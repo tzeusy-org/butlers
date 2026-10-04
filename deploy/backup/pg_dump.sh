@@ -473,7 +473,9 @@ SET ROLE %I;',
       || { echo "$?" > "${STATUSFILE}"; exit 0; }
     printf '\\.\n\\set ON_ERROR_STOP on\n'
     printf 'GRANT SELECT ON butlers_capture_restore_rows TO butler_general_rw;\n'
-    printf 'BEGIN;\nSET LOCAL ROLE butler_general_rw;\n'
+    # pg_dump leaves row_security=off in the restoring session. General FORCE
+    # RLS must apply during imports AND their deferred transaction-end checks.
+    printf 'BEGIN;\nSET LOCAL row_security=on;\nSET LOCAL ROLE butler_general_rw;\n'
     printf "SELECT public.capture_restore_row(relation_name, convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb) FROM butlers_capture_restore_rows ORDER BY ordinal, payload_hex;\n"
     printf 'COMMIT;\nDROP TABLE butlers_capture_restore_rows;\n\\set ON_ERROR_STOP off\n'
   fi

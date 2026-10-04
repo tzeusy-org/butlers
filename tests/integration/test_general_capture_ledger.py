@@ -216,6 +216,25 @@ async def test_effective_role_and_durable_receipt_guards(
     positive = await svc.process_one(positive.capture_id, owner="general", kind="note")
     genuine = await svc.verify(positive.operation_id)
     assert genuine is not None and genuine["item_id"] == str(positive.operation_id)
+    # A real pg_dump restore leaves row_security=off in the session. The
+    # invoker importer still applies General FORCE RLS rather than aborting or
+    # bypassing it, even when called independently of the scripted transaction.
+    async with capture_pool.acquire() as conn, conn.transaction():
+        restored_rows = [
+            (
+                table,
+                await conn.fetchval(
+                    f"SELECT to_jsonb(t) FROM public.{table} AS t WHERE id=$1", key
+                ),
+            )
+            for table, key in (
+                ("captures", positive.capture_id),
+                ("capture_operations", positive.operation_id),
+            )
+        ]
+        await conn.execute("SET LOCAL row_security=off")
+        for table, row in restored_rows:
+            await conn.execute("SELECT public.capture_restore_row($1,$2)", table, row)
     claimed = await svc.claim(receipt.capture_id, owner="general", kind="note")
 
     # A non-null shape, another operation's genuine locator, stale generation,
@@ -387,8 +406,35 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
     config = _build_alembic_config(db_url, chains=["core"])
     await asyncio.to_thread(command.downgrade, config, "core_258")
     await asyncio.to_thread(command.upgrade, config, "core_259")
+    sibling = _build_alembic_config(db_url, chains=["core"], target_schema="capture_replay")
+    await asyncio.to_thread(command.upgrade, sibling, "core_259")
+    await asyncio.to_thread(command.downgrade, config, "core_258")
+    await asyncio.to_thread(command.downgrade, sibling, "core_258")
+    await asyncio.to_thread(command.upgrade, config, "core_259")
+    # A missing sibling table cannot erase the still-present control record.
     conn = await asyncpg.connect(db_url)
     try:
+        await conn.execute("DROP TABLE public.capture_operations")
+    finally:
+        await conn.close()
+    with pytest.raises(DBAPIError, match="partial ledger"):
+        await asyncio.to_thread(command.downgrade, config, "core_258")
+    # Reinstall the empty missing table through the real installer, preserving
+    # the existing control. A restrictive policy must not hide evidence either.
+    await asyncio.to_thread(command.upgrade, sibling, "core_259")
+    conn = await asyncpg.connect(db_url)
+    try:
+        await conn.execute(
+            "CREATE POLICY capture_hidden ON public.capture_service_control AS RESTRICTIVE "
+            "FOR SELECT USING (false)"
+        )
+    finally:
+        await conn.close()
+    with pytest.raises(DBAPIError, match="General policy proof invalid"):
+        await asyncio.to_thread(command.downgrade, config, "core_258")
+    conn = await asyncpg.connect(db_url)
+    try:
+        await conn.execute("DROP POLICY capture_hidden ON public.capture_service_control")
         await conn.execute("SET ROLE butler_general_rw")
         await conn.execute(
             "UPDATE public.capture_service_control SET admitted_epoch=gen_random_uuid()"
@@ -400,7 +446,7 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
     # A new schema's historical chain must not remove/reset the shared control.
     await asyncio.to_thread(
         command.upgrade,
-        _build_alembic_config(db_url, chains=["core"], schema="capture_replay"),
+        _build_alembic_config(db_url, chains=["core"], target_schema="capture_evidence_replay"),
         "core_259",
     )
     conn = await asyncpg.connect(db_url)

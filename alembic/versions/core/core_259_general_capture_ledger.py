@@ -154,7 +154,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE OR REPLACE FUNCTION public.capture_validate_receipt(
             capture_uuid uuid, require_current boolean DEFAULT false)
-        RETURNS void LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+        RETURNS void LANGUAGE plpgsql SET search_path = pg_catalog SET row_security = on AS $$
         DECLARE c public.captures; o public.capture_operations; v record; parent record;
                 item record;
         BEGIN
@@ -268,7 +268,7 @@ def upgrade() -> None:
     # must match the exact row type; conflict rows must match byte-for-byte.
     op.execute("""
         CREATE OR REPLACE FUNCTION public.capture_restore_row(relation_name text, payload jsonb)
-        RETURNS void LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+        RETURNS void LANGUAGE plpgsql SET search_path = pg_catalog SET row_security = on AS $$
         DECLARE expected text[]; actual text[]; existing jsonb; incoming jsonb;
         BEGIN
             IF current_user <> 'butler_general_rw' OR jsonb_typeof(payload) <> 'object' THEN
@@ -343,7 +343,8 @@ def upgrade() -> None:
                 RAISE EXCEPTION 'capture restore conflict';
             END IF;
         EXCEPTION WHEN OTHERS THEN
-            RAISE EXCEPTION 'capture restore row invalid';
+            -- Fixed diagnostic only: never repeat payloads or raw exceptions.
+            RAISE EXCEPTION 'capture restore row invalid (SQLSTATE %)', SQLSTATE;
         END $$;
         REVOKE ALL ON FUNCTION public.capture_restore_row(text, jsonb) FROM PUBLIC;
         DO $$ BEGIN
@@ -356,12 +357,43 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Inspect as migration owner with RLS disabled: nonempty must ERROR, not look
-    # empty through FORCE RLS. A privileged maintenance owner sees the real rows.
-    op.execute("""DO $$ BEGIN
+    # Public objects are shared by every schema's core chain. A sibling may
+    # already have removed the complete empty ledger; a partial ledger is never
+    # evidence of emptiness. Inspect through the exact General RLS policy.
+    op.execute("""DO $$ DECLARE table_count integer; policy_count integer; all_policies integer;
+    BEGIN
+        SELECT count(*) INTO table_count FROM pg_class AS c
+        JOIN pg_namespace AS n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relname IN
+            ('captures','capture_operations','capture_service_control');
+        IF table_count=0 THEN RETURN; END IF;
+        IF table_count<>3 THEN
+            RAISE EXCEPTION 'capture evidence retained; partial ledger requires remediation';
+        END IF;
+        LOCK TABLE public.captures, public.capture_operations,
+            public.capture_service_control IN ACCESS EXCLUSIVE MODE;
+        SELECT count(*) INTO all_policies FROM pg_policy AS p
+        WHERE p.polrelid IN ('public.captures'::regclass,
+            'public.capture_operations'::regclass,'public.capture_service_control'::regclass);
+        SELECT count(*) INTO policy_count FROM pg_class AS c
+        JOIN pg_namespace AS n ON n.oid=c.relnamespace
+        JOIN pg_policy AS p ON p.polrelid=c.oid
+        WHERE n.nspname='public' AND c.relname IN
+            ('captures','capture_operations','capture_service_control')
+          AND c.relrowsecurity AND c.relforcerowsecurity
+          AND p.polname='capture_general_service' AND p.polcmd='*'
+          AND p.polpermissive AND p.polroles=ARRAY[0::oid]
+          AND pg_get_expr(p.polqual,p.polrelid)=
+              '(CURRENT_USER = ''butler_general_rw''::name)'
+          AND pg_get_expr(p.polwithcheck,p.polrelid)=
+              '(CURRENT_USER = ''butler_general_rw''::name)';
+        IF policy_count<>3 OR all_policies<>3 THEN
+            RAISE EXCEPTION 'capture evidence retained; General policy proof invalid';
+        END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'butler_general_rw') THEN
             RAISE EXCEPTION 'capture downgrade requires General authority';
         END IF;
+        SET LOCAL row_security=on;
         SET LOCAL ROLE butler_general_rw;
         IF EXISTS (SELECT 1 FROM public.captures) OR
            EXISTS (SELECT 1 FROM public.capture_operations) OR
@@ -373,8 +405,8 @@ def downgrade() -> None:
         RESET ROLE;
     END $$""")
     for table in reversed(TABLES):
-        op.execute(f"DROP TABLE public.{table}")
-    op.execute("DROP FUNCTION public.capture_restore_row(text, jsonb)")
-    op.execute("DROP FUNCTION public.capture_preserve_evidence()")
-    op.execute("DROP FUNCTION public.capture_validate_commit()")
-    op.execute("DROP FUNCTION public.capture_validate_receipt(uuid, boolean)")
+        op.execute(f"DROP TABLE IF EXISTS public.{table}")
+    op.execute("DROP FUNCTION IF EXISTS public.capture_restore_row(text, jsonb)")
+    op.execute("DROP FUNCTION IF EXISTS public.capture_preserve_evidence()")
+    op.execute("DROP FUNCTION IF EXISTS public.capture_validate_commit()")
+    op.execute("DROP FUNCTION IF EXISTS public.capture_validate_receipt(uuid, boolean)")

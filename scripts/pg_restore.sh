@@ -130,6 +130,10 @@ HAS_CAPTURE=false
 if gunzip -c "$BACKUP_FILE" | awk '/CREATE TABLE public.capture_service_control/ { found=1 } END { exit !found }'; then
   HAS_CAPTURE=true
 fi
+HAS_FLEET_EVIDENCE=false
+if gunzip -c "$BACKUP_FILE" | awk '/CREATE TABLE public.fleet_case_evidence/ { found=1 } END { exit !found }'; then
+  HAS_FLEET_EVIDENCE=true
+fi
 if [[ "$HAS_CAPTURE" == true ]]; then
   if [[ "$CAPTURE_EPOCH_FILE" != /* ]]; then
     echo "[restore] ERROR: capture restore requires --capture-epoch-file outside DB/repo" >&2
@@ -403,6 +407,31 @@ if [[ "$HAS_CAPTURE" == true ]]; then
           RAISE EXCEPTION 'capture restore operation binding invalid';
         END IF;
       END \$\$; COMMIT;" >/dev/null
+fi
+
+if [[ "$HAS_FLEET_EVIDENCE" == true ]]; then
+  # The current backup excludes cases but includes their readable evidence.
+  # psql can otherwise swallow the missing-parent FK error and return success.
+  # Preserve the excluded data policy; never certify missing relationship proof.
+  PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+    --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+    -c "DO \$\$ DECLARE evidence_oid oid; cases_oid oid; BEGIN
+      evidence_oid:=to_regclass('public.fleet_case_evidence');
+      cases_oid:=to_regclass('public.fleet_cases');
+      IF evidence_oid IS NULL OR cases_oid IS NULL OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint AS fk
+        WHERE fk.contype='f' AND fk.conrelid=evidence_oid AND fk.confrelid=cases_oid
+          AND fk.convalidated AND fk.confdeltype='c'
+          AND fk.conkey=ARRAY[(SELECT attnum FROM pg_attribute
+              WHERE attrelid=evidence_oid AND attname='case_id' AND NOT attisdropped)]
+          AND fk.confkey=ARRAY[(SELECT attnum FROM pg_attribute
+              WHERE attrelid=cases_oid AND attname='id' AND NOT attisdropped)]
+          AND (SELECT count(*) FROM pg_trigger AS t
+              WHERE t.tgconstraint=fk.oid AND t.tgenabled='O')=4
+      ) THEN
+        RAISE EXCEPTION 'Fleet evidence restore integrity missing; excluded case recovery unsupported';
+      END IF;
+    END \$\$;" >/dev/null
 fi
 
 echo "[restore] done — '${TARGET_DB}' is populated"

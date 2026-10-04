@@ -189,6 +189,17 @@ and equally if the script excludes something the dump role can in fact read
 red run go green — an entry there is a decision that data will not be in the
 backup.
 
+The existing exclusion of `public.fleet_cases` and `public.fleet_case_links`
+conflicts with the retained `public.fleet_case_evidence` foreign key. A dump may
+contain readable evidence while omitting its case parents. That artifact cannot
+reconstitute a complete Fleet relationship, even if `psql` continues after its
+missing-parent error. `pg_restore.sh` refuses certification unless the evidence
+table has its real parent and validated, enabled foreign key. It does not drop
+evidence, synthesize cases, change exclusions or grant restoration authority.
+Complete Fleet recovery needs an adopted data-admission and offline write
+authority contract; PUBLIC read permission does not admit the restoring login's
+INSERT through Switchboard-only FORCE RLS.
+
 A restore of one of these dumps therefore reconstitutes the application schema
 and data only. Re-run the managed bootstrap procedure to restore the executor
 boundary itself.
@@ -572,8 +583,11 @@ For a capture-bearing dump, `scripts/pg_restore.sh` requires an explicit absolut
 `--capture-epoch-file` (or `CAPTURE_EPOCH_FILE`) on a persistent host volume outside
 the repository/database. It disables existing target admission/dispatch before
 import and atomically rotates this nonsecret JSON manifest with a new generation
-and precise occurrence cutoff. The fixed invoker-rights importer restores only the
-three allowlisted row types, exact UUID/digest/operation bindings and terminal
+and precise occurrence cutoff. The scoped General import transaction explicitly
+sets `row_security=on`, overriding the ordinary dump's session setting while
+keeping FORCE RLS active through deferred receipt validation at commit. The
+fixed invoker-rights importer restores only the three allowlisted row types,
+exact UUID/digest/operation bindings and terminal
 receipts. Conflicts refuse. Imported control always has admission/dispatch false
 and recovery required, regardless of dumped enablement. Capture row/operation,
 FORCE-RLS and trigger checks run before certification; the prior definer-ownership
@@ -594,3 +608,9 @@ Recovery needs exact source-owned read-only outcomes and explicit control adopti
 there is no automatic resume, old-epoch rebase, timer expiry or reconstructed epoch
 from restored rows. Shipping these scripts does not run a live restore or provision
 its host path. The internal capture service is initially inactive.
+
+An empty inactive ledger may be removed on downgrade. Repeated schema-chain
+downgrade tolerates complete shared absence; partial tables, altered General
+policies or retained admission/operation evidence require forward remediation.
+The empty check holds exclusive table locks so a concurrent admission cannot
+commit between inspection and removal.
