@@ -95,6 +95,16 @@ async def test_held_admission_races_and_external_epoch_refuse_old_occurrences(
     )
     with pytest.raises(CaptureUnavailable, match="Capture service unavailable"):
         await restart.admit(changed, "Changed", mutation_key="same")
+    refs = [{"source_id": str(uuid.uuid4()), "attachment_id": str(uuid.uuid4())}]
+    reference_auth = VerifiedAuthority(
+        auth.principal_id,
+        uuid.uuid4(),
+        datetime.now(UTC),
+        epoch.generation,
+        canonical_intake("Synthetic capture", refs)[1],
+    )
+    referenced = await svc.admit(reference_auth, "Synthetic capture", references=refs)
+    assert referenced.disposition == "held"
     distinct = await svc.admit(authority(epoch), "Synthetic capture", mutation_key="same")
     assert distinct.capture_id != first.capture_id
     assert (

@@ -235,6 +235,16 @@ class CaptureService:
                 )
                 return project_receipt(row)
             intake = json.loads(row["canonical_intake"])
+            if intake["references"]:
+                # Admission can retain normalized handles, but no source-owning
+                # attachment eligibility adapter exists in this internal unit.
+                # Never relabel retained references as current read authority.
+                row = await conn.fetchrow(
+                    "UPDATE public.captures SET category='source_unavailable',updated_at=now() "
+                    "WHERE id=$1 RETURNING *",
+                    capture_id,
+                )
+                return project_receipt(row)
             await conn.execute(
                 "UPDATE public.capture_operations SET stage='in_doubt',updated_at=now() "
                 "WHERE id=$1",

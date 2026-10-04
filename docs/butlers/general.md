@@ -100,6 +100,10 @@ constructing `VerifiedAuthority` does not authenticate a caller. Text is bounded
 32 KiB UTF-8, normalized owning-source UUID reference pairs to eight, canonical
 admission to 64 KiB, and an optional nonblank mutation key to 128 UTF-8 bytes.
 
+Normalized reference intake can remain held; processing does not fetch attachments
+or route a referenced intake without a separately implemented source-eligibility
+adapter. Retained handles cannot authorize a newly private source.
+
 Only General is supported. Fixed note/fact/preference kinds require already declared
 ordinary notes/facts/preferences collections. No vocabulary is seeded. A single
 General transaction writes the item, immutable source version and exact routed
