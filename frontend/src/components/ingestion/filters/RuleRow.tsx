@@ -19,7 +19,7 @@
  * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §RuleRow
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { IngestionRule } from '@/api/types'
 import { Switch } from '@/components/ui/switch'
 
@@ -54,12 +54,18 @@ function actionColor(action: string): string {
 
 export interface RuleRowProps {
   rule: IngestionRule
+  linked?: boolean
+  onLinkedRowReady?: (row: HTMLElement) => void
   onToggle?: (id: string, enabled: boolean) => void
   onEdit?: (id: string) => void
   onDelete?: (id: string) => void
 }
 
-export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
+export function RuleRow({ rule, linked = false, onLinkedRowReady, onToggle, onEdit, onDelete }: RuleRowProps) {
+  const rowRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (linked && rowRef.current) onLinkedRowReady?.(rowRef.current)
+  }, [linked, onLinkedRowReady])
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const colorClass = actionColor(rule.action)
   const dotColor = rule.enabled
@@ -68,10 +74,17 @@ export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
 
   return (
     <div
-      className="grid items-start gap-4 py-4 border-b border-border/50"
+      ref={rowRef}
+      tabIndex={linked ? -1 : undefined}
+      role={linked ? 'group' : undefined}
+      aria-label={linked ? `Linked rule ${rule.name ?? rule.id}` : undefined}
+      data-rule-id={rule.id}
+      data-linked-rule={linked ? 'true' : undefined}
+      className={`grid items-start gap-4 py-4 border-b border-border/50 ${linked ? 'border-l-2 border-l-[var(--focus)] pl-3 bg-foreground/[0.03]' : ''}`}
       style={{ gridTemplateColumns: '12px 1fr 100px 40px auto' }}
       data-testid={`rule-row-${rule.id}`}
     >
+      {linked && <span className="col-span-full font-mono text-[10px] text-muted-foreground">Linked rule</span>}
       {/* Enabled dot */}
       <span
         className={`mt-1.5 inline-block w-1.5 h-1.5 rounded-full ${dotColor}`}

@@ -3205,6 +3205,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/ingestion/filters/ArchivedRulesSection.tsx`
 
+- Linked archived rule
+- Linked archived rule {}
 - Restore rule {}
 
 ## `frontend/src/components/ingestion/filters/ChannelDefaultsBlock.tsx`
@@ -3230,11 +3232,14 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - unresolved failures
 - replay pending
 - reviewed write-offs
+- Loading linked rule…
+- Rule no longer exists. The linked rule was not found in active or archived rules.
 - add rule
 - route_to:&lt;butler&gt;
 - + add rule
 - open DSL
 - execution backlog
+- linked rule
 
 ## `frontend/src/components/ingestion/filters/GateSection.tsx`
 
@@ -3317,7 +3322,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/ingestion/filters/RuleRow.tsx`
 
+- Linked rule
 - delete?
+- Linked rule {}
 - {} rule {}
 - Disable
 - Enable
@@ -4821,4 +4828,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3835*
+*Total strings: 3842*
