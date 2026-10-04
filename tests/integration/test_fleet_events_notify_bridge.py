@@ -257,6 +257,7 @@ async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
 
 
 @pytest.mark.timeout(30)
+# Spec: REQ-core-fleet-events-004, REQ-core-fleet-events-011, REQ-core-fleet-events-012
 async def test_calendar_and_chronicler_child_processes_reach_websocket(
     shared_db_url, monkeypatch: pytest.MonkeyPatch
 ):
@@ -371,6 +372,7 @@ async def test_multiple_events_across_types_all_arrive_in_order(shared_db_url):
         await api_pool.close()
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_listener_reconnects_and_keeps_delivering_after_connection_drop(shared_db_url):
     """Regression guard: a killed LISTEN connection must not permanently
     silence the bridge (that would recreate the exact "Live indicator shows

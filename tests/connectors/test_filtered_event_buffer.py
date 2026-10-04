@@ -100,6 +100,7 @@ async def test_flush_clears_buffer() -> None:
     assert len(buf) == 0
 
 
+# Spec: REQ-core-fleet-events-010
 async def test_flush_publishes_ingestion_event_after_successful_batch_write() -> None:
     """A committed filtered-event batch invalidates the unified ingestion feed."""
     buf = _make_buffer()
@@ -137,6 +138,7 @@ async def test_flush_publishes_ingestion_event_after_successful_batch_write() ->
     assert len(buf) == 0
 
 
+# Spec: REQ-core-fleet-events-010
 async def test_flush_does_not_retry_committed_rows_when_publication_fails() -> None:
     """A failed best-effort signal cannot duplicate an already committed batch."""
     buf = _make_buffer()
@@ -160,6 +162,7 @@ async def test_flush_does_not_retry_committed_rows_when_publication_fails() -> N
     assert len(buf) == 0
 
 
+# Spec: REQ-core-fleet-events-010
 async def test_flush_empty_buffer_is_noop() -> None:
     """flush() on an empty buffer must not call the pool at all."""
     buf = _make_buffer()
@@ -175,6 +178,7 @@ async def test_flush_empty_buffer_is_noop() -> None:
     mock_publish.assert_not_awaited()
 
 
+# Spec: REQ-core-fleet-events-010
 async def test_flush_db_error_is_non_fatal() -> None:
     """A failed batch INSERT does not publish a fleet event."""
     buf = _make_buffer()

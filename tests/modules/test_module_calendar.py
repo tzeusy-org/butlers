@@ -3036,6 +3036,7 @@ class TestProjectInternalSourcesNoReminders:
             "_project_reminders_source should have been removed from CalendarModule"
         )
 
+    # Spec: REQ-core-fleet-events-011
     async def test_project_internal_sources_publishes_calendar_event_after_projection(
         self, monkeypatch
     ):
@@ -3057,6 +3058,7 @@ class TestProjectInternalSourcesNoReminders:
 
         publish_mock.assert_awaited_once_with(pool, "calendar", {"kind": "internal_projection"})
 
+    # Spec: REQ-core-fleet-events-011
     async def test_empty_scheduler_sweep_is_non_material_and_emits_no_fleet_event(self):
         """A successful no-op sweep must not churn the calendar workspace caches."""
         pool = MagicMock()
@@ -3075,6 +3077,7 @@ class TestProjectInternalSourcesNoReminders:
 
 
 class TestCalendarFleetEvents:
+    # Spec: REQ-core-fleet-events-011
     async def test_sync_calendar_publishes_after_provider_projection_commits(self):
         """A provider delta publishes only after its normalized projection succeeds."""
         pool = MagicMock()

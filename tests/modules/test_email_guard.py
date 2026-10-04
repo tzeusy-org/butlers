@@ -265,6 +265,7 @@ class TestCheckEmailRecipient:
 class TestEmailGuardEmitsCreatedEvent:
     """email_guard.py must emit 'created' approval WS events when parking actions."""
 
+    # Spec: REQ-core-fleet-events-008
     async def test_no_rule_park_emits_created(self) -> None:
         """No standing rule: check_email_recipient publishes kind='created' with
         status='pending' onto the fleet event bus (publish_fleet_event, RFC 0022;
@@ -335,6 +336,7 @@ class TestEmailGuardEmitsCreatedEvent:
         assert event["butler"] == "home"
         assert event["status"] == "pending"
 
+    # Spec: REQ-core-fleet-events-008
     async def test_emit_created_survives_broker_failure(self) -> None:
         """publish_fleet_event raising must not prevent email guard from parking the action."""
         pool = AsyncMock()

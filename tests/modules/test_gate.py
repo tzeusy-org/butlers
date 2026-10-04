@@ -594,6 +594,7 @@ class TestGateEmitsCreatedEvent:
         assert event["tool_name"] == "telegram_send_message"
         assert event["status"] == "approved"
 
+    # Spec: REQ-core-fleet-events-008
     async def test_park_pending_emits_created(self) -> None:
         """No-rule path: gate publishes kind='created' with status='pending'.
 
@@ -636,6 +637,7 @@ class TestGateEmitsCreatedEvent:
         assert event["status"] == "pending"
         assert event["butler"] == "home"
 
+    # Spec: REQ-core-fleet-events-008
     async def test_emit_created_survives_import_failure(self) -> None:
         """If publish_fleet_event raises, gate wrapper must not crash."""
         owner = _owner_contact()

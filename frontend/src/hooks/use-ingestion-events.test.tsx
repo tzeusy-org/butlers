@@ -131,6 +131,7 @@ it("aborts an in-flight detail read when its drawer unmounts", async () => {
   expect(signal?.aborted).toBe(true);
 });
 
+// Spec: REQ-core-fleet-events-013
 it("polls the head only and disables pagination when the surface is inactive", async () => {
   const { wrapper } = setup();
   vi.mocked(api.listIngestionEvents).mockImplementation(async (params) =>
@@ -153,6 +154,7 @@ it("polls the head only and disables pagination when the surface is inactive", a
   expect(api.listIngestionEvents).toHaveBeenCalledTimes(count);
 });
 
+// Spec: REQ-core-fleet-events-013
 it("reconciles active drawer and aggregate reads every 30 seconds without bus events", async () => {
   vi.useFakeTimers();
   vi.setSystemTime("2026-01-01T12:00:00.000Z");

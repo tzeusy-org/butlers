@@ -34,6 +34,7 @@ class _FakePool:
         return "SELECT 1"
 
 
+# Spec: REQ-core-fleet-events-001
 async def test_publish_fleet_event_sends_pg_notify_with_channel_and_json_payload():
     pool = _FakePool()
 
@@ -51,6 +52,7 @@ async def test_publish_fleet_event_sends_pg_notify_with_channel_and_json_payload
     }
 
 
+# Spec: REQ-core-fleet-events-001
 async def test_publish_fleet_event_defaults_data_to_empty_dict():
     pool = _FakePool()
 
@@ -62,6 +64,7 @@ async def test_publish_fleet_event_defaults_data_to_empty_dict():
     assert envelope == {"type": "heartbeat", "data": {}}
 
 
+# Spec: REQ-core-fleet-events-002, REQ-core-fleet-events-007
 async def test_publish_fleet_event_swallows_notify_failure():
     pool = _FakePool(raise_on_execute=RuntimeError("connection lost"))
 
@@ -83,6 +86,7 @@ async def test_publish_fleet_event_swallows_missing_execute_method():
     assert ok is False
 
 
+# Spec: REQ-core-fleet-events-002
 async def test_publish_fleet_event_drops_oversized_payload():
     pool = _FakePool()
     # Comfortably exceeds Postgres's 8000-byte NOTIFY payload cap.
@@ -94,6 +98,7 @@ async def test_publish_fleet_event_drops_oversized_payload():
     assert pool.execute_calls == []  # never attempted the NOTIFY
 
 
+# Spec: REQ-core-fleet-events-002
 async def test_publish_fleet_event_drops_non_serializable_data():
     pool = _FakePool()
 

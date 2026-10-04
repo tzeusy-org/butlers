@@ -620,6 +620,7 @@ class TestEnsurePartitionOutsideTransaction:
 class TestIngestionEventPublishesOnBus:
     """A new (non-duplicate) ingest publishes an "ingestion" fleet event."""
 
+    # Spec: REQ-core-fleet-events-009
     async def test_new_ingest_publishes_ingestion_event_cross_process(self) -> None:
         """The switchboard daemon publishes through the RFC 0022 bridge."""
         from unittest.mock import AsyncMock, patch
@@ -644,6 +645,7 @@ class TestIngestionEventPublishesOnBus:
             "triage_target": None,
         }
 
+    # Spec: REQ-core-fleet-events-009
     async def test_duplicate_ingest_does_not_publish_ingestion_event(self) -> None:
         """A duplicate submission writes no new row, so no event should publish."""
         from unittest.mock import AsyncMock, patch

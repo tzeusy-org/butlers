@@ -140,6 +140,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
     expect(keys(invalidateQueries)).toEqual(expect.arrayContaining([["issues"]]));
   });
 
+  // Spec: REQ-core-fleet-events-013
   it("ingestion: invalidates the ingestion events feed, window-rollup, and histogram", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "ingestion", ts: 1, data: {} });
@@ -223,6 +224,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
     }
   });
 
+  // Spec: REQ-core-fleet-events-013
   it("calendar: invalidates the projected workspace and its derived views", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "calendar", ts: 1, data: { kind: "provider_projection" } });
@@ -242,6 +244,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
     );
   });
 
+  // Spec: REQ-core-fleet-events-013
   it("chronicles: invalidates projection-backed chronicler data", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "chronicles", ts: 1, data: { kind: "projection" } });
