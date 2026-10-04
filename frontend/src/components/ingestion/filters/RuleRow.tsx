@@ -19,7 +19,7 @@
  * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §RuleRow
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { IngestionRule } from '@/api/types'
 import { Switch } from '@/components/ui/switch'
 
@@ -57,9 +57,15 @@ export interface RuleRowProps {
   onToggle?: (id: string, enabled: boolean) => void
   onEdit?: (id: string) => void
   onDelete?: (id: string) => void
+  highlighted?: boolean
+  onTargetReady?: (row: HTMLDivElement) => void
 }
 
-export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
+export function RuleRow({ rule, onToggle, onEdit, onDelete, highlighted = false, onTargetReady }: RuleRowProps) {
+  const rowRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (highlighted && rowRef.current) onTargetReady?.(rowRef.current)
+  }, [highlighted, onTargetReady])
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const colorClass = actionColor(rule.action)
   const dotColor = rule.enabled
@@ -68,7 +74,12 @@ export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
 
   return (
     <div
-      className="grid items-start gap-4 py-4 border-b border-border/50"
+      ref={rowRef}
+      role="group"
+      aria-label={`Rule ${rule.name ?? rule.id}`}
+      aria-current={highlighted ? 'true' : undefined}
+      tabIndex={-1}
+      className={`grid items-start gap-4 py-4 border-b border-border/50 ${highlighted ? 'bg-foreground/[0.05] border-l-2 border-l-focus pl-3' : ''}`}
       style={{ gridTemplateColumns: '12px 1fr 100px 40px auto' }}
       data-testid={`rule-row-${rule.id}`}
     >
@@ -82,6 +93,7 @@ export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
       <div className="min-w-0">
         <div className="font-medium text-sm leading-tight tracking-[-0.005em] truncate">
           {rule.name ?? rule.id.slice(0, 8)}
+          {highlighted && <span className="ml-2 font-mono text-[10px] text-muted-foreground">linked rule</span>}
         </div>
         {rule.description && (
           <p className="font-serif italic text-[12.5px] text-muted-foreground mt-0.5 leading-snug">

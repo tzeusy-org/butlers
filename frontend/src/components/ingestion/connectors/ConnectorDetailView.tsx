@@ -701,7 +701,7 @@ function RoutingRulesList({ rules, reader }: RoutingRulesListProps) {
           {rules.rules.map((rule) => (
             <Link
               key={rule.id}
-              to="/ingestion/filters"
+              to={`/ingestion/filters?rule=${encodeURIComponent(rule.id)}`}
               className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0 hover:bg-foreground/[0.03] transition-colors -mx-1 px-1"
             >
               <span className="font-mono text-[10px] text-muted-foreground shrink-0">

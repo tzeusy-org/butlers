@@ -12,7 +12,7 @@
  *
  * Data sources:
  * - usePipelineStats("24h")        → PipelineStats (funnel counts)
- * - useIngestionRules({enabled:true})  → active rules
+ * - useIngestionRules()  → active rules
  * - useIngestionRules({archived:true}) → archived (soft-deleted) rules via ?archived=true
  *
  * Priority senders: rules with action starting with "route" and
@@ -32,7 +32,8 @@
  *       dashboard-ingestion-dispatch-console/spec.md §"Filters Pipeline"
  */
 
-import { useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { usePipelineStats } from '@/hooks/use-ingestion'
 import { useIngestionRules, useUpdateIngestionRule, useDeleteIngestionRule } from '@/hooks/use-ingestion-rules'
 import {
@@ -50,7 +51,7 @@ import { PrioritySendersBlock } from './PrioritySendersBlock'
 import { ChannelDefaultsBlock, type ChannelDefaultEditorState } from './ChannelDefaultsBlock'
 import { ArchivedRulesSection } from './ArchivedRulesSection'
 import { RuleEditor, type EditorMode } from './RuleEditor'
-import type { IngestionRule, PipelineStats } from '@/api/types'
+import type { ApiResponse, IngestionRule, PipelineStats } from '@/api/types'
 import type { ChannelDefaultPolicy } from '@/api/index.ts'
 import { ApiError } from '@/api/index.ts'
 import { getAvailablePipelineBacklog } from './backlog-state'
@@ -68,6 +69,15 @@ function isChannelDefault(rule: IngestionRule): boolean {
     rule.rule_type === 'channel_default' ||
     rule.scope === 'channel_default'
   )
+}
+
+/** Only a complete, nondegraded list can establish presence or absence. */
+function rulesReadComplete(response: ApiResponse<IngestionRule[]> | undefined): boolean {
+  if (!response || !Array.isArray(response.data)) return false
+  const degraded = response.meta?.sources_degraded
+  if (Array.isArray(degraded) && degraded.length > 0) return false
+  const total = response.meta?.total
+  return total === undefined || total === response.data.length
 }
 
 interface ExecutionBacklogProps {
@@ -170,6 +180,28 @@ function ExecutionBacklog({ stats, loading, statsError, onRetry }: ExecutionBack
 // ---------------------------------------------------------------------------
 
 export function FiltersPipeline() {
+  const [searchParams] = useSearchParams()
+  const ruleTarget = searchParams.get('rule') || null
+  const focusReceipt = useRef<{ target: string | null; focused: boolean }>({
+    target: null, focused: false,
+  })
+
+  // Layout effects run before row effects. Reset only for a decoded target
+  // change, so refetches, retries and repeated links never steal focus again.
+  useLayoutEffect(() => {
+    if (focusReceipt.current.target !== ruleTarget) {
+      focusReceipt.current = { target: ruleTarget, focused: false }
+    }
+  }, [ruleTarget])
+
+  const focusTargetRow = useCallback((row: HTMLDivElement) => {
+    const receipt = focusReceipt.current
+    if (receipt.target !== ruleTarget || receipt.focused) return
+    receipt.focused = true
+    row.focus({ preventScroll: true })
+    row.scrollIntoView({ block: 'center', behavior: 'auto' })
+  }, [ruleTarget])
+
   const [toggleError, setToggleError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [priorityMutationError, setPriorityMutationError] = useState<string | null>(null)
@@ -201,7 +233,7 @@ export function FiltersPipeline() {
     isLoading: rulesLoading,
     isError: rulesError,
     refetch: refetchRules,
-  } = useIngestionRules({ enabled: true })
+  } = useIngestionRules()
 
   // Archived rules (soft-deleted = deleted_at is set). The backend returns these
   // only when ?archived=true is passed; this is the PARAMS argument (query
@@ -211,6 +243,8 @@ export function FiltersPipeline() {
   const {
     data: archivedRulesResp,
     isLoading: archivedLoading,
+    isError: archivedError,
+    refetch: refetchArchived,
   } = useIngestionRules({ archived: true })
 
   const updateRule = useUpdateIngestionRule()
@@ -250,17 +284,28 @@ export function FiltersPipeline() {
   // Derived data
   // -------------------------------------------------------------------------
 
-  const allActiveRules: IngestionRule[] = activeRulesResp?.data ?? []
+  const allActiveRules: IngestionRule[] = Array.isArray(activeRulesResp?.data) ? activeRulesResp.data : []
   // ?archived=true already scopes the response to soft-deleted rules
   // (deleted_at set); no client-side filtering needed.
-  const archivedRules: IngestionRule[] = archivedRulesResp?.data ?? []
+  const archivedRules: IngestionRule[] = Array.isArray(archivedRulesResp?.data) ? archivedRulesResp.data : []
+
+  const activeComplete = !rulesLoading && !rulesError && rulesReadComplete(activeRulesResp)
+  const archivedComplete = !archivedLoading && !archivedError && rulesReadComplete(archivedRulesResp)
+  const activeTarget = activeComplete && allActiveRules.some((rule) => rule.id === ruleTarget)
+  const archivedTarget = activeComplete && !activeTarget && archivedComplete &&
+    archivedRules.some((rule) => rule.id === ruleTarget)
+  const highlightedRuleId = activeTarget || archivedTarget ? ruleTarget : null
+  const targetLoading = !activeTarget && (rulesLoading || (activeComplete && archivedLoading))
+  const targetUnavailable = !activeTarget && !targetLoading && (!activeComplete || !archivedComplete)
 
   const priorityContacts = priorityContactsResp?.data ?? []
   const contactCandidates = candidatesResp?.items ?? []
 
   // Split out special-purpose rules before gate bucketing
   const channelDefaultRules = allActiveRules.filter(isChannelDefault)
-  const gatableRules = allActiveRules.filter((r) => !isChannelDefault(r))
+  // A channel-default target needs its own exact rule row: the policy block
+  // groups by channel and edits a separate runtime document, not this rule.
+  const gatableRules = allActiveRules.filter((r) => !isChannelDefault(r) || r.id === highlightedRuleId)
 
   const rulesByGate = groupRulesByGate(gatableRules)
 
@@ -411,6 +456,11 @@ export function FiltersPipeline() {
   if (statsLoading && rulesLoading) {
     return (
       <div className="space-y-4 py-6">
+        {ruleTarget && (
+          <p role="status" aria-live="polite" data-testid="linked-rule-status">
+            Loading linked rule…
+          </p>
+        )}
         {Array.from({ length: 3 }).map((_, i) => (
           <div key={i} className="h-16 bg-foreground/5" />
         ))}
@@ -424,6 +474,30 @@ export function FiltersPipeline() {
 
   return (
     <div data-testid="filters-pipeline">
+      {ruleTarget && !activeTarget && !archivedTarget && (
+        targetUnavailable ? (
+          <SourceDegradedNote
+            className="mb-4"
+            label="linked rule"
+            detail="unavailable; rule reads could not be completed"
+            testId="linked-rule-unavailable"
+            onRetry={() => {
+              void refetchRules()
+              void refetchArchived()
+            }}
+          />
+        ) : (
+          <p
+            role="status"
+            aria-live="polite"
+            className="mb-4 font-mono text-[11px] text-muted-foreground"
+            data-testid="linked-rule-status"
+          >
+            {targetLoading ? 'Loading linked rule…' : 'Linked rule no longer exists.'}
+          </p>
+        )
+      )}
+
       {/* Error banners */}
       {(toggleError || deleteError) && (
         <div
@@ -478,6 +552,8 @@ export function FiltersPipeline() {
             onToggleRule={handleToggleRule}
             onEditRule={handleEditRule}
             onDeleteRule={handleDeleteRule}
+            highlightedRuleId={highlightedRuleId}
+            onTargetReady={focusTargetRow}
           />
         ))}
       </div>
@@ -519,6 +595,8 @@ export function FiltersPipeline() {
           rules={archivedRules}
           onRestore={handleRestoreRule}
           restoreError={restoreError}
+          highlightedRuleId={archivedTarget ? highlightedRuleId : null}
+          onTargetReady={focusTargetRow}
         />
       )}
 

@@ -20,8 +20,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act } from 'react'
+import { act, StrictMode, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter, useNavigate } from 'react-router'
 
 ;(
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -220,7 +221,7 @@ function cleanup(root: Root, container: HTMLDivElement) {
 }
 
 function renderComponent(container: HTMLDivElement, root: Root, component: React.ReactElement) {
-  act(() => { root.render(component) })
+  act(() => { root.render(<MemoryRouter>{component}</MemoryRouter>) })
   return container
 }
 
@@ -1912,5 +1913,179 @@ describe('bu-4utdw.9: channel defaults inline editor', () => {
     expect(footer.textContent).toContain('skip')
     expect(footer.textContent).not.toMatch(/\bdrop\b/)
     expect(footer.textContent).not.toMatch(/\bpreserve\b/)
+  })
+})
+
+// Exact navigation targets are independent of filter state and server actions.
+describe('connector routing-rule navigation', () => {
+  let container: HTMLDivElement
+  let root: Root
+  let scroll: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    setupDefaultMocks()
+    mockUpdateMutate.mockClear()
+    mockDeleteMutate.mockClear()
+    scroll = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true, value: scroll,
+    })
+  })
+  afterEach(() => {
+    cleanup(root, container)
+    vi.restoreAllMocks()
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
+  })
+
+  let navigate: ReturnType<typeof useNavigate>
+
+  function CaptureNavigation() {
+    const navigateTo = useNavigate()
+    useEffect(() => { navigate = navigateTo }, [navigateTo])
+    return null
+  }
+
+  function mountTarget(id: string) {
+    function render() {
+      root.render(
+        <StrictMode>
+          <MemoryRouter initialEntries={[`/ingestion/filters?rule=${encodeURIComponent(id)}`]}>
+            <CaptureNavigation />
+            <FiltersPipeline />
+          </MemoryRouter>
+        </StrictMode>,
+      )
+    }
+    act(render)
+    return { render, navigate: (path: string) => navigate(path) }
+  }
+
+  function reads(active: unknown, archived: unknown) {
+    mockUseIngestionRules.mockImplementation((params?: { archived?: boolean }) =>
+      params?.archived ? archived : active)
+  }
+
+  function row(id: string, archived = false) {
+    return [...container.querySelectorAll<HTMLElement>(archived
+      ? '[data-testid^="archived-rule-row-"]' : '[data-testid^="rule-row-"]')]
+      .find((element) => element.dataset.testid === `${archived ? 'archived-rule-row-' : 'rule-row-'}${id}`)!
+  }
+
+  it('waits for the active read and focuses only the full decoded disabled id', () => {
+    const id = 'rule /?&+#%"雪'
+    reads({ data: undefined, isLoading: true }, { data: { data: [] }, isLoading: false })
+    const router = mountTarget(id)
+    expect(scroll).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="linked-rule-status"]')?.getAttribute('role')).toBe('status')
+    setupDefaultMocks({}, [makeRule({ id: 'rule', name: 'Same name' }), makeRule({ id, enabled: false, rule_type: 'channel_default', name: 'Same name' })])
+    act(() => { router.render() })
+    expect(document.activeElement).toBe(row(id))
+    expect(row(id).getAttribute('tabindex')).toBe('-1')
+    expect(row(id).getAttribute('aria-label')).toContain('Same name')
+    expect(row(id).textContent).toContain('linked rule')
+    expect(row('rule').getAttribute('aria-current')).toBeNull()
+    expect(scroll).toHaveBeenCalledTimes(1)
+    expect(scroll.mock.instances[0]).toBe(row(id))
+    expect(scroll).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' })
+    expect(mockUseIngestionRules.mock.calls.at(-2)?.[0]).toBeUndefined()
+    expect(mockUpdateMutate).not.toHaveBeenCalled()
+    expect(mockDeleteMutate).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="rule-editor"]')).toBeNull()
+  })
+
+  it('waits for the archived read then expands and focuses the exact archived rule', async () => {
+    reads({ data: { data: [] }, isLoading: false }, { data: undefined, isLoading: true })
+    const router = mountTarget('old')
+    expect(container.querySelector('[data-testid="linked-rule-status"]')?.textContent).toMatch(/loading/i)
+    expect(scroll).not.toHaveBeenCalled()
+    await act(async () => {
+      setupDefaultMocks({}, [], [makeArchivedRule({ id: 'older' }), makeArchivedRule({ id: 'old' })])
+      router.render()
+    })
+    expect(container.querySelector('[data-testid="archived-rules-toggle"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(row('old', true))
+    expect(row('old', true).getAttribute('aria-current')).toBe('true')
+    expect(row('older', true).getAttribute('aria-current')).toBeNull()
+    expect(scroll.mock.instances[0]).toBe(row('old', true))
+    expect(mockUpdateMutate).not.toHaveBeenCalled()
+    expect(mockDeleteMutate).not.toHaveBeenCalled()
+  })
+
+  it('announces absence only after both complete reads and never picks a partial id', () => {
+    reads({ data: { data: [makeRule({ id: 'missing-prefix' })] }, isLoading: false }, { data: undefined, isLoading: true })
+    const router = mountTarget('missing')
+    expect(container.textContent).not.toMatch(/no longer exists/i)
+    setupDefaultMocks({}, [makeRule({ id: 'missing-prefix' })], [makeArchivedRule({ id: 'also-missing' })])
+    act(() => { router.render() })
+    const status = container.querySelector('[data-testid="linked-rule-status"]')
+    expect(status?.textContent).toMatch(/no longer exists/i)
+    expect(status?.getAttribute('role')).toBe('status')
+    expect(scroll).not.toHaveBeenCalled()
+    expect(container.querySelector('[aria-current="true"]')).toBeNull()
+  })
+
+  it('distinguishes failed, degraded, and incomplete reads from absence and retries both sources', () => {
+    const retryActive = vi.fn()
+    const retryArchived = vi.fn()
+    const router = mountTarget('target')
+    for (const badRead of [
+      { data: { data: [makeRule({ id: 'target' })] }, isError: true },
+      { data: undefined },
+      { data: { data: {} } },
+      { data: { data: [], meta: { sources_degraded: ['rules'] } } },
+      { data: { data: [], meta: { total: 1 } } },
+    ]) {
+      for (const failedSource of ['active', 'archived']) {
+        const goodRead = { data: { data: [] }, isLoading: false, isError: false }
+        reads(
+          { ...(failedSource === 'active' ? badRead : goodRead), refetch: retryActive },
+          { ...(failedSource === 'archived' ? badRead : goodRead), refetch: retryArchived },
+        )
+        act(() => { router.render() })
+        const status = container.querySelector('[data-testid="linked-rule-unavailable"]')
+        expect(status?.textContent).toMatch(/unavailable/i)
+        expect(container.textContent).not.toMatch(/no longer exists/i)
+        expect(scroll).not.toHaveBeenCalled()
+        act(() => { (status!.querySelector('button') as HTMLButtonElement).click() })
+      }
+    }
+    expect(retryActive).toHaveBeenCalledTimes(10)
+    expect(retryArchived).toHaveBeenCalledTimes(10)
+    setupDefaultMocks({}, [makeRule({ id: 'target' })])
+    act(() => { router.render() })
+    expect(document.activeElement).toBe(row('target'))
+    expect(scroll).toHaveBeenCalledTimes(1)
+  })
+
+  it('moves focus once per target change while repeated links, refetches and retries preserve user focus', async () => {
+    setupDefaultMocks({}, [makeRule({ id: 'one' }), makeRule({ id: 'two' })])
+    const router = mountTarget('one')
+    expect(document.activeElement).toBe(row('one'))
+    const footer = container.querySelector('[data-testid="filters-footer"] button') as HTMLButtonElement
+    footer.focus()
+    await act(async () => { await router.navigate('/ingestion/filters?rule=one&range=24h') })
+    setupDefaultMocks({}, [makeRule({ id: 'one', name: 'Refreshed' }), makeRule({ id: 'two' })])
+    act(() => { router.render() })
+    expect(document.activeElement).toBe(footer)
+    expect(scroll).toHaveBeenCalledTimes(1)
+    reads({ data: undefined, isLoading: false, isError: true }, { data: { data: [] } })
+    act(() => { router.render() })
+    setupDefaultMocks({}, [makeRule({ id: 'one' }), makeRule({ id: 'two' })])
+    act(() => { router.render() })
+    expect(document.activeElement).toBe(footer)
+    expect(scroll).toHaveBeenCalledTimes(1)
+    await act(async () => { await router.navigate('/ingestion/filters?rule=two') })
+    expect(document.activeElement).toBe(row('two'))
+    expect(row('one').getAttribute('aria-current')).toBeNull()
+    await act(async () => { await router.navigate('/ingestion/filters?rule=one') })
+    expect(document.activeElement).toBe(row('one'))
+    await act(async () => { await router.navigate('/ingestion/filters') })
+    footer.focus()
+    await act(async () => { await router.navigate('/ingestion/filters?rule=one') })
+    expect(document.activeElement).toBe(row('one'))
+    expect(scroll).toHaveBeenCalledTimes(4)
+    expect(mockUpdateMutate).not.toHaveBeenCalled()
+    expect(mockDeleteMutate).not.toHaveBeenCalled()
   })
 })

@@ -3205,6 +3205,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/ingestion/filters/ArchivedRulesSection.tsx`
 
+- linked rule
+- Archived rule {}
 - Restore rule {}
 
 ## `frontend/src/components/ingestion/filters/ChannelDefaultsBlock.tsx`
@@ -3230,11 +3232,13 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - unresolved failures
 - replay pending
 - reviewed write-offs
+- Loading linked rule…
 - add rule
 - route_to:&lt;butler&gt;
 - + add rule
 - open DSL
 - execution backlog
+- linked rule
 
 ## `frontend/src/components/ingestion/filters/GateSection.tsx`
 
@@ -3317,7 +3321,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/ingestion/filters/RuleRow.tsx`
 
+- linked rule
 - delete?
+- Rule {}
 - {} rule {}
 - Disable
 - Enable
@@ -4821,4 +4827,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3835*
+*Total strings: 3841*

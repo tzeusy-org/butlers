@@ -48,6 +48,8 @@ export interface GateSectionProps {
   onToggleRule?: (id: string, enabled: boolean) => void
   onEditRule?: (id: string) => void
   onDeleteRule?: (id: string) => void
+  highlightedRuleId?: string | null
+  onTargetReady?: (row: HTMLDivElement) => void
 }
 
 export function GateSection({
@@ -63,6 +65,8 @@ export function GateSection({
   onToggleRule,
   onEditRule,
   onDeleteRule,
+  highlightedRuleId,
+  onTargetReady,
 }: GateSectionProps) {
   const hasDrop = count.dropped > 0
   const hasPreserved = count.preserved > 0
@@ -142,6 +146,8 @@ export function GateSection({
               onToggle={onToggleRule}
               onEdit={onEditRule}
               onDelete={onDeleteRule}
+              highlighted={rule.id === highlightedRuleId}
+              onTargetReady={onTargetReady}
             />
           ))
         ) : (

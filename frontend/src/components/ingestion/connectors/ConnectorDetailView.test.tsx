@@ -723,12 +723,16 @@ describe('[bu-5ywn2] Routing rules section', () => {
     expect(container.textContent).toContain('block')
   })
 
-  it('rule rows link to /ingestion/filters', () => {
-    renderDetail(root, BASE_CONNECTOR, { routingRules: MOCK_RULES })
+  it('rule rows link to the exact encoded Filters rule target', () => {
+    const id = 'rule /?&+#%"雪'
+    renderDetail(root, BASE_CONNECTOR, {
+      routingRules: { ...MOCK_RULES, rules: [{ ...MOCK_RULES.rules[0], id }] },
+    })
     const list = container.querySelector('[data-testid="routing-rules-list"]')
     const link = list?.querySelector('a')
     expect(link).not.toBeNull()
-    expect(link?.getAttribute('href')).toBe('/ingestion/filters')
+    expect(link?.getAttribute('href')).toBe(`/ingestion/filters?rule=${encodeURIComponent(id)}`)
+    expect(new URL(link!.href).searchParams.get('rule')).toBe(id)
   })
 
   // Skip-aware histogram: degraded note (bu-c48im)

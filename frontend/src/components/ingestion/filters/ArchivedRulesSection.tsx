@@ -9,7 +9,7 @@
  * Reference: (ingestion dispatch redesign, graduated) ingestion-filters.jsx §archived section
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { IngestionRule } from '@/api/types'
 
 // ---------------------------------------------------------------------------
@@ -20,10 +20,25 @@ export interface ArchivedRulesSectionProps {
   rules: IngestionRule[]
   onRestore?: (id: string) => void
   restoreError?: string | null
+  highlightedRuleId?: string | null
+  onTargetReady?: (row: HTMLDivElement) => void
 }
 
-export function ArchivedRulesSection({ rules, onRestore, restoreError }: ArchivedRulesSectionProps) {
-  const [expanded, setExpanded] = useState(false)
+export function ArchivedRulesSection({ rules, onRestore, restoreError, highlightedRuleId, onTargetReady }: ArchivedRulesSectionProps) {
+  const [expanded, setExpanded] = useState(Boolean(highlightedRuleId))
+  const [previousTarget, setPreviousTarget] = useState(highlightedRuleId)
+  const targetRef = useRef<HTMLDivElement>(null)
+
+  // Derive expansion during the target transition so the row mounts before
+  // the focus effect. Manual collapse remains available after navigation.
+  if (previousTarget !== highlightedRuleId) {
+    setPreviousTarget(highlightedRuleId)
+    if (highlightedRuleId) setExpanded(true)
+  }
+
+  useEffect(() => {
+    if (expanded && highlightedRuleId && targetRef.current) onTargetReady?.(targetRef.current)
+  }, [expanded, highlightedRuleId, onTargetReady])
 
   if (rules.length === 0) return null
 
@@ -71,7 +86,12 @@ export function ArchivedRulesSection({ rules, onRestore, restoreError }: Archive
           {rules.map((rule) => (
             <div
               key={rule.id}
-              className="grid gap-3.5 py-3 border-b border-border/50 items-baseline opacity-55"
+              ref={rule.id === highlightedRuleId ? targetRef : undefined}
+              role="group"
+              aria-label={`Archived rule ${rule.name ?? rule.id}`}
+              aria-current={rule.id === highlightedRuleId ? 'true' : undefined}
+              tabIndex={-1}
+              className={`grid gap-3.5 py-3 border-b border-border/50 items-baseline ${rule.id === highlightedRuleId ? 'bg-foreground/[0.05] border-l-2 border-l-focus pl-3' : 'opacity-55'}`}
               style={{ gridTemplateColumns: '12px 1fr auto' }}
               data-testid={`archived-rule-row-${rule.id}`}
             >
@@ -82,6 +102,7 @@ export function ArchivedRulesSection({ rules, onRestore, restoreError }: Archive
               <div>
                 <div className="font-serif italic text-sm text-muted-foreground">
                   {rule.name ?? rule.id.slice(0, 8)}
+                  {rule.id === highlightedRuleId && <span className="ml-2 font-mono text-[10px]">linked rule</span>}
                 </div>
                 {rule.description && (
                   <span className="block font-mono text-[10px] text-muted-foreground/60 mt-1">
