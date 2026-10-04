@@ -726,3 +726,167 @@ class TestObligationLedgerMigration:
             "WHERE table_name = 'obligation_ledger')"
         )
         assert exists is False
+
+
+@pytest.fixture
+def legacy_budget_db(postgres_container):
+    """Replay the real predecessor, including category and shared claim FKs."""
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    # pinned-revision: exercise the predecessor of this one CHECK repair only.
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "finance"],
+        schemas={"finance": "finance"},
+        revisions={"finance": "finance_015"},
+    )
+
+
+@pytest.fixture
+async def legacy_budget_pool(legacy_budget_db):
+    from butlers.db import register_jsonb_codec
+
+    pool = await asyncpg.create_pool(
+        legacy_budget_db,
+        min_size=1,
+        max_size=3,
+        server_settings={"search_path": "finance,public"},
+        init=register_jsonb_codec,
+    )
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
+async def _budget_revision(db_url, direction, target):
+    import asyncio
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+
+    config = _build_alembic_config(db_url, ["finance"], target_schema="finance")
+    await asyncio.to_thread(getattr(command, direction), config, target)
+
+
+async def _budget_schema_state(pool):
+    """Read committed data, enforcement and stamp outside the migration connection."""
+    async with pool.acquire() as conn:
+        rows = [dict(r) for r in await conn.fetch("SELECT * FROM budgets ORDER BY id")]
+        constraint = await conn.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid='finance.budgets'::regclass AND conname='budgets_period_check'"
+        )
+        stamp = await conn.fetch(
+            "SELECT version_num FROM finance.alembic_version ORDER BY version_num"
+        )
+    return rows, constraint, [r["version_num"] for r in stamp]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, legacy_budget_pool):
+    """Real old CHECK rejects quarterly; the forward repair keeps legacy history."""
+    from decimal import Decimal
+
+    from butlers.tools.finance.budgets import budget_set
+
+    pool = legacy_budget_pool
+    for period in ("daily", "weekly", "monthly", "yearly"):
+        await pool.execute(
+            "INSERT INTO budgets(category,period,amount) VALUES('groceries',$1,100)", period
+        )
+        await pool.execute(
+            "INSERT INTO budgets(category,period,amount,is_active) VALUES('groceries',$1,50,false)",
+            period,
+        )
+    before, _, stamp = await _budget_schema_state(pool)
+    assert stamp == ["finance_015"]  # pinned-revision: owned repair predecessor.
+    with pytest.raises(asyncpg.CheckViolationError) as rejected:
+        await budget_set(pool, category="groceries", amount=100, period="quarterly")
+    assert rejected.value.constraint_name == "budgets_period_check"
+    assert (await _budget_schema_state(pool))[0] == before
+
+    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    assert (await _budget_schema_state(pool))[0] == before
+    result = await budget_set(pool, category="groceries", amount=300, period="quarterly")
+    async with pool.acquire() as conn:
+        stored = await conn.fetchrow("SELECT * FROM budgets WHERE id=$1::uuid", result["id"])
+    assert stored["period"] == "quarterly"
+    assert stored["amount"] == Decimal("300.00")
+    for invalid in ("annual", "unknown"):
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                "INSERT INTO budgets(category,period,amount) VALUES('travel',$1,50)", invalid
+            )
+    after = await _budget_schema_state(pool)
+    # Reapplying the repair changes neither rows nor its current CHECK.
+    repair = _load_migration(
+        "finance_budget_periods", _FINANCE_MIGRATIONS / "016_budget_periods.py"
+    )
+    async with pool.acquire() as conn, conn.transaction():
+        await _apply(conn, repair, "upgrade")
+    assert await _budget_schema_state(pool) == after
+    assert [r for r in after[0] if r["id"] in {b["id"] for b in before}] == before
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await pool.execute(
+            "INSERT INTO budgets(category,period,amount) VALUES('groceries','daily',10)"
+        )
+    with pytest.raises(asyncpg.ForeignKeyViolationError):
+        await pool.execute(
+            "INSERT INTO budgets(category,period,amount) VALUES('missing-category','monthly',10)"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_budget_period_downgrade_refuses_history_and_roundtrips(
+    legacy_budget_db, legacy_budget_pool
+):
+    """Downgrade refuses active/inactive quarterly data and otherwise preserves rows."""
+    from sqlalchemy.exc import IntegrityError
+
+    pool = legacy_budget_pool
+    for period in ("daily", "yearly"):
+        await pool.execute(
+            "INSERT INTO budgets(category,period,amount) VALUES('dining',$1,100)", period
+        )
+    legacy_rows = (await _budget_schema_state(pool))[0]
+    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    quarter_id = await pool.fetchval(
+        "INSERT INTO budgets(category,period,amount) VALUES('dining','quarterly',100) RETURNING id"
+    )
+    for active in (True, False):
+        await pool.execute("UPDATE budgets SET is_active=$1 WHERE id=$2", active, quarter_id)
+        before = await _budget_schema_state(pool)
+        with pytest.raises(IntegrityError, match="quarterly") as refused:
+            # pinned-revision: rollback only this CHECK repair, not core boundaries.
+            await _budget_revision(legacy_budget_db, "downgrade", "finance_015")
+        assert refused.value.orig.pgcode == "23514"
+        assert await _budget_schema_state(pool) == before
+        assert any(r["id"] == quarter_id for r in before[0])
+
+    # Removing this disposable sentinel establishes the safe rollback precondition.
+    await pool.execute("DELETE FROM budgets WHERE id=$1", quarter_id)
+    # pinned-revision: expected historical constraint and stamp for this repair.
+    await _budget_revision(legacy_budget_db, "downgrade", "finance_015")
+    rows, _, stamp = await _budget_schema_state(pool)
+    assert rows == legacy_rows
+    assert stamp == ["finance_015"]  # pinned-revision: owned repair predecessor.
+    for period in ("daily", "weekly", "monthly", "yearly"):
+        await pool.execute(
+            "INSERT INTO budgets(category,period,amount) VALUES('travel',$1,50)", period
+        )
+    for period in ("quarterly", "annual", "unknown"):
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                "INSERT INTO budgets(category,period,amount) VALUES('groceries',$1,50)", period
+            )
+    safe = (await _budget_schema_state(pool))[0]
+    await _budget_revision(legacy_budget_db, "upgrade", "finance@head")
+    assert (await _budget_schema_state(pool))[0] == safe
+    assert (
+        await pool.fetchval(
+            "INSERT INTO budgets(category,period,amount) VALUES('groceries','quarterly',50) RETURNING period"
+        )
+        == "quarterly"
+    )

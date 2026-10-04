@@ -207,7 +207,7 @@ CREATE_BUDGETS_SQL = """
 CREATE TABLE IF NOT EXISTS finance.budgets (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category         TEXT NOT NULL,
-    period           TEXT NOT NULL CHECK (period IN ('weekly', 'monthly', 'quarterly', 'yearly')),
+    period           TEXT NOT NULL CHECK (period IN ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
     amount           NUMERIC(14, 2) NOT NULL,
     currency         CHAR(3) NOT NULL DEFAULT 'USD',
     warn_threshold   NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
@@ -1061,25 +1061,28 @@ def test_budget_period_scope_token_per_period():
     """Each period yields a distinct, period-correct dedup time-scope token."""
     fj = _fj_module()
     tok = fj._budget_period_scope_token
+    assert tok("daily", date(2026, 7, 6)) == "2026-07-06"
     assert tok("weekly", date(2026, 7, 6)) == "2026-W28"  # Monday of ISO week 28
     assert tok("monthly", date(2026, 7, 1)) == "2026-07"
     assert tok("quarterly", date(2026, 7, 1)) == "2026-Q3"
     assert tok("yearly", date(2026, 1, 1)) == "2026"
-    # All four formats are mutually unambiguous for the same anchor, so budgets
+    # All five formats are mutually unambiguous for the same anchor, so budgets
     # of different periods for one category never share a dedup key.
     tokens = {
+        tok("daily", date(2026, 7, 6)),
         tok("weekly", date(2026, 7, 6)),
         tok("monthly", date(2026, 7, 1)),
         tok("quarterly", date(2026, 7, 1)),
         tok("yearly", date(2026, 1, 1)),
     }
-    assert len(tokens) == 4
+    assert len(tokens) == 5
 
 
 def test_budget_period_scope_token_resets_across_windows():
     """The token changes at every period boundary (dedup resets across windows)."""
     fj = _fj_module()
     tok = fj._budget_period_scope_token
+    assert tok("daily", date(2026, 7, 6)) != tok("daily", date(2026, 7, 7))
     assert tok("weekly", date(2026, 7, 6)) != tok("weekly", date(2026, 7, 13))
     assert tok("monthly", date(2026, 7, 1)) != tok("monthly", date(2026, 8, 1))
     # Quarter rollover Q1 -> Q2 at Apr 1.
@@ -2327,15 +2330,11 @@ async def test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions
 ):
     """The digest message surfaces flagged budget categories and subscription counts."""
     fj = _fj_module()
+    now = datetime(2026, 7, 6, 12, tzinfo=UTC)
+    actual_budget_status = fj.budget_status
 
-    async def _fake_budget_status(conn):
-        return {
-            "items": [
-                {"category": "dining", "status": "exceeded", "utilization_pct": 105.0},
-                {"category": "groceries", "status": "on_track", "utilization_pct": 40.0},
-            ],
-            "count": 2,
-        }
+    async def _pinned_budget_status(conn):
+        return await actual_budget_status(conn, now=now)
 
     async def _fake_subscription_audit(conn):
         return {
@@ -2349,11 +2348,16 @@ async def test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions
             "changes_since_last_audit": [],
         }
 
-    monkeypatch.setattr(fj, "budget_status", _fake_budget_status)
+    monkeypatch.setattr(fj, "budget_status", _pinned_budget_status)
     monkeypatch.setattr(fj, "subscription_audit", _fake_subscription_audit)
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
+        # The digest consumes real daily status instead of a canned result.
+        await _insert_budget(pool, category="dining", period="daily", amount="100.00")
+        await _insert_budget(pool, category="groceries", amount="100.00")
+        await _insert_transaction(pool, category="dining", amount="105.00", posted_at=now)
+        await _insert_transaction(pool, category="groceries", amount="40.00", posted_at=now)
 
         await fj.run_monthly_finance_digest(pool)
 

@@ -10,7 +10,11 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
+
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [
     pytest.mark.unit,
@@ -678,7 +682,7 @@ CREATE TABLE IF NOT EXISTS budgets (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category         TEXT NOT NULL,
     period           TEXT NOT NULL
-                         CHECK (period IN ('weekly', 'monthly', 'quarterly', 'yearly')),
+                         CHECK (period IN ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
     amount           NUMERIC(14, 2) NOT NULL,
     currency         CHAR(3) NOT NULL DEFAULT 'USD',
     warn_threshold   NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
@@ -725,6 +729,33 @@ async def budget_pool(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def migrated_budget_db(postgres_container):
+    """Real finance schema, including the category and shared cost-claim FKs."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "finance"],
+        schemas={"finance": "finance"},
+    )
+
+
+@pytest.fixture
+async def migrated_budget_pool(migrated_budget_db):
+    pool = await asyncpg.create_pool(
+        migrated_budget_db,
+        min_size=1,
+        max_size=3,
+        server_settings={"search_path": "finance,public"},
+        init=register_jsonb_codec,
+    )
+    await pool.execute("TRUNCATE finance.budgets")
+    try:
+        yield pool
+    finally:
+        await pool.close()
 
 
 async def _insert_tx(
@@ -817,10 +848,11 @@ class TestBudgetSet:
         assert Decimal(result["warn_threshold"]) == Decimal("0.8000")
         assert Decimal(result["alert_threshold"]) == Decimal("1.0000")
 
-    async def test_upsert_deactivates_existing(self, budget_pool):
+    async def test_upsert_deactivates_existing(self, migrated_budget_pool):
         """Setting a budget for the same category+period deactivates the previous one."""
         from butlers.tools.finance.budgets import budget_set
 
+        budget_pool = migrated_budget_pool
         first = await budget_set(budget_pool, category="groceries", amount=400.0, period="monthly")
         first_id = first["id"]
 
@@ -835,6 +867,16 @@ class TestBudgetSet:
             "SELECT is_active FROM budgets WHERE id = $1::uuid", first_id
         )
         assert old_row["is_active"] is False
+
+        # A real insert error after deactivation must preserve the current row.
+        with pytest.raises(asyncpg.NumericValueOutOfRangeError):
+            await budget_set(budget_pool, category="groceries", amount=1e20, period="monthly")
+        async with budget_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT id, is_active, amount FROM budgets ORDER BY created_at")
+        assert [(str(r["id"]), r["is_active"], r["amount"]) for r in rows] == [
+            (first_id, False, Decimal("400.00")),
+            (second["id"], True, Decimal("600.00")),
+        ]
 
     async def test_upsert_preserves_different_period(self, budget_pool):
         """Setting monthly budget does not affect the yearly budget for the same category."""
@@ -854,12 +896,18 @@ class TestBudgetSet:
         # Yearly budget is active too
         assert yearly["is_active"] is True
 
-    async def test_invalid_period_raises(self, budget_pool):
-        """An unsupported period raises ValueError."""
-        from butlers.tools.finance.budgets import budget_set
+    async def test_invalid_period_raises(self):
+        """Unsupported spellings fail before acquiring a DB connection."""
+        from butlers.tools.finance.budgets import budget_remove, budget_set
 
-        with pytest.raises(ValueError, match="Unsupported period"):
-            await budget_set(budget_pool, category="food", amount=100.0, period="bi-weekly")
+        pool = MagicMock()
+        for period in ("annual", "bi-weekly"):
+            with pytest.raises(ValueError, match="Unsupported period"):
+                await budget_set(pool, category="groceries", amount=100.0, period=period)
+            with pytest.raises(ValueError, match="Unsupported period"):
+                await budget_remove(pool, category="groceries", period=period)
+        pool.acquire.assert_not_called()
+        pool.execute.assert_not_called()
 
     async def test_invalid_amount_raises(self, budget_pool):
         """A non-positive amount raises ValueError."""
@@ -871,15 +919,78 @@ class TestBudgetSet:
         with pytest.raises(ValueError, match="must be positive"):
             await budget_set(budget_pool, category="food", amount=-50.0, period="monthly")
 
-    async def test_all_valid_periods(self, budget_pool):
-        """All four valid period values are accepted."""
-        from butlers.tools.finance.budgets import budget_set
+    async def test_all_valid_periods(self, migrated_budget_pool):
+        """Registered budget tools round trip every period on real migrations."""
+        from types import SimpleNamespace
 
-        for period in ("weekly", "monthly", "quarterly", "yearly"):
-            result = await budget_set(
-                budget_pool, category=f"cat_{period}", amount=100.0, period=period
+        from butlers.modules._roster_finance.tools import register_tools
+
+        class MCP:
+            def __init__(self):
+                self.tools = {}
+
+            def tool(self):
+                def register(fn):
+                    self.tools[fn.__name__] = fn
+                    return fn
+
+                return register
+
+        mcp = MCP()
+        register_tools(mcp, SimpleNamespace(_get_pool=lambda: migrated_budget_pool), config=None)
+        # Neutralize only this repair in the disposable migrated DB: the same
+        # registered call must reach the historical CHECK, not a category FK.
+        repaired_check = await migrated_budget_pool.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid='finance.budgets'::regclass AND conname='budgets_period_check'"
+        )
+        await migrated_budget_pool.execute(
+            "ALTER TABLE budgets DROP CONSTRAINT budgets_period_check; "
+            "ALTER TABLE budgets ADD CONSTRAINT budgets_period_check "
+            "CHECK (period IN ('monthly', 'weekly', 'yearly', 'daily'))"
+        )
+        try:
+            with pytest.raises(asyncpg.CheckViolationError) as rejected:
+                await mcp.tools["budget_set"](
+                    category="groceries", amount=100.0, period="quarterly"
+                )
+            assert rejected.value.constraint_name == "budgets_period_check"
+        finally:
+            await migrated_budget_pool.execute(
+                "ALTER TABLE budgets DROP CONSTRAINT budgets_period_check; "
+                f"ALTER TABLE budgets ADD CONSTRAINT budgets_period_check {repaired_check}"
             )
-            assert result["period"] == period
+        for period in ("daily", "weekly", "monthly", "quarterly", "yearly"):
+            result = await mcp.tools["budget_set"](
+                category="groceries", amount=100.0, period=period
+            )
+            async with migrated_budget_pool.acquire() as conn:
+                stored = await conn.fetchrow(
+                    "SELECT * FROM budgets WHERE id=$1::uuid", result["id"]
+                )
+            assert stored["period"] == period
+            assert stored["amount"] == Decimal("100.00")
+            replacement = await mcp.tools["budget_set"](
+                category="groceries", amount=120.0, period=period
+            )
+            async with migrated_budget_pool.acquire() as conn:
+                assert (
+                    await conn.fetchval(
+                        "SELECT is_active FROM budgets WHERE id=$1::uuid", result["id"]
+                    )
+                    is False
+                )
+                assert await conn.fetchval(
+                    "SELECT amount FROM budgets WHERE id=$1::uuid", replacement["id"]
+                ) == Decimal("120.00")
+        periods = {"daily", "weekly", "monthly", "quarterly", "yearly"}
+        assert {r["period"] for r in (await mcp.tools["budget_list"]())["budgets"]} == periods
+        assert {r["period"] for r in (await mcp.tools["budget_status"]())["items"]} == periods
+        for period in periods:
+            assert (await mcp.tools["budget_remove"](category="groceries", period=period))[
+                "removed"
+            ]
+        assert (await mcp.tools["budget_list"]())["count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1492,3 +1603,24 @@ class TestResolveBudgetZoneFallsBackToUTC:
             return_value={"timezone": "Asia/Singapore"},
         ):
             assert (await resolve_budget_zone(pool)).key == "Asia/Singapore"
+
+
+async def test_budget_calendar_bounds_and_dst_spans():
+    """Daily and quarterly calendar dates map to exact owner-local instants."""
+    from zoneinfo import ZoneInfo
+
+    from butlers.tools.finance.budgets import _period_bounds, _period_window
+
+    for anchor, expected in (
+        (date(2024, 2, 29), (date(2024, 1, 1), date(2024, 3, 31))),
+        (date(2024, 3, 31), (date(2024, 1, 1), date(2024, 3, 31))),
+        (date(2024, 4, 1), (date(2024, 4, 1), date(2024, 6, 30))),
+        (date(2024, 12, 31), (date(2024, 10, 1), date(2024, 12, 31))),
+        (date(2025, 1, 1), (date(2025, 1, 1), date(2025, 3, 31))),
+    ):
+        assert _period_bounds("quarterly", anchor) == expected
+    anchor = date(2026, 7, 6)
+    assert _period_bounds("daily", anchor) == (anchor, anchor)
+    for day, hours in ((date(2026, 3, 8), 23), (date(2026, 11, 1), 25)):
+        start, end = _period_window(day, day, ZoneInfo("America/New_York"))
+        assert (end.astimezone(UTC) - start.astimezone(UTC)).total_seconds() == hours * 3600
