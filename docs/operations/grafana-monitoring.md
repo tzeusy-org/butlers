@@ -33,20 +33,20 @@ use direct Compose to bypass the launcher's ownership guard.
 
 ### Starting the Stack
 
-Use `scripts/compose.sh` with the `--observability` flag:
+`scripts/compose.sh --observability` currently enables the `observability`
+profile and sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`, but its
+Compose command does not include `docker-compose.observability.yml`. The base
+file has no collector, Tempo, Prometheus or Grafana services, so that flag alone
+does not start them.
+
+To start the isolated stack with those services, include both files explicitly. Replace
+`/path/to/non-live.env` with its environment configuration (including
+`POSTGRES_HOST` and `POSTGRES_PASSWORD` for the non-live database). Use the same
+project, environment file, Compose files and profiles when stopping it:
 
 ```bash
-./scripts/compose.sh --observability
-```
-
-This enables the `observability` profile in Docker Compose, which automatically:
-- Sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`
-- Starts all observability services (otel-collector, Tempo, Prometheus, Grafana)
-
-Alternatively, start the stack directly with Docker Compose:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+docker compose --env-file /path/to/non-live.env -p butlers-local \
+  -f docker-compose.yml -f docker-compose.observability.yml \
   --profile observability up -d
 ```
 
@@ -54,7 +54,8 @@ If using direct Docker Compose, set the OTLP endpoint environment variable:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
-  docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+  docker compose --env-file /path/to/non-live.env -p butlers-local \
+  -f docker-compose.yml -f docker-compose.observability.yml \
   --profile observability up -d
 ```
 
@@ -127,11 +128,23 @@ The local stack is configured by:
 
 ### Stopping the Stack
 
+For the direct-start examples above, stop the same isolated project with the
+same environment configuration and the `observability` profile:
+
 ```bash
-# Stop the isolated Compose project and its observability services.
-# Match the project used when starting it (default dev launcher: butlers-dev).
-docker compose -p butlers-dev -f docker-compose.yml -f docker-compose.observability.yml down
+docker compose --env-file /path/to/non-live.env -p butlers-local \
+  -f docker-compose.yml -f docker-compose.observability.yml \
+  --profile observability down
 ```
+
+For a stack started by `scripts/compose.sh`, match that launcher's actual
+configuration instead: dev uses project `butlers-dev` and `.env.dev`, production
+uses `butlers` and `.env.prod`; both enable `dev`, and selected flags add profiles
+such as `hotreload`, `audio` and `observability`. Include the protected
+`docker-compose.restore-drill.yml` fragment if that launch selected it. The
+launcher exports its environment inside its own process, so the parent shell
+still needs the explicit matching `--env-file`. These are isolated/off-cluster
+Compose procedures; they do not stop the k3s dev release.
 
 ## Telemetry Initialization
 
