@@ -1,5 +1,6 @@
 roster/concierge/tests/test_dashboard_read.py
 roster/finance/tests/test_claim_reconciliation.py
+roster/general/tests/test_capture_service.py
 roster/general/tests/test_general_source_migration.py
 roster/general/tests/test_ordinary_source_authority.py
 roster/relationship/tests/test_entity_cadence_db.py
@@ -20,6 +21,7 @@ tests/integration/test_account_security_roundtrip.py
 tests/integration/test_commitments_entity_graph_edges.py
 tests/integration/test_entity_graph_walk.py
 tests/integration/test_fleet_case_contribution_roundtrip.py
+tests/integration/test_general_capture_ledger.py
 tests/integration/test_meeting_debrief_db.py
 tests/integration/test_runtime_attention_daemon_wiring.py
 tests/integration/test_runtime_attention_delivery_worker.py

@@ -44,6 +44,7 @@ pinned here:
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import os
 import re
@@ -138,7 +139,7 @@ def _exec(db_url: str, sql: str, **params: object) -> None:
 
 
 @pytest.fixture(scope="module")
-def source_db_url(postgres_container) -> str:
+def source_db_url(postgres_container, tmp_path_factory) -> str:
     """A database bootstrapped by the real init-db.sql and migrated to core@head.
 
     This is the production shape the nightly backup runs against: the fences are
@@ -189,6 +190,11 @@ def source_db_url(postgres_container) -> str:
             )
     finally:
         engine.dispose()
+    from tests.integration.test_general_capture_ledger import seed_capture_snapshot
+
+    asyncio.run(
+        seed_capture_snapshot(db_url, tmp_path_factory.mktemp("capture-host") / "epoch.json")
+    )
     return db_url
 
 
@@ -286,7 +292,7 @@ def _docker_client(
     The password crosses only as the value of an environment variable forwarded
     *by name*, so it is never in this process' argv nor in the container's.
     """
-    mounts = ["-v", f"{backup}:/backup.sql.gz:ro"]
+    mounts = ["-v", f"{backup}:/backup.sql.gz:ro", "-v", f"{backup.parent}:/capture-host"]
     if mount_script:
         mounts += ["-v", f"{_RESTORE_SCRIPT}:/pg_restore.sh:ro"]
     return subprocess.run(
@@ -325,7 +331,8 @@ def _run_restore_script(
         "bash /pg_restore.sh /backup.sql.gz "
         "--host host.docker.internal "
         f"--port {target.port} --user {target.login} "
-        f"--target-db {target_db} --drop-existing",
+        f"--target-db {target_db} --drop-existing "
+        "--capture-epoch-file /capture-host/epoch.json",
         password=target.password,
     )
 
@@ -616,6 +623,52 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
     finally:
         runtime_engine.dispose()
 
+    capture_tables = ("captures", "capture_operations", "capture_service_control")
+
+    def capture_query(url, sql):
+        return _query(url, "SET ROLE butler_general_rw; " + sql)
+
+    for table in capture_tables:
+        assert (
+            capture_query(source_db_url, f"SELECT count(*)::text FROM public.{table}")
+            == capture_query(restored_url, f"SELECT count(*)::text FROM public.{table}")
+            != ["0"]
+        )
+        posture = (
+            "SELECT relrowsecurity::text || '/' || relforcerowsecurity::text || '/' || "
+            "pg_get_userbyid(relowner) FROM pg_class WHERE oid=" + f"'public.{table}'::regclass"
+        )
+        assert _query(source_db_url, posture) == _query(restored_url, posture)
+    assert capture_query(
+        restored_url,
+        "SELECT admission_enabled::text || '/' || "
+        "dispatch_enabled::text || '/' || recovery_required::text "
+        "FROM public.capture_service_control",
+    ) == ["false/false/true"]
+    for table in ("captures", "capture_operations"):
+        rows = "SELECT to_jsonb(t)::text FROM public." + table + " AS t ORDER BY id"
+        assert capture_query(source_db_url, rows) == capture_query(restored_url, rows)
+    assert (
+        _query(source_db_url, "SELECT count(*)::text FROM general.source_versions")
+        == _query(restored_url, "SELECT count(*)::text FROM general.source_versions")
+        != ["0"]
+    )
+    # Actual restored triggers guard General and table owner; exceptions must be
+    # PostgreSQL guard failures, not lack of a planted receipt.
+    engine = create_engine(restored_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SET ROLE butler_general_rw")
+            for table in capture_tables:
+                with pytest.raises(DBAPIError):
+                    conn.exec_driver_sql(f"TRUNCATE public.{table} CASCADE")
+            with pytest.raises(DBAPIError):
+                conn.exec_driver_sql(
+                    "UPDATE public.captures SET category='pending' WHERE disposition='routed'"
+                )
+    finally:
+        engine.dispose()
+
     for table in ("cost_claims", "cost_claim_resolutions", "cost_claim_events"):
         source_count = _query(source_db_url, f"SELECT count(*)::text FROM public.{table}")
         restored_count = _query(restored_url, f"SELECT count(*)::text FROM public.{table}")
@@ -686,3 +739,105 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         )
     finally:
         _exec(restored_url, f'ALTER FUNCTION {signature} OWNER TO "{owner}"')
+
+
+@pytest.mark.db
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+def test_old_snapshot_missing_receipt_cannot_replay_source_occurrence(postgres_container, tmp_path):
+    """Run both real scripts around an effect absent from the older snapshot."""
+    import asyncpg
+
+    from butlers.core.capture import CaptureUnavailable, VerifiedAuthority, load_epoch
+    from butlers.db import register_jsonb_codec
+    from butlers.tools.general.capture_service import CaptureService
+    from tests.integration.test_general_capture_ledger import authority, seed_capture_snapshot
+    from tests.scripts.test_pg_dump_backup import _run_backup_script
+
+    source_url = create_migration_db(postgres_container, migration_db_name())
+    command.upgrade(_build_alembic_config(source_url, chains=["core"]), "core_259")
+    source_epoch_path = tmp_path / "source-host" / "epoch.json"
+    asyncio.run(seed_capture_snapshot(source_url, source_epoch_path))
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    result = _run_backup_script(
+        source_url, backup_dir, str(postgres_container.get_exposed_port(5432))
+    )
+    assert result.returncode == 0, result.stderr[-1000:]
+    artifact = next(backup_dir.glob("butlers_*.sql.gz"))
+
+    async def general_pool(url):
+        async def init(conn):
+            await register_jsonb_codec(conn)
+
+        async def setup(conn):
+            await conn.execute("SET ROLE butler_general_rw; SET search_path=general,public")
+
+        return await asyncpg.create_pool(url, min_size=1, max_size=2, init=init, setup=setup)
+
+    async def later_effect():
+        pool = await general_pool(source_url)
+        try:
+            svc = CaptureService(pool, source_epoch_path)
+            original = authority(load_epoch(source_epoch_path))
+            held = await svc.admit(original, "Synthetic capture", mutation_key="after-snapshot")
+            routed = await svc.process_one(held.capture_id, owner="general", kind="note")
+            assert routed.disposition == "routed"
+            return original, held.capture_id
+        finally:
+            await pool.close()
+
+    original, missing_id = asyncio.run(later_effect())
+    admin_url = postgres_container.get_connection_url()
+    parsed = urlparse(admin_url)
+    target = _Target(
+        str(postgres_container.get_exposed_port(5432)),
+        parsed.username or "",
+        parsed.password or "",
+        admin_url,
+    )
+    target_db = "capture_old_snapshot_" + uuid.uuid4().hex[:8]
+    restored = _run_restore_script(artifact, target, target_db)
+    assert restored.returncode == 0, restored.stderr[-1000:]
+    restored_url = target.url(target_db).replace("postgresql+psycopg2://", "postgresql://")
+    epoch_path = backup_dir / "epoch.json"
+    rotated = load_epoch(epoch_path)
+    assert rotated.generation != original.service_epoch
+    assert original.source_occurred_at < rotated.not_before
+
+    async def attempt_replay():
+        pool = await general_pool(restored_url)
+        try:
+            assert (
+                await pool.fetchval("SELECT count(*) FROM public.captures WHERE id=$1", missing_id)
+                == 0
+            )
+            svc = CaptureService(pool, epoch_path)
+            reminted = VerifiedAuthority(
+                original.principal_id,
+                original.source_occurrence,
+                original.source_occurred_at,
+                rotated.generation,
+                original.payload_digest,
+            )
+            with pytest.raises(CaptureUnavailable):
+                await svc.admit(reminted, "Synthetic capture", mutation_key="after-snapshot")
+            # Neutralize the control-only fence to prove the original-occurrence
+            # cutoff independently denies reminting; this is synthetic test SQL.
+            await pool.execute(
+                "UPDATE public.capture_service_control SET admitted_epoch=$1, "
+                "admission_enabled=true,recovery_required=false",
+                rotated.generation,
+            )
+            with pytest.raises(CaptureUnavailable):
+                await svc.admit(reminted, "Synthetic capture", mutation_key="after-snapshot")
+            assert (
+                await pool.fetchval("SELECT count(*) FROM public.captures WHERE id=$1", missing_id)
+                == 0
+            )
+            fresh = await svc.admit(authority(rotated), "Synthetic capture")
+            assert fresh.disposition == "held"
+        finally:
+            await pool.close()
+
+    asyncio.run(attempt_replay())

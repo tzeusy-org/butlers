@@ -41,6 +41,7 @@ TARGET_DB="butlers_restore_verify"
 DROP_EXISTING=false
 ENV_FILE=""
 BACKUP_FILE=""
+CAPTURE_EPOCH_FILE="${CAPTURE_EPOCH_FILE:-}"
 
 # CLI-flag overrides for connection params (empty = use env / file)
 FLAG_HOST=""
@@ -57,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --port)        FLAG_PORT="$2";       shift 2 ;;
     --user)        FLAG_USER="$2";       shift 2 ;;
     --password)    FLAG_PASSWORD="$2";   shift 2 ;;
+    --capture-epoch-file) CAPTURE_EPOCH_FILE="$2"; shift 2 ;;
     --drop-existing) DROP_EXISTING=true; shift ;;
     -*)            echo "Unknown flag: $1" >&2; exit 1 ;;
     *)
@@ -121,6 +123,21 @@ echo "WARNING: This restore targets '${TARGET_DB}', NOT the production database.
 echo "         The production database is left untouched."
 echo ""
 
+# Capture recovery authority is outside the restored database. A capture dump
+# requires an explicit persistent host path; it cannot reconstruct its epoch from
+# old rows. Rotate before importing, even if the dump lacks a newer receipt.
+HAS_CAPTURE=false
+if gunzip -c "$BACKUP_FILE" | awk '/CREATE TABLE public.capture_service_control/ { found=1 } END { exit !found }'; then
+  HAS_CAPTURE=true
+fi
+if [[ "$HAS_CAPTURE" == true ]]; then
+  if [[ "$CAPTURE_EPOCH_FILE" != /* ]]; then
+    echo "[restore] ERROR: capture restore requires --capture-epoch-file outside DB/repo" >&2
+    exit 1
+  fi
+
+fi
+
 # ── Drop existing target if requested ───────────────────────────────────
 if [[ "$DROP_EXISTING" == "true" ]]; then
   echo "[restore] Dropping existing database '${TARGET_DB}' (--drop-existing)"
@@ -148,6 +165,35 @@ PGPASSWORD="$PG_PASSWORD" createdb \
   --username="$PG_USER" \
   --no-password \
   "$TARGET_DB" 2>&1 | sed 's/^/  /' || true
+
+# Disable an existing target before import. The fixed dump importer also forces
+# both flags false and recovery_required=true, so dumped enablement never wins.
+if [[ "$HAS_CAPTURE" == true ]]; then
+  PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+    --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+    -c "DO \$\$ BEGIN
+      IF to_regclass('public.capture_service_control') IS NOT NULL THEN
+        SET LOCAL ROLE butler_general_rw;
+        UPDATE public.capture_service_control SET admission_enabled=false,
+          dispatch_enabled=false,recovery_required=true;
+      END IF;
+    END \$\$;" >/dev/null
+fi
+
+if [[ "$HAS_CAPTURE" == true ]]; then
+  mkdir -p "$(dirname "$CAPTURE_EPOCH_FILE")"
+  CAPTURE_EPOCH_TMP="$(mktemp "${CAPTURE_EPOCH_FILE}.tmp.XXXXXX")"
+  if ! PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+      --username="$PG_USER" --dbname=postgres --no-password --no-align --tuples-only \
+      --set=ON_ERROR_STOP=1 -c "SELECT json_build_object('generation',gen_random_uuid(),
+          'not_before',clock_timestamp());" > "$CAPTURE_EPOCH_TMP"; then
+    rm -f "$CAPTURE_EPOCH_TMP"
+    exit 1
+  fi
+  sync
+  mv -f "$CAPTURE_EPOCH_TMP" "$CAPTURE_EPOCH_FILE"
+  sync
+fi
 
 # ── Restore ─────────────────────────────────────────────────────────────
 echo "[restore] Restoring ${BACKUP_FILE} → ${TARGET_DB} ..."
@@ -302,6 +348,33 @@ if [[ -s "$AUDIT_DIR/inverted" ]]; then
   exit 1
 fi
 echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
+
+if [[ "$HAS_CAPTURE" == true ]]; then
+  PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+    --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+    -c "BEGIN; SET LOCAL ROLE butler_general_rw;
+      DO \$\$ BEGIN
+        IF EXISTS (SELECT 1 FROM public.capture_service_control WHERE admission_enabled
+                    OR dispatch_enabled OR NOT recovery_required) OR
+           EXISTS (SELECT 1 FROM public.captures AS c
+             LEFT JOIN public.capture_operations AS o ON o.id=c.operation_id
+             WHERE c.operation_id IS NOT NULL AND
+               (o.id IS NULL OR o.capture_id<>c.id OR o.service_epoch<>c.service_epoch
+                OR o.payload_digest<>c.payload_digest OR
+                (c.disposition='routed' AND (o.stage<>'routed' OR o.receipt<>c.receipt)))) OR
+           (SELECT count(*) FROM pg_class WHERE oid IN
+             ('public.captures'::regclass,'public.capture_operations'::regclass,
+              'public.capture_service_control'::regclass)
+             AND relrowsecurity AND relforcerowsecurity) <> 3 OR
+           (SELECT count(*) FROM pg_trigger WHERE tgrelid IN
+             ('public.captures'::regclass,'public.capture_operations'::regclass,
+              'public.capture_service_control'::regclass)
+             AND tgname IN ('capture_preserve_evidence','capture_no_truncate')
+             AND tgenabled='O') <> 6 THEN
+          RAISE EXCEPTION 'capture restore controls or evidence invalid';
+        END IF;
+      END \$\$; COMMIT;" >/dev/null
+fi
 
 echo "[restore] done — '${TARGET_DB}' is populated"
 echo ""

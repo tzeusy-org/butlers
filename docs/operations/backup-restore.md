@@ -557,3 +557,33 @@ into the live application database or manually erase recovery evidence.
 - Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
   `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).
+
+## General capture recovery boundary
+
+Capture data is durable. `deploy/backup/pg_dump.sh` retains its schema, ownership,
+FORCE RLS and immutability triggers in the ordinary dump, excludes only capture table
+**data** from that role-less path, and appends a fixed General-role projection. The
+capture query, exact policy proof, ordinary General `source_versions`, and existing
+cost-claim export use the same exported snapshot. Capture uses effective General
+role RLS; it does not acquire the cost-claim PUBLIC SELECT exception. Missing or
+altered policy/role installation refuses publication.
+
+For a capture-bearing dump, `scripts/pg_restore.sh` requires an explicit absolute
+`--capture-epoch-file` (or `CAPTURE_EPOCH_FILE`) on a persistent host volume outside
+the repository/database. It disables existing target admission/dispatch before
+import and atomically rotates this nonsecret JSON manifest with a new generation
+and precise occurrence cutoff. The fixed invoker-rights importer restores only the
+three allowlisted row types, exact UUID/digest/operation bindings and terminal
+receipts. Conflicts refuse. Imported control always has admission/dispatch false
+and recovery required, regardless of dumped enablement. Capture row/operation,
+FORCE-RLS and trigger checks run before certification; the prior definer-ownership
+and cost-claim fences remain required.
+
+An older snapshot may omit a completed effect's receipt. Missing proof is not
+permission to repeat it: the rotated host cutoff denies the original pre-restore
+source occurrence even if a later adapter tries to mint it under the new epoch.
+Restored in-flight/unknown operations retain their old lineage and remain held.
+Recovery needs exact source-owned read-only outcomes and explicit control adoption;
+there is no automatic resume, old-epoch rebase, timer expiry or reconstructed epoch
+from restored rows. Shipping these scripts does not run a live restore or provision
+its host path. The internal capture service is initially inactive.

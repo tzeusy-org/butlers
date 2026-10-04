@@ -31,6 +31,7 @@ Three things are pinned here:
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import os
@@ -70,6 +71,7 @@ while IFS= read -r line; do
       case "${output_file}" in
         */id) printf 'ABCDEF-012345\\n' > "${output_file}" ;;
         */policy-count) printf '3\\n' > "${output_file}" ;;
+        */capture-count) printf '0\\n' > "${output_file}" ;;
       esac
       output_file=""
       ;;
@@ -174,7 +176,11 @@ def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
     ]
     assert not [line for line in code if "--enable-row-security" in line]
     _excluded_schemas, _excluded_tables, scoped_data_tables = _read_backup_sets()
-    assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES
+    assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES | {
+        "public.captures",
+        "public.capture_operations",
+        "public.capture_service_control",
+    }
     assert any('--snapshot="${BACKUP_SNAPSHOT}"' in line for line in code)
     for table in scoped_data_tables:
         assert any('"--exclude-table-data=${table}"' in line for line in code)
@@ -262,7 +268,7 @@ ORDER BY 1, 2
 
 
 @pytest.fixture(scope="module")
-def bootstrapped_db_url(postgres_container) -> str:
+def bootstrapped_db_url(postgres_container, tmp_path_factory) -> str:
     """A database bootstrapped by the real init-db.sql and migrated to core@head.
 
     This is the production shape the backup runs against: the trusted-bootstrap
@@ -272,6 +278,11 @@ def bootstrapped_db_url(postgres_container) -> str:
     """
     db_url = create_migration_db(postgres_container, migration_db_name())
     command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
+    from tests.integration.test_general_capture_ledger import seed_capture_snapshot
+
+    asyncio.run(
+        seed_capture_snapshot(db_url, tmp_path_factory.mktemp("capture-host") / "epoch.json")
+    )
     return db_url
 
 
@@ -338,6 +349,11 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         f"only hiding data: schemas={unused_schemas} tables={unused_tables}."
     )
 
+    assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES | {
+        "public.captures",
+        "public.capture_operations",
+        "public.capture_service_control",
+    }
     assert scoped_data_tables <= fenced
     policy_rows = _fetch_rows(
         bootstrapped_db_url,
@@ -517,6 +533,11 @@ def test_script_produces_a_verifiable_artifact(
         assert f"CREATE TABLE {qualified} " in dump
         assert f"COPY {qualified} " not in dump
     assert "-- Butlers scoped cost-claim ledger data" in dump
+    assert "SET LOCAL ROLE butler_general_rw" in dump
+    assert "SELECT public.capture_restore_row(" in dump
+    for prefix in ("1\tcaptures\t", "2\tcapture_operations\t", "3\tcapture_service_control\t"):
+        assert any(line.startswith(prefix) for line in dump.splitlines())
+    assert "COPY general.source_versions" in dump
     assert "SELECT public.cost_claim_restore_row(" in dump
     staged_payloads = [
         bytes.fromhex(line.split("\t", 2)[2]).decode("utf-8")
@@ -532,16 +553,17 @@ def test_script_produces_a_verifiable_artifact(
 @pytest.mark.db
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.parametrize("relation", ["cost_claims", "captures"])
 def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
-    bootstrapped_db_url: str, postgres_container, tmp_path: Path
+    bootstrapped_db_url: str, postgres_container, tmp_path: Path, relation: str
 ) -> None:
     """A new restrictive policy cannot silently narrow the scoped export."""
     engine = create_engine(bootstrapped_db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             conn.exec_driver_sql(
-                "CREATE POLICY cost_claims_backup_regression "
-                "ON public.cost_claims AS RESTRICTIVE FOR SELECT USING (false)"
+                f"CREATE POLICY {relation}_backup_regression "
+                f"ON public.{relation} AS RESTRICTIVE FOR SELECT USING (false)"
             )
         result = _run_backup_script(
             bootstrapped_db_url,
@@ -549,12 +571,12 @@ def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
             str(postgres_container.get_exposed_port(5432)),
         )
         assert result.returncode != 0
-        assert "policy is not the exact full-row contract" in result.stderr
+        assert "policy" in result.stderr and "not publishing" in result.stderr
         assert not list(tmp_path.glob("butlers_*.sql.gz"))
     finally:
         with engine.connect() as conn:
             conn.exec_driver_sql(
-                "DROP POLICY IF EXISTS cost_claims_backup_regression ON public.cost_claims"
+                f"DROP POLICY IF EXISTS {relation}_backup_regression ON public.{relation}"
             )
         engine.dispose()
 
