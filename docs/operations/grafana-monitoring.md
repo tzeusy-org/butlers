@@ -2,15 +2,34 @@
 
 > **Purpose:** Document the observability stack: OpenTelemetry instrumentation, trace propagation, span architecture, and Grafana integration.
 > **Audience:** Operators monitoring Butlers in production, developers debugging performance issues.
-> **Prerequisites:** [Docker Deployment](docker-deployment.md), [Environment Config](environment-config.md).
+> **Prerequisites:** [Kubernetes Deployment](kubernetes-deployment.md) for live dev; [Docker Deployment](docker-deployment.md) for legacy/local Compose.
 
 ## Overview
 
 Butlers uses OpenTelemetry (OTel) for distributed tracing and metrics, with Tempo, Prometheus and Grafana as the observability backend. When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured, all butler daemons and the dashboard API emit traces and metrics via OTLP HTTP to an OpenTelemetry Collector (`otel-collector`, port 4318), which forwards traces to Grafana Tempo and metrics to Prometheus via `remote_write`. When unset, telemetry falls back to no-op providers with zero overhead.
 
-## Local Development Observability Stack
+## Current Dev Observability (Kubernetes)
 
-For local development, a self-contained observability stack is provided via `docker-compose.observability.yml`. This stack includes all components needed to collect and visualize telemetry without external dependencies.
+The live `butlers-dev` release sends OTLP HTTP to the cluster's existing LGTM
+stack; the Butlers chart does not install Grafana, Tempo, Prometheus or a
+collector. `commonEnv.OTEL_EXPORTER_OTLP_ENDPOINT` is applied to the API, daemon
+and connectors. `scripts/k8s/site-helm-args.sh` supplies its site-specific value
+from `BUTLERS_OTLP_ENDPOINT`; the checked-in `http://otel.invalid:4318` is a
+placeholder, not a usable collector.
+
+Use the site's existing Grafana endpoint and access policy. Compose's
+`--observability` and `BUTLERS_POSTURE` flags do not configure the cluster LGTM
+stack. See [Kubernetes Deployment](kubernetes-deployment.md#deploy) for the
+committed-image workflow and site configuration. This source description does
+not attest live collector reachability or dashboard provisioning.
+
+## Legacy/Local Compose Observability Stack
+
+For an isolated Compose deployment against a non-live database,
+`docker-compose.observability.yml` provides a self-contained observability stack.
+The commands in this section are Compose procedures, not the k3s dev workflow.
+Do not start a second Compose fleet against a database owned by Kubernetes or
+use direct Compose to bypass the launcher's ownership guard.
 
 ### Starting the Stack
 
@@ -109,11 +128,9 @@ The local stack is configured by:
 ### Stopping the Stack
 
 ```bash
-./scripts/compose.sh --observability
-# Then: docker compose down
-
-# Or directly:
-docker compose -f docker-compose.yml -f docker-compose.observability.yml down
+# Stop the isolated Compose project and its observability services.
+# Match the project used when starting it (default dev launcher: butlers-dev).
+docker compose -p butlers-dev -f docker-compose.yml -f docker-compose.observability.yml down
 ```
 
 ## Telemetry Initialization

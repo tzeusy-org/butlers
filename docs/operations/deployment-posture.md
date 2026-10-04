@@ -1,12 +1,25 @@
-# Deployment Posture
+# Compose Deployment Posture
 
 > **Purpose:** Document the dev vs hardened deployment posture, what each gates, and how to opt in.
 > **Audience:** Operators running Butlers in local or private-network deployments.
 > **Prerequisites:** [Docker Deployment](docker-deployment.md), [Grafana Monitoring](grafana-monitoring.md).
 
+## Deployment scope
+
+The live dev fleet runs on Kubernetes in `butlers-dev` and uses the cluster's
+existing LGTM stack. The Butlers chart does not deploy Grafana or consume
+`BUTLERS_POSTURE`; Compose's `--observability`/`--hardened` flags do not change
+cluster Grafana access. Follow the site's LGTM access policy and
+[Kubernetes Deployment](kubernetes-deployment.md) for the live dev workflow.
+
+This page describes retained production/local Compose deployments. Use the
+recipes below only against a database not served by a running Kubernetes fleet;
+the Compose launcher refuses a competing fleet. Direct Compose is not a way to
+bypass that ownership guard.
+
 ## Overview
 
-Butlers supports two deployment postures: **dev** and **hardened**. Posture
+The Compose launcher supports two deployment postures: **dev** and **hardened**. Posture
 controls security-sensitive toggles that need to be convenient for local
 iteration but tightened for non-dev deployments.
 
@@ -39,10 +52,13 @@ into Dashboard and all-butlers as a config — and both fail closed when those d
 or unprovisioned. There is no dev-convenience fallback that lets an unsigned or shared-bearer probe
 through, because the convenient version of that path is the one the requirement exists to remove.
 
-The dev-versus-production difference is only *which host files you point at*
-(`RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE`, `RUNTIME_PROBE_CONTROL_VERIFIERS_FILE`); a machine that
-points at neither runs with the plane closed and model verification reporting entries as
-*unavailable*. See [Runtime-Probe Control Keys](runtime-probe-control-keys.md).
+For Compose, the dev-versus-production difference is which host files you point at
+(`RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE`, `RUNTIME_PROBE_CONTROL_VERIFIERS_FILE`);
+a machine that points at neither runs with the plane closed and model
+verification reporting entries as *unavailable*. Kubernetes uses separately
+projected Secret files instead, with dev Secret ownership in BWS; changing these
+host file variables does not change the live k3s release. See
+[Runtime-Probe Control Keys](runtime-probe-control-keys.md).
 
 ## Opting Into Dev Posture
 

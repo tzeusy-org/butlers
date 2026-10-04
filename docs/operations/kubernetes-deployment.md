@@ -189,24 +189,35 @@ The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
   `secretKeyRef`s do not update live. Run `kubectl -n <ns> rollout restart deploy/dashboard-api
   deploy/butlers-up` after a rotation.
 
-## Cutting over from compose
+## Current dev workflow and retained Compose roles
 
-The dev compose stack and the `butlers-dev` release use the same database, schedulers and
-connector sessions, so never run both at once:
+The live dev fleet runs in `butlers-dev` from committed images. Use the dev
+[deployment workflow](#deploy), not `scripts/compose.sh`; there is no live
+hotreload. The original Compose-to-k3s cutover is complete. Its earlier
+`make secrets-dev` staging recipe predates dev's BWS-owned ExternalSecrets and
+is not the current deployment or rollback procedure.
 
-1. While compose is still running: `make secrets-dev`, `make image-dev`, then stage the release
-   with everything scaled to zero: `helm upgrade --install butlers . -n butlers-dev
-   -f values.yaml -f values.dev.yaml --set suspend=true --set image.tag=<sha>
-   --set frontendImage.tag=<sha>-dev`. Confirm `kubectl -n butlers-dev get externalsecret`
-   reports `SecretSynced`.
-2. Stop compose: `docker compose -p butlers-dev down` (named volumes are kept).
-3. `make deploy-dev` (which leaves `suspend` false), then repoint the three `tailscale serve`
-   mappings above.
-4. Verify: `make status-dev`, the dashboard at `https://butlers.example.ts.net/butlers-dev/`, an
-   owner sign-in, and connector logs (`kubectl -n butlers-dev logs deploy/connector-telegram-bot`).
+Compose remains a supported production/off-cluster deployment path and a local
+path for a non-live database. `scripts/compose.sh --prod` retains the production
+Compose configuration; it does not authorize starting a fleet against a database
+already owned by Kubernetes. The launcher checks `butlers-up` replicas in the
+matching namespace (`butlers-dev` for dev, `butlers` for prod) and refuses a
+competing fleet. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
+non-live database, never a live-fleet cutover shortcut.
 
-Rollback: `helm -n butlers-dev uninstall butlers` (PVCs are kept), restore the compose
-`tailscale serve` targets (42173, 42200, 42086), and rerun `./scripts/compose.sh`.
+The protected restore-drill executor remains Docker-only: it attests Docker
+cgroups and host iptables. Production Compose includes the protected fragment;
+dev Compose includes it only with `--with-restore-drill` (bu-viat6h.4). That flag
+starts a Compose fleet too, so it must not be used against the live k3s-owned
+dev database. Kubernetes restore drills need the separate attestation/isolation
+design before they can be enabled. The audio live-listener and optional Compose
+observability profile also remain outside this chart; current dev telemetry uses
+the cluster LGTM stack instead.
+
+Normal dev image rollback redeploys an already-pushed tag through
+`scripts/k8s/deploy-dev.sh <sha>`. Returning database ownership to Compose is a
+separate, coordinated cutover: never run two sets of schedulers and connector
+sessions against the same database.
 
 ## Security posture differences from compose
 

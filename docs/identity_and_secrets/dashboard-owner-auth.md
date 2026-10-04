@@ -59,7 +59,7 @@ infer trusted origin from client-supplied forwarded headers.
 
 Configure `DASHBOARD_AUTH_ORIGIN`, `DASHBOARD_AUTH_RP_ID`,
 `DASHBOARD_AUTH_DEPLOYMENT` and `DASHBOARD_AUTH_TRUSTED_PROXY_PEERS` as described
-in the [environment reference](environment-variables.md#dashboard-api-variables).
+in the [environment reference](environment-variables.md#dashboard-api).
 The API must see the raw peer: Uvicorn proxy-header rewriting is disabled. A
 trusted proxy supplies exact `X-Forwarded-Proto: https` and the canonical
 `X-Forwarded-Host`; unknown peers cannot supply effective HTTPS authority.
@@ -269,7 +269,23 @@ historical state refuses that downgrade. This bookkeeping exception neither
 removes authentication data nor authorizes an old image or live rollback.
 
 
-### Proxy binding after a Compose network replacement
+### Proxy binding on the current Kubernetes dev deployment
+
+The chart passes `dashboardAuth.trustedProxyPeers` to the API as
+`DASHBOARD_AUTH_TRUSTED_PROXY_PEERS`. The checked-in `values.dev.yaml` sets
+`10.42.0.1`, matching the single-node k3s host ingress source described by
+`hostIngress.nodeSourceCidr` (`10.42.0.1/32` in shared values). This is the
+configured source of the host Tailscale Serve hop to `dashboard-api-host`,
+whose NodePort is `32200` on dev and uses `externalTrafficPolicy: Local`.
+The `butlers-host-ingress` NetworkPolicy admits that source and namespace pods.
+
+These values describe this deployment's topology; an IP copied from this page
+is not evidence that another node or proxy is trusted. Check the intended
+host/proxy path before configuring a different deployment. The chart does not
+run Compose's peer-discovery routine or rewrite a host dotenv file. See
+[Kubernetes Deployment](../operations/kubernetes-deployment.md#ingress).
+
+### Proxy binding after a legacy Compose network replacement
 
 `scripts/compose.sh` starts the API with no trusted proxy peers when owner auth is
 configured. Before attribution, it resolves exactly one container for the active
