@@ -2,13 +2,46 @@
 
 > **Purpose:** Common failures, debugging techniques, and health check commands for Butlers.
 > **Audience:** Operators, developers debugging issues in development or production.
-> **Prerequisites:** [Docker Deployment](docker-deployment.md), [Environment Config](environment-config.md).
+> **Prerequisites:** [Kubernetes Deployment](kubernetes-deployment.md) for live dev; [Docker Deployment](docker-deployment.md) for retained Compose deployments.
 
 ## Overview
 
 This page covers the most common failure modes encountered when running Butlers, along with diagnostic commands and resolution steps. Issues typically fall into four categories: database connectivity, missing credentials, binary/dependency problems, and butler communication failures.
 
-## Database Connection Failures
+The current live dev fleet is the k3s release in `butlers-dev`, running committed
+images without hotreload. Start its investigation with the read-only commands
+below. Compose and host-process examples later on this page apply to retained
+local/off-cluster deployments, not to that release.
+
+## Live Dev Diagnostics (Kubernetes)
+
+```bash
+kubectl -n butlers-dev get pods,svc,externalsecret
+kubectl -n butlers-dev logs deploy/dashboard-api -c migrations --tail=100
+kubectl -n butlers-dev logs deploy/dashboard-api -c dashboard-api --tail=100
+kubectl -n butlers-dev logs deploy/butlers-up -c butlers-up --tail=100
+kubectl -n butlers-dev logs deploy/connector-telegram-bot --tail=100
+
+# Public health endpoint from a separate tailnet node; substitute the site host.
+curl --fail 'https://<TAILNET_DNS_NAME>/butlers-dev-api/api/health'
+```
+
+The API's `migrations` initContainer runs migrations before startup. A migration
+failure leaves the API unavailable; inspect that container rather than running
+host migrations against the live database. ExternalSecret status shows sync
+success/failure without reading secret values. Keep captured evidence limited
+to diagnostic categories, status and timestamps; omit credentials and private
+payloads from logs.
+
+All butler daemons, including Home and Switchboard, share `deploy/butlers-up`;
+there is no per-butler Deployment. Authenticated API investigations use the
+owner-signed-in dashboard; a bare `curl` is suitable only for public health.
+The chart's dev API NodePort is `32200`, not the legacy local API port `41200`.
+Use [Kubernetes Deployment](kubernetes-deployment.md#deploy) for any separately
+authorized redeploy or image rollback. Do not start Compose against the live
+database or try to recover this release through a hotreload service.
+
+## Database Connection Failures (Legacy Compose/Host Processes)
 
 ### Symptom: "connection refused" or "could not connect to server"
 
@@ -122,7 +155,7 @@ npm install -g @openai/codex
 go install github.com/opencode-ai/opencode@latest
 ```
 
-### Symptom: Docker build fails
+### Symptom: Docker build fails (Legacy Compose)
 
 **Diagnosis:**
 ```bash
@@ -146,11 +179,14 @@ psql -h "$POSTGRES_HOST" -p "${POSTGRES_PORT:-5432}" \
   -c "SELECT source, status, last_success_at, last_error_at, updated_at
       FROM home.ha_source_health WHERE source = 'home_assistant';"
 
-curl -s http://localhost:41200/api/home/snapshot-status | \
-  jq '{ha_source_available, newest_captured_at, total_entities}'
-
-docker compose logs --tail=100 butlers-up butlers-up-hotreload
+# Current k3s dev: all Home daemon logs are in the shared daemon Deployment.
+kubectl -n butlers-dev logs deploy/butlers-up -c butlers-up --tail=100
 ```
+
+Read `GET /api/home/snapshot-status` through the owner-authenticated dashboard
+and inspect only `ha_source_available`, `newest_captured_at` and `total_entities`.
+The SQL example requires an existing authorized connection to the exact database;
+it does not obtain that connection from the pod or authorize credential access.
 
 A missing row, `status='error'`, or a `last_success_at` older than five minutes
 means the source is unmeasurable. Keep the probe content-blind: timestamps and
@@ -160,8 +196,10 @@ status are enough; do not select `last_error`, credentials, or entity payloads.
 
 1. Restore Home Assistant network reachability and its configured credential
    path.
-2. If the Home daemon is not running, restart or redeploy `butlers-up` through
-   the normal Compose workflow.
+2. If the Home daemon is not running, use the current release's normal
+   committed-image deployment workflow in [Kubernetes Deployment](kubernetes-deployment.md#deploy)
+   for an authorized redeploy of `butlers-up`. Use Compose only for an existing
+   isolated/off-cluster Compose deployment.
 3. Wait for a REST refresh or WebSocket pong, then rerun both probes above.
 4. Confirm `ha_source_available=true` and advancing snapshot timestamps. HTTP
    200 by itself is only transport evidence and does not prove recovery.
@@ -172,30 +210,28 @@ status are enough; do not select `last_error`, credentials, or entity payloads.
 
 **Diagnosis:**
 ```bash
-# Check if the butler process is running
+# Current k3s dev: all daemons run in this Deployment.
+kubectl -n butlers-dev get deploy butlers-up
+kubectl -n butlers-dev logs deploy/butlers-up -c butlers-up --tail=100
+
+# Legacy Compose only: shared daemon service, not a per-butler container.
 docker compose ps
-
-# Check butler logs
-docker compose logs <butler-name> --tail=100
-
-# Test MCP endpoint
-curl http://localhost:<port>/health
+docker compose logs butlers-up --tail=100
+# In an existing hotreload Compose stack, use butlers-up-hotreload instead.
 ```
 
 ### Symptom: Messages not being routed
 
 **Cause:** Switchboard cannot reach target butlers, or butler is quarantined.
 
-**Diagnosis:**
-```bash
-# Check Switchboard routing log via dashboard
-curl http://localhost:41200/api/switchboard/routing-log?limit=20
+**Diagnosis:** Use the owner-authenticated dashboard to inspect
+`GET /api/switchboard/routing-log?limit=20` and
+`GET /api/switchboard/registry`. For live dev, these routes are beneath the
+`/butlers-dev-api` public prefix. See
+[Receiver-derived routing cutover](receiver-derived-routing-cutover.md) for the
+current dev flag and the distinction between policy holds and receiver health.
 
-# Check butler registry
-curl http://localhost:41200/api/switchboard/registry
-```
-
-## Health Check Commands
+## Health Check Commands (Legacy Compose/Host Processes)
 
 ```bash
 # Dashboard API health
@@ -207,8 +243,8 @@ pg_isready -h localhost -p 54320 -U butlers
 # All services status
 docker compose ps
 
-# Butler-specific logs
-docker compose logs <butler-name> --tail=50 --follow
+# Shared daemon logs (baked-image Compose service)
+docker compose logs butlers-up --tail=50 --follow
 
 # CLI auth status for all providers: dashboard Settings page
 # (owner-authenticated GET /api/cli-auth/providers)
@@ -239,7 +275,8 @@ Port conflicts during parallel execution are suppressed via `filterwarnings`. Ru
 
 ## Related Pages
 
-- [Docker Deployment](docker-deployment.md) -- Service configuration
+- [Kubernetes Deployment](kubernetes-deployment.md) -- Current live dev workflow
+- [Docker Deployment](docker-deployment.md) -- Retained Compose service configuration
 - [Grafana Monitoring](grafana-monitoring.md) -- Observability stack
 - [Environment Config](environment-config.md) -- Configuration reference
 - [CLI Runtime Auth](../identity_and_secrets/cli-runtime-auth.md) -- CLI authentication

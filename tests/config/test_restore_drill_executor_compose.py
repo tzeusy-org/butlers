@@ -620,7 +620,7 @@ def test_operator_guidance_keeps_the_protected_fragment_out_of_direct_compose() 
     assert "base-only `down --remove-orphans`" in backup_restore
     assert "base-only `down --remove-orphans`" in docker_deployment
     assert "base-only `down --remove-orphans`" in scripts_readme
-    assert "docker compose logs <butler-name> --tail=100" in troubleshooting
+    assert "docker compose logs butlers-up --tail=100" in troubleshooting
     assert "restore-drill-compose-inspect.sh" not in troubleshooting
 
 

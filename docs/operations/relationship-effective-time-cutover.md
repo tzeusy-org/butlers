@@ -6,7 +6,17 @@
 > **Contract:** [`authorize-relationship-effective-time-cutover`](../../openspec/changes/authorize-relationship-effective-time-cutover/design.md)
 > (receipt and fence schemas, failure taxonomy, file ownership) on top of
 > [`relationship-fact-effective-time`](../../openspec/changes/relationship-fact-effective-time/design.md).
-> **Scope:** Docker Compose, project `butlers` (prod) or `butlers-dev` (dev). No other orchestrator.
+> **Scope:** Draft Docker Compose contract, project `butlers` (prod) or `butlers-dev` (dev). No other orchestrator.
+
+The current live dev fleet runs on k3s in namespace `butlers-dev`; this packet's
+`dev-launcher` row is a proposed Compose invocation, not the current dev deployment
+path. There is **no Kubernetes cutover equivalent** in the governing contract or
+implementation. Its Compose container inventory, restart-policy fence and signed
+receipt cannot be replaced with `kubectl` commands. A Kubernetes path needs a
+separately designed and implemented fence/receipt contract before temporal
+activation can be described as executable. Normal image deployment through
+[Kubernetes Deployment](kubernetes-deployment.md#deploy) does not supply that fence
+or authorize this cutover.
 
 ## What the cutover does
 
@@ -24,7 +34,10 @@ target, fences every supported start path, and holds a database exclusion while 
 `roster/` is bind-mounted from the host checkout into `butlers-up`, `dashboard-api`, and
 `migrations`. Most Relationship mutators live there. A process's code is its image **plus** the
 checkout's `roster/` tree, so every check below binds both. Hotreload also mounts `src/` and reloads
-live, so a hotreload stack cannot be proven and is refused. Run dev cutovers with `--no-hotreload`.
+live, so the proposed verifier refuses a hotreload stack. The draft Compose
+`dev-launcher` row therefore requires `--no-hotreload`; this is not an instruction
+to replace the k3s dev fleet with Compose. The existing launcher guard refuses a
+Compose fleet competing for a Kubernetes-owned database.
 
 ## Preconditions
 
@@ -48,8 +61,8 @@ All must hold before anyone runs step 1:
 
 ## Supported invocations
 
-The cutover covers exactly the services of one named row. The wrapper resolves the row from its own
-launcher at the target SHA and refuses `compose_invocation_mismatch` on any difference, including a
+The proposed Compose cutover covers exactly the services of one named row. The wrapper resolves
+the row from its own launcher at the target SHA and refuses `compose_invocation_mismatch` on any difference, including a
 container started with another file set or profile.
 
 | Row | Launcher | Files | Project | Env file | Profiles |

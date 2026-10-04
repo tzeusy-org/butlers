@@ -2,9 +2,11 @@
 
 This is the L3 operator boundary for `REQ-butler-control-plane-liveness-002/004/008`
 and `REQ-butler-switchboard-002/004`. The code defaults to legacy routing when
-`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` is unset. Dev hotreload Compose sets
-it to `1` for both daemon and Dashboard API; their base services, also used in
-production, default to `0`.
+`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` is unset. The current k3s dev release
+sets it to `1` in `deploy/helm/butlers/values.dev.yaml` under `commonEnv`, which
+is applied to the daemon and Dashboard API. The chart's shared default is `0`;
+production does not override it. Retained local Compose hotreload services also
+set it to `1`, while Compose base services default to `0`.
 Production activation remains a separate exact-environment decision.
 
 ## Dev cutover behavior
@@ -51,7 +53,7 @@ Production activation remains a separate exact-environment decision.
 | `register_butler`, legacy read reconciliation, confirmed-route `last_seen_at` touch, old Dashboard heartbeat POST | May still write the legacy projection. None grants receiver-derived health or clears policy. The old TTL sweep is inert while the flag is `1`; the heartbeat POST remains owner-authenticated and rejected for daemon reporters. |
 | `public.register_butler_boot` and `butler_boot_registrations` | Daemon role owns boot succession; immutable UUID-to-epoch receipt survives rollback. |
 | Dashboard periodic observer | Receiver evidence through L2's role-bound reserve/record operations. |
-| Switchboard on-demand route probe | The same L2 reserve/record operations, behind the dev hotreload cutover flag and only after non-health gates pass. |
+| Switchboard on-demand route probe | The same L2 reserve/record operations, behind the dev cutover flag and only after non-health gates pass. |
 | Authenticated owner eligibility API | Sole administrative policy mutation; neither probe nor confirmed route may clear its hold. |
 | Direct route, classifier and correction candidates, local scheduler, recovery notification admission | Read separated control-plane facts when the flag is `1`; a policy hold still denies the route. Legacy resolver remains for flag-off rollback. |
 | Fleet board and system heartbeat API | Follow the same cutover flag as the daemon. With `1`, project the receiver's last verified healthy observation and administrative policy; with `0`, retain the legacy projection. The board does not turn a failed probe into a fresh heartbeat. |
@@ -65,9 +67,14 @@ Dev activation requires `sw_035`, the `sw_036` evidence repair, the QA receiver
 view in `sw_037`, current boot registrations, fresh receiver observations,
 and active policy for the exact intended targets. Verify the internal route preflight, a real
 authenticated route, and policy-denied negative case; then observe health and
-route acceptance beyond two legacy TTL windows. The dev hotreload Compose
-default supplies the flag, but production's base service remains default-off.
+route acceptance beyond two legacy TTL windows. The dev Helm values supply the
+flag; production's Helm values and Compose base services remain default-off.
 Production needs its own exact-environment verification and activation.
+
+For the k3s dev release, change the exact release's
+`commonEnv.BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` value through the chart's normal
+committed-image deployment workflow in [Kubernetes Deployment](kubernetes-deployment.md#deploy).
+Changing a host dotenv file or launching Compose does not change a running pod.
 
 For rollback, set the flag to `0` in the exact process deployment. Retain
 `sw_035`/`sw_036` policy and provenance, the `sw_037` QA read view, the restrictive
@@ -89,6 +96,7 @@ keep routing unavailable and escalate rather than widen eligibility.
   match transition ID, state, exact timestamp and the writer-specific reason, or automatic
   staleness becomes a sticky `review_required` policy.
 - The route flag governs candidate filtering, scheduled dispatch, recovery-notification admission,
-  TTL sweeps and the board and heartbeat projections, which must agree. Base Compose also serves
-  production and defaults it off; dev hotreload defaults it on. Keep the legacy heartbeat reporter
+  TTL sweeps and the board and heartbeat projections, which must agree. The dev chart enables
+  the flag; shared chart defaults and Compose base services keep it off. Retained local Compose
+  hotreload enables it too. Keep the legacy heartbeat reporter
   while any rollback path needs `last_seen_at`.
