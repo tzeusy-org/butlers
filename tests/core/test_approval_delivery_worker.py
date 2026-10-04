@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from fastmcp.server.dependencies import AccessToken
+from fastmcp import FastMCP
 
+from butlers.core.approval_delivery_authority import (
+    ProtectedApprovalMCP,
+    protected_approval_principal,
+)
 from butlers.core.approval_delivery_transport import (
     ApprovalRecoveryRuntime,
-    authenticated_daemon_name,
+    RecoveryAuthorityError,
 )
 from butlers.core.approval_delivery_worker import (
     ApprovalDeliveryWorker,
@@ -50,33 +55,54 @@ def _claim() -> DeliveryClaim:
     )
 
 
-# Spec: REQ-approval-delivery-intent-recovery-004; identity/scope rejection only; this does not prove issued transport or source attestation.
-def test_recovery_transport_principal_requires_bound_daemon_scope() -> None:
-    token = AccessToken(
-        token="synthetic",
-        client_id="butler:relationship",
-        scopes=["approval-recovery:source"],
-        claims={"actor_type": "daemon", "butler_name": "relationship"},
+# Spec: REQ-approval-delivery-intent-recovery-004; unsupported transport fails closed without creating a listener; registered transport proof lives in its integration harness.
+@pytest.mark.asyncio
+async def test_recovery_transport_requires_kernel_peer_admission(tmp_path, monkeypatch) -> None:
+    assert protected_approval_principal(audience="switchboard:approval-recovery") is None
+    mcp = FastMCP("kernel-peer")
+
+    @mcp.tool()
+    def peer() -> dict:
+        return {
+            "issuer": protected_approval_principal(audience="switchboard:approval-recovery"),
+            "wrong_audience": protected_approval_principal(audience="messenger:approval-recovery"),
+        }
+
+    with monkeypatch.context() as unsupported:
+        unsupported.delattr(socket, "SO_PEERCRED", raising=False)
+        endpoint = ProtectedApprovalMCP(
+            mcp,
+            issuer="relationship",
+            audience="switchboard:approval-recovery",
+            socket_path=tmp_path / "approval.sock",
+        )
+        with pytest.raises(RecoveryAuthorityError):
+            async with endpoint:
+                pytest.fail("unsupported peer admission opened a listener")
+        assert list(tmp_path.iterdir()) == []
+    if not hasattr(socket, "SO_PEERCRED"):
+        return  # The unsupported-platform rejection above is the relevant contract.
+    endpoint = ProtectedApprovalMCP(
+        mcp,
+        issuer="relationship",
+        audience="switchboard:approval-recovery",
+        socket_path=tmp_path / "approval.sock",
     )
-    assert (
-        authenticated_daemon_name(token, required_scope="approval-recovery:source")
-        == "relationship"
-    )
-    assert authenticated_daemon_name(token, required_scope="approval-recovery:switchboard") is None
-    mismatched = AccessToken(
-        token="synthetic",
-        client_id="butler:general",
-        scopes=["approval-recovery:source"],
-        claims={"actor_type": "daemon", "butler_name": "relationship"},
-    )
-    assert authenticated_daemon_name(mismatched, required_scope="approval-recovery:source") is None
+    async with endpoint:
+        assert await endpoint.call("peer", {}) == {"issuer": "relationship", "wrong_audience": None}
+    assert list(tmp_path.iterdir()) == []
+    with pytest.raises(RecoveryAuthorityError):
+        await endpoint.call("peer", {})
 
 
 @pytest.mark.asyncio
 async def test_source_runtime_reuses_correlation_without_exporting_local_fence() -> None:
     captured: list[dict[str, object]] = []
 
-    async def _dispatch(payload: dict[str, object]) -> dict[str, object]:
+    async def _dispatch(
+        local_claim: DeliveryClaim, payload: dict[str, object]
+    ) -> dict[str, object]:
+        assert local_claim == claim
         captured.append(payload)
         return {"handoff": {"classification": "confirmed", "provider_reference": "ref-1"}}
 

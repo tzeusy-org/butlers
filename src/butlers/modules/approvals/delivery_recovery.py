@@ -99,6 +99,70 @@ class ApprovalDeliveryRepository:
         self._pool = pool
         self._lease_seconds = lease_seconds
 
+    async def authorize_transport(
+        self, claim: DeliveryClaim, *, owning_schema: str
+    ) -> float | None:
+        """Attest a live, already-started claim from this owning schema only.
+
+        Keys and a daemon identity are insufficient. This read checks the
+        durable subject relationship, eligibility, mode and current fence.
+        It grants no domain mutation or new presentation authority.
+        """
+        remaining = await self._pool.fetchval(
+            """
+            SELECT extract(epoch FROM p.claim_expires_at - clock_timestamp())
+              FROM approval_delivery_presentations AS p
+             WHERE current_schema() = $9
+               AND current_user = 'butler_' || $9 || '_rw'
+               AND current_setting('role') = 'butler_' || $9 || '_rw'
+               AND p.id = $1 AND p.presentation_generation = $2
+               AND p.claim_token = $3 AND p.claim_fence = $4
+               AND p.presentation_key = $5 AND p.presentation_mode = $6
+               AND p.subject_kind = $7 AND p.subject_key = $8
+               AND p.state = 'handoff_started'
+               AND p.claim_expires_at > clock_timestamp()
+               AND ($10 OR NOT EXISTS (
+                   SELECT 1 FROM approval_delivery_presentations AS successor
+                   WHERE successor.subject_key = p.subject_key
+                     AND successor.presentation_generation > p.presentation_generation
+               ))
+               AND (
+                   (p.intent_id IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM approval_delivery_intents AS i
+                       JOIN pending_actions AS pa ON pa.id = i.action_id
+                       WHERE i.id = p.intent_id AND i.action_key = p.subject_key
+                         AND i.owning_schema = $9 AND i.origin_butler = $9
+                         AND i.admission_mode = 'single'
+                         AND pa.status = 'pending'
+                         AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
+                   ))
+                   OR
+                   (p.cohort_id IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM approval_delivery_cohorts AS c
+                       JOIN approval_delivery_cohort_members AS m ON m.cohort_id = c.id
+                       JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+                       JOIN pending_actions AS pa ON pa.id = i.action_id
+                       WHERE c.id = p.cohort_id AND c.cohort_key = p.subject_key
+                         AND c.owning_schema = $9 AND i.owning_schema = $9
+                         AND i.origin_butler = $9 AND m.eligible
+                         AND pa.status = 'pending'
+                         AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
+                   ))
+               )
+            """,
+            claim.presentation_id,
+            claim.presentation_generation,
+            claim.claim_token,
+            claim.claim_fence,
+            claim.presentation_key,
+            claim.presentation_mode,
+            claim.subject_kind,
+            claim.subject_key,
+            owning_schema,
+            claim.reconcile_only,
+        )
+        return float(remaining) if remaining is not None else None
+
     async def cancel_ineligible_presentations(self) -> int:
         """Cancel only presentation recovery; never transition a domain action."""
         direct = await self._pool.execute(

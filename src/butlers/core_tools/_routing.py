@@ -19,17 +19,16 @@ from typing import Any
 
 import asyncpg
 import httpx
-from fastmcp.server.dependencies import get_access_token
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 from opentelemetry.trace import Link as OtelLink
 from pydantic import ValidationError
 
+from butlers.core.approval_delivery_authority import protected_approval_principal
 from butlers.core.approval_delivery_transport import (
     MessengerApprovalHandoffRepository,
     RecoveryAuthorityError,
     TrustedRecoveryContext,
-    authenticated_daemon_name,
 )
 from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
@@ -122,10 +121,7 @@ def _preauthenticate_messenger_recovery(
     trusted_route_callers: set[str] | frozenset[str] | list[str],
 ) -> TrustedRecoveryContext:
     """Authenticate and bind recovery before any trace, log, lookup, or response detail."""
-    switchboard_principal = authenticated_daemon_name(
-        get_access_token(),
-        required_scope="approval-recovery:switchboard",
-    )
+    switchboard_principal = protected_approval_principal(audience="messenger:approval-recovery")
     if switchboard_principal != "switchboard":
         raise RecoveryAuthorityError("Messenger requires authenticated Switchboard")
 

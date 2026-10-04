@@ -118,6 +118,12 @@ None. The approvals module is a leaf module. Other modules interact with it indi
 
 ## Implementation Notes
 
+- Dormant RFC 0023 recovery uses the explicit
+  [approval delivery authority transport](../runtime/approval-delivery-authority.md).
+  Protected peer admission and the owning source's durable presentation proof
+  are separate prerequisites. Ordinary TCP or caller correlation cannot enable
+  recovery, and constructing the opt-in transport does not activate rollout.
+
 - Owner-entity mutations park for approval unless `src` is in `_OWNER_AUTO_APPLY_SOURCES`
   (`roster/relationship/tools/relationship_assert_fact.py`): owner self-registration plus
   `_TRUSTED_INTERNAL_SOURCES` (structured derivation such as `interaction_sync`). Prose-extraction

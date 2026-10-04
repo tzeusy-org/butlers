@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 
 class _StubMCP:
@@ -24,12 +24,18 @@ async def test_registered_deliver_authenticates_only_material_recovery(monkeypat
     from butlers.modules._roster_switchboard import tools
 
     pool = object()
-    deliver = AsyncMock(return_value={"status": "sent"})
-    authenticate = MagicMock(return_value="relationship")
     delivery_module = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    actual_deliver = delivery_module.deliver
+
+    async def delivery_boundary(*args, **kwargs):
+        if kwargs["notify_request"].get("recovery") is not None:
+            return await actual_deliver(*args, **kwargs)
+        return {"status": "sent"}
+
+    deliver = AsyncMock(side_effect=delivery_boundary)
+    authenticate = AsyncMock(wraps=tools.verify_switchboard_recovery)
     monkeypatch.setattr(delivery_module, "deliver", deliver)
-    monkeypatch.setattr(tools, "authenticated_daemon_name", authenticate)
-    monkeypatch.setattr(tools, "get_access_token", MagicMock(return_value="token"))
+    monkeypatch.setattr(tools, "verify_switchboard_recovery", authenticate)
     mcp = _StubMCP()
 
     tools.register_tools(
@@ -52,10 +58,11 @@ async def test_registered_deliver_authenticates_only_material_recovery(monkeypat
     await mcp.tools["deliver"](source_butler="health", notify_request=ordinary)
 
     authenticate.assert_not_called()
-    assert deliver.await_args.kwargs["trusted_source"] is None
+    assert deliver.await_args.kwargs["verified_context"] is None
 
     material = {**ordinary, "recovery": {"operation": "handoff"}}
-    await mcp.tools["deliver"](source_butler="relationship", notify_request=material)
+    result = await mcp.tools["deliver"](source_butler="relationship", notify_request=material)
 
-    authenticate.assert_called_once_with("token", required_scope="approval-recovery:source")
-    assert deliver.await_args.kwargs["trusted_source"] == "relationship"
+    authenticate.assert_awaited_once()
+    assert deliver.await_args.kwargs["verified_context"] is None
+    assert result["error"] == "Approval recovery authority rejected."
