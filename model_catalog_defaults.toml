@@ -82,6 +82,50 @@ complexity_tier = "reasoning"
 priority = 0
 enabled = true
 
+# ---------------------------------------------------------------------------
+# Codex GPT-6 routing: Luna max for trivial (cheap) work, Sol low for
+# sub-medium work (workhorse), Sol high for medium/high work (reasoning), and
+# Sol xhigh for planning/scoping/design (specialty). Luna max and Sol xhigh
+# rank below the direct-API rows so classification and discretion keep routing
+# onto them by default.
+# ---------------------------------------------------------------------------
+
+[[models]]
+alias = "gpt-6-luna-max"
+runtime_type = "codex"
+model_id = "gpt-6-luna"
+extra_args = ["--config", "model_reasoning_effort=\"max\""]
+complexity_tier = "cheap"
+priority = 26
+enabled = true
+
+[[models]]
+alias = "gpt-6-sol-low"
+runtime_type = "codex"
+model_id = "gpt-6-sol"
+extra_args = ["--config", "model_reasoning_effort=\"low\""]
+complexity_tier = "workhorse"
+priority = 31
+enabled = true
+
+[[models]]
+alias = "gpt-6-sol-high"
+runtime_type = "codex"
+model_id = "gpt-6-sol"
+extra_args = ["--config", "model_reasoning_effort=\"high\""]
+complexity_tier = "reasoning"
+priority = 30
+enabled = true
+
+[[models]]
+alias = "gpt-6-sol-xhigh"
+runtime_type = "codex"
+model_id = "gpt-6-sol"
+extra_args = ["--config", "model_reasoning_effort=\"xhigh\""]
+complexity_tier = "specialty"
+priority = 5
+enabled = true
+
 [[models]]
 alias = "gemini-2.5-flash"
 runtime_type = "gemini"
