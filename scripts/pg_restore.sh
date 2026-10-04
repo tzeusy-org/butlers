@@ -202,6 +202,7 @@ echo "[restore] (This may take a minute for large databases)"
 # The assignment belongs on `psql`, not on the pipeline: a prefix assignment
 # applies only to the command it prefixes, so putting it on `gunzip` left psql
 # with no password at all and the restore died at the connection.
+RESTORE_DATA_FAILED=false
 gunzip -c "$BACKUP_FILE" | PGPASSWORD="$PG_PASSWORD" psql \
   --host="$PG_HOST" \
   --port="$PG_PORT" \
@@ -210,8 +211,7 @@ gunzip -c "$BACKUP_FILE" | PGPASSWORD="$PG_PASSWORD" psql \
   --no-password \
   --quiet \
   2>&1 | sed -e '/^$/d' -e 's/^/  /' || {
-    echo "[restore] ERROR: psql restore failed" >&2
-    exit 1
+    RESTORE_DATA_FAILED=true
   }
 
 # ── Ownership audit: the fence must not invert (bu-zbybd) ───────────────
@@ -348,6 +348,12 @@ if [[ -s "$AUDIT_DIR/inverted" ]]; then
   exit 1
 fi
 echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
+# A strict scoped importer failure still cannot skip the existing ownership
+# diagnosis. Preserve that audit, then refuse certification of incomplete data.
+if [[ "$RESTORE_DATA_FAILED" == true ]]; then
+  echo "[restore] ERROR: psql restore failed; incomplete data is not certified" >&2
+  exit 1
+fi
 
 if [[ "$HAS_CAPTURE" == true ]]; then
   PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
@@ -366,6 +372,18 @@ if [[ "$HAS_CAPTURE" == true ]]; then
              ('public.captures'::regclass,'public.capture_operations'::regclass,
               'public.capture_service_control'::regclass)
              AND relrowsecurity AND relforcerowsecurity) <> 3 OR
+           (SELECT count(*) FROM pg_policy AS p
+             WHERE p.polrelid IN ('public.captures'::regclass,
+                 'public.capture_operations'::regclass,'public.capture_service_control'::regclass)) <> 3 OR
+           (SELECT count(*) FROM pg_policy AS p
+             WHERE p.polrelid IN ('public.captures'::regclass,
+                 'public.capture_operations'::regclass,'public.capture_service_control'::regclass)
+               AND p.polname='capture_general_service' AND p.polcmd='*'
+               AND p.polpermissive AND p.polroles=ARRAY[0::oid]
+               AND pg_get_expr(p.polqual,p.polrelid) =
+                 '(CURRENT_USER = ''butler_general_rw''::name)'
+               AND pg_get_expr(p.polwithcheck,p.polrelid) =
+                 '(CURRENT_USER = ''butler_general_rw''::name)') <> 3 OR
            (SELECT count(*) FROM pg_trigger WHERE tgrelid IN
              ('public.captures'::regclass,'public.capture_operations'::regclass,
               'public.capture_service_control'::regclass)
