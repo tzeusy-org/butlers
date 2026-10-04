@@ -164,6 +164,7 @@ async def _park_delivery_action(pool: asyncpg.Pool):
     return action_id
 
 
+# Spec: REQ-approval-delivery-intent-recovery-007; retention preserves unresolved ambiguous evidence.
 async def test_delivery_retention_keeps_ambiguous_terminal_evidence(approvals_pool) -> None:
     """Terminal action age never discards an unresolved provider outcome."""
     action_id = await _park_delivery_action(approvals_pool)
@@ -205,6 +206,7 @@ async def test_delivery_retention_keeps_ambiguous_terminal_evidence(approvals_po
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-007; resolved cleanup retains the safe event summary.
 async def test_delivery_retention_deletes_resolved_root_after_safe_summary(approvals_pool) -> None:
     """No-attempt terminal delivery cleans in order while its safe event survives."""
     action_id = await _park_delivery_action(approvals_pool)

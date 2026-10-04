@@ -213,6 +213,7 @@ def _runtime(dispatch: AsyncMock) -> ApprovalPushRuntime:
 
 
 @pytest.mark.parametrize("config_state", ["default", "absent", "invalid"])
+# Spec: REQ-approval-delivery-intent-recovery-011; server-held default/absent/invalid rollout stays inert.
 async def test_disabled_rollout_parks_without_recovery_rows_or_dual_write(
     disabled_rollout_pool: asyncpg.Pool,
     config_state: str,
@@ -360,6 +361,7 @@ async def _never_execute(**_kwargs: object) -> dict[str, object]:
     raise AssertionError("A parked gate action must not execute its original tool")
 
 
+# Spec: REQ-approval-delivery-intent-recovery-001, REQ-module-approvals-001; gate action and initial presentation commit together without egress.
 async def test_gate_park_atomically_admits_one_recoverable_presentation_without_sending(
     approval_push_pool: asyncpg.Pool,
 ) -> None:
@@ -427,6 +429,7 @@ async def test_gate_park_atomically_admits_one_recoverable_presentation_without_
     assert same_id.action_key == row["action_key"]
 
 
+# Spec: REQ-approval-delivery-intent-recovery-001; injected intent failure rolls back the pending action.
 async def test_atomic_admission_rolls_back_action_when_intent_insert_fails(
     approval_push_pool: asyncpg.Pool,
 ) -> None:
@@ -465,6 +468,7 @@ async def test_atomic_admission_rolls_back_action_when_intent_insert_fails(
         )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-001; concurrent semantic duplicates share one action/intent pair.
 async def test_semantic_duplicate_returns_existing_action_and_intent_under_concurrency(
     approval_push_pool: asyncpg.Pool,
 ) -> None:
@@ -499,6 +503,7 @@ async def test_semantic_duplicate_returns_existing_action_and_intent_under_concu
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-006; concurrent burst admissions retain direct/digest/collapsed evidence.
 async def test_concurrent_first_three_digest_and_collapse_are_durable(
     approval_push_pool: asyncpg.Pool,
 ) -> None:
@@ -615,6 +620,7 @@ async def test_admission_recomputes_database_time_after_serialization_wait(
     assert admission.not_before >= release_time
 
 
+# Spec: REQ-approval-delivery-intent-recovery-006, REQ-core-notify-030; stored exact release survives policy changes outside generic deferral.
 async def test_quiet_hours_are_snapshotted_without_generic_deferral(
     approval_push_pool: asyncpg.Pool,
 ) -> None:
@@ -657,6 +663,7 @@ async def test_quiet_hours_are_snapshotted_without_generic_deferral(
     assert await approval_push_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
 
 
+# Spec: REQ-approval-delivery-intent-recovery-002; invalid vocabulary and attempt mutation are rejected.
 async def test_delivery_schema_rejects_unknown_vocabulary_and_mutated_attempts(
     approval_push_pool: asyncpg.Pool,
 ) -> None:
@@ -709,6 +716,7 @@ async def test_delivery_schema_rejects_unknown_vocabulary_and_mutated_attempts(
 @pytest.mark.filterwarnings(
     "ignore:The test .* is marked with '@pytest.mark.asyncio':pytest.PytestWarning"
 )
+# Spec: REQ-approval-delivery-intent-recovery-011; additive migration preserves legacy evidence and refuses data loss.
 def test_approvals_migration_preserves_legacy_rows_and_refuses_nonempty_downgrade(
     postgres_container,
 ) -> None:
@@ -942,6 +950,7 @@ def _trusted_recovery_context() -> TrustedRecoveryContext:
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-004, REQ-core-notify-029, REQ-butler-messenger-001, REQ-butler-messenger-002; real ledger suppresses same-tuple sends and quarantines uncertainty.
 async def test_messenger_handoff_tuple_suppresses_duplicates_and_reconciles_ambiguity(
     messenger_handoff_pool: asyncpg.Pool,
 ) -> None:
@@ -1046,6 +1055,7 @@ async def test_messenger_safe_retry_never_marks_provider_started_and_reuses_same
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-009, REQ-core-notify-031; planted sentinels are excluded from generic controls/history; ordinary controls remain visible.
 async def test_recovery_path_persists_no_generic_or_history_content(
     switchboard_recovery_pool: asyncpg.Pool,
 ) -> None:

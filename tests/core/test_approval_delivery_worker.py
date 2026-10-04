@@ -50,6 +50,7 @@ def _claim() -> DeliveryClaim:
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-004; identity/scope rejection only; this does not prove issued transport or source attestation.
 def test_recovery_transport_principal_requires_bound_daemon_scope() -> None:
     token = AccessToken(
         token="synthetic",
@@ -152,6 +153,7 @@ async def test_lost_heartbeat_cancels_external_await_without_terminal_write() ->
 
 
 @pytest.mark.asyncio
+# Spec: REQ-approval-delivery-intent-recovery-003; active module lifecycle and server-held rollout govern worker startup.
 async def test_lifecycle_starts_once_only_for_active_approvals_and_stops_cleanly() -> None:
     repository = _IdleRepository()
     module = SimpleNamespace(

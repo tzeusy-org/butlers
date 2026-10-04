@@ -520,6 +520,7 @@ def test_approval_request_contract_requires_actions_and_decision_tokens():
         )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-004, REQ-core-notify-028; typed recovery shape validates correlation without exporting local authority.
 def test_approval_recovery_contract_is_closed_and_reconcile_is_correlation_only():
     subject_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     subject_key = f"approval:relationship:{subject_id}"

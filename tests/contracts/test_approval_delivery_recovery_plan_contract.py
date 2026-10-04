@@ -1,9 +1,8 @@
 """Static contract for RFC 0023 recovery-presentation history isolation.
 
-RFC 0023 is an OpenSpec-only planning packet.  This test keeps its future
-implementation plan explicit about the existing Switchboard outbound-history
-path, so a recovery-only approval presentation cannot silently become generic
-conversation or LLM history.
+RFC 0023's accepted WHAT now lives in the canonical recovery capability spec.
+This structural test follows the relocated source fixtures and retains its
+existing outbound-history isolation and negative-proof assertions.
 """
 
 from __future__ import annotations
@@ -16,14 +15,14 @@ pytestmark = pytest.mark.contract
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
 _RFC = _REPO_ROOT / "about/legends-and-lore/rfcs/0023-durable-approval-delivery-intent-recovery.md"
-_CORE_NOTIFY_DELTA = (
-    _REPO_ROOT
-    / "openspec/changes/durable-approval-delivery-intent-recovery/specs/core-notify/spec.md"
-)
+_CORE_NOTIFY_DELTA = _REPO_ROOT / "openspec/specs/approval-delivery-intent-recovery/spec.md"
 _IMPLEMENTATION_PLAN = (
     _REPO_ROOT / "docs/superpowers/plans/2026-08-13-durable-approval-delivery-intent-recovery.md"
 )
-_TASKS = _REPO_ROOT / "openspec/changes/durable-approval-delivery-intent-recovery/tasks.md"
+_TASKS = (
+    _REPO_ROOT
+    / "openspec/changes/archive/2026-10-05-durable-approval-delivery-intent-recovery/tasks.md"
+)
 
 
 def _read(path: Path) -> str:

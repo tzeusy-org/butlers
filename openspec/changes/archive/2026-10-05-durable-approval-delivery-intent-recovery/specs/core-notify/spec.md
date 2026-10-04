@@ -1,3 +1,5 @@
+The recovery protocol is owned by [approval-delivery-intent-recovery](../../../../../specs/approval-delivery-intent-recovery/spec.md). The requirements below bind this capability’s integration seam; they do not define a separate recovery protocol.
+
 ## ADDED Requirements
 
 ### Requirement: Authenticated recovery presentation envelope

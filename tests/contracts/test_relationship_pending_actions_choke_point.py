@@ -43,6 +43,7 @@ def _relationship_dir() -> Path:
     return _repo_root() / "roster" / "relationship"
 
 
+# Spec: REQ-approval-delivery-intent-recovery-008; scans production source for admissions bypassing the shared helper.
 def test_production_tree_has_no_direct_pending_actions_insert() -> None:
     """No production file may bypass atomic pending-action admission.
 
@@ -75,6 +76,7 @@ def test_production_tree_has_no_direct_pending_actions_insert() -> None:
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-008; the gate exception permits only explicitly auto-approved SQL inserts.
 def test_gate_direct_inserts_are_only_explicit_auto_approvals() -> None:
     """The gate allowlist cannot hide a future direct PENDING insertion."""
     gate_path = _repo_root() / "src" / "butlers" / "modules" / "approvals" / "gate.py"

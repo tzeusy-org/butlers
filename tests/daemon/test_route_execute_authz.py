@@ -340,6 +340,7 @@ class TestRouteExecuteAuthz:
         tg_mod._send_message.assert_awaited_once()
         assert result_ok["status"] == "ok"
 
+    # Spec: REQ-approval-delivery-intent-recovery-004; injected-principal route test rejects authority mismatches before ledger/egress.
     async def test_recovery_requires_authenticated_switchboard_before_provider(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

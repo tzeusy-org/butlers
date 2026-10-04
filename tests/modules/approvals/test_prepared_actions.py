@@ -72,6 +72,7 @@ def _prepared_kwargs(**overrides: object) -> dict:
     return kwargs
 
 
+# Spec: REQ-approval-delivery-intent-recovery-010; default-off prepared action remains silent without recovery rows.
 async def test_park_prepared_action_stays_default_off_and_never_pushes(pool) -> None:
     """Default-off admission preserves the silent prepared row without recovery state."""
     kwargs = _prepared_kwargs()
@@ -102,6 +103,7 @@ async def test_park_prepared_action_stays_default_off_and_never_pushes(pool) -> 
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-010; enabled prepared admission is collapsed, standalone and non-sendable.
 async def test_enabled_prepared_action_atomically_uses_non_sendable_delivery_protocol(pool) -> None:
     """Enabled admission creates one standalone collapsed presentation and no push."""
     await pool.execute(
