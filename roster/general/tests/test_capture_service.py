@@ -108,6 +108,21 @@ async def test_rollback_unknown_lineage_and_unsupported_owner(service, capture_p
     assert (
         await svc.process_one(positive.capture_id, owner="general", kind="fact")
     ).disposition == "routed"
+    from butlers.core.capture import VerifiedAuthority, canonical_intake
+
+    refs = [{"source_id": str(uuid.uuid4()), "attachment_id": str(uuid.uuid4())}]
+    ref_auth = authority(epoch)
+    ref_auth = VerifiedAuthority(
+        ref_auth.principal_id,
+        ref_auth.source_occurrence,
+        ref_auth.source_occurred_at,
+        epoch.generation,
+        canonical_intake("Synthetic capture", refs)[1],
+    )
+    ref_capture = await svc.admit(ref_auth, "Synthetic capture", references=refs)
+    ref_result = await svc.process_one(ref_capture.capture_id, owner="general", kind="fact")
+    assert ref_result.disposition == "held" and ref_result.category == "source_unavailable"
+    assert await svc.verify(ref_result.operation_id) is None
     unsupported = await svc.admit(authority(epoch), "Synthetic capture")
 
     async def forbidden(*args, **kwargs):
