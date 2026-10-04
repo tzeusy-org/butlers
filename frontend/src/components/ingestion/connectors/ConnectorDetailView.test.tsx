@@ -723,12 +723,14 @@ describe('[bu-5ywn2] Routing rules section', () => {
     expect(container.textContent).toContain('block')
   })
 
-  it('rule rows link to /ingestion/filters', () => {
-    renderDetail(root, BASE_CONNECTOR, { routingRules: MOCK_RULES })
+  it('rule rows link to their exact URL-encoded rule on Filters', () => {
+    renderDetail(root, BASE_CONNECTOR, { routingRules: {
+      ...MOCK_RULES, rules: MOCK_RULES.rules.map((rule) => ({ ...rule, id: 'rule /+#?%' })),
+    } })
     const list = container.querySelector('[data-testid="routing-rules-list"]')
     const link = list?.querySelector('a')
     expect(link).not.toBeNull()
-    expect(link?.getAttribute('href')).toBe('/ingestion/filters')
+    expect(link?.getAttribute('href')).toBe('/ingestion/filters?rule=rule%20%2F%2B%23%3F%25')
   })
 
   // Skip-aware histogram: degraded note (bu-c48im)

@@ -45,6 +45,8 @@ export interface GateSectionProps {
   rulesLoading?: boolean
   rulesError?: boolean
   onRetryRules?: () => void
+  linkedRuleId?: string | null
+  onLinkedRowReady?: (row: HTMLElement) => void
   onToggleRule?: (id: string, enabled: boolean) => void
   onEditRule?: (id: string) => void
   onDeleteRule?: (id: string) => void
@@ -60,6 +62,8 @@ export function GateSection({
   rulesLoading = false,
   rulesError = false,
   onRetryRules,
+  linkedRuleId,
+  onLinkedRowReady,
   onToggleRule,
   onEditRule,
   onDeleteRule,
@@ -139,6 +143,8 @@ export function GateSection({
             <RuleRow
               key={rule.id}
               rule={rule}
+              linked={rule.id === linkedRuleId}
+              onLinkedRowReady={onLinkedRowReady}
               onToggle={onToggleRule}
               onEdit={onEditRule}
               onDelete={onDeleteRule}
