@@ -10,7 +10,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from butlers.core.approval_delivery_authority import verify_switchboard_recovery
+from butlers.core.approval_delivery_authority import (
+    guard_registered_approval_tool,
+    verify_switchboard_recovery,
+)
 from butlers.modules.base import group_enabled
 
 
@@ -149,6 +152,24 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     # Notification delivery tools
     # =================================================================
 
+    async def preauthorize_deliver(arguments: dict[str, Any]) -> dict[str, Any] | None:
+        payload = arguments.get("notify_request")
+        if not isinstance(payload, dict) or payload.get("recovery") is None:
+            return None
+        trusted = await verify_switchboard_recovery(module, payload)
+        if (
+            trusted is None
+            or trusted.issuer != arguments.get("source_butler")
+            or not callable(getattr(module, "_approval_recovery_call", None))
+        ):
+            return {
+                "status": "failed",
+                "error": "Approval recovery authority rejected.",
+                "retryable": False,
+            }
+        return None
+
+    @guard_registered_approval_tool(mcp, preauthorize_deliver)
     @_tool("routing")
     async def deliver(
         channel: str | None = None,

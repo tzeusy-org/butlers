@@ -8,8 +8,10 @@ process deployments, or model children. Construction does not start workers.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import hmac
+import inspect
 import json
 import os
 import secrets
@@ -28,6 +30,7 @@ import uvicorn
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server.dependencies import get_http_request
+from fastmcp.tools.function_tool import FunctionTool
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from butlers.core.approval_delivery_transport import (
@@ -42,6 +45,51 @@ _PRINCIPAL_SCOPE = "butlers.approval_peer"
 _SWITCHBOARD_AUDIENCE = "switchboard:approval-recovery"
 _MESSENGER_AUDIENCE = "messenger:approval-recovery"
 _REFUSAL = "Approval recovery authority rejected."
+
+
+def guard_registered_approval_tool(
+    mcp: Any,
+    preauthorize: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]],
+) -> Callable:
+    """Put approval admission outside the actual registration proxy.
+
+    The owned source registration applies this after the generic proxy has
+    constructed its FunctionTool. The public registry and companion retain
+    that real proxy, but call it only after privileged preauthorization.
+    Ordinary traffic reaches the existing instrumentation unchanged.
+    """
+
+    def decorate(registered: Any) -> Any:
+        # Minimal registration stubs expose only the business function. That
+        # function retains its own fail-closed checks; it has no outer proxy.
+        if not callable(getattr(mcp, "add_tool", None)) or (
+            not isinstance(registered, FunctionTool)
+            and getattr(registered, "__fastmcp__", None) is None
+        ):
+            return registered
+        original = registered.fn if isinstance(registered, FunctionTool) else registered
+        signature = inspect.signature(original)
+
+        @functools.wraps(original)
+        async def admitted(*args: Any, **kwargs: Any) -> Any:
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            refusal = await preauthorize(dict(bound.arguments))
+            if refusal is not None:
+                return refusal
+            result = original(*args, **kwargs)
+            return await result if inspect.isawaitable(result) else result
+
+        if isinstance(registered, FunctionTool):
+            tool = registered.model_copy(update={"fn": admitted})
+        else:
+            tool = FunctionTool.from_function(
+                admitted, metadata=getattr(registered, "__fastmcp__", None)
+            )
+        mcp.add_tool(tool)
+        return registered
+
+    return decorate
 
 
 @dataclass(frozen=True, slots=True)

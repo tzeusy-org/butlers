@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import shutil
 import socket
 import sys
@@ -38,6 +39,7 @@ from butlers.core.approval_delivery_transport import RecoveryAuthorityError
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._routing import register_routing_tools
 from butlers.db import register_jsonb_codec
+from butlers.mcp_wrappers import _SpanWrappingMCP, _ToolCallLoggingMCP
 from butlers.migrations import _build_alembic_config
 from butlers.modules.approvals.delivery_lifecycle import (
     defer_pending_action,
@@ -94,6 +96,22 @@ def authority_db_url(postgres_container) -> str:
 @pytest.fixture
 async def authority_pools(authority_db_url):
     pools = {}
+    # Destructive disposable-fixture cleanup belongs to the migration owner.
+    # Bootstrap intentionally grants runtime DML, never TRUNCATE. All source
+    # admission, routing and ledger operations below retain owning SET ROLE.
+    cleanup = await asyncpg.connect(authority_db_url)
+    try:
+        await cleanup.execute(
+            "TRUNCATE relationship.approval_delivery_attempts, "
+            "relationship.approval_delivery_cohort_members, "
+            "relationship.approval_delivery_presentations, "
+            "relationship.approval_delivery_cohorts, "
+            "relationship.approval_delivery_intents, relationship.approval_events, "
+            "relationship.pending_actions, switchboard.notifications, "
+            "switchboard.message_inbox, messenger.approval_delivery_handoffs CASCADE"
+        )
+    finally:
+        await cleanup.close()
     async with AsyncExitStack() as stack:
         for schema in ("relationship", "switchboard", "messenger"):
 
@@ -137,11 +155,6 @@ async def authority_pools(authority_db_url):
                             await pool.fetchval(f"SELECT count(*) FROM {peer}.{peer_table}")
         source = pools["relationship"]
         await source.execute(
-            "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
-            "approval_delivery_presentations, approval_delivery_cohorts, "
-            "approval_delivery_intents, approval_events, pending_actions CASCADE"
-        )
-        await source.execute(
             "UPDATE approval_delivery_rollout SET admission_enabled=true, worker_enabled=false"
         )
         await source.execute(
@@ -170,7 +183,6 @@ async def authority_pools(authority_db_url):
             owner,
         )
         switchboard = pools["switchboard"]
-        await switchboard.execute("TRUNCATE notifications,message_inbox CASCADE")
         await switchboard.execute(
             "INSERT INTO butler_registry(name,endpoint_url,modules,last_seen_at,eligibility_state) "
             "VALUES ('relationship','http://localhost:41101/mcp','[\"approvals\"]'::jsonb,now(),'active'),"
@@ -178,7 +190,6 @@ async def authority_pools(authority_db_url):
             "ON CONFLICT(name) DO UPDATE SET last_seen_at=now(),eligibility_state='active'",
             _MESSENGER_URL,
         )
-        await pools["messenger"].execute("TRUNCATE approval_delivery_handoffs")
         yield pools
 
 
@@ -202,7 +213,7 @@ async def _registered_servers(pools):
     switchboard = default_registry().load_from_config({"switchboard": {"groups": ["routing"]}})[0]
     switchboard_mcp = FastMCP("actual-switchboard-registration")
     await switchboard.register_tools(
-        switchboard_mcp,
+        _SpanWrappingMCP(switchboard_mcp, "switchboard", module_name="switchboard"),
         SimpleNamespace(groups=["routing"]),
         SimpleNamespace(pool=pools["switchboard"]),
         "switchboard",
@@ -214,12 +225,13 @@ async def _registered_servers(pools):
         _modules=list(providers.values()),
     )
     messenger_mcp = FastMCP("actual-messenger-registration")
+    messenger_registration = _ToolCallLoggingMCP(messenger_mcp, "messenger", module_name="core")
     register_routing_tools(
         ToolContext(
             daemon, pools["messenger"], None, "messenger", ButlerType.STAFFER, False, True, None
         ),
-        messenger_mcp,
-        lambda *_args, **_kwargs: messenger_mcp.tool(),
+        messenger_registration,
+        lambda *_args, **_kwargs: messenger_registration.tool(),
     )
     return switchboard, switchboard_mcp, messenger_mcp, providers
 
@@ -334,6 +346,7 @@ _CASES = [
     "terminal-race",
     "defer-race",
     "lease-succession",
+    "forged-handoff-after-succession",
     "foreign-pid",
     "unavailable-verifier",
     "reconcile",
@@ -352,6 +365,24 @@ _CASES = [
 # REQ-butler-messenger-001, REQ-butler-messenger-002.
 @pytest.mark.parametrize("case", _CASES)
 async def test_registered_source_authority_transport(authority_pools, case, caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger="butlers.mcp_wrappers")
+    from butlers import mcp_wrappers
+
+    captures, spans = [], []
+    actual_capture, actual_span = mcp_wrappers.capture_tool_call, mcp_wrappers.tool_span
+
+    def observed_capture(**kwargs):
+        captures.append(copy.deepcopy(kwargs))
+        return actual_capture(**kwargs)
+
+    def observed_span(*args, **kwargs):
+        spans.append((args, kwargs))
+        return actual_span(*args, **kwargs)
+
+    # Observe the actual generic proxy without fabricating a session, token,
+    # admission result or tool-capture persistence context.
+    monkeypatch.setattr(mcp_wrappers, "capture_tool_call", observed_capture)
+    monkeypatch.setattr(mcp_wrappers, "tool_span", observed_span)
     pools = authority_pools
     source = SourceApprovalAdmission(
         ApprovalDeliveryRepository(pools["relationship"]), owning_schema="relationship"
@@ -400,6 +431,12 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
             forbidden += [
                 item["callback_token"] for item in payload["actions"] if "callback_token" in item
             ]
+            admitted_log_count = sum(
+                record.name == "butlers.mcp_wrappers" for record in caplog.records
+            )
+            assert admitted_log_count >= 4
+            assert len(captures) >= 4 and len(spans) >= 2
+            admitted_capture_count, admitted_span_count = len(captures), len(spans)
             changed = copy.deepcopy(payload)
             if case in {"ordinary-absent", "ordinary-null", "public-malformed"}:
                 if case == "ordinary-absent":
@@ -424,9 +461,18 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
                 if case == "public-malformed":
                     assert result["error"]["message"] == "Approval recovery authority rejected."
                     assert len(providers["telegram"].calls) == 1
+                    assert (
+                        sum(record.name == "butlers.mcp_wrappers" for record in caplog.records)
+                        == admitted_log_count
+                    )
                 else:
                     assert result["status"] == "ok"
                     assert len(providers["telegram"].calls) == 2
+                    assert len(captures) > admitted_capture_count
+                    assert (
+                        sum(record.name == "butlers.mcp_wrappers" for record in caplog.records)
+                        > admitted_log_count
+                    )
                 assert (
                     await pools["messenger"].fetchval(
                         "SELECT count(*) FROM approval_delivery_handoffs"
@@ -543,13 +589,17 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
                         hours=1,
                         actor="synthetic-authenticated-dashboard",
                     )
-            elif case == "lease-succession":
+            elif case in {"lease-succession", "forged-handoff-after-succession"}:
                 await pools["relationship"].execute(
                     "UPDATE approval_delivery_presentations SET claim_expires_at=now()-interval '1 second' WHERE id=$1",
                     claim.presentation_id,
                 )
                 successor = await repo.claim_next()
                 assert successor is not None and successor.claim_fence > claim.claim_fence
+                assert successor.reconcile_only
+                if case == "forged-handoff-after-succession":
+                    with pytest.raises(RecoveryAuthorityError):
+                        await source.mint(replace(successor, reconcile_only=False), payload)
             elif case == "unavailable-verifier":
                 await topology._verifiers["relationship"].endpoint.close()
             elif case == "foreign-pid":
@@ -583,7 +633,15 @@ asyncio.run(main())
                     proof=proof,
                 )
                 assert original["handoff"]["classification"] == "ambiguous"
-                claim = replace(claim, reconcile_only=True)
+                original_claim = claim
+                await pools["relationship"].execute(
+                    "UPDATE approval_delivery_presentations SET claim_expires_at=now()-interval '1 second' WHERE id=$1",
+                    original_claim.presentation_id,
+                )
+                claim = await repo.claim_next()
+                assert claim is not None and claim.reconcile_only
+                assert claim.presentation_key == original_claim.presentation_key
+                assert claim.claim_fence > original_claim.claim_fence
                 changed["recovery"]["operation"] = "reconcile"
                 changed["delivery"] = {
                     "intent": "approval_request",
@@ -637,6 +695,13 @@ asyncio.run(main())
                 }
                 ordinary_count = 2 if case in {"ordinary-absent", "ordinary-null"} else 1
                 assert sum(len(provider.calls) for provider in providers.values()) == ordinary_count
+                if ordinary_count == 1:
+                    assert (
+                        sum(record.name == "butlers.mcp_wrappers" for record in caplog.records)
+                        == admitted_log_count
+                    )
+                    assert len(captures) == admitted_capture_count
+                    assert len(spans) == admitted_span_count
                 assert (
                     await pools["messenger"].fetchval(
                         "SELECT count(*) FROM approval_delivery_handoffs"
@@ -663,6 +728,8 @@ asyncio.run(main())
             for sentinel in forbidden + minted_proofs:
                 assert sentinel not in persisted
                 assert sentinel not in caplog.text
+                if case not in {"ordinary-absent", "ordinary-null"}:
+                    assert sentinel not in repr(captures)
             assert (
                 await pools["relationship"].fetchval(
                     "SELECT worker_enabled FROM approval_delivery_rollout"

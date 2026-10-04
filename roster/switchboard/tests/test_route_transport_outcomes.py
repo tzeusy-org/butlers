@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.core.approval_delivery_transport import TrustedRecoveryContext
 from butlers.tools.switchboard.notification.deliver import deliver
 from butlers.tools.switchboard.routing.route import route
 from butlers.tools.switchboard.routing.transport import (
@@ -825,7 +826,13 @@ class TestDeliverPostSendBookkeeping:
                 pool,
                 notify_request=_recovery_envelope(),
                 source_butler="relationship",
-                trusted_source="relationship",
+                verified_context=TrustedRecoveryContext.from_internal_dict(
+                    {
+                        "issuer": "relationship",
+                        "owning_schema": "relationship",
+                        **_recovery_envelope()["recovery"],
+                    }
+                ),
             )
 
         expected_target.assert_called_once_with("relationship")
@@ -879,7 +886,13 @@ class TestDeliverPostSendBookkeeping:
                 pool,
                 notify_request=_recovery_envelope(),
                 source_butler="relationship",
-                trusted_source="relationship",
+                verified_context=TrustedRecoveryContext.from_internal_dict(
+                    {
+                        "issuer": "relationship",
+                        "owning_schema": "relationship",
+                        **_recovery_envelope()["recovery"],
+                    }
+                ),
             )
 
         assert result == {
@@ -924,7 +937,13 @@ class TestDeliverPostSendBookkeeping:
                 pool,
                 notify_request=_recovery_envelope(),
                 source_butler="relationship",
-                trusted_source="relationship",
+                verified_context=TrustedRecoveryContext.from_internal_dict(
+                    {
+                        "issuer": "relationship",
+                        "owning_schema": "relationship",
+                        **_recovery_envelope()["recovery"],
+                    }
+                ),
             )
 
         assert result == {"status": "recovery", "handoff": {"classification": "confirmed"}}

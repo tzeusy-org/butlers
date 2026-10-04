@@ -20,7 +20,7 @@ class _StubMCP:
         return _decorator
 
 
-async def test_registered_deliver_authenticates_only_material_recovery(monkeypatch):
+async def test_registered_deliver_authenticates_only_material_recovery(monkeypatch, caplog):
     from butlers.modules._roster_switchboard import tools
 
     pool = object()
@@ -66,3 +66,52 @@ async def test_registered_deliver_authenticates_only_material_recovery(monkeypat
     authenticate.assert_awaited_once()
     assert deliver.await_args.kwargs["verified_context"] is None
     assert result["error"] == "Approval recovery authority rejected."
+
+    # The real registration proxy logs before the business handler. Exercise
+    # its actual FunctionTool, so an inner-only guard cannot satisfy this gate.
+    from fastmcp import Client, FastMCP
+
+    from butlers.mcp_wrappers import _SpanWrappingMCP
+
+    caplog.set_level("INFO", logger="butlers.mcp_wrappers")
+    registered = FastMCP("registered-approval-boundary")
+    tools.register_tools(
+        _SpanWrappingMCP(registered, "switchboard", module_name="switchboard"),
+        SimpleNamespace(_get_pool=lambda: pool),
+        SimpleNamespace(groups=["routing"]),
+    )
+    async with Client(registered) as client:
+        positive = (
+            await client.call_tool(
+                "deliver",
+                {
+                    "source_butler": "health",
+                    "notify_request": ordinary,
+                },
+            )
+        ).data
+        assert positive == {"status": "sent"}
+        positive_logs = len(caplog.records)
+        assert any(record.name == "butlers.mcp_wrappers" for record in caplog.records)
+        calls_before_refusal = deliver.await_count
+        refused = (
+            await client.call_tool(
+                "deliver",
+                {
+                    "source_butler": "relationship",
+                    "notify_request": material,
+                },
+            )
+        ).data
+        assert refused["error"] == "Approval recovery authority rejected."
+        assert deliver.await_count == calls_before_refusal
+        assert len(caplog.records) == positive_logs
+
+    # A post-registration guard must never introduce a group-disabled tool.
+    disabled = FastMCP("routing-disabled")
+    tools.register_tools(
+        _SpanWrappingMCP(disabled, "switchboard", module_name="switchboard"),
+        SimpleNamespace(_get_pool=lambda: pool),
+        SimpleNamespace(groups=["lifecycle"]),
+    )
+    assert "deliver" not in {tool.name for tool in await disabled.list_tools()}

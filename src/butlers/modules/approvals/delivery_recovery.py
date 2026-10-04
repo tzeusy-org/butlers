@@ -121,6 +121,17 @@ class ApprovalDeliveryRepository:
                AND p.subject_kind = $7 AND p.subject_key = $8
                AND p.state = 'handoff_started'
                AND p.claim_expires_at > clock_timestamp()
+               AND EXISTS (
+                   SELECT 1 FROM approval_delivery_attempts AS started
+                   WHERE started.presentation_id = p.id
+                     AND started.presentation_generation = p.presentation_generation
+                     AND started.attempt_number = p.attempt_count
+                     AND started.outcome = 'started'
+                     AND (
+                         (NOT $10 AND started.claim_fence = p.claim_fence)
+                         OR ($10 AND started.claim_fence < p.claim_fence)
+                     )
+               )
                AND ($10 OR NOT EXISTS (
                    SELECT 1 FROM approval_delivery_presentations AS successor
                    WHERE successor.subject_key = p.subject_key

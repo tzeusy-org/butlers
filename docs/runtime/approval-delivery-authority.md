@@ -38,7 +38,10 @@ code, never an MCP tool. It takes the worker's local fenced claim and exact
 notification. `authorize_transport` checks the actual owning schema and
 `SET ROLE` identity, live handoff-started lease/token/fence, immutable subject,
 presentation generation/key/mode, and the admitted pending action or eligible
-cohort-member relationship. A terminal or expired action cannot mint or verify
+cohort-member relationship. The stored provider-start attempt must match the
+current fence for handoff; a higher reclaimed fence permits reconciliation
+only. A private claim's operation flag cannot override that durable boundary.
+A terminal or expired action cannot mint or verify
 send authority. A successor presentation created by defer excludes an old
 generation from a new handoff delegation. Reconcile retains the old tuple and
 cannot perform a speculative resend.
@@ -72,7 +75,13 @@ an unavailable reconciliation capability never authorizes a blind resend.
 ## Composition and cleanup
 
 The opt-in topology receives already registered source, Switchboard and
-Messenger objects and the expected registry target. `runtime(source, ...)`
+Messenger objects and the expected registry target. Owned source registration
+places privileged preauthorization outside the actual registered FunctionTool
+proxy, on both public and protected ingress. Admitted recovery and ordinary
+calls retain the original span, logging and sanitized capture instrumentation;
+rejected recovery does not enter those wrappers. Tool group exclusions remain
+unchanged. The companion copies this guarded registered tool, not an unwrapped
+business handler. `runtime(source, ...)`
 returns a dormant `ApprovalRecoveryRuntime` with the protected dispatch; it
 does not attach it to a daemon. Normal daemon startup does not construct this
 topology. Operational activation and its canary remain separate rollout gates.
@@ -87,7 +96,8 @@ same cleanup. It refuses existing paths instead of deleting another listener.
 `tests/integration/test_approval_delivery_authority_transport.py` owns the
 registered local source → protected verifier → Switchboard → Messenger →
 synthetic provider gate. It uses actual migrations, bootstrap replay, owning
-`SET ROLE` pools, positive admitted action/cohort controls, adversarial proofs
+`SET ROLE` pools (with disposable cleanup by the migration owner), actual
+generic registration proxies, positive admitted action/cohort controls, adversarial proofs
 and PID checks, ordinary TCP compatibility, tuple deduplication and post-start
 uncertainty. It never injects `get_access_token` or trusted source DTOs as
 authority. Its PostgreSQL cases require actual execution; collection or a
