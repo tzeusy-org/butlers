@@ -63,6 +63,8 @@ def _register(butler_name: str = "finance", switchboard_client=None) -> dict[str
     return registered
 
 
+# Spec: REQ-fleet-case-file-008
+# Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
 def test_all_fleet_case_tools_registered_for_a_domain_butler():
     registered = _register(butler_name="finance")
     assert set(registered) == {
@@ -76,6 +78,8 @@ def test_all_fleet_case_tools_registered_for_a_domain_butler():
     }
 
 
+# Spec: REQ-fleet-case-file-008
+# Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
 def test_all_fleet_case_tools_also_registered_for_switchboard():
     """Unlike domain_events/delegation, fleet_cases tools are NOT STAFFER-excluded:
     Switchboard is the sole write authority and needs them registered on its
@@ -137,6 +141,8 @@ class TestOpenCase:
         result = await registered["open_case"](correlation_key="dup-key")
         assert result == {"status": "error", "error": "An open case already exists"}
 
+    # Spec: REQ-fleet-case-file-008
+    # Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
     async def test_non_switchboard_forwards_through_switchboard_route(self, monkeypatch):
         registered = _register(butler_name="finance", switchboard_client=object())
         dispatch_mock = AsyncMock(return_value=({"status": "ok", "case": _CASE}, None, False))
@@ -162,6 +168,8 @@ class TestOpenCase:
 
 
 class TestContributeCaseEvidence:
+    # Spec: REQ-fleet-case-file-004
+    # Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
     async def test_never_dispatches_and_attributes_to_the_calling_butler(self, monkeypatch):
         registered = _register(butler_name="finance")
         evidence_row = {"id": "e1", "case_id": _CASE_ID, "contributor": "finance"}
@@ -199,6 +207,8 @@ class TestContributeCaseEvidence:
         assert attention_kwargs["posture"] == _CASE["posture"]
         assert attention_kwargs["state"] == _CASE["state"]
 
+    # Spec: REQ-fleet-case-file-009
+    # Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
     async def test_repeat_contribution_skips_the_attention_check(self, monkeypatch):
         """A no-op re-report (newly_recorded=False) cannot itself trigger a
         quiet-hours bypass -- evaluating it again would let a single
@@ -238,6 +248,8 @@ class TestContributeCaseEvidence:
         )
         assert result == {"status": "error", "error": "No fleet case with id='bogus'."}
 
+    # Spec: REQ-fleet-case-file-013
+    # Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
     async def test_linkable_kind_writes_the_link_directly_on_switchboard(self, monkeypatch):
         """RFC 0032 Slice 7: a newly-recorded contribution whose kind is one
         of LINK_KINDS also binds the case to that ledger entry."""
@@ -311,6 +323,8 @@ class TestContributeCaseEvidence:
             "ref": "condition-1",
         }
 
+    # Spec: REQ-fleet-case-file-013
+    # Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
     async def test_urgent_bypass_with_a_ledger_id_also_writes_an_attention_record_link(
         self, monkeypatch
     ):
@@ -349,6 +363,8 @@ class TestContributeCaseEvidence:
             "ref": "attn-1",
         }
 
+    # Spec: REQ-fleet-case-file-013
+    # Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
     async def test_bypass_without_a_ledger_id_writes_no_link(self, monkeypatch):
         """record_attention_event is best-effort and can return None; a
         missing ledger id must never be passed to write_case_link as a
@@ -411,6 +427,8 @@ class TestProposeCasePosture:
         # attention_result has no attention_ledger_id -- no link write attempted.
         write_link_mock.assert_not_awaited()
 
+    # Spec: REQ-fleet-case-file-013
+    # Partial fake-registration/patched-handler behavior; not real MCP/SQL proof.
     async def test_switchboard_bypass_with_a_ledger_id_writes_an_attention_record_link(
         self, monkeypatch
     ):

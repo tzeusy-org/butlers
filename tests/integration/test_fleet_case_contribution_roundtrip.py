@@ -204,6 +204,8 @@ async def _delete_owner_conditions(bootstrap_url: str, *, source: str) -> None:
         await conn.close()
 
 
+# Spec: REQ-fleet-case-file-001, REQ-fleet-case-file-002
+# Direct real-PG helper/storage seam; not registered transport/genuine-ref proof.
 async def test_lifecycle_via_switchboard_role_with_two_contributing_butlers(
     db_url: str, bootstrap_url: str
 ) -> None:
@@ -299,6 +301,8 @@ async def test_non_switchboard_role_cannot_write_fleet_cases_at_the_data_layer(
         await _delete_case(bootstrap_url, "test:rls-refusal-key-2")
 
 
+# Spec: REQ-fleet-case-file-012
+# Direct real-PG helper/storage seam; not registered transport/genuine-ref proof.
 async def test_write_case_link_covers_all_three_link_kinds_and_is_idempotent(
     db_url: str, bootstrap_url: str
 ) -> None:
@@ -381,6 +385,8 @@ async def test_non_switchboard_role_cannot_write_fleet_case_links_at_the_data_la
         await _delete_case(bootstrap_url, "test:link-rls-refusal-key")
 
 
+# Spec: REQ-fleet-case-file-010
+# Direct real-PG helper/storage seam; not registered transport/genuine-ref proof.
 async def test_lapse_sweep_only_closes_genuinely_stale_silent_or_routine_cases(
     db_url: str, bootstrap_url: str
 ) -> None:
@@ -473,6 +479,8 @@ async def test_lapse_sweep_only_closes_genuinely_stale_silent_or_routine_cases(
             await _delete_case(bootstrap_url, key)
 
 
+# Spec: REQ-fleet-case-file-011
+# Direct real-PG helper/storage seam; not registered transport/genuine-ref proof.
 async def test_backfill_historical_case_is_idempotent_against_real_postgres(
     db_url: str, bootstrap_url: str
 ) -> None:
@@ -551,6 +559,8 @@ async def test_closed_backfilled_row_can_share_a_correlation_key_with_an_active_
         await _delete_case(bootstrap_url, key)
 
 
+# Spec: REQ-fleet-case-file-011
+# Direct real-PG helper/storage seam; not registered transport/genuine-ref proof.
 async def test_backfill_from_owner_conditions_creates_closed_cases_and_reruns_idempotently(
     db_url: str, bootstrap_url: str
 ) -> None:
@@ -634,6 +644,8 @@ async def test_backfill_from_owner_conditions_creates_closed_cases_and_reruns_id
         await _delete_case(bootstrap_url, resolved_key)
 
 
+# Spec: REQ-fleet-case-file-009
+# Direct real-PG advisory-lock concurrency; no registered eligibility/provider proof.
 async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly_one_bypass(
     pool: asyncpg.Pool,
 ) -> None:
@@ -726,6 +738,8 @@ async def test_evaluate_case_attention_concurrent_same_dedup_key_records_exactly
         await pool.execute("DELETE FROM public.attention_ledger WHERE dedup_key = $1", dedup_key)
 
 
+# Spec: REQ-fleet-case-file-009
+# Direct real-PG advisory-lock concurrency; no registered eligibility/provider proof.
 async def test_evaluate_case_attention_different_dedup_keys_do_not_contend(
     pool: asyncpg.Pool,
 ) -> None:
