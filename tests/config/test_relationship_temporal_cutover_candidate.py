@@ -130,6 +130,14 @@ class CandidateDB:
     birth: dict
 
 
+def _execute_bootstrap_sql(conn):
+    # The existing migration bootstrap also uses the raw DBAPI cursor. Omitting
+    # the parameter argument preserves PostgreSQL format('%I', ...) literally;
+    # SQLAlchemy's empty parameter mapping makes psycopg2 reinterpret it.
+    with conn.connection.cursor() as cursor:
+        cursor.execute(init_db_sql_for_dbapi())
+
+
 def _bootstrap(db, *, narrow=True, after_grants=None):
     """Actual init-db SQL and explicit candidate hook, one transaction."""
     with db.bootstrap.begin() as conn:
@@ -137,7 +145,7 @@ def _bootstrap(db, *, narrow=True, after_grants=None):
             text("SELECT set_config('butlers.connecting_user', :role, true)"),
             {"role": db.migration_role},
         )
-        conn.exec_driver_sql(init_db_sql_for_dbapi())
+        _execute_bootstrap_sql(conn)
         if after_grants:
             after_grants(conn)
         if narrow:
@@ -239,7 +247,7 @@ def _comment(db, value, *, birth=False):
         conn.execute(text(f"COMMENT ON {target} IS :comment"), {"comment": _encoded(value)})
 
 
-def test_source_creation_and_actual_normal_role_catalog_visibility(candidate_db):
+def _assert_source_creation_and_actual_normal_role_catalog_visibility(candidate_db):
     db = candidate_db
     with pytest.raises(CandidateRefusal, match="^candidate_creation_refused$"):
         create_candidate_database(db.control, db.name, db.migration_role)
@@ -267,7 +275,7 @@ def test_source_creation_and_actual_normal_role_catalog_visibility(candidate_db)
             ).scalar_one() == _encoded(db.birth)
 
 
-def test_actual_migration_session_consumes_once_and_replay_is_atomic(candidate_db):
+def _assert_actual_migration_session_consumes_once_and_replay_is_atomic(candidate_db):
     with _bound(candidate_db) as (conn, binding, proof):
         consume_candidate_binding(conn, binding, proof)
         with pytest.raises(CandidateRefusal, match="^candidate_replay_refused$"):
@@ -363,6 +371,19 @@ def test_consume_index_and_synthetic_stamp_share_real_rollback(candidate_db):
         conn.execute(
             text("UPDATE relationship.alembic_version SET version_num=:stamp"), {"stamp": old_stamp}
         )
+        # Existing migration/database-owner authority can erase its own fact
+        # history and the real evidence cascade. The protected ledger does not
+        # claim to detect this trusted historical-erasure residual.
+        deleted = conn.execute(
+            text(
+                "DELETE FROM relationship.entity_facts WHERE subject=:id AND validity='retracted'"
+            ),
+            {"id": subject},
+        ).rowcount
+        assert deleted == 1
+    remaining = history_snapshot()
+    assert len(remaining[0]) == len(remaining[1]) == 2
+    assert _consumed(db, binding) == 1
 
 
 @pytest.mark.parametrize("role", [None, "butler_relationship_rw"])
@@ -409,7 +430,7 @@ def test_normal_database_owner_and_own_role_cannot_forge_protected_objects(candi
     )
 
 
-def test_every_missing_claim_and_wrong_expected_binding_refuses(candidate_db):
+def _assert_every_missing_claim_and_wrong_expected_binding_refuses(candidate_db):
     proof = _proof()
     for key in proof:
         incomplete = {k: v for k, v in proof.items() if k != key}
@@ -456,6 +477,7 @@ def test_every_missing_claim_and_wrong_expected_binding_refuses(candidate_db):
 
 
 def test_actual_binding_revision_fence_expiry_and_full_xid_controls(candidate_db):
+    _assert_every_missing_claim_and_wrong_expected_binding_refuses(candidate_db)
     db = candidate_db
     mutations = [
         ("purpose", "rollback_before_first_temporal_write", "candidate_binding_mismatch"),
@@ -483,6 +505,7 @@ def test_actual_binding_revision_fence_expiry_and_full_xid_controls(candidate_db
 
 
 def test_binding_cannot_cross_connections_epochs_or_foreign_runtime_roles(candidate_db):
+    _assert_actual_migration_session_consumes_once_and_replay_is_atomic(candidate_db)
     db = candidate_db
     with db.migration.begin() as original:
         challenge = candidate_session_challenge(original)
@@ -665,7 +688,7 @@ def test_durable_birth_survives_interrupted_bootstrap_and_committed_partial_resu
                     text("SELECT set_config('butlers.connecting_user', :role, true)"),
                     {"role": db.migration_role},
                 )
-                conn.exec_driver_sql(init_db_sql_for_dbapi())
+                _execute_bootstrap_sql(conn)
                 raise RuntimeError("synthetic_bootstrap_interruption")
         with db.bootstrap.connect() as conn:
             assert conn.execute(
@@ -684,6 +707,7 @@ def test_durable_birth_survives_interrupted_bootstrap_and_committed_partial_resu
         assert _read(db, "SELECT version_num FROM relationship.alembic_version") == "rel_036"
         # A genuine protected birth copied from another actual migrated target
         # must fail despite the correct protected object owner and body.
+        _assert_source_creation_and_actual_normal_role_catalog_visibility(db)
         _comment(db, candidate_db.birth, birth=True)
         with _bound(db) as (conn, binding, proof):
             with pytest.raises(CandidateRefusal, match="^candidate_birth_invalid$"):

@@ -98,6 +98,12 @@ their names or ACL text. A writable body/comment lookalike on a separate real
 migrated target must refuse. Protected object absence must also refuse; it is
 never freshness authority.
 
+The existing migration/database owner can erase its own fact/history rows and
+their real evidence cascades; the harness positively demonstrates that retained
+authority after the atomicity assertions. The protected ledger is not a
+fact-history integrity boundary and does not infer historical detection from
+its own unchanged birth comment.
+
 The existing privileged bootstrap actor and host remain trusted. That actor
 can erase a committed ledger nonce and mint another session binding, drop and
 recreate objects, or restore a database. The harness positively demonstrates
