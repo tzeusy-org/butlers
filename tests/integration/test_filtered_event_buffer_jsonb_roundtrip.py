@@ -54,11 +54,12 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain — connectors.filtered_events."""
+    """Actual heads for filtered rows, runtime registry and contact-query SQL."""
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["core"],
+        chains=["core", "switchboard", "relationship"],
+        schemas={"switchboard": "switchboard", "relationship": "relationship"},
     )
 
 
@@ -278,7 +279,9 @@ def _known_drop_payload(message_id: str, *, marked: bool) -> dict:
 
 
 @pytest.mark.pg_clock
-async def test_dropped_known_summary_counts_open_marked_drops_only(pool: asyncpg.Pool) -> None:
+async def test_dropped_known_summary_counts_open_marked_drops_only(
+    pool: asyncpg.Pool, migrated_db_url: str, monkeypatch, caplog
+) -> None:
     """Marked, still-unanswered drops count; unmarked, replayed and pending ones do not,
     and one (rule, sender) pair is a single episode however many messages it dropped."""
     buf = FilteredEventBuffer(
@@ -308,6 +311,115 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(pool: asyncpg
     summary = await ingestion_dropped_known_summary(pool, from_dt=datetime(2000, 1, 1, tzinfo=UTC))
 
     assert summary == {"dropped": 3, "episodes": 2}
+
+    # bu-q7vx1q.43 V3 baseline: preserve the original marked-count positive,
+    # then isolate one actual drop whose first contact query cannot execute.
+    # No new snapshot/context API is a prerequisite of this counterexample.
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastapi import FastAPI
+
+    from butlers.api.db import DatabaseManager
+    from butlers.api.routers.ingestion_events import _get_db_manager, router
+    from butlers.connectors.gmail import GmailConnectorConfig, GmailConnectorRuntime
+    from butlers.connectors.gmail_policy import GmailPolicyEvaluator
+
+    await pool.execute("TRUNCATE TABLE connectors.filtered_events")
+    # A real successful empty read also proves that the contact schema/query
+    # is usable; the failure below is the deliberately closed second pool.
+    empty_evaluator = GmailPolicyEvaluator(pool)
+    assert await empty_evaluator.get_known_contacts() == frozenset()
+    assert empty_evaluator._cache_loaded_at > float("-inf"), (
+        "An empty return after a swallowed SQL failure is not a successful-empty positive"
+    )
+    contact_pool = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=1, init=register_jsonb_codec
+    )
+    await contact_pool.close()
+    registry_pool = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard, public"},
+    )
+    try:
+        runtime = GmailConnectorRuntime(
+            GmailConnectorConfig(
+                switchboard_mcp_url="http://switchboard.example.test/unused",
+                connector_endpoint_identity="gmail:user:availability@example.test",
+                gmail_client_id="synthetic-client-id",
+                gmail_client_secret="synthetic-client-secret",
+                gmail_refresh_token="synthetic-refresh-token",
+            ),
+            db_pool=contact_pool,
+        )
+        # Only provider responses are synthetic. Actual evaluator, handler,
+        # label policy, buffering, codec, aggregate and API code remain wired.
+        monkeypatch.setattr(runtime, "_fetch_sent_message_ids", AsyncMock(return_value=frozenset()))
+        monkeypatch.setattr(
+            runtime,
+            "_fetch_message",
+            AsyncMock(
+                return_value={
+                    "id": "m-classification-unavailable",
+                    "threadId": "synthetic-thread",
+                    "internalDate": "1708000000000",
+                    "labelIds": ["SPAM"],
+                    "payload": {
+                        "headers": [
+                            {"name": "From", "value": "stranger@example.test"},
+                            {"name": "Subject", "value": "Synthetic filtered message"},
+                        ],
+                        "mimeType": "text/plain",
+                        "body": {"data": ""},
+                    },
+                }
+            ),
+        )
+        await runtime._refresh_policy_tier_assigner()
+        assert any(
+            record.name == "butlers.connectors.gmail_policy"
+            and "DB refresh failed" in record.getMessage()
+            for record in caplog.records
+        ), "The actual first contact query must reach its DB exception path"
+        await runtime._ingest_single_message("m-classification-unavailable")
+        assert len(runtime._filtered_event_buffer) == 1
+        await runtime._filtered_event_buffer.flush(pool)
+        async with pool.acquire() as readback:
+            row = await readback.fetchrow(
+                "SELECT status, jsonb_typeof(full_payload) AS kind, full_payload "
+                "FROM connectors.filtered_events WHERE external_message_id = $1",
+                "m-classification-unavailable",
+            )
+        assert row is not None
+        assert row["status"] == "filtered"
+        assert row["kind"] == "object"
+        assert row["full_payload"]["payload"]["raw"] == {}
+
+        manager = DatabaseManager()
+        manager._shared_pool = pool
+        manager._pools["switchboard"] = registry_pool
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[_get_db_manager] = lambda: manager
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://dashboard.example.test"
+        ) as client:
+            response = await client.get("/api/ingestion/events/dropped-known?window=24h")
+        assert response.status_code == 200
+        result = response.json()
+        assert result["dropped"] == 0
+        assert result["episodes"] == 0
+        # FIRST causal assertion: today's readable zero loses the DB-failure
+        # history. Future classification keys/epoch helpers are not needed.
+        assert result["available"] is False, (
+            "A persisted drop after an actual first contact-query failure is "
+            "unknown even when the filtered aggregate reads zero successfully"
+        )
+    finally:
+        await registry_pool.close()
 
 
 @pytest.mark.pg_clock

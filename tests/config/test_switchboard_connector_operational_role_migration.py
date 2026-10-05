@@ -460,6 +460,98 @@ def test_heartbeat_promotes_a_cursor_created_row(switchboard_db_url):
 
     assert _sw_row(switchboard_db_url, identity).startswith("(runtime_instance,")
 
+    # bu-q7vx1q.43 V4 baseline: retain the original role-ownership positive,
+    # then use the real producer and registered core wrapper with the codec
+    # configured by production pools. No new epoch/ACK helper is required.
+    from types import SimpleNamespace
+
+    from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+    from butlers.connectors.metrics import ConnectorMetrics
+    from butlers.core_tools._base import ToolContext
+    from butlers.core_tools._switchboard import register_switchboard_tools
+    from butlers.db import register_jsonb_codec
+
+    async def _round_trip_producer_capabilities() -> None:
+        pool = await asyncpg.create_pool(
+            switchboard_db_url,
+            min_size=1,
+            max_size=2,
+            init=register_jsonb_codec,
+            server_settings={"search_path": "switchboard, public"},
+        )
+        try:
+            registered = {}
+
+            def capture_tool(_group, **options):
+                def register(fn):
+                    registered[options.get("name", fn.__name__)] = fn
+                    return fn
+
+                return register
+
+            before_registration = set(asyncio.all_tasks())
+            register_switchboard_tools(
+                ToolContext(
+                    daemon=SimpleNamespace(_pipeline=None, _buffer=None),
+                    pool=pool,
+                    spawner=None,
+                    butler_name="switchboard",
+                    butler_type=None,
+                    is_switchboard=True,
+                    is_messenger=False,
+                    route_metrics=None,
+                ),
+                SimpleNamespace(),
+                capture_tool,
+            )
+            # Let the actual registration's unrelated policy load finish
+            # against the migrated schema before closing its real pool.
+            registration_tasks = set(asyncio.all_tasks()) - before_registration
+            await asyncio.gather(*registration_tasks)
+            transmitted = []
+            accepted = []
+
+            async def call_tool(name, arguments):
+                transmitted.append((name, arguments))
+                result = await registered[name](**arguments)
+                accepted.append(result)
+                return result
+
+            producer = ConnectorHeartbeat(
+                HeartbeatConfig(connector_type="gmail", endpoint_identity=identity),
+                SimpleNamespace(call_tool=call_tool),
+                ConnectorMetrics("gmail", identity),
+                get_health_state=lambda: ("healthy", None),
+                get_capabilities=lambda: {"backfill": True},
+            )
+            await producer._send_heartbeat()
+            assert len(transmitted) == 1
+            assert transmitted[0][0] == "connector.heartbeat"
+            assert transmitted[0][1]["capabilities"] == {"backfill": True}
+            assert len(accepted) == 1
+            assert accepted[0]["status"] == "accepted"
+            async with pool.acquire() as readback:
+                row = await readback.fetchrow(
+                    "SELECT operational_role, instance_id, jsonb_typeof(capabilities) AS kind, "
+                    "capabilities FROM switchboard.connector_registry "
+                    "WHERE connector_type = 'gmail' AND endpoint_identity = $1",
+                    identity,
+                )
+            assert row is not None
+            assert row["operational_role"] == "runtime_instance"
+            assert row["instance_id"] == producer.instance_id
+            # FIRST causal assertion: a string-shaped mock cannot prove this
+            # production-codec round-trip through the registered writer.
+            assert row["kind"] == "object", (
+                "Actual registered heartbeat capabilities must survive the "
+                "production JSONB codec as an object"
+            )
+            assert row["capabilities"] == {"backfill": True}
+        finally:
+            await pool.close()
+
+    asyncio.run(_round_trip_producer_capabilities())
+
 
 def test_save_cursor_never_demotes_a_runtime_instance(switchboard_db_url):
     """A live connector checkpointing under its own identity stays in the fleet."""
