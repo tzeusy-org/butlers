@@ -90,6 +90,10 @@ Approval companions use stateless JSON request/reply responses, with no SSE
 stream or dependency on process-global SSE drain state. Each client call has
 a ten-second deadline covering initialization, tool reply and client teardown;
 a missing reply fails closed without granting a retry or speculative resend.
+The companion's HTTP client disables separate HTTPX phase timers so the
+whole-call deadline governs instead of an implicit shorter read timeout.
+Both that deadline and HTTPX timeout exceptions normalize to the same
+content-blind `RecoveryAuthorityError`; no raw request or error URL is exposed.
 If that deadline expires after provider start, the worker records
 `ambiguous/provider_outcome_unknown` under its existing claim fence and clears
 the lease without scheduling a retry. The durable Messenger start marker is
@@ -119,7 +123,8 @@ authority. Its PostgreSQL cases require actual execution; collection or a
 Docker setup failure provides no behavior evidence. Each registered transport
 case has a 45-second deadline so missing initialization/replies fail visibly.
 The existing kernel-peer node also repeats fresh/reused three-companion
-lifecycles and checks an actual nonreplying handler's call deadline; that
+lifecycles, accepts a real six-second reply with production timeout defaults,
+and checks an actual nonreplying handler's call deadline; that
 PostgreSQL-free scope proves liveness, not source admission or ledger behavior.
 The Telegram uncertainty parameter separately holds its synthetic provider
 after both real owning-role start markers, observes the actual transport

@@ -141,12 +141,17 @@ async def test_recovery_transport_requires_kernel_peer_admission(tmp_path, monke
             assert module._approval_recovery_call is None
             assert module._approval_recovery_verifiers == {}
 
-    # An actual admitted peer whose handler never replies cannot hang call()
-    # indefinitely. Shorten only the owned deadline; library lifecycle stays real.
+    # Exercise production defaults before shortening the owned deadline. A
+    # valid reply between HTTPX's implicit five seconds and our ten-second
+    # deadline must succeed, rather than merely normalize an earlier refusal.
     from butlers.core import approval_delivery_authority
 
-    monkeypatch.setattr(approval_delivery_authority, "_CALL_TIMEOUT_SECONDS", 0.1)
     silent = FastMCP("silent-approval-peer")
+
+    @silent.tool()
+    async def delayed_reply() -> dict:
+        await asyncio.sleep(6)
+        return {"replied": True}
 
     @silent.tool()
     async def no_reply() -> dict:
@@ -159,6 +164,30 @@ async def test_recovery_transport_requires_kernel_peer_admission(tmp_path, monke
         audience="switchboard:approval-recovery",
         socket_path=tmp_path / "silent.sock",
     ) as silent_endpoint:
+        async with asyncio.timeout(12):
+            assert await silent_endpoint.call("delayed_reply", {}) == {"replied": True}
+        # Keep a real HTTPX phase timeout content-blind too. This test-only
+        # client policy forces the HTTP timeout family through the real socket;
+        # it does not install a principal, fake a reply or attest a source row.
+        original_client = approval_delivery_authority.httpx.AsyncClient
+
+        class PhaseBoundedClient(original_client):
+            def __init__(self, **kwargs):
+                kwargs["timeout"] = 0.1
+                super().__init__(**kwargs)
+
+        with monkeypatch.context() as phase_timeout:
+            phase_timeout.setattr(
+                approval_delivery_authority.httpx, "AsyncClient", PhaseBoundedClient
+            )
+            with pytest.raises(
+                RecoveryAuthorityError, match="Approval recovery authority rejected"
+            ):
+                async with asyncio.timeout(2):
+                    await silent_endpoint.call("no_reply", {})
+        # A nonreplying actual peer is bounded by the owned complete-call
+        # deadline. Library lifecycle and HTTP transport remain real.
+        monkeypatch.setattr(approval_delivery_authority, "_CALL_TIMEOUT_SECONDS", 0.1)
         with pytest.raises(RecoveryAuthorityError, match="Approval recovery authority rejected"):
             async with asyncio.timeout(2):
                 await silent_endpoint.call("no_reply", {})

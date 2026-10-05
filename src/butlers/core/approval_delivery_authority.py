@@ -244,6 +244,10 @@ class ProtectedApprovalMCP:
             # Never permit proxy/redirect or environment routing to replace the
             # bootstrap endpoint. Authority material is only an HTTP header.
             kwargs["follow_redirects"] = False
+            # The owned complete-call deadline covers every HTTP phase and
+            # teardown. Do not let HTTPX's implicit five-second read timeout
+            # refuse a valid reply earlier or bypass typed normalization.
+            kwargs["timeout"] = None
             return httpx.AsyncClient(
                 transport=httpx.AsyncHTTPTransport(uds=str(self._socket_path)),
                 trust_env=False,
@@ -261,7 +265,7 @@ class ProtectedApprovalMCP:
             async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
                 async with Client(transport) as client:
                     result = await client.call_tool(tool, arguments)
-        except TimeoutError:
+        except (TimeoutError, httpx.TimeoutException):
             raise RecoveryAuthorityError(_REFUSAL) from None
         if not isinstance(result.data, dict):
             raise RecoveryAuthorityError(_REFUSAL)
