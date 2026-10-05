@@ -22,7 +22,6 @@ from types import ModuleType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
 import pytest
 
 # The roster job modules are loaded dynamically via the root conftest using
@@ -164,9 +163,9 @@ async def _run_with_mocked_deps(
     The pool.fetch side_effect is set up to return different row sets for
     each call in order:
       1st call  → inbox groups (switchboard.message_inbox)
-      2nd call  → contact resolution (public.contact_info)
-      3rd call  → calendar events (public.calendar_events)
-      4th call  → calendar email resolution (public.contact_info)
+      2nd call  → contact resolution (relationship.entity_facts)
+      3rd call  → calendar events (relationship.calendar_events)
+      4th call  → calendar email resolution (relationship.entity_facts)
     """
     fetch_returns = [
         inbox_rows if inbox_rows is not None else [],
@@ -233,6 +232,7 @@ async def test_stats_contains_all_required_keys():
         "calendar_events_scanned",
         "co_attended_edges_minted",
         "knows_edges_minted",
+        "resolution_degraded",
         "errors",
     }
     assert required_keys.issubset(set(stats.keys()))
@@ -250,50 +250,6 @@ async def test_empty_inbox_logs_nothing():
     mock_log.assert_not_called()
     assert stats["logged"] == 0
     assert stats["processed"] == 0
-
-
-async def test_missing_calendar_table_is_skipped_without_error():
-    """Missing public.calendar_events should not increment errors."""
-    pool = _make_pool()
-    pool.fetch = AsyncMock(
-        side_effect=[
-            [],
-            asyncpg.exceptions.UndefinedTableError(
-                'relation "public.calendar_events" does not exist'
-            ),
-            [],  # knows-count query (Step 6) — empty, no edges minted
-        ]
-    )
-
-    mod = _get_rjobs()
-    run_fn = mod.run_interaction_sync
-
-    mock_log = AsyncMock(return_value={"id": str(uuid.uuid4()), "logged": True})
-    mock_state_get = AsyncMock(return_value=None)
-    mock_state_set = AsyncMock()
-
-    with (
-        patch.object(mod, "state_get", mock_state_get),
-        patch.object(mod, "state_set", mock_state_set),
-        patch(
-            "butlers.tools.relationship.interactions.interaction_log",
-            mock_log,
-        ),
-    ):
-        real_datetime = datetime
-
-        class _FixedDatetime(real_datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return _NOW.replace(tzinfo=tz) if tz else _NOW
-
-        with patch.object(mod, "datetime", _FixedDatetime):
-            stats = await run_fn(pool)
-
-    assert stats["calendar_events_scanned"] == 0
-    assert stats["errors"] == 0
-    assert pool.fetch.await_count == 3
-    mock_log.assert_not_called()
 
 
 async def test_checkpoint_read_failure_uses_default_window_without_raising(caplog):

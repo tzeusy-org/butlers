@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
-    ENTITY_PREDICATE_REGISTRY,
     PENDING_ACTIONS,
 )
 
@@ -1349,352 +1349,46 @@ async def test_insight_scan_origin_butler_is_relationship(provisioned_postgres_p
 
 
 # ---------------------------------------------------------------------------
-# Schema setup helpers for interaction sync
+# Synthetic data for real migrated interaction-sync fixtures
 # ---------------------------------------------------------------------------
 
-CREATE_PUBLIC_CONTACTS_SQL = """
-CREATE TABLE IF NOT EXISTS public.contacts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    first_name TEXT,
-    last_name TEXT,
-    nickname TEXT,
-    name TEXT,
-    company TEXT,
-    entity_id UUID,
-    stay_in_touch_days INT,
-    listed BOOLEAN NOT NULL DEFAULT true,
-    metadata JSONB NOT NULL DEFAULT '{}',
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-)
-"""
 
-CREATE_PUBLIC_CONTACT_INFO_SQL = """
-CREATE TABLE IF NOT EXISTS public.contact_info (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_id UUID NOT NULL REFERENCES public.contacts(id) ON DELETE CASCADE,
-    type VARCHAR NOT NULL,
-    value TEXT NOT NULL,
-    label VARCHAR,
-    is_primary BOOLEAN DEFAULT false,
-    secured BOOLEAN NOT NULL DEFAULT false,
-    parent_id UUID,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    CONSTRAINT uq_test_contact_info_type_value UNIQUE (type, value)
-)
-"""
-
-CREATE_PUBLIC_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id TEXT NOT NULL DEFAULT '',
-    canonical_name VARCHAR NOT NULL DEFAULT '',
-    name TEXT NOT NULL DEFAULT '',
-    entity_type VARCHAR NOT NULL DEFAULT 'other',
-    aliases TEXT[] NOT NULL DEFAULT '{}',
-    metadata JSONB DEFAULT '{}'::jsonb,
-    roles TEXT[] NOT NULL DEFAULT '{}',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_SWITCHBOARD_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS switchboard"
-
-CREATE_MESSAGE_INBOX_SQL = """
-CREATE TABLE IF NOT EXISTS switchboard.message_inbox (
-    id UUID NOT NULL DEFAULT gen_random_uuid(),
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
-    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    normalized_text TEXT NOT NULL DEFAULT '',
-    lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
-    schema_version TEXT NOT NULL DEFAULT 'message_inbox.v2',
-    direction TEXT NOT NULL DEFAULT 'inbound',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (received_at, id)
-)
-"""
-
-# Full facts schema for interaction sync tests — includes object_entity_id
-# which store_fact() requires (not present in the legacy CREATE_FACTS_SQL above).
-CREATE_FACTS_FULL_SQL = """
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject TEXT NOT NULL,
-    predicate TEXT NOT NULL,
-    content TEXT NOT NULL DEFAULT '',
-    embedding TEXT,
-    search_vector tsvector,
-    importance FLOAT NOT NULL DEFAULT 5.0,
-    confidence FLOAT NOT NULL DEFAULT 1.0,
-    decay_rate FLOAT NOT NULL DEFAULT 0.008,
-    permanence TEXT NOT NULL DEFAULT 'standard',
-    source_butler TEXT,
-    source_episode_id UUID,
-    supersedes_id UUID,
-    validity TEXT NOT NULL DEFAULT 'active',
-    scope TEXT NOT NULL DEFAULT 'global',
-    entity_id UUID,
-    object_entity_id UUID,
-    valid_at TIMESTAMPTZ,
-    reference_count INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_referenced_at TIMESTAMPTZ,
-    last_confirmed_at TIMESTAMPTZ,
-    tags JSONB DEFAULT '[]'::jsonb,
-    metadata JSONB DEFAULT '{}'::jsonb,
-    tenant_id TEXT NOT NULL DEFAULT 'owner',
-    request_id TEXT,
-    idempotency_key TEXT,
-    observed_at TIMESTAMPTZ DEFAULT now(),
-    invalid_at TIMESTAMPTZ,
-    retention_class TEXT NOT NULL DEFAULT 'operational',
-    sensitivity TEXT NOT NULL DEFAULT 'normal',
-    embedding_model_version TEXT DEFAULT 'unknown'
-)
-"""
-
-CREATE_PREDICATE_REGISTRY_SQL = """
-CREATE TABLE IF NOT EXISTS predicate_registry (
-    name TEXT PRIMARY KEY,
-    expected_subject_type TEXT,
-    expected_object_type TEXT,
-    is_edge BOOLEAN NOT NULL DEFAULT false,
-    is_temporal BOOLEAN NOT NULL DEFAULT false,
-    description TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    status TEXT NOT NULL DEFAULT 'active',
-    superseded_by TEXT,
-    deprecated_at TIMESTAMPTZ,
-    inverse_of TEXT,
-    is_symmetric BOOLEAN NOT NULL DEFAULT false,
-    aliases TEXT[] NOT NULL DEFAULT '{}',
-    usage_count INTEGER NOT NULL DEFAULT 0,
-    last_used_at TIMESTAMPTZ
-)
-"""
-
-CREATE_MEMORY_LINKS_SQL = """
-CREATE TABLE IF NOT EXISTS memory_links (
-    source_type TEXT NOT NULL,
-    source_id UUID NOT NULL,
-    target_type TEXT NOT NULL,
-    target_id UUID NOT NULL,
-    relation TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_type, source_id, target_type, target_id),
-    CONSTRAINT chk_memory_links_relation CHECK (
-        relation IN (
-            'derived_from', 'supports', 'contradicts',
-            'supersedes', 'related_to'
-        )
-    )
-)
-"""
-
-CREATE_STATE_SQL = """
-CREATE TABLE IF NOT EXISTS state (
-    key TEXT PRIMARY KEY,
-    value JSONB NOT NULL DEFAULT '{}',
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    version INTEGER NOT NULL DEFAULT 1
-)
-"""
-
-# calendar_events table for calendar interaction sync tests.
-# Simplified version of the real schema — omits FK to calendar_sources
-# since tests don't need the full calendar projection.
-CREATE_CALENDAR_EVENTS_SQL = """
-CREATE TABLE IF NOT EXISTS public.calendar_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    title TEXT NOT NULL,
-    description TEXT,
-    location TEXT,
-    timezone TEXT NOT NULL DEFAULT 'UTC',
-    starts_at TIMESTAMPTZ NOT NULL,
-    ends_at TIMESTAMPTZ NOT NULL,
-    all_day BOOLEAN NOT NULL DEFAULT false,
-    status TEXT NOT NULL DEFAULT 'confirmed',
-    visibility TEXT NOT NULL DEFAULT 'default',
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT test_cal_events_status_check
-        CHECK (status IN ('confirmed', 'tentative', 'cancelled'))
-)
-"""
-
-# relationship.entity_facts: triple-store for contact/relational predicates (migration rel_013).
-# run_interaction_sync now resolves sender identities via this table instead of public.contact_info.
-CREATE_RELATIONSHIP_ENTITY_FACTS_SQL = """
-CREATE SCHEMA IF NOT EXISTS relationship;
-CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-    id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-    subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-    predicate   TEXT        NOT NULL,
-    object      TEXT        NOT NULL,
-    object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-    src         TEXT        NOT NULL DEFAULT 'test',
-    conf        FLOAT       NOT NULL DEFAULT 1.0,
-    last_seen   TIMESTAMPTZ,
-    observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    weight      INT,
-    verified    BOOL        NOT NULL DEFAULT false,
-    "primary"   BOOL,
-    validity    TEXT        NOT NULL DEFAULT 'active'
-                    CHECK (validity IN ('active', 'retracted', 'superseded')),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-# Unique partial index required by relationship_assert_fact's ON CONFLICT clause.
-CREATE_RELATIONSHIP_ENTITY_FACTS_UNIQUE_IDX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-    ON relationship.entity_facts (subject, predicate, object)
-    WHERE validity = 'active'
-"""
-
-# Predicate registry used by relationship_assert_fact for validation.
-CREATE_RELATIONSHIP_PREDICATE_REGISTRY_SQL = ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship")
-
-# Seed just the predicates relevant to interaction_sync tests.
-SEED_RELATIONSHIP_PREDICATES_SQL = """
-INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
-VALUES
-    ('has-email',    'contact',    'literal', 'Email address'),
-    ('has-handle',   'contact',    'literal', 'Messaging handle'),
-    ('has-phone',    'contact',    'literal', 'Phone number'),
-    ('co-attended',  'relational', 'entity',  'Both entities attended the same event or place.')
-ON CONFLICT (predicate) DO NOTHING
-"""
-
-
-async def _setup_interaction_sync_schema(pool) -> None:
-    """Create tables needed for interaction sync tests."""
-    await pool.execute(CREATE_PUBLIC_ENTITIES_SQL)
-    await pool.execute(CREATE_PUBLIC_CONTACTS_SQL)
-    await pool.execute(CREATE_PUBLIC_CONTACT_INFO_SQL)
-    await pool.execute(CREATE_SWITCHBOARD_SCHEMA_SQL)
-    await pool.execute(CREATE_MESSAGE_INBOX_SQL)
-    await pool.execute(CREATE_CALENDAR_EVENTS_SQL)
-    # Use the full facts schema (includes object_entity_id required by store_fact)
-    await pool.execute(CREATE_FACTS_FULL_SQL)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_sync ON facts (subject, predicate)"
-    )
-    # run_interaction_sync resolves sender identities via relationship.entity_facts (rel_013).
-    # relationship_assert_fact also writes co-attended edges here, so schema must match
-    # production (observed_at column + unique index for ON CONFLICT dedup).
-    await pool.execute(CREATE_RELATIONSHIP_ENTITY_FACTS_SQL)
-    await pool.execute(CREATE_RELATIONSHIP_ENTITY_FACTS_UNIQUE_IDX_SQL)
-    # relationship_assert_fact validates predicates against entity_predicate_registry.
-    await pool.execute(CREATE_RELATIONSHIP_PREDICATE_REGISTRY_SQL)
-    await pool.execute(SEED_RELATIONSHIP_PREDICATES_SQL)
-    # store_fact() requires predicate_registry and memory_links
-    await pool.execute(CREATE_PREDICATE_REGISTRY_SQL)
-    await pool.execute(CREATE_MEMORY_LINKS_SQL)
-    # state table for checkpoint persistence
-    await pool.execute(CREATE_STATE_SQL)
-
-
-async def _insert_public_contact(
-    pool,
-    *,
-    first_name: str = "Alice",
-    last_name: str = "Smith",
-    entity_id: str | None = None,
+async def _insert_contact_anchor(
+    pool, *, first_name: str = "Alice", last_name: str = "Smith", entity_id: str | None = None
 ) -> str:
-    """Insert a public.contacts row (with auto-created entity) and return its UUID string.
+    """Create the canonical entity/contact bridge without retired public contacts."""
+    from roster.relationship.tests.calendar_projection import make_contact_anchor
 
-    Each contact must have a linked entity_id since interaction_log requires it.
-    If no entity_id is provided, a new entity is created and linked automatically.
-    """
     if entity_id is None:
         entity_id = await _insert_public_entity(pool)
-    contact_id = str(uuid.uuid4())
-    await pool.execute(
-        """
-        INSERT INTO public.contacts (id, first_name, last_name, entity_id)
-        VALUES ($1::uuid, $2, $3, $4)
-        """,
-        contact_id,
-        first_name,
-        last_name,
-        uuid.UUID(entity_id),
-    )
-    return contact_id
+    return str(await make_contact_anchor(pool, uuid.UUID(entity_id)))
 
 
 async def _insert_public_entity(pool, *, roles: list[str] | None = None) -> str:
-    """Insert a public.entities row and return its UUID string."""
-    entity_id = str(uuid.uuid4())
-    await pool.execute(
-        """
-        INSERT INTO public.entities (id, roles)
-        VALUES ($1::uuid, $2::text[])
-        """,
-        entity_id,
-        roles or [],
-    )
-    return entity_id
+    from roster.relationship.tests.calendar_projection import make_entity
+
+    return str(await make_entity(pool, roles=roles))
 
 
 async def _insert_contact_info(
-    pool,
-    *,
-    contact_id: str,
-    ci_type: str,
-    value: str,
-    is_primary: bool = True,
+    pool, *, contact_id: str, ci_type: str, value: str, is_primary: bool = True
 ) -> str:
-    """Insert a public.contact_info row and a matching relationship.entity_facts triple.
+    """Write canonical identity evidence with the real central fact writer."""
+    from roster.relationship.tests.calendar_projection import link_identity
 
-    The interaction_sync job resolves sender identities via relationship.entity_facts
-    (post bead-7 cut-over).  Each call here also inserts the corresponding triple so
-    tests that rely on identity resolution continue to work.
-    """
-    ci_id = str(uuid.uuid4())
-    await pool.execute(
-        """
-        INSERT INTO public.contact_info (id, contact_id, type, value, is_primary)
-        VALUES ($1::uuid, $2::uuid, $3, $4, $5)
-        """,
-        ci_id,
-        contact_id,
-        ci_type,
-        value,
-        is_primary,
-    )
-    # Also insert the corresponding entity_facts triple for bead-7 resolution.
-    # Map contact_info type → entity_facts predicate per relationship_jobs.py channel map.
-    _ci_type_to_predicate = {
+    predicates = {
         "telegram_chat_id": "has-handle",
         "whatsapp_jid": "has-handle",
         "email": "has-email",
         "phone": "has-phone",
     }
-    predicate = _ci_type_to_predicate.get(ci_type, "has-handle")
-    # Look up entity_id from public.contacts (set by _insert_public_contact).
     entity_id = await pool.fetchval(
-        "SELECT entity_id FROM public.contacts WHERE id = $1::uuid",
+        "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1::uuid",
         contact_id,
     )
-    if entity_id is not None:
-        await pool.execute(
-            """
-            INSERT INTO relationship.entity_facts
-                (subject, predicate, object, object_kind, src, validity)
-            VALUES ($1, $2, $3, 'literal', 'test', 'active')
-            ON CONFLICT DO NOTHING
-            """,
-            entity_id,
-            predicate,
-            value,
-        )
-    return ci_id
+    assert entity_id is not None
+    await link_identity(pool, entity_id=entity_id, predicate=predicates[ci_type], value=value)
+    return str(uuid.uuid4())
 
 
 async def _insert_message_inbox(
@@ -1718,14 +1412,10 @@ async def _insert_message_inbox(
         request_context["source_endpoint_identity"] = source_endpoint_identity
     if source_thread_identity is not None:
         request_context["source_thread_identity"] = source_thread_identity
-    await pool.execute(
-        """
-        INSERT INTO switchboard.message_inbox (received_at, request_context, direction)
-        VALUES ($1, $2, $3)
-        """,
-        received_at,
-        request_context,
-        direction,
+    from roster.relationship.tests.calendar_projection import insert_message
+
+    await insert_message(
+        pool, received_at=received_at, request_context=request_context, direction=direction
     )
 
 
@@ -1738,29 +1428,19 @@ async def _insert_calendar_event(
     status: str = "confirmed",
     attendees: list[dict] | None = None,
 ) -> str:
-    """Insert a public.calendar_events row and return its UUID string."""
-    if starts_at is None:
-        starts_at = datetime.now(UTC) - timedelta(hours=2)
-    if ends_at is None:
-        ends_at = starts_at + timedelta(hours=1)
-    metadata: dict = {}
-    if attendees is not None:
-        metadata["attendees"] = attendees
-    event_id = str(uuid.uuid4())
-    await pool.execute(
-        """
-        INSERT INTO public.calendar_events
-            (id, title, timezone, starts_at, ends_at, status, metadata)
-        VALUES ($1::uuid, $2, 'UTC', $3, $4, $5, $6)
-        """,
-        event_id,
-        title,
-        starts_at,
-        ends_at,
-        status,
-        metadata,
+    """Use the existing local CalendarModule writer, including source and instance."""
+    from roster.relationship.tests.calendar_projection import project_event
+
+    return str(
+        await project_event(
+            pool,
+            title=title,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            status=status,
+            attendees=attendees,
+        )
     )
-    return event_id
 
 
 # ---------------------------------------------------------------------------
@@ -1768,13 +1448,11 @@ async def _insert_calendar_event(
 # ---------------------------------------------------------------------------
 
 
-async def test_interaction_sync_no_messages_returns_zeros(provisioned_postgres_pool):
+async def test_interaction_sync_no_messages_returns_zeros(interaction_sync_pool):
     """No-op: returns zeros when message_inbox is empty."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         result = await run_interaction_sync(pool)
 
         assert result["processed"] == 0
@@ -1784,31 +1462,35 @@ async def test_interaction_sync_no_messages_returns_zeros(provisioned_postgres_p
         assert result["errors"] == 0
 
 
-async def test_interaction_sync_returns_expected_stats_keys(provisioned_postgres_pool):
+async def test_interaction_sync_returns_expected_stats_keys(interaction_sync_pool):
     """Result dict always contains all expected statistics keys."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         result = await run_interaction_sync(pool)
 
-        assert "scan_window_start" in result
-        assert "scan_window_end" in result
-        assert "processed" in result
-        assert "logged" in result
-        assert "skipped_unresolved" in result
-        assert "skipped_owner" in result
-        assert "errors" in result
+        assert {
+            "scan_window_start",
+            "scan_window_end",
+            "processed",
+            "logged",
+            "skipped_unresolved",
+            "skipped_owner",
+            "skipped_ineligible",
+            "skipped_group_too_large",
+            "calendar_events_scanned",
+            "co_attended_edges_minted",
+            "knows_edges_minted",
+            "resolution_degraded",
+            "errors",
+        }.issubset(result)
 
 
-async def test_interaction_sync_unresolved_sender_skipped(provisioned_postgres_pool):
+async def test_interaction_sync_unresolved_sender_skipped(interaction_sync_pool):
     """Senders with no matching contact_info entry are counted as skipped_unresolved."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         # Insert message with no matching contact_info
         await _insert_message_inbox(
             pool,
@@ -1823,14 +1505,12 @@ async def test_interaction_sync_unresolved_sender_skipped(provisioned_postgres_p
         assert result["logged"] == 0
 
 
-async def test_interaction_sync_outbound_messages_ignored(provisioned_postgres_pool):
+async def test_interaction_sync_outbound_messages_ignored(interaction_sync_pool):
     """Outbound messages are not processed (only inbound are synced)."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Bob")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Bob")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="12345"
         )
@@ -1848,16 +1528,14 @@ async def test_interaction_sync_outbound_messages_ignored(provisioned_postgres_p
         assert result["logged"] == 0
 
 
-async def test_interaction_sync_owner_contact_skipped(provisioned_postgres_pool):
+async def test_interaction_sync_owner_contact_skipped(interaction_sync_pool):
     """Owner contacts are skipped even when their sender identity is resolved."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         # Create an owner entity and link it to the contact
         entity_id = await _insert_public_entity(pool, roles=["owner"])
-        contact_id = await _insert_public_contact(pool, first_name="Owner", entity_id=entity_id)
+        contact_id = await _insert_contact_anchor(pool, first_name="Owner", entity_id=entity_id)
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="owner123"
         )
@@ -1874,14 +1552,12 @@ async def test_interaction_sync_owner_contact_skipped(provisioned_postgres_pool)
         assert result["logged"] == 0
 
 
-async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_pool):
+async def test_interaction_sync_logs_telegram_interaction(interaction_sync_pool):
     """A resolved telegram_user_client message is logged as an interaction fact."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Carol")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Carol")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="777001"
         )
@@ -1898,7 +1574,8 @@ async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_p
         # Verify a fact was created with the typed predicate.
         # Facts are now stored with subject='entity:{entity_id}'.
         entity_id = await pool.fetchval(
-            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+            "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1::uuid",
+            contact_id,
         )
         rows = await pool.fetch(
             """
@@ -1921,16 +1598,15 @@ async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_p
 
 
 async def test_interaction_sync_keeps_sibling_endpoints_separate(
-    provisioned_postgres_pool,
+    interaction_sync_pool,
 ):
     """One shared thread/date cannot collapse two exact producer endpoints."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-        contact_id = await _insert_public_contact(pool, first_name="Endpoint")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Endpoint")
         entity_id = await pool.fetchval(
-            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid",
+            "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1::uuid",
             contact_id,
         )
         await _insert_contact_info(
@@ -1971,14 +1647,12 @@ async def test_interaction_sync_keeps_sibling_endpoints_separate(
         assert result["errors"] == 0
 
 
-async def test_interaction_sync_deduplicates_same_sender_same_day(provisioned_postgres_pool):
+async def test_interaction_sync_deduplicates_same_sender_same_day(interaction_sync_pool):
     """Multiple messages from the same sender on the same day → one interaction fact."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Dave")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Dave")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="888001"
         )
@@ -2001,15 +1675,13 @@ async def test_interaction_sync_deduplicates_same_sender_same_day(provisioned_po
 
 
 async def test_interaction_sync_different_channels_logged_separately(
-    provisioned_postgres_pool,
+    interaction_sync_pool,
 ):
     """Same contact via different channels (telegram + email) → two separate facts."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Eve")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Eve")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="tg_eve"
         )
@@ -2032,7 +1704,8 @@ async def test_interaction_sync_different_channels_logged_separately(
 
         assert result["logged"] == 2
         entity_id = await pool.fetchval(
-            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+            "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1::uuid",
+            contact_id,
         )
         rows = await pool.fetch(
             "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
@@ -2041,14 +1714,12 @@ async def test_interaction_sync_different_channels_logged_separately(
         assert len(rows) == 2
 
 
-async def test_interaction_sync_old_messages_excluded(provisioned_postgres_pool):
+async def test_interaction_sync_old_messages_excluded(interaction_sync_pool):
     """Messages older than the scan window are not processed."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Frank")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Frank")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="old_sender"
         )
@@ -2067,14 +1738,12 @@ async def test_interaction_sync_old_messages_excluded(provisioned_postgres_pool)
         assert result["logged"] == 0
 
 
-async def test_interaction_sync_unknown_channel_ignored(provisioned_postgres_pool):
+async def test_interaction_sync_unknown_channel_ignored(interaction_sync_pool):
     """Messages from unsupported channels (e.g. telegram_bot) are not processed."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Grace")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Grace")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="bot_sender"
         )
@@ -2090,14 +1759,12 @@ async def test_interaction_sync_unknown_channel_ignored(provisioned_postgres_poo
         assert result["logged"] == 0
 
 
-async def test_interaction_sync_idempotent_second_run(provisioned_postgres_pool):
+async def test_interaction_sync_idempotent_second_run(interaction_sync_pool):
     """Running interaction sync twice for the same messages does not create duplicate facts."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Henry")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Henry")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="idem_tg"
         )
@@ -2118,7 +1785,8 @@ async def test_interaction_sync_idempotent_second_run(provisioned_postgres_pool)
 
         # Only one fact should exist.
         entity_id = await pool.fetchval(
-            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+            "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1::uuid",
+            contact_id,
         )
         rows = await pool.fetch(
             "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
@@ -2127,14 +1795,12 @@ async def test_interaction_sync_idempotent_second_run(provisioned_postgres_pool)
         assert len(rows) == 1
 
 
-async def test_interaction_sync_whatsapp_channel_resolved(provisioned_postgres_pool):
+async def test_interaction_sync_whatsapp_channel_resolved(interaction_sync_pool):
     """A resolved whatsapp_user_client message is logged via whatsapp_jid contact_info."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Ivan")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Ivan")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="whatsapp_jid", value="5591999@s.whatsapp.net"
         )
@@ -2150,14 +1816,12 @@ async def test_interaction_sync_whatsapp_channel_resolved(provisioned_postgres_p
         assert result["errors"] == 0
 
 
-async def test_interaction_sync_email_channel_resolved(provisioned_postgres_pool):
+async def test_interaction_sync_email_channel_resolved(interaction_sync_pool):
     """A resolved email message is logged via email contact_info."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Jane")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Jane")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="email", value="jane@example.com"
         )
@@ -2177,13 +1841,11 @@ async def test_interaction_sync_email_channel_resolved(provisioned_postgres_pool
 # ---------------------------------------------------------------------------
 
 
-async def test_interaction_sync_no_checkpoint_uses_30_day_default(provisioned_postgres_pool):
+async def test_interaction_sync_no_checkpoint_uses_30_day_default(interaction_sync_pool):
     """Without a checkpoint, scan_window_start defaults to ~30 days ago."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         result = await run_interaction_sync(pool)
 
         assert "scan_window_start" in result
@@ -2195,14 +1857,12 @@ async def test_interaction_sync_no_checkpoint_uses_30_day_default(provisioned_po
         assert abs(window - timedelta(days=30)) <= timedelta(minutes=1)
 
 
-async def test_interaction_sync_checkpoint_used_as_start(provisioned_postgres_pool):
+async def test_interaction_sync_checkpoint_used_as_start(interaction_sync_pool):
     """When a checkpoint exists, it is used as scan_window_start."""
     from butlers.core.state import state_set
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         # Store a checkpoint 5 days ago
         checkpoint = datetime.now(UTC) - timedelta(days=5)
         await state_set(pool, "interaction_sync.last_scan_at", checkpoint.isoformat())
@@ -2216,14 +1876,12 @@ async def test_interaction_sync_checkpoint_used_as_start(provisioned_postgres_po
         assert 4.9 < diff_days < 5.1
 
 
-async def test_interaction_sync_checkpoint_capped_at_30_days(provisioned_postgres_pool):
+async def test_interaction_sync_checkpoint_capped_at_30_days(interaction_sync_pool):
     """A checkpoint older than 30 days is capped to 30 days ago."""
     from butlers.core.state import state_set
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         # Store a checkpoint 60 days ago
         checkpoint = datetime.now(UTC) - timedelta(days=60)
         await state_set(pool, "interaction_sync.last_scan_at", checkpoint.isoformat())
@@ -2237,14 +1895,12 @@ async def test_interaction_sync_checkpoint_capped_at_30_days(provisioned_postgre
         assert 29.9 < diff_days < 30.1
 
 
-async def test_interaction_sync_writes_checkpoint_on_success(provisioned_postgres_pool):
+async def test_interaction_sync_writes_checkpoint_on_success(interaction_sync_pool):
     """After a successful run, the state store contains scan_window_end as the new checkpoint."""
     from butlers.core.state import state_get
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         result = await run_interaction_sync(pool)
 
         stored = await state_get(pool, "interaction_sync.last_scan_at")
@@ -2252,13 +1908,11 @@ async def test_interaction_sync_writes_checkpoint_on_success(provisioned_postgre
         assert stored == result["scan_window_end"]
 
 
-async def test_interaction_sync_window_end_is_iso8601(provisioned_postgres_pool):
+async def test_interaction_sync_window_end_is_iso8601(interaction_sync_pool):
     """scan_window_start and scan_window_end are valid ISO8601 strings."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         result = await run_interaction_sync(pool)
 
         # Should not raise
@@ -2266,14 +1920,12 @@ async def test_interaction_sync_window_end_is_iso8601(provisioned_postgres_pool)
         datetime.fromisoformat(result["scan_window_end"])
 
 
-async def test_interaction_sync_second_run_uses_first_checkpoint(provisioned_postgres_pool):
+async def test_interaction_sync_second_run_uses_first_checkpoint(interaction_sync_pool):
     """Second run uses the checkpoint written by the first run."""
     from butlers.core.state import state_get
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         result1 = await run_interaction_sync(pool)
         checkpoint_after_first = await state_get(pool, "interaction_sync.last_scan_at")
         assert checkpoint_after_first == result1["scan_window_end"]
@@ -2292,113 +1944,313 @@ async def test_interaction_sync_second_run_uses_first_checkpoint(provisioned_pos
 # ---------------------------------------------------------------------------
 
 
-async def test_interaction_sync_calendar_stats_key_present(provisioned_postgres_pool):
-    """calendar_events_scanned is always present in the return stats."""
-    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
-
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        result = await run_interaction_sync(pool)
-
-        assert "calendar_events_scanned" in result
-        assert result["calendar_events_scanned"] == 0
-
-
-async def test_interaction_sync_calendar_no_events_returns_zero(provisioned_postgres_pool):
+async def test_interaction_sync_calendar_no_events_returns_zero(interaction_sync_pool):
     """No calendar events → calendar_events_scanned remains 0."""
+    from butlers.core.state import state_get
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         result = await run_interaction_sync(pool)
 
         assert result["calendar_events_scanned"] == 0
         assert result["logged"] == 0
         assert result["errors"] == 0
-
-
-async def test_interaction_sync_missing_calendar_table_skips_calendar_scan(
-    provisioned_postgres_pool,
-):
-    """Missing public.calendar_events degrades to a no-op instead of an error."""
-    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
-
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-        await pool.execute("DROP TABLE public.calendar_events")
-
-        result = await run_interaction_sync(pool)
-
-        assert result["calendar_events_scanned"] == 0
-        assert result["errors"] == 0
+        assert await state_get(pool, "interaction_sync.last_scan_at") == result["scan_window_end"]
 
 
 @pytest.mark.pg_clock
-async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_postgres_pool):
-    """A calendar event with a resolved attendee email logs an interaction fact."""
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [
+        ("table", "UndefinedTableError"),
+        ("column", "UndefinedColumnError"),
+        ("privilege", "InsufficientPrivilegeError"),
+    ],
+)
+async def test_interaction_sync_calendar_query_failure_preserves_checkpoint(
+    interaction_sync_pool, caplog, failure, category
+):
+    """REQ-passive-interaction-sync-002: retain the original window and committed work."""
+    from butlers.core.state import state_get, state_set
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
+    from roster.relationship.tests.calendar_projection import (
+        database_for,
+        link_identity,
+        make_entity,
+    )
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Alice")
-        await _insert_contact_info(
-            pool, contact_id=contact_id, ci_type="email", value="alice@example.com"
+    async with interaction_sync_pool() as pool:
+        anchor = await pool.fetchval("SELECT now()")
+        checkpoint = anchor - timedelta(days=3)
+        event_at = anchor - timedelta(days=2)
+        message_at = anchor - timedelta(days=1)
+        await state_set(pool, "interaction_sync.last_scan_at", checkpoint.isoformat())
+        alice = await make_entity(pool)
+        bob = await make_entity(pool)
+        for entity_id, email in [(alice, "alice@example.com"), (bob, "bob@example.com")]:
+            await link_identity(pool, entity_id=entity_id, predicate="has-email", value=email)
+        await _insert_message_inbox(
+            pool,
+            sender_identity="alice@example.com",
+            source_channel="email",
+            received_at=message_at,
         )
-
         await _insert_calendar_event(
             pool,
-            title="Coffee Chat",
-            attendees=[
-                {"email": "alice@example.com", "responseStatus": "accepted"},
-                {"email": "me@owner.com", "responseStatus": "accepted", "self": True},
-            ],
+            starts_at=event_at,
+            attendees=[{"email": "alice@example.com"}, {"email": "bob@example.com"}],
+        )
+        faults = {
+            "table": (
+                "ALTER TABLE relationship.calendar_events RENAME TO calendar_events_unavailable",
+                "ALTER TABLE relationship.calendar_events_unavailable RENAME TO calendar_events",
+            ),
+            "column": (
+                "ALTER TABLE relationship.calendar_events RENAME COLUMN metadata TO metadata_unavailable",
+                "ALTER TABLE relationship.calendar_events RENAME COLUMN metadata_unavailable TO metadata",
+            ),
+            "privilege": (
+                "REVOKE SELECT ON relationship.calendar_events FROM butler_relationship_rw",
+                "GRANT SELECT ON relationship.calendar_events TO butler_relationship_rw",
+            ),
+        }
+        break_read, restore_read = faults[failure]
+        async with database_for(pool).control() as control:
+            await control.execute(break_read)
+        try:
+            with caplog.at_level(logging.WARNING):
+                result = await run_interaction_sync(pool)
+            assert result["errors"] == 1
+            assert result["logged"] == 1
+            assert result["calendar_events_scanned"] == 0
+            assert await state_get(pool, "interaction_sync.last_scan_at") == checkpoint.isoformat()
+            assert any(category in record.message for record in caplog.records)
+            if failure == "table":
+                assert any(
+                    "UndefinedTableError" in r.message and r.levelno == logging.WARNING
+                    for r in caplog.records
+                )
+            else:
+                assert any(
+                    r.exc_info and r.exc_info[0].__name__ == category for r in caplog.records
+                )
+            message_ids = {
+                r["id"]
+                for r in await pool.fetch(
+                    "SELECT id FROM facts WHERE predicate = 'interaction_email'"
+                )
+            }
+            assert len(message_ids) == 1
+        finally:
+            async with database_for(pool).control() as control:
+                await control.execute(restore_read)
+
+        recovered = await run_interaction_sync(pool)
+        for stats in (result, recovered):
+            start = datetime.fromisoformat(stats["scan_window_start"])
+            end = datetime.fromisoformat(stats["scan_window_end"])
+            assert start == checkpoint < event_at < end
+            assert end - start < timedelta(days=30)
+        assert recovered["errors"] == 0
+        assert recovered["logged"] == 2
+        assert recovered["co_attended_edges_minted"] == 2
+        assert {
+            r["id"]
+            for r in await pool.fetch("SELECT id FROM facts WHERE predicate = 'interaction_email'")
+        } == message_ids
+        facts = {
+            r["id"]
+            for r in await pool.fetch("SELECT id FROM facts WHERE predicate LIKE 'interaction_%'")
+        }
+        edges = {
+            r["id"]
+            for r in await pool.fetch(
+                "SELECT id FROM relationship.entity_facts WHERE predicate = 'co-attended'"
+            )
+        }
+        assert len(facts) == 3 and len(edges) == 2
+        assert (
+            await state_get(pool, "interaction_sync.last_scan_at") == recovered["scan_window_end"]
         )
 
+        # Test setup deliberately repeats the SAME bounded interval to exercise
+        # real writer dedup; production has no new rewind/retry mechanism.
+        await state_set(pool, "interaction_sync.last_scan_at", checkpoint.isoformat())
+        repeated = await run_interaction_sync(pool)
+        assert repeated["errors"] == repeated["logged"] == repeated["co_attended_edges_minted"] == 0
+        assert {
+            r["id"]
+            for r in await pool.fetch("SELECT id FROM facts WHERE predicate LIKE 'interaction_%'")
+        } == facts
+        assert {
+            r["id"]
+            for r in await pool.fetch(
+                "SELECT id FROM relationship.entity_facts WHERE predicate = 'co-attended'"
+            )
+        } == edges
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_calendar_logs_attendee_interaction(interaction_sync_pool):
+    """REQ-passive-interaction-sync-001: real own-role local projection consumption.
+
+    The causal control restores ONLY the historical public-table SQL literal,
+    not the full historical job/error/checkpoint implementation.
+    """
+    from types import FunctionType
+
+    from butlers.core.state import state_set
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
+    from roster.relationship.tests.calendar_projection import (
+        database_for,
+        link_identity,
+        make_entity,
+        project_event,
+    )
+
+    async with interaction_sync_pool() as pool:
+        people = {}
+        for label in ("own-a", "own-b", "public-a", "public-b", "foreign-a", "foreign-b"):
+            people[label] = await make_entity(pool)
+            await link_identity(
+                pool, entity_id=people[label], predicate="has-email", value=f"{label}@example.com"
+            )
+        event_at = await pool.fetchval("SELECT now() - interval '2 days'")
+        own_event = await project_event(
+            pool,
+            title="Own projected event",
+            starts_at=event_at,
+            attendees=[{"email": "own-a@example.com"}, {"email": "own-b@example.com"}],
+        )
+        database = database_for(pool)
+        await database.migrate_controls()
+        control_events = {}
+        for schema, prefix in [("public", "public"), ("health", "foreign")]:
+            async with database.control(schema) as control:
+                control_events[schema] = await project_event(
+                    control,
+                    title=f"{schema} sentinel",
+                    starts_at=event_at,
+                    attendees=[
+                        {"email": f"{prefix}-a@example.com"},
+                        {"email": f"{prefix}-b@example.com"},
+                    ],
+                )
+                assert (
+                    await control.fetchval(
+                        f"SELECT id FROM {schema}.calendar_events WHERE id = $1",
+                        control_events[schema],
+                    )
+                    == control_events[schema]
+                )
+        # Schema reachability is checked first; to_regclass itself would throw
+        # on a foreign schema without USAGE. No transaction catches/continues.
+        assert not await pool.fetchval(
+            "SELECT COALESCE((SELECT has_schema_privilege(oid, 'USAGE') "
+            "FROM pg_namespace WHERE nspname = 'health'), false)"
+        )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await pool.fetch("SELECT id FROM health.calendar_events")
+
+        async def fact_ids(ids):
+            return {
+                r["id"]
+                for r in await pool.fetch(
+                    "SELECT id FROM relationship.facts WHERE predicate = 'interaction_calendar_event' "
+                    "AND entity_id = ANY($1::uuid[])",
+                    ids,
+                )
+            }
+
+        async def edge_ids(ids):
+            return {
+                r["id"]
+                for r in await pool.fetch(
+                    "SELECT id FROM relationship.entity_facts WHERE predicate = 'co-attended' "
+                    "AND validity = 'active' AND subject = ANY($1::uuid[])",
+                    ids,
+                )
+            }
+
+        own = [people["own-a"], people["own-b"]]
+        wrong = [people["public-a"], people["public-b"]]
+        foreign = [people["foreign-a"], people["foreign-b"]]
+        constants = run_interaction_sync.__code__.co_consts
+        matches = [
+            i
+            for i, value in enumerate(constants)
+            if isinstance(value, str) and "FROM relationship.calendar_events" in value
+        ]
+        assert len(matches) == 1, (
+            "Historical-query control requires exactly one Step 4 SQL constant"
+        )
+        index = matches[0]
+        assert constants[index].count("FROM relationship.calendar_events") == 1
+        legacy_constants = tuple(
+            value.replace("FROM relationship.calendar_events", "FROM public.calendar_events")
+            if i == index
+            else value
+            for i, value in enumerate(constants)
+        )
+        legacy_code = run_interaction_sync.__code__.replace(co_consts=legacy_constants)
+        assert legacy_code.replace(co_consts=constants) == run_interaction_sync.__code__
+        assert all(legacy_constants[i] is constants[i] for i in range(len(constants)) if i != index)
+        legacy_query = FunctionType(
+            legacy_code,
+            run_interaction_sync.__globals__,
+            run_interaction_sync.__name__,
+            run_interaction_sync.__defaults__,
+            run_interaction_sync.__closure__,
+        )
+        legacy_query.__kwdefaults__ = run_interaction_sync.__kwdefaults__
+        assert legacy_query.__globals__ is run_interaction_sync.__globals__
+        legacy = await legacy_query(pool)
+        assert legacy["errors"] == 0
+        assert legacy["logged"] == legacy["co_attended_edges_minted"] == 2
+        assert await fact_ids(own) == await edge_ids(own) == set()
+        wrong_facts, wrong_edges = await fact_ids(wrong), await edge_ids(wrong)
+        assert len(wrong_facts) == len(wrong_edges) == 2
+        assert not await fact_ids(foreign) and not await edge_ids(foreign)
+
+        # Only synthetic checkpoint state is reset between these two phases.
+        # Previously-minted wrong IDs are positive witnesses, not claimed to
+        # have been minted by the corrected call.
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (event_at - timedelta(days=1)).isoformat()
+        )
         result = await run_interaction_sync(pool)
-
         assert result["calendar_events_scanned"] == 1
-        assert result["logged"] == 1
+        assert result["logged"] == result["co_attended_edges_minted"] == 2
         assert result["errors"] == 0
-
-        # Verify the fact was written correctly with typed predicate.
-        # Facts are stored with subject='entity:{entity_id}' since rel_018.
-        entity_id = await pool.fetchval(
-            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
-        )
+        assert len(await fact_ids(own)) == len(await edge_ids(own)) == 2
+        assert await fact_ids(wrong) == wrong_facts and await edge_ids(wrong) == wrong_edges
+        assert not await fact_ids(foreign) and not await edge_ids(foreign)
         rows = await pool.fetch(
-            """
-            SELECT id, predicate, metadata FROM facts
-            WHERE subject = $1
-              AND predicate LIKE 'interaction_%'
-              AND scope = 'relationship'
-            """,
-            f"entity:{entity_id}",
+            "SELECT metadata FROM relationship.facts WHERE entity_id = ANY($1::uuid[]) "
+            "AND predicate = 'interaction_calendar_event'",
+            own,
         )
-        assert len(rows) == 1
-        assert rows[0]["predicate"] == "interaction_calendar_event"
-        meta = rows[0]["metadata"]
-        if isinstance(meta, str):
-            meta = json.loads(meta)
-        assert meta.get("type") == "calendar_event"
-        assert meta.get("direction") == "mutual"
-        extra = meta.get("extra_metadata") or {}
-        assert extra.get("source") == "interaction_sync"
-        assert "event_id" in extra
+        for row in rows:
+            meta = row["metadata"]
+            assert meta["type"] == "calendar_event" and meta["direction"] == "mutual"
+            assert meta["extra_metadata"]["source"] == "interaction_sync"
+            assert meta["extra_metadata"]["event_id"] == str(own_event)
+        evidence = await pool.fetchval(
+            "SELECT count(*) FROM relationship.fact_coverage WHERE subject = ANY($1::uuid[]) "
+            "AND predicate = 'co-attended'",
+            own,
+        )
+        assert evidence == 2
 
 
 @pytest.mark.pg_clock
 async def test_interaction_sync_calendar_unresolved_attendee_skipped(
-    provisioned_postgres_pool,
+    interaction_sync_pool,
 ):
     """Attendee email not in contact_info increments skipped_unresolved."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         await _insert_calendar_event(
             pool,
             title="Mystery Meeting",
@@ -2415,14 +2267,12 @@ async def test_interaction_sync_calendar_unresolved_attendee_skipped(
         assert result["logged"] == 0
 
 
-async def test_interaction_sync_calendar_declined_event_excluded(provisioned_postgres_pool):
+async def test_interaction_sync_calendar_declined_event_excluded(interaction_sync_pool):
     """Events where the owner RSVP is declined are excluded (not counted)."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Bob")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Bob")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="email", value="bob@example.com"
         )
@@ -2448,14 +2298,12 @@ async def test_interaction_sync_calendar_declined_event_excluded(provisioned_pos
         assert result["logged"] == 0
 
 
-async def test_interaction_sync_calendar_cancelled_event_excluded(provisioned_postgres_pool):
+async def test_interaction_sync_calendar_cancelled_event_excluded(interaction_sync_pool):
     """Events with status='cancelled' are excluded by the query filter."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Carol")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Carol")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="email", value="carol@example.com"
         )
@@ -2476,15 +2324,13 @@ async def test_interaction_sync_calendar_cancelled_event_excluded(provisioned_po
 
 
 @pytest.mark.pg_clock
-async def test_interaction_sync_calendar_owner_attendee_excluded(provisioned_postgres_pool):
+async def test_interaction_sync_calendar_owner_attendee_excluded(interaction_sync_pool):
     """The owner's own attendee entry (self=True) is excluded from interaction logging."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         entity_id = await _insert_public_entity(pool, roles=["owner"])
-        owner_contact_id = await _insert_public_contact(
+        owner_contact_id = await _insert_contact_anchor(
             pool, first_name="Owner", entity_id=entity_id
         )
         await _insert_contact_info(
@@ -2508,15 +2354,13 @@ async def test_interaction_sync_calendar_owner_attendee_excluded(provisioned_pos
 
 
 @pytest.mark.pg_clock
-async def test_interaction_sync_calendar_owner_contact_skipped(provisioned_postgres_pool):
+async def test_interaction_sync_calendar_owner_contact_skipped(interaction_sync_pool):
     """Owner contact resolved via non-self email entry is counted as skipped_owner."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         entity_id = await _insert_public_entity(pool, roles=["owner"])
-        owner_contact_id = await _insert_public_contact(
+        owner_contact_id = await _insert_contact_anchor(
             pool, first_name="Owner", entity_id=entity_id
         )
         # Register owner's email in contact_info (resolves as owner contact)
@@ -2542,15 +2386,13 @@ async def test_interaction_sync_calendar_owner_contact_skipped(provisioned_postg
 
 @pytest.mark.pg_clock
 async def test_interaction_sync_calendar_case_insensitive_email_match(
-    provisioned_postgres_pool,
+    interaction_sync_pool,
 ):
     """Attendee email matching against contact_info is case-insensitive."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Dave")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Dave")
         # Stored as lowercase in contact_info
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="email", value="dave@example.com"
@@ -2572,20 +2414,18 @@ async def test_interaction_sync_calendar_case_insensitive_email_match(
 
 @pytest.mark.pg_clock
 async def test_interaction_sync_calendar_multiple_attendees_same_event(
-    provisioned_postgres_pool,
+    interaction_sync_pool,
 ):
     """A single event with multiple resolved attendees creates one fact per contact."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_a = await _insert_public_contact(pool, first_name="Eve")
+    async with interaction_sync_pool() as pool:
+        contact_a = await _insert_contact_anchor(pool, first_name="Eve")
         await _insert_contact_info(
             pool, contact_id=contact_a, ci_type="email", value="eve@example.com"
         )
 
-        contact_b = await _insert_public_contact(pool, first_name="Frank")
+        contact_b = await _insert_contact_anchor(pool, first_name="Frank")
         await _insert_contact_info(
             pool, contact_id=contact_b, ci_type="email", value="frank@example.com"
         )
@@ -2594,8 +2434,9 @@ async def test_interaction_sync_calendar_multiple_attendees_same_event(
             pool,
             title="Team Lunch",
             attendees=[
-                {"email": "eve@example.com", "responseStatus": "accepted"},
-                {"email": "frank@example.com", "responseStatus": "accepted"},
+                {"email": "eve@example.com", "responseStatus": "declined"},
+                {"email": " EVE@EXAMPLE.COM ", "responseStatus": "accepted"},
+                {"email": "frank@example.com", "responseStatus": "tentative"},
                 {"email": "me@owner.com", "responseStatus": "accepted", "self": True},
             ],
         )
@@ -2607,7 +2448,8 @@ async def test_interaction_sync_calendar_multiple_attendees_same_event(
 
         for cid in (contact_a, contact_b):
             eid = await pool.fetchval(
-                "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", cid
+                "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1::uuid",
+                cid,
             )
             rows = await pool.fetch(
                 "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
@@ -2617,15 +2459,13 @@ async def test_interaction_sync_calendar_multiple_attendees_same_event(
 
 
 async def test_interaction_sync_calendar_event_outside_window_excluded(
-    provisioned_postgres_pool,
+    interaction_sync_pool,
 ):
     """Calendar events older than the lookback window are not processed."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Grace")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Grace")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="email", value="grace@example.com"
         )
@@ -2649,14 +2489,12 @@ async def test_interaction_sync_calendar_event_outside_window_excluded(
 
 
 @pytest.mark.pg_clock
-async def test_interaction_sync_calendar_idempotent_second_run(provisioned_postgres_pool):
+async def test_interaction_sync_calendar_idempotent_second_run(interaction_sync_pool):
     """Running interaction sync twice for the same event does not create duplicate facts."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        contact_id = await _insert_public_contact(pool, first_name="Henry")
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Henry")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="email", value="henry@example.com"
         )
@@ -2676,7 +2514,8 @@ async def test_interaction_sync_calendar_idempotent_second_run(provisioned_postg
         assert result2["logged"] == 0  # duplicate skipped
 
         entity_id = await pool.fetchval(
-            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid", contact_id
+            "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1::uuid",
+            contact_id,
         )
         rows = await pool.fetch(
             "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
@@ -2685,38 +2524,43 @@ async def test_interaction_sync_calendar_idempotent_second_run(provisioned_postg
         assert len(rows) == 1
 
 
-async def test_interaction_sync_calendar_no_attendees_field_skipped(
-    provisioned_postgres_pool,
-):
-    """Events with no attendees field in metadata are silently skipped."""
+async def test_interaction_sync_calendar_no_attendees_field_skipped(interaction_sync_pool):
+    """Absent, non-array and malformed attendees never manufacture interactions."""
+    from butlers.core.state import state_set
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
-        # No attendees key in metadata
-        await _insert_calendar_event(
-            pool,
-            title="Solo Event",
-            attendees=None,  # _insert_calendar_event omits the key when None
-        )
-
-        result = await run_interaction_sync(pool)
-
-        assert result["calendar_events_scanned"] == 0
-        assert result["logged"] == 0
+    async with interaction_sync_pool() as pool:
+        event_at = await pool.fetchval("SELECT now() - interval '1 hour'")
+        event_id = await _insert_calendar_event(pool, title="Solo Event", starts_at=event_at)
+        for metadata, scanned in [
+            ({}, 0),
+            ({"attendees": []}, 0),
+            ({"attendees": {"email": "not-an-array@example.com"}}, 0),
+            ({"attendees": [None, {}, {"email": 7}]}, 1),
+        ]:
+            # Genuine projected row, malformed persisted metadata: exercise the
+            # consumer separately from the provider's typed input validator.
+            await pool.execute(
+                "UPDATE relationship.calendar_events SET metadata = $2 WHERE id = $1",
+                uuid.UUID(event_id),
+                metadata,
+            )
+            await state_set(
+                pool, "interaction_sync.last_scan_at", (event_at - timedelta(days=1)).isoformat()
+            )
+            result = await run_interaction_sync(pool)
+            assert result["calendar_events_scanned"] == scanned
+            assert result["logged"] == result["errors"] == 0
 
 
 @pytest.mark.pg_clock
-async def test_interaction_sync_combined_messages_and_calendar(provisioned_postgres_pool):
+async def test_interaction_sync_combined_messages_and_calendar(interaction_sync_pool):
     """Messages and calendar events are both processed in a single run."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_interaction_sync_schema(pool)
-
+    async with interaction_sync_pool() as pool:
         # Contact with telegram + email
-        contact_id = await _insert_public_contact(pool, first_name="Iris")
+        contact_id = await _insert_contact_anchor(pool, first_name="Iris")
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="tg_iris"
         )

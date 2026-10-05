@@ -951,11 +951,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     On successful completion the job writes ``scan_window_end`` back to the state
     store so the next run continues from where this one left off.
 
-    **Calendar-based sync:** Queries ``public.calendar_events`` for confirmed
+    **Calendar-based sync:** Queries ``relationship.calendar_events`` for confirmed
     events within the scan window.  For each event, extracts the
     ``metadata->'attendees'`` JSONB array, resolves attendee emails to
-    contact_ids via ``relationship.entity_facts`` (``has-email`` →
-    ``public.contacts.entity_id``), and calls
+    entity IDs via active ``relationship.entity_facts`` ``has-email`` facts, and calls
     ``interaction_log()`` with ``type='calendar_event'``.  Events where the
     owner's RSVP is ``declined`` are skipped entirely.  The owner's own
     attendee entry (``self=true``) is excluded from attendee resolution.
@@ -1395,9 +1394,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     stats["errors"] += 1
 
     # -----------------------------------------------------------------------
-    # Step 4: Scan public.calendar_events for confirmed events within the
+    # Step 4: Scan relationship.calendar_events for confirmed events within the
     # scan window, extract attendees, and log interactions.
     # -----------------------------------------------------------------------
+    calendar_query_succeeded = False
     try:
         cal_rows = await db_pool.fetch(
             """
@@ -1406,7 +1406,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 title,
                 starts_at,
                 metadata
-            FROM public.calendar_events
+            FROM relationship.calendar_events
             WHERE status = 'confirmed'
               AND starts_at >= $1
               AND starts_at <= now()
@@ -1415,13 +1415,19 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             """,
             scan_window_start,
         )
+        calendar_query_succeeded = True
     except asyncpg.exceptions.UndefinedTableError:
-        logger.info(
-            "interaction_sync: public.calendar_events unavailable; skipping calendar-based sync"
+        logger.warning(
+            "interaction_sync: relationship.calendar_events unavailable (UndefinedTableError); "
+            "calendar scan incomplete"
         )
+        stats["errors"] += 1
         cal_rows = []
-    except Exception:
-        logger.exception("interaction_sync: failed to query public.calendar_events")
+    except Exception as exc:
+        logger.exception(
+            "interaction_sync: failed to query relationship.calendar_events (%s)",
+            type(exc).__name__,
+        )
         stats["errors"] += 1
         cal_rows = []
 
@@ -1739,23 +1745,22 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         )
                         stats["errors"] += 1
 
-    # Persist the end of this scan window as the next checkpoint. Fail-open for
-    # the same reasons as the read above (interaction_log() dedups, scheduler
-    # storm avoidance). Surface via stats["errors"] + WARNING logs so monitoring
-    # catches recurring write failures without turning a completed fallback scan
-    # into an ERROR-level job failure.
-    next_checkpoint = scan_window_end.isoformat()
-    try:
-        await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
-    except Exception:
-        logger.warning(
-            "interaction_sync: failed to write checkpoint key=%s value=%s",
-            _INTERACTION_SYNC_STATE_KEY,
-            next_checkpoint,
-            exc_info=True,
-        )
-        stats["errors"] += 1
-
+    # A failed calendar read is not an empty successful scan. Preserve the
+    # bounded interval; committed message work deduplicates on the next run.
+    if calendar_query_succeeded:
+        next_checkpoint = scan_window_end.isoformat()
+        try:
+            await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
+        except Exception:
+            logger.warning(
+                "interaction_sync: failed to write checkpoint key=%s value=%s",
+                _INTERACTION_SYNC_STATE_KEY,
+                next_checkpoint,
+                exc_info=True,
+            )
+            stats["errors"] += 1
+    else:
+        logger.warning("interaction_sync: calendar scan incomplete; checkpoint not advanced")
     logger.info(
         "Interaction sync complete: processed=%d, logged=%d, "
         "skipped_unresolved=%d, skipped_owner=%d, "

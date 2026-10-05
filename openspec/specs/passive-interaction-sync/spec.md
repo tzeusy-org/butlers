@@ -7,7 +7,7 @@ calendar events so the Dunbar tier system has accurate data. Today, interaction
 facts are only created when the user explicitly narrates them ("I had coffee with
 Chloe"). This spec defines a background job that passively creates interaction
 facts from data already in the system: messages in `switchboard.message_inbox`
-and events in `public.calendar_events`.
+and events in `relationship.calendar_events`.
 
 ## Context
 
@@ -123,10 +123,14 @@ The relationship butler SHALL run a scheduled job (`interaction_sync`) that scan
 The `interaction_sync` job SHALL also scan past calendar events for social
 gatherings and log interactions with attendees who are known contacts.
 
+ID: REQ-passive-interaction-sync-001
+Source: Existing passive-interaction-sync calendar scenarios; RFC 0006 (accepted) schema isolation; [Observed] core_003_calendar.py and CalendarModule._upsert_projection_event; bu-2mpps3 bounded repair
+Scope: v1-mandatory
+
 #### Scenario: Detect past calendar events with attendees
 
 - **WHEN** `interaction_sync` runs
-- **THEN** it SHALL query `public.calendar_events` for events where:
+- **THEN** it SHALL query `relationship.calendar_events` for events where:
   - `starts_at` is within the scan window
   - `status` = `'confirmed'`
   - The event has attendees in `metadata->'attendees'` (JSONB array)
@@ -161,10 +165,21 @@ gatherings and log interactions with attendees who are known contacts.
 - **WHEN** a calendar event has `status = 'cancelled'`
 - **THEN** the job SHALL skip that event
 
+#### Scenario: Calendar projection query failure is visible
+
+- **WHEN** the job cannot read `relationship.calendar_events` because the table is missing, a required column is missing, or access is denied
+- **THEN** it SHALL increment the existing `errors` return counter and log the calendar query failure with its failure category
+- **AND** it SHALL retain already-created message interactions and continue returning the existing job result shape
+- **AND** a failed calendar read MUST NOT be represented as a successful empty calendar scan or an all-clear
+
 ### Requirement: Scan window and checkpoint
 
 The job SHALL maintain a durable checkpoint to avoid re-scanning the full history
 on every run.
+
+ID: REQ-passive-interaction-sync-002
+Source: Existing passive-interaction-sync Checkpoint persistence scenario and 30-day bound; RFC 0029 honest absence; bu-2mpps3 bounded failure/recovery correction
+Scope: v1-mandatory
 
 #### Scenario: Checkpoint persistence
 
@@ -184,6 +199,19 @@ on every run.
 - **WHEN** the checkpoint is older than 30 days (e.g., after a long outage)
 - **THEN** the scan window start SHALL be capped at 30 days ago to prevent
   unbounded backfill
+
+#### Scenario: Calendar query failure retains the checkpoint
+
+- **WHEN** the message portion has completed but the calendar projection query fails
+- **THEN** the job SHALL leave `interaction_sync.last_scan_at` unchanged so the next scheduled run can read the unprocessed calendar events in the original bounded window
+- **AND** it SHALL preserve message interactions already created by that run
+- **AND** after the calendar query becomes available, rerunning SHALL create the recovered calendar interactions and co-attended edges once without duplicating the previously-created message interactions
+- **AND** the existing 30-day scan cap SHALL still apply
+
+#### Scenario: A successful empty calendar read advances normally
+
+- **WHEN** the calendar query succeeds and returns no qualifying events, and the job otherwise reaches checkpoint persistence
+- **THEN** the job SHALL persist the scan window end normally rather than treating a genuine empty result as a failed read
 
 ### Requirement: Schedule configuration
 
