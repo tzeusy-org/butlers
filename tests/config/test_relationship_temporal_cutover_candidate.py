@@ -36,6 +36,7 @@ from butlers.relationship_temporal_cutover import (
 from butlers.testing.migration import (
     _create_test_migration_role,
     _upgrade_chain_to_revision,
+    assert_at_chain_head,
     bootstrap_extensions,
     create_migrated_test_db,
     init_db_sql_for_dbapi,
@@ -766,6 +767,7 @@ def test_durable_birth_survives_interrupted_bootstrap_and_committed_partial_resu
             ).scalar_one() == _encoded(db.birth)
         _bootstrap(db)
         _migrate(db, partial=True)
+        # pinned-revision: committed pre-expand checkpoint deliberately resumes through rel035/036.
         assert _read(db, "SELECT version_num FROM relationship.alembic_version") == "rel_034"
         asyncio.run(
             run_migrations(
@@ -774,7 +776,8 @@ def test_durable_birth_survives_interrupted_bootstrap_and_committed_partial_resu
                 schema="relationship",
             )
         )
-        assert _read(db, "SELECT version_num FROM relationship.alembic_version") == "rel_036"
+        with db.migration.connect() as conn:
+            assert_at_chain_head(conn, "relationship", chain="relationship")
         # A genuine protected birth copied from another actual migrated target
         # must fail despite the correct protected object owner and body.
         _assert_source_creation_and_actual_normal_role_catalog_visibility(db)
@@ -797,7 +800,8 @@ def test_durable_birth_survives_interrupted_bootstrap_and_committed_partial_resu
             with pytest.raises(CandidateRefusal, match="^candidate_object_missing$"):
                 with conn.begin_nested():
                     consume_candidate_binding(conn, binding, proof)
-        assert _read(db, "SELECT version_num FROM relationship.alembic_version") == "rel_036"
+        with db.migration.connect() as conn:
+            assert_at_chain_head(conn, "relationship", chain="relationship")
         assert _read(db, "SELECT to_regclass('relationship.uq_ef_spo_active') IS NOT NULL")
     finally:
         _drop(db)
