@@ -3007,6 +3007,7 @@ async def test_catalog_search_empty_results(app, monkeypatch):
     assert resp.json()["data"] == []
 
 
+# REQ-entity-graph-008: incident count helper or mocked HTTP coverage mapping only.
 async def test_catalog_search_attaches_graph_coverage_for_entity_anchored_result(app, monkeypatch):
     """An entity-anchored row gets its RFC 0031 relationship counts attached."""
     from butlers.core import entity_graph_edges as _graph_edges_module
@@ -3076,6 +3077,7 @@ async def test_catalog_search_omits_graph_coverage_without_entity_id(app, monkey
     assert resp.json()["data"][0]["graph_coverage"] is None
 
 
+# REQ-entity-graph-008: incident count helper or mocked HTTP coverage mapping only.
 async def test_catalog_search_graph_coverage_none_when_entity_has_no_edges(app, monkeypatch):
     """An entity absent from the coverage map (zero edges) yields graph_coverage=None."""
     from butlers.core import entity_graph_edges as _graph_edges_module

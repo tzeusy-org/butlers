@@ -183,6 +183,7 @@ class TestCommitmentEntityGraphProjection:
         )
         assert await _edge_for_condition(pool, transition.condition_id) is None
 
+    # REQ-entity-graph-002: actual source transaction/projection effect asserted here.
     async def test_projection_failure_rolls_back_the_commitment_write(
         self,
         pool: asyncpg.Pool,
@@ -215,6 +216,8 @@ class TestCommitmentEntityGraphProjection:
 
         assert await _rows_for(pool, source) == []
 
+    # REQ-entity-graph-001: natural-key rerun assertions only.
+    # REQ-entity-graph-004: repeat-call helper idempotence only; recovery invocation remains uncovered.
     async def test_backfill_is_idempotent(
         self,
         pool: asyncpg.Pool,

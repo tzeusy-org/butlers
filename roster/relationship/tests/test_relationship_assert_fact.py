@@ -345,6 +345,7 @@ class TestEntityGraphEdgeProjection:
         assert new_edge is not None
         assert new_edge["object_entity_id"] == other_entity_id
 
+    # REQ-entity-graph-002: actual source transaction/projection effect asserted here.
     async def test_projection_failure_rolls_back_the_fact_write(
         self, pool, entity, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -378,6 +379,8 @@ class TestEntityGraphEdgeProjection:
         )
         assert survived == 0
 
+    # REQ-entity-graph-001: natural-key rerun assertions only.
+    # REQ-entity-graph-004: repeat-call helper idempotence only; recovery invocation remains uncovered.
     async def test_backfill_is_idempotent(self, pool, entity) -> None:
         """Backfilling the same pre-existing active row twice never duplicates its edge."""
         from butlers.core.entity_graph_edges import backfill_relationship_entity_facts_edges
