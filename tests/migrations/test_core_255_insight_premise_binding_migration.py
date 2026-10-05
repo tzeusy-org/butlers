@@ -2,8 +2,9 @@
 
 Real PostgreSQL: the new columns/vocabulary arrive without disturbing existing
 rows, the enqueue definer is idempotent per (candidate, resolution), a second
-schema's core run is a no-op, and downgrade folds the new values back before
-narrowing the constraints.
+schema's populated core run preserves every outcome and its provenance, and
+bounded downgrades retain their documented folds without narrowing the shared
+ledger CHECK.
 """
 
 from __future__ import annotations
@@ -69,6 +70,28 @@ def _attention_ledger_snapshot(db_url: str) -> tuple[list[dict], list[tuple], li
         engine.dispose()
 
 
+def _seed_attention_ledger(conn, outcomes: tuple[str, ...], provenance: str) -> None:
+    """Plant the same full outcome/provenance witness for replay and rollback."""
+    conn.execute(
+        text(
+            "INSERT INTO public.attention_ledger "
+            "(origin_butler, source, outcome, reason, dedup_key, notification_ref, metadata) "
+            "VALUES ('general', 'insight', :outcome, :reason, :dedup, :notification, "
+            "jsonb_build_object('seed', CAST(:outcome AS text), 'provenance', CAST(:provenance AS text)))"
+        ),
+        [
+            {
+                "outcome": outcome,
+                "reason": f"synthetic-reason:{outcome}",
+                "dedup": f"synthetic-dedup:{outcome}",
+                "notification": f"synthetic-notification:{outcome}",
+                "provenance": provenance,
+            }
+            for outcome in outcomes
+        ],
+    )
+
+
 def test_current_attention_outcomes_survive_populated_schema_replay(postgres_container) -> None:
     """A new core schema must preserve an already-current shared ledger."""
     outcomes = (
@@ -93,24 +116,7 @@ def test_current_attention_outcomes_survive_populated_schema_replay(postgres_con
                     "FROM pg_roles WHERE rolname = current_user"
                 )
             ).scalar_one()
-            conn.execute(
-                text(
-                    "INSERT INTO public.attention_ledger "
-                    "(origin_butler, source, outcome, reason, dedup_key, notification_ref, metadata) "
-                    "VALUES ('general', 'insight', :outcome, :reason, :dedup, :notification, "
-                    "jsonb_build_object('seed', CAST(:outcome AS text), "
-                    "'provenance', 'synthetic-replay-sentinel'))"
-                ),
-                [
-                    {
-                        "outcome": outcome,
-                        "reason": f"synthetic-reason:{outcome}",
-                        "dedup": f"synthetic-dedup:{outcome}",
-                        "notification": f"synthetic-notification:{outcome}",
-                    }
-                    for outcome in outcomes
-                ],
-            )
+            _seed_attention_ledger(conn, outcomes, "synthetic-replay-sentinel")
             candidate = conn.execute(
                 text(
                     "INSERT INTO public.insight_candidates "
@@ -161,6 +167,65 @@ def test_current_attention_outcomes_survive_populated_schema_replay(postgres_con
     outcome_check = next(check for check in fresh[2] if check[0] == "chk_attention_ledger_outcome")
     assert outcome_check[2] is True
     assert set(re.findall(r"'([^']+)'", outcome_check[1])) == set(outcomes)
+
+
+@pytest.mark.parametrize(
+    ("revision", "predecessor", "folds"),
+    [
+        ("core_168", "core_167", {"failed": "deferred"}),
+        ("core_241", "core_240", {"expired": "suppressed"}),
+        ("core_255", "core_254", {"withdrawn": "suppressed", "amended": "delivered"}),
+    ],
+)
+def test_bounded_attention_downgrades_preserve_cumulative_check_and_provenance(
+    postgres_container, revision, predecessor, folds
+) -> None:
+    """Only the owned revision's documented outcome fold may change a row."""
+    outcomes = (
+        "delivered",
+        "coalesced",
+        "deferred",
+        "suppressed",
+        "failed",
+        "expired",
+        "withdrawn",
+        "amended",
+    )
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(db_url, ["core"])
+    # Bound the actual upgrade: this never rolls back unrelated later boundaries.
+    command.upgrade(config, revision)
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            _seed_attention_ledger(conn, outcomes, "synthetic-downgrade-sentinel")
+        before = _attention_ledger_snapshot(db_url)
+        assert len(before[0]) == len(outcomes)
+        assert {row["outcome"] for row in before[0]} == set(outcomes)
+        expected = (
+            [dict(row, outcome=folds.get(row["outcome"], row["outcome"])) for row in before[0]],
+            before[1],
+            before[2],
+        )
+        command.downgrade(config, predecessor)
+        assert _attention_ledger_snapshot(db_url) == expected
+        check = next(c for c in expected[2] if c[0] == "chk_attention_ledger_outcome")
+        assert check[2] is True
+        assert set(re.findall(r"'([^']+)'", check[1])) == set(outcomes)
+        # Keeping newer values must not turn the constraint into a fail-open one.
+        with engine.begin() as conn:
+            with pytest.raises(IntegrityError):
+                with conn.begin_nested():
+                    conn.execute(
+                        text(
+                            "INSERT INTO public.attention_ledger (origin_butler, source, outcome) "
+                            "VALUES ('general', 'insight', 'unadopted-outcome')"
+                        )
+                    )
+        command.upgrade(config, revision)
+        assert _attention_ledger_snapshot(db_url) == expected
+    finally:
+        engine.dispose()
 
 
 def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(

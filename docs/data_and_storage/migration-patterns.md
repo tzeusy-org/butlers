@@ -248,9 +248,18 @@ uv run pytest tests/test_migrations.py -q --tb=short 2>&1 | tail -20
   `public.runtime_attention_outbox` (FORCE RLS). Read such tables through
   `migration_bootstrap_db_url()` from a module-scoped db-name fixture.
 - Core revisions replay against shared `public.*` data whenever a new schema is added, so a CHECK
-  replacement in a historical revision must carry the cumulative vocabulary and a downgrade must
-  not narrow persisted values. Prove it with a real-Postgres test that migrates a second schema from
-  base after seeding current values.
+  replacement in a historical revision must carry the cumulative vocabulary. For
+  `attention_ledger`, core168/core241/core255 installers accept all eight adopted outcomes on
+  upgrade and downgrade: delivered, coalesced, deferred, suppressed, failed, expired, withdrawn,
+  amended. A later forward revision cannot repair an earlier `ADD CHECK` that already fails on
+  shared rows. Correct that historical installer; do not stamp past it, drop the CHECK, delete rows,
+  or map newer outcomes to make an upgrade pass. Downgrades retain their documented own-value
+  folds (168 failed -> deferred; 241 expired -> suppressed; 255 withdrawn -> suppressed and
+  amended -> delivered), but their CHECK remains cumulative for other schemas. Prove replay with
+  a real-Postgres test that migrates a second schema from base after seeding every current outcome,
+  reads ids/count/provenance through a separate connection, and compares the final schema and
+  vocabulary with a fresh dynamic-head database. Test downgrade/reupgrade separately at each
+  bounded revision, preserving every row and all provenance outside the documented outcome fold.
 - Table rewrites (rename old, create new) keep the old index names on the backup table; new index
   names must not collide.
 - `run_migrations` builds its Alembic config through
