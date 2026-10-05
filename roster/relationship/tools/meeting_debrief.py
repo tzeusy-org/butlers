@@ -8,8 +8,8 @@ session when to call them.
 The session does not get to invent a counterparty. Each commitment's counterparty must be
 an attendee frozen into the debrief's snapshot (or null), so a reply cannot attach an
 obligation to someone who was not in the meeting. Everything is validated before the first
-write, so a bad item cannot leave a half-captured answer; the commitment fingerprint makes
-a retry after a mid-way failure re-confirm rather than duplicate.
+write. One locked debrief transaction owns the complete answer, common commitment writes
+and projections. Retry reads the durable terminal state and cannot append another set.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from butlers.core.commitments import (
     COMMITMENT_KINDS,
     COMMITMENT_SPHERES,
     create_commitment,
+    validate_commitment_creation,
 )
 from butlers.jobs.meeting_debrief import active_entity_ids, decode_attendees
 
@@ -151,76 +152,81 @@ async def meeting_debrief_answer(
     except ValueError:
         return {"status": "not_found", "debrief_id": str(debrief_id)}
 
-    row = await pool.fetchrow(
-        """
-        SELECT id, event_id, occurrence_start, event_title, attendees, state
-        FROM meeting_debriefs WHERE id = $1
-        """,
-        debrief_uuid,
-    )
-    if row is None:
-        return {"status": "not_found", "debrief_id": str(debrief_id)}
-    if row["state"] not in _ANSWERABLE_STATES:
-        return {"status": "already_answered", "state": row["state"]}
-
-    opened: list[dict[str, Any]] = []
-    items = commitments or []
-    if items:
-        try:
-            prepared = _prepare_items(items, decode_attendees(row["attendees"]))
-        except ValueError as exc:
-            return {"status": "invalid", "reason": str(exc)}
-
-        occurrence_start: datetime = row["occurrence_start"]
-        evidence = {
-            "source": DEBRIEF_EVIDENCE_SOURCE,
-            "event_id": str(row["event_id"]),
-            "occurrence_start": occurrence_start.isoformat(),
-            "debrief_id": str(row["id"]),
-            "event_title": row["event_title"],
-            "session_id": session_id,
-        }
-        for item in prepared:
-            try:
-                transition = await create_commitment(
-                    pool,
-                    source=COMMITMENT_SOURCE,
-                    summary=item["summary"],
-                    kind=item["kind"],
-                    direction=item["direction"],
-                    counterparty_entity_id=item["counterparty_entity_id"],
-                    confidence=DEBRIEF_CONFIDENCE,
-                    evidence_opened=dict(evidence),
-                    action_description=item["summary"],
-                    deadline=item["deadline"],
-                    sphere=item["sphere"],
-                )
-            except ValueError as exc:
-                return {"status": "invalid", "reason": str(exc)}
-            if transition is None:  # unreachable: DEBRIEF_CONFIDENCE is above the creation floor
-                return {"status": "invalid", "reason": "commitment was not created"}
-            opened.append(
-                {
-                    "status": (
-                        "created"
-                        if transition.transition in ("opened", "reopened")
-                        else "confirmed"
-                    ),
-                    "fingerprint": transition.fingerprint,
-                    "counterparty_entity_id": item["counterparty_entity_id"],
-                }
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT id, event_id, occurrence_start, event_title, attendees, state
+                FROM meeting_debriefs WHERE id = $1 FOR UPDATE
+                """,
+                debrief_uuid,
             )
+            if row is None:
+                return {"status": "not_found", "debrief_id": str(debrief_id)}
+            if row["state"] not in _ANSWERABLE_STATES:
+                return {"status": "already_answered", "state": row["state"]}
 
-    state = "captured" if opened else "none_agreed"
-    await pool.execute(
-        """
-        UPDATE meeting_debriefs
-        SET state = $2, answered_at = now(), session_id = $3
-        WHERE id = $1 AND state = ANY($4::text[])
-        """,
-        debrief_uuid,
-        state,
-        session_id,
-        list(_ANSWERABLE_STATES),
-    )
+            prepared = _prepare_items(commitments or [], decode_attendees(row["attendees"]))
+            occurrence_start: datetime = row["occurrence_start"]
+            evidence = {
+                "source": DEBRIEF_EVIDENCE_SOURCE,
+                "event_id": str(row["event_id"]),
+                "occurrence_start": occurrence_start.isoformat(),
+                "debrief_id": str(row["id"]),
+                "event_title": row["event_title"],
+                "session_id": session_id,
+            }
+            creations = [
+                {
+                    "source": COMMITMENT_SOURCE,
+                    "summary": item["summary"],
+                    "kind": item["kind"],
+                    "direction": item["direction"],
+                    "counterparty_entity_id": item["counterparty_entity_id"],
+                    "confidence": DEBRIEF_CONFIDENCE,
+                    "evidence_opened": dict(evidence),
+                    "action_description": item["summary"],
+                    "deadline": item["deadline"],
+                    "sphere": item["sphere"],
+                }
+                for item in prepared
+            ]
+            for creation in creations:
+                validate_commitment_creation(**creation)
+
+            opened = []
+            for creation in creations:
+                transition = await create_commitment(pool, **creation, transaction_connection=conn)
+                if transition is None:  # confidence is fixed above the creation floor
+                    raise ValueError("commitment was not created")
+                opened.append(
+                    {
+                        "status": (
+                            "created"
+                            if transition.transition in ("opened", "reopened")
+                            else "confirmed"
+                        ),
+                        "fingerprint": transition.fingerprint,
+                        "counterparty_entity_id": creation["counterparty_entity_id"],
+                    }
+                )
+
+            state = "captured" if opened else "none_agreed"
+            updated = await conn.fetchval(
+                """
+                UPDATE meeting_debriefs
+                SET state = $2, answered_at = now(), session_id = $3
+                WHERE id = $1 AND state = ANY($4::text[])
+                RETURNING id
+                """,
+                debrief_uuid,
+                state,
+                session_id,
+                list(_ANSWERABLE_STATES),
+            )
+            if updated is None:
+                raise RuntimeError("meeting_debrief_answer: locked answerable row was not updated")
+    except ValueError as exc:
+        # The transaction has already rolled back, including prior items and hooks.
+        return {"status": "invalid", "reason": str(exc)}
     return {"status": state, "debrief_id": str(row["id"]), "commitments": opened}

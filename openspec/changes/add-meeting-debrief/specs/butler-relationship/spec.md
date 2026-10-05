@@ -36,6 +36,17 @@ The Relationship butler SHALL register `meeting_debrief_pending` and `meeting_de
 `tracking` tool group. `meeting_debrief_answer` SHALL record `none_agreed` or `captured` exactly
 once per debrief and SHALL create commitments only through `create_commitment`.
 
+Exactly once SHALL include concurrent distinct answers and a competing empty answer. Answer
+admission, all commitment effects and eligible projections, and the final answered state SHALL
+commit in one owning transaction after the locked debrief state is rechecked. The losing call
+SHALL report `already_answered` without changing commitments, evidence, answered state, timestamp
+or session. Full batch validation SHALL precede its first effect. A propagated failure or
+cancellation before commit SHALL roll back the answer's effects and leave its prior state intact;
+the tool SHALL acknowledge `captured` or `none_agreed` only after commit. A response lost during
+commit acknowledgment SHALL NOT license a second answer: retry SHALL observe the durable state
+and either return `already_answered` for a committed answer or accept a new whole answer only
+after rollback. A stale job snapshot SHALL NOT move an answered debrief back to answerable state.
+
 #### Scenario: None agreed is a recorded answer
 
 - **WHEN** the owner answers a debrief with nothing agreed
@@ -45,6 +56,44 @@ once per debrief and SHALL create commitments only through `create_commitment`.
 
 - **WHEN** an answered debrief is answered again
 - **THEN** the second call reports `already_answered` and creates nothing
+
+
+#### Scenario: Concurrent distinct answers accept one whole set
+
+- **WHEN** two actual calls concurrently answer the same unanswered debrief with different valid commitment sets
+- **THEN** exactly one call SHALL report `captured` and the other SHALL report `already_answered`
+- **AND** only the winning set's commitments, meeting evidence and eligible graph effects SHALL commit
+
+#### Scenario: None and captured compete for the same answer
+
+- **WHEN** an empty answer and a non-empty answer concurrently target the same unanswered debrief
+- **THEN** exactly one complete `none_agreed` or `captured` result SHALL commit
+- **AND** the loser and any post-commit retry SHALL change no commitment, evidence, answered timestamp or session
+
+#### Scenario: Failure after a real commitment write rolls back the whole answer
+
+- **WHEN** a propagated later commitment, eligible graph, final-state error or cancellation occurs after an answer has written an actual commitment but before commit
+- **THEN** the outer transaction SHALL roll back every effect executed by that answer and retain the debrief's prior unanswered state
+- **AND** separate-connection readback SHALL find no surviving new commitment or graph rows and no partial updates to existing evidence or conditional premise effects
+
+#### Scenario: An invalid later item refuses the entire answer
+
+- **WHEN** an answer includes a valid item followed by an item rejected by common commitment validation
+- **THEN** the tool SHALL return `invalid` after any transaction has rolled back and SHALL create no item from that answer
+- **AND** current attendee/null and declared-sphere validation SHALL remain in force
+
+#### Scenario: Lost acknowledgment does not permit a second answer
+
+- **WHEN** the client loses the result while a complete answer is being committed and retries
+- **THEN** the tool SHALL lock and inspect durable debrief state rather than infer permission from the missing response
+- **AND** a committed result SHALL yield `already_answered`; a rolled-back result MAY accept one new complete answer
+- **AND** no reply SHALL acknowledge `captured` or `none_agreed` before its commit is confirmed
+
+#### Scenario: A stale prompt snapshot cannot reopen answered state
+
+- **WHEN** the prompt job selected a pending unaskable debrief before an answer committed and later tries to expire that stale selection
+- **THEN** `captured` or `none_agreed`, answered timestamp and session SHALL remain intact and the next answer SHALL report `already_answered`
+- **AND** a genuinely still-pending unaskable debrief SHALL retain ordinary expiry behavior
 
 ### Requirement: Meeting debrief back-off
 

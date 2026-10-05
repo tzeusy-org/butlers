@@ -113,6 +113,29 @@ on the condition ledger, and deriving `sphere` from endpoint custody.
 
 ## Implementation Notes
 
+### Meeting debrief answer transactions
+
+The answer handler holds the debrief row and rechecks answerability in the same owning
+transaction as every public `create_commitment` call and the final state update. The additive
+internal `transaction_connection` option retains the ordinary pool wrapper; it must not reacquire
+the held pool connection, so a size-one pool works. Batch preflight reuses common validation.
+Required propagated graph/final-state failures and cancellation before commit roll back the batch,
+including changes to existing confirmations. Typed invalid responses follow rollback; captured/
+none_agreed follow commit. Lost commit acknowledgment remains uncertain, and durable row-lock
+retry cannot append a second answer. The job's stale unaskable expiry rechecks pending.
+
+Creation and reconfirmation use `snapshot_complete=False` and produce no resolved transition,
+so they do not generate premise amendments. The existing resolved-only premise hook retains its
+savepoint/best-effort ordinary-error behavior; this existing partial conformance does not waive the
+mandatory resolved-enqueue contract. Conditional enqueue commit/rollback proof uses a real
+resolution control. Counterparty/null, evidence, declared sphere and current prompt posture policy
+are preserved. Answer-time posture (.69) and free-text/LLM verification (.66) remain separately
+uncompleted. The source PR retains separate baseline and corrected-source receipts: the actual
+before-fix head `220cf3eb` executed 23 migrated PG cases with 10 causal failures and 13 passing
+controls in CI 37286612106. Corrected-source named PG proof, independent review and the protected
+gate remain required; source inspection and collection alone are not runtime proof.
+
+
 - `relationship.facts` is a multi-valued log store: `activity` and `interaction_*` carry many
   active rows per `(entity_id, predicate)`. Contradiction detection in
   `run_fact_retraction_curation` (`roster/relationship/jobs/relationship_jobs.py`) is therefore

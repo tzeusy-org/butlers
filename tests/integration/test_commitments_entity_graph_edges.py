@@ -22,6 +22,7 @@ sidesteps that whole class of cross-test contamination.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 
@@ -48,7 +49,7 @@ def migrated_db_url(postgres_container) -> str:
 
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=2, max_size=10)
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
     yield p
     await p.close()
 
@@ -184,37 +185,78 @@ class TestCommitmentEntityGraphProjection:
         assert await _edge_for_condition(pool, transition.condition_id) is None
 
     # REQ-entity-graph-002: actual source transaction/projection effect asserted here.
+    @pytest.mark.parametrize("mode", ["pool", "caller-transaction"])
     async def test_projection_failure_rolls_back_the_commitment_write(
         self,
         pool: asyncpg.Pool,
         source: str,
         owner_and_counterparty: tuple[uuid.UUID, uuid.UUID],
         monkeypatch: pytest.MonkeyPatch,
+        mode: str,
     ) -> None:
         """RFC 0031 write-behind contract: a projection failure fails the whole write."""
         from butlers.core import entity_graph_edges
 
         _, counterparty_id = owner_and_counterparty
 
-        async def _boom(*args, **kwargs):
+        positive = await create_commitment(
+            pool,
+            source=source + ":positive",
+            summary="Keep the existing agreement",
+            kind="promise",
+            direction="owner_to_other",
+            counterparty_entity_id=str(counterparty_id),
+            confidence=0.9,
+            evidence_opened=_evidence("positive"),
+            action_description="keep the existing agreement",
+        )
+        positive_edge = await _edge_for_condition(pool, positive.condition_id)
+        assert positive_edge is not None and positive_edge["object_entity_id"] == counterparty_id
+        real_projector = entity_graph_edges.project_entity_graph_edge
+        projected_ids = []
+
+        async def _boom(conn, **kwargs):
+            await real_projector(conn, **kwargs)
+            assert (
+                await conn.fetchval(
+                    "SELECT count(*) FROM public.entity_graph_edges WHERE source_id = $1",
+                    kwargs["source_id"],
+                )
+                == 1
+            )
+            projected_ids.append(kwargs["source_id"])
             raise RuntimeError("simulated entity_graph_edges projection failure")
 
         monkeypatch.setattr(entity_graph_edges, "project_entity_graph_edge", _boom)
 
+        creation = dict(
+            source=source,
+            summary="Send Sam the book",
+            kind="promise",
+            direction="owner_to_other",
+            counterparty_entity_id=str(counterparty_id),
+            confidence=0.9,
+            evidence_opened=_evidence("session-1"),
+            action_description="send Sam the book",
+        )
         with pytest.raises(RuntimeError, match="simulated entity_graph_edges projection failure"):
-            await create_commitment(
-                pool,
-                source=source,
-                summary="Send Sam the book",
-                kind="promise",
-                direction="owner_to_other",
-                counterparty_entity_id=str(counterparty_id),
-                confidence=0.9,
-                evidence_opened=_evidence("session-1"),
-                action_description="send Sam the book",
-            )
+            async with asyncio.timeout(15):
+                if mode == "pool":
+                    await create_commitment(pool, **creation)
+                else:
+                    async with pool.acquire() as conn, conn.transaction():
+                        await create_commitment(pool, **creation, transaction_connection=conn)
 
+        assert len(projected_ids) == 1, "actual graph SQL preceded the propagated fault"
         assert await _rows_for(pool, source) == []
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.entity_graph_edges WHERE source_id = ANY($1::uuid[])",
+                projected_ids,
+            )
+            == 0
+        )
+        assert await _edge_for_condition(pool, positive.condition_id) == positive_edge
 
     # REQ-entity-graph-001: natural-key rerun assertions only.
     # REQ-entity-graph-004: repeat-call helper idempotence only; recovery invocation remains uncovered.

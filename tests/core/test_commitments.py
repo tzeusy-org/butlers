@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -251,6 +251,8 @@ class TestCreateCommitmentValidation:
             ("deadline", "not-a-timestamp", "deadline"),
             ("deadline", 1756000000, "deadline"),
             ("initial_grace_seconds", -1, "initial_grace_seconds"),
+            ("sphere", "hobby", "sphere"),
+            ("sphere", True, "sphere"),
         ],
     )
     async def test_req_commitment_lifecycle_002_rejects_bad_input_before_the_database(
@@ -261,6 +263,13 @@ class TestCreateCommitmentValidation:
         with pytest.raises(ValueError, match=match):
             await create_commitment(pool, **{**VALID_CREATE, field: value})
 
+        connection = MagicMock()
+        connection.is_in_transaction.side_effect = AssertionError("invalid input probed connection")
+        with pytest.raises(ValueError, match=match):
+            await create_commitment(
+                pool, **{**VALID_CREATE, field: value}, transaction_connection=connection
+            )
+        connection.is_in_transaction.assert_not_called()
         _assert_pool_untouched(pool)
 
     @pytest.mark.parametrize("kind", sorted(commitments.COMMITMENT_KINDS))
