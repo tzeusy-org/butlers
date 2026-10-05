@@ -18,9 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from fastmcp.server.dependencies import AccessToken
 
-from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.daemon import ButlerDaemon
 from butlers.modules.telegram import TelegramProviderResponseError
 
@@ -233,15 +231,6 @@ def _trusted_recovery_context() -> dict[str, Any]:
     return {"issuer": "relationship", "owning_schema": "relationship", **recovery}
 
 
-def _switchboard_recovery_token() -> AccessToken:
-    return AccessToken(
-        token="synthetic",
-        client_id="butler:switchboard",
-        scopes=["approval-recovery:switchboard"],
-        claims={"actor_type": "daemon", "butler_name": "switchboard"},
-    )
-
-
 @pytest.fixture(autouse=True)
 def _mock_route_inbox(monkeypatch):
     """Patch route_inbox DB calls so tests don't need a real DB pool."""
@@ -340,7 +329,7 @@ class TestRouteExecuteAuthz:
         tg_mod._send_message.assert_awaited_once()
         assert result_ok["status"] == "ok"
 
-    # Spec: REQ-approval-delivery-intent-recovery-004; injected-principal route test rejects authority mismatches before ledger/egress.
+    # Spec: REQ-approval-delivery-intent-recovery-004; public DTO/correlation cannot create protected approval authority.
     async def test_recovery_requires_authenticated_switchboard_before_provider(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -357,13 +346,8 @@ class TestRouteExecuteAuthz:
         telegram = next(module for module in daemon._modules if module.name == "telegram")
         telegram._send_message = AsyncMock(return_value={"message_id": "provider-ref"})
 
-        async def _process(_context, *, provider_call, **_kwargs):
-            assert provider_call is not None
-            await provider_call()
-            return HandoffResult("confirmed", provider_reference="provider-ref")
-
         repository = MagicMock()
-        repository.process = AsyncMock(side_effect=_process)
+        repository.process = AsyncMock()
         route_payload = {
             "schema_version": "route.v1",
             "request_context": _route_request_context(
@@ -379,35 +363,6 @@ class TestRouteExecuteAuthz:
             },
         }
 
-        with (
-            patch(
-                "butlers.core_tools._routing.get_access_token",
-                return_value=_switchboard_recovery_token(),
-            ),
-            patch(
-                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
-                new=AsyncMock(return_value={"owner": True}),
-            ),
-            patch(
-                "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
-                return_value=repository,
-            ),
-        ):
-            accepted = await route_execute(**route_payload)
-
-        assert accepted["status"] == "ok"
-        assert accepted["result"]["notify_response"]["handoff"] == {
-            "classification": "confirmed",
-            "provider_reference": "provider-ref",
-        }
-        telegram._send_message.assert_awaited_once()
-
-        wrong_scope = AccessToken(
-            token="synthetic",
-            client_id="butler:switchboard",
-            scopes=["unrelated"],
-            claims={"actor_type": "daemon", "butler_name": "switchboard"},
-        )
         malformed = {
             **route_payload,
             "input": {
@@ -453,20 +408,12 @@ class TestRouteExecuteAuthz:
                 },
             },
         }
-        cases = [
-            (None, route_payload),
-            (wrong_scope, route_payload),
-            (_switchboard_recovery_token(), malformed),
-            (_switchboard_recovery_token(), origin_mismatch),
-            (_switchboard_recovery_token(), missing_attestation),
-            (_switchboard_recovery_token(), mismatch),
-        ]
+        cases = [route_payload, malformed, origin_mismatch, missing_attestation, mismatch]
         telegram._send_message.reset_mock()
         repository.process.reset_mock()
         patches["mock_pool"].reset_mock()
         caplog.clear()
         with (
-            patch("butlers.core_tools._routing.get_access_token") as access_token,
             patch(
                 "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
                 return_value=repository,
@@ -480,8 +427,7 @@ class TestRouteExecuteAuthz:
             ) as owner_lookup,
         ):
             refusals = []
-            for token, payload in cases:
-                access_token.return_value = token
+            for payload in cases:
                 refusals.append(await route_execute(**payload))
 
         assert all(result == refusals[0] for result in refusals)

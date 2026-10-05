@@ -16,7 +16,6 @@ from pydantic import ValidationError
 from butlers.core.approval_delivery_transport import (
     RecoveryAuthorityError,
     TrustedRecoveryContext,
-    recovery_context_from_request,
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.tools.switchboard.notification.log import log_notification
@@ -523,26 +522,35 @@ async def _authenticate_recovery_request(
     envelope_payload: dict[str, Any],
     source_butler: str,
     trusted_source: str | None,
+    verified_context: TrustedRecoveryContext | None,
 ) -> tuple[NotifyRequestV1, RouteRequestContextV1, TrustedRecoveryContext] | None:
     """Authenticate recovery before emitting caller-derived observability."""
-    if trusted_source is None:
+    # Legacy caller/claimed principal text cannot establish a source row.
+    if verified_context is None:
         return None
     try:
         notify_request = parse_notify_request(envelope_payload)
         recovery = notify_request.recovery
         if (
             recovery is None
-            or trusted_source != source_butler
-            or notify_request.origin_butler != trusted_source
+            or verified_context.issuer != source_butler
+            or notify_request.origin_butler != verified_context.issuer
         ):
             raise RecoveryAuthorityError("recovery source principal does not match issuer")
-        trusted = recovery_context_from_request(issuer=trusted_source, recovery=recovery)
+        trusted = verified_context
+        trusted.validate()
+        if any(
+            getattr(recovery, key) != value
+            for key, value in trusted.as_internal_dict().items()
+            if key not in {"issuer", "owning_schema"}
+        ):
+            raise RecoveryAuthorityError("source admission does not match request")
     except (RecoveryAuthorityError, ValidationError):
         return None
 
     try:
         if receiver_route_cutover_enabled():
-            expected = expected_route_target(trusted_source)
+            expected = expected_route_target(trusted.issuer)
             if expected is None:
                 return None
             decision = await resolve_control_plane_target(pool, expected)
@@ -554,15 +562,15 @@ async def _authenticate_recovery_request(
                 SELECT name FROM switchboard.butler_registry
                 WHERE name = $1 AND eligibility_state = 'active'
                 """,
-                trusted_source,
+                trusted.issuer,
             )
-            if registered != trusted_source:
+            if registered != trusted.issuer:
                 return None
     except Exception:
         return None
 
     request_context = notify_request.request_context or _default_notify_request_context(
-        trusted_source
+        trusted.issuer
     )
     return notify_request, request_context, trusted
 
@@ -620,6 +628,7 @@ async def deliver(
     *,
     call_fn: Any | None = None,
     trusted_source: str | None = None,
+    verified_context: TrustedRecoveryContext | None = None,
 ) -> dict[str, Any]:
     """Deliver a notification through the specified channel.
 
@@ -662,6 +671,7 @@ async def deliver(
             envelope_payload=envelope_payload,
             source_butler=source_butler,
             trusted_source=trusted_source,
+            verified_context=verified_context,
         )
         if authenticated is None:
             return _recovery_authority_refusal()

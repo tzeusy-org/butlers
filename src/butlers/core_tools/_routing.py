@@ -19,17 +19,19 @@ from typing import Any
 
 import asyncpg
 import httpx
-from fastmcp.server.dependencies import get_access_token
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 from opentelemetry.trace import Link as OtelLink
 from pydantic import ValidationError
 
+from butlers.core.approval_delivery_authority import (
+    guard_registered_approval_tool,
+    protected_approval_principal,
+)
 from butlers.core.approval_delivery_transport import (
     MessengerApprovalHandoffRepository,
     RecoveryAuthorityError,
     TrustedRecoveryContext,
-    authenticated_daemon_name,
 )
 from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
@@ -122,10 +124,7 @@ def _preauthenticate_messenger_recovery(
     trusted_route_callers: set[str] | frozenset[str] | list[str],
 ) -> TrustedRecoveryContext:
     """Authenticate and bind recovery before any trace, log, lookup, or response detail."""
-    switchboard_principal = authenticated_daemon_name(
-        get_access_token(),
-        required_scope="approval-recovery:switchboard",
-    )
+    switchboard_principal = protected_approval_principal(audience="messenger:approval-recovery")
     if switchboard_principal != "switchboard":
         raise RecoveryAuthorityError("Messenger requires authenticated Switchboard")
 
@@ -650,6 +649,24 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
     # route.execute is ALWAYS registered regardless of core_groups.
     # The Switchboard calls it server-to-server via MCP to deliver routed
     # requests. It is an infrastructure endpoint, not an LLM-facing tool.
+    async def preauthorize_route(arguments: dict[str, Any]) -> dict[str, Any] | None:
+        if butler_name != "messenger" or not _raw_input_has_approval_recovery(
+            arguments.get("input")
+        ):
+            return None
+        try:
+            _preauthenticate_messenger_recovery(
+                **{
+                    ("input_payload" if key == "input" else key): value
+                    for key, value in arguments.items()
+                },
+                trusted_route_callers=daemon.config.trusted_route_callers,
+            )
+        except Exception:
+            return _approval_recovery_refusal_response()
+        return None
+
+    @guard_registered_approval_tool(mcp, preauthorize_route)
     @mcp.tool(name="route.execute")
     async def route_execute(
         schema_version: str,

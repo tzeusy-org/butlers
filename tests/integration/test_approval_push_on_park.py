@@ -28,8 +28,10 @@ from butlers.api.routers.notifications import (
     _fetch_notification_row,
     _query_notifications,
     ack_failed_notifications,
+    escalate_notification,
     mark_notification_read,
     notification_stats,
+    retry_notification,
 )
 from butlers.config import ApprovalRiskTier
 from butlers.core.approval_delivery_transport import (
@@ -1095,20 +1097,11 @@ async def test_recovery_path_persists_no_generic_or_history_content(
     notify_request["recovery"].pop("issuer")
     notify_request["recovery"].pop("owning_schema")
 
-    route_result = {
-        "result": {
-            "notify_response": {
-                "status": "ok",
-                "handoff": {"classification": "confirmed"},
-            }
-        },
-        "transport": {"outcome": "confirmed", "retryable": False},
-    }
     with (
         patch(
             "butlers.tools.switchboard.notification.deliver.route",
-            new=AsyncMock(return_value=route_result),
-        ),
+            new=AsyncMock(),
+        ) as remote_route,
         patch(
             "butlers.tools.switchboard.notification.deliver.log_notification",
             new=AsyncMock(),
@@ -1121,8 +1114,11 @@ async def test_recovery_path_persists_no_generic_or_history_content(
             notify_request=notify_request,
         )
 
-    assert result["handoff"]["classification"] == "confirmed"
+    # Claimed daemon text cannot establish independent source admission.
+    # The registered positive transport is covered by the authority harness.
+    assert result["error"] == "Approval recovery authority rejected."
     generic_log.assert_not_awaited()
+    remote_route.assert_not_awaited()
     assert await switchboard_recovery_pool.fetchval("SELECT count(*) FROM notifications") == 0
     assert await switchboard_recovery_pool.fetchval("SELECT count(*) FROM message_inbox") == 0
     now = datetime.now(UTC)
@@ -1257,6 +1253,10 @@ async def test_recovery_path_persists_no_generic_or_history_content(
             cache=cache,
         )
     assert read_error.value.status_code == 404
+    for forbidden_control in (retry_notification, escalate_notification):
+        with pytest.raises(HTTPException) as control_error:
+            await forbidden_control(recovery_notification_id, db=fake_db, cache=cache)
+        assert control_error.value.status_code == 404
     acknowledged = await ack_failed_notifications(db=fake_db, cache=cache)
     assert acknowledged.data.acknowledged == 0
     with pytest.raises(ValueError, match="no generic replay envelope"):
@@ -1301,6 +1301,54 @@ async def test_recovery_path_persists_no_generic_or_history_content(
             now,
         )
         == ""
+    )
+
+    # Positive ordinary companions for the exact SQL/control surfaces above.
+    # The failed recovery row stays planted throughout this exercise.
+    ordinary_id = await switchboard_recovery_pool.fetchval(
+        "INSERT INTO notifications(source_butler,channel,recipient,message,metadata,status) "
+        "VALUES ('relationship','telegram','ordinary-owner','ordinary-control','{}'::jsonb,'failed') "
+        "RETURNING id"
+    )
+    ordinary_row = await _fetch_notification_row(switchboard_recovery_pool, ordinary_id)
+    assert ordinary_row is not None and ordinary_row["message"] == "ordinary-control"
+    assert _extract_stored_envelope(ordinary_row)["delivery"]["message"] == "ordinary-control"
+    ordinary_page = await _query_notifications(switchboard_recovery_pool, offset=0, limit=20)
+    assert [row.id for row in ordinary_page.data] == [ordinary_id]
+    ordinary_stats = await notification_stats(since=None, until=None, db=fake_db)
+    assert ordinary_stats.data.total == ordinary_stats.data.failed == 1
+    ordinary_timeline = await query_timeline_notifications_single(
+        switchboard_recovery_pool, limit=20
+    )
+    assert len(ordinary_timeline) == 1
+    ordinary_histogram = await query_timeline_notification_histogram_single(
+        switchboard_recovery_pool,
+        since=now - timedelta(hours=1),
+        until=now + timedelta(hours=1),
+    )
+    assert ordinary_histogram
+    (
+        ordinary_attention,
+        ordinary_attention_count,
+    ) = await query_timeline_attention_notifications_single(
+        switchboard_recovery_pool,
+        since=now - timedelta(hours=1),
+        until=now + timedelta(hours=1),
+    )
+    assert ordinary_attention and ordinary_attention_count == 1
+    acknowledged = await ack_failed_notifications(db=fake_db, cache=cache)
+    assert acknowledged.data.acknowledged == 1
+    read = await mark_notification_read(ordinary_id, db=fake_db, cache=cache)
+    assert read.data.id == ordinary_id and read.data.status == "read"
+    for ordinary_control in (retry_notification, escalate_notification):
+        with pytest.raises(HTTPException) as ordinary_control_error:
+            await ordinary_control(ordinary_id, db=fake_db, cache=cache)
+        assert ordinary_control_error.value.status_code == 409
+    assert (
+        await switchboard_recovery_pool.fetchval(
+            "SELECT status FROM notifications WHERE id=$1", recovery_notification_id
+        )
+        == "failed"
     )
 
 
