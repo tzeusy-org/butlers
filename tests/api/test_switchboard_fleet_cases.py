@@ -126,6 +126,8 @@ def _sample_link_row(**overrides):
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_happy_path_maps_all_fields(app):
     app, _ = _app_with_mock(app, fetch_rows=[_make_row(_sample_case_row())])
     async with httpx.AsyncClient(
@@ -178,6 +180,8 @@ async def test_list_cases_posture_filter_adds_condition(app):
     assert call[0][1] == ["urgent"]
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_has_more_emits_next_cursor(app):
     rows = [
         _make_row(_sample_case_row(id=f"11111111-1111-1111-1111-11111111111{i}")) for i in range(3)
@@ -195,6 +199,8 @@ async def test_list_cases_has_more_emits_next_cursor(app):
     assert body["meta"]["next_cursor"] is not None
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_cursor_round_trips_into_where_clause(app):
     app, mock_pool = _app_with_mock(app, fetch_rows=[])
     cursor_payload = {"ua": "2026-09-01T00:00:00+00:00", "id": "some-id"}
@@ -270,6 +276,8 @@ async def test_list_cases_graceful_degrade_when_table_missing(app):
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_get_case_happy_path_includes_evidence_and_links(app):
     app, mock_pool = _app_with_mock(
         app,
@@ -300,6 +308,8 @@ async def test_get_case_happy_path_includes_evidence_and_links(app):
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_get_case_not_found_404(app):
     _app_with_mock(app, fetchrow_result=None)
     async with httpx.AsyncClient(
@@ -309,6 +319,8 @@ async def test_get_case_not_found_404(app):
     assert resp.status_code == 404
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_get_case_invalid_uuid_422(app):
     _app_with_mock(app, fetchrow_result=None)
     async with httpx.AsyncClient(
@@ -327,6 +339,8 @@ async def test_get_case_503_when_pool_unavailable(app):
     assert resp.status_code == 503
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_get_case_503_when_lookup_fails(app):
     _app_with_mock(app, fetchrow_side_effect=RuntimeError("relation does not exist"))
     async with httpx.AsyncClient(

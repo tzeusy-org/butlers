@@ -184,6 +184,8 @@ async def _bootstrap_pool(bootstrap_url: str) -> asyncpg.Pool:
     return await asyncpg.create_pool(bootstrap_url, min_size=1, max_size=1)
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_state_check_constraint_rejects_bogus_value(
     fresh_core_only_bootstrap_url: str,
@@ -201,6 +203,8 @@ async def test_state_check_constraint_rejects_bogus_value(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_posture_check_constraint_rejects_bogus_value(
     fresh_core_only_bootstrap_url: str,
@@ -218,6 +222,8 @@ async def test_posture_check_constraint_rejects_bogus_value(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_closed_requires_outcome(fresh_core_only_bootstrap_url: str) -> None:
     pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
@@ -233,6 +239,8 @@ async def test_closed_requires_outcome(fresh_core_only_bootstrap_url: str) -> No
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_non_closed_state_rejects_outcome(fresh_core_only_bootstrap_url: str) -> None:
     pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
@@ -248,6 +256,8 @@ async def test_non_closed_state_rejects_outcome(fresh_core_only_bootstrap_url: s
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-002
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_close_with_outcome_and_closed_at_succeeds(
     fresh_core_only_bootstrap_url: str,
@@ -269,6 +279,8 @@ async def test_close_with_outcome_and_closed_at_succeeds(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-003
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_active_correlation_key_uniqueness_rejects_second_active_case(
     fresh_core_only_bootstrap_url: str,
@@ -293,6 +305,8 @@ async def test_active_correlation_key_uniqueness_rejects_second_active_case(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-003
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_closed_case_does_not_block_reopening_same_correlation_key(
     fresh_core_only_bootstrap_url: str,
@@ -322,6 +336,8 @@ async def test_closed_case_does_not_block_reopening_same_correlation_key(
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-004
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_evidence_idempotent_per_contributor_kind_ref(
     fresh_core_only_bootstrap_url: str,
@@ -405,6 +421,8 @@ async def test_evidence_cascades_on_case_delete(fresh_core_only_bootstrap_url: s
         await pool.close()
 
 
+# Spec: REQ-fleet-case-file-006
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_switchboard_role_can_insert_case_other_roles_cannot(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
@@ -444,6 +462,8 @@ async def test_switchboard_role_can_insert_case_other_roles_cannot(
         await bootstrap_pool.close()
 
 
+# Spec: REQ-fleet-case-file-006
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_switchboard_role_can_update_case_other_roles_cannot(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
@@ -495,6 +515,8 @@ async def test_switchboard_role_can_update_case_other_roles_cannot(
         await bootstrap_pool.close()
 
 
+# Spec: REQ-fleet-case-file-006
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_switchboard_role_can_insert_link_other_roles_cannot(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
@@ -545,6 +567,8 @@ async def test_switchboard_role_can_insert_link_other_roles_cannot(
         await bootstrap_pool.close()
 
 
+# Spec: REQ-fleet-case-file-006
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_switchboard_role_can_update_link_other_roles_cannot(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
@@ -608,6 +632,8 @@ async def test_switchboard_role_can_update_link_other_roles_cannot(
         await bootstrap_pool.close()
 
 
+# Spec: REQ-fleet-case-file-004
+# Actual migrated constraint/role seam; no post-migration bootstrap replay proof.
 @_asyncio_session
 async def test_any_role_can_insert_evidence(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
