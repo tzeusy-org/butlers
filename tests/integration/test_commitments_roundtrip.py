@@ -14,6 +14,7 @@ proofs — tests/integration/test_owner_conditions_roundtrip.py owns those.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -46,7 +47,7 @@ def migrated_db_url(postgres_container) -> str:
 
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=2, max_size=10)
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
     yield p
     await p.close()
 
@@ -90,11 +91,11 @@ async def _rows_for(pool: asyncpg.Pool, source: str) -> list[asyncpg.Record]:
 
 
 class TestCommitmentCreation:
+    @pytest.mark.parametrize("mode", ["pool", "caller-transaction"])
     async def test_req_commitment_lifecycle_001_persists_the_metadata_convention(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, pool: asyncpg.Pool, source: str, entity_id: str, mode: str
     ) -> None:
-        transition = await create_commitment(
-            pool,
+        creation = dict(
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -105,6 +106,23 @@ class TestCommitmentCreation:
             action_description="send Sam the book",
             deadline="2026-09-01T00:00:00+00:00",
         )
+        if mode == "pool":
+            transition = await create_commitment(pool, **creation)
+        else:
+            async with asyncio.timeout(15), pool.acquire() as conn:
+                with pytest.raises(ValueError, match="requires an active transaction"):
+                    await create_commitment(pool, **creation, transaction_connection=conn)
+                assert (
+                    await conn.fetchval(
+                        "SELECT count(*) FROM public.owner_conditions WHERE source = $1", source
+                    )
+                    == 0
+                )
+                async with conn.transaction():
+                    transition = await create_commitment(
+                        pool, **creation, transaction_connection=conn
+                    )
+                    assert conn.is_in_transaction(), "callee cannot commit the caller's transaction"
 
         assert transition is not None
         assert transition.transition == "opened"

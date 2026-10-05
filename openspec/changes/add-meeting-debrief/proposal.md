@@ -26,3 +26,16 @@ them back out. "I'll send you the deck" said in a 1:1 is lost; "nothing agreed" 
 - Deriving `sphere` from endpoint custody (waits for the custody move); the first slice takes the
   owner's declaration only.
 - A Vocation butler home for the job (an owner decision).
+
+## Required answer atomicity repair (bu-q7vx1q.68)
+
+Exactly-once answer recording includes competing distinct commitment sets, an empty/non-empty
+race, complete rollback after an actual first write and committed-state retry. The repair composes
+the existing public create_commitment path on the handler's owning connection, preserving shared
+validation, source lock and graph/conditional premise hooks. The prompt job must recheck pending
+before expiring a stale unaskable selection so it cannot reopen answered state. Current source
+inspection and old sequential tests are not executed concurrency/rollback proof; retain meaningful
+before-fix migrated PostgreSQL counterexamples and corrected exact-source receipts. All original
+producer, sphere, job/back-off and registered inventory requirements remain mandatory. Separate
+answer-time posture policy (.69) and free-text/LLM reply proof (.66) remain incomplete, and this
+repair does not archive the whole active change as implemented.

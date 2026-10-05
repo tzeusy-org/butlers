@@ -326,7 +326,8 @@ async def _propose_batch(
         (askable if kept else unaskable).append((debrief_id, title, kept))  # type: ignore[arg-type]
     if unaskable:
         await pool.execute(
-            "UPDATE meeting_debriefs SET state = 'expired' WHERE id = ANY($1::uuid[])",
+            "UPDATE meeting_debriefs SET state = 'expired' "
+            "WHERE id = ANY($1::uuid[]) AND state = 'pending'",
             [d[0] for d in unaskable],
         )
     if not askable:

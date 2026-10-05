@@ -123,6 +123,7 @@ async def reconcile_snapshot(
     initial_grace_seconds: float,
     post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
     | None = None,
+    transaction_connection: asyncpg.Connection | None = None,
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the owner condition ledger.
 
@@ -139,6 +140,8 @@ async def reconcile_snapshot(
     reconciliation writes (see the engine's docstring) — used by
     ``butlers.core.commitments`` to project a commitment's counterparty onto
     ``public.entity_graph_edges`` atomically with the ledger write.
+    ``transaction_connection`` forwards an internal caller's active transaction
+    to the same engine; otherwise the existing pool-owned transaction is used.
     """
 
     async def _chained_post_write(
@@ -150,6 +153,11 @@ async def reconcile_snapshot(
         # premise it was, atomically with the resolution itself.
         await enqueue_premise_amendments(conn, transitions)
 
+    connection_kwargs = (
+        {"transaction_connection": transaction_connection}
+        if transaction_connection is not None
+        else {}
+    )
     return await _reconcile_snapshot(
         pool,
         table=_TABLE,
@@ -158,6 +166,7 @@ async def reconcile_snapshot(
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=initial_grace_seconds,
         post_write=_chained_post_write,
+        **connection_kwargs,
     )
 
 
