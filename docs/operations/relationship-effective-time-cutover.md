@@ -1,6 +1,6 @@
 # Relationship Effective-Time Cutover Packet
 
-> **Status:** draft contract. The verifier, wrapper, fence checks, and rel036 migration named below
+> **Status:** unimplemented source contract. The verifier, wrapper, fence checks, and symbolic G migration named below
 > do **not** exist yet. Nothing on this page can be executed today, and nothing here authorizes a
 > key, host change, deployment, container stop or start, migration, or temporal activation.
 > **Contract:** [`authorize-relationship-effective-time-cutover`](../../openspec/changes/authorize-relationship-effective-time-cutover/design.md)
@@ -18,11 +18,14 @@ activation can be described as executable. Normal image deployment through
 [Kubernetes Deployment](kubernetes-deployment.md#deploy) does not supply that fence
 or authorize this cutover.
 
+Actual `rel_036` is the immutable meeting-debrief migration. G is a then-free cutover revision
+after the actual then-current head, not a reserved number or replacement for `rel_036`.
+
 ## What the cutover does
 
 `rel_035` added effective-time columns and the occurrence index but kept
 `relationship.uq_ef_spo_active`. While that index exists, every Relationship mutator refuses temporal
-intent with `temporal_cutover_pending`. rel036 drops only that index, which is the sole signal that
+intent with `temporal_cutover_pending`. G drops only that index, which is the sole signal that
 enables temporal assertions, corrections, and repeated periods.
 
 Old code must be gone first: pre-transition writers and unfenced mutators collapse or overwrite
@@ -47,17 +50,65 @@ All must hold before anyone runs step 1:
    wrapper, and sudoers rule are installed by a separate host act. The same host act prepares the
    isolated test runtime: account `butlers-rtc-test` in no `docker` or `sudo` group, its own rootless
    Docker daemon, and a read-only offline dependency cache for the target `uv.lock`.
-2. The owner has recorded the gate lifecycle and non-production and fresh-install decision
-   (`bu-ftd491`). It is **open**. Until it is decided, the gate applies to every database: dev,
-   fresh installs, CI, and restore-drill scratch databases all stay at `rel_035` and receive no
-   later Relationship migration until they run this procedure.
-3. The target SHA contains the verifier, wrapper, fence checks, rel036, and the
+2. CLOSED `bu-ftd491` answer A (2026-10-04) requires a non-spoofable unsigned genuinely
+   fresh/disposable path while keeping receipts mandatory for existing real-data targets. It is not
+   an unanswered permission question. Complete unsigned proof binding and legitimate disposable
+   interruption/committed/bootstrap/resume remain UNDELIVERED; the current partial candidate below
+   cannot authorize migration. No automatic retirement or lighter real-data path is inferred.
+3. The target SHA contains the verifier, wrapper, fence checks, G, and the
    `relationship-fact-effective-time` task 3.5 real-PostgreSQL scenarios.
-4. The entity-merge collision wording amendment `bu-ldcp5f` is resolved, so the inventory digest
-   attests behavior that matches the adopted contract.
+4. CLOSED `bu-ldcp5f` and PR #4317 have already applied the no-effective-time merge carve-out.
+   The actual inventory digest must attest the complete adopted behavior, with discrepancies fixed
+   through their owning packets; the closed decision is not requested again.
 5. A live authorization names: authorization id (`rtc-YYYYMMDD-xxxxxxxx`), environment, one
    supported invocation row and its flags (below), target SHA, target image id, rollback image id
    (retained), optional-absent services, and maximum window.
+
+## Fresh/disposable admission and interruption recovery: not executable
+
+The smallest source candidate derives a private initial-state witness from the actual online
+database/physical connection/backend/transaction/schema/G invocation before Relationship revisions
+and its own schema/version preparation. It distinguishes ordinary empty managed schemas and
+unrelated core/module bootstrap from applicable public/schema-scoped Relationship stamps and the
+reviewed historical footprint. Missing visibility, ambiguous schemas or existing Relationship
+history deny it. A caller `fresh`/`disposable` flag, Config/x-argument, schema choice, absent index or
+empty rows cannot substitute. It cannot survive consumption, commit, rollback, reconnect, another
+target or a reused Config/next-chain invocation. G would independently recheck all-validity
+emptiness and both expected valid indexes under required activity exclusion and `ACCESS EXCLUSIVE
+NOWAIT`; a rel_028 import revokes emptiness without deleting legacy input.
+
+This witness proves only database state. REQ003/004/005 retain complete independently protected
+source/test/instance/target/fence obligations, and REQ005 matches a quiesced fence to a receipt.
+There is no non-receipt binding route. A witness alone must therefore refuse unsigned G. Neither
+raw Alembic, current migrated helpers nor daemon topology supplies the missing proof. Current
+separate chain connections and committed schema preflight must be accounted for in actual future
+integration; daemon pools exist before migration, so no safe exclusion or automatic drain is
+assumed. The complete unsigned source-owned proof channel remains mandatory UNDELIVERED.
+
+A fully rolled-back from-base traversal may reread actual catalog state and derive a new partial
+witness, never replay the old one; missing full proof still denies cutover. Legitimate genuinely
+disposable interrupted/committed/bootstrap/resume targets must eventually advance unsigned using
+independent target/disposal provenance plus complete non-receipt proof. That obligation is also
+mandatory UNDELIVERED, not permanently receipt-bearing. Current stamped-empty, restored,
+DELETE/TRUNCATE, downgrade, stamp/index edits and nominal disposable labels cannot acquire partial
+fresh authority. Temporary safe fallback is the ordinary receipt route or separately authorized
+new-target recreation. This page does not authorize recreation, dropping data or automatic cleanup;
+source delivery cannot close the original runtime outcome.
+
+CLOSED A contemplated a non-spoofable marker. A viable source-owned target-bound marker may reuse
+existing trusted bootstrap/migration/provisioning authority if actual ownership, ordinary-role
+DML/TRIGGER forgery, bootstrap regrants, restore/lifetime, race and restart controls prove it safe.
+Forced RLS alone does not prevent a runtime-planted trigger executing during a later trusted update.
+No marker/binding is selected or implemented. A genuine new actor, privilege, custody or historical
+guarantee outside existing doctrine needs its exact changed-boundary decision; durability by itself
+does not require repeat approval. Current catalogs cannot distinguish trusted owner/migration-role
+erasure of every footprint or a manipulated restore; that residual remains explicit.
+
+The existing bounded repository implementation release is retained. Actual gate, receipt and
+admission work stays cohesive with `bu-h3b7t`; `bu-jnnxtq` joins its same isolated-runtime surface.
+Foreign launcher ownership and the unadopted `bu-0kf2fd` Kubernetes proposal require serial source
+allocation, not implied transfer or live authority. The signed legacy procedure below retains all
+its future operational prerequisites and cannot be executed from this source proposal.
 
 ## Supported invocations
 
@@ -81,7 +132,7 @@ and, when the row includes it, the restore-drill executor and its proxy.
 Each verb is a fixed wrapper entry point run as
 `sudo -n /usr/local/libexec/butlers-relationship-temporal-cutover <verb> --authorization <id>`.
 
-1. **Deploy the target normally** through the named row's launcher at the target SHA. The gated ceiling stops the Relationship chain at `rel_035`, so the fleet
+1. **Deploy the target normally** through the named row's launcher at the target SHA. The gated ceiling stops an existing pre-cutover Relationship chain at G's actual predecessor, so the fleet
    runs target code with the legacy index still present. Confirm the chain reports
    `temporal_cutover_pending`.
 2. **Prepare** (`--prepare-v1`). The wrapper locks, sets the fence, verifies the checkout, resolves
@@ -100,16 +151,16 @@ Each verb is a fixed wrapper entry point run as
    to `quiesced`, and writes the signed receipt. Expiry is 15 minutes from here.
 3. **Migrate** (`--migrate-v1`). The wrapper runs
    `butlers db relationship-temporal-cutover --receipt <path>` in a fresh target-image `migrations`
-   container with the receipt, keyring, and fence mounted read-only. rel036 takes a `NOWAIT`
+   container with the receipt, keyring, and fence mounted read-only. G takes a `NOWAIT`
    access-exclusive lock, proves no other database session, verifies the receipt and fence, checks
    both indexes, and drops only `uq_ef_spo_active`. Any failure changes nothing.
 4. **Release** (`--release-v1`). The wrapper starts the row's services through the row's own launcher
    in fence-release mode (no build, restore-drill preparation included, `butlers-app` pinned to the
    target image id), verifies every container against the instance rules and a start time after the
-   rel036 commit, proves no extra container, and removes the fence. A mismatch keeps the fence held.
+   G commit, proves no extra container, and removes the fence. A mismatch keeps the fence held.
 
-**Abort** (`--abort-v1`) is allowed only while the Relationship chain is still `rel_035`. It releases
-the same target image through the step 4 checks and clears the fence. After rel036 commits, the only
+**Abort** (`--abort-v1`) is allowed only while the Relationship chain is still at G's actual predecessor. It releases
+the same target image through the step 4 checks and clears the fence. After G commits, the only
 path is forward through release.
 
 ## During the window
@@ -122,7 +173,7 @@ While the fence is held:
 - Do not edit, pull, or check out anything in the deploy checkout.
 
 **Residual risk.** Those unsupported paths bypass the refusal layer. The wrapper removes old
-containers and rel036 refuses any live session, so a bypass that is running at the DDL check is
+containers and G refuses any live session, so a bypass that is running at the DDL check is
 caught. Nothing stops a root-capable operator from starting old non-central code after release, and
 that code can collapse temporal occurrences. The prohibition on those paths continues after the
 window.
@@ -152,10 +203,10 @@ window.
 
 ## Rollback
 
-- **Before rel036 commits:** `--abort-v1`. Earlier transition-image rollback follows the existing
+- **Before G commits:** `--abort-v1`. Earlier transition-image rollback follows the existing
   `rel_035` rules in [Relationship Butler](../butlers/relationship.md#effective-time-on-structural-facts).
-- **After rel036, before the first temporal write:** a new authorization with purpose
-  `rollback_before_first_temporal_write`, prepared through the same fence. rel036's downgrade
+- **After G, before the first temporal write:** a new authorization with purpose
+  `rollback_before_first_temporal_write`, prepared through the same fence. G's downgrade
   recreates `uq_ef_spo_active` only if no row in any validity carries a temporal value and no SPO has
   two active rows, then release starts the named rollback image.
 - **After the first temporal write:** downgrade and old-image release are refused
