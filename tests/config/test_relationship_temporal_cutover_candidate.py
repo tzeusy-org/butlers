@@ -547,6 +547,44 @@ def test_binding_cannot_cross_connections_epochs_or_foreign_runtime_roles(candid
                 conn.exec_driver_sql(f"SELECT count(*) FROM {_TABLE}")
         assert refused.value.orig.pgcode == "42501"
     assert _consumed(db, binding) == 1
+    with _bound(db) as (conn, binding, proof):
+        assert conn.execute(
+            text("SELECT pg_has_role(current_user,'butler_relationship_rw','USAGE')")
+        ).scalar_one()
+        assert conn.execute(
+            text(
+                "SELECT backend_start IS NOT NULL FROM pg_stat_activity WHERE pid=pg_backend_pid()"
+            )
+        ).scalar_one()
+        with conn.begin_nested():
+            conn.exec_driver_sql("SET LOCAL ROLE butler_relationship_rw")
+            # Existing membership points from migration login to managed role,
+            # not back to the login. The original downshift really hides this
+            # same physical session's fields; NULL must never equal authority.
+            assert conn.execute(
+                text(
+                    "SELECT backend_start IS NULL FROM pg_stat_activity WHERE pid=pg_backend_pid()"
+                )
+            ).scalar_one()
+            with pytest.raises(CandidateRefusal, match="^candidate_session_mismatch$"):
+                with conn.begin_nested():
+                    consume_candidate_binding(conn, binding, proof)
+            conn.exec_driver_sql("RESET ROLE")
+        with conn.begin_nested():
+            conn.exec_driver_sql("SET LOCAL ROLE butler_general_rw")
+            with pytest.raises(CandidateRefusal, match="^candidate_sql_refused$"):
+                with conn.begin_nested():
+                    consume_candidate_binding(conn, binding, proof)
+            conn.exec_driver_sql("RESET ROLE")
+        assert (
+            conn.execute(
+                text(f"SELECT count(*) FROM {_TABLE} WHERE authorization_id=:id"),
+                {"id": binding["authorization_id"]},
+            ).scalar_one()
+            == 0
+        )
+        consume_candidate_binding(conn, binding, proof)
+    assert _consumed(db, binding) == 1
 
 
 def test_grant_replay_narrows_atomically_and_omitting_hook_is_a_real_unsafe_control(candidate_db):
@@ -604,6 +642,18 @@ def test_other_actual_session_and_nowait_lock_refuse_before_consumption(candidat
                     consume_candidate_binding(conn, binding, proof)
             competing.exec_driver_sql("LOCK TABLE relationship.entity_facts IN ROW EXCLUSIVE MODE")
             with pytest.raises(CandidateRefusal, match="^candidate_lock_busy$"):
+                with conn.begin_nested():
+                    consume_candidate_binding(conn, binding, proof)
+        with db.bootstrap.begin() as hidden_competing:
+            hidden_pid = hidden_competing.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            conn.exec_driver_sql("SELECT pg_stat_clear_snapshot()")
+            assert conn.execute(
+                text("SELECT backend_type IS NULL FROM pg_stat_activity WHERE pid=:pid"),
+                {"pid": hidden_pid},
+            ).scalar_one()
+            # The client exists even when ordinary activity access cannot tell
+            # its kind. A hidden field must fail closed, without pg_monitor.
+            with pytest.raises(CandidateRefusal, match="^candidate_other_session$"):
                 with conn.begin_nested():
                     consume_candidate_binding(conn, binding, proof)
         consume_candidate_binding(conn, binding, proof)

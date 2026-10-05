@@ -276,12 +276,14 @@ BEGIN
        OR (v_binding->>'expires_at')::bigint - (v_binding->>'issued_at')::bigint > 900 THEN
         RAISE EXCEPTION 'candidate_binding_expired';
     END IF;
-    IF current_user <> 'butler_relationship_rw'
+    IF current_user IS DISTINCT FROM session_user
+       OR NOT pg_has_role(current_user, 'butler_relationship_rw', 'USAGE')
        OR (SELECT oid FROM pg_roles WHERE rolname=session_user)
-          <> (v_birth->>'migration_oid')::oid
-       OR (v_binding->>'backend_pid')::integer <> pg_backend_pid()
-       OR (v_binding->>'backend_start')::timestamptz <> v_backend
-       OR v_binding->>'full_xid' <> pg_current_xact_id()::text THEN
+          IS DISTINCT FROM (v_birth->>'migration_oid')::oid
+       OR (v_binding->>'backend_pid')::integer IS DISTINCT FROM pg_backend_pid()
+       OR v_backend IS NULL
+       OR (v_binding->>'backend_start')::timestamptz IS DISTINCT FROM v_backend
+       OR v_binding->>'full_xid' IS DISTINCT FROM pg_current_xact_id()::text THEN
         RAISE EXCEPTION 'candidate_session_mismatch';
     END IF;
     LOCK TABLE relationship.entity_facts IN ACCESS EXCLUSIVE MODE NOWAIT;
@@ -290,7 +292,7 @@ BEGIN
     PERFORM pg_stat_clear_snapshot();
     IF EXISTS (SELECT 1 FROM pg_stat_activity
                 WHERE datid=v_database AND pid<>pg_backend_pid()
-                  AND backend_type='client backend') THEN
+                  AND (backend_type='client backend' OR backend_type IS NULL)) THEN
         RAISE EXCEPTION 'candidate_other_session';
     END IF;
     NEW.birth_id := (v_birth->>'birth_id')::uuid;
@@ -495,6 +497,10 @@ def consume_candidate_binding(
 ) -> None:
     """Consume on the caller's real transaction, without index/stamp wiring.
 
+    Keep the actual normal migration identity: bootstrap's existing membership
+    supplies inherited own-role INSERT, without hiding that session's activity
+    fields by SET ROLE. No new membership or grant is introduced.
+
     No commit/pool acquisition occurs here. The dormant guard rechecks actual
     owner/catalog/backend/full-xid/session/exclusion at INSERT. Caller-supplied
     expected claims are comparison inputs, never an issuer or freshness bypass.
@@ -505,7 +511,6 @@ def consume_candidate_binding(
     if binding["proof_digest"] != hashlib.sha256(_json(expected_proof).encode()).hexdigest():
         raise CandidateRefusal("candidate_proof_mismatch")
     try:
-        conn.exec_driver_sql(f"SET LOCAL ROLE {_ROLE}")
         conn.execute(
             text(f"""
         INSERT INTO {_TABLE} (authorization_id, birth_id, fence_id, proof_digest, proof)
@@ -514,7 +519,6 @@ def consume_candidate_binding(
             {k: binding[k] for k in ["authorization_id", "birth_id", "fence_id", "proof_digest"]}
             | {"proof": _json(expected_proof)},
         )
-        conn.exec_driver_sql("RESET ROLE")
     except DBAPIError as exc:
         # The real transaction remains aborted; only its owner may roll back.
         # Suppress driver text/parameters when exposing the refusal boundary.

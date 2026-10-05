@@ -36,8 +36,9 @@ object ownership, canonical namespace/function, body hash, database and cluster,
 session identity, backend, full transaction ID, revision, purpose, expiry and
 exact proof/fence/authorization equality. It takes the actual `NOWAIT`
 access-exclusive facts lock and rejects another client session. Only then can
-the existing `butler_relationship_rw` role insert the unique consumption nonce
-on the migration caller's transaction. No function commits or acquires another
+the authenticated normal migration login insert the unique consumption nonce
+with its existing inherited `butler_relationship_rw` privileges on that caller's
+transaction. No function commits or acquires another
 pool connection on that caller's behalf.
 
 The client check calls `pg_stat_clear_snapshot()` after the lock and before
@@ -45,6 +46,16 @@ reading activity. The earlier challenge's transaction-local activity snapshot
 cannot represent clients that connected later. This refresh makes the actual
 client check current; it does not establish the future managed lifecycle fence
 or prevent every later connection by itself.
+
+Consumption retains the normal migration identity and requires its existing
+managed-role membership. PostgreSQL hides activity fields after a downshift to
+the managed role because that role is not a member of the login role. The
+session comparison rejects missing activity data, and another backend with an
+unreadable type counts as a possible client. This conservative rule can also
+refuse an unreadable internal backend; unknown activity is never evidence of
+zero clients. The harness witnesses the genuine
+role-visibility difference and a hidden privileged competing client; no
+monitoring grant or privileged function is added to obtain these results.
 
 No authority role, cross-schema read/write grant, privileged reader,
 `SECURITY DEFINER` function or custodian is introduced. Existing bootstrap
@@ -123,6 +134,9 @@ roles is part of the real SQL species, not a reason to add a guessed grant.
 See [control-data functions](https://www.postgresql.org/docs/17/functions-info.html#FUNCTIONS-CONTROLDATA),
 [comments](https://www.postgresql.org/docs/17/sql-comment.html), and
 [privileges](https://www.postgresql.org/docs/17/ddl-priv.html).
+PostgreSQL's [activity visibility](https://www.postgresql.org/docs/17/monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW)
+explains why role membership affects the activity fields available to an
+ordinary invoker. The pinned-image assertions remain the execution evidence.
 
 Local Docker access is unavailable in the authoring environment. Collection and
 static checks do not prove SQL. The standard hosted disposable-PostgreSQL job
