@@ -13,8 +13,18 @@ down_revision = "core_240"
 branch_labels = None
 depends_on = None
 
-_OLD_LEDGER_OUTCOMES = ("delivered", "coalesced", "deferred", "suppressed", "failed")
-_NEW_LEDGER_OUTCOMES = (*_OLD_LEDGER_OUTCOMES, "expired")
+# Core revisions replay per schema against shared public data. Neither an
+# upgrade nor a downgrade may reject outcomes owned by another current schema.
+_LEDGER_OUTCOMES = (
+    "delivered",
+    "coalesced",
+    "deferred",
+    "suppressed",
+    "failed",
+    "expired",
+    "withdrawn",
+    "amended",
+)
 _FEEDBACK_TABLE = "public.insight_feedback"
 _FEEDBACK_SEQUENCE = "public.insight_feedback_id_seq"
 _FEEDBACK_POLICY = "insight_feedback_switchboard"
@@ -109,7 +119,7 @@ def _fence_feedback_table() -> None:
 
 
 def upgrade() -> None:
-    _set_ledger_outcomes(_NEW_LEDGER_OUTCOMES)
+    _set_ledger_outcomes(_LEDGER_OUTCOMES)
     op.execute(
         """
         ALTER TABLE public.insight_engagement
@@ -171,7 +181,7 @@ def downgrade() -> None:
     # blocked_by reason while folding only the typed outcome to its nearest
     # pre-core_241 representation.
     op.execute("UPDATE public.attention_ledger SET outcome='suppressed' WHERE outcome='expired'")
-    _set_ledger_outcomes(_OLD_LEDGER_OUTCOMES)
+    _set_ledger_outcomes(_LEDGER_OUTCOMES)
     op.execute(f"DROP TABLE IF EXISTS {_FEEDBACK_TABLE}")
     op.execute("DROP INDEX IF EXISTS public.idx_insight_engagement_category_recent")
     op.execute(
