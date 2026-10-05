@@ -1165,7 +1165,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
             category: Spending category to budget (e.g. "dining", "groceries").
             amount: Budget limit in the given currency.
-            period: Budget period — "monthly", "weekly", or "yearly".
+            period: Budget period — "daily", "weekly", "monthly", "quarterly", or "yearly".
             currency: ISO-4217 currency code (default "USD").
             warn_threshold: Fraction of budget that triggers a warning (default 0.8 = 80%).
             alert_threshold: Fraction of budget that triggers an alert (default 1.0 = 100%).
@@ -1206,6 +1206,8 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
             Sets is_active = false on the matching row. The budget record is preserved
             for historical reference but excluded from active checks.
+
+            period: "daily", "weekly", "monthly", "quarterly", or "yearly".
 
             Returns: {deactivated, category, period}
             """

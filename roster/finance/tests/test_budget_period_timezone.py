@@ -64,7 +64,7 @@ CREATE_BUDGETS_SQL = """
 CREATE TABLE IF NOT EXISTS finance.budgets (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category        TEXT NOT NULL,
-    period          TEXT NOT NULL CHECK (period IN ('weekly','monthly','quarterly','yearly')),
+    period          TEXT NOT NULL CHECK (period IN ('daily','weekly','monthly','quarterly','yearly')),
     amount          NUMERIC(14, 2) NOT NULL,
     currency        CHAR(3) NOT NULL DEFAULT 'USD',
     warn_threshold  NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
@@ -455,3 +455,85 @@ async def test_insight_scan_dedup_key_uses_the_owners_month(provisioned_postgres
         cand = _budget_proposal(proposals)
         assert cand["dedup_key"] == "finance:budget-threshold:rent:2026-08-exceeded"
         assert cand["expires_at"] == datetime(2026, 9, 1, tzinfo=SGT)
+
+
+async def test_daily_owner_windows_drive_status_alert_and_pressure(
+    provisioned_postgres_pool, monkeypatch
+):
+    """Daily spending and both outputs use the same local day, including DST edges."""
+    from datetime import date, time, timedelta
+    from unittest.mock import AsyncMock
+
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    publisher = AsyncMock()
+    monkeypatch.setattr("butlers.core_tools._domain_events.publish_domain_event_once", publisher)
+    async with provisioned_postgres_pool() as pool:
+        await _setup_scan(pool)
+        for zone_name, day in (
+            ("UTC", date(2026, 7, 6)),
+            ("Asia/Singapore", date(2026, 7, 6)),
+            ("America/New_York", date(2026, 3, 8)),
+            ("America/New_York", date(2026, 11, 1)),
+        ):
+            await pool.execute("TRUNCATE finance.budgets, finance.transactions")
+            await save_general_settings(
+                pool,
+                timezone=zone_name,
+                language="en-SG",
+                date_format="YYYY-mm-dd",
+                time_format="HH:MM",
+                week_starts_on="Monday",
+                currency="USD",
+            )
+            zone = ZoneInfo(zone_name)
+            start = datetime.combine(day, time.min, zone).astimezone(UTC)
+            end = datetime.combine(day + timedelta(days=1), time.min, zone).astimezone(UTC)
+            now = start + timedelta(hours=1)
+            await _budget(pool, category="coffee", period="daily", amount="100.00")
+            # Both positive and excluded sentinels exercise the actual SQL range.
+            for instant, amount in (
+                (start - timedelta(microseconds=1), "900.00"),
+                (start, "40.00"),
+                (start + timedelta(minutes=30), "45.00"),
+                (end, "800.00"),
+            ):
+                await _spend(pool, category="coffee", at=instant, amount=amount)
+            # In-window sentinels prove every other spending filter still acts.
+            for category, currency, direction, deleted_at in (
+                ("coffee", "USD", "credit", None),
+                ("coffee", "EUR", "debit", None),
+                ("other-category", "USD", "debit", None),
+                ("coffee", "USD", "debit", now),
+            ):
+                await pool.execute(
+                    "INSERT INTO finance.transactions "
+                    "(posted_at,merchant,amount,category,currency,direction,deleted_at) "
+                    "VALUES ($1,'Excluded sentinel',700,$2,$3,$4,$5)",
+                    now,
+                    category,
+                    currency,
+                    direction,
+                    deleted_at,
+                )
+            item = _only(await _status(pool, now=now))
+            assert item["period_start"] == item["period_end"] == day.isoformat()
+            assert item["spent"] == "85.00"
+            proposals = _capture_proposals(monkeypatch)
+            publisher.reset_mock()
+            await run_insight_scan(pool, now=now)
+            candidate = _budget_proposal(proposals)
+            assert candidate["dedup_key"] == f"finance:budget-threshold:coffee:{day}-warning"
+            assert candidate["cooldown_days"] == 1
+            assert candidate["expires_at"].astimezone(UTC) == end
+            publisher.assert_awaited_once()
+            payload = publisher.await_args.kwargs["payload"]
+            assert datetime.fromisoformat(payload["valid_until"]).astimezone(UTC) == end
+            assert publisher.await_args.kwargs["dedup_key"] == candidate["dedup_key"]
+            # Escalation has its own daily identity even after warning.
+            await _spend(pool, category="coffee", at=now, amount="25.00")
+            proposals.clear()
+            await run_insight_scan(pool, now=now)
+            assert _budget_proposal(proposals)["dedup_key"] == (
+                f"finance:budget-threshold:coffee:{day}-exceeded"
+            )

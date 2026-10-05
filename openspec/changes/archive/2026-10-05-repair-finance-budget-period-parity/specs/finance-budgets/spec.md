@@ -1,9 +1,4 @@
-# Finance Budgets
-
-## Purpose
-Category-level budget targets with threshold-based proactive alerts, spending trend analysis (month-over-month and year-over-year), and end-of-month spending forecasting.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Budget Target Management
 The system SHALL allow setting, updating, and querying category-level budget targets stored in the `finance.budgets` table.
@@ -60,48 +55,3 @@ The system SHALL provide a `budget_status` tool that compares current spending a
 - **THEN** `period_start` and `period_end` SHALL both be the current owner-local date
 - **AND** only debit spending within that day's half-open midnight-to-next-midnight instant window SHALL count, preserving category, currency and deleted-transaction filtering
 - **AND** a daylight-saving transition SHALL retain the same calendar-day semantics even when the instant window is 23 or 25 hours
-
-### Requirement: Spending Trend Analysis
-The system SHALL provide a `spending_trends` tool that compares spending across time periods with percentage changes and trend direction.
-
-#### Scenario: Month-over-month comparison
-- **WHEN** `spending_trends(comparison="mom", months=6)` is called
-- **THEN** the system SHALL return per-month spending totals for the last N months
-- **AND** each month SHALL include: `period` (YYYY-MM), `total_spend`, `change_amount` (vs. prior month), `change_pct` (vs. prior month), `direction` (one of `up`, `down`, `flat`)
-- **AND** `flat` SHALL be used when `abs(change_pct) < 5%`
-
-#### Scenario: Year-over-year comparison
-- **WHEN** `spending_trends(comparison="yoy")` is called
-- **THEN** the system SHALL compare the current month's spending against the same month in the prior year
-- **AND** the response SHALL include: `current_period`, `prior_period`, `current_spend`, `prior_spend`, `change_amount`, `change_pct`, `direction`
-
-#### Scenario: Category-level trends
-- **WHEN** `spending_trends(comparison="mom", category="dining")` is called with a category filter
-- **THEN** the trend analysis SHALL be scoped to transactions matching that category only
-- **AND** the response shape SHALL be identical to the unfiltered response
-
-#### Scenario: Insufficient data for comparison
-- **WHEN** `spending_trends()` is called but there is less than 2 months of transaction data
-- **THEN** the response SHALL include `status="insufficient_data"` and a `message` explaining the minimum data requirement
-
-### Requirement: Spending Forecasting
-The system SHALL provide a `spending_forecast` tool that predicts end-of-month spending based on current trajectory and historical patterns.
-
-#### Scenario: Linear projection forecast
-- **WHEN** `spending_forecast()` is called mid-month
-- **THEN** the system SHALL compute a linear projection: `(current_month_spend / days_elapsed) * days_in_month`
-- **AND** the response SHALL include: `as_of_date`, `days_elapsed`, `days_remaining`, `current_spend`, `projected_total`, `daily_average`
-
-#### Scenario: Category-level forecast
-- **WHEN** `spending_forecast()` is called
-- **THEN** the response SHALL include per-category projections for each category with spending in the current month
-- **AND** each category projection SHALL include: `category`, `current_spend`, `projected_total`, `historical_average` (average monthly spend for that category over the last 6 months)
-
-#### Scenario: Forecast vs. budget comparison
-- **WHEN** `spending_forecast()` is called and budget targets exist
-- **THEN** for each category with a budget, the forecast SHALL include: `budget_amount`, `projected_utilization_pct`, `on_track` (boolean, true if projected_total <= budget_amount)
-
-#### Scenario: First-of-month edge case
-- **WHEN** `spending_forecast()` is called on the 1st of the month with no spending data for the current month
-- **THEN** the projection SHALL use the prior month's total as the forecast
-- **AND** a `basis` field SHALL be set to `"prior_month"` instead of `"linear_projection"`

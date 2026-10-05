@@ -68,6 +68,20 @@ cancellation, or all-clear. The producer mapping lives in
 - `merchant_mappings` columns are `raw_pattern`, `normalized_merchant`, `learned_from_count` and
   `source`; the legacy `merchant`, `merchant_pattern` and `sample_count` columns do not exist.
 
+### Budget periods
+
+Budget tools and the current CHECK accept `daily`, `weekly`, `monthly`, `quarterly`
+and `yearly`. `yearly` denotes the annual January 1 through December 31 calendar
+span; `annual` is an unsupported token. Bounds follow the owner's timezone, with
+UTC fallback, and use half-open local-midnight windows, including 23/25-hour DST
+days. Budget alerts and pressure evidence expire at the same window boundary.
+
+`finance_016` widens the historical `finance_006` CHECK without rewriting any
+budget row. Downgrade restores daily/weekly/monthly/yearly only when no quarterly
+row remains, including inactive history. Otherwise it refuses without changing
+data, the CHECK or the migration stamp; keep the repair installed until quarterly
+history is explicitly resolved. The migration never deletes or converts history.
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes financial email and messages here

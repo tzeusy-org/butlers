@@ -657,13 +657,14 @@ def _budget_period_scope_token(period: str, period_start: date) -> str:
     severity). It resets exactly at each period's boundary so a threshold
     crossing dedupes within its window and re-fires in the next one:
 
+    - ``daily``     -> ``YYYY-MM-DD``        (e.g. ``2026-07-06``)
     - ``weekly``    -> ISO week, ``YYYY-Www`` (e.g. ``2026-W28``)
     - ``monthly``   -> ``YYYY-MM``            (e.g. ``2026-07``) — unchanged, so
       already-shipped monthly budgets keep their dedup identity
     - ``quarterly`` -> ``YYYY-Qn``            (e.g. ``2026-Q3``)
     - ``yearly``    -> ``YYYY``               (e.g. ``2026``)
 
-    The four formats are mutually unambiguous, so budgets of different periods
+    The five formats are mutually unambiguous, so budgets of different periods
     for the same category never share a dedup key (e.g. a monthly and a yearly
     ``dining`` budget both crossing threshold in the same year stay distinct).
 
@@ -671,6 +672,8 @@ def _budget_period_scope_token(period: str, period_start: date) -> str:
     owner's calendar, so the token stays consistent with the window the spending
     was aggregated over.
     """
+    if period == "daily":
+        return period_start.isoformat()
     if period == "weekly":
         iso = period_start.isocalendar()
         return f"{iso.year}-W{iso.week:02d}"
@@ -697,6 +700,7 @@ async def _publish_budget_pressure_event(
     period_start: date,
     period_end: date,
     dedup_key: str,
+    zone: ZoneInfo,
 ) -> None:
     """Best-effort, at-most-once-per-window publish of ``finance.budget_pressure``.
 
@@ -712,7 +716,7 @@ async def _publish_budget_pressure_event(
     from butlers.core.tool_call_capture import get_current_switchboard_client
     from butlers.core_tools._domain_events import publish_domain_event_once
 
-    valid_until = _end_of_period_dt(period_end)
+    valid_until = _end_of_period_dt(period_end, zone)
     try:
         await publish_domain_event_once(
             db_pool,
@@ -835,7 +839,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     1. Spending anomalies — categories >30% above 3-month rolling average
     2. Upcoming bills — due within 3 days, not paid
     3. Budget thresholds — spending at/above each budget's warn_threshold, for
-       every budget period (weekly/monthly/quarterly/yearly) via budget_status()
+       every budget period (daily/weekly/monthly/quarterly/yearly) via budget_status()
     4. Subscription renewals — annual subscriptions renewing within 14 days
 
     Each candidate is submitted via ``propose_insight_candidate()``.
@@ -1162,10 +1166,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     )
 
     # ------------------------------------------------------------------
-    # 3. Budget thresholds (all periods: weekly/monthly/quarterly/yearly)
+    # 3. Budget thresholds (all periods: daily/weekly/monthly/quarterly/yearly)
     # ------------------------------------------------------------------
     # bu-hovqz: drive this section off budget_status(), which aligns each
-    # budget's spending window to its OWN period via DATE_TRUNC and returns
+    # budget's spending window to its OWN calendar period and returns
     # per-budget spent/status/period_start/period_end. This replaces the
     # previous monthly-only SQL, which silently excluded weekly/quarterly/yearly
     # budgets even though the owner can configure them. budget_status already
@@ -1225,6 +1229,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             period_start=period_start,
             period_end=period_end,
             dedup_key=dedup_key,
+            zone=zone,
         )
 
         # Cooldown spans the remainder of the current period window, so each
