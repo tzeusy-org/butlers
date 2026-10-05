@@ -162,6 +162,40 @@ async def test_recovery_transport_requires_kernel_peer_admission(tmp_path, monke
         with pytest.raises(RecoveryAuthorityError, match="Approval recovery authority rejected"):
             async with asyncio.timeout(2):
                 await silent_endpoint.call("no_reply", {})
+        # Also execute the deadline -> authority error -> worker uncertainty
+        # boundary. This protocol-double repository proves the exception path,
+        # while the owning PG transport parameter proves durable quarantine.
+        claim = _claim()
+        repository = SimpleNamespace(
+            cancel_ineligible_presentations=AsyncMock(return_value=0),
+            claim_next=AsyncMock(return_value=claim),
+            load_render_subject=AsyncMock(return_value=object()),
+            mark_handoff_started=AsyncMock(return_value=True),
+            heartbeat=AsyncMock(return_value=True),
+            complete_handoff=AsyncMock(return_value=True),
+        )
+
+        async def silent_dispatch(_claim, _payload):
+            return await silent_endpoint.call("no_reply", {})
+
+        runtime = ApprovalRecoveryRuntime(
+            source_butler="relationship",
+            owning_schema="relationship",
+            dispatch=silent_dispatch,
+            resolve_owner_recipient=AsyncMock(return_value="owner"),
+            resolve_callback_secret=AsyncMock(return_value="synthetic-secret"),
+        )
+        worker = ApprovalDeliveryWorker(
+            repository,
+            SimpleNamespace(render_single=Mock(return_value={"safe": "envelope"})),
+            runtime,
+        )
+        async with asyncio.timeout(2):
+            assert await worker.process_one() is True
+        repository.mark_handoff_started.assert_awaited_once_with(claim)
+        repository.complete_handoff.assert_awaited_once_with(
+            claim, HandoffResult("ambiguous", "provider_outcome_unknown")
+        )
     assert list(tmp_path.iterdir()) == []
 
 

@@ -90,6 +90,13 @@ Approval companions use stateless JSON request/reply responses, with no SSE
 stream or dependency on process-global SSE drain state. Each client call has
 a ten-second deadline covering initialization, tool reply and client teardown;
 a missing reply fails closed without granting a retry or speculative resend.
+If that deadline expires after provider start, the worker records
+`ambiguous/provider_outcome_unknown` under its existing claim fence and clears
+the lease without scheduling a retry. The durable Messenger start marker is
+retained. Neither a fresh claim nor a new source admission is authorized by
+the timeout. The existing original-tuple reconciliation boundary remains;
+an expired handoff lease can be reclaimed for reconciliation only, whereas an
+already quarantined ambiguous presentation is not automatically reclaimed.
 Fresh or reused registered objects can form a new topology after the prior
 listeners close. The ordinary TCP listener in the synthetic harness also uses
 JSON and a deadline; generic public daemon transport is unchanged.
@@ -114,6 +121,11 @@ case has a 45-second deadline so missing initialization/replies fail visibly.
 The existing kernel-peer node also repeats fresh/reused three-companion
 lifecycles and checks an actual nonreplying handler's call deadline; that
 PostgreSQL-free scope proves liveness, not source admission or ledger behavior.
+The Telegram uncertainty parameter separately holds its synthetic provider
+after both real owning-role start markers, observes the actual transport
+deadline through the worker, and checks durable same-fence ambiguity, refused
+remint and no resend. Its provider-raised-error branch and the original-tuple
+reconciliation parameter remain separate controls.
 
 The nearest core, daemon and Switchboard registration files own unsupported
 platform and early refusal checks. The planted recovery/privacy test in

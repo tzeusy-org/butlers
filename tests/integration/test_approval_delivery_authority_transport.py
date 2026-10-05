@@ -36,6 +36,7 @@ from butlers.core.approval_delivery_authority import (
     approval_companion_mcp,
 )
 from butlers.core.approval_delivery_transport import RecoveryAuthorityError
+from butlers.core.approval_delivery_worker import ApprovalDeliveryWorker, HandoffResult
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._routing import register_routing_tools
 from butlers.db import register_jsonb_codec
@@ -237,8 +238,7 @@ async def _registered_servers(pools):
     return switchboard, switchboard_mcp, messenger_mcp, providers
 
 
-async def _claimed_presentation(pool, *, ordinal, cohort=False):
-    count = 4 if cohort else 1
+async def _admit_source_actions(pool, *, ordinal, count=1):
     for index in range(count):
         now = datetime.now(UTC)
         await park_pending_action(
@@ -255,6 +255,10 @@ async def _claimed_presentation(pool, *, ordinal, cohort=False):
             reversibility="compensable",
             origin_butler="relationship",
         )
+
+
+async def _claimed_presentation(pool, *, ordinal, cohort=False):
+    await _admit_source_actions(pool, ordinal=ordinal, count=4 if cohort else 1)
     repo = ApprovalDeliveryRepository(pool)
     if cohort:
         # Schedule the unrelated direct subjects later; do not manufacture a
@@ -394,11 +398,17 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
         ApprovalDeliveryRepository(pools["relationship"]), owning_schema="relationship"
     )
     minted_proofs = []
+    callback_tokens = []
     actual_mint = source.mint
 
     async def observed_mint(*args, **kwargs):
         proof = await actual_mint(*args, **kwargs)
         minted_proofs.append(proof)
+        callback_tokens.extend(
+            item["callback_token"]
+            for item in args[1].get("actions", [])
+            if "callback_token" in item
+        )
         return proof
 
     monkeypatch.setattr(source, "mint", observed_mint)
@@ -425,8 +435,6 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
             assert (await runtime.handoff(control, envelope)).classification == "confirmed"
             assert (await runtime.handoff(control, envelope)).classification == "confirmed"
             assert len(providers["telegram"].calls) == 1
-            from butlers.core.approval_delivery_worker import HandoffResult
-
             assert await repo.complete_handoff(control, HandoffResult("confirmed"))
             repo, claim, payload = await _claimed_presentation(
                 pools["relationship"], ordinal=1, cohort=case == "cohort"
@@ -487,6 +495,7 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
                 )
                 # Continue through the shared rejection/privacy assertions on
                 # a forged proof, independently of the ordinary TCP exercise.
+                changed = copy.deepcopy(payload)
                 proof = "forged-proof"
             expect_handoff = case in {"accepted", "cohort", "reconcile"} or case.endswith(
                 "uncertain"
@@ -714,6 +723,101 @@ asyncio.run(main())
                     )
                     == 1
                 )
+            if case == "telegram-uncertain":
+                # Preserve the provider-raised error control above, then test
+                # the different causal branch: a real RPC deadline after the
+                # worker and Messenger have committed their start markers.
+                assert await repo.complete_handoff(
+                    claim, HandoffResult("ambiguous", "provider_outcome_unknown")
+                )
+                await _admit_source_actions(pools["relationship"], ordinal=2)
+                provider_started, provider_finished, release = (
+                    asyncio.Event(),
+                    asyncio.Event(),
+                    asyncio.Event(),
+                )
+                provider = providers["telegram"]
+
+                async def held_provider(*args, **kwargs):
+                    provider.calls.append((args, kwargs))
+                    provider_started.set()
+                    try:
+                        await release.wait()
+                        raise TimeoutError(_ERROR_RAW)
+                    finally:
+                        provider_finished.set()
+
+                monkeypatch.setattr(provider, "_send_message", held_provider)
+                actual_dispatch = runtime._dispatch
+                dispatched, transport_errors = [], []
+
+                async def observed_dispatch(owned_claim, notification):
+                    dispatched.append((owned_claim, copy.deepcopy(notification)))
+                    try:
+                        return await actual_dispatch(owned_claim, notification)
+                    except RecoveryAuthorityError as error:
+                        transport_errors.append(error)
+                        raise
+
+                # Observation preserves actual source admission, protected
+                # registered proxies, RPC cancellation and owning-role SQL.
+                monkeypatch.setattr(runtime, "_dispatch", observed_dispatch)
+                worker = ApprovalDeliveryWorker(
+                    repo,
+                    ApprovalDeliveryRenderer(dashboard_base_url="https://dashboard.example.test"),
+                    runtime,
+                    heartbeat_interval_s=1,
+                )
+                pending = asyncio.create_task(worker.process_one())
+                try:
+                    await asyncio.wait_for(provider_started.wait(), 15)
+                    timed_claim, timed_payload = dispatched[0]
+                    started = await pools["relationship"].fetchrow(
+                        "SELECT state,claim_fence FROM approval_delivery_presentations WHERE id=$1",
+                        timed_claim.presentation_id,
+                    )
+                    assert started["state"] == "handoff_started"
+                    assert started["claim_fence"] == timed_claim.claim_fence
+                    marker = await pools["messenger"].fetchrow(
+                        "SELECT provider_started_at,handoff_class FROM approval_delivery_handoffs "
+                        "WHERE presentation_key=$1",
+                        timed_claim.presentation_key,
+                    )
+                    assert marker["provider_started_at"] is not None
+                    assert marker["handoff_class"] is None
+                    assert await asyncio.wait_for(pending, 15) is True
+                    assert len(transport_errors) == 1
+                finally:
+                    release.set()
+                    if not pending.done():
+                        pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    await asyncio.wait_for(provider_finished.wait(), 5)
+                quarantined = await pools["relationship"].fetchrow(
+                    "SELECT state,last_reason_code,claim_fence,claim_token,next_attempt_at "
+                    "FROM approval_delivery_presentations WHERE id=$1",
+                    timed_claim.presentation_id,
+                )
+                assert dict(quarantined) == {
+                    "state": "ambiguous",
+                    "last_reason_code": "provider_outcome_unknown",
+                    "claim_fence": timed_claim.claim_fence,
+                    "claim_token": None,
+                    "next_attempt_at": None,
+                }
+                assert (
+                    await pools["relationship"].fetchval(
+                        "SELECT count(*) FROM approval_delivery_attempts WHERE presentation_id=$1 "
+                        "AND outcome='ambiguous' AND claim_fence=$2",
+                        timed_claim.presentation_id,
+                        timed_claim.claim_fence,
+                    )
+                    == 1
+                )
+                assert await worker.process_one() is False
+                with pytest.raises(RecoveryAuthorityError):
+                    await source.mint(timed_claim, timed_payload)
+                assert len(provider.calls) == 3  # positive, provider error, finite RPC deadline
             assert await pools["switchboard"].fetchval("SELECT count(*) FROM notifications") == 0
             assert await pools["switchboard"].fetchval("SELECT count(*) FROM message_inbox") == 0
             persisted = await pools["messenger"].fetchval(
@@ -731,7 +835,7 @@ asyncio.run(main())
                     f"SELECT string_agg(t::text,' ') FROM {table} t"
                 )
                 persisted += source_evidence or ""
-            for sentinel in forbidden + minted_proofs:
+            for sentinel in forbidden + minted_proofs + callback_tokens:
                 assert sentinel not in persisted
                 assert sentinel not in caplog.text
                 if case not in {"ordinary-absent", "ordinary-null"}:
