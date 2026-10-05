@@ -4,8 +4,13 @@
 the legacy-index drop conditional on proof that every Relationship instance runs the transition
 writer plus every inventoried mutator behavior or fence, that old images are absent, that the static
 inventory is clean, and that the named real-PostgreSQL tests pass. It names what must be proven, not
-how. This change specifies the mechanism for the only current deployment shape: Docker Compose,
-projects `butlers` (prod) and `butlers-dev` (dev), each against its own database.
+how. This change retains the unimplemented Docker Compose proof proposal, projects `butlers`
+(prod) and `butlers-dev` (dev), each against its own database. The current live dev fleet uses k3s;
+there is no implemented Kubernetes cutover equivalent. The separate `bu-0kf2fd` source proposal
+does not adopt that topology.
+
+Actual `rel_036` creates meeting debriefs and remains untouched. Symbolic G is the then-free cutover
+revision selected after the actual then-current head, never a reserved migration number.
 
 Repository facts this design relies on:
 
@@ -38,17 +43,17 @@ Repository facts this design relies on:
 - Code identity that covers both the image and the bind-mounted `roster/` tree.
 - An enforced fence, not an observation: supported start paths refuse while it is held, old
   containers cannot restart, and the DDL cannot overlap any live session.
-- rel036 present for revision resolution but absent from every automatic path.
+- G present for revision resolution but excluded from automatic advancement of existing pre-cutover branches.
 - The adopted rollback boundary, expressed as a checkable predicate.
 
 **Non-Goals:**
 
-- Writing rel036, the verifier, the wrapper, or any fence code.
+- Writing G, the verifier, the wrapper, or any fence code.
 - Provisioning keys, installing the wrapper, editing sudoers, or touching a host.
 - Running any migration, deployment, or container lifecycle act.
 - k3s, Kubernetes, or a generic orchestrator abstraction.
 - Changing adopted `relationship-facts` requirement bodies, including the entity-merge collision
-  wording owned by `bu-ldcp5f`.
+  wording already adopted through CLOSED `bu-ldcp5f` and PR #4317.
 
 ## Why existing patterns are insufficient
 
@@ -146,7 +151,7 @@ libpq environment key, a `*_DB_(HOST|PORT|USER|PASSWORD|PASSWORD_FILE)` key or a
 `RESTORE_DRILL_EXECUTOR_`/`RESTORE_DRILL_PROXY_` key, a secret whose name looks like a database
 credential, an attachment to the `db` network, or any `env_file`. The rule is deliberately
 over-inclusive: a false positive only stops one more container during the window, while a false
-negative leaves a live session that rel036 would then refuse. On the current files it classifies
+negative leaves a live session that G would then refuse. On the current files it classifies
 `backup-cron` (rules 1 and 4), `restore-drill-executor` (rules 2 and 3), and
 `restore-drill-postgres-proxy` (rule 2) as credentialed, which a rule keyed on `x-postgres-env`
 alone would miss.
@@ -164,7 +169,7 @@ Three independent layers:
 2. **Refusal.** `scripts/compose.sh` (before its `down`) and `butlers deploy` (before build) read the
    fence and refuse `cutover_fence_held`. Only the wrapper's migration run and release verb start
    containers while the fence is held.
-3. **Exclusion.** rel036 takes `ACCESS EXCLUSIVE` with `NOWAIT` on `relationship.entity_facts`, then
+3. **Exclusion.** G takes `ACCESS EXCLUSIVE` with `NOWAIT` on `relationship.entity_facts`, then
    proves zero other client backends on the target database, then checks the fence. The lock makes
    any later connection unable to touch the table until commit; the session count proves no earlier
    one exists.
@@ -173,31 +178,36 @@ Quiesce covers every credentialed service, not only the Relationship writers, be
 count cannot tell a connector's session from a writer's and every `butlers-app` container carries the
 Relationship code. The cutover is therefore a short full-application maintenance window.
 
-### D4. rel036 is a gated revision, not a separate chain
+### D4. G is a gated revision, not a separate chain
 
-rel036 lives in `roster/relationship/migrations/` with `down_revision = "rel_035"`, so every image
-built after it can resolve `alembic_version = rel_036`. Putting it in a separate directory would
-leave post-cutover daemons unable to locate the applied revision and fail every boot.
+G belongs in `roster/relationship/migrations/` with the actual then-current head as its predecessor.
+Every later image must retain it for applied-revision resolution; a separate unregistered directory
+would leave post-cutover daemons unable to locate the applied revision. Existing meeting-debrief
+`rel_036` and its actual predecessor stay immutable. G and its filename are symbolic until allocated
+against the current migration census.
 
-`src/butlers/migrations.py` gains a registry `GATED_REVISIONS = {"relationship": "rel_036"}` and a
-resolver used by `_upgrade_chain`:
+The future `src/butlers/migrations.py` registry and `_upgrade_chain` resolver must use that actual
+revision and predecessor:
 
-- gate applied (the schema's `alembic_version` for that chain is the gate or a descendant): target
-  `head`;
-- gate unapplied: target the gate's `down_revision`, and log `temporal_cutover_pending` with the
-  count of revisions waiting.
+- gate applied (the actual chain stamp is G or a descendant): target `head`;
+- gate unapplied on an existing pre-cutover branch: target G's actual predecessor and log
+  `temporal_cutover_pending` with the count of revisions waiting;
+- genuine fresh/disposable traversal: advance unsigned only after the complete independent
+  non-receipt proof binding and source-owned provenance required by REQ006 are implemented.
 
-`get_chain_head` keeps returning the true head; a new `get_automatic_ceiling(chain, applied)` is what
-automatic callers and tests of automatic behavior use. rel036's own `upgrade()` refuses without the
-receipt x-argument, so a raw `alembic upgrade relationship@head` also fails closed, except for the
-fresh-from-base case under owner answer A' (see "Gate lifecycle and non-production policy"), where
-the resolver's no-stamp read is handed to rel036 as a fresh signal.
+`get_chain_head` continues to return the true head. A future automatic-ceiling selector is distinct
+from that answer. Source-derived admission must begin inside the actual online connection before
+Relationship revisions and the invocation's own schema/version preparation. No resolver Boolean,
+Config value or x-argument is freshness authority. Raw online Alembic and migrated helpers must use
+the same protected seam; offline or unsupported paths refuse before cutover SQL/DDL. The current
+runner/environment implement none of this, and the partial state witness below is insufficient
+for unsigned G because the retained proof/fence contract has no non-receipt binding.
 
-The explicit path is `butlers db relationship-temporal-cutover --receipt <path>` (future CLI in
-`src/butlers/cli.py`), which builds the Alembic config with `cmd_opts.x =
-["relationship_temporal_cutover_receipt=<path>"]`, uses one `NullPool` connection, runs only the
-Relationship chain, and upgrades to exactly `rel_036`, never `head`. The equivalent raw form
-`alembic -x relationship_temporal_cutover_receipt=<path> upgrade rel_036` is also valid.
+The future explicit legacy path is `butlers db relationship-temporal-cutover --receipt <path>`
+(`src/butlers/cli.py`), using `cmd_opts.x =
+["relationship_temporal_cutover_receipt=<path>"]`, one `NullPool` connection, only the Relationship
+chain, and exactly the resolved G rather than `head`. A raw receipt-bearing Alembic invocation must
+target that same actual G. These are future interfaces, not commands usable from this draft.
 
 ### D5. Test and inventory evidence are digests of exact artifacts
 
@@ -210,7 +220,7 @@ the digest even when the list does not. The test receipt binds the fixed node li
 ### D6. Rollback is a second purpose, not a flag
 
 A `rollback_before_first_temporal_write` receipt, collected under the same fence, is the only input
-that lets rel036's `downgrade()` run. Keeping purposes distinct stops a cutover receipt from being
+that lets G's `downgrade()` run. Keeping purposes distinct stops a cutover receipt from being
 replayed as a rollback authority, or the reverse.
 
 ## Receipt schema
@@ -317,7 +327,7 @@ invocation that signs the receipt; it is never an input.
 ```
 
 Path: `/var/lib/butlers/relationship-temporal-cutover/<compose_project>.fence.json`. Phases advance
-`inventory` then `quiesced` (receipt signed) then `migrated` (rel036 committed) then `releasing`, and
+`inventory` then `quiesced` (receipt signed) then `migrated` (G committed) then `releasing`, and
 the file is removed on verified release. `generation` increments on every write. Readers require
 `root:root`, not group- or world-writable, a regular non-symlink file, and a root-owned
 non-writable parent. The wrapper serializes itself with `flock` on
@@ -331,7 +341,7 @@ receipt file, the verifier keyring, and the fence file.
 1. **Authorize** (live, separate): authorization id, environment, supported invocation row and
    flags, target SHA, target and rollback image ids, optional-absent services, and maximum window.
 2. **Deploy the target normally.** Build and deploy the target image through the named row's
-   ordinary launcher. The gate stops the chain at `rel_035`; the fleet runs target code with the
+   ordinary launcher. The gate stops an existing pre-cutover chain at G's actual predecessor; the fleet runs target code with the
    legacy index present, so temporal intent is still refused.
 3. **Prepare** (`--prepare-v1`): lock; set fence phase `inventory`; verify the checkout; resolve the
    named row from its launcher and hash the non-interpolated configuration; run the isolation probes
@@ -341,14 +351,14 @@ receipt file, the verifier keyring, and the fence file.
    fence (nothing has been touched yet). Otherwise set restart policy `no` on every credentialed
    container; stop; prove stopped; remove; prove zero credentialed containers; re-verify checkout,
    image, and Compose row; set phase `quiesced`; sign and write the receipt.
-4. **Migrate** (`--migrate-v1`): run the explicit rel036 path in a fresh target-image `migrations`
+4. **Migrate** (`--migrate-v1`): run the explicit G path in a fresh target-image `migrations`
    container with the three read-only mounts. On success set phase `migrated`.
 5. **Release** (`--release-v1`): set phase `releasing`; start the row's services through its own
    launcher in fence-release mode (no build, restore-drill preparation included, `butlers-app`
    pinned to the target image id); verify every started container against the instance rules with
-   `StartedAt` after the rel036 commit; prove no extra container; remove the fence.
-6. **Abort before migrate** (`--abort-v1`): allowed only while `alembic_version` is `rel_035`;
-   releases the same target image through the step 5 checks and clears the fence. After rel036
+   `StartedAt` after the G commit; prove no extra container; remove the fence.
+6. **Abort before migrate** (`--abort-v1`): allowed only while the Relationship stamp is G's actual predecessor;
+   releases the same target image through the step 5 checks and clears the fence. After G
    commits, the only forward path is release.
 
 ## Failure taxonomy
@@ -379,8 +389,8 @@ receipt file, the verifier keyring, and the fence file.
 | `lock_unavailable` | migration | `NOWAIT` access-exclusive lock failed. |
 | `active_writer` / `db_activity_unverifiable` | migration | Another client backend exists, or the role cannot see `pg_stat_activity` rows. |
 | `occurrence_index_invalid` | migration | `uq_ef_spo_occurrence_active` absent or not `indisvalid`. |
-| `schema_state_unexpected` | migration | `uq_ef_spo_active` already absent while rel036 is unapplied. |
-| `temporal_rollback_prohibited` | rel036 downgrade | Temporal-bearing row or duplicate active SPO exists. |
+| `schema_state_unexpected` | migration | `uq_ef_spo_active` already absent while G is unapplied. |
+| `temporal_rollback_prohibited` | G downgrade | Temporal-bearing row or duplicate active SPO exists. |
 | `release_instance_mismatch` / `release_instance_extra` | release | Released container is not exactly the target, or an extra exists; fence stays held. |
 
 Every code above that the migration raises occurs before its first DDL statement. All output is
@@ -394,7 +404,7 @@ limited to the categories in the receipt requirement.
 | `butlers deploy` during the window | Refused before build. |
 | Docker daemon restart revives `unless-stopped` containers | Nothing to revive: policy set to `no`, stopped, removed. |
 | `docker start <old id>` | Fails: container removed. |
-| Old process still connected when rel036 runs | `active_writer`, no DDL. |
+| Old process still connected when G runs | `active_writer`, no DDL. |
 | Connection opened after the session check | Blocks on the access-exclusive lock until commit. |
 | Old writer released after cutover by an unsupported path | Central insert fails for lack of a matching `ON CONFLICT` target; non-central old mutators do not, which is why the managed path must not be bypassed. |
 | Receipt copied from another cutover | Fence id, database target, or expiry mismatch. |
@@ -414,8 +424,8 @@ those paths during and after the window.
 - **Before step 4 commits:** `--abort-v1` releases the same target image. The target code is valid
   with the legacy index, so this is not a code rollback at all. Ordinary rollback to an earlier
   transition image remains the existing `rel_035` rule.
-- **After rel036, before the first temporal write:** a new authorization and a
-  `rollback_before_first_temporal_write` receipt, prepared through the same fence. rel036
+- **After G, before the first temporal write:** a new authorization and a
+  `rollback_before_first_temporal_write` receipt, prepared through the same fence. G
   `downgrade()` takes the same lock and session proof, then checks:
 
   ```sql
@@ -448,18 +458,20 @@ those paths during and after the window.
 | Compose launcher fence, non-mutating row resolution, fence-release mode | `scripts/compose.sh` | `tests/scripts/test_compose_relationship_cutover_fence.py` |
 | Deploy fence, row resolution, fence-release mode | `src/butlers/core/deploy.py` | `tests/core/test_deploy.py` |
 | Receipt, fence, inventory parser and digests | `src/butlers/relationship_temporal_cutover.py` | `tests/core/test_relationship_temporal_cutover_receipt.py` |
-| Gated ceiling and x-argument plumbing | `src/butlers/migrations.py`, `src/butlers/cli.py` | `tests/core/test_migration_gated_revision.py`, `tests/config/test_migrations.py` |
+| Gated ceiling, actual online admission and legacy x-argument plumbing | `src/butlers/migrations.py`, `alembic/env.py`, `src/butlers/cli.py` | Nearest existing `tests/config/test_migrations.py`, `tests/daemon/test_butler_migrations.py`; `tests/core/test_migration_gated_revision.py` only for a distinct selector seam |
 | Static inventory guard (imports shipped inventory) | `tests/contracts/test_entity_facts_mutator_inventory.py` | same |
-| rel036 migration | `roster/relationship/migrations/036_entity_fact_effective_time_cutover.py` | `roster/relationship/tests/test_rel_036_cutover_migration.py` |
+| Then-free cutover migration G | Actual then-allocated file in `roster/relationship/migrations/` | One then-named roster migration test species; preserve rel_035 old/new writer controls |
 | Operator packet | `docs/operations/relationship-effective-time-cutover.md` | reviewed with the wrapper |
 
-New test files are registered in `.github/ci-test-shards` in the same PR that adds them. rel036 tests
+New test files are registered in `.github/ci-test-shards` in the same PR that adds them. G tests
 use test-only keys, a temporary fence directory, and testcontainers PostgreSQL; they never read host
 paths.
 
 ## Owner decisions
 
-Two owner decisions stand before any live cutover. This change chooses neither.
+The dedicated signer/proof artifact and separate exact-environment authorization govern live acts.
+CLOSED gate-policy and merge decisions are consumed below; the existing bounded repository
+implementation release is not reopened. This draft does not adopt a new live artifact.
 
 ### Signer artifact
 
@@ -471,57 +483,87 @@ One artifact choice:
 > `/usr/local/libexec/butlers-relationship-temporal-cutover`, and the public keyring at
 > `/etc/butlers/relationship-temporal-cutover/verifiers.json` (`root:root`, `0444`).
 
-Declining leaves rel036 unrunnable, which is the safe default. This change provisions nothing.
+Declining leaves the signed legacy-receipt path unrunnable. The separate mandatory unsigned path
+also remains unavailable until its complete proof and admission are implemented. This change
+provisions nothing.
 
-### Gate lifecycle and non-production policy (`bu-ftd491`, partly open)
+### Gate lifecycle and non-production policy: CLOSED A, mandatory source gaps
 
-The Relationship chain is linear. Once rel036 exists with `down_revision = "rel_035"`, every later
-Relationship revision descends from it, so the gate is permanent unless the owner retires it: any
-database that has not run the managed cutover stays at `rel_035` and receives no later Relationship
-migration. That includes dev stacks, fresh installs, CI and testcontainers databases, and
-restore-drill scratch databases. The only way past the gate is a root-signed receipt plus a
-full-stack fence, or, in tests, the explicit path with test-only keys, fence, and receipt fixtures.
+Owner decision bu-ftd491 is CLOSED with answer A. Its non-spoofable requirement excludes a
+caller-chosen `fresh`/`disposable` flag and excludes absent index plus currently empty rows as
+sufficient historical proof. bu-ldcp5f is CLOSED and its no-effective-time merge carve-out was
+applied by PR4317. These facts consume earlier authority rather than request it again.
 
-**Owner answer A' (recorded 2026-09-30, `bu-ftd491`; fresh-from-base pass rule only).** A database
-that applies the Relationship chain from base in one invocation MAY pass rel036 without a receipt
-only when both conditions hold:
+The smallest candidate adds no durable custody. At the actual online environment connection, before
+any Relationship revision or its own schema/version preparation, read every applicable
+public/schema-scoped branch stamp and the reviewed source-derived historical Relationship footprint
+manifest. Empty managed bootstrap schemas and unrelated core/module objects may exist; existing
+Relationship objects or stamps, hidden/ambiguous schemas or insufficient metadata visibility deny
+the exception. Known shared public or memory objects alone are not Relationship history, but a
+caller cannot label unknown objects as bootstrap to exempt them. The exact resolved manifest needs
+actual migrated positive and planted historical controls, not a grep-only authority.
 
-1. **No version stamp at invocation start.** Before any revision runs, the runner captures whether
-   the Relationship branch had a version stamp: the intersection of the schema's applied
-   `alembic_version` rows with `get_chain_revision_ids(chain)` is empty, and a missing schema or
-   missing `alembic_version` table counts as fresh, not as an error. This is the same read D4's
-   resolver already performs before `command.upgrade`. Because a from-base run executes the whole
-   chain in one Alembic transaction, rel036 cannot observe the absent stamp itself (the stamp reads
-   `rel_035` by then), so the runner passes an explicit fresh signal (an x-argument or config
-   option) to rel036. An in-DB predicate MAY replace the signal only if review proves it reliable.
-2. **Empty `entity_facts` under the migration lock.** rel036 verifies, after taking its lock, that
-   `relationship.entity_facts` has no rows. This is the backstop for the signal, which any Alembic
-   invoker can set: a raw `alembic -x <fresh signal> upgrade` against a wiped but stamped database
-   would satisfy condition 1 by assertion, so condition 2 is the only guard on that path, on top of
-   trust in the DB owner and root.
+Only a private non-serialized invocation witness derived there may cross to G. Bind actual database
+name/OID/cluster, backend/physical connection, actual transaction, schema and G traversal; never
+accept a Config Boolean, x-argument, environment flag, caller DTO or persistent disposable marker.
+Preserve the initial snapshot through the same traversal's intermediate stamp; do not mistake the
+predecessor stamp created inside that transaction for history at admission. Invalidate on
+consumption, commit, rollback, reconnect, different target, Config reuse/next-chain call and every
+exit.
 
-Every stamped database stays gated on the runner and CLI paths, including dev databases with data and
-restore-drill scratch databases (a restored dump carries `alembic_version`). A fresh run under A'
-does not lift the ceiling for any stamped database and does not alter the receipt path.
+G independently validates the binding, complete compatible-mutator/old-writer-absence and lifecycle
+proof, required other-client exclusion and `ACCESS EXCLUSIVE NOWAIT`. Under that exclusion, require
+zero `entity_facts` in every validity, validate both original legacy and occurrence index
+definitions/validity, and drop only the legacy index plus stamp atomically. A first-run rel028
+import from public data revokes empty admission; rollback cannot delete legacy input to qualify. The
+mandatory completed unsigned outcome may waive the signed cutover receipt only, never whole
+writer/lifecycle proof. The present private state witness cannot do so: REQ005 must compare a
+quiesced fence to the receipt, and no protected non-receipt binding exists for REQ003/004/005. G
+must refuse witness-only unsigned authority. Full equivalent source/test/instance/target/fence
+binding remains UNDELIVERED and must be explicitly composed into the complete proof contract, not
+inferred. Any direct raw online caller must use this same protected admission. Offline/unsupported
+invocation denies before cutover SQL/DDL. The normal stamped/legacy receipt route retains its
+independent custody/schema/signature/purpose/time/image/code/inventory/database/fence/exclusion
+checks and the first-temporal-write rollback boundary.
 
-**Fallback.** If the signal channel and any in-DB predicate are rejected in review or prove
-unreliable, this rule falls back to option F (defer to the first post-rel036 revision, with the
-gate applying to every database as before). It MUST NOT fall back to an empty-`entity_facts`-only
-test: seeded owner facts and the rel_028 backfill make that test wrong for dev, and it cannot
-distinguish a restored scratch database.
+Current `_upgrade_chain` blindly upgrades head; the reusable Config and each `env.py` NullPool
+connection do not derive this witness. Environment schema preflight currently commits before Alembic
+migration transaction; the future refactor must start actual admission in the same transaction that
+performs Relationship traversal. CLI/core/module and test helper chains are separate traversals.
+Daemon pools and logging connect before migrations, so unsupported other-client/exclusion topology
+may correctly deny; no production drain/reorder or grants are inferred. Both public-version-table
+and schema-scoped migrated helpers must be proved using real normal migration login, not a test-only
+fresh signal or skipped gate.
 
-**Still owner-gated and unresolved under `bu-ftd491`** (this answer does not decide them):
+A fully rolled-back from-base traversal can retry by rereading catalog and minting a new private
+witness; no cached old authority survives. A legitimate committed pre-G bootstrap/bounded stage,
+restored or stamped scratch, DELETE/TRUNCATE, ordinary downgrade, stamp edit or missing index cannot
+obtain this exception from emptiness. That unsigned stamped-disposable resume remains unsolved in
+this candidate and remains part of the original implementation outcome assessment. The original
+terminal nevertheless requires genuine disposable interrupted/committed/bootstrap/resume to advance
+unsigned using valid non-spoofable provenance plus complete non-receipt proof. That outcome is
+UNDELIVERED, not permanently redefined as receipt-bearing. The temporary safety fallback is normal
+receipt or separately authorized recreation, never automatic destruction or terminal closure. A
+complete target-bound source-owned marker could reuse existing trusted
+bootstrap/migration/provisioning authority under CLOSED A if actual RLS/object
+ownership/trigger/default-grant/bootstrap reapply/restore/lifetime/race checks prove it; durability
+alone does not invent a new owner decision. A label is not provenance.
 
-- whether and when the gate retires (for example, automatic advancement after a release in which
-  every supported deployment has cut over);
-- how dev databases with data and restore-drill scratch databases pass the gate (a disposable
-  marker versus recreating the database);
-- the remaining non-production lighter-path question; and
-- how CI and fixtures reach revisions after rel036 beyond the from-base case.
+The security doctrine trusts the owner/host/migration role. That actor can remove every historical
+stamp and footprint or restore a manipulated pristine-looking dump; current catalogs cannot
+distinguish its past. State the residual explicitly, without promising refusal. Defending that past
+against this actor requires a new durable authority/custody boundary; it is not implied by CLOSED A.
+Existing bounded repository implementation release is retained. Dedicated signer/proof adoption and
+exact environment authorization continue to gate live acts; no blanket new source permission is
+invented.
 
-Implementation MUST NOT pick an option for these. The fresh-from-base rule is contract text only: it
-implements nothing, signs nothing, and does not license the rel036 implementation, a signer artifact,
-or any live cutover.
+Allocate receipt and fresh admission together under bu-h3b7t's state machine/DDL/stamp/migrated
+fixture/security review, carrying bu-2z6jyb's full runtime terminal acceptance. Source-stage
+clarification is independent and countable, but it cannot close the original. Consume the source
+artifact without a parent/original dependency cycle; an independently released exact hook is the
+only alternative serial source ownership. Fold filesystem PostgreSQL Unix-socket isolation bu-jnnxtq
+into the same actual sandbox. Serialize bu-0kf2fd temporal draft author, preserve the full Compose
+contract and its source-only unadopted Kubernetes alternative.
 
 ## Risks / Trade-offs
 
@@ -530,11 +572,11 @@ or any live cutover.
 - `pg_control_system()` or other sessions' `pg_stat_activity` rows may be invisible to the migration
   role: the migration fails closed (`db_target_unverifiable`, `db_activity_unverifiable`); tests must
   prove visibility under the role Compose uses.
-- A gated revision blocks every later Relationship revision on every database that has not cut over
-  (other than the fresh-from-base case under owner answer A'), for as long as the gate lives. No
-  later revision can land "before" the gate in a linear chain; a revision authored after rel036
-  descends from it. This lasting cost is not accepted here; retirement and the remaining
-  non-production paths are the open owner decisions under `bu-ftd491` above.
+- A linear gate blocks later revisions for existing pre-cutover branches until the applicable proof
+  succeeds. CLOSED A requires unsigned genuinely fresh/disposable advancement, including legitimate
+  interruption and committed resume. Its complete non-receipt binding and resume provenance are
+  UNDELIVERED; current witness-only refusal is temporary safety, not accepted terminal downscope.
+  No automatic gate retirement or lighter real-data route is inferred.
 - The isolated test runtime needs host preparation (account, rootless daemon, offline cache) and may
   be unavailable on some hosts: accepted; preparation fails closed with `test_isolation_invalid`
   rather than falling back to the host daemon.
@@ -543,6 +585,10 @@ or any live cutover.
 
 ## Open Questions
 
-Two owner decisions remain open, listed in "Owner decisions": the signer artifact, and the rest of
-the gate lifecycle and non-production policy (`bu-ftd491`; only the fresh-from-base pass rule is
-answered, as A'). Both are preconditions for any live cutover. Every other decision is subject to exact owner acceptance of this contract.
+The exact dedicated signer/proof artifact and live environment authorization remain distinct live
+gates. CLOSED `bu-ftd491` answer A and CLOSED/applied `bu-ldcp5f` are not unanswered questions.
+Source design must still deliver equivalent protected REQ003/004/005 unsigned binding and legitimate
+disposable interrupted/committed/bootstrap/resume provenance. Existing trusted actors may suffice
+under the adopted security doctrine; an actual new actor, privilege, custody or stronger historical
+guarantee needs its precise changed-boundary decision, not blanket source permission. This source
+proposal chooses no marker/binding implementation and supplies no runtime proof.
