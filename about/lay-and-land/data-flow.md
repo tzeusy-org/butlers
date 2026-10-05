@@ -252,7 +252,7 @@ weighted by direction, interaction type and group size; tiers are never
 assigned by hand. Interaction facts come from `interaction_log()`, called by the
 fact-extraction skill and by the daily `interaction_sync` job, which scans
 `switchboard.message_inbox` (group-aware, skipping chats over 20 participants)
-and confirmed `public.calendar_events`.
+and confirmed `relationship.calendar_events`.
 
 The scoring formula, weights, hysteresis and sync rules are specified in
 [RFC 0013](../legends-and-lore/rfcs/0013-dunbar-group-aware-interaction-scoring.md).

@@ -122,6 +122,18 @@ on the condition ledger, and deriving `sphere` from endpoint custody.
 - `run_interaction_sync_job` reads `switchboard.message_inbox` directly, so `scripts/init-db.sql`
   grants `butler_relationship_rw` read-only access to schema `switchboard` (plus matching default
   privileges).
+- Calendar interaction sync reads `relationship.calendar_events` explicitly through the
+  Relationship role. It consumes the local Calendar module projection, including its attendee
+  metadata, rather than falling back to a public or another butler's projection.
+  Calendar query failures increment the existing `errors` result counter and log the failure;
+  a missing table emits a warning. The shared checkpoint remains unchanged after a failed
+  calendar query, preserving the bounded interval for the next scheduled run while committed
+  message interactions deduplicate. A successful empty read advances normally. The scheduler
+  still records the returned dict as dispatch success, so callers must inspect `errors`.
+- Routine Calendar provider polling remains disabled by default in the checked-in Relationship
+  configuration. Existing internal projection, explicit force-sync and mutation projection
+  paths remain available. Reading this table proves local consumption only; it does not prove
+  provider ingestion or deployed source population, and does not subscribe to foreign schemas.
 - `POST /api/relationship/contacts/sync` dispatches to the `contacts_sync_now` MCP tool with
   `{"provider": "google", "mode": "incremental|full"}`. `mode` is strict, and credential failures
   surface as `400` errors pointing at `/api/oauth/google/start`.
