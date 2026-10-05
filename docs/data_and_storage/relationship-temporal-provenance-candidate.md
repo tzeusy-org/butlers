@@ -40,6 +40,12 @@ the existing `butler_relationship_rw` role insert the unique consumption nonce
 on the migration caller's transaction. No function commits or acquires another
 pool connection on that caller's behalf.
 
+The client check calls `pg_stat_clear_snapshot()` after the lock and before
+reading activity. The earlier challenge's transaction-local activity snapshot
+cannot represent clients that connected later. This refresh makes the actual
+client check current; it does not establish the future managed lifecycle fence
+or prevent every later connection by itself.
+
 No authority role, cross-schema read/write grant, privileged reader,
 `SECURITY DEFINER` function or custodian is introduced. Existing bootstrap
 creates the managed namespace and owns the protected objects; it grants the

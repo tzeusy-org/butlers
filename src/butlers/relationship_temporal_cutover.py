@@ -285,6 +285,9 @@ BEGIN
         RAISE EXCEPTION 'candidate_session_mismatch';
     END IF;
     LOCK TABLE relationship.entity_facts IN ACCESS EXCLUSIVE MODE NOWAIT;
+    -- The challenge may have read activity before another backend connected.
+    -- Refresh PostgreSQL's transaction-local statistics snapshot, not authority.
+    PERFORM pg_stat_clear_snapshot();
     IF EXISTS (SELECT 1 FROM pg_stat_activity
                 WHERE datid=v_database AND pid<>pg_backend_pid()
                   AND backend_type='client backend') THEN

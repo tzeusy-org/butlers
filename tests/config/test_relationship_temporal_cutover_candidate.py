@@ -499,6 +499,26 @@ def test_actual_binding_revision_fence_expiry_and_full_xid_controls(candidate_db
             with pytest.raises(CandidateRefusal, match=f"^{code}$"):
                 with conn.begin_nested():
                     consume_candidate_binding(conn, binding, proof)
+                    # Observe only after the invalid consume has returned, so
+                    # this read cannot make the guard's negative control pass.
+                    visible = conn.execute(
+                        text(
+                            "SELECT (description::jsonb ->> :key) "
+                            "IS NOT DISTINCT FROM CAST(:value AS text) "
+                            "FROM pg_description WHERE objoid="
+                            "'relationship.temporal_cutover_consume_guard()'::regprocedure "
+                            "AND classoid='pg_proc'::regclass AND objsubid=0"
+                        ),
+                        {"key": key, "value": str(value)},
+                    ).scalar_one()
+                    rows = conn.execute(
+                        text(f"SELECT count(*) FROM {_TABLE} WHERE authorization_id=:id"),
+                        {"id": binding["authorization_id"]},
+                    ).scalar_one()
+                    pytest.fail(
+                        f"protected binding mutation was accepted: {key}; "
+                        f"visible_mutation={visible}; nonce_rows={rows}"
+                    )
         _comment(db, binding)
         consume_candidate_binding(conn, binding, proof)
     assert _consumed(db, binding) == 1
