@@ -516,6 +516,22 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
                         else ordinary["identity"]["session_user"]
                     )
                     assert identity["current_user"] == identity["role"] == role
+                    grants = dict(
+                        conn.execute(
+                            text(
+                                "SELECT has_table_privilege(current_user, 'public.insight_amendments', 'SELECT') AS can_select, "
+                                "has_table_privilege(current_user, 'public.insight_amendments', 'INSERT') AS can_insert, "
+                                "has_table_privilege(current_user, 'public.insight_amendments', 'UPDATE') AS can_update, "
+                                "has_table_privilege(current_user, 'public.insight_amendments', 'DELETE') AS can_delete"
+                            )
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    if replay and role != "butler_calendar_rw":
+                        # Position the RLS negative after actual grant widening;
+                        # a missing table ACL must not substitute for the policy.
+                        assert all(grants.values()), (role, replay, grants)
                     params = {
                         "candidate": candidate,
                         "episode": f"synthetic-direct:{replay}:{role}",
@@ -626,6 +642,7 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
                             "identity": identity,
                             "direct": direct,
                             "enqueue": execution,
+                            "effective_table_grants": grants,
                         }
                     )
             finally:
@@ -642,6 +659,25 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
         try:
             with engine.begin() as conn:
                 conn.execute(text(f'SET LOCAL ROLE "{unrelated_role}"'))
+                assert (
+                    conn.execute(
+                        text("SELECT has_schema_privilege(current_user, 'public', 'USAGE')")
+                    ).scalar_one()
+                    is True
+                )
+                for signature in (
+                    "public.enqueue_premise_amendments(text,text,timestamptz,text)",
+                    "public.resolve_finance_bill_status(uuid)",
+                ):
+                    assert (
+                        conn.execute(
+                            text(
+                                "SELECT has_function_privilege(current_user, :signature, 'EXECUTE')"
+                            ),
+                            {"signature": signature},
+                        ).scalar_one()
+                        is False
+                    )
                 _expect_permission_denied(
                     conn,
                     "SELECT public.enqueue_premise_amendments('synthetic-source', "
