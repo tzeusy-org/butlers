@@ -4,7 +4,7 @@
 
 Six selected fixes are wired in source. Four new moves survive deduplication: one chat correction and three evidence-aware capability specifications.
 
-[Structured evidence](2026-09-22-jarvis-pursuit-data.json)
+Full per-agent structured output lived in `2026-09-22-jarvis-pursuit-data.json`, pruned from the tree under the two-newest-runs retention rule; read it with `git show 091af61db399b48b78809486dbab43e60bb6d122:docs/redesigns/2026-09-22-jarvis-pursuit-data.json` (pipe into jq in place of the path in the access patterns below).
 
 ## Decision in view
 

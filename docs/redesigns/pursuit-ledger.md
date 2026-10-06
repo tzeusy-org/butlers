@@ -26,27 +26,28 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 13 | 2026-09-12 | 15 | bu-h40h2b | [2026-09-12-jarvis-pursuit.md](2026-09-12-jarvis-pursuit.md) |
 | 14 | 2026-09-22 | 4 | bu-p5umi2 | [2026-09-22-jarvis-pursuit.md](2026-09-22-jarvis-pursuit.md) |
 | 15 | 2026-10-03 | 15 | bu-q7vx1q | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
+| 16 | 2026-10-06 | 15 | bu-s11n0s | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
 
 ## Tier history
 
 Verdicts per surface key across runs (blank: not tiered that run; keys were normalized across cohorts, so compare adjacent runs only).
 
-| Surface | 07-03 | 07-04 | 07-10 | 07-12 | 07-17 | 07-22 | 07-25 | 08-09 | 09-03 | 09-05 | 09-12 | 09-22 | 10-03 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| command |  |  |  |  |  |  |  |  | solid | solid | solid | solid | solid |
-| activity |  |  |  |  |  |  |  |  | solid | functional | functional | solid | solid |
-| chat |  |  |  |  |  | functional |  |  |  |  |  | functional | functional |
-| health |  | functional | functional | functional | functional |  | solid | solid | weak | functional | functional | functional | functional |
-| education |  | functional |  | functional | functional | weak | weak | weak |  |  |  | broken | broken |
-| life-graph |  |  |  |  |  |  |  |  | weak | weak | weak | weak | weak |
-| calendar |  | solid | solid | solid | solid | solid | solid | solid |  |  |  | functional | functional |
-| ops |  |  |  |  |  |  |  |  | functional | weak | weak | functional | functional |
-| settings |  | functional | solid |  |  |  |  |  | solid | weak | weak | functional | functional |
-| spend |  | functional | functional | solid | functional |  | solid | functional |  |  |  | weak | weak |
-| cross-shell |  |  |  |  | solid | solid | solid | solid |  |  |  | functional | functional |
-| cross-visual |  |  |  |  | solid | functional | solid | solid |  |  |  | functional | functional |
-| cross-speed |  |  |  |  | solid | solid | solid | solid |  |  |  | functional | functional |
-| cross-accessibility |  | solid | functional | functional |  |  |  |  |  |  | functional | functional | functional |
+| Surface | 07-03 | 07-04 | 07-10 | 07-12 | 07-17 | 07-22 | 07-25 | 08-09 | 09-03 | 09-05 | 09-12 | 09-22 | 10-03 | 10-06 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| command |  |  |  |  |  |  |  |  | solid | solid | solid | solid | solid | solid |
+| activity |  |  |  |  |  |  |  |  | solid | functional | functional | solid | solid | solid |
+| chat |  |  |  |  |  | functional |  |  |  |  |  | functional | functional | functional |
+| health |  | functional | functional | functional | functional |  | solid | solid | weak | functional | functional | functional | functional | functional |
+| education |  | functional |  | functional | functional | weak | weak | weak |  |  |  | broken | broken | broken |
+| life-graph |  |  |  |  |  |  |  |  | weak | weak | weak | weak | weak | weak |
+| calendar |  | solid | solid | solid | solid | solid | solid | solid |  |  |  | functional | functional | functional |
+| ops |  |  |  |  |  |  |  |  | functional | weak | weak | functional | functional | functional |
+| settings |  | functional | solid |  |  |  |  |  | solid | weak | weak | functional | functional | functional |
+| spend |  | functional | functional | solid | functional |  | solid | functional |  |  |  | weak | weak | weak |
+| cross-shell |  |  |  |  | solid | solid | solid | solid |  |  |  | functional | functional | functional |
+| cross-visual |  |  |  |  | solid | functional | solid | solid |  |  |  | functional | functional | functional |
+| cross-speed |  |  |  |  | solid | solid | solid | solid |  |  |  | functional | functional | functional |
+| cross-accessibility |  | solid | functional | functional |  |  |  |  |  |  | functional | functional | functional | functional |
 
 ## Ranked moves by run
 
@@ -275,3 +276,20 @@ Titles only; packets live in the epic's child beads and in the run's data file (
 14. Action mandates: a butler asks a sibling to act, the sibling keeps its authority, and the outcome comes back
 15. Personal baselines: a per-schema robust band with honest coverage, deviation episodes that exclude their own days, and one scorer behind every 'unusual for you'
 
+### 16 (2026-10-06) · epic bu-s11n0s
+
+1. Endpoint custody holds: 'my phone is gone' or 'that sign-in wasn't me' strips that channel's owner authority fleet-wide in one write
+2. Owner-verified means the owner verified it: server-derived authority on relationship.entity_facts, with third-party contact handles held as candidates
+3. Finish run 15's seams: a writer for allowance_account, posture on the birthday push, and the bearer scrub on filtered-message previews
+4. Calendar context truth: RSVP, transparency and the event type the owner declared decide whether they are in a meeting, away, focused or working somewhere
+5. Count strips tell deaf from quiet: time-keyed buckets with per-bucket listening state, and no fabricated liveness zeros
+6. Served-identity attestation: every attempt records what actually served it, and requested-not-served becomes evidence
+7. Keep the location retention promise: raw fixes expire on a declared horizon once their places and trips are projected
+8. Break-through list: the owner declares who and what may reach them in quiet hours, checked on every inbound channel and delivered within minutes
+9. Payment-redirect guard: a request to pay a known counterparty somewhere new is checked jointly by Finance, Relationship and Switchboard
+10. Absence Plans: owner-signed, time-boxed grant bundles that keep the fleet working while the owner is away, with atomic use claims and one-row revoke
+11. Say a name, get the person: deterministic mention anchoring in memory context and recall, with honest ambiguity and known unknowns
+12. Ask promotion: a question the owner keeps asking becomes an offered standing push, and an unread push offers to retire
+13. Who covers what: a duty-of-care ledger that names a carer for every occurrence and flags the ones nobody covers
+14. Auto-reply and bounce perception: an out-of-office reply becomes 'away until', a hard bounce becomes a dead address, with no LLM involved
+15. Insight outcome ledger: premise-tracked nudges with natural holdouts, per-class efficacy verdicts, and shaping that follows whether the world changed
