@@ -225,6 +225,63 @@ uv run pytest tests/test_migrations.py -q --tb=short 2>&1 | tail -20
 # Expected: all migration integrity tests pass
 ```
 
+## Metadata visibility and evidence-preserving rollback
+
+The core smoke comparison reads `information_schema.columns` through the ordinary
+migration login. `Tables only in fresh DB` is a privilege-filtered inventory
+observation. A missing entry can mean that the object exists under another creator
+without effective table privileges; it does not establish that downgrade failed to
+recreate the table. Diagnose this in a disposable database with a positive qualified
+administrative catalog witness. Record the session and effective role, table owner,
+effective and inherited privileges, per-creator default ACLs, enabled/forced RLS,
+and the function owner, EXECUTE grants and pinned search path separately.
+
+The initial core_255 correction in PR #4347 changed two independent behaviors at
+once: it added a targeted Switchboard table grant and retained `insight_amendments`
+on downgrade. The historical initial source dropped an empty amendment table;
+managed bootstrap then recreated it under its own owner. The ordinary migration
+login's default privileges applied to its own creations, not the bootstrap creator.
+Both a grant-only control and a keep-only control must therefore accompany the
+initial-source reproduction. Retention can mask the inventory failure by preserving
+ownership and ACLs. That does not make retention the cause of correct grants.
+
+The documented decision is to keep the current core_255 migration unchanged. Its
+narrow grant already exposes bootstrap-created amendment metadata through the
+ordinary login's configured inherited Switchboard membership. Actual runtime
+`SET ROLE` identities still face the Switchboard row policy, including after two
+production `init-db.sql` replays re-widen public DML. Metadata equality, row visibility,
+DDL ownership and SECURITY DEFINER execution are four separate checks. Runtime table
+grants never confer the ownership needed to ALTER or DROP a bootstrap-created table.
+The core_258 grant convergence and a dynamic-head round-trip remain separate smoke
+checks; a passing current head comparison cannot identify which historical change
+fixed a core_255 comparison.
+
+A bounded core_255-to-core_254 rollback intentionally retains complete amendment
+rows in all four states, while their referenced candidates remain. It removes
+candidate `premise` and `delivery_ref`, folds candidate `withdrawn` to `filtered`, and
+folds ledger `withdrawn` to `suppressed` and `amended` to `delivered`. Reupgrade cannot
+recover the removed candidate fields. The surviving table does not mean that older
+code can deliver corrections. Its existing candidate FK still cascades on deletion;
+this decision is not a promise of indefinite evidence retention.
+
+Retaining a table also does not converge function ownership. A managed-bootstrap
+reupgrade can recreate the two definers under the bootstrap owner. A later ordinary
+rollback/replay may silently retain those functions because their DDL uses
+best-effort privilege handling. A surviving enqueue function can still fail with
+undefined-column SQLSTATE `42703` while the rollback has removed candidate premise
+data. Record that fact independently of table inventory and row retention.
+Broader caller/source validation, FK lifecycle, FORCE RLS and
+definer ownership hardening remain with `bu-q7vx1q.33`; this investigation adds no
+authority or waiver for those choices.
+
+The real-PG controls live in
+`tests/migrations/test_core_255_insight_premise_binding_migration.py`. They use the
+complete canonical predecessor chain and bootstrap, a checksum-verified historical
+test fixture, isolated empty destructive variants, planted positive row witnesses,
+and actual role execution. Source inspection, mock results and collection are not
+SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
+`openspec/specs/proactive-insight-engine/spec.md` for the bounded contract.
+
 ## Implementation Notes
 
 - Alembic loads every `*.py` in a versions directory, so a stray file with a duplicate `revision`
