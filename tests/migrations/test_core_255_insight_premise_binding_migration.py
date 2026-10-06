@@ -54,6 +54,12 @@ def _experiment_config(db_url: str, tmp_path: Path, variant: str, source: str):
     """Change only a test copy of core_255 in the complete canonical environment."""
     snapshot = tmp_path / variant / "alembic"
     shutil.copytree(ALEMBIC_DIR, snapshot, ignore=shutil.ignore_patterns("__pycache__"))
+    # core_004/core_159 resolve this canonical seed file relative to their
+    # revision path. Keep that input too, rather than silently omitting seeds.
+    shutil.copyfile(
+        ALEMBIC_DIR.parent / "model_catalog_defaults.toml",
+        snapshot.parent / "model_catalog_defaults.toml",
+    )
     (snapshot / "versions/core" / _CORE_255.name).write_text(source, encoding="utf-8")
     config = _build_alembic_config(db_url, ["core"])
     config.set_main_option("script_location", str(snapshot))
