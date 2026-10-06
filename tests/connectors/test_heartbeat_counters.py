@@ -292,6 +292,16 @@ async def test_classification_publication_serializes_exact_ack_and_retires_late_
         assert await publisher.publish_once() is False
         assert publisher._admission_epoch == epoch1 and evaluator.peek_snapshot() == latest
 
+    async def mutated_arguments(_name, envelope):
+        altered = envelope["capabilities"][CLASSIFICATION_KEY]
+        altered["generation"] += 100
+        return response(altered)
+
+    publisher._mcp_client.call_tool = mutated_arguments
+    assert await publisher.publish_once() is False
+    assert publisher._admission_epoch == epoch1 and evaluator.peek_snapshot() == latest
+    assert publisher._last_acknowledged_generation == latest.generation
+
     # Hold an old normal reply while a genuine query completes a newer generation.
     entered.clear()
     release.clear()

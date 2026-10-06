@@ -424,7 +424,9 @@ class ConnectorHeartbeat:
             envelope = self._build_envelope()
             envelope["capabilities"] = {
                 **envelope.get("capabilities", {}),
-                CLASSIFICATION_KEY: sent,
+                # Transport receives its own fixed-value copy; ACK validation
+                # retains the private captured request even if arguments mutate.
+                CLASSIFICATION_KEY: dict(sent),
             }
             task = asyncio.create_task(self._mcp_client.call_tool("connector.heartbeat", envelope))
             done, _ = await asyncio.wait({task}, timeout=max(0, deadline - loop.time()))
