@@ -436,7 +436,7 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
                     "('finance', 80, 'synthetic', 'synthetic:grant-sentinel', now()+interval '1 day', "
                     "'Synthetic grant witness', 'delivered', '2080-01-01'::timestamptz, "
                     '\'{"kind":"owner_condition","source":"synthetic-source",'
-                    '"fingerprint":"synthetic-fingerprint"}\', \'{"synthetic":true}\') RETURNING id'
+                    '"fingerprint":"synthetic-fingerprint"}\', jsonb_build_object(\'synthetic\', true)) RETURNING id'
                 )
             ).scalar_one()
             for status, delivered_at, kind in (
