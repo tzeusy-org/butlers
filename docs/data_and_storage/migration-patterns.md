@@ -233,7 +233,7 @@ observation. A missing entry can mean that the object exists under another creat
 without effective table privileges; it does not establish that downgrade failed to
 recreate the table. Diagnose this in a disposable database with a positive qualified
 administrative catalog witness. Record the session and effective role, table owner,
-effective and inherited privileges, per-creator default ACLs, enabled/forced RLS,
+effective and inherited privileges, database/schema ownership, per-creator default ACLs, enabled/forced RLS,
 and the function owner, EXECUTE grants and pinned search path separately.
 
 The initial core_255 correction in PR #4347 changed two independent behaviors at
@@ -251,7 +251,15 @@ ordinary login's configured inherited Switchboard membership. Actual runtime
 `SET ROLE` identities still face the Switchboard row policy, including after two
 production `init-db.sql` replays re-widen public DML. Metadata equality, row visibility,
 DDL ownership and SECURITY DEFINER execution are four separate checks. Runtime table
-grants never confer the ownership needed to ALTER or DROP a bootstrap-created table.
+grants do not confer ownership needed to ALTER a bootstrap-created table. DROP has
+an additional schema-owner authority: in the fresh PostgreSQL 17 fixture, the
+ordinary login owns its database and implicitly owns `public` through
+`pg_database_owner`. It can drop bootstrap-owned contained objects without being
+able to ALTER the table or REPLACE the functions. These are separate operations,
+not a reason to destroy correction rows. See PostgreSQL's
+[database-owner role](https://www.postgresql.org/docs/17/predefined-roles.html),
+[DROP TABLE contract](https://www.postgresql.org/docs/17/sql-droptable.html) and
+[generic DROP ownership check](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/backend/commands/dropcmds.c).
 The core_258 grant convergence and a dynamic-head round-trip remain separate smoke
 checks; a passing current head comparison cannot identify which historical change
 fixed a core_255 comparison.
@@ -265,11 +273,13 @@ code can deliver corrections. Its existing candidate FK still cascades on deleti
 this decision is not a promise of indefinite evidence retention.
 
 Retaining a table also does not converge function ownership. A managed-bootstrap
-reupgrade can recreate the two definers under the bootstrap owner. A later ordinary
-rollback/replay may silently retain those functions because their DDL uses
-best-effort privilege handling. A surviving enqueue function can still fail with
-undefined-column SQLSTATE `42703` while the rollback has removed candidate premise
-data. Record that fact independently of table inventory and row retention.
+reupgrade can recreate the two definers under the bootstrap owner. An ordinary
+schema replay cannot REPLACE those functions and its best-effort DDL can leave the
+owner unchanged. In the fresh database-owner fixture, ordinary rollback can DROP
+them through schema ownership; the function is then unavailable (`42883`) until
+ordinary reupgrade recreates it under the ordinary owner. Record the actual
+database/schema authority and function absence or ownership at each step. Do not
+extrapolate this DROP authority to a migration login that lacks schema ownership.
 Broader caller/source validation, FK lifecycle, FORCE RLS and
 definer ownership hardening remain with `bu-q7vx1q.33`; this investigation adds no
 authority or waiver for those choices.

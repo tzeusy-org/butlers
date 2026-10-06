@@ -9,3 +9,7 @@ The exact historical source is stored as checksum-verified inert test data. Runt
 ## Budget
 
 One new grant/visibility test function is balanced by grouping core_168 and core_241 downgrade parameters. Each older boundary retains its fresh database, original helper body and every assertion. core_255 remains independently collected. Integration collected delta is zero; no baseline increase.
+
+## PostgreSQL evidence correction
+
+The first hosted falsification rejected the shaping prediction that ordinary rollback must fail on bootstrap-owned objects: the fixture login owns its database and implicitly owns public through pg_database_owner. Generic DROP permits schema-owner authority, while ALTER/REPLACE still needs object ownership. Tests record both operations separately. This changes no production grants, ownership, role membership, data-retention policy or existing requirement body. The original shaping seal remains immutable.

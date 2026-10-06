@@ -890,6 +890,6 @@ The premise-amendment migration lifecycle SHALL distinguish the ordinary migrati
 #### Scenario: Metadata inventory loss is diagnosed with a positive object witness
 
 - **WHEN** a disposable PostgreSQL round-trip comparison reports the amendment table only in the fresh database
-- **THEN** the investigation compares a positive qualified administrative object witness with the ordinary login's metadata inventory and records login, object owner, effective inherited privileges and per-creator defaults before attributing the failure to teardown
+- **THEN** the investigation compares a positive qualified administrative object witness with the ordinary login's metadata inventory and records login, object owner, database/schema ownership, effective inherited privileges and per-creator defaults before attributing the failure to teardown
 - **AND** grant-only and retention-only controls are tested separately when the historical correction changed both
 - **AND** missing function execution or ownership convergence is recorded independently of table inventory equality

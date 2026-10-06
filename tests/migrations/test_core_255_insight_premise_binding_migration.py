@@ -92,6 +92,21 @@ def _amendment_catalog(db_url: str) -> dict:
     try:
         with engine.connect() as conn:
             identity = _identity(conn)
+            ownership = dict(
+                conn.execute(
+                    text(
+                        "SELECT pg_get_userbyid(d.datdba) AS database_owner, "
+                        "pg_get_userbyid(n.nspowner) AS public_schema_owner, "
+                        "pg_has_role(current_user, n.nspowner, 'USAGE') AS effective_schema_owner, "
+                        "r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolinherit "
+                        "FROM pg_database d CROSS JOIN pg_namespace n CROSS JOIN pg_roles r "
+                        "WHERE d.datname=current_database() AND n.nspname='public' "
+                        "AND r.rolname=current_user"
+                    )
+                )
+                .mappings()
+                .one()
+            )
             table = (
                 conn.execute(
                     text(
@@ -163,6 +178,7 @@ def _amendment_catalog(db_url: str) -> dict:
             )
             return {
                 "identity": identity,
+                "ownership": ownership,
                 "qualified_object": table is not None,
                 "table": dict(table) if table else None,
                 "ordinary_columns": columns,
@@ -305,12 +321,28 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
                 assert inventory == fresh_inventory, "privilege-filtered inventory differs"
             assert ordinary["ordinary_columns"] == []
         if recreated:
-            # Table DML/metadata authority never grants ALTER ownership. This
-            # hypothetical normal replay is observational, not a supported fix.
+            # A database owner implicitly owns public through pg_database_owner
+            # on fresh PG17. Schema ownership permits DROP, but not relation
+            # ALTER. Keep those authorities separate; data variants stay empty.
+            assert ordinary["ownership"]["public_schema_owner"] == "pg_database_owner"
+            assert ordinary["ownership"]["effective_schema_owner"] is True
+            engine = create_engine(db_url)
+            try:
+                with engine.begin() as conn:
+                    _expect_permission_denied(
+                        conn, "ALTER TABLE public.insight_amendments ENABLE ROW LEVEL SECURITY"
+                    )
+            finally:
+                engine.dispose()
             config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
-            with pytest.raises(DBAPIError) as error:
-                command.downgrade(config, "core_254")
-            assert error.value.orig.pgcode == "42501"
+            command.downgrade(config, "core_254")
+            assert _amendment_catalog(admin_url)["qualified_object"] is False
+            assert _amendment_catalog(admin_url)["functions"] == []
+            command.upgrade(config, "core_255")
+            assert (
+                _amendment_catalog(db_url)["table"]["owner"] == before["identity"]["session_user"]
+            )
+            assert _metadata_inventory(db_url) == fresh_inventory
         receipts.append(
             {
                 "variant": variant,
@@ -321,7 +353,9 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
                 "ordinary": ordinary,
                 "only_fresh": sorted(only_fresh),
                 "inventory_equality": "PASS" if visible else "RED with positive object",
-                "ordinary_ownership_rollback": "42501" if recreated else "not attempted",
+                "ordinary_ownership": "ALTER 42501; schema-owner DROP and ordinary recreate succeed"
+                if recreated
+                else "retained normal table owner",
             }
         )
     # Falsify the exact supported-install metadata assertion by neutralizing
@@ -350,6 +384,7 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
             "same_install_assertion": "RED with positive object",
         }
     )
+    _publish_disposable_receipt({"historical_controls": receipts})
     return receipts
 
 
@@ -366,6 +401,12 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
     command.upgrade(_build_alembic_config(admin_url, ["core"]), "core_255")
     ordinary = _amendment_catalog(db_url)
     administrative = _amendment_catalog(admin_url)
+    assert ordinary["ownership"]["database_owner"] == ordinary["identity"]["session_user"]
+    assert ordinary["ownership"]["effective_schema_owner"] is True
+    assert all(
+        ordinary["ownership"][flag] is False
+        for flag in ("rolsuper", "rolcreaterole", "rolcreatedb")
+    )
     # This is the grant regression seam: bootstrap creates the table after the
     # normal login's per-creator defaults, and before any grant-all replay.
     _assert_bootstrap_metadata_visible(ordinary, administrative)
@@ -621,7 +662,7 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
             engine.dispose()
     _publish_disposable_receipt(
         {
-            "historical_controls": historical,
+            "historical_controls": [r["variant"] for r in historical],
             "current_source_sha256": hashlib.sha256(_CORE_255.read_bytes()).hexdigest(),
             "current_install": ordinary,
             "current_role_matrix": receipts,
@@ -999,16 +1040,25 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
             {"authority": authority, "after_upgrade": _amendment_catalog(db_url), "rows": before}
         )
     # Retained table ownership lets the next ordinary schema replay proceed.
-    # Best-effort definer DDL cannot converge a bootstrap-owned function or drop
-    # it as the normal login; record this separately from inventory equality.
+    # REPLACE still needs function ownership; the database owner's implicit
+    # public-schema ownership permits DROP. Verify both actual authorities.
     bootstrap_functions = _amendment_catalog(db_url)["functions"]
     assert all(
         f["owner"] == _amendment_catalog(admin_url)["identity"]["session_user"]
         for f in bootstrap_functions
     )
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            for source_name in ("CREATE_ENQUEUE_FN", "CREATE_BILL_STATUS_FN"):
+                _expect_permission_denied(conn, runpy.run_path(str(_CORE_255))[source_name])
+    finally:
+        engine.dispose()
+    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    assert _amendment_catalog(db_url)["functions"] == bootstrap_functions
     command.downgrade(config, "core_254")
     assert _amendment_rows(db_url) == before
-    assert _amendment_catalog(db_url)["functions"] == bootstrap_functions
+    assert _amendment_catalog(db_url)["functions"] == []
     engine = create_engine(db_url)
     try:
         with engine.begin() as conn:
@@ -1024,19 +1074,38 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
                             "SELECT public.enqueue_premise_amendments('s', 'f', '2099-01-01'::timestamptz, NULL)"
                         )
                     )
-            assert (
-                error.value.orig.pgcode == "42703"
-            )  # surviving function references removed premise
+            assert error.value.orig.pgcode == "42883"
     finally:
         engine.dispose()
     command.upgrade(config, "core_255")
-    assert _amendment_catalog(db_url)["functions"] == bootstrap_functions
-    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    ordinary_functions = _amendment_catalog(db_url)["functions"]
+    assert len(ordinary_functions) == 2
+    assert all(f["owner"] == before_catalog["identity"]["session_user"] for f in ordinary_functions)
+    assert all(f["proconfig"] == ["search_path=pg_catalog, pg_temp"] for f in ordinary_functions)
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text('SET LOCAL ROLE "butler_switchboard_rw"'))
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT public.enqueue_premise_amendments('s', 'f', '2099-01-01'::timestamptz, NULL)"
+                    )
+                ).scalar_one()
+                == 0
+            )
+            assert (
+                conn.execute(text("SELECT count(*) FROM public.insight_amendments")).scalar_one()
+                == 4
+            )
+    finally:
+        engine.dispose()
     assert _amendment_rows(db_url) == before
     _publish_disposable_receipt(
         {
             "bounded_retention": receipts,
-            "ordinary_definer_downgrade": "bootstrap-owned functions survive best-effort DROP; enqueue raises 42703 while premise is absent",
+            "ordinary_definer_downgrade": "schema-owner DROP succeeds; function call raises 42883 until ordinary recreate",
+            "ordinary_definer_replace": "42501 while bootstrap-owned; best-effort schema replay leaves owner unchanged",
             "ordinary_replay_functions": _amendment_catalog(db_url)["functions"],
             "all_states_preserved": sorted(row["state"] for row in before),
         }
