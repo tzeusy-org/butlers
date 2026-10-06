@@ -323,6 +323,13 @@ def test_parse_heartbeat_with_capabilities(valid_heartbeat_payload):
     valid_heartbeat_payload["capabilities"] = {"backfill": True}
     envelope = parse_connector_heartbeat(valid_heartbeat_payload)
     assert envelope.capabilities == {"backfill": True}
+    # The new object is normalized before generic validation diagnostics.
+    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+
+    for malformed in ["CONTACT-token-error", {"state": "CONTACT-token-error"}]:
+        valid_heartbeat_payload["capabilities"][CLASSIFICATION_KEY] = malformed
+        parsed = parse_connector_heartbeat(valid_heartbeat_payload)
+        assert parsed.capabilities == {"backfill": True, CLASSIFICATION_KEY: None}
 
 
 def test_parse_heartbeat_without_capabilities(valid_heartbeat_payload):
@@ -351,10 +358,8 @@ def test_parse_heartbeat_capabilities_multiple_flags(valid_heartbeat_payload):
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_with_capabilities_stored_in_registry(valid_heartbeat_payload):
+async def test_heartbeat_with_capabilities_stored_in_registry(valid_heartbeat_payload, caplog):
     """Test that capabilities from heartbeat are persisted to connector_registry."""
-    import json
-
     valid_heartbeat_payload["capabilities"] = {"backfill": True}
 
     pool = AsyncMock()
@@ -372,7 +377,20 @@ async def test_heartbeat_with_capabilities_stored_in_registry(valid_heartbeat_pa
     assert "capabilities" in sql
     # The last positional arg (after checkpoint_updated_at) should be capabilities JSON
     capabilities_arg = args[-1]
-    assert capabilities_arg == json.dumps({"backfill": True})
+    assert capabilities_arg == {"backfill": True}
+    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+
+    caplog.set_level("INFO")
+    sentinel = "private-contact raw-error provider-token epoch-sentinel"
+    valid_heartbeat_payload["capabilities"][CLASSIFICATION_KEY] = {
+        "state": sentinel,
+        "reason": sentinel,
+        "admission_epoch": sentinel,
+    }
+    assert (await heartbeat(pool, valid_heartbeat_payload)).status == "accepted"
+    assert sentinel not in caplog.text and "epoch-sentinel" not in caplog.text
+    assert "backfill" in caplog.text
+    assert pool.execute.call_args_list[-3].args[-1] == {"backfill": True, CLASSIFICATION_KEY: None}
 
 
 @pytest.mark.asyncio
@@ -400,8 +418,6 @@ async def test_heartbeat_without_capabilities_stores_null(valid_heartbeat_payloa
 @pytest.mark.asyncio
 async def test_heartbeat_capabilities_updated_on_subsequent_heartbeat(valid_heartbeat_payload):
     """Test that capabilities are updated on every heartbeat upsert."""
-    import json
-
     instance_id = valid_heartbeat_payload["connector"]["instance_id"]
     valid_heartbeat_payload["capabilities"] = {"backfill": False}
 
@@ -428,4 +444,4 @@ async def test_heartbeat_capabilities_updated_on_subsequent_heartbeat(valid_hear
     assert "capabilities = EXCLUDED.capabilities" in sql
     # Last arg should be the JSON capabilities
     capabilities_arg = args[-1]
-    assert capabilities_arg == json.dumps({"backfill": False})
+    assert capabilities_arg == {"backfill": False}

@@ -4587,8 +4587,8 @@ export interface IngestionHistogramResponse {
 /**
  * Response from GET /api/ingestion/events/dropped-known.
  *
- * `available=false` means the filtered-event store could not be read: the
- * counts are then meaningless and must never be rendered as zero.
+ * `available=false` means complete classification is unknown. Positive counts
+ * remain a lower bound only with counts_available; failed-read zeros are placeholders.
  */
 export interface IngestionDroppedKnownSummary {
   available: boolean;
@@ -4597,6 +4597,10 @@ export interface IngestionDroppedKnownSummary {
   dropped: number;
   /** Distinct (rule, sender) cases behind `dropped`. */
   episodes: number;
+  counts_available: boolean;
+  classification_available: boolean;
+  uncertain_drops: number | null;
+  availability_reason: "none" | "counts_unavailable" | "registry_unavailable" | "classification_unknown" | "historical_uncertainty";
 }
 
 /** One replay attempt entry from public.audit_log. */

@@ -418,6 +418,229 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
             "A persisted drop after an actual first contact-query failure is "
             "unknown even when the filtered aggregate reads zero successfully"
         )
+
+        # Same real gate species: admitted unknown, actual query success, failed
+        # loaded publication, then recovery of CURRENT truth only.
+        from types import SimpleNamespace
+
+        from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+        from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+        from butlers.core_tools._base import ToolContext
+        from butlers.core_tools._switchboard import register_switchboard_tools
+
+        registered = {}
+
+        def capture_tool(_group, **options):
+            def register(fn):
+                registered[options.get("name", fn.__name__)] = fn
+                return fn
+
+            return register
+
+        import asyncio
+
+        before_registration = set(asyncio.all_tasks())
+        register_switchboard_tools(
+            ToolContext(
+                daemon=SimpleNamespace(_pipeline=None, _buffer=None),
+                pool=registry_pool,
+                spawner=None,
+                butler_name="switchboard",
+                butler_type=None,
+                is_switchboard=True,
+                is_messenger=False,
+                route_metrics=None,
+            ),
+            SimpleNamespace(),
+            capture_tool,
+        )
+        await asyncio.gather(*(set(asyncio.all_tasks()) - before_registration))
+        fail_loaded = True
+
+        async def call_tool(name, arguments):
+            check = arguments["capabilities"][CLASSIFICATION_KEY]
+            if fail_loaded and check["state"] == "loaded":
+                raise TimeoutError("synthetic private-error token-sentinel")
+            return await registered[name](**arguments)
+
+        publisher = ConnectorHeartbeat(
+            HeartbeatConfig("gmail", runtime._config.connector_endpoint_identity),
+            SimpleNamespace(call_tool=call_tool),
+            runtime._metrics,
+            runtime._get_health_state,
+            get_capabilities=runtime._get_capabilities,
+            get_contact_snapshot=runtime._gmail_policy_evaluator.peek_snapshot,
+        )
+        runtime._heartbeat = publisher
+        assert await publisher.publish_once()  # accepted startup unknown
+        runtime._gmail_policy_evaluator._db_pool = pool
+        await runtime._refresh_policy_tier_assigner()
+        empty_loaded = runtime._gmail_policy_evaluator.peek_snapshot()
+        assert empty_loaded.state == "loaded" and empty_loaded.contacts == frozenset()
+
+        async def api_summary():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://dashboard.example.test"
+            ) as client:
+                response = await client.get("/api/ingestion/events/dropped-known?window=24h")
+            assert response.status_code == 200
+            return response.json()
+
+        # Read back actual provider-time and classification-time fields from a
+        # separate acquisition, after another refresh and delayed buffer flush.
+        runtime._fetch_message.return_value["id"] = "m-loaded-empty"
+        await runtime._ingest_single_message("m-loaded-empty")
+        frozen_empty = dict(
+            runtime._filtered_event_buffer._rows[-1][9]["drop_context"]["classification"]
+        )
+        entity = await pool.fetchval(
+            "INSERT INTO public.entities(canonical_name) VALUES($1) RETURNING id",
+            "Synthetic priority",
+        )
+        await pool.execute(
+            "INSERT INTO public.priority_contacts(contact_id, entity_id) VALUES($1,$1)",
+            entity,
+        )
+        await pool.execute(
+            "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
+            "VALUES($1,'has-email',$2,'literal','q43-synthetic')",
+            entity,
+            "known@example.test",
+        )
+        runtime._gmail_policy_evaluator._cache_loaded_at -= 901
+        await runtime._refresh_policy_tier_assigner()
+        known_loaded = runtime._gmail_policy_evaluator.peek_snapshot()
+        assert known_loaded.state == "loaded" and known_loaded.contacts == frozenset(
+            {"known@example.test"}
+        )
+        for suffix, provider_date in [
+            ("old", "1"),
+            ("future", "4102444800000"),
+            ("malformed", "not-a-date"),
+        ]:
+            message = runtime._fetch_message.return_value
+            message["payload"]["headers"][0]["value"] = "known@example.test"
+            message["internalDate"] = provider_date
+            await runtime._ingest_single_message(f"m-known-{suffix}")
+        assert len(runtime._filtered_event_buffer) == 4
+        await runtime._filtered_event_buffer.flush(pool)
+        async with pool.acquire() as readback:
+            persisted = await readback.fetch(
+                "SELECT external_message_id, full_payload, received_at FROM connectors.filtered_events "
+                "WHERE external_message_id LIKE 'm-known-%' OR external_message_id='m-loaded-empty'"
+            )
+        assert len(persisted) == 4
+        for persisted_row in persisted:
+            payload = persisted_row["full_payload"]
+            classification = payload["drop_context"]["classification"]
+            success = datetime.fromisoformat(classification["last_success_at"])
+            observed = datetime.fromisoformat(classification["observed_at"])
+            assert classification["state"] == "loaded"
+            assert 0 <= (observed - success).total_seconds() <= 900
+            assert payload["payload"]["raw"] == {}
+            assert observed <= persisted_row["received_at"]
+            if persisted_row["external_message_id"] == "m-loaded-empty":
+                assert classification == frozen_empty
+                assert "important_dropped" not in payload["drop_context"]
+            else:
+                assert payload["drop_context"]["important_dropped"] is True
+                assert classification["observed_at"] != payload["event"]["observed_at"]
+        unknown_current = await api_summary()
+        assert unknown_current["dropped"] == 3 and unknown_current["counts_available"] is True
+        assert unknown_current["classification_available"] is False
+        assert unknown_current["uncertain_drops"] == 1 and unknown_current["available"] is False
+        assert runtime._get_health_state() == ("healthy", None)
+        fail_loaded = False
+        assert await publisher.publish_once()
+        recovered = await api_summary()
+        assert recovered["classification_available"] is True
+        assert recovered["available"] is False and recovered["uncertain_drops"] == 1
+        async with pool.acquire() as readback:
+            original = await readback.fetchval(
+                "SELECT full_payload FROM connectors.filtered_events WHERE external_message_id=$1",
+                "m-classification-unavailable",
+            )
+        assert original == row["full_payload"]  # recovery never rewrites history
+        await pool.execute(
+            "UPDATE connectors.filtered_events SET status='replay_pending' WHERE external_message_id=$1",
+            "m-classification-unavailable",
+        )
+        assert (await api_summary())["uncertain_drops"] == 1
+        await pool.execute(
+            "UPDATE connectors.filtered_events SET status='replay_complete' WHERE external_message_id=$1",
+            "m-classification-unavailable",
+        )
+        assert (await api_summary())["available"] is True
+
+        # A wholly unobserved failed send cannot revoke previous fresh evidence.
+        fail_loaded = True
+        assert await publisher.publish_once() is False
+        assert (await api_summary())["available"] is True
+        await registry_pool.execute(
+            "UPDATE switchboard.connector_registry SET last_heartbeat_at=now()-interval '301 seconds' "
+            "WHERE connector_type='gmail' AND endpoint_identity=$1",
+            runtime._config.connector_endpoint_identity,
+        )
+        assert (await api_summary())["classification_available"] is False
+        fail_loaded = False
+        assert await publisher.publish_once()
+        await registry_pool.execute(
+            "UPDATE switchboard.connector_registry SET capabilities=jsonb_set(capabilities, "
+            "'{known_contact_check,last_success_at}',to_jsonb((now()-interval '901 seconds')::text)) "
+            "WHERE connector_type='gmail' AND endpoint_identity=$1",
+            runtime._config.connector_endpoint_identity,
+        )
+        assert (await api_summary())["classification_available"] is False
+        # New actual query/ordinary admitted publication repairs current age.
+        runtime._gmail_policy_evaluator._cache_loaded_at -= 901
+        await runtime._refresh_policy_tier_assigner()
+        assert (await api_summary())["available"] is True
+
+        # Legacy, malformed, future and clock-incoherent HISTORY stays unknown;
+        # independently retain all positive counts and window/status semantics.
+        loaded_payload = persisted[0]["full_payload"]
+        import copy
+
+        for suffix, classification in [
+            ("legacy", None),
+            ("malformed", {"state": "contact-error-token"}),
+            ("future", {**frozen_empty, "last_success_at": "2100-01-01T00:00:00+00:00"}),
+            ("clock", {**frozen_empty, "observed_at": "2000-01-01T00:00:00+00:00"}),
+        ]:
+            planted = copy.deepcopy(loaded_payload)
+            planted["drop_context"] = {"classification": classification}
+            runtime._filtered_event_buffer.record(
+                external_message_id=f"m-uncertain-{suffix}",
+                source_channel="email",
+                sender_identity="synthetic@example.test",
+                subject_or_preview=None,
+                filter_reason="label_exclude:SPAM",
+                full_payload=planted,
+            )
+        await runtime._filtered_event_buffer.flush(pool)
+        invalid_history = await api_summary()
+        assert invalid_history["uncertain_drops"] == 4 and invalid_history["dropped"] == 3
+        await pool.execute(
+            "UPDATE connectors.filtered_events SET received_at=now()-interval '25 hours' "
+            "WHERE external_message_id LIKE 'm-uncertain-%'"
+        )
+        assert (await api_summary())["available"] is True
+        # Excluded row roles do not create authority; a genuinely empty complete
+        # read is positive, while a real applicable legacy row is not.
+        await registry_pool.execute(
+            "DELETE FROM switchboard.connector_registry WHERE connector_type='gmail'"
+        )
+        assert (await api_summary())["available"] is True
+        await registry_pool.execute(
+            "INSERT INTO switchboard.connector_registry(connector_type,endpoint_identity,operational_role) "
+            "VALUES('gmail','gmail:user:legacy@example.test','runtime_instance')"
+        )
+        assert (await api_summary())["classification_available"] is False
+        await registry_pool.execute(
+            "UPDATE switchboard.connector_registry SET operational_role='checkpoint' "
+            "WHERE endpoint_identity='gmail:user:legacy@example.test'"
+        )
+        assert (await api_summary())["available"] is True
     finally:
         await registry_pool.close()
 
@@ -435,7 +658,18 @@ async def test_replay_of_marked_drop_submits_clean_envelope(pool: asyncpg.Pool) 
         subject_or_preview="Hello",
         filter_reason=FilteredEventBuffer.reason_policy_rule("global_rule", "skip", "keyword"),
         status="replay_pending",
-        full_payload=_known_drop_payload("m-replay", marked=True),
+        full_payload={
+            **_known_drop_payload("m-replay", marked=True),
+            "drop_context": {
+                "important_dropped": True,
+                "basis": "known_contact",
+                "classification": {
+                    "state": "loaded",
+                    "reason": "none",
+                    "observed_at": "private-sentinel",
+                },
+            },
+        },
     )
     await buf.flush(pool)
 

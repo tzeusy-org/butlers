@@ -246,6 +246,12 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
   `code/status/reason/message` for `history.list` 404 cursor resets, other non-2xx `history.list`
   responses and failed token refreshes, before raising; never dump full payloads.
 
+### Known-contact query evidence
+
+`GmailPolicyEvaluator` exposes an immutable local snapshot independently of provider health. Successful empty and nonempty queries are loaded; no pool, failed/cancelled unfinished queries and the existing 900-second TTL are unknown. Failed refreshes retain cached contacts and their last successful timestamp for lower-bound positive classification. A per-message assigner and frozen `drop_context.classification` use one snapshot. Its UTC observation is captured at the drop decision, independently of Gmail `internalDate`, `event.observed_at`, and the persisted `received_at` window. All three drop paths retain `raw={}`; replay removes the entire context.
+
+When heartbeat is enabled, startup attempts an unloaded publication with a two-second bound before provider work. Refresh transitions publish through the same serialized source-owned heartbeat path. Query success remains loaded when publication fails; publication never changes priority tiers, rules or provider/auth health. Current dashboard availability separately requires all last-admitted applicable runtime accounts plus complete historical classification. No server read can discover an entirely unobserved restart or failed send. Prior admitted evidence remains bounded by 300-second heartbeat and 900-second query freshness; source delivery does not imply deployment or provider verification.
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)

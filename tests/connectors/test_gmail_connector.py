@@ -668,6 +668,55 @@ async def test_health_state_clears_on_next_successful_call(
     assert state == "healthy"
     assert err is None
 
+    # Actual startup composition publishes bounded unloaded evidence before
+    # provider work. Provider/network boundaries alone are synthetic here.
+    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY
+
+    runtime._config = gmail_config.model_copy(
+        update={
+            "gmail_pubsub_enabled": True,
+            "connector_backfill_enabled": False,
+        }
+    )
+    observed = []
+
+    async def accepted(_name, envelope):
+        check = envelope["capabilities"][CLASSIFICATION_KEY]
+        observed.append(check)
+        assert check["state"] == "unloaded" and check["generation"] == 0
+        return {
+            "status": "accepted",
+            "classification_ack": {
+                "admitted": True,
+                "instance_id": check["instance_id"],
+                "generation": 0,
+                "request_admission_epoch": None,
+                "admission_epoch": "22222222-2222-4222-8222-222222222222",
+                "reason": "none",
+            },
+        }
+
+    async def provider_work():
+        assert len(observed) == 1
+        assert runtime._heartbeat._admission_epoch is not None
+
+    runtime._mcp_client.call_tool = AsyncMock(side_effect=accepted)
+    with (
+        patch.dict("os.environ", {"CONNECTOR_HEARTBEAT_ENABLED": "true"}),
+        patch.object(runtime, "_start_health_server"),
+        patch.object(runtime, "_start_webhook_server"),
+        patch.object(runtime, "_gmail_watch_start", side_effect=provider_work),
+        patch("butlers.connectors.gmail.wait_for_switchboard_ready", new_callable=AsyncMock),
+        patch.object(runtime, "_ensure_cursor", new_callable=AsyncMock),
+        patch.object(runtime._ingestion_policy, "ensure_loaded", new_callable=AsyncMock),
+        patch.object(runtime._global_ingestion_policy, "ensure_loaded", new_callable=AsyncMock),
+        patch.object(runtime, "_run_ingestion_loop", new_callable=AsyncMock),
+    ):
+        await runtime.start()
+    assert runtime._get_health_state() == ("healthy", None)
+    assert runtime._gmail_policy_evaluator.peek_snapshot().state == "unloaded"
+    assert runtime._heartbeat._task is None
+
 
 def test_account_loop_get_health_maps_auth_revocation_to_error(
     gmail_config: GmailConnectorConfig,
@@ -828,6 +877,7 @@ def _drop_known_message(site: str, from_addr: str) -> tuple[dict[str, Any], list
     ]
 
 
+# REQ-ingestion-policy-001: synthetic provider, actual three drop paths and frozen metadata.
 @pytest.mark.parametrize("site", ["label_exclude", "connector_rule", "global_rule"])
 @pytest.mark.parametrize(
     ("from_addr", "marked"),
@@ -839,7 +889,12 @@ def _drop_known_message(site: str, from_addr: str) -> tuple[dict[str, Any], list
 async def test_known_contact_drop_is_marked_important(
     gmail_runtime: GmailConnectorRuntime, site: str, from_addr: str, marked: bool
 ) -> None:
-    gmail_runtime._policy_tier_assigner.known_contacts = frozenset({"alice@known.example"})
+    evaluator = gmail_runtime._gmail_policy_evaluator
+    evaluator._db_pool = AsyncMock()
+    evaluator._db_pool.fetch.return_value = [{"value": "alice@known.example"}]
+    loaded = await evaluator.get_snapshot()
+    assert loaded.state == "loaded"
+    gmail_runtime._policy_tier_assigner.known_contacts = loaded.contacts
     message, (connector_decision, global_decision) = _drop_known_message(site, from_addr)
 
     with (
@@ -856,11 +911,56 @@ async def test_known_contact_drop_is_marked_important(
     stored = rows[0][9]
     assert rows[0][8] == "filtered"
     if marked:
-        assert stored["drop_context"] == {"important_dropped": True, "basis": "known_contact"}
+        assert stored["drop_context"]["important_dropped"] is True
+        assert stored["drop_context"]["basis"] == "known_contact"
     else:
-        assert "drop_context" not in stored
+        assert "important_dropped" not in stored["drop_context"]
     # The marker carries no message content: the privacy-tier raw={} still holds.
     assert stored["payload"]["raw"] == {}
+
+    classification = stored["drop_context"]["classification"]
+    assert classification["state"] == "loaded"
+    observed = datetime.fromisoformat(classification["observed_at"])
+    assert loaded.last_success_at <= observed
+    assert (observed - loaded.last_success_at).total_seconds() <= 900
+    frozen = dict(classification)
+    # Provider event time is independent of the classification decision; no
+    # classification refresh is performed merely to discard another message.
+    for provider_date in ["1", "4102444800000", "not-a-date"]:
+        message["internalDate"] = provider_date
+        with (
+            patch.object(
+                gmail_runtime, "_fetch_message", new_callable=AsyncMock, return_value=message
+            ),
+            patch.object(
+                gmail_runtime._ingestion_policy, "evaluate", return_value=connector_decision
+            ),
+            patch.object(
+                gmail_runtime._global_ingestion_policy, "evaluate", return_value=global_decision
+            ),
+        ):
+            await gmail_runtime._ingest_single_message("msg123")
+        next_stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        next_class = next_stored["drop_context"]["classification"]
+        assert next_class["state"] == "loaded" and next_class["generation"] == loaded.generation
+        assert next_stored["payload"]["raw"] == {}
+        assert next_class["observed_at"] != next_stored["event"]["observed_at"]
+    evaluator._cache_loaded_at -= 901
+    evaluator._db_pool.fetch.side_effect = RuntimeError("private error-tail")
+    await evaluator.get_snapshot()
+    with (
+        patch.object(gmail_runtime, "_fetch_message", new_callable=AsyncMock, return_value=message),
+        patch.object(gmail_runtime._ingestion_policy, "evaluate", return_value=connector_decision),
+        patch.object(
+            gmail_runtime._global_ingestion_policy, "evaluate", return_value=global_decision
+        ),
+    ):
+        await gmail_runtime._ingest_single_message("msg123")
+    retained = gmail_runtime._filtered_event_buffer._rows[-1][9]
+    assert retained["drop_context"]["classification"]["state"] == "failed"
+    assert bool(retained["drop_context"].get("important_dropped")) is marked
+    assert stored["drop_context"]["classification"] == frozen
+    assert gmail_runtime._get_health_state() == ("healthy", None)
 
 
 async def test_submission_error_retains_raw_payload(

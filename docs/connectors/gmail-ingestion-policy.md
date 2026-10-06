@@ -153,3 +153,10 @@ curl -s "http://localhost:41200/api/switchboard/ingestion-rules" | python3 -m js
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full `ingest.v1` envelope spec
 - [Attachment Handling](attachment-handling.md) -- Attachment fetch policy
 - [Metrics](metrics.md) -- Connector statistics and dashboard API
+
+
+## Implementation Notes
+
+The compatibility contact-set getter retains cached positives on failed refresh. The immutable query snapshot additionally reports loaded/unloaded/stale/failed, a closed reason, generation, and the last successful refresh. A refresh lock prevents older completion from overwriting newer evidence. Cancellation of an unfinished query is failed/refresh_cancelled; cancellation of publication after actual query success leaves that success intact. Publication and provider health are separate truths.
+
+Gmail freezes classification on known and stranger drops at label exclusion, connector block and global skip. A retained known marker is a lower bound, not a completeness claim. The new metadata contains no contact identities, contact list, provider payload, error tails or credentials; existing authorized sender/preview metadata is unchanged. Historical loaded evidence must satisfy `last_success_at <= classification.observed_at <= last_success_at + 900s`. Classification observation is actual UTC at the decision, not provider event time or flush time. Legacy/malformed/unknown context remains uncertain after recovery; neither queueing replay nor a new successful snapshot retroactively certifies it. Replay strips all context.

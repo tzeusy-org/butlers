@@ -547,6 +547,153 @@ def test_heartbeat_promotes_a_cursor_created_row(switchboard_db_url):
                 "production JSONB codec as an object"
             )
             assert row["capabilities"] == {"backfill": True}
+
+            # Extend the same gate species through actual registered admission.
+            from datetime import UTC, datetime
+            from uuid import uuid4
+
+            from butlers.connectors.known_contact_state import (
+                CLASSIFICATION_KEY,
+                KnownContactSnapshot,
+            )
+
+            snapshot = KnownContactSnapshot()
+            admitted_producer = ConnectorHeartbeat(
+                HeartbeatConfig(connector_type="gmail", endpoint_identity=identity),
+                SimpleNamespace(call_tool=call_tool),
+                ConnectorMetrics("gmail", identity),
+                get_health_state=lambda: ("healthy", None),
+                get_capabilities=lambda: {"backfill": True},
+                get_contact_snapshot=lambda: snapshot,
+            )
+            assert await admitted_producer.publish_once()
+            startup = accepted[-1]["classification_ack"]
+            epoch = startup["admission_epoch"]
+            assert startup["generation"] == 0 and startup["request_admission_epoch"] is None
+            assert epoch is not None
+            snapshot = KnownContactSnapshot(
+                state="loaded",
+                reason="none",
+                generation=2,
+                last_success_at=datetime.now(UTC),
+            )
+            assert await admitted_producer.publish_once()
+            normal = accepted[-1]["classification_ack"]
+            assert normal["generation"] == 2 and normal["request_admission_epoch"] == epoch
+            assert normal["admission_epoch"] == epoch
+            loaded_packet = transmitted[-1][1]
+
+            async def read_registry():
+                async with pool.acquire() as readback:
+                    return dict(
+                        await readback.fetchrow(
+                            "SELECT instance_id, last_heartbeat_at, capabilities, counter_messages_ingested "
+                            "FROM switchboard.connector_registry WHERE connector_type='gmail' "
+                            "AND endpoint_identity=$1",
+                            identity,
+                        )
+                    )
+
+            loaded_row = await read_registry()
+            assert loaded_row["capabilities"][CLASSIFICATION_KEY]["state"] == "loaded"
+            assert loaded_row["capabilities"]["backfill"] is True
+            for changes in [
+                {"generation": 1},
+                {"admission_epoch": str(uuid4())},
+                {"generation": 2, "state": "failed", "reason": "refresh_failed"},
+            ]:
+                altered = {
+                    **loaded_packet,
+                    "capabilities": {
+                        **loaded_packet["capabilities"],
+                        CLASSIFICATION_KEY: {
+                            **loaded_packet["capabilities"][CLASSIFICATION_KEY],
+                            **changes,
+                        },
+                    },
+                }
+                refusal = await registered["connector.heartbeat"](**altered)
+                ack = refusal["classification_ack"]
+                assert ack["admitted"] is False and ack["admission_epoch"] is None
+                assert (
+                    ack["generation"] == altered["capabilities"][CLASSIFICATION_KEY]["generation"]
+                )
+                assert await read_registry() == loaded_row
+            wrong_instance = {
+                **loaded_packet,
+                "connector": {
+                    **loaded_packet["connector"],
+                    "instance_id": str(uuid4()),
+                },
+            }
+            mismatch = await registered["connector.heartbeat"](**wrong_instance)
+            assert mismatch["classification_ack"]["reason"] == "instance"
+            assert await read_registry() == loaded_row
+            duplicate = await registered["connector.heartbeat"](**loaded_packet)
+            assert duplicate["classification_ack"]["admitted"] is True
+            assert (await read_registry())["capabilities"] == loaded_row["capabilities"]
+
+            # Prove actual endpoint advisory contention before releasing it;
+            # separate sessions avoid a pool-size assumption and sleep ordering.
+            blocker = await asyncpg.connect(switchboard_db_url)
+            observer = await asyncpg.connect(switchboard_db_url)
+            pending = None
+            try:
+                async with blocker.transaction():
+                    blocker_pid = await blocker.fetchval("SELECT pg_backend_pid()")
+                    await blocker.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        f"connector-classification:gmail:{identity}",
+                    )
+                    snapshot = KnownContactSnapshot(
+                        state="loaded",
+                        reason="none",
+                        generation=4,
+                        last_success_at=snapshot.last_success_at,
+                    )
+                    pending = asyncio.create_task(admitted_producer.publish_once(timeout_s=5))
+                    deadline = asyncio.get_running_loop().time() + 3
+                    blocked = False
+                    while asyncio.get_running_loop().time() < deadline:
+                        blocked = await observer.fetchval(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                            "WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))",
+                            blocker_pid,
+                        )
+                        if blocked:
+                            break
+                    assert blocked, "Actual registered writer must wait on the endpoint lock"
+                    assert not pending.done()
+                assert await pending
+            finally:
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                await observer.close()
+                await blocker.close()
+            assert (await read_registry())["capabilities"][CLASSIFICATION_KEY]["generation"] == 4
+
+            # A late no-epoch startup is a separate SERVER observation: it
+            # conservatively rotates unknown. Old loaded cannot certify it.
+            startup_packet = transmitted[1][1]
+            late_startup = await registered["connector.heartbeat"](**startup_packet)
+            rotated = late_startup["classification_ack"]["admission_epoch"]
+            assert rotated != epoch
+            assert (await read_registry())["capabilities"][CLASSIFICATION_KEY][
+                "state"
+            ] == "unloaded"
+            refused_loaded = await registered["connector.heartbeat"](**loaded_packet)
+            assert refused_loaded["classification_ack"]["admitted"] is False
+            assert await admitted_producer.publish_once() is False
+            assert admitted_producer._admission_epoch is None
+            assert await admitted_producer.publish_once()
+            assert await admitted_producer.publish_once()
+            assert (await read_registry())["capabilities"][CLASSIFICATION_KEY]["state"] == "loaded"
+            # Existing ordinary producer remains accepted and fails classification
+            # closed, preserving the unrelated capability exactly.
+            await producer._send_heartbeat()
+            assert (await read_registry())["capabilities"] == {"backfill": True}
+
         finally:
             await pool.close()
 

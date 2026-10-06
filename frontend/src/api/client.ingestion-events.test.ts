@@ -35,7 +35,7 @@ function mockEventsResponse(events: unknown[] = []) {
 // ---------------------------------------------------------------------------
 
 import {
-  listIngestionEvents, getIngestionEvent, getIngestionEventSessions,
+  listIngestionEvents, getIngestionEvent, getIngestionEventSessions, getIngestionDroppedKnown,
   getIngestionWindowRollup, getIngestionEventReplays,
   getIngestionEventSenderContact, getIngestionEventPayload,
 } from "./client.ts";
@@ -43,6 +43,7 @@ import {
 it("forwards cancellation from each ingestion read to the underlying fetch", async () => {
   const readers = [
     (signal: AbortSignal) => listIngestionEvents({}, signal),
+    (signal: AbortSignal) => getIngestionDroppedKnown("24h", signal),
     (signal: AbortSignal) => getIngestionEvent("event", signal),
     (signal: AbortSignal) => getIngestionEventSessions("event", signal),
     (signal: AbortSignal) => getIngestionWindowRollup({}, signal),
@@ -259,4 +260,16 @@ describe("getIngestionWindowRollup", () => {
     const result = await getIngestionWindowRollup({ trace_id: "trace-abc-123" });
     expect(result).toEqual(body);
   });
+});
+
+
+it("preserves partial dropped-known evidence through the actual API client", async () => {
+  const body = { available: false, counts_available: true, classification_available: false,
+    uncertain_drops: 2, availability_reason: "classification_unknown",
+    window: "7d", dropped: 3, episodes: 2 };
+  mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => body,
+    text: async () => JSON.stringify(body), headers: { get: () => "application/json" } });
+  expect(await getIngestionDroppedKnown("7d")).toEqual(body);
+  expect(mockFetch.mock.calls[0][0]).toContain("/ingestion/events/dropped-known?window=7d");
+  expect(mockFetch).toHaveBeenCalledTimes(1);
 });
