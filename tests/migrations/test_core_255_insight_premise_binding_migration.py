@@ -799,7 +799,11 @@ def test_bounded_attention_downgrades_preserve_cumulative_check_and_provenance(
     upgrade/seed/downgrade/invalid-value/reupgrade assertion body unchanged.
     """
     for revision, predecessor, folds in boundaries:
-        _assert_bounded_attention_downgrade(postgres_container, revision, predecessor, folds)
+        try:
+            _assert_bounded_attention_downgrade(postgres_container, revision, predecessor, folds)
+        except Exception as error:
+            error.add_note(f"Isolated boundary {revision} -> {predecessor}; owned folds={folds!r}")
+            raise
 
 
 def _assert_bounded_attention_downgrade(postgres_container, revision, predecessor, folds) -> None:
