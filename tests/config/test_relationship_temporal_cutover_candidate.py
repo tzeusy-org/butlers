@@ -637,10 +637,91 @@ def test_other_actual_session_and_nowait_lock_refuse_before_consumption(candidat
     db = candidate_db
     with _bound(db) as (conn, binding, proof):
         with db.migration.begin() as competing:
-            competing.exec_driver_sql("SELECT 1")
+            competing_pid = competing.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
             with pytest.raises(CandidateRefusal, match="^candidate_other_session$"):
                 with conn.begin_nested():
                     consume_candidate_binding(conn, binding, proof)
+            assert conn.execute(
+                text("SELECT has_database_privilege(current_user, current_database(), 'TEMP')")
+            ).scalar_one()
+            assert conn.execute(
+                text("SELECT proconfig FROM pg_catalog.pg_proc WHERE oid=:function"),
+                {
+                    "function": conn.exec_driver_sql(
+                        f"SELECT '{_FUNCTION}()'::regprocedure::oid"
+                    ).scalar_one()
+                },
+            ).scalar_one() == ["search_path=pg_catalog"]
+            self_pid = conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            assert competing_pid != self_pid
+            conn.exec_driver_sql("SELECT pg_stat_clear_snapshot()")
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_catalog.pg_stat_activity "
+                        "WHERE datid=:database AND usesysid=:issuer"
+                    ),
+                    {"database": db.birth["database_oid"], "issuer": db.birth["owner_oid"]},
+                ).scalar_one()
+                == 0
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_catalog.pg_locks "
+                        "WHERE pid=:pid AND relation='relationship.entity_facts'::regclass"
+                    ),
+                    {"pid": competing_pid},
+                ).scalar_one()
+                == 0
+            )
+            previous_path = conn.exec_driver_sql("SHOW search_path").scalar_one()
+            conn.exec_driver_sql(
+                "CREATE TEMP VIEW pg_stat_activity AS "
+                "SELECT * FROM pg_catalog.pg_stat_activity WHERE pid=pg_backend_pid()"
+            )
+            try:
+                # Match the installed old guard's pg_catalog-only path. Omitted
+                # pg_temp still resolves relations before pg_catalog.
+                conn.exec_driver_sql("SET LOCAL search_path=pg_catalog")
+                assert conn.exec_driver_sql(
+                    "SELECT to_regclass('pg_stat_activity')=to_regclass('pg_temp.pg_stat_activity') "
+                    "AND to_regclass('pg_stat_activity')<>to_regclass('pg_catalog.pg_stat_activity')"
+                ).scalar_one()
+                assert conn.exec_driver_sql(
+                    "SELECT array_agg(pid) FROM pg_stat_activity"
+                ).scalar_one() == [self_pid]
+                assert conn.execute(
+                    text(
+                        "SELECT datid=:database AND backend_type='client backend' "
+                        "FROM pg_catalog.pg_stat_activity WHERE pid=:pid"
+                    ),
+                    {"database": db.birth["database_oid"], "pid": competing_pid},
+                ).scalar_one()
+                with pytest.raises(CandidateRefusal, match="^candidate_other_session$"):
+                    with conn.begin_nested():
+                        consume_candidate_binding(conn, binding, proof)
+                        accepted_nonce = conn.execute(
+                            text(f"SELECT count(*) FROM {_TABLE} WHERE authorization_id=:id"),
+                            {"id": binding["authorization_id"]},
+                        ).scalar_one()
+                        pytest.fail(
+                            "catalog-shadow accepted a bound consume despite the qualified live "
+                            f"competitor; nonce_rows={accepted_nonce}; "
+                            "TEMP/self-only resolution/closed issuer/no facts lock witnessed"
+                        )
+                assert (
+                    conn.execute(
+                        text(f"SELECT count(*) FROM {_TABLE} WHERE authorization_id=:id"),
+                        {"id": binding["authorization_id"]},
+                    ).scalar_one()
+                    == 0
+                )
+            finally:
+                conn.exec_driver_sql("DROP VIEW pg_temp.pg_stat_activity")
+                conn.execute(
+                    text("SELECT set_config('search_path', :path, true)"), {"path": previous_path}
+                )
             competing.exec_driver_sql("LOCK TABLE relationship.entity_facts IN ROW EXCLUSIVE MODE")
             with pytest.raises(CandidateRefusal, match="^candidate_lock_busy$"):
                 with conn.begin_nested():
