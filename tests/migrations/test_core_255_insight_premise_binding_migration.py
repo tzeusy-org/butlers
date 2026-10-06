@@ -490,6 +490,14 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
                     "NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS"
                 )
             )
+            unrelated_initial_schema_usage = conn.execute(
+                text("SELECT has_schema_privilege(:role, 'public', 'USAGE')"),
+                {"role": unrelated_role},
+            ).scalar_one()
+            # The canonical bootstrap can deny schema reachability first.
+            # Give only this disposable nonmember control that precondition,
+            # so the subsequent 42501 proves the separate function ACL.
+            conn.execute(text(f'GRANT USAGE ON SCHEMA public TO "{unrelated_role}"'))
     finally:
         engine.dispose()
     assert set(roles) - enqueue_roles == {"connector_writer"}
@@ -497,9 +505,25 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
     assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 0
     assert len(_amendment_rows(admin_url)) == 1
     receipts = []
+    bootstrap_observations = []
     for replay in range(3):
         if replay:
             _bootstrap_migration_prerequisites(admin_url, urlparse(db_url).username)
+        observed = _amendment_catalog(db_url)
+        administrative_observed = _amendment_catalog(admin_url)
+        _assert_bootstrap_metadata_visible(observed, administrative_observed)
+        assert observed["table"]["owner"] == ordinary["table"]["owner"]
+        assert observed["table"]["rls"] is True
+        assert observed["table"]["force_rls"] is False
+        assert observed["policies"] == ordinary["policies"]
+        assert len(observed["functions"]) == 2
+        for function in observed["functions"]:
+            assert function["owner"] == administrative["identity"]["session_user"]
+            assert function["prosecdef"] is True
+            assert function["proconfig"] == ["search_path=pg_catalog, pg_temp"]
+        bootstrap_observations.append(
+            {"replay": replay, "ordinary": observed, "administrative": administrative_observed}
+        )
         for index, role in enumerate(roles):
             # Bootstrap does not grant optional Calendar membership to the
             # migration login. Observe that role under the disposable control
@@ -690,6 +714,9 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
                     {
                         "replay": replay,
                         "identity": _identity(conn),
+                        "schema_usage": True,
+                        "initial_schema_usage": unrelated_initial_schema_usage,
+                        "schema_usage_grant": "disposable synthetic control only",
                         "enqueue": "42501",
                         "finance_probe": "42501",
                     }
@@ -701,6 +728,7 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
             "historical_controls": [r["variant"] for r in historical],
             "current_source_sha256": hashlib.sha256(_CORE_255.read_bytes()).hexdigest(),
             "current_install": ordinary,
+            "current_bootstrap_replays": bootstrap_observations,
             "current_role_matrix": receipts,
             "retained_rows": len(rows),
             "optional_calendar": "present" if "butler_calendar_rw" in roles else "absent",
