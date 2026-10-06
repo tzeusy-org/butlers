@@ -7,7 +7,7 @@ where real immaturity hides.
 
 ## Maintenance contract (read this first)
 
-This is a **living catalog**. The numbered *shapes* (1–8) are durable. The `e.g.` instances are
+This is a **living catalog**. The numbered *shapes* are durable. The `e.g.` instances are
 **dated, illustrative observations** from specific audits — they rot (a cited bug gets fixed; a
 path moves). Rules for consuming and maintaining it:
 
@@ -168,3 +168,27 @@ path moves). Rules for consuming and maintaining it:
     `divergence_source_error` is `true` on every load. *Fix posture:* subtract the known pseudo-identity
     classes (or key the guard on a typed `identity_kind`) and add a test that a healthy fixture yields
     `false`.
+
+15. **Zero-fill conflates silence with absence**: a count series is built by filling a fixed-length
+    array with zeros and dropping observed buckets into it by position, so an hour when the
+    instrument was not listening renders exactly like an hour when nothing happened, and a short
+    server result shifts every bucket away from its real time. Distinct from shape 4 (the counts are
+    real) and shape 11 (no join fails; the absence was never represented). *Tell:* `Array(n).fill(0)`
+    or `padded[n-len+i]` in a chart derivation, a server `GROUP BY bucket` with no dense time series,
+    and labels that name clock hours on a rolling window. *e.g.* (2026-10, connector detail)
+    `ConnectorDetailView.tsx:752-763` pads by position over `ingestion_connectors.py:548-575`, which
+    returns only non-empty hours; `ingestion_connectors.py:173-177,188-192` default liveness fields to
+    0. *Fix posture:* time-keyed dense buckets from the server, a per-bucket listening state distinct
+    in shape from a measured zero, and a lint ban on positional zero-fill.
+
+16. **Sibling reader left behind**: a fix moves a shared predicate (a helper, a posture, a scrub)
+    into most readers of a fact, and one sibling reader keeps the old behaviour, so the defect
+    survives in the place the QC pass did not walk. *Tell:* after a fix lands, `rg` every reader of
+    the underlying field or table, not just the ones the packet named; a reader that does not call
+    the new helper is the leak. *e.g.* (2026-10, run-15 QC) `counts_toward_owner_load` reached the
+    radar, day load, relationship job and debrief, but `jobs/context_producers.py:156` still asserts
+    'meeting' for declined events; posture reached every producer except Relationship
+    `upcoming_dates`; the bearer scrub reached submit envelopes but not
+    `filtered_event_buffer.py:296-345`. *Fix posture:* the packet's verification names a reader
+    census (every reader of the field, each with a test), not a list of the readers the author
+    remembered.
