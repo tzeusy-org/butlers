@@ -231,26 +231,33 @@ class ConnectorHeartbeat:
 
     async def stop(self) -> None:
         """Stop the heartbeat background task gracefully."""
-        if self._transport_tails:
-            for tail in self._transport_tails:
+        task = self._task
+        if task is not None:
+            logger.info(
+                "Stopping heartbeat task: connector_type=%s, endpoint_identity=%s",
+                self._config.connector_type,
+                self._config.endpoint_identity,
+            )
+
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancellation of the periodic publisher retires its active transport
+        # in publish_once's finally. Drain after the owner has finished so that
+        # newly retired task receives the same bounded cleanup as older tails.
+        tails = set(self._transport_tails)
+        if tails:
+            for tail in tails:
                 tail.cancel()
-            await asyncio.wait(self._transport_tails, timeout=0.1)
-        if self._task is None:
+            await asyncio.wait(tails, timeout=0.1)
+        if task is None:
             return
 
-        logger.info(
-            "Stopping heartbeat task: connector_type=%s, endpoint_identity=%s",
-            self._config.connector_type,
-            self._config.endpoint_identity,
-        )
-
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-
-        self._task = None
+        if self._task is task:
+            self._task = None
         logger.info(
             "Heartbeat task stopped: connector_type=%s, endpoint_identity=%s",
             self._config.connector_type,

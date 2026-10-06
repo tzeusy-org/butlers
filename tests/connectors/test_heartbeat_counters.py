@@ -375,6 +375,52 @@ async def test_classification_publication_serializes_exact_ack_and_retires_late_
         await cancelled
     assert not publisher._publication_lock.locked() and publisher._admission_epoch == epoch2
     await publisher.stop()
+    # Stop the actual periodic owner while its transport is active. The first
+    # cancellation retires the transport; stop must also drain that new tail.
+    active_entered, active_release = asyncio.Event(), asyncio.Event()
+    first_cancel_seen = asyncio.Event()
+    active_cancellations = 0
+    active_transports = []
+
+    async def active_transport(_name, envelope):
+        nonlocal active_cancellations
+        active_transports.append(asyncio.current_task())
+        active_entered.set()
+        try:
+            await active_release.wait()
+        except asyncio.CancelledError:
+            active_cancellations += 1
+            first_cancel_seen.set()
+            try:
+                await active_release.wait()
+            except asyncio.CancelledError:
+                active_cancellations += 1
+                raise
+        return response(envelope["capabilities"][CLASSIFICATION_KEY])
+
+    publisher._config.interval_s = 0
+    publisher._mcp_client.call_tool = active_transport
+    publisher.start()
+    try:
+        await asyncio.wait_for(active_entered.wait(), timeout=1)
+        await publisher.stop()
+        await asyncio.wait_for(first_cancel_seen.wait(), timeout=1)
+        first_stop_pending = sum(not task.done() for task in publisher._transport_tails)
+        first_stop_cancellations = active_cancellations
+        assert publisher._task is None and not publisher._publication_lock.locked()
+        assert publisher._admission_epoch == epoch2
+        assert evaluator.peek_snapshot() == newest
+        # The second stop is both idempotence and a planted cleanup positive:
+        # old code reaches the tail only on this call. Capture first-stop truth.
+        await publisher.stop()
+        assert not publisher._transport_tails and active_cancellations == 2
+        assert first_stop_pending == 0
+        assert first_stop_cancellations == 2
+    finally:
+        await publisher.stop()
+        active_release.set()
+        await asyncio.gather(*active_transports, return_exceptions=True)
+
     publisher._config.enabled = False
     sent_before = len(transmitted)
     assert await publisher.publish_once() is False
@@ -388,3 +434,24 @@ async def test_classification_publication_serializes_exact_ack_and_retires_late_
     ordinary = generic._mcp_client.call_tool.call_args.args[1]
     assert ordinary["capabilities"] == {"backfill": True}
     assert generic._admission_epoch is None
+
+    # Generic periodic shutdown retains its cooperative cancellation behavior.
+    generic_entered, generic_release = asyncio.Event(), asyncio.Event()
+
+    async def generic_transport(_name, envelope):
+        generic_entered.set()
+        await generic_release.wait()
+        return {"status": "accepted"}
+
+    generic._config.interval_s = 0
+    generic._mcp_client.call_tool = generic_transport
+    generic.start()
+    try:
+        await asyncio.wait_for(generic_entered.wait(), timeout=1)
+        await generic.stop()
+        assert generic._task is None and not generic._transport_tails
+        await generic.stop()
+        assert generic._admission_epoch is None
+    finally:
+        generic_release.set()
+        await generic.stop()
