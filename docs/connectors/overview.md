@@ -221,9 +221,15 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
 `FilteredEventBuffer.record()` scrubs `subject_or_preview` before it enters the in-memory queue.
 It uses the existing bearer detector and typed placeholders, provider-domain hints from the envelope,
 and aggressive numeric-code detection for the actual Telegram service sender `777000` or an envelope
-service participant. On detector/extraction failure it withholds the preview as null without logging
-its contents. None, ordinary numbers, date/time guards and existing placeholders retain their
-existing detector semantics. Payloads, replay/drop decisions, status and other columns are unchanged;
+service participant. Provider and sender-domain hints are untrusted display metadata: the preview
+seam accepts bounded provider slugs or DNS names, rejects URLs, paths, code-bearing numeric labels
+and labels containing a detected link secret, and uses a fixed connector label (or `unknown`) as
+fallback. It validates every resulting placeholder label, including old unsafe placeholders, so
+the replacement cannot reintroduce a code or token through its label. Genuine safe domains and
+safe existing placeholders remain intact; numeric-domain behavior in other detector callers is
+unchanged. On detector/extraction failure it withholds the preview as null without logging its
+contents. None, ordinary numbers and date/time guards retain existing detector semantics.
+Payloads, replay/drop decisions, status and other columns are unchanged;
 this is not a claim that every payload or producer log is free of secrets, and it does not produce
 an authentication artifact.
 

@@ -9,6 +9,8 @@ the provider domain, and the observation time.
 
 FilteredEventBuffer.record SHALL also apply the shared detector to subject_or_preview before appending it for persistence, deriving provider domain and service-sender aggressive behavior from its existing source metadata. Detector failure SHALL withhold that preview without changing the drop decision or retaining its original text.
 
+The preview seam SHALL treat provider and sender-domain labels as untrusted hints. It SHALL validate every emitted placeholder label, including historical unsafe placeholders, and use a fixed connector fallback or unknown rather than reflect URLs, paths, code-bearing numeric labels or a detected link secret. Genuine safe provider domains SHALL remain visible. This preview-only label policy SHALL NOT rewrite the shared detector's other callers or alter source metadata and replay payloads.
+
 #### Scenario: One-time code is replaced by a placeholder
 - **WHEN** an `ingest.v1` envelope whose text contains a one-time code (for example "Your code is 482913") reaches the ingest boundary
 - **THEN** `message_inbox.raw_payload` and `message_inbox.normalized_text` SHALL NOT contain the code
@@ -52,6 +54,12 @@ FilteredEventBuffer.record SHALL also apply the shared detector to subject_or_pr
 - **WHEN** source hint extraction or the detector raises while preparing subject_or_preview
 - **THEN** the record seam SHALL withhold the preview and SHALL NOT enqueue, persist or log its original text
 - **AND** the metadata row and unchanged filter decision SHALL remain available
+
+#### Scenario: Untrusted labels cannot reintroduce withheld bearer material
+- **WHEN** current or legacy source/provider or sender hints contain a code-bearing path or DNS label, a URL with a bearer token, or a detected link secret, or an old placeholder already contains such an unsafe label
+- **THEN** the current record seam and historical preview command SHALL persist a typed placeholder with a fixed safe fallback label and SHALL NOT retain the code or token in that preview
+- **AND** genuine safe domains, nonstring-hint fallback, benign text, metadata and payloads SHALL retain their defined behavior
+- **AND** detector failure SHALL withhold the preview without logging the raw hint, preview or error message
 
 #### Scenario: One-shot historical preview scrub is bounded and honestly reported
 - **WHEN** the separately released one-shot maintenance command processes a fixed historical cutoff

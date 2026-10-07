@@ -290,12 +290,84 @@ def scrub_filtered_preview(
     """Withhold bearer text before buffering or repairing a visibility preview.
 
     Legacy JSONB strings can supply hints, but cannot override the actual row
-    sender. A detector failure withholds the preview without logging its text.
+    sender. Untrusted labels cannot copy codes or bearer links back into the
+    replacement. A detector failure withholds the preview without logging text.
     Replay payloads and authentication-artifact production stay separate.
     """
     if preview is None:
         return None
     try:
+        # This fallback is a fixed display label, not a caller-controlled string
+        # or a new connector registration/authority decision.
+        fallback = (
+            connector_type
+            if connector_type
+            in {
+                "gmail",
+                "telegram",
+                "telegram_bot",
+                "telegram_user",
+                "telegram_user_client",
+                "discord",
+                "discord_user",
+                "whatsapp_user_client",
+                "google_drive",
+                "google_calendar",
+                "google_health",
+                "spotify",
+                "owntracks",
+                "steam",
+                "activitywatch",
+                "home_assistant",
+                "live-listener",
+                "live_listener",
+            }
+            else "unknown"
+        )
+        # Keep the shared detector's classification unchanged. These values are
+        # used only to prevent a label from reintroducing detected bearer text.
+        forbidden = set()
+        for pattern in (_OTP_FORWARD, _OTP_REVERSE):
+            forbidden.update(match.group(1).lower() for match in pattern.finditer(preview))
+        for match in _URL.finditer(preview):
+            url = match.group(0).rstrip(_URL_TRAILING)
+            if _classify_url(url) is not None:
+                parts = urlsplit(url)
+                forbidden.update(
+                    value.lower()
+                    for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                    if key.lower() in _SECRET_PARAMS and value
+                )
+                forbidden.update(
+                    part.lower()
+                    for part in parts.path.split("/")
+                    if _OPAQUE_SEGMENT.fullmatch(part)
+                )
+
+        def safe_label(value: object) -> str:
+            if not isinstance(value, str):
+                return fallback
+            label = value.lower()
+            # A provider slug or DNS name only; no path, URL, query, credentials,
+            # controls or code-bearing DNS labels. This stricter policy applies
+            # only to visibility previews, not global numeric-domain semantics.
+            valid = re.fullmatch(r"[a-z][a-z_-]{0,62}", label) or (
+                len(label) <= 253
+                and re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", label)
+            )
+            if (
+                not valid
+                or re.search(r"\d{4}", label)
+                or any(_OPAQUE_SEGMENT.fullmatch(part) for part in label.split("."))
+                or any(secret in label for secret in forbidden)
+                or any(
+                    secret.replace(" ", "").replace("-", "") in label.replace("-", "")
+                    for secret in forbidden
+                )
+            ):
+                return fallback
+            return label
+
         if isinstance(full_payload, str):
             try:
                 full_payload = json.loads(full_payload)
@@ -305,17 +377,23 @@ def scrub_filtered_preview(
         source = payload.get("source")
         provider = source.get("provider") if isinstance(source, Mapping) else None
         if not isinstance(provider, str):
-            provider = connector_type
+            provider = fallback
         sender = payload.get("sender")
         aggressive = is_auth_service_sender({"identity": sender_identity}) or (
             isinstance(sender, Mapping) and is_auth_service_sender(sender)
         )
         text, _ = scrub_text(
             preview,
-            provider_domain=provider_domain_for(sender_identity, provider),
+            provider_domain=safe_label(provider_domain_for(sender_identity, provider)),
             aggressive=aggressive,
         )
-        return text
+        # Validate every resulting label, including URL-host labels and unsafe
+        # placeholders already planted by an old writer. Safe placeholders are
+        # unchanged; the detector itself still protects them on repeat visits.
+        return _PLACEHOLDER.sub(
+            lambda match: placeholder(_LABEL_KINDS[match.group(1)], safe_label(match.group(2))),
+            text,
+        )
     except Exception:
         return None
 

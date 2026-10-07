@@ -42,7 +42,11 @@ import pytest
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.core.ingestion_events import ingestion_dropped_known_summary
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -92,7 +96,9 @@ def _sample_payload() -> dict:
 
 
 @pytest.mark.pg_clock
-async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg.Pool) -> None:
+async def test_record_and_flush_round_trips_full_payload_as_object(
+    pool: asyncpg.Pool, postgres_container
+) -> None:
     """record() + flush() persist full_payload as a jsonb OBJECT, not a
     jsonb-typed string."""
     buf = FilteredEventBuffer(
@@ -129,7 +135,7 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
 
     from butlers.connectors import filtered_event_buffer as buffer_module
     from scripts.scrub_filtered_event_previews import scrub_existing_previews
-    from tests.three_seams_helpers import baseline_function
+    from tests.three_seams_helpers import baseline_function, preview_label_controls
 
     old_record = baseline_function("record", vars(buffer_module))
     old_buffer = FilteredEventBuffer(connector_type="gmail", endpoint_identity="synthetic-old")
@@ -152,6 +158,7 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
     current_buffer = FilteredEventBuffer(
         connector_type="telegram_user", endpoint_identity="synthetic-current"
     )
+    label_controls = preview_label_controls("telegram_user")
     for name, sender, preview, expected, payload in [
         (
             "gmail-code",
@@ -182,6 +189,11 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
             {},
         ),
         ("null", "777000", None, None, {}),
+        *[
+            (f"hint-{name}-{kind}", sender, preview, expected, hints)
+            for name, sender, preview, expected, payload in label_controls
+            for kind, hints in (("object", payload), ("legacy", json.dumps(payload)))
+        ],
     ]:
         current_buffer.record(
             external_message_id=name,
@@ -228,16 +240,22 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
     cutoff = datetime.now(UTC)
     # Historical operator rows use the same real table/codec, including a legacy
     # JSONB string and malformed hint payload. Nothing here reaches deployed data.
-    for name, sender, payload in [
-        ("historic-telegram", "777000", {}),
-        ("historic-legacy", "777000", json.dumps({"source": {"provider": "telegram"}})),
-        ("historic-malformed", "777000", "not-json"),
+    for name, sender, preview, payload in [
+        ("historic-telegram", "777000", "482913", {}),
+        ("historic-legacy", "777000", "482913", json.dumps({"source": {"provider": "telegram"}})),
+        ("historic-malformed", "777000", "482913", "not-json"),
+        *[
+            (f"historic-hint-{name}-{kind}", sender, preview, hints)
+            for name, sender, preview, _, payload in label_controls
+            for kind, hints in (("object", payload), ("legacy", json.dumps(payload)))
+        ],
     ]:
         await pool.execute(
-            "INSERT INTO connectors.filtered_events(received_at,connector_type,endpoint_identity,external_message_id,source_channel,sender_identity,subject_or_preview,filter_reason,status,full_payload) VALUES($1,'telegram_user','synthetic-history',$2,'telegram',$3,'482913','validation_error','filtered',$4::jsonb)",
+            "INSERT INTO connectors.filtered_events(received_at,connector_type,endpoint_identity,external_message_id,source_channel,sender_identity,subject_or_preview,filter_reason,status,full_payload) VALUES($1,'telegram_user','synthetic-history',$2,'telegram',$3,$4,'validation_error','filtered',$5::jsonb)",
             cutoff,
             name,
             sender,
+            preview,
             payload,
         )
     # Both a future row and a pre-existing typed placeholder are planted positive
@@ -250,7 +268,7 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
         r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
     }
     dry = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2, dry_run=True)
-    assert dry.verdict == "DRY-RUN" and dry.changed == 4
+    assert dry.verdict == "DRY-RUN" and dry.changed == 4 + 2 * len(label_controls)
     assert {
         r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
     } == before
@@ -323,6 +341,16 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
             assert (
                 "withheld:" in row["subject_or_preview"]
                 and "482913" not in row["subject_or_preview"]
+                and "synthetic-reset-token" not in row["subject_or_preview"]
+            )
+    for name, _, _, expected, _ in label_controls:
+        for kind in ("object", "legacy"):
+            assert (
+                await pool.fetchval(
+                    "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id=$1",
+                    f"historic-hint-{name}-{kind}",
+                )
+                == expected
             )
     again = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2)
     assert again.verdict == "COMPLETE" and again.changed == 0
@@ -404,15 +432,31 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
     assert (await scrub_existing_previews(pool, cutoff=cutoff)).verdict == "COMPLETE"
     # Disposable unsupported operator demonstrates both SELECT and UPDATE denial;
     # no production grant widening or live identity inspection is involved.
-    await pool.execute("CREATE ROLE preview_scrub_denied NOLOGIN")
+    assert not await pool.fetchval(
+        "SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname=current_user"
+    )
+    database = await pool.fetchval("SELECT current_database()")
+    normal_role = (await pool.fetchval("SELECT current_user")).replace('"', '""')
+    denied_role = "preview_scrub_denied_" + database
+    admin_url = migration_bootstrap_db_url(postgres_container, database)
+    admin = await asyncpg.connect(admin_url.replace("postgresql+psycopg2://", "postgresql://"))
     try:
+        await admin.execute(f'CREATE ROLE "{denied_role}" NOLOGIN')
+    except BaseException:
+        await admin.close()
+        raise
+    try:
+        # Fixture administration only: permit the normal login to SET ROLE without
+        # inheriting any denied-role privileges or gaining CREATEROLE/SUPERUSER.
+        await admin.execute(f'GRANT "{denied_role}" TO "{normal_role}"')
 
         class DeniedPool:
             @asynccontextmanager
             async def acquire(self):
                 async with pool.acquire() as connection:
-                    await connection.execute("SET ROLE preview_scrub_denied")
+                    await connection.execute(f'SET ROLE "{denied_role}"')
                     try:
+                        assert await connection.fetchval("SELECT current_user") == denied_role
                         yield connection
                     finally:
                         await connection.execute("RESET ROLE")
@@ -422,8 +466,9 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
         assert {
             r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
         } == after
-        await pool.execute(
-            "GRANT USAGE ON SCHEMA connectors TO preview_scrub_denied; GRANT SELECT ON connectors.filtered_events TO preview_scrub_denied"
+        await admin.execute(
+            f'GRANT USAGE ON SCHEMA connectors TO "{denied_role}"; '
+            f'GRANT SELECT ON connectors.filtered_events TO "{denied_role}"'
         )
         await pool.execute(
             "UPDATE connectors.filtered_events SET subject_or_preview='482913' WHERE external_message_id='historic-telegram'"
@@ -434,10 +479,11 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
             await scrub_existing_previews(DeniedPool(), cutoff=cutoff, dry_run=True)
         ).verdict == "DRY-RUN"
         async with DeniedPool().acquire() as denied_connection:
-            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            with pytest.raises(asyncpg.InsufficientPrivilegeError) as standalone_denial:
                 await denied_connection.execute(
                     "UPDATE connectors.filtered_events SET subject_or_preview=NULL WHERE external_message_id='historic-telegram'"
                 )
+            assert standalone_denial.value.sqlstate == "42501"
         pre_denial = await pool.fetchrow(
             "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
         )
@@ -454,7 +500,13 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
             == pre_denial
         )
     finally:
-        await pool.execute("DROP OWNED BY preview_scrub_denied; DROP ROLE preview_scrub_denied")
+        try:
+            await admin.execute(f'DROP OWNED BY "{denied_role}"; DROP ROLE "{denied_role}"')
+        finally:
+            await admin.close()
+    assert not await pool.fetchval(
+        "SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname=current_user"
+    )
 
 
 @pytest.mark.pg_clock

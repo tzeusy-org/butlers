@@ -69,7 +69,7 @@ def test_record_increments_length() -> None:
     assert len(buf) == 1
 
 
-def test_record_multiple_events() -> None:
+def test_record_multiple_events(caplog) -> None:
     buf = _make_buffer()
     for i in range(3):
         buf.record(
@@ -134,6 +134,48 @@ def test_record_multiple_events() -> None:
             full_payload={},
         )
     assert buf._rows[-1][6] is None
+
+    import json
+
+    from butlers.ingestion_bearer_scrub import scrub_filtered_preview
+    from tests.three_seams_helpers import preview_label_controls
+
+    for _, sender, preview, expected, payload in preview_label_controls("gmail"):
+        for hints in (payload, json.dumps(payload)):
+            buf.record(
+                external_message_id="hint-control",
+                source_channel="email",
+                sender_identity=sender,
+                subject_or_preview=preview,
+                filter_reason="validation_error",
+                full_payload=hints,
+            )
+            assert buf._rows[-1][6] == expected
+            assert buf._rows[-1][5] == sender and buf._rows[-1][9] == hints
+            assert (
+                scrub_filtered_preview(
+                    expected, connector_type="gmail", sender_identity=sender, full_payload=hints
+                )
+                == expected
+            )
+    with patch(
+        "butlers.ingestion_bearer_scrub.scrub_text",
+        side_effect=RuntimeError("private synthetic-reset-token 482913"),
+    ):
+        for hints in (
+            {"source": {"provider": "https://example.test/reset?token=synthetic-reset-token"}},
+            "not-json",
+        ):
+            buf.record(
+                external_message_id="hint-error-control",
+                source_channel="email",
+                sender_identity="person@482913.example.test",
+                subject_or_preview="Your verification code is 482913",
+                filter_reason="validation_error",
+                full_payload=hints,
+            )
+            assert buf._rows[-1][6] is None
+    assert "482913" not in caplog.text and "synthetic-reset-token" not in caplog.text
 
 
 async def test_flush_clears_buffer() -> None:
