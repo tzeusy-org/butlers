@@ -1,0 +1,73 @@
+async def _insert_active_fact(
+    conn: asyncpg.Connection,
+    *,
+    subject: uuid.UUID,
+    predicate: str,
+    object: str,
+    object_kind: str,
+    src: str,
+    conf: float,
+    last_seen: datetime | None,
+    observed_at: datetime,
+    weight: int | None,
+    verified: bool,
+    primary: bool | None,
+    packet: EvidencePacket,
+    temporal: TemporalPacket = UNKNOWN,
+) -> uuid.UUID | None:
+    """Insert a new ACTIVE row, returning its id, or ``None`` on conflict.
+
+    Uses a TARGETLESS ``ON CONFLICT DO NOTHING`` so a concurrent writer that
+    already holds the active slot is NEVER mutated in place — crucially,
+    ``conf`` and ``observed_at`` on the existing active row are left untouched
+    (spec: conf is immutable, superseded rows keep their observed_at). A
+    ``None`` return signals the caller to re-read and route the collision
+    through normal supersession.
+
+    Targetless on purpose (relationship-fact-effective-time): it names no
+    inference index, so the same statement is valid while the legacy
+    ``uq_ef_spo_active`` exists, while both it and the occurrence index exist,
+    and after a cutover leaves only the occurrence index.
+
+    *packet* supplies the assertion provenance stamped onto the row
+    (``assert_origin``/``assert_session_id``/``assert_action_id``): how this row
+    came to be active, which runtime session authored it, and which approved
+    action authorised it. It is written with the row, not after it, so a fact can
+    never exist with its provenance missing. *temporal* is the row's effective
+    packet, likewise immutable once written.
+    """
+    return await conn.fetchval(
+        f"""
+        INSERT INTO relationship.entity_facts (
+            id, subject, predicate, object, object_kind,
+            src, conf, last_seen, observed_at, weight, verified, "primary",
+            validity, created_at, updated_at,
+            assert_origin, assert_session_id, assert_action_id,
+            {PACKET_COLUMNS}
+        )
+        VALUES (
+            gen_random_uuid(), $1, $2, $3, $4,
+            $5, $6, $7, $8, $9, $10, $11,
+            'active', now(), now(),
+            $12, $13, $14,
+            $15, $16, $17, $18, $19
+        )
+        ON CONFLICT DO NOTHING
+        RETURNING id
+        """,
+        subject,
+        predicate,
+        object,
+        object_kind,
+        src,
+        conf,
+        last_seen,
+        observed_at,
+        weight,
+        verified,
+        primary,
+        packet.origin,
+        packet.session_id,
+        packet.action_id,
+        *temporal.sql_args(),
+    )

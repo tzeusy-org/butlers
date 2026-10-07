@@ -369,6 +369,16 @@ async def transition_pending_action(
             metadata=event_metadata or {"tool_name": action.tool_name},
             occurred_at=database_now,
         )
+        if (
+            effective_status is ActionStatus.APPROVED
+            and action.tool_name == "relationship_assert_fact"
+        ):
+            # The helper derives authority from actual request admission, never
+            # decided_by/event_actor. It runs on this transition transaction.
+            from butlers.tools.relationship.fact_authority import record_admitted_approval
+
+            await record_admitted_approval(connection, action_id)
+
         if intent is not None:
             await _record_delivery_summary(
                 connection,

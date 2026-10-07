@@ -53,6 +53,11 @@ from roster.relationship.tests.evidence_schema import (
     apply_evidence_schema,
     simulate_temporal_cutover,
 )
+from roster.relationship.tests.fact_authority_fixtures import (
+    approve_fixture,
+    replay_fixture,
+    synthetic_owner,
+)
 
 # ---------------------------------------------------------------------------
 # Test markers
@@ -230,18 +235,19 @@ class TestInsertNewFact:
 
     async def test_insert_stores_provenance_fields(self, pool, entity):
         ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
-        result = await relationship_assert_fact(
-            pool,
-            entity,
-            _PRED_HAS_EMAIL,
-            "alice@example.com",
-            src="ingestion",
-            conf=0.85,
-            last_seen=ts,
-            weight=3,
-            verified=True,
-            primary=True,
-        )
+        async with synthetic_owner(pool):
+            result = await relationship_assert_fact(
+                pool,
+                entity,
+                _PRED_HAS_EMAIL,
+                "alice@example.com",
+                src="ingestion",
+                conf=0.85,
+                last_seen=ts,
+                weight=3,
+                verified=True,
+                primary=True,
+            )
         assert result.outcome == AssertOutcome.inserted
         row = await pool.fetchrow(
             "SELECT * FROM relationship.entity_facts WHERE id = $1",
@@ -512,9 +518,10 @@ class TestSupersession:
         await relationship_assert_fact(
             pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=False
         )
-        r2 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=True
-        )
+        async with synthetic_owner(pool):
+            r2 = await relationship_assert_fact(
+                pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=True
+            )
         assert r2.outcome == AssertOutcome.superseded
 
     async def test_changed_last_seen_triggers_supersession(self, pool, entity):
@@ -1452,14 +1459,13 @@ class TestEffectiveTimeAfterCutover:
                 pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship", **kwargs
             )
             assert result.outcome == AssertOutcome.pending_approval
-            await pool.execute(
-                "UPDATE pending_actions SET status = 'approved' WHERE id = $1", result.action_id
-            )
+            await approve_fixture(pool, result.action_id)
             return result.action_id
 
         async def replay(action_id, wire, **overrides):
-            return await relationship_assert_fact(
+            return await replay_fixture(
                 pool,
+                relationship_assert_fact,
                 owner_entity,
                 _PRED_HAS_EMAIL,
                 value,
@@ -1685,6 +1691,17 @@ async def pool_with_relational_predicates(pool: asyncpg.Pool) -> asyncpg.Pool:
 # ---------------------------------------------------------------------------
 
 
+async def _alias_object(pool: asyncpg.Pool) -> str:
+    """Plant a real object for a positive entity-valued alias assertion."""
+    entity_id = uuid.uuid4()
+    await pool.execute(
+        "INSERT INTO public.entities(id, canonical_name, entity_type) VALUES($1, $2, 'person')",
+        entity_id,
+        f"Synthetic alias object {entity_id}",
+    )
+    return str(entity_id)
+
+
 class TestPredicateAliasResolution:
     """Underscore alias names are normalised to canonical hyphenated forms at assert time.
 
@@ -1700,7 +1717,7 @@ class TestPredicateAliasResolution:
                 pool_with_relational_predicates,
                 entity,
                 alias,
-                str(uuid.uuid4()),
+                await _alias_object(pool_with_relational_predicates),
                 src="test",
                 object_kind="entity",
             )
@@ -1715,6 +1732,20 @@ class TestPredicateAliasResolution:
                 f"alias {alias!r} stored as {row['predicate']!r}, want {canonical!r}"
             )
 
+        # A UUID without a referenced entity remains a real FK refusal. The
+        # positive rows above also position the zero-effects readback below.
+        before = await _effect_counts(pool_with_relational_predicates)
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
+            await relationship_assert_fact(
+                pool_with_relational_predicates,
+                entity,
+                "family_of",
+                str(uuid.uuid4()),
+                src="test",
+                object_kind="entity",
+            )
+        assert await _effect_counts(pool_with_relational_predicates) == before
+
     async def test_sibling_of_maps_to_family_of(
         self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
     ) -> None:
@@ -1723,7 +1754,7 @@ class TestPredicateAliasResolution:
             pool_with_relational_predicates,
             entity,
             "sibling_of",
-            str(uuid.uuid4()),
+            await _alias_object(pool_with_relational_predicates),
             src="test",
             object_kind="entity",
         )
@@ -1742,7 +1773,7 @@ class TestPredicateAliasResolution:
             pool_with_relational_predicates,
             entity,
             "married_to",
-            str(uuid.uuid4()),
+            await _alias_object(pool_with_relational_predicates),
             src="test",
             object_kind="entity",
         )
@@ -1757,8 +1788,8 @@ class TestPredicateAliasResolution:
         self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
     ) -> None:
         """family_of and sibling_of both map to family-of — they are distinct aliases for one canonical."""
-        other_a = str(uuid.uuid4())
-        other_b = str(uuid.uuid4())
+        other_a = await _alias_object(pool_with_relational_predicates)
+        other_b = await _alias_object(pool_with_relational_predicates)
 
         r_family = await relationship_assert_fact(
             pool_with_relational_predicates,
@@ -1790,8 +1821,8 @@ class TestPredicateAliasResolution:
         self, pool_with_relational_predicates: asyncpg.Pool, entity: uuid.UUID
     ) -> None:
         """partner_of and married_to both map to partner-of — distinct aliases for one canonical."""
-        other_a = str(uuid.uuid4())
-        other_b = str(uuid.uuid4())
+        other_a = await _alias_object(pool_with_relational_predicates)
+        other_b = await _alias_object(pool_with_relational_predicates)
 
         r_partner = await relationship_assert_fact(
             pool_with_relational_predicates,

@@ -71,12 +71,20 @@ def _make_fact_row(
         "id": fact_id or uuid4(),
         "predicate": predicate,
         "object": object_value,
+        "verified": False,
+        "confirmation_status": "unconfirmed",
+        "content_authority": None,
+        "reported_by": {"entity_id": None, "name": None, "availability": "legacy_unknown"},
+        "confirmed_at": None,
+        "confirmed_by_entity_id": None,
+        "confirmation_source": None,
         "observed_at": observed_at,
         "last_seen": last_seen,
         "created_at": created_at or _NOW,
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = data.get
     return row
 
 
@@ -97,6 +105,7 @@ def _make_narrative_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = data.get
     return row
 
 
@@ -110,6 +119,7 @@ def _make_owner_row() -> MagicMock:
     data = {"id": uuid4(), "roles": ["owner"]}
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = data.get
     return row
 
 
@@ -381,9 +391,27 @@ class TestResponseShape:
             ("relationship", "narrative", str(shared_id)),
         ]
         assert body["items"][1]["summary"] == "Exact identity value"
+        assert body["items"][1]["confirmation_status"] == "unconfirmed"
+        assert body["items"][1]["reported_by"]["availability"] == "legacy_unknown"
         assert body["items"][2]["summary"] == "Exact gift text"
         assert all(
-            set(item) == {"id", "ts", "kind", "src", "store", "predicate", "episode_id", "summary"}
+            set(item)
+            == {
+                "id",
+                "ts",
+                "kind",
+                "src",
+                "store",
+                "predicate",
+                "episode_id",
+                "summary",
+                "content_authority",
+                "reported_by",
+                "confirmed_at",
+                "confirmed_by_entity_id",
+                "confirmation_source",
+                "confirmation_status",
+            }
             for item in body["items"]
         )
 
@@ -435,6 +463,7 @@ class TestMergedStreamSort:
         def record(data: dict) -> MagicMock:
             row = MagicMock()
             row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+            row.get = data.get
             return row
 
         timestamped_id = UUID("00000000-0000-4000-8000-000000000010")

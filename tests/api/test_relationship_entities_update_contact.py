@@ -81,6 +81,7 @@ def _make_contact_fact_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 

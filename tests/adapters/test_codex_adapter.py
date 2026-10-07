@@ -102,13 +102,24 @@ def test_build_config_file(tmp_path: Path):
     """build_config_file() writes TOML with correct transport; unsafe names are skipped."""
     # Basic structure
     config_path = CodexAdapter().build_config_file(
-        mcp_servers={"my-butler": {"url": "http://localhost:9100/mcp"}}, tmp_dir=tmp_path
+        mcp_servers={
+            "my-butler": {
+                "url": "http://localhost:9100/mcp",
+                "headers": {"X-Butlers-Fact-Invocation": 'synthetic:quote"'},
+            }
+        },
+        tmp_dir=tmp_path,
     )
     assert config_path == tmp_path / ".codex" / "config.toml"
     content = config_path.read_text()
     assert "[mcp_servers.my-butler]" in content and 'url = "http://127.0.0.1:9100/mcp"' in content
     assert 'transport = "streamable_http"' in content
     assert "required = true" in content
+    import tomllib
+
+    assert tomllib.loads(content)["mcp_servers"]["my-butler"]["http_headers"] == {
+        "X-Butlers-Fact-Invocation": 'synthetic:quote"'
+    }
     assert "startup_timeout_sec = 30" in content
     # Transport URL inference
     assert _infer_mcp_transport_from_url("http://localhost:41100/mcp") == "streamable_http"

@@ -48,6 +48,8 @@ import {
 import { labelFillColors } from "@/lib/visual-token-roles";
 import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret, useSetPreferredChannel, useClearPreferredChannel } from "@/hooks/use-entities";
 import { sortChannelsPrimaryFirst } from "./contact-channel-utils";
+import { IdentityCandidateReview } from "./IdentityCandidateReview";
+import { FactReporterLine } from "./FactReporterLine";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -274,7 +276,8 @@ export function ExpandedContactInfoRow({
   const isEntityFacts = entry.source === "entity_facts";
   const canEdit = isEntityFacts && entry.predicate != null && entry.value_hash != null && !entry.secured;
   const canDelete = isEntityFacts && entry.predicate != null && entry.value_hash != null;
-  const canVerify = isEntityFacts && entry.predicate != null && entry.value_hash != null && !entry.verified;
+  const ownerVerified = entry.confirmation_status === "owner_asserted" || entry.confirmation_status === "owner_confirmed";
+  const canVerify = isEntityFacts && entry.predicate != null && entry.value_hash != null && !ownerVerified;
 
   function handleMarkVerified() {
     if (!canVerify || markVerified.isPending) return;
@@ -414,7 +417,7 @@ export function ExpandedContactInfoRow({
           <span className="ml-1 text-[var(--dim)]">(primary)</span>
         )}
         {/* Amber dot: unverified entity_facts channel */}
-        {isEntityFacts && !entry.verified && (
+        {isEntityFacts && !ownerVerified && (
           <span
             data-testid="unverified-dot"
             title="Unverified: owner has not confirmed this channel"
@@ -433,7 +436,10 @@ export function ExpandedContactInfoRow({
         {entry.secured ? (
           <SecuredChannelEntry entry={entry} entityId={entityId} />
         ) : (
-          <ChannelValue entry={entry} />
+          <>
+            <ChannelValue entry={entry} />
+            <FactReporterLine fact={entry} />
+          </>
         )}
       </span>
       {/* Edit/Delete/Verify affordances — entity_facts rows only (non-secured) */}
@@ -898,6 +904,7 @@ export function ContactChannelCard({
         className="space-y-2"
       >
         <h2 className="text-lg font-semibold">Channels</h2>
+      <IdentityCandidateReview entityId={entityId} />
         <div className="space-y-2" data-testid="contact-channel-card-skeleton">
           <div className="h-8 bg-muted rounded" />
           <div className="h-8 bg-muted rounded" />

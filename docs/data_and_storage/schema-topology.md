@@ -197,3 +197,20 @@ psql -h localhost -U butlers -d butlers -c \
 - [Migration Patterns](migration-patterns.md) -- How schema-scoped migrations work
 - [State Store](state-store.md) -- The KV JSONB store within each butler schema
 - [Credential Store](credential-store.md) -- Secret storage across schemas
+
+## Relationship report attribution topology
+
+`rel_037` is additive after immutable `rel_036`: it owns fact report/confirmation columns,
+candidate occurrence uniqueness, private approval lineage and exact identity-decision receipts.
+It does not alter the effective-time transition indexes, reserve the held cutover successor,
+add a global grant, or change cross-butler schema isolation. Downgrade refuses classified data
+instead of erasing provenance. The canonical Relationship resolver/writer remain on the
+Relationship runtime role; Switchboard uses their registered MCP interface.
+
+`core_261` separately owns the nullable private `public.dashboard_messages.fact_owner_admission`
+field, because dashboard conversations work without Relationship startup. The actual admitted
+API producer stamps a new user message and binds its normalized accepted content. Old messages
+and core-only installations below this additive revision stay unstamped; retries preserve that
+unknown state. A caller's dashboard label, actor, status or boolean is not this producer witness.
+The shared public-table grants and trusted-host premise remain unchanged; the stamp is not a
+credential or protection against a compromised trusted database actor.

@@ -622,9 +622,11 @@ class ContactBackfillWriter:
         if self._provider == "telegram" and contact.external_id:
             entries.append(("telegram_user_id", contact.external_id, "has-handle", False))
 
+        from butlers.core.fact_authority import FactWriteContext, _current_report
         from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
 
         for type_, value, predicate, primary in entries:
+            report_token = _current_report.set(FactWriteContext("third_party"))
             try:
                 await relationship_assert_fact(
                     self._pool,
@@ -645,6 +647,8 @@ class ContactBackfillWriter:
                     value,
                     exc_info=True,
                 )
+            finally:
+                _current_report.reset(report_token)
 
     async def upsert_addresses(
         self,

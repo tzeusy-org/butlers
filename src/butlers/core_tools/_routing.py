@@ -906,6 +906,35 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 message=message,
             )
 
+        # Public envelope fields never supply attribution. Resolve the private
+        # source capability before durable acceptance, then persist only the
+        # source's frozen record. Crash recovery does not replay bearer tokens.
+        from butlers.core.fact_authority import (
+            _current_report,
+            _incoming_receipt,
+            _incoming_source,
+            admit_incoming_source,
+        )
+
+        if _incoming_source.get():
+            try:
+                admitted_report = await admit_incoming_source(
+                    butler_name,
+                    "route-accept:" + str(uuid.uuid4()),
+                    daemon.config.switchboard_url,
+                )
+            except Exception:
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="target_unavailable",
+                    message="Private source admission is unavailable.",
+                    retryable=False,
+                )
+            route_payload["_fact_source_report"] = admitted_report.to_record()
+            route_payload["_fact_source_receipt"] = _incoming_receipt.get()
+            _current_report.set(admitted_report)
+            _incoming_source.set(None)
+
         # Intentional name check: messenger has a unique synchronous delivery path
         # (it processes notify_request inline without route_inbox). Other staffer or
         # domain butlers all use the async accept-then-process pattern below.

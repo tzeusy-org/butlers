@@ -1570,6 +1570,7 @@ class Spawner:
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
+        fact_invocation_token: str | None = None
         runtime_session_id: str | None = None
         spawner_result: SpawnerResult | None = None
         runtime_invoked = False
@@ -2548,9 +2549,18 @@ class Spawner:
                     runtime_session_id,
                     trigger_source=trigger_source,
                 )
+                from butlers.core.fact_authority import INVOCATION_HEADER, register_invocation
+
+                fact_invocation_token = await register_invocation(
+                    self._config.name,
+                    runtime_session_id,
+                    source_endpoint=self._config.switchboard_url,
+                    routed=trigger_source in {"route", "classification"},
+                )
                 mcp_servers = {
                     self._config.name: {
                         "url": mcp_url,
+                        "headers": {INVOCATION_HEADER: fact_invocation_token},
                     },
                 }
 
@@ -3729,6 +3739,9 @@ class Spawner:
             return spawner_result
 
         finally:
+            from butlers.core.fact_authority import settle_invocation
+
+            settle_invocation(fact_invocation_token)
             # A normal runtime return can race the heartbeat task by one event
             # loop turn. If the lease became unprovable before this durable
             # finalizer runs, prefer the conservative recovery disposition over

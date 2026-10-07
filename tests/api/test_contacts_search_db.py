@@ -186,6 +186,8 @@ async def test_alias_match(search_app, pool):
 # ---------------------------------------------------------------------------
 
 
+# REQ-contacts-identity-001: real non-secret search SQL; the adjacent real
+# secret/person/blank controls retain the full existing matching contract.
 async def test_non_secret_identifier_match(search_app, pool):
     ids = await _seed(pool)
     results = await _search(search_app, "bob.secret@")

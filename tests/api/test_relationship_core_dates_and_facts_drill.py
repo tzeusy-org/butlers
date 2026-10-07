@@ -85,7 +85,14 @@ class TestCoreDatesRegistryDriven:
     async def test_uses_registry_predicates_in_facts_query(self):
         """The facts query is parameterised with the registry's contact predicates."""
         registry_rows = [{"predicate": "has-birthday"}, {"predicate": "has-anniversary"}]
-        fact_rows = [_date_fact_row("has-anniversary", "2020-06-15")]
+        fact_rows = [
+            _date_fact_row("has-anniversary", "2020-06-15")
+            | {
+                "confirmation_status": "legacy_verified",
+                "content_authority": None,
+                "reported_by": {"entity_id": None, "name": None, "availability": "legacy_unknown"},
+            }
+        ]
 
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=_owner_row())  # owner-role gate
@@ -109,6 +116,8 @@ class TestCoreDatesRegistryDriven:
         # A row stored under the registry-only predicate is rendered.
         body = resp.json()
         assert any(item["predicate"] == "has-anniversary" for item in body["items"])
+        assert body["items"][0]["confirmation_status"] == "legacy_verified"
+        assert body["items"][0]["reported_by"]["availability"] == "legacy_unknown"
 
     async def test_empty_registry_returns_no_core_dates(self):
         """No registered date predicates → empty block, no facts query issued."""

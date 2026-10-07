@@ -38,6 +38,7 @@ from roster.relationship.tests.evidence_schema import (
     apply_evidence_schema,
     simulate_temporal_cutover,
 )
+from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
 
 pytestmark = [
     pytest.mark.integration,
@@ -61,6 +62,7 @@ async def pool(provisioned_postgres_pool):
                 canonical_name TEXT        NOT NULL DEFAULT '',
                 entity_type    TEXT        NOT NULL DEFAULT 'person',
                 roles          TEXT[]      NOT NULL DEFAULT '{}',
+                metadata       JSONB       NOT NULL DEFAULT '{}'::jsonb,
                 created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -162,7 +164,10 @@ class TestAssert:
 
     async def test_assert_stores_provenance(self, pool, entity):
         await _add_channel(pool, entity, "has-email", "a@b.com")
-        result = await assert_prefers_channel(pool, entity, "email", src="dashboard", verified=True)
+        async with synthetic_owner(pool):
+            result = await assert_prefers_channel(
+                pool, entity, "email", src="dashboard", verified=True
+            )
         row = await pool.fetchrow(
             "SELECT * FROM relationship.entity_facts WHERE id = $1", result.fact_id
         )

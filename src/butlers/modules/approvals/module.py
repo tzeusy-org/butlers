@@ -929,6 +929,10 @@ class ApprovalsModule(Module):
                 metadata={"tool_name": rule.tool_name},
                 occurred_at=now,
             )
+            if rule.tool_name == "relationship_assert_fact":
+                from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+                await record_admitted_rule(self._db, rule.id)
             if self._decision_memory_writer is not None:
                 await self._decision_memory_writer.record_standing_rule(rule, active=True)
             rule_dict = rule.to_dict()
@@ -1122,6 +1126,10 @@ class ApprovalsModule(Module):
             metadata={"tool_name": rule.tool_name},
             occurred_at=now,
         )
+        if rule.tool_name == "relationship_assert_fact":
+            from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+            await record_admitted_rule(self._db, rule.id)
         if self._decision_memory_writer is not None:
             await self._decision_memory_writer.record_standing_rule(rule, active=True)
 
@@ -1227,6 +1235,10 @@ class ApprovalsModule(Module):
             metadata={"tool_name": rule.tool_name},
             occurred_at=now,
         )
+        if rule.tool_name == "relationship_assert_fact":
+            from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+            await record_admitted_rule(self._db, rule.id)
         if self._decision_memory_writer is not None:
             await self._decision_memory_writer.record_standing_rule(rule, active=True)
 

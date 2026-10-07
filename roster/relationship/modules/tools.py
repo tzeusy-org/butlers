@@ -181,6 +181,74 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """
         return await _ci.channel_search(module._get_pool(), value, type=type)
 
+    @_tool("contacts")
+    async def identity_resolve_channels(
+        channel_type: str,
+        channel_values: list[str],
+    ) -> dict[str, Any]:
+        """Resolve exact channel identifiers through eligible active facts.
+
+        This read-only owning-role boundary uses the canonical resolver's
+        normalization and ambiguity rules. Candidate reports never resolve.
+        Returned identities do not authenticate transport or grant authority.
+        """
+        if not channel_type or len(channel_type) > 64 or len(channel_values) > 256:
+            raise ValueError("invalid identity lookup batch")
+        if any(not value or len(value) > 1024 for value in channel_values):
+            raise ValueError("invalid channel identifier")
+        from dataclasses import asdict
+
+        from butlers.identity import resolve_contacts_by_channel_bulk
+
+        pairs = [(channel_type, value) for value in dict.fromkeys(channel_values)]
+        resolved = await resolve_contacts_by_channel_bulk(
+            module._get_pool(), pairs, raise_on_error=True
+        )
+        return {
+            value: asdict(resolved[(channel_type, value)])
+            if resolved[(channel_type, value)] is not None
+            else None
+            for _, value in pairs
+        }
+
+    @_tool("contacts")
+    async def identity_assert_sender_channel(
+        entity_id: uuid.UUID,
+        channel_type: str,
+        channel_value: str,
+    ) -> dict[str, Any]:
+        """Record a temporary sender's canonical channel on the owning role.
+
+        Only a current unidentified entity is eligible. This does not adopt a
+        known person's reported channel or supply verified content authority.
+        Unsupported channels and unavailable writes return recorded=false;
+        callers preserve ingress and its durable temporary-entity reservation.
+        """
+        pool = module._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT metadata FROM public.entities WHERE id=$1 FOR KEY SHARE",
+                entity_id,
+            )
+            if (
+                row is None
+                or not (row["metadata"] or {}).get("unidentified")
+                or any((row["metadata"] or {}).get(key) for key in ("deleted_at", "merged_into"))
+            ):
+                return {"recorded": False}
+            from butlers.tools.relationship.relationship_assert_fact import (
+                assert_sender_channel_fact,
+            )
+
+            result = await assert_sender_channel_fact(
+                pool,
+                entity_id,
+                channel_type,
+                channel_value,
+                conn=conn,
+            )
+            return {"recorded": result is not None}
+
     # =================================================================
     # Contact tools (group: contacts)
     # =================================================================
@@ -1135,7 +1203,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         conf: float = 1.0,
         last_seen: datetime | None = None,
         weight: int | None = None,
-        verified: bool = False,
         primary: bool | None = None,
         evidence: list[dict[str, str]] | None = None,
         approval_action_id: uuid.UUID | None = None,
@@ -1163,7 +1230,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             conf: Confidence in [0.0, 1.0] (default 1.0).
             last_seen: Timestamp of the most recent observation (nullable).
             weight: Relational aggregation weight (nullable).
-            verified: Owner-confirmed flag (default False).
             primary: Primary-of-kind flag for multi-valued contact predicates.
             evidence: Ordered typed references justifying the assertion, each
                 {"type": "fact"|"entity"|"url"|"text", "ref": ..., "note": ...}.
@@ -1233,7 +1299,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             conf=conf,
             last_seen=last_seen,
             weight=weight,
-            verified=verified,
             primary=primary,
             evidence=evidence,
             approval_action_id=approval_action_id,
