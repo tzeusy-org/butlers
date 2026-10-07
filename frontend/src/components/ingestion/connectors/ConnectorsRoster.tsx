@@ -60,6 +60,7 @@ import type { ConnectorSummary } from '@/api/types'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
 import { AttentionStrip } from './AttentionStrip'
 import { ConnectorRosterRow } from './ConnectorRosterRow'
+import { sourceCountWindow } from '@/lib/bucket-series'
 import { DormantList } from './DormantList'
 import { ArchivedConnectorsList } from './ArchivedConnectorsList'
 import { ArchiveCandidatesList } from './ArchiveCandidatesList'
@@ -334,6 +335,7 @@ export function ConnectorsRoster() {
                 <ConnectorRosterRow
                   key={`${c.connector_type}:${c.endpoint_identity}`}
                   connector={c}
+                  bucketWindow={sourceCountWindow(connectorsResp?.data?.bucket_window)}
                   catalogChannel={catalogChannelByType.get(c.connector_type)}
                   rosterSparkMax={rosterSparkMax}
                 />

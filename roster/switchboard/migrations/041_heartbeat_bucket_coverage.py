@@ -143,7 +143,7 @@ def upgrade() -> None:
                    (date_trunc('month', clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                        + interval '2 months' THEN
                 receipts := receipts || jsonb_build_array(jsonb_build_object(
-                    'oid', relation.oid, 'range_start', boundary[1]::timestamptz,
+                    'oid', relation.oid::bigint, 'range_start', boundary[1]::timestamptz,
                     'range_end', boundary[2]::timestamptz));
             END IF;
         END LOOP;

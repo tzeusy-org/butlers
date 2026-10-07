@@ -15,6 +15,17 @@ export interface BucketWindow {
   counts_available: boolean
 }
 
+/** Project the receiver's declared window; absent legacy metadata supplies no bounds. */
+export function sourceCountWindow(metadata: unknown): BucketWindow | null | undefined {
+  if (metadata === undefined) return undefined
+  if (metadata === null || typeof metadata !== "object") return null
+  const source = metadata as Record<string, unknown>
+  if (typeof source.window_start !== "string" || typeof source.window_end !== "string" ||
+      typeof source.bucket_width_s !== "number" || typeof source.hourly_events_available !== "boolean") return null
+  return { window_start:source.window_start, window_end:source.window_end,
+    bucket_width_s:source.bucket_width_s, counts_available:source.hourly_events_available }
+}
+
 /** Reject ambiguous keys rather than inventing a time axis from array order. */
 export function orderedBuckets(input: readonly CountBucket[]): CountBucket[] {
   const seen = new Set<number>()

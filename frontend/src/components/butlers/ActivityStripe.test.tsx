@@ -242,6 +242,51 @@ describe("ActivityStripe: className forwarding", () => {
     expect(unknownCounts).not.toContain("total 0")
     expect(renderToStaticMarkup(<SourceActivityStripe counts={counts({2:2,20:20})} />)).toContain("Count window unavailable")
 
+    // The mounted primitive must consume the declared window, not compress
+    // two sparse source keys into adjacent ordinal cells.
+    const onBucketClick = vi.fn()
+    const mounted = render(<AppTimezoneProvider timezone="America/New_York">
+      <SourceActivityStripe buckets={[buckets[20], buckets[2]]}
+        window={{ ...window, counts_available:false }} onBucketClick={onBucketClick} />
+      </AppTimezoneProvider>)
+    const cells = screen.getAllByRole("button")
+    expect(cells).toHaveLength(24)
+    expect(cells[2].getAttribute("aria-label")).toContain("2 sessions")
+    expect(cells[20].getAttribute("aria-label")).toContain("20 sessions")
+    expect(cells[5].getAttribute("aria-label")).toContain("count unavailable; liveness unknown")
+    expect(mounted.container.textContent).not.toContain("not listening")
+    expect(screen.getByRole("group").getAttribute("aria-label")).toContain("known total 22 sessions, count incomplete")
+    expect(cells[5].className).toContain("min-w-11")
+    expect(cells[5].className).toContain("min-h-11")
+    fireEvent.click(cells[20])
+    expect(onBucketClick).toHaveBeenLastCalledWith(buckets[20])
+    fireEvent.click(cells[5])
+    expect(onBucketClick).toHaveBeenLastCalledWith({
+      bucket_start:buckets[5].bucket_start, bucket_end:buckets[5].bucket_end,
+      count:null, filtered:null, listening:"unknown",
+    })
+    mounted.unmount()
+    const measuredEmpty = renderToStaticMarkup(<SourceActivityStripe buckets={[]}
+      window={window} />)
+    expect((measuredEmpty.match(/relative flex-1/g) ?? [])).toHaveLength(24)
+    expect(measuredEmpty).toContain("total 0 sessions")
+    expect(measuredEmpty).toContain("liveness unknown")
+    const shortWindow = { ...window, window_end:buckets[9].bucket_end }
+    const short = renderToStaticMarkup(<SourceActivityStripe buckets={[buckets[2]]} window={shortWindow} />)
+    expect((short.match(/relative flex-1/g) ?? [])).toHaveLength(10)
+    expect(renderToStaticMarkup(<SourceActivityStripe buckets={[buckets[20]]} window={shortWindow} />))
+      .toContain("Count window unavailable")
+    expect(renderToStaticMarkup(<SourceActivityStripe buckets={buckets} window={{ ...window, bucket_width_s:0 }} />))
+      .toContain("Count window unavailable")
+    expect(renderToStaticMarkup(<SourceActivityStripe buckets={buckets} window={null} />))
+      .toContain("Count window unavailable")
+    const onSparseBarClick = vi.fn()
+    const indexed = render(<SourceActivityStripe buckets={[buckets[20], buckets[2]]}
+      window={window} onBarClick={onSparseBarClick} />)
+    fireEvent.click(screen.getAllByRole("button")[20])
+    expect(onSparseBarClick).toHaveBeenLastCalledWith(20)
+    indexed.unmount()
+
   })
 })
 

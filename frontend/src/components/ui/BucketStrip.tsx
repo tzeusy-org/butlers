@@ -1,9 +1,11 @@
-import { orderedBuckets, type CountBucket } from "@/lib/bucket-series"
+import { denseCountBuckets, orderedBuckets, type BucketWindow, type CountBucket } from "@/lib/bucket-series"
 import { formatOwnerDateTime } from "@/components/ui/time"
 import { useTimezone } from "@/components/ui/timezone-context"
 
 interface BucketStripProps {
   buckets: readonly CountBucket[]
+  /** Explicit source bounds. Null means present but invalid source metadata. */
+  window?: BucketWindow | null
   className?: string
   height?: number
   maxValue?: number
@@ -13,9 +15,9 @@ interface BucketStripProps {
 }
 
 /** One count grammar: actual source keys, independent receiver evidence, no animation. */
-export function BucketStrip({ buckets, className, height = 28, maxValue, onBucketClick, variant = "histogram", noun = "events" }: BucketStripProps) {
+export function BucketStrip({ buckets, window, className, height = 28, maxValue, onBucketClick, variant = "histogram", noun = "events" }: BucketStripProps) {
   const timezone = useTimezone()
-  const ordered = orderedBuckets(buckets)
+  const ordered = window === null ? [] : window ? denseCountBuckets(buckets, window) : orderedBuckets(buckets)
   const peak = maxValue ?? Math.max(...ordered.map(bucket => bucket.count ?? 0), 1)
   const filteredPeak = Math.max(...ordered.map(bucket => bucket.filtered ?? 0), 1)
   const total = ordered.reduce((sum, bucket) => sum + (bucket.count ?? 0), 0)

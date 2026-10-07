@@ -180,7 +180,8 @@ async def test_is_priority_sender_normalizes_input():
     assert result is True
 
 
-# REQ-ingestion-policy-002: executed query/cancellation/publication boundary; SQL is V3.
+# REQ-ingestion-policy-002 and REQ-ingestion-policy-003: executed local-query/publication
+# boundary; required append/registry rollback and refusal admission need actual SQL V3.
 async def test_snapshot_refresh_serializes_and_keeps_query_success_separate_from_publication(
     caplog,
 ):

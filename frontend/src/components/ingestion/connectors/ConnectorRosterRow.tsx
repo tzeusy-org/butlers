@@ -30,6 +30,7 @@ import { Time } from '@/components/ui/time'
 import { StateDot } from '@/components/ui/StateDot'
 import { stateTextColorVar } from '@/lib/visual-token-roles'
 import type { ConnectorSummary } from '@/api/types'
+import type { BucketWindow } from '@/lib/bucket-series'
 import { ConnectorCheckpoints } from './ConnectorCheckpoints'
 import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
 import { Sparkline } from './Sparkline'
@@ -44,6 +45,7 @@ import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
 interface ConnectorRosterRowProps {
   connector: ConnectorSummary
+  bucketWindow?: BucketWindow | null
   /** Legacy numeric compatibility prop; count charts use hourly_buckets only. */
   spark24h?: number[]
   /**
@@ -81,6 +83,7 @@ function formatNum(n: number): string {
  */
 export function ConnectorRosterRow({
   connector,
+  bucketWindow,
   events24h,
   catalogChannel,
   rosterSparkMax,
@@ -89,8 +92,8 @@ export function ConnectorRosterRow({
   const info = deriveConnectorDispatchInfo(c)
   const detailPath = `/ingestion/connectors/${encodeURIComponent(c.connector_type)}/${encodeURIComponent(c.endpoint_identity)}`
 
-  const buckets = (c.hourly_buckets ?? []).filter(bucket => bucket.bucket_start && bucket.bucket_end).map(bucket => ({
-    bucket_start: bucket.bucket_start!, bucket_end: bucket.bucket_end!,
+  const buckets = (c.hourly_buckets ?? []).map(bucket => ({
+    bucket_start: bucket.bucket_start ?? "", bucket_end: bucket.bucket_end ?? "",
     count: bucket.messages_ingested, filtered: bucket.messages_filtered,
     listening: bucket.listening ?? "unknown", counts_partial: bucket.counts_partial,
   }))
@@ -186,7 +189,7 @@ export function ConnectorRosterRow({
       {/* 24h sparkline */}
       <div className="flex flex-col gap-1">
         <Sparkline
-          buckets={buckets}
+          buckets={buckets} window={bucketWindow}
           maxValue={rosterSparkMax}
           height={24}
         />

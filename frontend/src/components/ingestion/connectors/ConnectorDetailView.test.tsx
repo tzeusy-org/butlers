@@ -779,6 +779,24 @@ describe('[bu-5ywn2] Routing rules section', () => {
     expect(detailCells.filter(cell => cell.classList.contains('bucket-deaf'))).toHaveLength(3)
     expect(roster.innerHTML).toContain('not listening 3h')
     expect(container.innerHTML).toContain('not listening 3h')
+    // Sparse source positives use the exact same declared bounds in both
+    // mounted adapters. Missing cells supply no invented listening/counts.
+    const window = { window_start:'2026-05-10T00:00:00Z', window_end:'2026-05-11T00:00:00Z',
+      bucket_width_s:3600, counts_available:false }
+    const sparse = buckets.filter(bucket => [2, 20].includes(new Date(bucket.bucket_start).getUTCHours()))
+    renderDetail(root, BASE_CONNECTOR, { stats: makeStats({ timeseries:sparse, bucket_window:window }) })
+    roster.innerHTML = renderToStaticMarkup(<MemoryRouter>
+      <ConnectorRosterRow connector={{ ...BASE_CONNECTOR, hourly_buckets:sparse }} bucketWindow={window} />
+      </MemoryRouter>)
+    const sparseDetailCells = [...container.querySelectorAll('[data-testid="histogram-bars"] > div')]
+    const sparseRosterCells = [...roster.querySelectorAll('[data-testid="histogram-bars"] > div')]
+    expect(sparseDetailCells).toHaveLength(24)
+    expect(sparseRosterCells.map(cell => cell.getAttribute('aria-label')))
+      .toEqual(sparseDetailCells.map(cell => cell.getAttribute('aria-label')))
+    expect(sparseDetailCells[2].getAttribute('aria-label')).toContain('2 events')
+    expect(sparseDetailCells[20].getAttribute('aria-label')).toContain('20 events')
+    expect(sparseDetailCells[5].getAttribute('aria-label')).toContain('count unavailable; liveness unknown')
+    expect(sparseDetailCells.filter(cell => cell.classList.contains('bucket-deaf'))).toHaveLength(0)
   })
 
   it('does not show the degraded note while stats are still loading', () => {

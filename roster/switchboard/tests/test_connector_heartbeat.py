@@ -315,6 +315,23 @@ async def test_heartbeat_appends_to_log_table(valid_heartbeat_payload):
     restored = _pool()
     restored.fetchrow.return_value = None
     assert (await heartbeat(restored, valid_heartbeat_payload)).status == "accepted"
+    # The same consumer used by the actual-role migration node must reject
+    # corrupt JSON representation, independently of the numeric SQL producer.
+    from butlers.db import _jsonb_decoder, encode_jsonb
+    from tests.heartbeat_coverage_helpers import assert_positive_catalog
+
+    assert_positive_catalog(_jsonb_decoder(encode_jsonb([{"oid": 16384}])))
+    for invalid in (
+        [],
+        [{"oid": 0}],
+        [{"oid": -1}],
+        [{"oid": "16384"}],
+        [{"oid": True}],
+        [{"oid": 16384.0}],
+        [{"oid": None}],
+    ):
+        with pytest.raises(AssertionError):
+            assert_positive_catalog(_jsonb_decoder(encode_jsonb(invalid)))
 
 
 @pytest.mark.asyncio

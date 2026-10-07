@@ -1,4 +1,5 @@
 import { ownerFetch } from "./owner-session";
+import { sourceCountWindow } from "@/lib/bucket-series";
 /**
  * Typed fetch wrapper for the Butlers dashboard API.
  *
@@ -4548,6 +4549,7 @@ function _toConnectorStats(
   endpointIdentity: string,
   period: IngestionPeriod,
   hourlyEventsAvailable: boolean,
+  bucketWindow: ConnectorStats["bucket_window"],
 ): ConnectorStats {
   const timeseries: ConnectorStatsBucket[] = rows.map((r) => ({
     bucket: (r.hour ?? r.day ?? ""),
@@ -4583,6 +4585,7 @@ function _toConnectorStats(
     period,
     summary,
     timeseries,
+    bucket_window: bucketWindow,
     hourly_events_available: hourlyEventsAvailable,
   };
 }
@@ -4625,6 +4628,8 @@ export async function getConnectorStats(
       endpointIdentity,
       period,
       hourlyEventsAvailable,
+      resp.meta?.window_start === undefined && resp.meta?.window_end === undefined && resp.meta?.bucket_width_s === undefined
+        ? undefined : sourceCountWindow(resp.meta),
     ),
   };
 }

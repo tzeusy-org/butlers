@@ -153,6 +153,19 @@ describe("getConnectorStats timeseries transformation", () => {
     expect(stats.timeseries).toHaveLength(2);
     expect(stats.timeseries[0].bucket).toBe("2026-02-23T10:00:00Z");
     expect(stats.timeseries[0].messages_ingested).toBe(60);
+    expect(stats.bucket_window).toBeUndefined(); // Legacy rows declare no complete window.
+    const metadata = { window_start:"2026-02-23T00:00:00Z", window_end:"2026-02-24T00:00:00Z",
+      bucket_width_s:3600, hourly_events_available:false };
+    mockResponse({ data:[], meta:metadata });
+    expect((await getConnectorStats("gmail", "u@x.com")).data.bucket_window)
+      .toEqual({ window_start:metadata.window_start, window_end:metadata.window_end,
+        bucket_width_s:3600, counts_available:false });
+    mockResponse({ data:[], meta:{ ...metadata, hourly_events_available:true } });
+    expect((await getConnectorStats("gmail", "u@x.com")).data.bucket_window?.counts_available).toBe(true);
+    mockResponse({ data:[], meta:{ ...metadata, hourly_events_available:"true" } });
+    expect((await getConnectorStats("gmail", "u@x.com")).data.bucket_window).toBeNull();
+    mockResponse({ data:[], meta:{ bucket_width_s:3600 } });
+    expect((await getConnectorStats("gmail", "u@x.com")).data.bucket_window).toBeNull();
   });
 
   it("returns empty timeseries and zero summary when no rows", async () => {

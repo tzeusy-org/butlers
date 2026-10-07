@@ -4147,6 +4147,8 @@ export interface ConnectorStats {
   period: IngestionPeriod;
   summary: ConnectorStatsSummary;
   timeseries: ConnectorStatsBucket[];
+  /** Exact receiver bounds/availability; null means malformed source metadata. */
+  bucket_window?: import("@/lib/bucket-series").BucketWindow | null;
   /**
    * DB-source health flag (bu-c48im), threaded from the response
    * `meta.hourly_events_available`. `false` only when the backend's combined
@@ -4229,6 +4231,13 @@ export interface ConnectorFanoutResponse extends ApiResponse<ConnectorFanoutRow[
  */
 export interface ConnectorSummariesResponse {
   connectors: ConnectorSummary[];
+  /** Raw receiver-declared bounds, projected at the count-strip boundary. */
+  bucket_window?: {
+    window_start: string;
+    window_end: string;
+    bucket_width_s: number;
+    hourly_events_available: boolean;
+  };
   /**
    * False only if the primary connector registry query failed and the
    * connector list is its HTTP-200 fallback. Optional/additive; absent on

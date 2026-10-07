@@ -55,6 +55,12 @@ async def _init_admin(connection):
     await connection.execute("SET search_path TO switchboard, public")
 
 
+def assert_positive_catalog(catalog: list[dict]) -> None:
+    """Validate decoded numeric receipts without coercing corrupt JSON leaves."""
+    assert catalog and all(type(receipt["oid"]) is int for receipt in catalog)
+    assert catalog and all(receipt["oid"] > 0 for receipt in catalog)
+
+
 async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
     """Keep every causal role/catalog/commit witness inside an existing PG node."""
     from sqlalchemy.engine import make_url
@@ -73,7 +79,7 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
             "SELECT switchboard.switchboard_connector_heartbeat_log_ensure_partition(clock_timestamp())"
         )
         catalog = await runtime.fetchval("SELECT switchboard.heartbeat_recording_catalog()")
-        assert catalog and all(receipt["oid"] > 0 for receipt in catalog)
+        assert_positive_catalog(catalog)
 
         payload = _payload("paired-positive")
         ack = await heartbeat(runtime, payload)

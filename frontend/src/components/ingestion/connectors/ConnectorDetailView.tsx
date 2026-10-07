@@ -176,8 +176,8 @@ export function ConnectorDetailView({
   const statsLoading = statsReader?.isLoading === true && !stats
 
   // Derive spark data from timeseries (24h hourly buckets)
-  const spark24h = (stats?.timeseries ?? []).filter(bucket => bucket.bucket_start && bucket.bucket_end).map(bucket => ({
-    bucket_start: bucket.bucket_start!, bucket_end: bucket.bucket_end!,
+  const spark24h = (stats?.timeseries ?? []).map(bucket => ({
+    bucket_start: bucket.bucket_start ?? "", bucket_end: bucket.bucket_end ?? "",
     count: stats?.hourly_events_available === false ? null : bucket.messages_ingested,
     filtered: stats?.hourly_events_available === false ? null : bucket.messages_filtered,
     listening: bucket.listening ?? "unknown", counts_partial: bucket.counts_partial,
@@ -340,7 +340,7 @@ export function ConnectorDetailView({
               </p>
             ) : (
               <>
-                <ConnectorHistogram buckets={spark24h} height={96} />
+                <ConnectorHistogram buckets={spark24h} window={stats?.bucket_window} height={96} />
                 {/* Never let a failed hourly query hide behind a quiet histogram (bu-c48im). */}
                 {!hourlyEventsAvailable && (
                   <SourceDegradedNote
