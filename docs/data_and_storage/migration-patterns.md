@@ -225,6 +225,104 @@ uv run pytest tests/test_migrations.py -q --tb=short 2>&1 | tail -20
 # Expected: all migration integrity tests pass
 ```
 
+## Metadata visibility and evidence-preserving rollback
+
+The core smoke comparison reads `information_schema.columns` through the ordinary
+migration login. `Tables only in fresh DB` is a privilege-filtered inventory
+observation. A missing entry can mean that the object exists under another creator
+without effective table privileges; it does not establish that downgrade failed to
+recreate the table. Diagnose this in a disposable database with a positive qualified
+administrative catalog witness. Record the session and effective role, table owner,
+effective and inherited privileges, database/schema ownership, per-creator default ACLs, enabled/forced RLS,
+and the function owner, EXECUTE grants and pinned search path separately.
+
+The initial core_255 correction in PR #4347 changed two independent behaviors at
+once: it added a targeted Switchboard table grant and retained `insight_amendments`
+on downgrade. The historical initial source dropped an empty amendment table;
+managed bootstrap then recreated it under its own owner. The ordinary migration
+login's default privileges applied to its own creations, not the bootstrap creator.
+Both a grant-only control and a keep-only control must therefore accompany the
+initial-source reproduction. Retention can mask the inventory failure by preserving
+ownership and ACLs. That does not make retention the cause of correct grants.
+
+The documented decision is to keep the current core_255 migration unchanged. Its
+narrow grant already exposes bootstrap-created amendment metadata through the
+ordinary login's configured inherited Switchboard membership. Actual runtime
+`SET ROLE` identities still face the Switchboard row policy, including after two
+production `init-db.sql` replays re-widen public DML. Metadata equality, row visibility,
+DDL ownership and SECURITY DEFINER execution are four separate checks. Runtime table
+grants do not confer ownership needed to ALTER a bootstrap-created table. DROP has
+an additional schema-owner authority: in the fresh PostgreSQL 17 fixture, the
+ordinary login owns its database and implicitly owns `public` through
+`pg_database_owner`. It can drop bootstrap-owned contained objects without being
+able to ALTER the table or REPLACE the functions. These are separate operations,
+not a reason to destroy correction rows. See PostgreSQL's
+[database-owner role](https://www.postgresql.org/docs/17/predefined-roles.html),
+[DROP TABLE contract](https://www.postgresql.org/docs/17/sql-droptable.html) and
+[generic DROP ownership check](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/backend/commands/dropcmds.c).
+The core_258 grant convergence and a dynamic-head round-trip remain separate smoke
+checks; a passing current head comparison cannot identify which historical change
+fixed a core_255 comparison.
+
+Ordinary migration traversal must be tested while the table is still bootstrap
+owned, before any ordinary DROP/recreate changes the owner. The current empty
+DROP diagnostics with and without the targeted grant both exercise the canonical
+`run_migrations(..., chain="core", schema="health")` entrypoint. The exact current
+bootstrap-created install also exercises that entrypoint after its complete role
+matrix and two `init-db.sql` replays, with all 43 planted rows still present. Only
+the independent health version table is positioned at core_254; the already-run
+shared predecessors remain intact and core_255 is actually traversed. The tests
+record the reached upgrade frame, rejected SQL statement and `42501`, then read
+the catalog, rows and version tables through separate connections to prove that
+ownership and evidence survived and health did not advance past core_254.
+Metadata PASS therefore does not mean ordinary replay succeeds in this current
+bootstrap-owned state. The hypothetical empty-DROP controls are diagnostics; the
+exact current bootstrap-created replay is an existing failure, not a repaired
+supported path. A later ordinary replay over an ordinarily owned retained table
+is a separate positive control and does not discharge this failure.
+
+The concrete forward proposal is scoped bootstrap convergence before ordinary
+core replay: within the existing privileged bootstrap boundary, resolve the
+configured migration identity from `butlers.connecting_user`, guard the qualified
+amendment table's existence and converge only its ownership to that trusted
+migration identity. Preserve every row, runtime ACL entry, policy and ENABLE/FORCE setting;
+retain the existing runtime role matrix and test rollback/durable version state.
+This follows the bootstrap's existing contract that Alembic objects belong to the
+normal migration user for future ALTER. It requires a separately reviewed
+bootstrap change and disposable-PG validation of first install, retained-table
+replay, repeated convergence and the same positive/negative role controls.
+It is a proposal, not an adopted owner change or a verified repair. No applied
+core_255 rewrite, new core allocation, broad grant, DROP or runtime owner privilege
+is authorized here. Function-owner convergence remains with `bu-q7vx1q.33`.
+
+A bounded core_255-to-core_254 rollback intentionally retains complete amendment
+rows in all four states, while their referenced candidates remain. It removes
+candidate `premise` and `delivery_ref`, folds candidate `withdrawn` to `filtered`, and
+folds ledger `withdrawn` to `suppressed` and `amended` to `delivered`. Reupgrade cannot
+recover the removed candidate fields. The surviving table does not mean that older
+code can deliver corrections. Its existing candidate FK still cascades on deletion;
+this decision is not a promise of indefinite evidence retention.
+
+Retaining a table also does not converge function ownership. A managed-bootstrap
+reupgrade can recreate the two definers under the bootstrap owner. An ordinary
+schema replay cannot REPLACE those functions and its best-effort DDL can leave the
+owner unchanged. In the fresh database-owner fixture, ordinary rollback can DROP
+them through schema ownership; the function is then unavailable (`42883`) until
+ordinary reupgrade recreates it under the ordinary owner. Record the actual
+database/schema authority and function absence or ownership at each step. Do not
+extrapolate this DROP authority to a migration login that lacks schema ownership.
+Broader caller/source validation, FK lifecycle, FORCE RLS and
+definer ownership hardening remain with `bu-q7vx1q.33`; this investigation adds no
+authority or waiver for those choices.
+
+The real-PG controls live in
+`tests/migrations/test_core_255_insight_premise_binding_migration.py`. They use the
+complete canonical predecessor chain and bootstrap, a checksum-verified historical
+test fixture, isolated empty destructive variants, planted positive row witnesses,
+and actual role execution. Source inspection, mock results and collection are not
+SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
+`openspec/specs/proactive-insight-engine/spec.md` for the bounded contract.
+
 ## Implementation Notes
 
 - Alembic loads every `*.py` in a versions directory, so a stray file with a duplicate `revision`

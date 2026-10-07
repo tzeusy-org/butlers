@@ -76,8 +76,9 @@ def _get_table_columns_sql(db_url: str) -> dict[str, set[str]]:
     """Return ``{schema.table → {column, ...}}`` for all user tables via information_schema.
 
     Excludes system schemas (pg_catalog, information_schema, pg_toast).  Used to
-    compare schema structure between two databases without relying on alembic
-    version strings.
+    compare the connected login's privilege-filtered metadata inventory without
+    relying on alembic version strings. An omitted table may still exist in
+    pg_catalog; ownership and effective grants need a separate positive witness.
     """
     engine = create_engine(db_url)
     try:
@@ -1235,5 +1236,8 @@ def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
         "Schema after round-trip must be equivalent to a direct empty→head migration. "
         f"Tables only in round-trip DB: {only_round_trip!r}. "
         f"Tables only in fresh DB: {only_fresh!r}. "
-        "Check that the most recent migration's downgrade() is symmetric with its upgrade()."
+        "This is the ordinary login's privilege-filtered metadata inventory. "
+        "Check qualified object presence, ownership, effective/inherited privileges and "
+        "per-creator default ACLs in a disposable database before attributing absence "
+        "to asymmetric downgrade/upgrade teardown."
     )
