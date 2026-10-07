@@ -1510,6 +1510,7 @@ class TestEntityActivity:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_mcp_result(self, episodes: list[dict]) -> MagicMock:
@@ -2107,6 +2108,7 @@ class TestEntityActivityBinning:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_mcp_result(self, episodes: list[dict]) -> MagicMock:
@@ -2356,6 +2358,7 @@ class TestEntityDeltaFacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_app(
@@ -2466,6 +2469,7 @@ class TestEntityCoreDates:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_app(
@@ -2504,6 +2508,9 @@ class TestEntityCoreDates:
         assert row["conf"] == 1.0
         assert row["verified"] is True
         assert row["staleness_band"] == "fresh"
+        assert row["confirmation_status"] == "legacy_verified"
+        assert row["confirmed_at"] is None
+        assert row["reported_by"] is None
 
     async def test_partial_date_without_year_supported(self):
         """A --MM-DD partial date (year unknown) still yields a next occurrence."""

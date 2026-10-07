@@ -13,13 +13,12 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import socket
-import subprocess
 import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import asyncpg
@@ -61,9 +60,9 @@ from butlers.tools.relationship.relationship_assert_fact import (
     relationship_assert_fact,
 )
 from butlers.tools.switchboard.registry.registry import register_butler
+from tests.relationship_authority_helpers import baseline_writer
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
-BASE = "461e03b32ac3b88e2a92d487432f77a73aa2b829"
 
 
 @asynccontextmanager
@@ -143,7 +142,14 @@ async def env(postgres_container):
     approvals = ApprovalsModule()
     await approvals.on_startup({}, SimpleNamespace(pool=rel))
     try:
-        yield SimpleNamespace(url=url, admin=admin, rel=rel, sw=switchboard, owner=owner)
+        state = SimpleNamespace(url=url, admin=admin, rel=rel, sw=switchboard, owner=owner)
+        # A migrated daemon owns one registered MCP lifecycle until shutdown.
+        # Reconstructing the entire tool server for every report can time out
+        # during Client initialization before the owning resolver ever runs.
+        # Nested report scopes below reuse this actual live endpoint, never a
+        # substitute resolver or typed report.
+        async with _registered(state):
+            yield state
     finally:
         await approvals.on_shutdown()
         await asyncio.gather(rel.close(), switchboard.close(), admin.close())
@@ -183,7 +189,17 @@ async def _report(env, entity, authority="third_party"):
     )
     async with _registered(env):
         issuer = _source_issuer(env)
-        report = await issuer.capture_accepted_report(await _accepted(env, address), entity)
+        owning = await resolve_contact_by_channel(env.rel, "email", address, raise_on_error=True)
+        assert owning is not None and owning.entity_id == entity
+        registered = (await issuer.resolve_identities("email", [address]))[address]
+        assert registered is not None and registered.entity_id == entity
+        accepted = await _accepted(env, address)
+        source = await env.sw.fetchrow(
+            "SELECT request_context FROM switchboard.message_inbox WHERE id=$1", accepted
+        )
+        assert source["request_context"]["source_channel"] == "email"
+        assert source["request_context"]["source_sender_identity"] == address
+        report = await issuer.capture_accepted_report(accepted, entity)
     assert report.authority == authority
     return report
 
@@ -244,6 +260,13 @@ async def _assert(env, subject, predicate, value, report, **kwargs):
 
 @asynccontextmanager
 async def _registered(env):
+    endpoint = getattr(env, "_registered_endpoint", None)
+    if endpoint is not None:
+        # Restore the fixed live target after a receiver-recovery negative
+        # temporarily publishes its own endpoint; do not reconstruct a daemon.
+        await register_butler(env.sw, "relationship", endpoint + "/mcp")
+        yield endpoint
+        return
     module = RelationshipModule()
     mcp = FastMCP("relationship")
     await module.register_tools(mcp, None, SimpleNamespace(pool=env.rel), "relationship")
@@ -251,7 +274,11 @@ async def _registered(env):
     try:
         async with _tcp(app) as endpoint:
             await register_butler(env.sw, "relationship", endpoint + "/mcp")
-            yield endpoint
+            env._registered_endpoint = endpoint
+            try:
+                yield endpoint
+            finally:
+                del env._registered_endpoint
     finally:
         await module.on_shutdown()
 
@@ -514,19 +541,8 @@ async def test_registered_source_resolver_and_writer_are_role_owned(env):
 async def test_caller_verified_and_context_copy_cannot_mint_owner_report(env):
     """The original protected writer demonstrably accepted caller verified."""
     subject = await _person(env)
-    source = subprocess.run(
-        ["git", "show", BASE + ":roster/relationship/tools/relationship_assert_fact.py"],
-        check=True,
-        text=True,
-        capture_output=True,
-    ).stdout
-    old = SimpleNamespace()
-    historical = ModuleType("_authority_baseline_writer")
-    sys.modules[historical.__name__] = historical
-    namespace = historical.__dict__
-    exec(compile(source, "protected-baseline-relationship_assert_fact.py", "exec"), namespace)
-    old.write = namespace["relationship_assert_fact"]
-    before = await old.write(
+    historical = baseline_writer()
+    before = await historical.relationship_assert_fact(
         env.rel,
         subject,
         "has-email",
@@ -1848,7 +1864,7 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         assert name == "switchboard"
         return AcceptedLocalIngress()
 
-    async with _owner_app(env) as (client, _service, headers):
+    async with _registered(env), _owner_app(env) as (client, _service, headers):
 
         @client._transport.app.post("/api/test-dashboard-submit")
         async def submit_dashboard():
@@ -1864,6 +1880,7 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
                 message_id=live_message,
                 message_text=durable["content"],
                 conversation_context=[{"role": "assistant", "content": "Synthetic prior context"}],
+                pinned_target="relationship",
             )
             return await _submit_to_switchboard(
                 "relationship",
@@ -1879,6 +1896,11 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
     accepted_id = uuid.UUID(received.json()["request_id"])
     device = await issuer.capture_accepted_report(accepted_id, None)
     assert device.authority == "owner_device" and device.original_entity_id == env.owner
+    assert captured_envelopes[0]["control"]["pinned_target"] == "relationship"
+    stored_origin = await env.sw.fetchrow(
+        "SELECT raw_payload,request_context FROM switchboard.message_inbox WHERE id=$1", accepted_id
+    )
+    assert stored_origin["raw_payload"]["control"]["pinned_target"] == "relationship"
     # Capture/recovery does not upgrade an old unstamped row or a locator whose
     # actual text differs. Both companions are durably planted before reading.
     envelope = captured_envelopes[0]
@@ -1896,7 +1918,7 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         ("event", "external_event_id", str(uuid.uuid4())),
         ("source", "endpoint_identity", "dashboard:web:" + str(uuid.uuid4())),
         ("event", "external_thread_id", str(uuid.uuid4())),
-        ("control", "pinned_target", "relationship"),
+        ("control", "pinned_target", "finance"),
     ):
         copied = copy.deepcopy(envelope)
         copied[part][key] = value
