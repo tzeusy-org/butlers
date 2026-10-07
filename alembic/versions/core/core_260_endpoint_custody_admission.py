@@ -1,7 +1,7 @@
 """Install bounded endpoint custody under the existing trusted bootstrap owner.
 
 Revision ID: core_260
-Revises: core_258
+Revises: core_261
 
 The numeric gap is intentional. The independently owned capture revision259
 is not a prerequisite, source import, restored-history admission or runtime
@@ -17,7 +17,7 @@ from alembic import op
 from butlers.core.custody_installed import verify_installed_functions
 
 revision = "core_260"
-down_revision = "core_258"
+down_revision = "core_261"
 branch_labels = None
 depends_on = None
 

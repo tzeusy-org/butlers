@@ -18,6 +18,8 @@ import {
   deleteEntityContact,
   dismissRelationshipEntityPair,
   markEntityContactVerified,
+  getIdentityCandidates,
+  decideIdentityCandidate,
   updateEntityContact,
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
@@ -1058,6 +1060,32 @@ export function useCreateEntityGift() {
       void queryClient.invalidateQueries({ queryKey: ["entity-gifts", entityId] });
       invalidateEntityActivityFamily(queryClient, entityId);
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
+    },
+  });
+}
+
+
+export function useIdentityCandidates(entityId: string) {
+  return useQuery({
+    queryKey: ["identity-candidates", entityId],
+    queryFn: () => getIdentityCandidates(entityId),
+    enabled: !!entityId,
+  });
+}
+
+export function useDecideIdentityCandidate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entityId, factId, decision }: { entityId: string; factId: string; decision: "adopt" | "reject" }) =>
+      decideIdentityCandidate(entityId, factId, decision),
+    onSettled: (_, __, { entityId }) => {
+      // A network error can follow a committed decision: durable readback is
+      // required on errors too. Never optimistically invent a verified handle.
+      for (const family of ["identity-candidates", "entity-linked-contacts", "entity-facts", "entity-contacts"]) {
+        void queryClient.invalidateQueries({ queryKey: [family, entityId] });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+      invalidateEntityActivityFamily(queryClient, entityId);
     },
   });
 }

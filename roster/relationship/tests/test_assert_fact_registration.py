@@ -74,8 +74,8 @@ async def test_assert_fact_resolvable_via_get_tool():
 async def test_approved_groups_register_expected_relationship_surface(monkeypatch):
     """Approved groups retain the fact writer and the owning channel resolver."""
     names = await _register(_PRODUCTION_GROUPS)
-    assert len(names) == 62
-    assert "identity_resolve_channels" in names
+    assert len(names - {"identity_resolve_channels", "identity_assert_sender_channel"}) == 61
+    assert {"identity_resolve_channels", "identity_assert_sender_channel"} <= names
     assert {
         "address_add",
         "upcoming_dates",

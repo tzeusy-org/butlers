@@ -178,7 +178,7 @@ async def backfill_email_identity_facts(
             summary["errors"] += 1
             continue
 
-        if result.outcome.value == "pending_approval":
+        if result.outcome.value in {"pending_approval", "candidate"}:
             summary["pending_approval"] += 1
         else:
             summary["linked"] += 1

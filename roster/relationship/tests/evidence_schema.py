@@ -160,3 +160,16 @@ async def apply_evidence_schema(pool: asyncpg.Pool | asyncpg.Connection) -> None
     )
     for statement in rel_035().upgrade_statements():
         await pool.execute(statement)
+
+    # Execute the real owned authority installer, not a local DDL imitation.
+    if not await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+        "table_schema='relationship' AND table_name='entity_facts' "
+        "AND column_name='content_authority')"
+    ):
+        path = Path(__file__).resolve().parents[1] / "migrations" / "037_fact_content_authority.py"
+        spec = importlib.util.spec_from_file_location("_migration_rel_037", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for statement in module.upgrade_statements():
+            await pool.execute(statement)

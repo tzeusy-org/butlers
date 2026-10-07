@@ -584,6 +584,9 @@ class ButlerDaemon:
         The socket is stored on ``self._mcp_socket`` and closed in shutdown after
         the server task finishes.
         """
+        from butlers.core.fact_authority import FactReceiverContextRegistry
+
+        self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -591,6 +594,8 @@ class ButlerDaemon:
             runtime_probe_coordinator=self._build_runtime_probe_coordinator(),
             identity_provider=self._identity_facts,
             route_preflight=self._build_route_preflight(),
+            fact_source_registry=getattr(self, "_fact_source_registry", None),
+            fact_receiver_registry=self._fact_receiver_registry,
         )
         config = uvicorn.Config(
             app,
@@ -720,6 +725,8 @@ class ButlerDaemon:
         runtime_probe_coordinator: Any | None = None,
         identity_provider: Any | None = None,
         route_preflight: Any | None = None,
+        fact_source_registry: Any | None = None,
+        fact_receiver_registry: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -798,6 +805,18 @@ class ButlerDaemon:
             ):
                 if not cls._attach_route_via_public_api(streamable_app, control_route):
                     streamable_app.routes.append(control_route)
+
+        if fact_source_registry is not None:
+            for source_route in (
+                fact_source_registry.route(),
+                fact_source_registry.recovery_route(),
+            ):
+                if not cls._attach_route_via_public_api(streamable_app, source_route):
+                    streamable_app.routes.append(source_route)
+        if fact_receiver_registry is not None:
+            receiver_route = fact_receiver_registry.route()
+            if not cls._attach_route_via_public_api(streamable_app, receiver_route):
+                streamable_app.routes.append(receiver_route)
 
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,

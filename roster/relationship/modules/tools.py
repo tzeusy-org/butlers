@@ -48,46 +48,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import tasks as _tasks
     from butlers.tools.relationship import vcard as _vcard
 
-    # Fixed owning resolver. DTO fields remain locators; only the private
-    # constructor publisher can record current binding in the SAME transaction.
-    # This additive baseline hook is serialized with .2's REQUEST-only resolver
-    # at delivery; no peer source or FactWriteContext supplies custody privilege.
-    @_tool("contacts")
-    async def identity_resolve_channels(channel_type: str, channel_values: list[str]) -> dict:
-        """Resolve up to 256 channel values through the owning canonical identity query.
-
-        Returns the minimized contact fields or null per value. Ambiguous or
-        unknown mappings remain unavailable; no binding generation, source
-        token, entity birth witness or authentication proof is returned.
-        """
-        from butlers.core.custody_bindings import owning_binding_publisher
-        from butlers.identity import resolve_contacts_by_channel_bulk
-
-        if not channel_type or len(channel_type) > 64 or len(channel_values) > 256:
-            raise ValueError("invalid identity lookup batch")
-        if any(not value or len(value) > 1024 for value in channel_values):
-            raise ValueError("invalid channel identifier")
-        if not channel_values:
-            return {}  # Empty read is not a binding observation or source grant.
-        pool = module._get_pool()
-        publisher = owning_binding_publisher(pool)
-        if publisher is not None:
-            return await publisher.observe_channels(channel_type, channel_values)
-        resolved = await resolve_contacts_by_channel_bulk(
-            pool, [(channel_type, value) for value in channel_values], raise_on_error=True
-        )
-        return {
-            value: None
-            if contact is None
-            else {
-                "name": contact.name,
-                "roles": list(contact.roles),
-                "entity_id": None if contact.entity_id is None else str(contact.entity_id),
-                "is_unidentified": contact.is_unidentified,
-            }
-            for (_, value), contact in resolved.items()
-        }
-
     # =================================================================
     # Address tools (group: contacts_extended)
     # =================================================================
@@ -220,6 +180,88 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         Uses ILIKE for case-insensitive partial matching.
         """
         return await _ci.channel_search(module._get_pool(), value, type=type)
+
+    @_tool("contacts")
+    async def identity_resolve_channels(
+        channel_type: str,
+        channel_values: list[str],
+    ) -> dict[str, Any]:
+        """Resolve exact channel identifiers through eligible active facts.
+
+        This read-only owning-role boundary uses the canonical resolver's
+        normalization and ambiguity rules. Candidate reports never resolve.
+        Returned identities do not authenticate transport or grant authority.
+        """
+        if not channel_type or len(channel_type) > 64 or len(channel_values) > 256:
+            raise ValueError("invalid identity lookup batch")
+        if any(not value or len(value) > 1024 for value in channel_values):
+            raise ValueError("invalid channel identifier")
+        from dataclasses import asdict
+
+        from butlers.core.custody_bindings import owning_binding_publisher
+        from butlers.identity import resolve_contacts_by_channel_bulk
+
+        if not channel_values:
+            return {}  # Empty read is neither currentness nor a source grant.
+        publisher = owning_binding_publisher(module._get_pool())
+        if publisher is not None:
+            return await publisher.observe_channels(
+                channel_type, list(dict.fromkeys(channel_values))
+            )
+        pairs = [(channel_type, value) for value in dict.fromkeys(channel_values)]
+        resolved = await resolve_contacts_by_channel_bulk(
+            module._get_pool(), pairs, raise_on_error=True
+        )
+        return {
+            value: asdict(resolved[(channel_type, value)])
+            if resolved[(channel_type, value)] is not None
+            else None
+            for _, value in pairs
+        }
+
+    @_tool("contacts")
+    async def identity_assert_sender_channel(
+        entity_id: uuid.UUID,
+        channel_type: str,
+        channel_value: str,
+    ) -> dict[str, Any]:
+        """Record a temporary sender's canonical channel on the owning role.
+
+        Only a current unidentified entity is eligible. This does not adopt a
+        known person's reported channel or supply verified content authority.
+        Unsupported channels and unavailable writes return recorded=false;
+        callers preserve ingress and its durable temporary-entity reservation.
+        """
+        from butlers.core.custody_bindings import native_channel_mutation
+
+        pool = module._get_pool()
+        async with (
+            pool.acquire() as conn,
+            native_channel_mutation(pool, conn, [entity_id]),
+            conn.transaction(),
+        ):
+            row = await conn.fetchrow(
+                "SELECT metadata FROM public.entities WHERE id=$1 FOR KEY SHARE",
+                entity_id,
+            )
+            if (
+                row is None
+                or not (row["metadata"] or {}).get("unidentified")
+                or any((row["metadata"] or {}).get(key) for key in ("deleted_at", "merged_into"))
+            ):
+                return {"recorded": False}
+            from butlers.tools.relationship.relationship_assert_fact import (
+                assert_sender_channel_fact,
+            )
+
+            result = await assert_sender_channel_fact(
+                pool,
+                entity_id,
+                channel_type,
+                channel_value,
+                conn=conn,
+            )
+            return {"recorded": result is not None}
 
     # =================================================================
     # Contact tools (group: contacts)
@@ -1175,7 +1217,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         conf: float = 1.0,
         last_seen: datetime | None = None,
         weight: int | None = None,
-        verified: bool = False,
         primary: bool | None = None,
         evidence: list[dict[str, str]] | None = None,
         approval_action_id: uuid.UUID | None = None,
@@ -1203,7 +1244,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             conf: Confidence in [0.0, 1.0] (default 1.0).
             last_seen: Timestamp of the most recent observation (nullable).
             weight: Relational aggregation weight (nullable).
-            verified: Owner-confirmed flag (default False).
             primary: Primary-of-kind flag for multi-valued contact predicates.
             evidence: Ordered typed references justifying the assertion, each
                 {"type": "fact"|"entity"|"url"|"text", "ref": ..., "note": ...}.
@@ -1273,7 +1313,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             conf=conf,
             last_seen=last_seen,
             weight=weight,
-            verified=verified,
             primary=primary,
             evidence=evidence,
             approval_action_id=approval_action_id,

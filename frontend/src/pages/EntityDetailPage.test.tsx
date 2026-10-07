@@ -58,6 +58,8 @@ vi.mock("@/hooks/use-memory", () => ({
 
 // Relationship-scoped hooks consumed by the consolidated page
 vi.mock("@/hooks/use-entities", () => ({
+  useIdentityCandidates: vi.fn(() => ({ data: { facts: [] }, isPending: false, isError: false, refetch: vi.fn() })),
+  useDecideIdentityCandidate: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   ENTITY_CADENCE_REFRESH_MS: 30_000,
   ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   // EntityDetailPage renders EntityVerbRail (bu-6t8ix.4); its four write verbs each
@@ -968,6 +970,21 @@ describe("EntityDetailPage — ProvenanceGrid (Workbench mode)", () => {
     expect(html).toContain("Acme Corp");
     // src (source butler)
     expect(html).toContain("general");
+    setEntityFacts([{ ...SAMPLE_ENTITY_FACT, verified: true, confirmation_status: "legacy_verified",
+      content_authority: null, reported_by: { entity_id: null, name: null, availability: "legacy_unknown" } }]);
+    const legacy = renderPage();
+    expect(legacy).toContain("Legacy verification: author unknown");
+    expect(legacy).not.toContain('data-verified="true"');
+    expect(legacy).not.toContain("Owner verified");
+    setEntityFacts([{ ...SAMPLE_ENTITY_FACT, verified: true, confirmation_status: "owner_asserted",
+      content_authority: "owner", reported_by: { entity_id: "owner", name: "Owner", availability: "available" } }]);
+    const admitted = renderPage();
+    expect(admitted).toContain("Owner verified");
+    expect(admitted).toContain("Reported by Owner");
+    setEntityFacts([{ ...SAMPLE_ENTITY_FACT, store: "narrative", verified: true }]);
+    const narrative = renderPage();
+    expect(narrative).not.toContain("Legacy verification: author unknown");
+    expect(narrative).not.toContain("Reported by");
   });
 
   it("Workbench renders real column headers: Predicate, Weight, Last Observed", () => {

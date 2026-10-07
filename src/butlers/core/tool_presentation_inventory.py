@@ -451,12 +451,6 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "relationship",
         "contacts",
-        "identity_resolve_channels",
-        presentable=False,
-    ),
-    *_declare(
-        "relationship",
-        "contacts",
         "channel_add channel_search contact_create contact_get contact_resolve contact_search "
         "contact_update",
     ),
@@ -507,6 +501,12 @@ TOOL_PRESENTATION_INVENTORY = (
         "relationship_assert_fact "
         "relationship_fact_evidence relationship_lookup relationship_predicate_coverage "
         "relationship_record_coverage",
+    ),
+    *_declare(
+        "relationship",
+        "contacts",
+        "identity_resolve_channels identity_assert_sender_channel",
+        presentable=False,
     ),
     *_declare("switchboard", "routing", "correct_route list_butlers route"),
     *_declare("switchboard", "delivery", "deliver", presentable=False),

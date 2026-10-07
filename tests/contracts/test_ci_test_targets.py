@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -395,13 +400,128 @@ def test_ci_cleanup_refuses_malformed_free_space_before_reclamation(
     assert not sentinel.exists()
 
 
-def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> None:
+def _exercise_browser_installer(root: Path) -> None:
+    """Actual shell/group lifecycle with synthetic install/OS/browser boundaries.
+
+    Only wall-clock literals are scaled in this routine control. Healthy
+    boundaries include a deliberate 200 ms startup delay within a two-second
+    allowance; stall pairs witness handler readiness before TERM/KILL checks.
+    The ignored one-shot receipt exercises unchanged 110/120/380 deadlines;
+    actual apt/Chromium execution belongs to the hosted frontend-e2e job.
+    """
+    source = (REPO_ROOT / "frontend/scripts/install-playwright-browsers.mjs").read_text()
+    assert "TERM_MS = 110_000" in source
+    assert "KILL_MS = 120_000" in source
+    assert "BACKOFF_MS = 10_000" in source
+    assert "TOTAL_MS = 380_000" in source
+    scaled = (
+        source.replace("110_000", "2_000")
+        .replace("120_000", "2_500")
+        .replace("10_000", "10")
+        .replace("380_000", "8_000")
+    )
+    for mode, expected_calls, expected_probes, expected_exit in [
+        ("cold", 1, 1, 0),
+        ("warm", 1, 1, 0),
+        ("fail-once", 2, 1, 0),
+        ("invalid-cache", 2, 2, 0),
+        ("exhaust", 3, 0, 1),
+        ("stall", 3, 0, 1),
+    ]:
+        directory = root / mode
+        scripts = directory / "scripts"
+        cli = directory / "node_modules/.bin/playwright"
+        scripts.mkdir(parents=True)
+        cli.parent.mkdir(parents=True)
+        (scripts / "install-playwright-browsers.mjs").write_text(scaled)
+        (scripts / "playwright-cache-version.mjs").write_text("// synthetic browser boundary\n")
+        ledger = directory / "ledger.json"
+        ledger.write_text(json.dumps({"calls": [], "probes": 0, "pids": [], "ready": []}))
+        program = r"""import json, os, signal, subprocess, sys, time
+from pathlib import Path
+time.sleep(0.2)  # Ordinary slow fixture launch must not fail a healthy boundary.
+p = Path(os.environ["M3_INSTALL_LEDGER"])
+data = json.loads(p.read_text())
+mode = os.environ["M3_INSTALL_MODE"]
+if Path(sys.argv[0]).name == "node":
+    data["probes"] += 1
+    data["ready"].append({"boundary": "probe", "pid": os.getpid()})
+    p.write_text(json.dumps(data))
+    sys.exit(1 if mode == "invalid-cache" and data["probes"] == 1 else 0)
+data["calls"].append(sys.argv[1:])
+if mode == "stall":
+    signal.signal(signal.SIGTERM, lambda *_: (p.parent / f"term-{os.getpid()}").touch())
+    child_program = "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,lambda *_: Path('term-'+str(os.getpid())).touch());print('ready',flush=True);time.sleep(60)"
+    child = subprocess.Popen([sys.executable, "-c", child_program], cwd=p.parent, stdout=subprocess.PIPE, text=True)
+    data["pids"].extend([os.getpid(), child.pid])
+    p.write_text(json.dumps(data))
+    assert child.stdout.readline() == "ready\n", "stall child never installed its TERM handler"
+    child.stdout.close()
+    data["ready"].append({"boundary": "stall-pair", "pids": [os.getpid(), child.pid]})
+    p.write_text(json.dumps(data))
+    time.sleep(60)
+data["ready"].append({"boundary": "install", "pid": os.getpid()})
+p.write_text(json.dumps(data))
+if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
+    sys.exit(1)
+"""
+        cli.write_text(f"#!{sys.executable}\n" + program)
+        cli.chmod(0o755)
+        node = directory / "node"
+        node.write_text(f"#!{sys.executable}\n" + program)
+        node.chmod(0o755)
+        env = dict(
+            os.environ,
+            M3_INSTALL_LEDGER=str(ledger),
+            M3_INSTALL_MODE=mode,
+        )
+        env["PATH"] = str(directory) + os.pathsep + os.environ["PATH"]
+        try:
+            result = subprocess.run(
+                [shutil.which("node"), str(scripts / "install-playwright-browsers.mjs")],
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=15,
+            )
+            data = json.loads(ledger.read_text())
+            assert result.returncode == expected_exit, (mode, data, result.stderr)
+            assert len(data["calls"]) == expected_calls, (mode, data)
+            assert data["probes"] == expected_probes, (mode, data)
+            assert len(data["ready"]) == expected_calls + expected_probes, (mode, data)
+            for index, args in enumerate(data["calls"]):
+                assert args == ["install", "--with-deps", "chromium"] + (
+                    ["--force"] if index else []
+                )
+            if expected_exit == 0:
+                assert data["probes"] >= 1
+            if mode == "stall":
+                ready_pids = [pid for pair in data["ready"] for pid in pair["pids"]]
+                assert ready_pids == data["pids"] and len(ready_pids) == 6, data
+                for pid in ready_pids:
+                    assert (directory / f"term-{pid}").exists(), (
+                        f"ready stall member {pid} never witnessed TERM before KILL"
+                    )
+            for pid in data["pids"]:
+                stat = Path(f"/proc/{pid}/stat")
+                assert not stat.exists() or stat.read_text().split()[2] == "Z", (
+                    f"ordinary installer descendant{pid} survived watchdog"
+                )
+        finally:
+            for pid in json.loads(ledger.read_text())["pids"]:
+                stat = Path(f"/proc/{pid}/stat")
+                if stat.exists() and stat.read_text().split()[2] != "Z":
+                    os.kill(pid, 9)
+
+
+def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_path: Path) -> None:
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
     preflight = jobs["check-preflight"]
     unit_jobs = [jobs[f"check-unit-{index}"] for index in range(1, 6)]
     integration_jobs = [jobs[f"check-integration-{index}"] for index in range(1, 6)]
     check_job = jobs["check"]
+    coverage_job = jobs["coverage"]
 
     # Merge-queue topology (bu-r5mnn): the queue's merge_group run is the terminal
     # broad gate, so the workflow must accept that event.
@@ -658,7 +778,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
 
     artifact_steps = {
         step["with"]["name"]: step
-        for job in [preflight, *unit_jobs, *integration_jobs, check_job]
+        for job in [preflight, *unit_jobs, *integration_jobs, coverage_job]
         for step in job["steps"]
         if step.get("uses") == "actions/upload-artifact@v4"
     }
@@ -682,10 +802,13 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
 
     for coverage_name, filename, download_name, directory in expected_coverage_artifacts:
         coverage_upload = artifact_steps[coverage_name]
-        assert coverage_upload["if"] == "always()"
+        assert coverage_upload["if"] == "${{ always() && env.CI_COVERAGE == '1' }}"
         assert coverage_upload["with"]["if-no-files-found"] == "error"
-        assert coverage_upload["with"]["path"].endswith(filename)
-        download = _workflow_step(job=check_job, name=download_name)
+        paths = coverage_upload["with"]["path"].splitlines()
+        assert len(paths) == 2
+        assert paths[0].endswith(filename)
+        assert paths[1] == paths[0] + ".metadata.json"
+        download = _workflow_step(job=coverage_job, name=download_name)
         assert download["uses"] == "actions/download-artifact@v4"
         assert download["with"] == {
             "name": coverage_name,
@@ -702,17 +825,30 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
         "REF": "${{ github.ref }}",
         "NEEDS_JSON": "${{ toJSON(needs) }}",
     }
-    for step in check_job["steps"][1:]:
-        assert "steps.gate.outputs.shards_ran == 'true'" in step["if"]
+    assert check_job["steps"] == [gate]
+    expected_shards = [
+        f"check-{lane}-{index}" for lane in ("unit", "integration") for index in range(1, 6)
+    ]
+    assert coverage_job["needs"] == expected_shards
+    assert coverage_job["if"] == (
+        "${{ always() && github.event_name == 'merge_group' && "
+        + " && ".join(f"needs.{name}.result == 'success'" for name in expected_shards)
+        + " }}"
+    )
+    for job in [*unit_jobs, *integration_jobs]:
+        assert job["env"]["CI_COVERAGE"] == (
+            "${{ github.event_name == 'merge_group' && '1' || '0' }}"
+        )
+    assert "coverage" not in check_job["needs"]
 
     combine = _workflow_step(
-        job=check_job, name="Combine coverage from all independent test shards"
+        job=coverage_job, name="Combine coverage from all independent test shards"
     )
     assert "coverage combine --data-file=" in combine["run"]
     for prefix, count in (("UNIT", 5), ("INTEGRATION", 5)):
         for index in range(1, count + 1):
             assert f"{prefix}_{index}_COVERAGE" in combine["run"]
-    assert 'test -s "$coverage_file"' in combine["run"]
+    assert "scripts/check_ci_coverage.py" in combine["run"]
 
     smoke = _workflow_step(job=preflight, name="Smoke tests (fast gate + release evidence)")
     assert smoke["env"]["TESTCONTAINERS_RYUK_DISABLED"] == "true"
@@ -721,7 +857,365 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     smoke_artifact = artifact_steps["smoke-release-evidence"]
     assert smoke_artifact["with"]["path"].endswith("smoke/release-evidence.json")
 
-    badge = _workflow_step(job=check_job, name="Update coverage badge")
-    assert badge["if"] == (
-        "${{ steps.gate.outputs.shards_ran == 'true' && github.event_name == 'merge_group' }}"
+    badge = _workflow_step(job=coverage_job, name="Update coverage badge")
+    assert badge["if"] == "${{ success() }}"
+
+    # Every job, including rare/scheduled/reporting jobs, has a positive outer
+    # watchdog. Provenance is before-only/provisional, never after calibration.
+    register = json.loads((REPO_ROOT / "scripts/ci-job-timeouts.json").read_text())
+    declared = {}
+    for path in (REPO_ROOT / ".github/workflows").glob("*.yml"):
+        source = yaml.safe_load(path.read_text())
+        for name, job in source["jobs"].items():
+            value = job.get("timeout-minutes")
+            assert isinstance(value, int) and not isinstance(value, bool) and value > 0
+            declared[(str(path.relative_to(REPO_ROOT)), name)] = value
+    assert set(declared) == {(r["workflow"], r["job"]) for r in register["jobs"]}
+    for row in register["jobs"]:
+        assert declared[(row["workflow"], row["job"])] == row["installed_timeout_minutes"]
+        assert row["state"] and row["sample_source"]
+        if row["p95_s"] is not None:
+            reserve = (
+                row["review_uv_nominal_envelope_s"] + row["review_browser_hard_retry_interval_s"]
+            )
+            reserve += row["additional_provisional_cold_dependency_allowance_s"]
+            assert row["installed_timeout_minutes"] >= max(
+                2, math.ceil((2 * row["p95_s"] + reserve) / 60)
+            )
+        else:
+            assert "provisional" in row["state"] or row["job"] == "faketime-matrix"
+        observations = row.get("healthy_job_observations", [])
+        if observations:
+            # A single whole-job observation is a compatibility floor, not p95.
+            # Keep setup/evidence time and the full extra recovery allowance.
+            durations = []
+            for observation in observations:
+                assert observation["conclusion"] == "success"
+                elapsed = (
+                    datetime.fromisoformat(observation["completed_at"])
+                    - datetime.fromisoformat(observation["started_at"])
+                ).total_seconds()
+                assert elapsed >= observation["test_step_elapsed_s"] > 0
+                durations.append(elapsed)
+            envelope = max(durations)
+            assert row["provisional_healthy_envelope_s"] == envelope
+            reserve = (
+                row["review_uv_nominal_envelope_s"]
+                + row["review_browser_hard_retry_interval_s"]
+                + row["additional_provisional_cold_dependency_allowance_s"]
+            )
+            assert row["installed_timeout_minutes"] * 60 >= 2 * envelope + reserve, (
+                f"{row['job']} watchdog excludes its recorded healthy whole-job envelope "
+                "and full setup/recovery headroom"
+            )
+    nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
+        "faketime-matrix"
+    ]
+    assert nightly["timeout-minutes"] == 75
+    nightly_shell = "\n".join(step.get("run", "") for step in nightly["steps"])
+    assert "WATCHDOG_SECONDS=3600" in nightly_shell
+    assert "--signal=SIGABRT --kill-after=30s" in nightly_shell
+    assert "--timeout=300 --timeout-method=thread" in nightly_shell
+
+    schedules = yaml.safe_load((REPO_ROOT / ".github/workflows/e2e-main-schedule.yml").read_text())
+    browser_jobs = [jobs["frontend-e2e"], schedules["jobs"]["frontend-e2e"]]
+    for browser_job in browser_jobs:
+        version_step = _workflow_step(job=browser_job, name="Resolve locked Playwright version")
+        assert "npm run --silent test:e2e:cache-version" in version_step["run"]
+        cache = _workflow_step(job=browser_job, name="Cache locked Playwright browsers")
+        assert cache["continue-on-error"] is True  # advisory cache only
+        assert cache["with"]["path"] == "~/.cache/ms-playwright"
+        assert "restore-keys" not in cache["with"]
+        assert cache["with"]["key"] == (
+            "playwright-${{ runner.os }}-${{ runner.arch }}-"
+            "${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}"
+        )
+        installer = _workflow_step(job=browser_job, name="Install Playwright browsers")
+        assert installer["run"] == "npm run test:e2e:install"
+        assert "if" not in installer and not installer.get("continue-on-error")
+    _exercise_browser_installer(tmp_path / "browser-install")
+
+
+def _historical_controls_coverage_receipt(tmp_path: Path) -> dict:
+    """Trace genuine old bodies and current code under the repository config."""
+    from coverage import CoverageData
+
+    script = tmp_path / "trace_historical_controls.py"
+    script.write_text(
+        "import sys, json, hashlib\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        "from butlers.api.routers import model_settings\n"
+        "from butlers.connectors import filtered_event_buffer\n"
+        "from butlers.tools.relationship import dates\n"
+        "from tests.three_seams_helpers import baseline_function\n"
+        "functions = {name: baseline_function(name, vars(module)) for name, module in [\n"
+        "    ('create_catalog_entry', model_settings), ('upcoming_dates', dates),\n"
+        "    ('record', filtered_event_buffer)]}\n"
+        "kwargs = dict(external_message_id='coverage-control', source_channel='email',\n"
+        "    sender_identity='777000', subject_or_preview='482913',\n"
+        "    filter_reason='validation_error', full_payload={})\n"
+        "old = filtered_event_buffer.FilteredEventBuffer(\n"
+        "    connector_type='telegram', endpoint_identity='synthetic:coverage')\n"
+        "functions['record'](old, **kwargs)\n"
+        "current = filtered_event_buffer.FilteredEventBuffer(\n"
+        "    connector_type='telegram', endpoint_identity='synthetic:coverage')\n"
+        "current.record(**kwargs)\n"
+        "assert old._rows[-1][6] == kwargs['subject_or_preview']\n"
+        "assert current._rows[-1][6] == '[auth-code withheld: telegram]'\n"
+        "print(json.dumps({name: function.__code__.co_filename\n"
+        "    for name, function in functions.items()}))\n"
     )
+    data_file = tmp_path / "historical-controls.data"
+    result = subprocess.run(
+        [sys.executable, "-m", "coverage", "run", f"--data-file={data_file}", str(script)],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    data = CoverageData(basename=str(data_file))
+    data.read()
+    measured = set(data.measured_files())
+    expected = {str(path.resolve()) for path in (REPO_ROOT / "src/butlers").rglob("*.py")}
+    # The current-source positive prevents an absence-only green when no code ran.
+    current = str(REPO_ROOT / "src/butlers/connectors/filtered_event_buffer.py")
+    assert data.lines(current)
+    assert measured == expected, (sorted(measured - expected), sorted(expected - measured))
+    functions = json.loads(result.stdout)
+    fixture = json.loads((REPO_ROOT / "tests/fixtures/three_seams_baseline.json").read_text())
+    for name, filename in functions.items():
+        assert fixture[name]["git_sha"] in filename and fixture[name]["path"] in filename
+        assert not Path(filename).is_relative_to(REPO_ROOT / "src/butlers")
+    return {"source_count": len(measured), "historical_filenames": functions}
+
+
+def test_ci_coverage_report_rejects_any_bad_input_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run the actual report shell with ten independently traced coverage DBs.
+
+    The immutable M1 shell demonstrates that nine valid plus one nonempty corrupt
+    database produced a partial green report. This is local reporting evidence,
+    not a hosted artifact-upload, badge-network or merge-group timing claim.
+    """
+    from coverage import CoverageData
+
+    historical = _historical_controls_coverage_receipt(tmp_path)
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import check_ci_coverage as reporter
+
+    checkout = tmp_path / "checkout"
+    source = checkout / "src/butlers/example.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("value = 7\n")
+    (source.parent / "__init__.py").write_text("")
+    (checkout / "trace.py").write_text("import runpy\nrunpy.run_path('src/butlers/example.py')\n")
+    (checkout / ".coveragerc").write_text("[run]\nsource = src/butlers\n")
+    tests = checkout / "tests/test_example.py"
+    tests.parent.mkdir()
+    tests.write_text("def test_example(): pass\n")
+    manifests = checkout / ".github/ci-test-shards"
+    manifests.mkdir(parents=True)
+    specs = [(lane, index) for lane in ("unit", "integration") for index in range(1, 6)]
+    for lane, index in specs:
+        (manifests / f"{lane}-{index}.txt").write_text("tests/test_example.py\n")
+    scripts = checkout / "scripts"
+    scripts.mkdir()
+    for filename in ("check_ci_coverage.py", "check_ci_test_shards.py"):
+        shutil.copyfile(REPO_ROOT / "scripts" / filename, scripts / filename)
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CI fixture",
+            "-c",
+            "user.email=ci-fixture@example.invalid",
+            "commit",
+            "-qm",
+            "coverage control fixture",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
+    for name, value in {
+        "GITHUB_SHA": head,
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_EVENT_NAME": "merge_group",
+    }.items():
+        monkeypatch.setenv(name, value)
+    inputs = tmp_path / "runner/ci-coverage"
+    population: dict[Path, bytes] = {}
+    for lane, index in specs:
+        data = inputs / f"{lane}-{index}" / f"coverage-{lane}-{index}.data"
+        data.parent.mkdir(parents=True)
+        subprocess.run(
+            [sys.executable, "-m", "coverage", "run", f"--data-file={data}", "trace.py"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        reporter.write_shard_metadata(
+            coverage_file=data,
+            repo_root=checkout,
+            lane=lane,
+            shard=index,
+            test_files=["tests/test_example.py"],
+        )
+        population[data] = data.read_bytes()
+        metadata = data.with_suffix(".data.metadata.json")
+        population[metadata] = metadata.read_bytes()
+    # Use the installed interpreter for each original `uv run` invocation. This
+    # avoids installing another environment and preserves real coverage commands.
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    shim = binaries / "uv"
+    shim.write_text(
+        '#!/bin/sh\n[ "$1" = run ] || exit 90\nshift\n'
+        'if [ "$1" = python ]; then shift; exec ' + shlex.quote(sys.executable) + ' "$@"; fi\n'
+        "exec " + shlex.quote(sys.executable) + ' -m "$@"\n'
+    )
+    shim.chmod(0o755)
+    combined = inputs / "combined.data"
+    report = tmp_path / "runner/ci-artifacts/coverage/coverage.json"
+    output = tmp_path / "outputs"
+    environment = {
+        **os.environ,
+        "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+        "RUNNER_TEMP": str(inputs.parent),
+        "COMBINED_COVERAGE": str(combined),
+        "COMBINED_REPORT": str(report),
+        "GITHUB_OUTPUT": str(output),
+        **{
+            f"{lane.upper()}_{index}_COVERAGE": str(
+                inputs / f"{lane}-{index}" / f"coverage-{lane}-{index}.data"
+            )
+            for lane, index in specs
+        },
+    }
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    fixed = _workflow_step(
+        job=workflow["jobs"]["coverage"], name="Combine coverage from all independent test shards"
+    )["run"]
+    old_path = REPO_ROOT / "tests/fixtures/ci_coverage/m1-combine.sh"
+    old = old_path.read_text()
+    receipts = []
+
+    def reset() -> None:
+        shutil.rmtree(inputs)
+        for path, contents in population.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(contents)
+        report.unlink(missing_ok=True)
+        output.write_text("")
+
+    def stamp(data: Path) -> None:
+        reporter.write_shard_metadata(
+            coverage_file=data,
+            repo_root=checkout,
+            lane="unit",
+            shard=1,
+            test_files=["tests/test_example.py"],
+        )
+
+    def run(label: str, body: str, expected: int) -> None:
+        result = subprocess.run(
+            ["bash", "-e", "-c", body],
+            cwd=checkout,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        published = "percentage=" in output.read_text() and "color=" in output.read_text()
+        assert result.returncode == expected, (label, result.stdout, result.stderr)
+        assert report.exists() == (expected == 0), (label, result.stderr)
+        assert published == (expected == 0), (label, result.stderr)
+        receipts.append(
+            {
+                "case": label,
+                "exit": result.returncode,
+                "report": report.exists(),
+                "badge_outputs": published,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+        )
+
+    data = inputs / "unit-1/coverage-unit-1.data"
+    metadata = data.with_suffix(".data.metadata.json")
+    reset()
+    run("fixed-ten-independently-traced-valid", fixed, 0)
+    reset()
+    data.write_bytes(b"nonempty corrupt coverage control\n")
+    stamp(data)  # A valid digest cannot stand in for reading the actual SQLite DB.
+    run("baseline-nine-valid-one-nonempty-corrupt", old, 0)
+    reset()
+    data.write_bytes(b"nonempty corrupt coverage control\n")
+    stamp(data)
+    run("fixed-nine-valid-one-nonempty-corrupt", fixed, 2)
+    for case in (
+        "missing",
+        "empty",
+        "extra",
+        "mixed-run",
+        "stale-head",
+        "wrong-shard",
+        "wrong-manifest",
+        "digest",
+        "incompatible-tracing",
+        "source-population",
+    ):
+        reset()
+        if case == "missing":
+            data.unlink()
+        elif case == "empty":
+            data.unlink()
+            empty = CoverageData(basename=str(data))
+            empty.add_lines({})
+            empty.write()
+            stamp(data)
+        elif case == "extra":
+            (inputs / "extra.data").write_bytes(b"extra")
+        elif case in {"incompatible-tracing", "source-population"}:
+            data.unlink()
+            command = [sys.executable, "-m", "coverage", "run", f"--data-file={data}"]
+            if case == "incompatible-tracing":
+                command.append("--branch")
+            else:
+                command.append("--omit=src/butlers/__init__.py")
+            subprocess.run(
+                [*command, "trace.py"], cwd=checkout, check=True, capture_output=True, text=True
+            )
+            stamp(data)
+        else:
+            payload = json.loads(metadata.read_text())
+            field, value = {
+                "mixed-run": ("run_id", "124"),
+                "stale-head": ("head", "0" * 40),
+                "wrong-shard": ("shard", True),
+                "wrong-manifest": ("test_files", []),
+                "digest": ("sha256", "0" * 64),
+            }[case]
+            payload[field] = value
+            metadata.write_text(json.dumps(payload))
+        run("fixed-" + case, fixed, 2)
+    receipt = tmp_path / "coverage-report-controls.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "baseline_shell_sha256": hashlib.sha256(old.encode()).hexdigest(),
+                "fixed_shell_sha256": hashlib.sha256(fixed.encode()).hexdigest(),
+                "source_checkout": head,
+                "historical_control_source_identity": historical,
+                "controls": receipts,
+            },
+            indent=2,
+        )
+    )
+    print(f"coverage report receipt: {receipt}")

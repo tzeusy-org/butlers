@@ -243,8 +243,7 @@ doors still need their actual integration and controls.
 
 ## Implementation Notes
 
-- Private draft migration core260 points to core258. The coordinator serializes
-  the actual single head with separately owned core261 at delivery; capture259
+- Private migration core260 now points to the actually adopted core261 (main795d). The current chain has one core head260; adopted261 remains its parent. Capture259
   is neither imported nor a prerequisite for independent fresh sources.
 - New definers use exactly `search_path=pg_catalog,pg_temp` with qualified
   relations and non-catalog functions. Private table DML and hold lifecycle are

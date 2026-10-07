@@ -161,8 +161,42 @@ Tests can use this to skip gracefully when Docker is not installed.
   recovery policy and frozen dev synchronization. Their command scopes match the former
   preflight commands and local `make check-guards`. Exact-once manifests, collected budgets,
   smoke/release cmd/SHA/duration/status/skips and sanitized artifacts stay in preflight.
-  Coverage still combines in check; extraction and finite-timeout changes in the active
-  `fail-closed-ci-assurance` plan remain unfinished. M1 makes no wall-clock gain claim.
+  Required check contains only the verdict step. The independent non-required `coverage`
+  job waits directly for all ten successful merge-group shards, reads each raw CoverageData
+  database and its checkout/run/attempt/lane/shard/manifest/digest metadata, requires the
+  complete measured source population and compatible tracing, then combines and publishes
+  the existing report and badge. Missing, empty, corrupt, stale or mismatched inputs fail
+  reporting before publication. Coverage reporting never changes required test verdicts.
+- Heavy shards receive exact `CI_COVERAGE=1` on merge-group and `0` on PRs. The standalone
+  runner defaults to `1`; any supplied value other than literal `0` or `1` fails. Only
+  enabled runs require `COVERAGE_FILE` and produce/upload raw coverage plus metadata. PRs
+  retain the same paths, markers, workers, maxfail and sanitized JUnit evidence without
+  instrumentation. Affected-only runs remain without coverage. Direct local CI targets
+  retain their existing coverage behavior. Actual merge-group uploads and timings remain
+  observation obligations; M1/M2 source changes claim no wall-clock gain. M3 supplies finite source bounds; its hosted timeout/cold-cache observations and the M4
+  calibration in `fail-closed-ci-assurance` remain unfinished.
+- Pytest's configured default is 300 seconds per item. Existing justified finite marks stay;
+  a named timeout fails the item. Node's two `node --test` commands use the same 300-second
+  bound; Vitest and Playwright retain their existing shorter defaults and retry settings.
+  Collection, worker setup and session finalization still need the owning workflow watchdog.
+  A killed or incomplete receipt remains UNKNOWN, never a pass.
+- Every workflow job has a finite positive `timeout-minutes`, inventoried in
+  `scripts/ci-job-timeouts.json`. Named healthy before samples, provisional rare-job debt,
+  full UV recovery allowance and browser/cold-setup reserves are recorded separately. They
+  are initial bounds, not current p95 calibration or proof that no job exceeds sixty minutes.
+  Faketime retains its existing 75-minute job and 3600-second ABRT plus 30-second KILL
+  watchdog until healthy measurements justify a separate change.
+- Browser caches require the exact runner OS, architecture, package-lock hash and installed
+  locked Playwright version. Cache failure is advisory; installation is mandatory on hits
+  and misses and always includes `--with-deps`. The installed-version reader checks all
+  three Playwright packages against the lock. Each attempt installs and launches the locked
+  Chromium, rejects a missing/corrupt/wrong-version executable and closes it. Attempts two
+  and three force repair; test retries are unchanged.
+  The Node installer supervises each Linux process group: TERM at 110 seconds, KILL by 120,
+  three attempts and two ten-second backoffs, with a 380-second outer deadline. It cleans
+  ordinary descendants even when their shell exits first; these bounds do not establish
+  containment of deliberately detached hostile processes. Local synthetic install controls
+  prove the supervisor, not actual OS-package installation or hosted cache behavior.
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
   caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
 - Startup timeouts (before a container starts) are host contention: reduce load and rely on the

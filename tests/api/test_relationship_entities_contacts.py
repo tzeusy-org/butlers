@@ -34,6 +34,8 @@ Acceptance criteria:
 from __future__ import annotations
 
 import hashlib
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -89,9 +91,15 @@ def _make_contact_fact_row(
         "weight": weight,
         "verified": verified,
         "primary": primary,
+        "content_authority": None,
+        "reported_by": {"entity_id": None, "name": None, "availability": "legacy_unknown"},
+        "confirmed_at": None,
+        "confirmed_by_entity_id": None,
+        "confirmation_source": None,
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = data.get
     return row
 
 
@@ -105,6 +113,7 @@ def _make_owner_row() -> MagicMock:
     data = {"id": _OWNER_ENTITY_ID, "roles": ["owner"]}
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = data.get
     return row
 
 
@@ -121,6 +130,7 @@ def _make_delete_candidate_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = data.get
     return row
 
 
@@ -167,6 +177,61 @@ def _make_app(
     mock_pool.fetchval = mock_fetchval
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.execute = AsyncMock(return_value=execute_return)
+
+    # Exact decision now owns a connection/transaction and durable receipt.
+    # These are explicit row/transaction doubles, not PostgreSQL/auth proof.
+    birth = datetime(2026, 1, 1, tzinfo=UTC)
+
+    class DecisionConnection:
+        @asynccontextmanager
+        async def transaction(self):
+            yield self
+
+        async def fetchrow(self, sql, *values):
+            if "fact_identity_decisions" in sql:
+                return None
+            if "relationship.entity_facts" in sql:
+                selected = next((row for row in fetch_rows or [] if row["id"] == values[0]), None)
+                if selected is None:
+                    return None
+                return dict(
+                    id=selected["id"],
+                    subject=_ENT_ID,
+                    predicate="has-email",
+                    object=selected["object"],
+                    object_kind="literal",
+                    validity="active",
+                    content_authority=None,
+                    authority_entity_id=None,
+                    authority_original_entity_id=None,
+                    authority_entity_created_at=None,
+                    confirmed_by_entity_id=None,
+                    confirmed_by_original_entity_id=None,
+                    confirmed_at=None,
+                    confirmation_source=None,
+                    effective_period_id=None,
+                    effective_from=None,
+                    effective_from_precision=None,
+                    effective_to=None,
+                    effective_to_precision=None,
+                    src="relationship",
+                    observed_at=birth,
+                )
+            if "public.entities" in sql:
+                return {"id": _OWNER_ENTITY_ID, "created_at": birth, "metadata": {}}
+            raise AssertionError("unexpected synthetic decision query")
+
+        async def fetchval(self, sql, *values):
+            return True
+
+        async def execute(self, sql, *values):
+            return await mock_pool.execute(sql, *values)
+
+    @asynccontextmanager
+    async def acquire_decision_connection():
+        yield DecisionConnection()
+
+    mock_pool.acquire = acquire_decision_connection
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
@@ -258,6 +323,8 @@ class TestGetEntityContactsWithData:
         assert fact["predicate"] == "has-email"
         assert fact["object"] == _EMAIL
         assert fact["value_hash"] == _EMAIL_HASH
+        assert fact["confirmation_status"] == "unconfirmed"
+        assert fact["reported_by"]["availability"] == "legacy_unknown"
 
     async def test_multiple_facts_for_different_predicates(self):
         rows = [
@@ -296,6 +363,8 @@ class TestGetEntityContactsProvenance:
         resp = await _get(app)
 
         fact = resp.json()["facts"][0]
+        assert fact["verified"] is True
+        assert fact["confirmation_status"] == "legacy_verified"
         for field in ("src", "conf", "last_seen", "weight", "verified", "primary"):
             assert field in fact, f"Provenance field {field!r} missing from response"
 
@@ -693,8 +762,20 @@ class TestVerifyEntityContactHappyPath:
 
         await _post_verify(app, _VERIFY_PATH)
 
-        mock_pool.execute.assert_called_once()
-        call_args = mock_pool.execute.call_args[0]
+        # Preserve one verified fact write; the new domain transaction also
+        # takes locks and records coverage, gaps and a durable decision receipt.
+        fact_updates = [
+            call
+            for call in mock_pool.execute.call_args_list
+            if "UPDATE relationship.entity_facts SET validity='active',verified=true"
+            in call.args[0]
+        ]
+        assert len(fact_updates) == 1
+        assert any(
+            "INSERT INTO relationship.fact_identity_decisions" in call.args[0]
+            for call in mock_pool.execute.call_args_list
+        )
+        call_args = fact_updates[0].args
         sql = call_args[0]
         assert "verified" in sql.lower()
         assert "true" in sql.lower()

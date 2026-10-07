@@ -71,12 +71,22 @@ import asyncpg
 from butlers.core import entity_graph_edges
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.custody_bindings import native_channel_mutation
+from butlers.core.fact_authority import FactWriteContext, current_fact_write_context
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
 )
-from butlers.modules.memory.content_authority import resolve_content_authority
+from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.memory.knowledge_gaps import close_matching_gaps
+from butlers.tools.relationship.fact_authority import (
+    IDENTITY_PREDICATES,
+    REPORT_COLUMNS,
+    locked_report,
+    report_sql_args,
+    should_hold_candidate,
+    stored_gap_authority,
+    stored_report,
+)
 from butlers.tools.relationship.fact_coverage import record_coverage
 from butlers.tools.relationship.fact_evidence import (
     EvidencePacket,
@@ -306,6 +316,7 @@ class AssertOutcome(StrEnum):
     inserted = "inserted"  # brand-new active row
     unchanged = "unchanged"  # identical provenance — no write needed
     superseded = "superseded"  # old row retracted; new row inserted
+    candidate = "candidate"
     pending_approval = "pending_approval"  # owner carve-out triggered
 
 
@@ -432,6 +443,7 @@ async def _create_pending_action(
     temporal_mode: RequestMode,
     temporal_base_fact_id: uuid.UUID | None,
     dedup_match: dict[str, Any] | None = None,
+    fact_context: FactWriteContext | None = None,
     why: str | None = None,
     evidence: list[_EvidenceReference] | None = None,
 ) -> uuid.UUID:
@@ -469,6 +481,19 @@ async def _create_pending_action(
     can refuse a stale one. A pending match must share them: the same canonical
     packet resolved against a different base is a different question.
     """
+    if fact_context is not None and (
+        fact_context.original_entity_id is not None or fact_context.authority == "owner_device"
+    ):
+        async with pool.acquire() as capture_conn, capture_conn.transaction():
+            fact_context = await locked_report(
+                capture_conn,
+                fact_context,
+                subject=uuid.UUID(str(tool_args["subject"])),
+                object=tool_args["object"],
+                object_kind=tool_args["object_kind"],
+                src=src,
+            )
+
     if dedup_match is not None:
         existing = await pool.fetchval(
             """
@@ -479,6 +504,7 @@ async def _create_pending_action(
                AND pa.tool_args @> $2::jsonb
                AND ctx.temporal_request_mode IS NOT DISTINCT FROM $3
                AND ctx.temporal_base_fact_id IS NOT DISTINCT FROM $4
+               AND ctx.frozen_report IS NOT DISTINCT FROM $5::jsonb
              ORDER BY pa.requested_at ASC
              LIMIT 1
             """,
@@ -486,6 +512,7 @@ async def _create_pending_action(
             dedup_match,
             temporal_mode.value,
             temporal_base_fact_id,
+            fact_context.to_record() if fact_context else None,
         )
         if existing is not None:
             return existing
@@ -514,6 +541,7 @@ async def _create_pending_action(
         observed_at=observed_at,
         temporal_mode=temporal_mode,
         temporal_base_fact_id=temporal_base_fact_id,
+        fact_context=fact_context,
     )
 
     await park_pending_action(
@@ -541,6 +569,7 @@ async def _record_approval_context(
     observed_at: datetime,
     temporal_mode: RequestMode,
     temporal_base_fact_id: uuid.UUID | None,
+    fact_context: FactWriteContext | None = None,
 ) -> None:
     """Record the server-written provenance of one parked fact write.
 
@@ -551,9 +580,9 @@ async def _record_approval_context(
     await pool.execute(
         """
         INSERT INTO relationship.fact_approval_context (
-            action_id, src, observed_at, temporal_request_mode, temporal_base_fact_id
+            action_id, src, observed_at, temporal_request_mode, temporal_base_fact_id, frozen_report
         )
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         ON CONFLICT (action_id) DO NOTHING
         """,
         action_id,
@@ -561,6 +590,7 @@ async def _record_approval_context(
         observed_at,
         temporal_mode.value,
         temporal_base_fact_id,
+        fact_context.to_record() if fact_context else None,
     )
 
 
@@ -597,6 +627,7 @@ class _ApprovedAction:
     temporal: TemporalRequest
     temporal_wire: dict[str, str | None]
     frozen: _FrozenResolution | None
+    fact_context: FactWriteContext
 
 
 async def _resolve_approved_action(
@@ -626,7 +657,8 @@ async def _resolve_approved_action(
         """
         SELECT pa.tool_name, pa.tool_args, pa.status, pa.evidence, pa.session_id,
                ctx.src AS ctx_src, ctx.observed_at AS ctx_observed_at,
-               ctx.temporal_request_mode, ctx.temporal_base_fact_id
+               ctx.temporal_request_mode, ctx.temporal_base_fact_id,
+               ctx.frozen_report, ctx.decision_report
         FROM pending_actions pa
         LEFT JOIN relationship.fact_approval_context ctx ON ctx.action_id = pa.id
         WHERE pa.id = $1
@@ -659,7 +691,54 @@ async def _resolve_approved_action(
             f"approval_action_id {action_id} was approved for a different triple; "
             "the write does not match what the owner approved."
         )
+    execution = get_approval_execution_context(
+        tool_name="relationship_assert_fact", tool_args=stored_args
+    )
+    if execution is None or execution.action_id != action_id:
+        raise ValueError("fact replay requires the real bound approval executor")
+    report_data = _as_json_object(row["frozen_report"])
+    report = (
+        FactWriteContext.from_record(report_data)
+        if report_data
+        else FactWriteContext(None, preserve=True)
+    )
+    decision_data = _as_json_object(row["decision_report"])
+    if report_data and not decision_data:
+        raise ValueError("fresh fact approval has no admitted owner decision lineage")
+    if decision_data:
+        from dataclasses import replace
 
+        from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+        if decision_data.get("action_id") != str(action_id) or decision_data.get(
+            "tool_args_digest"
+        ) != approval_tool_args_digest(stored_args):
+            raise ValueError("fact confirmation does not match the actual stored approval")
+        if decision_data.get("confirmation_source") == "standing_rule":
+            from butlers.tools.relationship.fact_authority import approved_rule_confirmation
+
+            decision = await approved_rule_confirmation(conn, action_id, decision_data)
+        else:
+            try:
+                event_id = uuid.UUID(decision_data["approval_event_id"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("fact confirmation has no recorded approval event") from exc
+            if not await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM approval_events WHERE event_id=$1 "
+                "AND action_id=$2 AND event_type='action_approved')",
+                event_id,
+                action_id,
+            ):
+                raise ValueError("fact confirmation does not match the recorded approval event")
+            decision = FactWriteContext.from_record(decision_data)
+        report = replace(
+            report,
+            confirmation_entity_id=decision.confirmation_entity_id,
+            confirmation_original_entity_id=decision.confirmation_original_entity_id,
+            confirmed_at=decision.confirmed_at,
+            confirmation_source=decision.confirmation_source,
+            preserve=True,
+        )
     stored_src = row["ctx_src"]
     if not isinstance(stored_src, str) or not stored_src:
         raise ValueError(
@@ -678,6 +757,7 @@ async def _resolve_approved_action(
         temporal=temporal,
         temporal_wire=temporal_wire,
         frozen=None if mode is None else _FrozenResolution(row["temporal_base_fact_id"]),
+        fact_context=report,
     )
 
 
@@ -782,6 +862,8 @@ async def _insert_active_fact(
     primary: bool | None,
     packet: EvidencePacket,
     temporal: TemporalPacket = UNKNOWN,
+    fact_context: FactWriteContext | None = None,
+    validity: str = "active",
 ) -> uuid.UUID | None:
     """Insert a new ACTIVE row, returning its id, or ``None`` on conflict.
 
@@ -804,6 +886,11 @@ async def _insert_active_fact(
     never exist with its provenance missing. *temporal* is the row's effective
     packet, likewise immutable once written.
     """
+    if fact_context is None:
+        # Compatibility for private internal callers; a caller boolean never
+        # supplies content authority, even at this lower-level insertion seam.
+        fact_context = current_fact_write_context()
+        verified = fact_context.verified
     return await conn.fetchval(
         f"""
         INSERT INTO relationship.entity_facts (
@@ -811,14 +898,15 @@ async def _insert_active_fact(
             src, conf, last_seen, observed_at, weight, verified, "primary",
             validity, created_at, updated_at,
             assert_origin, assert_session_id, assert_action_id,
-            {PACKET_COLUMNS}
+            {PACKET_COLUMNS}, {REPORT_COLUMNS}
         )
         VALUES (
             gen_random_uuid(), $1, $2, $3, $4,
             $5, $6, $7, $8, $9, $10, $11,
-            'active', now(), now(),
+            $20, now(), now(),
             $12, $13, $14,
-            $15, $16, $17, $18, $19
+            $15, $16, $17, $18, $19,
+            $21, $22, $23, $24, $25, $26, $27, $28
         )
         ON CONFLICT DO NOTHING
         RETURNING id
@@ -838,12 +926,14 @@ async def _insert_active_fact(
         packet.session_id,
         packet.action_id,
         *temporal.sql_args(),
+        validity,
+        *report_sql_args(fact_context),
     )
 
 
 #: The active row of one effective occurrence (NULL period = default occurrence).
 _ACTIVE_OCCURRENCE_SQL = f"""
-    SELECT id, src, conf, verified, last_seen, {PACKET_COLUMNS}
+    SELECT id, src, conf, verified, last_seen, {PACKET_COLUMNS}, {REPORT_COLUMNS}
     FROM relationship.entity_facts
     WHERE subject   = $1
       AND predicate = $2
@@ -966,6 +1056,7 @@ async def _upsert_fact(
     packet: EvidencePacket,
     temporal: TemporalRequest = ORDINARY,
     frozen: _FrozenResolution | None = None,
+    fact_context: FactWriteContext | None = None,
 ) -> AssertResult:
     """Perform the idempotency / supersession logic on *conn*.
 
@@ -1000,8 +1091,26 @@ async def _upsert_fact(
     *correction* is delegated to :func:`_correct_fact`. *frozen* is set for an
     approved ordinary replay and must still hold (see :class:`_FrozenResolution`).
     """
-    # Entity rows before any fact row (see _lock_fact_entities).
-    await _lock_fact_entities(conn, subject, object, object_kind)
+    if temporal.mode is RequestMode.correction:
+        selected = await conn.fetchrow(
+            f"SELECT {REPORT_COLUMNS} FROM relationship.entity_facts WHERE id=$1",
+            temporal.corrects_fact_id,
+        )
+        if selected is not None:
+            fact_context = stored_report(selected)
+    fact_context = await locked_report(
+        conn,
+        fact_context or current_fact_write_context(),
+        subject=subject,
+        object=object,
+        object_kind=object_kind,
+        src=src,
+    )
+    if predicate in IDENTITY_PREDICATES:
+        from butlers.tools.relationship.identity_slots import lock_identity_slot
+
+        await lock_identity_slot(conn, predicate, object, subject)
+    verified = fact_context.verified
 
     write: dict[str, Any] = dict(
         subject=subject,
@@ -1016,9 +1125,34 @@ async def _upsert_fact(
         verified=verified,
         primary=primary,
         packet=packet,
+        fact_context=fact_context,
     )
     if temporal.mode is RequestMode.correction:
         return await _correct_fact(conn, request=temporal, write=write)
+    if await should_hold_candidate(conn, subject, predicate, fact_context):
+        existing = await _active_occurrence(
+            conn,
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            period_id=temporal.packet.period_id,
+        )
+        if frozen is not None and temporal.mode is RequestMode.ordinary:
+            _verify_frozen_ordinary(existing, frozen)
+        resolved = temporal.packet
+        if existing is not None:
+            stored = TemporalPacket.from_row(existing)
+            if temporal.mode is RequestMode.explicit and stored != temporal.packet:
+                raise TemporalError(CORRECTION_REQUIRED, "active occurrence has a different packet")
+            if temporal.mode is RequestMode.ordinary:
+                resolved = stored
+        return await _upsert_candidate(
+            conn,
+            write,
+            resolved,
+            request_mode=temporal.mode,
+            active_packet=existing is not None,
+        )
 
     period_id = temporal.packet.period_id
     for _ in range(_MAX_UPSERT_ATTEMPTS):
@@ -1040,10 +1174,46 @@ async def _upsert_fact(
                     "a repeated period.",
                 )
 
+            if (
+                existing["content_authority"] is None
+                and fact_context.authority == "system"
+                and not fact_context.preserve
+                and _same_assertion_fields(
+                    existing,
+                    src=src,
+                    conf=conf,
+                    verified=existing["verified"],
+                    last_seen=last_seen,
+                )
+            ):
+                # Exact internal reobservation preserves the legacy unknown
+                # report. It neither backfills authority nor invents a version.
+                await persist_evidence(conn, fact_id=old_id, packet=packet)
+                return AssertResult(outcome=AssertOutcome.unchanged, fact_id=old_id)
+
+            if fact_context.preserve:
+                from dataclasses import replace
+
+                selected_report = stored_report(existing)
+                if selected_report.live_entity_id is None:
+                    fact_context = replace(fact_context, live_entity_id=None)
+                if not fact_context.confirmed_at:
+                    fact_context = selected_report
+                write["fact_context"] = fact_context
+                write["verified"] = fact_context.verified
+                verified = fact_context.verified
+            elif (
+                predicate in IDENTITY_PREDICATES
+                and existing["verified"]
+                and not fact_context.verified
+            ):
+                # An unconfirmed new report cannot replace an owner-active row.
+                return await _upsert_candidate(conn, write, stored)
+
             # 2. Compare provenance fields to detect supersession.
             if _same_assertion_fields(
                 existing, src=src, conf=conf, verified=verified, last_seen=last_seen
-            ):
+            ) and _same_report(existing, fact_context):
                 # Idempotent on the FACT: same identity + same provenance, so no
                 # new row. The evidence packet is still appended — a second
                 # source citing a reason for an already-known fact is new
@@ -1127,7 +1297,7 @@ async def _correct_fact(
     target = await conn.fetchrow(
         f"""
         SELECT id, subject, predicate, object, validity,
-               src, conf, verified, last_seen, {PACKET_COLUMNS}
+               src, conf, verified, last_seen, {PACKET_COLUMNS}, {REPORT_COLUMNS}
         FROM relationship.entity_facts
         WHERE id = $1
         FOR UPDATE
@@ -1145,8 +1315,14 @@ async def _correct_fact(
             "predicate and object.",
         )
     desired = _correction_packet(request, target)
-    fields = {k: write[k] for k in ("src", "conf", "verified", "last_seen")}
+    from dataclasses import replace
 
+    selected_report = stored_report(target)
+    if write["fact_context"].live_entity_id is None:
+        selected_report = replace(selected_report, live_entity_id=None)
+    write["fact_context"] = selected_report
+    write["verified"] = write["fact_context"].verified
+    fields = {k: write[k] for k in ("src", "conf", "verified", "last_seen")}
     if target["validity"] == "active":
         if TemporalPacket.from_row(target) == desired and _same_assertion_fields(target, **fields):
             await persist_evidence(conn, fact_id=target_id, packet=write["packet"])
@@ -1310,6 +1486,8 @@ async def _assert_on_conn(
         approved replay, whose request is the parked canonical one; the replay's
         raw wire values (*temporal_wire*) must equal the parked form exactly.
     """
+    fact_context = current_fact_write_context()
+    verified = fact_context.verified
     # Predicate validation (fast indexed lookup, runs on every call).
     await _validate_predicate(conn, predicate)
 
@@ -1328,6 +1506,8 @@ async def _assert_on_conn(
         # are proposal-time gates, so an approved execution skips them and goes
         # straight to the write with the parked provenance.
         src = approved.src
+        fact_context = approved.fact_context
+        verified = fact_context.verified
         if approved.observed_at is not None:
             # The fact was observed when it was proposed, not when the owner got
             # round to approving it. Staleness bands read observed_at, so taking
@@ -1414,6 +1594,7 @@ async def _assert_on_conn(
             temporal_mode=temporal.mode,
             temporal_base_fact_id=parked.base_fact_id,
             dedup_match=parked.dedup_match,
+            fact_context=fact_context,
             why=effective_why,
             evidence=effective_evidence,
         )
@@ -1436,9 +1617,17 @@ async def _assert_on_conn(
     # routed to pending_approval rather than writing a hard entity-to-entity edge.
     # This prevents inferred mis-extractions (e.g. "has a son" when untrue) from
     # silently writing incorrect parent-of/child-of/family-of edges.
-    # High-confidence (conf ≥ 0.8) kinship assertions from explicit statements
-    # proceed through the normal upsert path below.
-    if approved is None and predicate in _FAMILY_GATE_PREDICATES and conf < _FAMILY_GATE_CONF:
+    # Actual owner-class reports retain the confidence threshold. Existing trusted
+    # internal/no-request SYSTEM writers retain their ordinary confidence policy.
+    # An unbound MCP or attributed third-party report never inherits that policy.
+    if (
+        approved is None
+        and predicate in _FAMILY_GATE_PREDICATES
+        and (
+            fact_context.authority not in {"owner", "owner_device", "system"}
+            or conf < _FAMILY_GATE_CONF
+        )
+    ):
         parked_gate = await _parked_arguments(
             conn,
             temporal,
@@ -1486,6 +1675,7 @@ async def _assert_on_conn(
             temporal_mode=temporal.mode,
             temporal_base_fact_id=parked_gate.base_fact_id,
             dedup_match=parked_gate.dedup_match,
+            fact_context=fact_context,
             why=gate_why,
             evidence=gate_evidence,
         )
@@ -1534,6 +1724,7 @@ async def _assert_on_conn(
         packet=packet,
         temporal=temporal,
         frozen=approved.frozen if approved is not None else None,
+        fact_context=fact_context,
     )
     # Parking/approval notification above stays outside a newly acquired
     # custody transaction. Enter the current-binding writer BEFORE the actual
@@ -1587,7 +1778,7 @@ async def _parked_arguments(
         "object_kind": object_kind,
         **temporal.tool_args(resolved),
     }
-    tool_args: dict[str, Any] = {**identity, "conf": conf, "verified": verified}
+    tool_args: dict[str, Any] = {**identity, "conf": conf}
     if last_seen is not None:
         tool_args["last_seen"] = last_seen.isoformat()
     if weight is not None:
@@ -1610,6 +1801,8 @@ async def _write_fact_with_receipts(
     it runs on the same connection inside the same transaction.
     """
     result = await _upsert_fact(conn, **kwargs)
+    if result.outcome is AssertOutcome.candidate:
+        return result
     await record_coverage(
         conn,
         subject=kwargs["subject"],
@@ -1648,7 +1841,7 @@ async def _answer_knowledge_gaps(
         predicate=kwargs["predicate"],
         ref=f"entity_fact:{result.fact_id}",
         value=value,
-        authority=lambda: resolve_content_authority(conn),
+        authority=lambda: stored_gap_authority(conn, result.fact_id),
     )
 
 
@@ -2271,67 +2464,70 @@ async def assert_prefers_channel(
     channel = channel.strip()
 
     async def _do(c: asyncpg.Connection) -> AssertResult:
-        # Predicate must be registered (defensive — rel_022 seeds it).
         await _validate_predicate(c, PREFERS_CHANNEL_PREDICATE)
-
-        # 1. Reachability validation — reject a preference the entity can't honor.
         if not await _entity_has_reachability_fact(c, subject, channel):
-            raise ValueError(
-                f"Cannot prefer channel {channel!r} for entity {subject}: the entity "
-                f"has no active contact fact for that channel "
-                f"(expected a has-email / has-phone / has-handle of the {channel!r} "
-                f"family). Add the channel identity first, then set the preference."
-            )
+            raise ValueError(f"Cannot prefer channel {channel!r}: no active contact fact")
+        context = await locked_report(
+            c,
+            current_fact_write_context(),
+            subject=subject,
+            object=channel,
+            object_kind="literal",
+            src=src,
+        )
+        from butlers.tools.relationship.fact_identity_decisions import lock_identity_slot
 
-        # Entity rows before the fence's fact-row locks (see _lock_fact_entities).
-        await _lock_fact_entities(c, subject)
+        await lock_identity_slot(c, PREFERS_CHANNEL_PREDICATE, channel, subject)
         await _fence_prefers_channel(c, subject)
-
-        # 2. Idempotency — same active channel already set → no write.
-        existing = await c.fetchrow(
-            """
-            SELECT id, src, conf, verified
-            FROM relationship.entity_facts
-            WHERE subject   = $1
-              AND predicate = $2
-              AND object    = $3
-              AND validity  = 'active'
-            """,
-            subject,
-            PREFERS_CHANNEL_PREDICATE,
-            channel,
+        packet = EvidencePacket(
+            items=(),
+            src=src,
+            origin="direct",
+            session_id=coerce_session_id(get_current_runtime_session_id()),
         )
-        if existing is not None and (
-            existing["src"] == src
-            and existing["conf"] == conf
-            and bool(existing["verified"]) == verified
+        write = dict(
+            subject=subject,
+            predicate=PREFERS_CHANNEL_PREDICATE,
+            object=channel,
+            object_kind="literal",
+            src=src,
+            conf=conf,
+            last_seen=None,
+            observed_at=datetime.now(UTC),
+            weight=None,
+            verified=context.verified,
+            primary=None,
+            packet=packet,
+            fact_context=context,
+        )
+        if await should_hold_candidate(c, subject, PREFERS_CHANNEL_PREDICATE, context):
+            return await _upsert_candidate(c, write, UNKNOWN)
+        existing = await _active_occurrence(
+            c, subject=subject, predicate=PREFERS_CHANNEL_PREDICATE, object=channel, period_id=None
+        )
+        if (
+            existing is not None
+            and _same_assertion_fields(
+                existing, src=src, conf=conf, verified=context.verified, last_seen=None
+            )
+            and _same_report(existing, context)
         ):
-            return AssertResult(outcome=AssertOutcome.unchanged, fact_id=existing["id"])
-
-        # 3. Single-valued supersession — retire ALL prior active values (any
-        #    object), then insert the new active row.
+            return AssertResult(AssertOutcome.unchanged, existing["id"])
         superseded = await _supersede_active_prefers_channel(c, subject, validity="superseded")
-        new_id = await c.fetchval(
-            """
-            INSERT INTO relationship.entity_facts (
-                id, subject, predicate, object, object_kind,
-                src, conf, verified, validity, created_at, updated_at
-            )
-            VALUES (
-                gen_random_uuid(), $1, $2, $3, 'literal',
-                $4, $5, $6, 'active', now(), now()
-            )
-            RETURNING id
-            """,
-            subject,
-            PREFERS_CHANNEL_PREDICATE,
-            channel,
-            src,
-            conf,
-            verified,
+        new_id = await _insert_active_fact(c, **write)
+        if new_id is None:
+            raise RuntimeError("preferred-channel slot changed during the owned transaction")
+        await record_coverage(
+            c,
+            subject=subject,
+            predicate=PREFERS_CHANNEL_PREDICATE,
+            src=src,
+            outcome="present",
+            observed_at=write["observed_at"],
         )
-        outcome = AssertOutcome.superseded if superseded else AssertOutcome.inserted
-        return AssertResult(outcome=outcome, fact_id=new_id)
+        return AssertResult(
+            AssertOutcome.superseded if superseded else AssertOutcome.inserted, new_id
+        )
 
     if conn is not None:
         async with native_channel_mutation(pool, conn, [subject]) as current_conn:
@@ -2367,3 +2563,81 @@ async def retract_prefers_channel(
         async with native_channel_mutation(pool, acquired_conn, [subject]) as current_conn:
             async with current_conn.transaction():
                 return await _do(current_conn)
+
+
+def _same_report(row: Any, report: FactWriteContext) -> bool:
+    stored = stored_report(row)
+    # Re-observing an unchanged owner assertion keeps its first confirmation
+    # time. Approved/adopted confirmation has distinct frozen lineage and must
+    # still match exactly; a new reporter or provenance creates a new version.
+    owner_reobservation = (
+        stored.confirmation_source == report.confirmation_source == "owner_assertion"
+        and not report.preserve
+    )
+    # A live FK disappearing is availability only, not a new assertion.
+    return (
+        stored.authority,
+        stored.original_entity_id,
+        stored.entity_created_at,
+        stored.confirmation_original_entity_id,
+        stored.confirmed_at,
+        stored.confirmation_source,
+    ) == (
+        report.authority,
+        report.original_entity_id,
+        report.entity_created_at,
+        report.confirmation_original_entity_id,
+        stored.confirmed_at if owner_reobservation else report.confirmed_at,
+        report.confirmation_source,
+    )
+
+
+async def _upsert_candidate(
+    conn: Any,
+    write: dict[str, Any],
+    temporal: TemporalPacket,
+    *,
+    request_mode: RequestMode | None = None,
+    active_packet: bool = False,
+) -> AssertResult:
+    for _ in range(_MAX_UPSERT_ATTEMPTS):
+        row = await conn.fetchrow(
+            f"SELECT id,src,conf,verified,last_seen,{PACKET_COLUMNS},{REPORT_COLUMNS} "
+            "FROM relationship.entity_facts WHERE subject=$1 AND predicate=$2 AND object=$3 "
+            "AND validity='candidate' AND effective_period_id IS NOT DISTINCT FROM $4 FOR UPDATE",
+            write["subject"],
+            write["predicate"],
+            write["object"],
+            temporal.period_id,
+        )
+        if row is not None:
+            stored = TemporalPacket.from_row(row)
+            if request_mode is RequestMode.explicit and stored != temporal:
+                raise TemporalError(
+                    CORRECTION_REQUIRED, "candidate occurrence has a different packet"
+                )
+            if request_mode is RequestMode.ordinary:
+                if active_packet and stored != temporal:
+                    raise TemporalError(CORRECTION_REQUIRED, "candidate and active packets differ")
+                temporal = stored
+            if _same_assertion_fields(
+                row,
+                src=write["src"],
+                conf=write["conf"],
+                verified=write["verified"],
+                last_seen=write["last_seen"],
+            ) and _same_report(row, write["fact_context"]):
+                await persist_evidence(conn, fact_id=row["id"], packet=write["packet"])
+                return AssertResult(outcome=AssertOutcome.candidate, fact_id=row["id"])
+            await conn.execute(
+                "UPDATE relationship.entity_facts SET validity='superseded', "
+                "updated_at=now() WHERE id=$1 AND validity='candidate'",
+                row["id"],
+            )
+        new_id = await _insert_active_fact(conn, **write, temporal=temporal, validity="candidate")
+        if new_id:
+            if row is not None:
+                await carry_evidence_forward(conn, from_fact_id=row["id"], to_fact_id=new_id)
+            await persist_evidence(conn, fact_id=new_id, packet=write["packet"])
+            return AssertResult(outcome=AssertOutcome.candidate, fact_id=new_id)
+    raise RuntimeError("candidate contention exhausted")

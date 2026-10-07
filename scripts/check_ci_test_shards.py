@@ -284,8 +284,16 @@ def verify(*, repo_root: Path = REPO_ROOT) -> dict[str, tuple[int, int]]:
     return results
 
 
+def _coverage_enabled() -> bool:
+    """CI supplies exact 0/1; standalone calls retain coverage by default."""
+    value = os.environ.get("CI_COVERAGE", "1")
+    if value not in {"0", "1"}:
+        raise ValueError("CI_COVERAGE must be exactly 0 or 1")
+    return value == "1"
+
+
 def run_shard(
-    *, lane: str, shard: int, repo_root: Path, coverage_file: Path, evidence_dir: Path
+    *, lane: str, shard: int, repo_root: Path, coverage_file: Path | None, evidence_dir: Path
 ) -> int:
     """Execute one lane shard with the CI-owned marker and file manifest."""
     config = _lane_config(lane)
@@ -293,7 +301,11 @@ def run_shard(
         raise ValueError(f"{lane}: shard must be between 1 and {config.shard_count}, got {shard}")
     manifest = repo_root / MANIFEST_DIRECTORY / f"{lane}-{shard}.txt"
     files = _read_manifest(manifest=manifest, repo_root=repo_root)
-    coverage_file.parent.mkdir(parents=True, exist_ok=True)
+    coverage_enabled = _coverage_enabled()
+    if coverage_enabled:
+        if coverage_file is None:
+            raise ValueError("COVERAGE_FILE is required when CI_COVERAGE is enabled")
+        coverage_file.parent.mkdir(parents=True, exist_ok=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
     command = [
@@ -314,22 +326,39 @@ def run_shard(
             config.workers,
             "--dist",
             "loadfile",
-            "--cov=src/butlers",
-            f"--cov-report=json:{evidence_dir / 'coverage.json'}",
-            "--cov-report=term-missing",
-            f"--junitxml={evidence_dir / 'raw-junit.xml'}",
-            "--",
-            *files,
         ]
     )
+    if coverage_enabled:
+        command.extend(
+            [
+                "--cov=src/butlers",
+                f"--cov-report=json:{evidence_dir / 'coverage.json'}",
+                "--cov-report=term-missing",
+            ]
+        )
+    command.extend([f"--junitxml={evidence_dir / 'raw-junit.xml'}", "--", *files])
     environment = {
         **os.environ,
-        "COVERAGE_FILE": str(coverage_file),
         "TEST_EVIDENCE_DIR": str(evidence_dir),
     }
-    return subprocess.run(  # noqa: S603
+    if coverage_enabled:
+        environment["COVERAGE_FILE"] = str(coverage_file)
+    else:
+        environment.pop("COVERAGE_FILE", None)
+    result = subprocess.run(  # noqa: S603
         command, cwd=repo_root, check=False, env=environment
     ).returncode
+    if coverage_enabled:
+        from check_ci_coverage import write_shard_metadata
+
+        write_shard_metadata(
+            coverage_file=coverage_file,
+            repo_root=repo_root,
+            lane=lane,
+            shard=shard,
+            test_files=files,
+        )
+    return result
 
 
 def _parse_args() -> argparse.Namespace:
@@ -348,7 +377,7 @@ def main() -> int:
         if args.command in (None, "verify"):
             verify()
             return 0
-        coverage_file = Path(os.environ["COVERAGE_FILE"])
+        coverage_file = Path(os.environ["COVERAGE_FILE"]) if _coverage_enabled() else None
         evidence_dir = Path(os.environ["TEST_EVIDENCE_DIR"])
         return run_shard(
             lane=args.lane,

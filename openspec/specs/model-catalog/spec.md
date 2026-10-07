@@ -9,6 +9,8 @@ The model catalog is the canonical registry of available model configurations fo
 ### Requirement: Model Catalog Schema
 The system SHALL maintain a `public.model_catalog` table as the canonical registry of available model configurations. Each entry defines a named model alias, its runtime adapter type, the actual model identifier, optional extra CLI arguments, a complexity tier assignment, an enabled flag, and a priority for tie-breaking.
 
+Entries SHALL also carry nullable allowance_account, an operator-supplied nonsecret account label; NULL SHALL retain the existing runtime_type fallback. Assigning a label SHALL NOT provision provider credentials or change quota/breaker semantics.
+
 #### Scenario: Catalog entry structure
 - **WHEN** a model catalog entry is created
 - **THEN** it contains: `id` (UUID PK), `alias` (text, UNIQUE), `runtime_type` (text, NOT NULL), `model_id` (text, NOT NULL), `extra_args` (JSONB, default `[]`), `complexity_tier` (text, NOT NULL), `enabled` (boolean, default true), `priority` (int, default 0), `session_timeout_s` (int, NOT NULL, default 1800), `last_verified_at` (timestamptz, nullable), `last_verified_latency_ms` (int, nullable), `last_verified_ok` (bool, nullable), `last_verified_error` (text, nullable), `created_at` (timestamptz), `updated_at` (timestamptz)
@@ -34,6 +36,16 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 #### Scenario: Extra args format
 - **WHEN** `extra_args` is provided
 - **THEN** it MUST be a JSON array of strings, where each string is a single CLI token (e.g. `["--config", "model_reasoning_effort=high"]`)
+
+#### Scenario: Explicit account label and legacy default
+- **WHEN** the existing catalog API creates a route with a valid allowance_account label or omits it
+- **THEN** the label SHALL be persisted and returned, or the column SHALL be NULL when omitted or null
+- **AND** NULL SHALL continue to use runtime_type as the allowance account key without guessing or backfilling credentials
+
+#### Scenario: Same-runtime routes retain distinct account assignments
+- **WHEN** two routes on one runtime_type are assigned different labels through the catalog API and one account is exhausted until a future reset
+- **THEN** the exhausted account's routes SHALL be excluded and an otherwise eligible route on the other account SHALL still resolve
+- **AND** identical labels SHALL intentionally retain the current account-key grouping across routes
 
 ### Requirement: Model Alias Concept
 A model alias is a named configuration combining a base model with optional extra runtime arguments. Aliases SHALL be rows in the model catalog - there is no separate alias table. The alias serves as the human-readable identifier while `model_id` is the actual model string passed to the runtime adapter.

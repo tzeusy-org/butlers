@@ -47,6 +47,18 @@ def test_relationship_job_schedules_have_registered_handlers() -> None:
             missing.append(job_name)
 
     assert not missing, f"Relationship deterministic jobs not registered: {missing}"
+    (push,) = [s for s in schedules if s["name"] == "upcoming-dates-check"]
+    assert push["cron"] == "0 8 * * *"
+    for contract in (
+        "upcoming_dates(days_ahead=7)",
+        "currently active",
+        "read fails",
+        "no reminder or all-clear",
+        "empty",
+        "exit silently",
+        'notify(channel="telegram"',
+    ):
+        assert contract in push["prompt"]
 
 
 @pytest.mark.asyncio

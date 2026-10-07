@@ -826,6 +826,7 @@ async def test_start_mcp_server_waits_until_uvicorn_reports_started(butler_dir: 
     daemon = ButlerDaemon(butler_dir)
     daemon.config = load_config(butler_dir)
     daemon.mcp = RuntimeFastMCP("test-butler")
+    daemon.db = MagicMock(pool=AsyncMock())
 
     with (
         patch.object(ButlerDaemon, "_build_mcp_http_app", return_value=object()),

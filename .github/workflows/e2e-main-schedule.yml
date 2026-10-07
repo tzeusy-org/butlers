@@ -31,6 +31,7 @@ permissions:
 
 jobs:
   frontend-e2e:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
 
     defaults:
@@ -53,6 +54,21 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Resolve locked Playwright version
+        id: playwright-version
+        run: |
+          version="$(npm run --silent test:e2e:cache-version)"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      # Cache is advisory. A failed restore still reaches the mandatory bounded
+      # installer, OS dependencies and locked-browser launch verification.
+      - name: Cache locked Playwright browsers
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright browsers
         run: npm run test:e2e:install

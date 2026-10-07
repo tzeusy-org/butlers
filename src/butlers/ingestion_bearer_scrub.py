@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -277,6 +278,128 @@ def scrub_stored_record(
     # The payload subtree embeds normalized_text, so one artifact can hit in both;
     # count the text hits (or the raw-only hits) once.
     return result, new_text, text_hits or json_hits
+
+
+def scrub_filtered_preview(
+    preview: str | None,
+    *,
+    connector_type: str,
+    sender_identity: str,
+    full_payload: object,
+) -> str | None:
+    """Withhold bearer text before buffering or repairing a visibility preview.
+
+    Legacy JSONB strings can supply hints, but cannot override the actual row
+    sender. Untrusted labels cannot copy codes or bearer links back into the
+    replacement. A detector failure withholds the preview without logging text.
+    Replay payloads and authentication-artifact production stay separate.
+    """
+    if preview is None:
+        return None
+    try:
+        # This fallback is a fixed display label, not a caller-controlled string
+        # or a new connector registration/authority decision.
+        fallback = (
+            connector_type
+            if connector_type
+            in {
+                "gmail",
+                "telegram",
+                "telegram_bot",
+                "telegram_user",
+                "telegram_user_client",
+                "discord",
+                "discord_user",
+                "whatsapp_user_client",
+                "google_drive",
+                "google_calendar",
+                "google_health",
+                "spotify",
+                "owntracks",
+                "steam",
+                "activitywatch",
+                "home_assistant",
+                "live-listener",
+                "live_listener",
+            }
+            else "unknown"
+        )
+        # Keep the shared detector's classification unchanged. These values are
+        # used only to prevent a label from reintroducing detected bearer text.
+        forbidden = set()
+        for pattern in (_OTP_FORWARD, _OTP_REVERSE):
+            for match in pattern.finditer(preview):
+                code = match.group(1).lower()
+                forbidden.update((code, re.sub(r"\D", "", code)))
+        for match in _URL.finditer(preview):
+            url = match.group(0).rstrip(_URL_TRAILING)
+            if _classify_url(url) is not None:
+                parts = urlsplit(url)
+                forbidden.update(
+                    value.lower()
+                    for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                    if key.lower() in _SECRET_PARAMS and value
+                )
+                forbidden.update(
+                    part.lower()
+                    for part in parts.path.split("/")
+                    if _OPAQUE_SEGMENT.fullmatch(part)
+                )
+        compact_forbidden = {re.sub(r"[^a-z0-9]", "", secret) for secret in forbidden}
+        compact_forbidden.discard("")
+
+        def safe_label(value: object) -> str:
+            if not isinstance(value, str):
+                return fallback
+            label = value.lower()
+            # DNS dots and slug underscores must not disguise the same code or
+            # token that hyphens/spaces separated in the original bearer text.
+            compact_label = re.sub(r"[^a-z0-9]", "", label)
+            # A provider slug or DNS name only; no path, URL, query, credentials,
+            # controls or code-bearing DNS labels. This stricter policy applies
+            # only to visibility previews, not global numeric-domain semantics.
+            valid = re.fullmatch(r"[a-z][a-z_-]{0,62}", label) or (
+                len(label) <= 253
+                and re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", label)
+            )
+            if (
+                not valid
+                or re.search(r"\d{4}", compact_label)
+                or any(_OPAQUE_SEGMENT.fullmatch(part) for part in label.split("."))
+                or any(secret in label for secret in forbidden)
+                or any(secret in compact_label for secret in compact_forbidden)
+            ):
+                return fallback
+            return label
+
+        if isinstance(full_payload, str):
+            try:
+                full_payload = json.loads(full_payload)
+            except ValueError:
+                full_payload = None
+        payload = full_payload if isinstance(full_payload, Mapping) else {}
+        source = payload.get("source")
+        provider = source.get("provider") if isinstance(source, Mapping) else None
+        if not isinstance(provider, str):
+            provider = fallback
+        sender = payload.get("sender")
+        aggressive = is_auth_service_sender({"identity": sender_identity}) or (
+            isinstance(sender, Mapping) and is_auth_service_sender(sender)
+        )
+        text, _ = scrub_text(
+            preview,
+            provider_domain=safe_label(provider_domain_for(sender_identity, provider)),
+            aggressive=aggressive,
+        )
+        # Validate every resulting label, including URL-host labels and unsafe
+        # placeholders already planted by an old writer. Safe placeholders are
+        # unchanged; the detector itself still protects them on repeat visits.
+        return _PLACEHOLDER.sub(
+            lambda match: placeholder(_LABEL_KINDS[match.group(1)], safe_label(match.group(2))),
+            text,
+        )
+    except Exception:
+        return None
 
 
 def scrub_message_text(text: str, *, source: Mapping[str, Any], sender: Mapping[str, Any]) -> str:

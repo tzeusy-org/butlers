@@ -292,6 +292,7 @@ async def _submit_to_switchboard(
     envelope: dict[str, Any],
     *,
     mcp_mgr: MCPClientManager,
+    owner_source_pool: Any | None = None,
 ) -> dict[str, Any] | None:
     """Submit an ingest.v1 envelope to the Switchboard butler via MCP.
 
@@ -308,6 +309,39 @@ async def _submit_to_switchboard(
         a deterministic rejection, not a connectivity failure, so the caller
         surfaces it distinctly rather than inviting a retry.
     """
+    # The exact canonical payload is bound by the authenticated API producer,
+    # before transport. Public dashboard labels/message locators cannot stamp it.
+    if owner_source_pool is not None:
+        from butlers.api.owner_auth.context import in_http_request, verified_http_principal
+
+        if in_http_request.get() and verified_http_principal.get() == "owner":
+            import hashlib
+
+            from butlers.core.fact_authority import dashboard_origin_digest
+
+            has_stamp = await owner_source_pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+                "table_schema='public' AND table_name='dashboard_messages' "
+                "AND column_name='fact_owner_admission')"
+            )
+            origin = dashboard_origin_digest(envelope)
+            if has_stamp is True and origin is not None:
+                await owner_source_pool.execute(
+                    "UPDATE public.dashboard_messages SET fact_owner_admission="
+                    "fact_owner_admission || $2::jsonb WHERE id=$1 AND role='user' "
+                    "AND fact_owner_admission IS NOT NULL "
+                    "AND fact_owner_admission->>'accepted_origin_digest' IS NULL "
+                    "AND content=$3 AND conversation_id=$4",
+                    UUID(envelope["event"]["external_event_id"]),
+                    {
+                        "accepted_text_digest": hashlib.sha256(
+                            envelope["payload"]["normalized_text"].encode()
+                        ).hexdigest(),
+                        "accepted_origin_digest": origin,
+                    },
+                    envelope["payload"]["raw"]["message"],
+                    UUID(envelope["payload"]["raw"]["conversation_id"]),
+                )
     try:
         client = await asyncio.wait_for(
             mcp_mgr.get_client(_SWITCHBOARD_BUTLER), timeout=_MCP_DISPATCH_TIMEOUT_S
@@ -541,7 +575,9 @@ async def _stream_conversation_response(
 
     if should_submit:
         try:
-            accepted = await _submit_to_switchboard(butler_name, envelope, mcp_mgr=mcp_mgr)
+            accepted = await _submit_to_switchboard(
+                butler_name, envelope, mcp_mgr=mcp_mgr, owner_source_pool=shared_pool
+            )
         except ValueError as exc:
             failure_turn: DashboardTurnResult | None = None
             if message_id is not None:
@@ -975,6 +1011,67 @@ async def _persist_dashboard_user_message(
     ``page_context``, not from the request body, so a retry never re-sends a
     stale or since-changed page context.
     """
+    from butlers.api.owner_auth.context import in_http_request, verified_http_principal
+
+    if in_http_request.get() and verified_http_principal.get() == "owner":
+        from butlers.core.fact_authority import FactWriteContext
+
+        has_stamp = await pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+            "table_schema='public' AND table_name='dashboard_messages' "
+            "AND column_name='fact_owner_admission')"
+        )
+        if has_stamp is not True:
+            # Core-only/older deployments keep ordinary chat processing. Missing
+            # private producer evidence supplies no owner-class fact admission.
+            return await _persist_dashboard_user_message_inner(
+                pool,
+                conversation_id=conversation_id,
+                message=message,
+                message_id=message_id,
+                page_context=page_context,
+            )
+        async with pool.acquire() as conn, conn.transaction():
+            result = await _persist_dashboard_user_message_inner(
+                conn,
+                conversation_id=conversation_id,
+                message=message,
+                message_id=message_id,
+                page_context=page_context,
+            )
+            if result[1]:
+                owner = await conn.fetchrow(
+                    "SELECT id,created_at FROM public.entities WHERE 'owner'=ANY(roles) "
+                    "ORDER BY id LIMIT 1 FOR KEY SHARE"
+                )
+                if owner is None:
+                    raise HTTPException(status_code=409, detail="Registered owner unavailable.")
+                report = FactWriteContext(
+                    "owner_device", owner["id"], owner["created_at"], owner["id"]
+                )
+                await conn.execute(
+                    "UPDATE public.dashboard_messages SET fact_owner_admission=$2 WHERE id=$1",
+                    result[0]["id"],
+                    report.to_record(),
+                )
+            return result
+    return await _persist_dashboard_user_message_inner(
+        pool,
+        conversation_id=conversation_id,
+        message=message,
+        message_id=message_id,
+        page_context=page_context,
+    )
+
+
+async def _persist_dashboard_user_message_inner(
+    pool: Any,
+    *,
+    conversation_id: UUID,
+    message: str,
+    message_id: UUID | None,
+    page_context: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
     if message_id is None:
         return (
             await message_create(
