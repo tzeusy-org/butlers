@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import fractions
 import json
 import os
 import re
