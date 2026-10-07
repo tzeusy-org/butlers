@@ -725,3 +725,5 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     assert badge["if"] == (
         "${{ steps.gate.outputs.shards_ran == 'true' && github.event_name == 'merge_group' }}"
     )
+
+CI_CANARY_FORMAT  =  'format-only'
