@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+import asyncpg
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastmcp.exceptions import ToolError
+from pydantic import ValidationError
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
@@ -27,7 +30,16 @@ from butlers.api.deps import (
 )
 from butlers.api.models import ApiResponse
 from butlers.api.models.state import StateEntry, StateSetRequest
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import log_audit_entry
+from butlers.chronicler.location_retention import (
+    PolicyConflictError,
+    PolicyUnavailableError,
+    PolicyUpdate,
+    read_policy,
+    set_policy,
+)
+from butlers.location_retention import POLICY_STATE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +86,7 @@ async def list_state(
             updated_at=row["updated_at"],
         )
         for row in rows
+        if row["key"] != POLICY_STATE_KEY
     ]
 
     return ApiResponse[list[StateEntry]](data=entries)
@@ -99,6 +112,15 @@ async def get_state(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
         )
+
+    if name == "chronicler" and key == POLICY_STATE_KEY:
+        try:
+            policy = await read_policy(pool)
+        except (PolicyUnavailableError, asyncpg.PostgresError):
+            raise HTTPException(
+                status_code=503, detail="Location retention is unavailable"
+            ) from None
+        return ApiResponse(data=StateEntry(key=key, value=policy, updated_at=policy["updated_at"]))
 
     row = await pool.fetchrow(
         "SELECT key, value, updated_at FROM state WHERE key = $1",
@@ -126,6 +148,7 @@ async def set_state(
     name: str,
     key: str,
     request: StateSetRequest,
+    http_request: Request = None,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
@@ -139,6 +162,33 @@ async def set_state(
     (e.g. switchboard) -- a structural configuration state, not a transient
     fault, so it must not surface as a 500.
     """
+    if key == POLICY_STATE_KEY:
+        if name != "chronicler" or http_request is None:
+            raise HTTPException(status_code=403, detail="Use the owner location-retention control")
+        require_dashboard_owner_control(http_request)
+        try:
+            update = PolicyUpdate.model_validate(request.value)
+            policy = await set_policy(
+                db.pool(name),
+                days=update.days,
+                expected_version=update.expected_version,
+                server_actor=authenticated_principal(),
+            )
+        except ValidationError:
+            raise HTTPException(
+                status_code=422, detail="Invalid location-retention policy"
+            ) from None
+        except PolicyConflictError:
+            raise HTTPException(
+                status_code=409, detail="Policy changed; reload before saving"
+            ) from None
+        except (KeyError, PolicyUnavailableError, asyncpg.PostgresError):
+            raise HTTPException(
+                status_code=503, detail="Location retention is unavailable"
+            ) from None
+        await log_audit_entry(db, name, "location_retention_update", {"days": update.days})
+        return ApiResponse(data={"key": key, "value": policy, "status": "updated"})
+
     summary = {"key": key}
     try:
         client = await mgr.get_client(name)
@@ -196,6 +246,8 @@ async def delete_state(
     (e.g. switchboard) -- a structural configuration state, not a transient
     fault, so it must not surface as a 500.
     """
+    if key == POLICY_STATE_KEY:
+        raise HTTPException(status_code=403, detail="Location retention policy cannot be deleted")
     summary = {"key": key}
     try:
         client = await mgr.get_client(name)

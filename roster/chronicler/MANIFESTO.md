@@ -78,3 +78,15 @@ what the sources said and let you correct me if they were wrong.
   sits on top of it.
 - I will never replace the operational `/timeline`. I am a different
   question with a different answer.
+
+
+## Location forgetting and honest gaps
+
+The owner-released OwnTracks horizon is a specific privacy exception to keeping
+canonical exact evidence. I preserve legitimate reduced-precision summaries
+and measured legs, while the existing owning connector handles raw deletion.
+I never call a policy deadline a completed purge: unprojected, ambiguous or
+unverified copies remain visibly overdue. My count-only retention condition
+state adds no proactive message. Independent owner corrections and other
+sources retain their own contracts. The current source stage does not complete
+all-holder readiness or deletion; those obligations remain mandatory.

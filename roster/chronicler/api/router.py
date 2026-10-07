@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Annotated, Any, Protocol
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
@@ -36,6 +37,7 @@ from butlers.api.models import (
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.chronicler.adapters.comms import CHANNEL_LABELS
 from butlers.chronicler.adapters.sessions import (
     EXCLUDED_TRIGGER_SOURCE_PREFIX,
@@ -63,6 +65,14 @@ from butlers.chronicler.day_close_cache import (
     resolve_day_close_timezone,
 )
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START, day_window_utc
+from butlers.chronicler.location_retention import (
+    PolicyConflictError,
+    PolicyUnavailableError,
+    PolicyUpdate,
+    read_policy,
+    retention_status,
+    set_policy,
+)
 from butlers.chronicler.models import RoutineOrigin
 from butlers.chronicler.prose_admission import classify_day_close_candidate
 from butlers.chronicler.rollups import DEFAULT_TIMEZONE as ROLLUPS_DEFAULT_TIMEZONE
@@ -175,6 +185,53 @@ def _pool(db: DatabaseManager):
             status_code=503,
             detail="Chronicler butler database is not available",
         )
+
+
+@router.get("/location-retention", response_model=ApiResponse[dict[str, Any]])
+async def get_location_retention(
+    _: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Authoritative policy and measured receipt; overdue raw may still exist."""
+    pool = _pool(db)
+    try:
+        policy = await read_policy(pool)
+        status = await retention_status(pool)
+    except (PolicyUnavailableError, asyncpg.PostgresError):
+        raise HTTPException(status_code=503, detail="Location retention is unavailable") from None
+    return ApiResponse(data={**policy, **status})
+
+
+@router.put("/location-retention", response_model=ApiResponse[dict[str, Any]])
+async def put_location_retention(
+    body: PolicyUpdate,
+    request: Request,
+    _: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Shorten future preparation, preserving irreversible prepared decisions."""
+    actor = authenticated_principal()
+    try:
+        policy = await set_policy(
+            _pool(db), days=body.days, expected_version=body.expected_version, server_actor=actor
+        )
+    except PolicyConflictError:
+        raise HTTPException(
+            status_code=409, detail="Policy changed; reload before saving"
+        ) from None
+    except (PolicyUnavailableError, asyncpg.PostgresError):
+        raise HTTPException(status_code=503, detail="Location retention is unavailable") from None
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="location_retention_update",
+        method="PUT",
+        path="/api/chronicler/location-retention",
+        body=body.model_dump(),
+        response_status=200,
+        request=request,
+    )
+    return ApiResponse(data=policy)
 
 
 def _coerce_payload(value: Any) -> dict[str, Any]:
@@ -968,6 +1025,10 @@ def _rows_to_source_state(
                 optional_schema=row["optional_schema"],
                 active=row["active"],
                 inactive_reason=row["inactive_reason"],
+                raw_evidence_retention=row.get("raw_evidence_retention"),
+                projected_evidence_retention=row.get("projected_evidence_retention"),
+                allowed_spatial_precision_m=row.get("allowed_spatial_precision_m"),
+                source_tombstone_behavior=row.get("source_tombstone_behavior"),
                 last_run_at=last_run_at,
                 last_error=last_error,
                 subsource_checkpoints=subsource_checkpoints,

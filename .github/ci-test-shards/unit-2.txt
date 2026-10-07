@@ -72,6 +72,7 @@ tests/chronicler/test_episode_category_field.py
 tests/chronicler/test_flags.py
 tests/chronicler/test_google_health_adapter.py
 tests/chronicler/test_home_assistant_sensor_activity_adapter.py
+tests/chronicler/test_location_retention_values.py
 tests/chronicler/test_owner_entity_id.py
 tests/chronicler/test_owntracks_adapter.py
 tests/chronicler/test_privacy_defaults.py

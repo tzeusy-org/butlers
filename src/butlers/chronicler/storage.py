@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -38,6 +38,7 @@ from butlers.chronicler.models import (
     RoutineOrigin,
     SourceAdapterState,
 )
+from butlers.location_retention import ADAPTER_NAMES, logical_digest, reduced_summary
 
 
 def _utcnow() -> datetime:
@@ -211,15 +212,20 @@ async def register_source(
         INSERT INTO source_adapter_state (
             source_name, chronicler_compatibility, read_surface,
             boundary_semantics, optional_schema, schema_version,
-            registered_at, updated_at
+            registered_at, updated_at,raw_evidence_retention,projected_evidence_retention,
+            allowed_spatial_precision_m,source_tombstone_behavior
         )
-        VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), now())
+        VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,now()),now(),$8,$9,$10,$11)
         ON CONFLICT (source_name) DO UPDATE SET
             chronicler_compatibility = EXCLUDED.chronicler_compatibility,
             read_surface = EXCLUDED.read_surface,
             boundary_semantics = EXCLUDED.boundary_semantics,
             optional_schema = EXCLUDED.optional_schema,
             schema_version = EXCLUDED.schema_version,
+            raw_evidence_retention=EXCLUDED.raw_evidence_retention,
+            projected_evidence_retention=EXCLUDED.projected_evidence_retention,
+            allowed_spatial_precision_m=EXCLUDED.allowed_spatial_precision_m,
+            source_tombstone_behavior=EXCLUDED.source_tombstone_behavior,
             updated_at = now()
         """,
         state.source_name,
@@ -229,6 +235,10 @@ async def register_source(
         state.optional_schema,
         state.schema_version,
         state.registered_at,
+        state.raw_evidence_retention,
+        state.projected_evidence_retention,
+        state.allowed_spatial_precision_m,
+        state.source_tombstone_behavior,
     )
 
 
@@ -273,6 +283,10 @@ async def get_source_state(
         active=row["active"],
         inactive_reason=row["inactive_reason"],
         schema_version=row["schema_version"],
+        raw_evidence_retention=row.get("raw_evidence_retention"),
+        projected_evidence_retention=row.get("projected_evidence_retention"),
+        allowed_spatial_precision_m=row.get("allowed_spatial_precision_m"),
+        source_tombstone_behavior=row.get("source_tombstone_behavior"),
         registered_at=row["registered_at"],
         updated_at=row["updated_at"],
     )
@@ -477,16 +491,46 @@ async def get_checkpoint_subsource(
 # ── Point events ──────────────────────────────────────────────────────────
 
 
+async def _lock_location_writes(conn: asyncpg.Connection) -> None:
+    """Use the same policy-first order as projection/preparation and replay."""
+    policy = await conn.fetchrow(
+        "SELECT version FROM location_retention_policy WHERE singleton FOR UPDATE"
+    )
+    if policy is None:
+        raise RuntimeError("Location retention policy is unavailable")
+    for name in ADAPTER_NAMES:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", name)
+
+
 async def upsert_point_event(
     conn: asyncpg.Connection | asyncpg.Pool,
     event: PointEvent,
-) -> PointEvent:
+) -> PointEvent | None:
     """Idempotent upsert on ``(source_name, source_ref)``.
 
     Updates mutable fields (title, payload, precision, privacy,
     retention, tombstone, occurred_at, entity_id) so replays with
     corrected source data are reflected.
     """
+    if event.source_name == "owntracks.points":
+        if isinstance(conn, asyncpg.Pool):
+            async with conn.acquire() as acquired:
+                async with acquired.transaction():
+                    return await upsert_point_event(acquired, event)
+        if isinstance(conn, asyncpg.Connection) and not conn.is_in_transaction():
+            async with conn.transaction():
+                return await upsert_point_event(conn, event)
+        await _lock_location_writes(conn)
+        prefix = "connectors.owntracks_points:"
+        if not event.source_ref.startswith(prefix):
+            raise ValueError("OwnTracks event source reference is unavailable")
+        forgotten = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_evidence_tombstones "
+            "WHERE logical_source_digest=$1)",
+            logical_digest(event.source_ref[len(prefix) :]),
+        )
+        if forgotten:
+            return None
     row = await conn.fetchrow(
         """
         INSERT INTO point_events (
@@ -539,6 +583,25 @@ async def upsert_episode(
     Open-ended episodes (``end_at IS NULL``) are permitted. Replays that
     close an open episode update ``end_at`` in place.
     """
+    if episode.source_name in ADAPTER_NAMES:
+        if isinstance(conn, asyncpg.Pool):
+            async with conn.acquire() as acquired:
+                async with acquired.transaction():
+                    return await upsert_episode(acquired, episode)
+        if isinstance(conn, asyncpg.Connection) and not conn.is_in_transaction():
+            async with conn.transaction():
+                return await upsert_episode(conn, episode)
+        await _lock_location_writes(conn)
+        floor = await conn.fetchval(
+            """SELECT EXISTS(SELECT 1 FROM location_summary_floors f
+               JOIN episodes e ON e.id=f.episode_id WHERE e.source_name=$1 AND e.source_ref=$2)""",
+            episode.source_name,
+            episode.source_ref,
+        )
+        if floor:
+            episode = replace(
+                episode, title="Location summary", payload=reduced_summary(episode.payload)
+            )
     row = await conn.fetchrow(
         """
         INSERT INTO episodes (
@@ -810,6 +873,28 @@ async def insert_override(
     conn: asyncpg.Connection | asyncpg.Pool,
     override: Override,
 ) -> Override:
+    if isinstance(conn, asyncpg.Pool):
+        async with conn.acquire() as acquired:
+            async with acquired.transaction():
+                return await insert_override(acquired, override)
+    if isinstance(conn, asyncpg.Connection) and not conn.is_in_transaction():
+        async with conn.transaction():
+            return await insert_override(conn, override)
+    # Location corrections take the same first lock before touching overlays.
+    # Unrelated correction targets keep their existing behavior.
+    if override.target_kind == OverrideTarget.EPISODE:
+        own_location = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM episodes WHERE id=$1 AND source_name=ANY($2::text[]))",
+            override.target_id,
+            list(ADAPTER_NAMES),
+        )
+        if own_location is True:
+            await _lock_location_writes(conn)
+            if await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_summary_floors WHERE episode_id=$1)",
+                override.target_id,
+            ) and (override.corrected_title is not None or override.note is not None):
+                raise ValueError("Forgotten location labels cannot be restored by corrections")
     row = await conn.fetchrow(
         """
         INSERT INTO overrides (
@@ -989,6 +1074,10 @@ async def get_carryover(
             source_name,
         )
     except asyncpg.PostgresError:
+        from butlers.chronicler.location_projection import native_projection_active
+
+        if native_projection_active():
+            raise
         return {}
     if raw is None:
         return {}
@@ -996,10 +1085,19 @@ async def get_carryover(
         try:
             loaded = json.loads(raw)
         except json.JSONDecodeError:
+            from butlers.chronicler.location_projection import native_projection_active
+
+            if native_projection_active():
+                raise ValueError("Native location carry is unavailable") from None
             return {}
-        return loaded if isinstance(loaded, dict) else {}
-    if isinstance(raw, dict):
+        if isinstance(loaded, dict):
+            return loaded
+    elif isinstance(raw, dict):
         return raw
+    from butlers.chronicler.location_projection import native_projection_active
+
+    if native_projection_active():
+        raise ValueError("Native location carry is unavailable")
     return {}
 
 
@@ -1026,6 +1124,10 @@ async def save_carryover(
             carryover,
         )
     except asyncpg.PostgresError:
+        from butlers.chronicler.location_projection import native_projection_active
+
+        if native_projection_active():
+            raise
         return
 
 

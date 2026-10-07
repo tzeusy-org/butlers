@@ -22,6 +22,8 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 
 import {
   createChroniclerRoutine,
+  getLocationRetention,
+  putLocationRetention,
   deleteChroniclerRoutine,
   getChroniclerBalance,
   getChroniclerCorrectionPrompts,
@@ -517,6 +519,30 @@ export function useDeleteChroniclesRoutine() {
     mutationFn: (routineId: string) => deleteChroniclerRoutine(routineId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
+    },
+  });
+}
+
+
+export function useLocationRetention() {
+  return useQuery({
+    queryKey: [...chroniclesKeys.all, "location-retention"],
+    queryFn: ({ signal }) => getLocationRetention(signal),
+    refetchInterval: CHRONICLES_POLL_DEFAULT_MS,
+    staleTime: 0,
+  });
+}
+
+export function useUpdateLocationRetention() {
+  const cache = useQueryClient();
+  return useMutation({
+    mutationFn: ({days, version}: {days: number; version: number}) => putLocationRetention(days, version),
+    onSuccess: async () => {
+      // Discard outstanding historical exact-trail responses before refreshing.
+      // Widening does not restore erased evidence or create a local TTL cache.
+      await cache.cancelQueries({ queryKey: chroniclesKeys.all });
+      cache.removeQueries({ queryKey: [...chroniclesKeys.all, "point-events"] });
+      await cache.invalidateQueries({ queryKey: chroniclesKeys.all });
     },
   });
 }

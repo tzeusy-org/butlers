@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -68,6 +69,11 @@ class ChroniclerModuleConfig(BaseModel):
 # reusing this `name` to override cadence — TOML wins on cadence, not
 # existence.
 _DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "chronicler_location_retention",
+        "cron": "35 */6 * * *",
+        "job_name": "chronicler_location_retention",
+    },
     {
         # Weekly, Sunday 03:30 (owner's effective timezone — see
         # `ensure_module_default_schedule`): mines the prior weeks' activity
@@ -196,6 +202,24 @@ class ChroniclerModule(Module):
 
 def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
     """Register Chronicler read and bundle tools on *mcp*."""
+
+    @mcp.tool()
+    async def chronicler_location_retention_batches() -> list[dict[str, Any]]:
+        """Read stored ready OwnTracks decisions without caller raw selectors.
+
+        Metadata locators are consumed by the native registered connector
+        outside its transaction. They do not certify caller source identity.
+        """
+        from butlers.chronicler.location_retention import ready_batches
+
+        return await ready_batches(module._get_pool())
+
+    @mcp.tool()
+    async def chronicler_location_retention_status(decision_id: UUID) -> dict[str, Any]:
+        """Read the actual stored decision state; missing is unavailable."""
+        from butlers.chronicler.location_retention import plan_status
+
+        return await plan_status(module._get_pool(), decision_id)
 
     # ------------------------------------------------------------------
     # chronicler_list_events

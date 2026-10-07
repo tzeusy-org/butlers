@@ -10521,3 +10521,27 @@ export interface FactAttribution {
 export interface CandidateIdentityFact extends ContactFact {
   validity: "candidate";
 }
+
+
+/** Authoritative policy plus latest measured retention attempt, never a UI TTL. */
+export interface LocationRetentionStatus {
+  days: number;
+  version: number;
+  updated_at: string;
+  precision_after_forgetting_m: number;
+  widening_restores_forgotten_points: false;
+  prepared_decisions_may_finish: true;
+  status: string;
+  reason_code: string | null;
+  receipt: string | null;
+  attempt_started_at?: string;
+  completion_at?: string | null;
+  cutoff?: string;
+  prepared_count?: number;
+  deleted_count?: number;
+  blocked_count?: number | null;
+  unknown_count?: number | null;
+  overdue_count?: number | null;
+  holder_pending_count?: number | null;
+  counts_observed_at?: string | null;
+}

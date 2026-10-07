@@ -2529,6 +2529,21 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Gantt timeline
 - {}: no data this period
 
+## `frontend/src/components/chronicles/LocationRetentionControl.tsx`
+
+- Checking location retention…
+- Location retention could not be confirmed. Exact points may remain.
+- Retry retention status
+- = 1 && days
+- Last attempt
+- After forgetting, summaries retain approximately 150 m precision. Increasing the period cannot restore forgotten points; already prepared deletions may finish.
+- Keep exact trail for
+- Cancel
+- Eligible exact points may be permanently forgotten sooner. This cannot be undone.
+- Choose a whole number from 1 to 30.
+- Retention was not saved. Reloaded the current policy; review it before retrying.
+- Location retention
+
 ## `frontend/src/components/chronicles/ManualRefreshButton.tsx`
 
 - Refreshing
@@ -4851,4 +4866,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3859*
+*Total strings: 3871*

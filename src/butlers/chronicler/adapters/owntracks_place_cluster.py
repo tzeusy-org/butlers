@@ -65,7 +65,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -81,8 +81,15 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
+from butlers.chronicler.location_projection import (
+    ProjectionConnection,
+    record_closed_output,
+    record_contribution,
+    run_projection,
+)
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
+from butlers.location_retention import content_digest
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +253,7 @@ class ClusterSpan:
     sum_lat: float
     sum_lon: float
     point_count: int
+    raw_ids: list[str] = field(default_factory=list)
 
     @property
     def centroid_lat(self) -> float:
@@ -320,6 +328,7 @@ def cluster_points(
                 sum_lat=rows[i]["lat"],
                 sum_lon=rows[i]["lon"],
                 point_count=1,
+                raw_ids=[str(rows[i]["id"])],
             )
         i += 1
 
@@ -339,6 +348,7 @@ def cluster_points(
                 cluster.sum_lat += row["lat"]
                 cluster.sum_lon += row["lon"]
                 cluster.point_count += 1
+                cluster.raw_ids.append(str(row["id"]))
                 cluster.end_at = row["ts"]
                 i += 1
                 continue
@@ -361,6 +371,7 @@ def cluster_points(
                     cluster.sum_lat += nxt["lat"]
                     cluster.sum_lon += nxt["lon"]
                     cluster.point_count += 1
+                    cluster.raw_ids.append(str(nxt["id"]))
                     cluster.end_at = nxt["ts"]
                     i += 2
                     continue
@@ -379,6 +390,7 @@ def cluster_points(
             "sum_lat": span.sum_lat,
             "sum_lon": span.sum_lon,
             "point_count": span.point_count,
+            "raw_ids": span.raw_ids,
         }
 
     return spans, new_carryover
@@ -459,6 +471,7 @@ def _resume_from_carryover(
         sum_lat=sum_lat + row["lat"],
         sum_lon=sum_lon + row["lon"],
         point_count=point_count + 1,
+        raw_ids=[*carry.get("raw_ids", []), str(row["id"])],
     )
 
 
@@ -498,6 +511,22 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         self.max_gap = timedelta(minutes=max_gap_minutes)
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
         self.reference_points = tuple(reference_points)
+
+    def retention_mapping_revision(self) -> bytes:
+        return content_digest(
+            {
+                "adapter": self.source_name,
+                "version": 1,
+                "radius_m": self.radius_m,
+                "min_dwell_seconds": self.min_dwell.total_seconds(),
+                "max_gap_seconds": self.max_gap.total_seconds(),
+                "skew_seconds": self.clock_skew_threshold.total_seconds(),
+                "references": [asdict(reference) for reference in self.reference_points],
+            }
+        )
+
+    async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
+        return await run_projection(self, chronicler_pool=chronicler_pool)
 
     async def project(
         self,
@@ -548,11 +577,31 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 max_gap=self.max_gap,
                 prior_carryover=prior_carryover,
             )
-            for span in spans:
+            current_ids = {str(row["id"]): row["id"] for row in valid_rows}
+            contributed: set[str] = set()
+            for index, span in enumerate(spans):
                 episode = await self._maybe_emit(chronicler_pool, span, entity_id=entity_id)
+                raw_ids = [current_ids[key] for key in span.raw_ids if key in current_ids]
+                contributed.update(span.raw_ids)
+                is_open = not any(
+                    later.endpoint_identity == span.endpoint_identity
+                    for later in spans[index + 1 :]
+                )
+                record_contribution(
+                    raw_ids,
+                    [episode.id] if episode is not None and episode.id else [],
+                    pending=is_open,
+                )
                 if episode is not None:
                     result.rows_projected += 1
                     result.episodes_closed += 1
+                    if not is_open and episode.id is not None:
+                        record_closed_output(episode.id)
+            # The native clustering algorithm actually evaluated these rejected
+            # glitch fixes. They have no place output, not invented place rows.
+            for key, raw_id in current_ids.items():
+                if key not in contributed:
+                    record_contribution([raw_id], [])
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
@@ -640,6 +689,8 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         since: datetime | None,
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark; ``None`` if table missing."""
+        if isinstance(pool, ProjectionConnection):
+            return pool.location_rows
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(

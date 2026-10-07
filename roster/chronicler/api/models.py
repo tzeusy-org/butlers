@@ -113,6 +113,10 @@ class SourceStateRow(BaseModel):
     inactive_reason: str | None = None
     last_run_at: datetime | None = None
     last_error: str | None = None
+    raw_evidence_retention: str | None = None
+    projected_evidence_retention: str | None = None
+    allowed_spatial_precision_m: int | None = None
+    source_tombstone_behavior: str | None = None
     subsource_checkpoints: list[SubsourceCheckpoint] | None = None
 
 

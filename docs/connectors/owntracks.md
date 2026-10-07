@@ -94,3 +94,20 @@ access accordingly and use SSID/region names that reveal no more than intended.
   UUIDs, `watermark_id` is BIGINT) and pages by `(ts, id)`.
   A malformed or mismatched cursor triggers a bounded replay. One `run()` transaction under a
   source-keyed advisory lock holds every write and the checkpoint.
+
+
+### Conditional forgetting
+
+The owner-released raw horizon is 30 days or an authenticated shorter integer
+horizon. Age alone does not authorize deletion: all current projection and
+copy-holder evidence must close first. Held or unknown evidence may be overdue;
+the dashboard must say so rather than report a policy deadline as a purge.
+The current source stage does not issue READY or complete raw deletion. See
+[location retention](../operations/owntracks-location-retention.md) for the
+implemented boundaries, mandatory remaining work and recovery limits.
+
+Native projection uses an arrival anti-join and typed per-generation output
+witnesses under a shared policy-first transaction. An ordinary `(ts, id)`
+watermark, a surviving episode or a caller-supplied accepted UUID cannot prove
+complete projection. The connector's existing audit-buffer retention setting
+and six-hour cadence are separate from the raw point horizon.

@@ -1710,6 +1710,21 @@ async def _run_chronicler_project_owntracks_job(
     return await run_project_owntracks(pool, job_args)
 
 
+async def _run_chronicler_location_retention_job(
+    pool: asyncpg.Pool, job_args: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Native scheduled retention attempt; no model-selected raw set."""
+    from butlers.chronicler.location_retention import run_retention
+
+    if job_args:
+        raise ValueError("Location retention does not accept caller selectors")
+    from butlers.core.tool_call_capture import get_current_switchboard_client
+
+    # Bound by the actual daemon scheduler, cleared in its finally block.
+    # A job argument cannot supply a client, endpoint, holder or verdict.
+    return await run_retention(pool, switchboard_client=get_current_switchboard_client())
+
+
 async def _run_chronicler_project_owntracks_place_cluster_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2153,6 +2168,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
+            "chronicler_location_retention": _run_chronicler_location_retention_job,
             "chronicler_project_owntracks_place_cluster": (
                 _run_chronicler_project_owntracks_place_cluster_job
             ),

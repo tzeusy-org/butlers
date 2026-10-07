@@ -382,3 +382,17 @@ SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
 - [State Store](state-store.md) -- The `state` table created by core migrations
+
+
+### OwnTracks retention history
+
+`core_264` follows `core_261` and adds connector-owned immutable source birth,
+lineage, tombstones and committed receipts plus per-owning-schema source-copy
+history. `chronicler_027` follows `chronicler_026` and adds owning policy,
+projection coverage, decisions and floors. These revisions create no principal
+or LOGIN. Receipt SELECT is limited to Chronicler; raw DELETE stays with the
+existing connector writer. Source-copy ledgers live in each owning schema and
+do not grant peer SQL writes. Trigger bodies use `pg_catalog,pg_temp` and
+qualified installed functions. A populated history/floor downgrade refuses;
+never erase floors to repair a revision. Actual migration/role controls must
+execute before reporting installed authority or recovery proof.

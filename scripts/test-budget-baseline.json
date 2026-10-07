@@ -1,8 +1,8 @@
 {
   "note": "Per-lane collected-test budget (scripts/check_test_budget.py). A lane over budget fails check-preflight: condense tests in the same PR, or run `uv run python scripts/check_test_budget.py --update-baseline` and state the net test delta (Tests: +added ~extended -removed) and why in the PR body. Budgets are current count + 5% at the last update; never raise them silently.",
   "integration": {
-    "budget": 4930,
-    "collected_at_update": 4695
+    "budget": 4931,
+    "collected_at_update": 4931
   },
   "unit": {
     "budget": 17853,

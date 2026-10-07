@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -48,15 +48,20 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
+from butlers.chronicler.location_projection import (
+    ProjectionConnection,
+    record_closed_carry,
+    record_closed_output,
+    record_contribution,
+    run_projection,
+)
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import (
     get_carryover,
-    get_checkpoint,
-    mark_source_active,
     save_carryover,
-    upsert_checkpoint,
     upsert_episode,
 )
+from butlers.location_retention import content_digest
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +120,7 @@ class SsidPresenceSpan:
     start_at: datetime
     end_at: datetime
     point_count: int
+    raw_ids: list[str] = field(default_factory=list)
 
     def source_ref(self) -> str:
         return (
@@ -177,6 +183,7 @@ def group_ssid_points(
             ):
                 current.end_at = row["ts"]
                 current.point_count += 1
+                current.raw_ids.append(str(row["id"]))
                 continue
 
             _append_if_presence(spans, current)
@@ -187,6 +194,7 @@ def group_ssid_points(
                 start_at=row["ts"],
                 end_at=row["ts"],
                 point_count=1,
+                raw_ids=[str(row["id"])],
             )
 
         _append_if_presence(spans, current)
@@ -196,6 +204,7 @@ def group_ssid_points(
                 "start_at": current.start_at.isoformat(),
                 "end_at": current.end_at.isoformat(),
                 "point_count": current.point_count,
+                "raw_ids": current.raw_ids,
             }
         else:
             new_carryover.pop(endpoint, None)
@@ -263,6 +272,7 @@ def _resume_span(
         start_at=start_at,
         end_at=first_row["ts"],
         point_count=point_count + 1,
+        raw_ids=[*raw.get("raw_ids", []), str(first_row["id"])],
     )
 
 
@@ -291,75 +301,19 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         self.max_gap = timedelta(minutes=max_gap_minutes)
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
 
-    async def run(
-        self,
-        *,
-        pool: asyncpg.Pool,
-        chronicler_pool: asyncpg.Pool,
-    ) -> AdapterResult:
-        """Project and advance replay state in one Chronicler transaction."""
-        self._llm_probe()
+    def retention_mapping_revision(self) -> bytes:
+        return content_digest(
+            {
+                "adapter": self.source_name,
+                "version": 1,
+                "places": self.ssid_places,
+                "max_gap_seconds": self.max_gap.total_seconds(),
+                "skew_seconds": self.clock_skew_threshold.total_seconds(),
+            }
+        )
 
-        try:
-            async with chronicler_pool.acquire() as conn:
-                async with conn.transaction():
-                    await conn.execute(
-                        """
-                        SELECT pg_advisory_xact_lock(
-                            hashtextextended('chronicler.projection:' || $1, 0)
-                        )
-                        """,
-                        self.source_name,
-                    )
-                    checkpoint = await get_checkpoint(conn, self.source_name)
-                    since = checkpoint.watermark if checkpoint is not None else None
-                    since_id = checkpoint.watermark_id if checkpoint is not None else None
-                    source_db = conn if pool is chronicler_pool else pool
-                    result = await self.project(
-                        source_db,
-                        chronicler_pool=conn,
-                        since=since,
-                        since_id=since_id,
-                    )
-
-                    if result.skipped:
-                        await mark_source_active(
-                            conn,
-                            self.source_name,
-                            active=False,
-                            inactive_reason=result.skipped_reason or "adapter skipped",
-                        )
-                        return result
-
-                    if not result.success:
-                        raise RuntimeError(result.error or "SSID presence projection failed")
-
-                    await mark_source_active(conn, self.source_name, active=True)
-                    await upsert_checkpoint(
-                        conn,
-                        self.source_name,
-                        watermark=result.watermark,
-                        watermark_id=result.watermark_id,
-                        success=result.success,
-                        rows_projected=result.rows_projected,
-                        error=result.error,
-                    )
-            return result
-        except Exception as exc:  # pragma: no cover - exercised by failure injection
-            logger.exception("Adapter %s failed", self.source_name)
-            try:
-                await upsert_checkpoint(
-                    chronicler_pool,
-                    self.source_name,
-                    success=False,
-                    error=str(exc),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed recording failure checkpoint for adapter %s",
-                    self.source_name,
-                )
-            return AdapterResult(source_name=self.source_name, error=str(exc))
+    async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
+        return await run_projection(self, chronicler_pool=chronicler_pool)
 
     async def project(
         self,
@@ -448,10 +402,34 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
                 max_gap=self.max_gap,
                 prior_carryover=prior_carryover,
             )
+            current_ids = {str(row["id"]): row["id"] for row in normalized_rows}
+            open_ids = {
+                key
+                for carry in new_carryover.values()
+                if isinstance(carry, dict)
+                for key in carry.get("raw_ids", [])
+            }
+            contributed: set[str] = set()
             for span in spans:
-                await self._upsert_presence_episode(chronicler_conn, span, entity_id=entity_id)
+                episode = await self._upsert_presence_episode(
+                    chronicler_conn, span, entity_id=entity_id
+                )
+                contributed.update(span.raw_ids)
+                is_open = any(key in open_ids for key in span.raw_ids)
+                record_contribution(
+                    [current_ids[key] for key in span.raw_ids if key in current_ids],
+                    [episode.id] if episode is not None and episode.id is not None else [],
+                    pending=is_open,
+                )
+                if not is_open:
+                    record_closed_carry(span.raw_ids)
+                    if episode is not None and episode.id is not None:
+                        record_closed_output(episode.id)
                 result.rows_projected += 1
                 result.episodes_closed += 1
+            for key, raw_id in current_ids.items():
+                if key not in contributed:
+                    record_contribution([raw_id], [], pending=key in open_ids)
         else:
             new_carryover = dict(prior_carryover)
 
@@ -544,6 +522,8 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         *,
         since_uuid: UUID | None,
     ) -> list[asyncpg.Record] | None:
+        if isinstance(pool, ProjectionConnection):
+            return pool.location_rows
         try:
             if isinstance(pool, asyncpg.Pool):
                 async with pool.acquire() as conn:

@@ -257,9 +257,15 @@ prefix. This enables:
 Some connectors ingest data that is more privacy-sensitive than typical messages:
 
 - **Location data** (OwnTracks): GPS coordinates and geofence transitions.
-  Default ingestion tier is `metadata` (no raw coordinates in the ingest
-  payload). Configurable retention with a conservative default (30 days).
-  The connector is opt-in only.
+  Default ingestion tier is `metadata` (no raw coordinates in that envelope
+  tier); durable connector evidence still stores exact coordinates and may
+  store SSID/region labels. The owner-released raw horizon is 30 days or an
+  authenticated shorter integer horizon. Unprojected or unverified copy
+  holders prevent deletion and must expose overdue retention. A policy
+  deadline is not a measured purge. Reduced-precision summaries survive
+  forgetting; widening never resurrects deleted precision. The current source
+  stage does not complete all-holder readiness or deletion. The connector is
+  opt-in only.
 - **Listening history** (Spotify): Tracks, playlists, and playback sessions.
   Low-sensitivity individually, but aggregated patterns reveal daily routines.
 - **Smart home state** (Home Assistant): Device states, automation triggers,

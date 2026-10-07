@@ -549,6 +549,8 @@ BEGIN
     FOREACH _table IN ARRAY ARRAY[
         'steam_play_history',
         'owntracks_points',
+        'owntracks_retention_batches',
+        'owntracks_retention_batch_rows',
         'home_assistant_history'
     ] LOOP
         IF EXISTS (

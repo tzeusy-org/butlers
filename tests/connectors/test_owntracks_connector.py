@@ -16,7 +16,8 @@ Verifies:
 from __future__ import annotations
 
 import base64
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -148,8 +149,11 @@ def test_location_envelope_full_tier_has_raw() -> None:
 
 async def test_persist_location_point_keeps_ssid_and_inregions_untouched() -> None:
     """The connector's durable JSONB evidence keeps app-provided context verbatim."""
-    pool = AsyncMock()
-    pool.fetchval.return_value = "point-id"
+    pool = MagicMock()
+    conn = AsyncMock()
+    pool.acquire.return_value.__aenter__.return_value = conn
+    conn.transaction = MagicMock()
+    conn.fetchval.side_effect = [False, datetime(2026, 3, 26, tzinfo=UTC), "point-id"]
     raw_payload = {
         **_LOCATION_PAYLOAD,
         "SSID": "Office WiFi",
@@ -168,7 +172,7 @@ async def test_persist_location_point_keeps_ssid_and_inregions_untouched() -> No
     )
 
     assert inserted is True
-    sql, *args = pool.fetchval.await_args.args
+    sql, *args = conn.fetchval.await_args.args
     assert "connectors.owntracks_points" in sql
     assert "raw_payload" in sql
     persisted_payload = args[7]

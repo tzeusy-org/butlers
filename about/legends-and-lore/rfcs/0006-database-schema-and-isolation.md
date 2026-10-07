@@ -368,3 +368,15 @@ Butlers is a user-federated platform (each user owns their instance). This shape
 **Shared migration chain.** Rejected because coupling all module migrations into a single linear chain would create merge conflicts between independent module development streams and require coordinating revision IDs across teams. Multi-chain branching allows each module to evolve its schema independently.
 
 **Vault or encrypted secret storage.** Rejected for the user-federated deployment model. The user controls the PostgreSQL instance directly, so DB-level encryption adds complexity without meaningful security improvement. For enterprise or multi-tenant deployments, a Vault integration could be added as an alternative credential store backend without changing the `CredentialStore` interface.
+
+
+### Narrow OwnTracks receipt read
+
+The location-retention source contract adds only Chronicler SELECT on
+`connectors.owntracks_retention_batches` and
+`connectors.owntracks_retention_batch_rows`, recording connector-owned committed
+forgetting receipts. It does not confer connector tombstone writes, raw DELETE,
+peer schema writes or a new principal. Each source-copy holder performs its own
+mutation and committed receipt read over its fixed registered MCP boundary.
+A locator/digest is not identity or readiness authority. Actual bootstrap and
+restricted-role controls remain required before installed isolation is claimed.

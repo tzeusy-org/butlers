@@ -64,6 +64,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from threading import Thread
 from typing import TYPE_CHECKING, Annotated, Any, Literal
+from uuid import UUID
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -77,6 +78,7 @@ from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.connectors.owntracks_forgetting import RegisteredRetentionSource
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import (
@@ -86,6 +88,7 @@ from butlers.db import (
     should_retry_with_ssl_disable,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.location_retention import content_digest
 
 if TYPE_CHECKING:
     import asyncpg
@@ -442,6 +445,7 @@ class OwnTracksRetention:
         pool: asyncpg.Pool,
         *,
         purge_interval_s: int = RETENTION_PURGE_INTERVAL_S,
+        retention_source: RegisteredRetentionSource | None = None,
     ) -> None:
         """Initialise the retention task.
 
@@ -466,6 +470,7 @@ class OwnTracksRetention:
         self._purge_interval_s = purge_interval_s
         self._task: asyncio.Task | None = None
         self._consecutive_failures = 0
+        self._retention_source = retention_source
 
     @property
     def retention_days(self) -> int:
@@ -503,6 +508,8 @@ class OwnTracksRetention:
     async def stop(self) -> None:
         """Cancel the background purge loop and wait for it to exit."""
         if self._task is None:
+            if self._retention_source is not None:
+                await self._retention_source.aclose()
             return
 
         logger.info("Stopping OwnTracks retention task.")
@@ -515,6 +522,8 @@ class OwnTracksRetention:
             self._task = None
 
         logger.info("OwnTracks retention task stopped.")
+        if self._retention_source is not None:
+            await self._retention_source.aclose()
 
     async def purge_once(self) -> int:
         """Execute a single purge cycle immediately.
@@ -535,6 +544,8 @@ class OwnTracksRetention:
 
         # asyncpg returns a status string like "DELETE 42"
         deleted = _parse_delete_count(result)
+        if self._retention_source is not None:
+            await self._retention_source.forget_pending(self._pool)
         return deleted
 
     async def _purge_loop(self) -> None:
@@ -807,6 +818,24 @@ def build_waypoints_envelope(
 # ---------------------------------------------------------------------------
 
 _LOCATION_EVIDENCE_TABLE = "connectors.owntracks_points"
+_RETENTION_MUTEX = "owntracks:retention:source"
+
+
+def _accepted_request_id(result: Any) -> UUID | None:
+    """Freeze only the actual fixed ingest client's acknowledged locator.
+
+    This UUID does not authenticate a holder or certify projection. Missing or
+    malformed old-server results keep lineage unknown and cannot earn deletion.
+    """
+    if not isinstance(result, dict) or result.get("status") != "accepted":
+        return None
+    value = result.get("request_id")
+    if not isinstance(value, (str, UUID)):
+        return None
+    try:
+        return UUID(str(value))
+    except ValueError:
+        return None
 
 
 async def persist_location_point(
@@ -819,6 +848,9 @@ async def persist_location_point(
     accuracy: float | None,
     trigger: str | None,
     raw_payload: dict[str, Any],
+    accepted_request_id: UUID | None = None,
+    accepted_payload_digest: bytes | None = None,
+    accepted_normalized_digest: bytes | None = None,
 ) -> bool:
     """Write a location point to the durable evidence table.
 
@@ -847,30 +879,50 @@ async def persist_location_point(
     idempotency_key = f"owntracks:{endpoint_identity}:{tst}:location"
     ts = datetime.fromtimestamp(tst, tz=UTC)
 
-    result = await pool.fetchval(
-        f"""
-        INSERT INTO {_LOCATION_EVIDENCE_TABLE} (
-            idempotency_key,
-            ts,
-            lat,
-            lon,
-            accuracy,
-            trigger,
-            endpoint_identity,
-            raw_payload
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (idempotency_key) DO NOTHING
-        RETURNING id
-        """,
-        idempotency_key,
-        ts,
-        lat,
-        lon,
-        accuracy,
-        trigger,
-        endpoint_identity,
-        raw_payload,
-    )
+    from butlers.location_retention import logical_digest, retention_birth
+
+    logical = logical_digest(idempotency_key)
+    body_digest = content_digest(raw_payload)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Native insert and raw-delete use the same connector mutex. No
+            # network I/O occurs while it is held, and retries never refresh birth.
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", _RETENTION_MUTEX
+            )
+            forgotten = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM connectors.owntracks_retention_tombstones "
+                "WHERE logical_source_digest=$1)",
+                logical,
+            )
+            if forgotten:
+                return False
+            recorded_at = await conn.fetchval("SELECT clock_timestamp()")
+            result = await conn.fetchval(
+                f"""
+                INSERT INTO {_LOCATION_EVIDENCE_TABLE} (
+                    idempotency_key,ts,lat,lon,accuracy,trigger,endpoint_identity,raw_payload,
+                    recorded_at,retention_at,logical_source_digest,content_digest,accepted_request_id,
+                    accepted_payload_digest,accepted_normalized_digest
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                ON CONFLICT (idempotency_key) DO NOTHING RETURNING id
+                """,
+                idempotency_key,
+                ts,
+                lat,
+                lon,
+                accuracy,
+                trigger,
+                endpoint_identity,
+                raw_payload,
+                recorded_at,
+                retention_birth(ts, recorded_at),
+                logical,
+                body_digest,
+                accepted_request_id,
+                accepted_payload_digest,
+                accepted_normalized_digest,
+            )
     return result is not None
 
 
@@ -1061,7 +1113,11 @@ class OwnTracksConnector:
                 retention_config = OwnTracksRetentionConfig(
                     retention_days=self._config.retention_days
                 )
-                self._retention = OwnTracksRetention(retention_config, self._db_pool)
+                self._retention = OwnTracksRetention(
+                    retention_config,
+                    self._db_pool,
+                    retention_source=RegisteredRetentionSource(self._mcp_client),
+                )
                 self._retention.start()
 
             # Phase 10: Wait for shutdown
@@ -1419,7 +1475,7 @@ class OwnTracksConnector:
         start_t = time.perf_counter()
         status = "success"
         try:
-            await self._mcp_client.call_tool("ingest", envelope)
+            accepted_result = await self._mcp_client.call_tool("ingest", envelope)
             self._last_ingest_ok = True
             self._health_error = None
             logger.debug(
@@ -1427,12 +1483,12 @@ class OwnTracksConnector:
                 payload_type,
                 device.endpoint_identity,
             )
-        except Exception as exc:
+        except Exception:
             status = "error"
             self._last_ingest_ok = False
-            self._health_error = str(exc)
-            logger.warning("OwnTracksConnector: failed to submit %s event: %s", payload_type, exc)
-            raise
+            self._health_error = "OwnTracks ingest unavailable"
+            logger.warning("OwnTracksConnector: ingest submission unavailable")
+            raise RuntimeError("OwnTracks ingest unavailable") from None
         finally:
             latency = time.perf_counter() - start_t
             device.metrics.record_ingest_submission(status=status, latency=latency)
@@ -1453,11 +1509,15 @@ class OwnTracksConnector:
                     accuracy=float(body["acc"]) if body.get("acc") is not None else None,
                     trigger=body.get("t") or None,
                     raw_payload=body,
+                    accepted_request_id=_accepted_request_id(accepted_result),
+                    accepted_payload_digest=content_digest({"raw": envelope["payload"]["raw"]}),
+                    accepted_normalized_digest=content_digest(
+                        {"text": envelope["payload"]["normalized_text"]}
+                    ),
                 )
             except Exception:
                 logger.warning(
-                    "OwnTracksConnector: failed to persist location evidence (non-fatal)",
-                    exc_info=True,
+                    "OwnTracksConnector: location evidence persistence unavailable",
                 )
 
         # Flush filtered event buffer (task 6.4) and drain replay queue (task 6.5)
@@ -1465,7 +1525,7 @@ class OwnTracksConnector:
             try:
                 await device.filtered_event_buffer.flush(self._db_pool)
             except Exception:
-                logger.warning("OwnTracksConnector: filtered event flush failed", exc_info=True)
+                logger.warning("OwnTracksConnector: filtered event flush failed")
             try:
                 await drain_replay_pending(
                     pool=self._db_pool,
@@ -1475,7 +1535,7 @@ class OwnTracksConnector:
                     drain_logger=logger,
                 )
             except Exception:
-                logger.warning("OwnTracksConnector: replay queue drain failed", exc_info=True)
+                logger.warning("OwnTracksConnector: replay queue drain failed")
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""
@@ -1578,10 +1638,7 @@ class OwnTracksConnector:
         """
         loop = self._main_loop
         if loop is None or loop.is_closed():
-            logger.warning(
-                "OwnTracksConnector: main loop unavailable, dropping event (type=%r)",
-                body.get("_type"),
-            )
+            logger.warning("OwnTracksConnector: main loop unavailable, dropping event")
             return
 
         future = asyncio.run_coroutine_threadsafe(self._process_webhook_event(body), loop)
@@ -1590,10 +1647,7 @@ class OwnTracksConnector:
             try:
                 f.result()
             except Exception:
-                logger.exception(
-                    "OwnTracksConnector: background event processing failed (type=%r)",
-                    body.get("_type"),
-                )
+                logger.warning("OwnTracksConnector: background event processing failed")
 
         future.add_done_callback(_log_if_failed)
 

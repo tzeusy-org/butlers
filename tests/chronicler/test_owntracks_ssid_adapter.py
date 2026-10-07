@@ -330,7 +330,11 @@ async def test_run_uses_one_transactional_chronicler_connection() -> None:
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     adapter.project = AsyncMock(return_value=AdapterResult(source_name=SOURCE_NAME, watermark=_NOW))
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetchrow = AsyncMock(
+        side_effect=lambda sql, *args: (
+            {"version": 1} if "location_retention_policy" in sql else None
+        )
+    )
     transaction = _TrackingAsyncCtx(None)
     conn.transaction = MagicMock(return_value=transaction)
     acquire = _TrackingAsyncCtx(conn)
@@ -342,15 +346,14 @@ async def test_run_uses_one_transactional_chronicler_connection() -> None:
     result = await adapter.run(pool=pool, chronicler_pool=pool)
 
     assert result.watermark == _NOW
-    adapter.project.assert_awaited_once_with(
-        conn,
-        chronicler_pool=conn,
-        since=None,
-        since_id=None,
-    )
+    adapter.project.assert_awaited_once()
+    bound = adapter.project.await_args.args[0]
+    assert bound.conn is conn
+    assert adapter.project.await_args.kwargs == {"chronicler_pool": bound, "since": None}
+    pool.acquire.assert_called_once()
     assert transaction.entered and transaction.exited
     assert acquire.entered and acquire.exited
-    assert conn.execute.await_count == 3
+    assert conn.execute.await_count == 6
     pool.execute.assert_not_awaited()
 
 
@@ -358,7 +361,11 @@ async def test_run_locks_source_before_reading_checkpoint() -> None:
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     adapter.project = AsyncMock(return_value=AdapterResult(source_name=SOURCE_NAME, watermark=_NOW))
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetchrow = AsyncMock(
+        side_effect=lambda sql, *args: (
+            {"version": 1} if "location_retention_policy" in sql else None
+        )
+    )
     transaction = _TrackingAsyncCtx(None)
     conn.transaction = MagicMock(return_value=transaction)
     pool = MagicMock()
@@ -368,8 +375,15 @@ async def test_run_locks_source_before_reading_checkpoint() -> None:
 
     lock_sql, lock_key = conn.execute.await_args_list[0].args
     assert "pg_advisory_xact_lock" in lock_sql
-    assert lock_key == SOURCE_NAME
-    assert conn.fetchrow.await_args_list[0].args == (
+    assert lock_key == "owntracks.place_cluster"
+    assert [call.args[1] for call in conn.execute.await_args_list[:3]] == [
+        "owntracks.place_cluster",
+        "owntracks.points",
+        SOURCE_NAME,
+    ]
+    assert "location_retention_policy" in conn.fetchrow.await_args_list[0].args[0]
+    assert "FOR UPDATE" in conn.fetchrow.await_args_list[0].args[0]
+    assert conn.fetchrow.await_args_list[1].args == (
         "SELECT * FROM projection_checkpoints WHERE source_name = $1 AND subsource = ''",
         SOURCE_NAME,
     )
@@ -379,7 +393,11 @@ async def test_run_releases_transaction_and_connection_before_reporting_failure(
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     adapter.project = AsyncMock(side_effect=RuntimeError("injected persistence failure"))
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetchrow = AsyncMock(
+        side_effect=lambda sql, *args: (
+            {"version": 1} if "location_retention_policy" in sql else None
+        )
+    )
     transaction = _TrackingAsyncCtx(None)
     conn.transaction = MagicMock(return_value=transaction)
     acquire = _TrackingAsyncCtx(conn)
@@ -394,11 +412,11 @@ async def test_run_releases_transaction_and_connection_before_reporting_failure(
 
     result = await adapter.run(pool=pool, chronicler_pool=pool)
 
-    assert result.error == "injected persistence failure"
+    assert result.error == "location_projection_failed"
     assert transaction.exited and transaction.exit_type is RuntimeError
     assert acquire.exited and acquire.exit_type is RuntimeError
     assert "pg_advisory_xact_lock" in conn.execute.await_args_list[0].args[0]
-    assert conn.execute.await_count == 1
+    assert conn.execute.await_count == 4
     pool.execute.assert_awaited_once()
 
 
@@ -406,7 +424,11 @@ async def test_run_preserves_projection_error_when_failure_metadata_write_fails(
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     adapter.project = AsyncMock(side_effect=RuntimeError("original projection failure"))
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetchrow = AsyncMock(
+        side_effect=lambda sql, *args: (
+            {"version": 1} if "location_retention_policy" in sql else None
+        )
+    )
     conn.transaction = MagicMock(return_value=_TrackingAsyncCtx(None))
     pool = MagicMock()
     pool.acquire.return_value = _TrackingAsyncCtx(conn)
@@ -414,7 +436,8 @@ async def test_run_preserves_projection_error_when_failure_metadata_write_fails(
 
     result = await adapter.run(pool=pool, chronicler_pool=pool)
 
-    assert result.error == "original projection failure"
+    assert result.error == "location_projection_failed"
+    assert result.warnings == ["failure_receipt_unavailable"]
     pool.execute.assert_awaited_once()
 
 
@@ -422,7 +445,11 @@ async def test_run_cancellation_rolls_back_and_releases_without_failure_write() 
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     adapter.project = AsyncMock(side_effect=asyncio.CancelledError())
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetchrow = AsyncMock(
+        side_effect=lambda sql, *args: (
+            {"version": 1} if "location_retention_policy" in sql else None
+        )
+    )
     transaction = _TrackingAsyncCtx(None)
     conn.transaction = MagicMock(return_value=transaction)
     acquire = _TrackingAsyncCtx(conn)
@@ -436,7 +463,7 @@ async def test_run_cancellation_rolls_back_and_releases_without_failure_write() 
     assert transaction.exited and transaction.exit_type is asyncio.CancelledError
     assert acquire.exited and acquire.exit_type is asyncio.CancelledError
     assert "pg_advisory_xact_lock" in conn.execute.await_args_list[0].args[0]
-    assert conn.execute.await_count == 1
+    assert conn.execute.await_count == 4
     pool.execute.assert_not_awaited()
 
 

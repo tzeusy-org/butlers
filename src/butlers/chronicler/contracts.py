@@ -124,6 +124,11 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
             "one location point event per GPS fix; "
             "contiguous fixes within 30 min → movement_episode rollup"
         ),
+        schema_version=2,
+        raw_evidence_retention="30 days or protected owner-shorter policy; conditional on coverage",
+        projected_evidence_retention="Summary lifetime retained; source spatial floor survives",
+        allowed_spatial_precision_m=150,
+        source_tombstone_behavior="Permanent floor; replay/reset/widen cannot refill",
         optional_schema=True,
     ),
     # OwnTracks GPS place clustering — independent of and complementary to
@@ -139,6 +144,11 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
             "place_episode; (start_at, end_at) span the dwell; labeled "
             "against owner-declared reference points or 'place_unknown'"
         ),
+        schema_version=2,
+        raw_evidence_retention="30 days or protected owner-shorter policy; conditional on coverage",
+        projected_evidence_retention="Summary lifetime retained; source spatial floor survives",
+        allowed_spatial_precision_m=150,
+        source_tombstone_behavior="Permanent floor; replay/reset/widen cannot refill",
         optional_schema=True,
     ),
     SourceAdapterState(
@@ -151,6 +161,11 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
             "missing SSIDs, and unmapped SSIDs close the run; "
             "first/last point bound the episode with precision=minute"
         ),
+        schema_version=2,
+        raw_evidence_retention="30 days or protected owner-shorter policy; conditional on coverage",
+        projected_evidence_retention="Summary lifetime retained; source spatial floor survives",
+        allowed_spatial_precision_m=150,
+        source_tombstone_behavior="Permanent floor; replay/reset/widen cannot refill",
         optional_schema=True,
     ),
     SourceAdapterState(

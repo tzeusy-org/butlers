@@ -6,6 +6,7 @@ import { ownerFetch } from "./owner-session";
  */
 
 import type {
+  LocationRetentionStatus,
   CandidateIdentityFact,
   ApprovalAction,
   ApprovalActionsResponse,
@@ -7261,4 +7262,16 @@ export function getIdentityDecision(entityId: string, factId: string): Promise<{
   fact_id: string; decision: "adopt" | "reject"; decided_at: string; replayed: boolean;
 }> {
   return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/decision`);
+}
+
+
+/** Owner policy and actual last receipt. A failed fetch cannot imply expiration. */
+export function getLocationRetention(signal?: AbortSignal): Promise<{data: LocationRetentionStatus}> {
+  return apiFetch("/chronicler/location-retention", { signal });
+}
+
+export function putLocationRetention(days: number, expectedVersion: number): Promise<{data: Pick<LocationRetentionStatus, "days" | "version">}> {
+  return apiFetch("/chronicler/location-retention", {
+    method: "PUT", body: JSON.stringify({ days, expected_version: expectedVersion }),
+  });
 }
