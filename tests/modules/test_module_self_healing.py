@@ -114,9 +114,8 @@ class TestReportErrorBehavior:
         """Actual MCP closures/serialization and QA buffer; routing is synthetic. REQ-core-modules-003"""
         from butlers.config import ButlerConfig
         from butlers.core.qa.sources.butler_reports import ButlerReportsSource
-        from butlers.daemon import ButlerDaemon
+        from butlers.daemon import ButlerDaemon, LocalSwitchboardClient
         from butlers.modules.qa import QaModule
-        from butlers.modules.self_healing import LocalSwitchboardClient
 
         qa = QaModule()
         qa._butler_reports_source = ButlerReportsSource()

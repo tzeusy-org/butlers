@@ -15,7 +15,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastmcp import Client
 from pydantic import BaseModel, ConfigDict
 
 from butlers.core.healing import get_active_attempt, get_recent_attempt, list_attempts
@@ -432,14 +431,3 @@ def _mcp_payload(result: Any) -> Any:
         except (ValueError, TypeError):
             pass
     return None
-
-
-class LocalSwitchboardClient:
-    """Self-healing-only adapter to the already registered local MCP tools."""
-
-    def __init__(self, mcp: Any) -> None:
-        self._mcp = mcp
-
-    async def call_tool(self, name: str, arguments: dict) -> Any:
-        async with Client(self._mcp) as client:
-            return await client.call_tool(name, arguments)

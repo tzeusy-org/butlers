@@ -192,6 +192,21 @@ _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
 }
 
 
+class LocalSwitchboardClient:
+    """Daemon-owned transport to its already registered local MCP tools.
+
+    Modules receive only call_tool transport; MCP server custody and tool
+    registration remain in the daemon infrastructure.
+    """
+
+    def __init__(self, mcp: FastMCP) -> None:
+        self._mcp = mcp
+
+    async def call_tool(self, name: str, arguments: dict) -> Any:
+        async with MCPClient(self._mcp) as client:
+            return await client.call_tool(name, arguments)
+
+
 class ButlerDaemon:
     """Central orchestrator for a single butler instance."""
 
@@ -2001,8 +2016,6 @@ class ButlerDaemon:
                     and self.config.name == "switchboard"
                     and client is None
                 ):
-                    from butlers.modules.self_healing import LocalSwitchboardClient
-
                     client = LocalSwitchboardClient(self.mcp)
                 wire_fn(self.spawner, repo_root, switchboard_client=client)
                 logger.debug(

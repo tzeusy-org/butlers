@@ -1106,7 +1106,7 @@ class TestSelfHealingToQaRelayIntegration:
         assert bf.fingerprint == result["fingerprint"]
 
     async def test_relay_falls_back_when_qa_not_registered(self):
-        """Falls back to direct dispatch when QA staffer not in Switchboard registry.
+        """Reports unavailable reception when QA is absent from Switchboard registry.
 
         Confirms graceful degradation: missing QA registration → explicit unconfirmed
         reception, never a local dispatcher.
