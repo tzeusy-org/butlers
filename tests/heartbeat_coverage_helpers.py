@@ -557,6 +557,19 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
                 f"DROP TRIGGER coverage_hostile ON {leaf}",
             ),
         ):
+            relation = undo.split(" ON ", 1)[1]
+            owner_membership = (
+                "SELECT pg_has_role(current_user, "
+                "(SELECT relowner FROM pg_class WHERE oid=$1::text::regclass),'MEMBER')"
+            )
+            trigger_present = (
+                "SELECT EXISTS(SELECT 1 FROM pg_trigger "
+                "WHERE tgrelid=$1::text::regclass AND tgname='coverage_hostile')"
+            )
+            # TRIGGER permits creation; removal requires the table owner.
+            # The existing fixture login owns these migrated parent/leaf tables.
+            assert not await runtime.fetchval(owner_membership, relation)
+            assert await admin.fetchval(owner_membership, relation)
             await runtime.execute(ddl)
             try:
                 try:
@@ -572,8 +585,39 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
                     )
                     == 0
                 )
+                try:
+                    await runtime.execute(undo)
+                except asyncpg.InsufficientPrivilegeError as denied:
+                    assert denied.sqlstate == "42501"
+                else:
+                    raise AssertionError("runtime removed a table-owned hostile trigger")
+                assert await admin.fetchval(trigger_present, relation)
             finally:
-                await runtime.execute(undo)
+                # An unexpected successful runtime DROP must leave its own
+                # assertion visible, rather than be masked by absent-trigger
+                # cleanup. Genuine remaining hostile triggers use owner cleanup.
+                if await admin.fetchval(trigger_present, relation):
+                    await admin.execute(undo)
+            # Independent committed catalog and registered-writer witnesses
+            # prove cleanup restored the canonical chain for each species.
+            assert not await admin.fetchval(trigger_present, relation)
+            restored_endpoint = "restored-hostile-" + (
+                "before" if "BEFORE INSERT" in ddl else "deferred"
+            )
+            restored_ack = await heartbeat(runtime, _payload(restored_endpoint))
+            restored_row = await admin.fetchrow(
+                "SELECT r.last_heartbeat_at,r.heartbeat_history_coverage,l.received_at "
+                "FROM connector_registry r JOIN connector_heartbeat_log l "
+                "USING(connector_type,endpoint_identity) WHERE r.endpoint_identity=$1",
+                restored_endpoint,
+            )
+            assert restored_ack.status == "accepted"
+            assert restored_row["heartbeat_history_coverage"]["version"] == 1
+            assert (
+                restored_ack.server_time
+                == restored_row["last_heartbeat_at"].isoformat()
+                == restored_row["received_at"].isoformat()
+            )
         await runtime.execute("DROP FUNCTION switchboard.coverage_hostile_trigger()")
         await admin.execute(
             "ALTER TABLE connector_heartbeat_log DISABLE TRIGGER heartbeat_history_stamp"
