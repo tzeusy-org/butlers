@@ -173,8 +173,30 @@ Tests can use this to skip gracefully when Docker is not installed.
   retain the same paths, markers, workers, maxfail and sanitized JUnit evidence without
   instrumentation. Affected-only runs remain without coverage. Direct local CI targets
   retain their existing coverage behavior. Actual merge-group uploads and timings remain
-  observation obligations; M1/M2 source changes claim no wall-clock gain. Finite-timeout
-  changes in the active `fail-closed-ci-assurance` plan remain unfinished.
+  observation obligations; M1/M2 source changes claim no wall-clock gain. M3 supplies finite source bounds; its hosted timeout/cold-cache observations and the M4
+  calibration in `fail-closed-ci-assurance` remain unfinished.
+- Pytest's configured default is 300 seconds per item. Existing justified finite marks stay;
+  a named timeout fails the item. Node's two `node --test` commands use the same 300-second
+  bound; Vitest and Playwright retain their existing shorter defaults and retry settings.
+  Collection, worker setup and session finalization still need the owning workflow watchdog.
+  A killed or incomplete receipt remains UNKNOWN, never a pass.
+- Every workflow job has a finite positive `timeout-minutes`, inventoried in
+  `scripts/ci-job-timeouts.json`. Named healthy before samples, provisional rare-job debt,
+  full UV recovery allowance and browser/cold-setup reserves are recorded separately. They
+  are initial bounds, not current p95 calibration or proof that no job exceeds sixty minutes.
+  Faketime retains its existing 75-minute job and 3600-second ABRT plus 30-second KILL
+  watchdog until healthy measurements justify a separate change.
+- Browser caches require the exact runner OS, architecture, package-lock hash and installed
+  locked Playwright version. Cache failure is advisory; installation is mandatory on hits
+  and misses and always includes `--with-deps`. The installed-version reader checks all
+  three Playwright packages against the lock. Each attempt installs and launches the locked
+  Chromium, rejects a missing/corrupt/wrong-version executable and closes it. Attempts two
+  and three force repair; test retries are unchanged.
+  The Node installer supervises each Linux process group: TERM at 110 seconds, KILL by 120,
+  three attempts and two ten-second backoffs, with a 380-second outer deadline. It cleans
+  ordinary descendants even when their shell exits first; these bounds do not establish
+  containment of deliberately detached hostile processes. Local synthetic install controls
+  prove the supervisor, not actual OS-package installation or hosted cache behavior.
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
   caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
 - Startup timeouts (before a container starts) are host contention: reduce load and rely on the

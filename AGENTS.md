@@ -133,6 +133,20 @@ No local gate command matches CI's scope; check which command produced a number.
   Docker contention, not a broken branch: never run two broad Docker-backed gates at once; re-run
   alone before attributing the red to the code.
 
+### Finite execution bounds
+
+- Pytest's default item timeout is 300 seconds. Preserve justified finite overrides. Node's
+  `node --test` commands also have a 300-second bound; existing Vitest/Playwright defaults stay.
+  A timeout is a named non-pass. Collection, worker startup and session finalization need the
+  owning job watchdog, and an incomplete receipt is UNKNOWN.
+- Keep every workflow job in `scripts/ci-job-timeouts.json`, including explicitly provisional
+  rare-job/setup values. Current p95 and the full two-week long-tail audit require actual named
+  receipts; source caps alone are not calibration. Preserve faketime's existing 75-minute job
+  and 3600-second ABRT/30-second KILL watchdog until healthy measurements justify a change.
+- Browser cache hits still run mandatory OS-dependency installation and locked-version launch.
+  The shared installer owns three attempts, TERM110/KILL120 process-group cleanup, two ten-second
+  backoffs and the 380-second outer bound. A shell exit must not strand resistant descendants.
+
 ### Frontend CI gate order (knip masks build and test)
 
 The `frontend` job in `.github/workflows/ci.yml` runs lint, em-dash copy gate, query-result

@@ -27,8 +27,9 @@ flag and infers the default; the effective value only exists after pytest merges
 A grep for ``-n 0`` in the Makefile would pass while pinning nothing: the value that
 matters is the merged one, and it is only knowable by asking pytest.
 
-The probe exits at ``pytest_sessionstart``, so no subprocess here collects a test or
-boots a worker -- and none of them boots an ecosystem or spends a token on a live model.
+The configuration probe exits at ``pytest_sessionstart`` before collection or worker startup.
+A separate short timeout control below collects two temporary tests with ``-n 0``; neither
+probe boots an ecosystem or spends a token on a live model.
 """
 
 from __future__ import annotations
@@ -82,6 +83,7 @@ PROBE_PLUGIN = textwrap.dedent(
                     "dist": getattr(config.option, "dist", "<absent>"),
                     "tx": list(getattr(config.option, "tx", None) or []),
                     "dsession": config.pluginmanager.get_plugin("dsession") is not None,
+                    "timeout": config._env_timeout,
                 }
             )
         )
@@ -194,7 +196,44 @@ def _assert_serial(target: str, argv: list[str], effective: dict) -> None:
 @pytest.mark.timeout(300)
 def test_qg_serial_target_runs_on_one_process(tmp_path: Path) -> None:
     argv = _target_pytest_argv("test-qg-serial")
-    _assert_serial("test-qg-serial", argv, _effective_xdist_config(argv, tmp_path))
+    effective = _effective_xdist_config(argv, tmp_path)
+    _assert_serial("test-qg-serial", argv, effective)
+    assert effective["timeout"] == 300, effective
+
+    # Timer mechanics are separate from the causal inherited-default assertion
+    # above: an explicit short override also worked before the global default.
+    # Never put a permanent 300-second sleep into routine collection.
+    sleeper = tmp_path / "test_finite_timer.py"
+    sleeper.write_text(
+        "import time, pytest\n"
+        "@pytest.mark.timeout(0.1)\n"
+        "def test_named_sleep_control():\n    time.sleep(0.3)\n"
+        "def test_ordinary_positive():\n    assert 2 + 2 == 4\n"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTEST_", "COV_CORE_"))}
+    timed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--noconftest",
+            "-c",
+            str(REPO_ROOT / "pyproject.toml"),
+            "-n",
+            "0",
+            "-q",
+            "--tb=short",
+            str(sleeper),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert timed.returncode == 1, timed.stdout + timed.stderr
+    assert "test_named_sleep_control" in timed.stdout and "Timeout (>0.1s)" in timed.stdout
+    assert "1 failed, 1 passed" in timed.stdout
 
 
 @pytest.mark.timeout(300)
@@ -236,3 +275,11 @@ def test_e2e_target_list_is_complete() -> None:
         "A new pytest-backed e2e target must be added to E2E_TARGETS (or, if it is not "
         "pytest-backed, excluded here the way test-e2e-frontend is)."
     )
+
+
+# Temporary authorized normal-PR observation. Remove only after its official named red.
+# This item deliberately inherits pyproject's300s default: no timeout/skip override.
+def test_m3_hosted_inherited_300_second_sleep_canary():
+    import time
+
+    time.sleep(310)

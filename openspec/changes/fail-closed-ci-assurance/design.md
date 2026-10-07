@@ -4,7 +4,7 @@ Audited base60a2 has CI sources identical to current main0af0e213. The real extr
 
 ## Goals / Non-Goals
 
-Retain delivered M1 complete fail-closed needs/static survivors and implement released M2 coverage separation. Preserve closed bu-tt97y: preflight stays independent of heavy-ran classification. Keep required contexts check/guards/frontend, advisory frontend-e2e, test selection/markers/workers/full merge-group population/sanitized evidence. No M3/M4 implementation, whole closure, baseline sync/archive, runtime/SQL/grants or seven-minute target. M1/M2 claim no wall-clock gain.
+Retain delivered M1 complete fail-closed needs/static survivors and retain protected-landed M2 coverage separation and implement released M3 finite execution/browser installation. Preserve closed bu-tt97y: preflight stays independent of heavy-ran classification. Keep required contexts check/guards/frontend, advisory frontend-e2e, test selection/markers/workers/full merge-group population/sanitized evidence. No M4 completion, whole closure, baseline sync/archive, runtime/SQL/grants or seven-minute target. M1/M2/M3 source changes claim no wall-clock gain.
 
 ## Decisions
 
@@ -44,9 +44,48 @@ combine warnings alone cannot establish completeness. No badge credential value 
 
 Copy existing five-attempt UV policy into guards before lock; frozen dev sync precedes lint/format/SQL. Preserve Python/Node/OpenSpec and all current guards. Four moved steps get IDs/finalizer entries; only non-PR session-links skip is permitted. Setup failures remain job failures. Add guards directly to check.needs. Makefile check-lock/check-format/check-guards use identical nonmutating commands/scopes. Exact-once, budget, smoke cmd/SHA/status/duration/skips and sanitized artifacts remain preflight.
 
+### M3 finite execution and locked browser installation
+
+Pytest inherits300s through project configuration. Existing finite item overrides remain. The
+existing serial contract reads the installed timeout plugin's effective value; None is the
+causal old-source red. A short marked sleeper separately proves named non-pass plus an ordinary
+positive. An ignored unmarked310s local control actually failed at300.319s with its name and
+ordinary positive; that is local framework evidence, not the original hosted branch observation.
+No permanent300s sleeper enters the routine suite. Node's two existing `node --test` invocations
+receive300000ms; a short separate command proves its mechanism. Vitest/Playwright defaults,
+workers, retries, markers, corpus, sanitized JUnit and all M1/M2 verdict/report bodies stay.
+
+Every one of the25 jobs in all five workflows has a finite positive installed watchdog. The
+source register records exact named before inputs, stable/provisional status, full640s UV
+recovery allowance where applicable,380s browser allowance and setup reserves. Guards and
+coverage include an additional explicitly provisional180s frozen-dependency reserve, giving
+17m and16m respectively; this is engineering headroom, not measured dependency latency. Rare
+jobs keep explicit calibration debt. Faketime stays75m with3600sABRT/30sKILL. Watchdogs bound
+collection/setup/finalizers too; killed/missing terminal evidence remains UNKNOWN. No job is
+removed or made advisory, and required check's consumer/needs remain exact M2.
+
+Both frontend-e2e workflows resolve the exact installed/locked Playwright version after npmci.
+Their advisory cache key contains OS, architecture, complete lock hash and version, with no
+fallback restore keys. Mandatory installation runs even on a hit and always requests
+`--with-deps`. The lock reader rejects package disagreement. Each install attempt then actually
+launches the expected Chromium version and closes it; failure of a warm/corrupt/wrong binary
+causes retry with --force. There are three attempts and two10s backoffs. A Node supervisor uses
+one Linux process group per install/probe, TERM110s, KILL by120s and a380s outer deadline,
+clearing ordinary descendants on failure, shell exit, cancellation and final exit. This corrects
+an actually observed shell-wrapper stall: its shell died onTERM while a resistant descendant
+held the result pipe. It does not claim containment of deliberately detached hostile children.
+No install/test retry-until-green or cache bypass of OS dependencies is permitted.
+
+The current source proof distinguishes scaled routine external-boundary controls, unscaled local
+110/120/380 process-group observation, actual installed lock-reader output and the separate
+hosted OS/Chromium/cold-cache observations. Synthetic launch packages are not real browser or
+OS evidence. A normal PR source run plus protected full merge-group remain required. The
+original hosted inherited300 branch sleeper remains a distinct unfulfilled obligation until
+its exact named red and ordinary companion are retained; local evidence cannot close it.
+
 ### Whole original continues
 
-M2 source controls do not establish actual hosted uploads or timings. M3 later introduces finite pytest/Node/job bounds with full UV recovery/setup headroom and browser TERM110/KILL120 within each120s attempt. M4 keeps two real merge-group reports/~5s check, ten before/after check samples, ten clean merge-group p95/cap comparisons and complete two-week zero>60 audit. Every unfinished source/observation remains mandatory/unchecked; existing faketime75m/3600sABRT+30s cleanup survives. No-gain general alternative does not delete specific observer clauses.
+M2 source controls do not establish actual hosted uploads or timings. M3 introduces finite pytest/Node/job bounds with full UV recovery/setup headroom and browser TERM110/KILL120 within each120s attempt. M4 keeps two real merge-group reports/~5s check, ten before/after check samples, ten clean merge-group p95/cap comparisons and complete two-week zero>60 audit. Every unfinished source/observation remains mandatory/unchecked; existing faketime75m/3600sABRT+30s cleanup survives. No-gain general alternative does not delete specific observer clauses.
 
 ## Risks / Trade-offs
 
