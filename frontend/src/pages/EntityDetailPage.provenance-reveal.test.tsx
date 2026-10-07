@@ -216,6 +216,8 @@ afterEach(() => {
 });
 
 describe("EntityDetailPage — editorial provenance reveal", () => {
+  // REQ-dashboard-relationship-003: mounted owner-confirmed versus legacy
+  // provenance display. These fixtures do not prove request authentication.
   it("keeps provenance hidden until the affordance is activated", () => {
     renderPage();
 

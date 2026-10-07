@@ -1,3 +1,15 @@
+**Source References**
+
+- Non-Negotiable Rule 3 (inter-butler communication and schema isolation)
+- Non-Negotiable Rule 4 (deterministic infrastructure)
+- Non-Negotiable Rule 6 (Relationship Butler manifesto governs domain scope)
+- RFC 0004 (identity and contact resolution)
+- RFC 0006 (database schema and isolation)
+- RFC 0017 (owner mutation approval carry-forward)
+- RFC 0031 (atomic public entity graph projection)
+- `fact-evidence-and-coverage` active change (immutable evidence, coverage, and approval provenance)
+- `relational-edges-single-home` active change (structural versus narrative fact ownership)
+
 ## MODIFIED Requirements
 
 ### Requirement: Relationship entity facts triple store
@@ -622,15 +634,3 @@ Scope: v1-mandatory
 - **THEN** the writer MUST perform no automatic retraction or supersession
 - **AND** current readers MUST remain assertion-current until opt-in as-of behavior lands under
   `bu-1ypjo`
-
-## Source References
-
-- Non-Negotiable Rule 3 (inter-butler communication and schema isolation)
-- Non-Negotiable Rule 4 (deterministic infrastructure)
-- Non-Negotiable Rule 6 (Relationship Butler manifesto governs domain scope)
-- RFC 0004 (identity and contact resolution)
-- RFC 0006 (database schema and isolation)
-- RFC 0017 (owner mutation approval carry-forward)
-- RFC 0031 (atomic public entity graph projection)
-- `fact-evidence-and-coverage` active change (immutable evidence, coverage, and approval provenance)
-- `relational-edges-single-home` active change (structural versus narrative fact ownership)

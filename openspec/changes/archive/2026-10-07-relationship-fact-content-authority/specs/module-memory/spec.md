@@ -1,3 +1,9 @@
+**Source References**
+- PLAN.md §6 Phase 8 — memory fold-in scope.
+- Visual reference: the `MemoryExpanded` redesign prototype (graduated; now shipped in `frontend/`).
+- Reuses `audit.append()` from dashboard-audit-log on policy mutations.
+- Existing module-memory requirements (correction-driven retraction, etc.) are unchanged by this delta.
+
 ## MODIFIED Requirements
 
 ### Requirement: Content authority and steering-class admission
@@ -77,9 +83,3 @@ Scope: v1-mandatory
 
 - **WHEN** an episode is stored with no routing context
 - **THEN** it SHALL be stamped `system`
-
-## Source References
-- PLAN.md §6 Phase 8 — memory fold-in scope.
-- Visual reference: the `MemoryExpanded` redesign prototype (graduated; now shipped in `frontend/`).
-- Reuses `audit.append()` from dashboard-audit-log on policy mutations.
-- Existing module-memory requirements (correction-driven retraction, etc.) are unchanged by this delta.

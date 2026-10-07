@@ -583,6 +583,7 @@ async def test_registered_source_resolver_and_writer_are_role_owned(env):
             admission.register_source_registry(prior)
 
 
+# REQ-relationship-facts-003: actual admitted owner confirmation versus caller flags.
 async def test_caller_verified_and_context_copy_cannot_mint_owner_report(env):
     """The original protected writer demonstrably accepted caller verified."""
     subject = await _person(env)
@@ -767,6 +768,9 @@ async def test_protected_adoption_rejection_and_unknown_ack_readback(env, monkey
         )
 
 
+# REQ-relationship-facts-001: real triple-store reference/retention/null seam;
+# held effective-time cutover/index admission remains outside this proof.
+# REQ-dashboard-relationship-003: durable reporter/confirmation read-model states.
 async def test_report_versions_birth_witness_and_author_deletion(env):
     subject, first, second = await _person(env), await _person(env), await _person(env)
     # Capture both birth witnesses on the actual accepted-source producer.
@@ -923,6 +927,7 @@ async def test_report_versions_birth_witness_and_author_deletion(env):
     )
 
 
+# REQ-relationship-facts-004: high confidence cannot elevate third-party kinship.
 async def test_family_gate_and_stored_gap_authority(env):
     subject, relative, reporter = await _person(env), await _person(env), await _person(env)
     report = await _report(env, reporter)
@@ -975,6 +980,9 @@ async def test_family_gate_and_stored_gap_authority(env):
     assert owner_positive.fact_id and owner_positive.outcome is not AssertOutcome.pending_approval
 
 
+# REQ-relationship-facts-002: ordinary writer versus temporal legacy-index
+# refusal and packet preservation; no held G/index cutover delivery is claimed.
+# REQ-relationship-facts-005: actual executor lineage and frozen replay arguments.
 async def test_approval_replay_original_args_and_legacy_normalization(env, monkeypatch):
     from butlers.modules.approvals.executor import execute_approved_action
 
@@ -1312,6 +1320,8 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
     )
 
 
+# REQ-contacts-identity-001: genuine candidate exclusion plus active/adopted
+# search companions; the existing search DB suite covers matching and secrets.
 async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env):
     reporter = await _person(env)
     report = await _report(env, reporter)
