@@ -81,6 +81,14 @@ narrows away from that default, never replaces or widens it on its own authority
 `merge_group` run is unaffected either way -- it always runs the full matrix, unabridged, against
 the tree about to land.
 
+The required `check` evaluates needed-job verdicts without checkout or dependency installation.
+The visible, non-required `coverage` job runs only after all ten merge-group shards succeed.
+It validates each database and its same-checkout/run/attempt shard metadata before combining
+and publishing the existing report/badge. PRs run the same selected corpus without coverage;
+merge-group shards and direct standalone shard calls retain coverage. A reporting failure is
+visible independently of required test verdicts. Source/fixture controls do not establish hosted
+upload success or timing improvements; those need their named actual merge-group observations.
+
 **Measured planner precision.** The scoped lane shipped after the planner escalated to `mode=full`
 for all 7 of 7 PRs with a real shard failure in a 50-PR sample; the merge queue still runs the full
 matrix on every landing tree, so the lane can only speed PRs up, never let a failure through.

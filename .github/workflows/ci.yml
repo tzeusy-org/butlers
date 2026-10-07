@@ -661,6 +661,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -722,11 +723,13 @@ jobs:
           overwrite: true
 
       - name: Upload unit shard 1 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-unit-1-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-unit-1.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-unit-1.data
+            ${{ runner.temp }}/ci-coverage/coverage-unit-1.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -765,6 +768,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -826,11 +830,13 @@ jobs:
           overwrite: true
 
       - name: Upload unit shard 2 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-unit-2-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-unit-2.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-unit-2.data
+            ${{ runner.temp }}/ci-coverage/coverage-unit-2.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -869,6 +875,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -930,11 +937,13 @@ jobs:
           overwrite: true
 
       - name: Upload unit shard 3 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-unit-3-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-unit-3.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-unit-3.data
+            ${{ runner.temp }}/ci-coverage/coverage-unit-3.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -973,6 +982,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -1034,11 +1044,13 @@ jobs:
           overwrite: true
 
       - name: Upload unit shard 4 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-unit-4-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-unit-4.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-unit-4.data
+            ${{ runner.temp }}/ci-coverage/coverage-unit-4.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -1077,6 +1089,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -1138,11 +1151,13 @@ jobs:
           overwrite: true
 
       - name: Upload unit shard 5 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-unit-5-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-unit-5.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-unit-5.data
+            ${{ runner.temp }}/ci-coverage/coverage-unit-5.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -1181,6 +1196,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -1275,11 +1291,13 @@ jobs:
           overwrite: true
 
       - name: Upload integration shard 1 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-integration-1-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-integration-1.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-integration-1.data
+            ${{ runner.temp }}/ci-coverage/coverage-integration-1.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -1318,6 +1336,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -1412,11 +1431,13 @@ jobs:
           overwrite: true
 
       - name: Upload integration shard 2 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-integration-2-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-integration-2.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-integration-2.data
+            ${{ runner.temp }}/ci-coverage/coverage-integration-2.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -1455,6 +1476,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -1549,11 +1571,13 @@ jobs:
           overwrite: true
 
       - name: Upload integration shard 3 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-integration-3-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-integration-3.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-integration-3.data
+            ${{ runner.temp }}/ci-coverage/coverage-integration-3.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -1592,6 +1616,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -1685,11 +1710,13 @@ jobs:
           overwrite: true
 
       - name: Upload integration shard 4 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-integration-4-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-integration-4.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-integration-4.data
+            ${{ runner.temp }}/ci-coverage/coverage-integration-4.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -1728,6 +1755,7 @@ jobs:
           - 5432:5432
 
     env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
       DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
@@ -1821,11 +1849,13 @@ jobs:
           overwrite: true
 
       - name: Upload integration shard 5 coverage data
-        if: always()
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-integration-5-coverage-data
-          path: ${{ runner.temp }}/ci-coverage/coverage-integration-5.data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-integration-5.data
+            ${{ runner.temp }}/ci-coverage/coverage-integration-5.data.metadata.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true
@@ -1834,7 +1864,7 @@ jobs:
     # Affected-test lane (bu-v28ho): the `plan` job's evidence when it
     # selected a scoped plan. Runs the planner-selected test paths directly
     # instead of the full ten-shard matrix. Not part of the coverage-combine
-    # pipeline in `check` -- this lane trades combined coverage for wall
+    # pipeline in `coverage` -- this lane trades combined coverage for wall
     # time on the PRs where the planner's selection is precise, and the
     # merge queue's merge_group run still exercises every shard with
     # coverage before anything lands on main.
@@ -1933,7 +1963,7 @@ jobs:
     # changes, plan and independent preflight. The exact event/ref/plan skip
     # policy preserves docs/main-push skips and affected-only scoped PRs.
     # Preflight never contributes to heavy-shard consistency (bu-tt97y).
-    # Coverage remains here until the separately released M2 extraction.
+    # Verdict-only: independent coverage reporting is never a prerequisite.
     needs: [changes, guards, plan, check-preflight, check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5, check-affected]
     if: ${{ always() }}
     runs-on: ubuntu-latest
@@ -2054,17 +2084,22 @@ jobs:
               output.write(f"shards_ran={str(shards_ran).lower()}\n")
           PY
 
+  coverage:
+    # Visible reporting only; required check/guards/frontend never await it.
+    # always() avoids skip propagation from the shards' intentionally skipped plan.
+    needs: [check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5]
+    if: ${{ always() && github.event_name == 'merge_group' && needs.check-unit-1.result == 'success' && needs.check-unit-2.result == 'success' && needs.check-unit-3.result == 'success' && needs.check-unit-4.result == 'success' && needs.check-unit-5.result == 'success' && needs.check-integration-1.result == 'success' && needs.check-integration-2.result == 'success' && needs.check-integration-3.result == 'success' && needs.check-integration-4.result == 'success' && needs.check-integration-5.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
       - uses: actions/checkout@v6
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
 
       - name: Set up Python 3.12
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Install uv
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         run: |
           set -euo pipefail
           max_attempts=5
@@ -2083,81 +2118,69 @@ jobs:
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
       - name: Install dependencies for coverage aggregation
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         run: uv sync --frozen --dev
 
       - name: Download unit shard 1 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-1-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-1
 
       - name: Download unit shard 2 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-2-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-2
 
       - name: Download unit shard 3 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-3-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-3
 
       - name: Download unit shard 4 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-4-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-4
 
       - name: Download unit shard 5 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-5-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-5
 
       - name: Download integration shard 1 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-1-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-1
 
       - name: Download integration shard 2 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-2-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-2
 
       - name: Download integration shard 3 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-3-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-3
 
       - name: Download integration shard 4 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-4-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-4
 
       - name: Download integration shard 5 coverage data
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-5-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-5
 
       - name: Combine coverage from all independent test shards
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         id: coverage
         env:
           UNIT_1_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-1/coverage-unit-1.data
@@ -2174,19 +2197,11 @@ jobs:
           COMBINED_REPORT: ${{ runner.temp }}/ci-artifacts/coverage/coverage.json
         run: |
           mkdir -p "$(dirname "$COMBINED_COVERAGE")" "$(dirname "$COMBINED_REPORT")"
-          for coverage_file in \
-            $UNIT_1_COVERAGE \
-            $UNIT_2_COVERAGE \
-            $UNIT_3_COVERAGE \
-            $UNIT_4_COVERAGE \
-            $UNIT_5_COVERAGE \
-            $INTEGRATION_1_COVERAGE \
-            $INTEGRATION_2_COVERAGE \
-            $INTEGRATION_3_COVERAGE \
-            $INTEGRATION_4_COVERAGE \
-            $INTEGRATION_5_COVERAGE; do
-            test -s "$coverage_file"
-          done
+          rm -f "$COMBINED_COVERAGE" "$COMBINED_REPORT"
+          uv run python scripts/check_ci_coverage.py \
+            --input-root "${RUNNER_TEMP}/ci-coverage" \
+            --head "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
           uv run coverage combine --data-file="$COMBINED_COVERAGE" \
             $UNIT_1_COVERAGE \
             $UNIT_2_COVERAGE \
@@ -2213,7 +2228,6 @@ jobs:
           fi
 
       - name: Upload combined coverage report
-        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-combined-coverage-report
@@ -2227,7 +2241,7 @@ jobs:
         # is the lane that still has coverage data for the tree about to land.
         # merge_group runs execute in the repository context and see repository
         # secrets; dynamic-badges-action needs only the gist secrets, not the ref.
-        if: ${{ steps.gate.outputs.shards_ran == 'true' && github.event_name == 'merge_group' }}
+        if: ${{ success() }}
         uses: schneegans/dynamic-badges-action@v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}

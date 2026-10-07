@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -402,6 +405,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     unit_jobs = [jobs[f"check-unit-{index}"] for index in range(1, 6)]
     integration_jobs = [jobs[f"check-integration-{index}"] for index in range(1, 6)]
     check_job = jobs["check"]
+    coverage_job = jobs["coverage"]
 
     # Merge-queue topology (bu-r5mnn): the queue's merge_group run is the terminal
     # broad gate, so the workflow must accept that event.
@@ -658,7 +662,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
 
     artifact_steps = {
         step["with"]["name"]: step
-        for job in [preflight, *unit_jobs, *integration_jobs, check_job]
+        for job in [preflight, *unit_jobs, *integration_jobs, coverage_job]
         for step in job["steps"]
         if step.get("uses") == "actions/upload-artifact@v4"
     }
@@ -682,10 +686,13 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
 
     for coverage_name, filename, download_name, directory in expected_coverage_artifacts:
         coverage_upload = artifact_steps[coverage_name]
-        assert coverage_upload["if"] == "always()"
+        assert coverage_upload["if"] == "${{ always() && env.CI_COVERAGE == '1' }}"
         assert coverage_upload["with"]["if-no-files-found"] == "error"
-        assert coverage_upload["with"]["path"].endswith(filename)
-        download = _workflow_step(job=check_job, name=download_name)
+        paths = coverage_upload["with"]["path"].splitlines()
+        assert len(paths) == 2
+        assert paths[0].endswith(filename)
+        assert paths[1] == paths[0] + ".metadata.json"
+        download = _workflow_step(job=coverage_job, name=download_name)
         assert download["uses"] == "actions/download-artifact@v4"
         assert download["with"] == {
             "name": coverage_name,
@@ -702,17 +709,30 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
         "REF": "${{ github.ref }}",
         "NEEDS_JSON": "${{ toJSON(needs) }}",
     }
-    for step in check_job["steps"][1:]:
-        assert "steps.gate.outputs.shards_ran == 'true'" in step["if"]
+    assert check_job["steps"] == [gate]
+    expected_shards = [
+        f"check-{lane}-{index}" for lane in ("unit", "integration") for index in range(1, 6)
+    ]
+    assert coverage_job["needs"] == expected_shards
+    assert coverage_job["if"] == (
+        "${{ always() && github.event_name == 'merge_group' && "
+        + " && ".join(f"needs.{name}.result == 'success'" for name in expected_shards)
+        + " }}"
+    )
+    for job in [*unit_jobs, *integration_jobs]:
+        assert job["env"]["CI_COVERAGE"] == (
+            "${{ github.event_name == 'merge_group' && '1' || '0' }}"
+        )
+    assert "coverage" not in check_job["needs"]
 
     combine = _workflow_step(
-        job=check_job, name="Combine coverage from all independent test shards"
+        job=coverage_job, name="Combine coverage from all independent test shards"
     )
     assert "coverage combine --data-file=" in combine["run"]
     for prefix, count in (("UNIT", 5), ("INTEGRATION", 5)):
         for index in range(1, count + 1):
             assert f"{prefix}_{index}_COVERAGE" in combine["run"]
-    assert 'test -s "$coverage_file"' in combine["run"]
+    assert "scripts/check_ci_coverage.py" in combine["run"]
 
     smoke = _workflow_step(job=preflight, name="Smoke tests (fast gate + release evidence)")
     assert smoke["env"]["TESTCONTAINERS_RYUK_DISABLED"] == "true"
@@ -721,7 +741,234 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     smoke_artifact = artifact_steps["smoke-release-evidence"]
     assert smoke_artifact["with"]["path"].endswith("smoke/release-evidence.json")
 
-    badge = _workflow_step(job=check_job, name="Update coverage badge")
-    assert badge["if"] == (
-        "${{ steps.gate.outputs.shards_ran == 'true' && github.event_name == 'merge_group' }}"
+    badge = _workflow_step(job=coverage_job, name="Update coverage badge")
+    assert badge["if"] == "${{ success() }}"
+
+
+def test_ci_coverage_report_rejects_any_bad_input_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run the actual report shell with ten independently traced coverage DBs.
+
+    The immutable M1 shell demonstrates that nine valid plus one nonempty corrupt
+    database produced a partial green report. This is local reporting evidence,
+    not a hosted artifact-upload, badge-network or merge-group timing claim.
+    """
+    from coverage import CoverageData
+
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import check_ci_coverage as reporter
+
+    checkout = tmp_path / "checkout"
+    source = checkout / "src/butlers/example.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("value = 7\n")
+    (source.parent / "__init__.py").write_text("")
+    (checkout / "trace.py").write_text("import runpy\nrunpy.run_path('src/butlers/example.py')\n")
+    (checkout / ".coveragerc").write_text("[run]\nsource = src/butlers\n")
+    tests = checkout / "tests/test_example.py"
+    tests.parent.mkdir()
+    tests.write_text("def test_example(): pass\n")
+    manifests = checkout / ".github/ci-test-shards"
+    manifests.mkdir(parents=True)
+    specs = [(lane, index) for lane in ("unit", "integration") for index in range(1, 6)]
+    for lane, index in specs:
+        (manifests / f"{lane}-{index}.txt").write_text("tests/test_example.py\n")
+    scripts = checkout / "scripts"
+    scripts.mkdir()
+    for filename in ("check_ci_coverage.py", "check_ci_test_shards.py"):
+        shutil.copyfile(REPO_ROOT / "scripts" / filename, scripts / filename)
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CI fixture",
+            "-c",
+            "user.email=ci-fixture@example.invalid",
+            "commit",
+            "-qm",
+            "coverage control fixture",
+        ],
+        cwd=checkout,
+        check=True,
     )
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
+    for name, value in {
+        "GITHUB_SHA": head,
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_EVENT_NAME": "merge_group",
+    }.items():
+        monkeypatch.setenv(name, value)
+    inputs = tmp_path / "runner/ci-coverage"
+    population: dict[Path, bytes] = {}
+    for lane, index in specs:
+        data = inputs / f"{lane}-{index}" / f"coverage-{lane}-{index}.data"
+        data.parent.mkdir(parents=True)
+        subprocess.run(
+            [sys.executable, "-m", "coverage", "run", f"--data-file={data}", "trace.py"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        reporter.write_shard_metadata(
+            coverage_file=data,
+            repo_root=checkout,
+            lane=lane,
+            shard=index,
+            test_files=["tests/test_example.py"],
+        )
+        population[data] = data.read_bytes()
+        metadata = data.with_suffix(".data.metadata.json")
+        population[metadata] = metadata.read_bytes()
+    # Use the installed interpreter for each original `uv run` invocation. This
+    # avoids installing another environment and preserves real coverage commands.
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    shim = binaries / "uv"
+    shim.write_text(
+        '#!/bin/sh\n[ "$1" = run ] || exit 90\nshift\n'
+        'if [ "$1" = python ]; then shift; exec ' + shlex.quote(sys.executable) + ' "$@"; fi\n'
+        "exec " + shlex.quote(sys.executable) + ' -m "$@"\n'
+    )
+    shim.chmod(0o755)
+    combined = inputs / "combined.data"
+    report = tmp_path / "runner/ci-artifacts/coverage/coverage.json"
+    output = tmp_path / "outputs"
+    environment = {
+        **os.environ,
+        "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+        "RUNNER_TEMP": str(inputs.parent),
+        "COMBINED_COVERAGE": str(combined),
+        "COMBINED_REPORT": str(report),
+        "GITHUB_OUTPUT": str(output),
+        **{
+            f"{lane.upper()}_{index}_COVERAGE": str(
+                inputs / f"{lane}-{index}" / f"coverage-{lane}-{index}.data"
+            )
+            for lane, index in specs
+        },
+    }
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    fixed = _workflow_step(
+        job=workflow["jobs"]["coverage"], name="Combine coverage from all independent test shards"
+    )["run"]
+    old_path = REPO_ROOT / "tests/fixtures/ci_coverage/m1-combine.sh"
+    old = old_path.read_text()
+    receipts = []
+
+    def reset() -> None:
+        shutil.rmtree(inputs)
+        for path, contents in population.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(contents)
+        report.unlink(missing_ok=True)
+        output.write_text("")
+
+    def stamp(data: Path) -> None:
+        reporter.write_shard_metadata(
+            coverage_file=data,
+            repo_root=checkout,
+            lane="unit",
+            shard=1,
+            test_files=["tests/test_example.py"],
+        )
+
+    def run(label: str, body: str, expected: int) -> None:
+        result = subprocess.run(
+            ["bash", "-e", "-c", body],
+            cwd=checkout,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        published = "percentage=" in output.read_text() and "color=" in output.read_text()
+        assert result.returncode == expected, (label, result.stdout, result.stderr)
+        assert report.exists() == (expected == 0), (label, result.stderr)
+        assert published == (expected == 0), (label, result.stderr)
+        receipts.append(
+            {
+                "case": label,
+                "exit": result.returncode,
+                "report": report.exists(),
+                "badge_outputs": published,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+        )
+
+    data = inputs / "unit-1/coverage-unit-1.data"
+    metadata = data.with_suffix(".data.metadata.json")
+    reset()
+    run("fixed-ten-independently-traced-valid", fixed, 0)
+    reset()
+    data.write_bytes(b"nonempty corrupt coverage control\n")
+    stamp(data)  # A valid digest cannot stand in for reading the actual SQLite DB.
+    run("baseline-nine-valid-one-nonempty-corrupt", old, 0)
+    reset()
+    data.write_bytes(b"nonempty corrupt coverage control\n")
+    stamp(data)
+    run("fixed-nine-valid-one-nonempty-corrupt", fixed, 2)
+    for case in (
+        "missing",
+        "empty",
+        "extra",
+        "mixed-run",
+        "stale-head",
+        "wrong-shard",
+        "wrong-manifest",
+        "digest",
+        "incompatible-tracing",
+        "source-population",
+    ):
+        reset()
+        if case == "missing":
+            data.unlink()
+        elif case == "empty":
+            data.unlink()
+            empty = CoverageData(basename=str(data))
+            empty.add_lines({})
+            empty.write()
+            stamp(data)
+        elif case == "extra":
+            (inputs / "extra.data").write_bytes(b"extra")
+        elif case in {"incompatible-tracing", "source-population"}:
+            data.unlink()
+            command = [sys.executable, "-m", "coverage", "run", f"--data-file={data}"]
+            if case == "incompatible-tracing":
+                command.append("--branch")
+            else:
+                command.append("--omit=src/butlers/__init__.py")
+            subprocess.run(
+                [*command, "trace.py"], cwd=checkout, check=True, capture_output=True, text=True
+            )
+            stamp(data)
+        else:
+            payload = json.loads(metadata.read_text())
+            field, value = {
+                "mixed-run": ("run_id", "124"),
+                "stale-head": ("head", "0" * 40),
+                "wrong-shard": ("shard", True),
+                "wrong-manifest": ("test_files", []),
+                "digest": ("sha256", "0" * 64),
+            }[case]
+            payload[field] = value
+            metadata.write_text(json.dumps(payload))
+        run("fixed-" + case, fixed, 2)
+    receipt = tmp_path / "coverage-report-controls.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "baseline_shell_sha256": hashlib.sha256(old.encode()).hexdigest(),
+                "fixed_shell_sha256": hashlib.sha256(fixed.encode()).hexdigest(),
+                "source_checkout": head,
+                "controls": receipts,
+            },
+            indent=2,
+        )
+    )
+    print(f"coverage report receipt: {receipt}")
