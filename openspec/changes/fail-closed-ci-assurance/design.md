@@ -64,6 +64,15 @@ jobs keep explicit calibration debt. Faketime stays75m with3600sABRT/30sKILL. Wa
 collection/setup/finalizers too; killed/missing terminal evidence remains UNKNOWN. No job is
 removed or made advisory, and required check's consumer/needs remain exact M2.
 
+The affected lane also admits successful run 37597511584, job 112713967258 at 1631a1f4:
+2,124s for the whole job, including 2,077s of tests and 47s of setup/evidence/finalization. Its
+initial 26-minute cap excluded that workload. With only one healthy sample and no stable or
+current p95, retain the complete observation as a provisional envelope:
+ceil((2*2124+640)/60) = 82 minutes. This applies the existing conservative multiplier plus
+the complete extra UV recovery reserve without subtracting observed setup. The finite bound
+preserves the workload; it neither guarantees zero jobs over 60 minutes nor replaces the
+ten-run calibration and complete two-week audit.
+
 Both frontend-e2e workflows resolve the exact installed/locked Playwright version after npmci.
 Their advisory cache key contains OS, architecture, complete lock hash and version, with no
 fallback restore keys. Mandatory installation runs even on a hit and always requests

@@ -1,6 +1,6 @@
 {
   "observed_at": "2026-10-07T03:00:04.849210+00:00",
-  "formula": "Installed initial bounds: ceil((2*named healthy before p95 + complete explicit UV/browser recovery reserve + stated provisional cold setup reserve)/60), minimum2 minutes. Reviewed candidate fields retain original provenance. Unknown healthy jobs remain explicitly provisional; none is current calibration or a wall-clock-gain claim.",
+  "formula": "Installed initial bounds: ceil((2*named healthy before p95 + complete explicit UV/browser recovery reserve + stated provisional cold setup reserve)/60), minimum2 minutes. A job without stable p95 may use twice its maximum named healthy whole-job observation as a provisional compatibility envelope, retaining complete observed setup/evidence and full extra recovery reserves. Reviewed candidate fields retain original provenance. Neither one healthy sample nor before-only samples establish current calibration or wall-clock gain.",
   "jobs": [
     {
       "workflow": ".github/workflows/ci.yml",
@@ -286,21 +286,42 @@
       "workflow": ".github/workflows/ci.yml",
       "job": "check-affected",
       "existing_timeout_minutes": null,
-      "successful_sample_n": 0,
+      "successful_sample_n": 1,
       "p95_s": null,
-      "candidate_timeout_minutes": 26,
+      "candidate_timeout_minutes": 82,
       "retry_extra_s": 0,
-      "state": "provisional; no healthy p95 proof",
-      "sample_source": "other-workflow-timing-metadata.json",
+      "state": "provisional; one named healthy whole-job envelope, no stable or current p95 proof",
+      "sample_source": "https://github.com/tzeusy-org/butlers/actions/runs/37597511584/job/112713967258",
       "retained_original_candidate_minutes": 26,
       "review_uv_nominal_envelope_s": 640,
       "review_browser_hard_retry_interval_s": 0,
       "review_conservative_before_only_candidate_minutes": null,
       "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
-      "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
+      "review_policy": "Provisional compatibility bound: ceil((2*2124s named healthy whole-job envelope + complete640s extra UV recovery reserve)/60)=82min. The2124s observation includes2077s tests and47s other setup/evidence/finalization; retain all47s and add another2124s provisional setup/runtime variation allowance, without subtracting first-attempt setup. No additional cold allowance is needed beyond this conservative doubled complete envelope. One old successful observation is not stable/current p95. Recalibrate using required named current samples; no guarantee of zero>60min jobs or wall-clock gain.",
       "reviewed_job_name": "check-affected",
       "additional_provisional_cold_dependency_allowance_s": 0,
-      "installed_timeout_minutes": 26
+      "installed_timeout_minutes": 82,
+      "healthy_job_observations": [
+        {
+          "run_id": 37597511584,
+          "run_attempt": 1,
+          "head_sha": "1631a1f400ab7fbf5e1c2a12194a2efa98636dfc",
+          "event": "pull_request",
+          "job_id": 112713967258,
+          "conclusion": "success",
+          "started_at": "2026-10-07T09:00:35Z",
+          "completed_at": "2026-10-07T09:35:59Z",
+          "test_step_elapsed_s": 2077,
+          "junit_sha256": "dad2ffc520c8935ba74798eadea7cdebd8432d24220517e964ed54758a9101a3",
+          "testcases": 17853,
+          "failures": 0,
+          "errors": 0,
+          "skips": 108,
+          "maximum_testcase_s": 69.922,
+          "testcases_over_300": 0
+        }
+      ],
+      "provisional_healthy_envelope_s": 2124
     },
     {
       "workflow": ".github/workflows/ci.yml",

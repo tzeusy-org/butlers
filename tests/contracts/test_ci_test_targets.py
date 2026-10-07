@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -883,6 +884,30 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
             )
         else:
             assert "provisional" in row["state"] or row["job"] == "faketime-matrix"
+        observations = row.get("healthy_job_observations", [])
+        if observations:
+            # A single whole-job observation is a compatibility floor, not p95.
+            # Keep setup/evidence time and the full extra recovery allowance.
+            durations = []
+            for observation in observations:
+                assert observation["conclusion"] == "success"
+                elapsed = (
+                    datetime.fromisoformat(observation["completed_at"])
+                    - datetime.fromisoformat(observation["started_at"])
+                ).total_seconds()
+                assert elapsed >= observation["test_step_elapsed_s"] > 0
+                durations.append(elapsed)
+            envelope = max(durations)
+            assert row["provisional_healthy_envelope_s"] == envelope
+            reserve = (
+                row["review_uv_nominal_envelope_s"]
+                + row["review_browser_hard_retry_interval_s"]
+                + row["additional_provisional_cold_dependency_allowance_s"]
+            )
+            assert row["installed_timeout_minutes"] * 60 >= 2 * envelope + reserve, (
+                f"{row['job']} watchdog excludes its recorded healthy whole-job envelope "
+                "and full setup/recovery headroom"
+            )
     nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
         "faketime-matrix"
     ]

@@ -1875,7 +1875,7 @@ jobs:
           overwrite: true
 
   check-affected:
-    timeout-minutes: 26
+    timeout-minutes: 82
     # Affected-test lane (bu-v28ho): the `plan` job's evidence when it
     # selected a scoped plan. Runs the planner-selected test paths directly
     # instead of the full ten-shard matrix. Not part of the coverage-combine
