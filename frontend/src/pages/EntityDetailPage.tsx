@@ -57,6 +57,7 @@ import { announce } from "@/lib/shell-announcer";
 import { Row } from "@/components/ui/Row";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Voice } from "@/components/ui/Voice";
+import { FactReporterLine } from "@/components/relationship/FactReporterLine";
 import { ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
 import {
   AlertDialog,
@@ -1238,6 +1239,7 @@ function FactRow({
         >
           <StalenessBand band={provenance.staleness_band} />
           <ProvenanceMarks src={provenance.src} verified={provenance.verified} />
+          {provenance.store === "identity" && <FactReporterLine fact={provenance} />}
         </div>
       )}
     </li>
@@ -2116,6 +2118,7 @@ function WorkbenchInspectorRow({ fact }: { fact: EntityFact }) {
           {formatPredicateLabel(fact.predicate)}
         </div>
         <ProvenanceMarks src={fact.src} verified={fact.verified} className="mt-0.5" />
+        {fact.store === "identity" && <FactReporterLine fact={fact} />}
       </div>
     </Row>
   );

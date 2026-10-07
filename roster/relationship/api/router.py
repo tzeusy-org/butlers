@@ -55,6 +55,12 @@ from butlers.tools.relationship.entity_merge import (
     TemporalOccurrenceCollisionError,
     merge_entity_pair,
 )
+from butlers.tools.relationship.fact_identity_decisions import (
+    IdentityDecisionConflict,
+    attribution_response,
+    attribution_select_sql,
+    decide_identity_fact,
+)
 from butlers.tools.relationship.fact_temporal import (
     MUTATOR_UNSUPPORTED as _TEMPORAL_MUTATOR_UNSUPPORTED,
 )
@@ -386,6 +392,7 @@ def _ef_row_to_ci_entry(fr: Any) -> Any:
         predicate=fr["predicate"],
         value_hash=_contact_value_hash(raw_obj),
         verified=bool(verified_raw) if verified_raw is not None else False,
+        **attribution_response(fr),
     )
 
 
@@ -4574,6 +4581,7 @@ def _row_to_contact_fact(r: Any) -> Any:
         weight=r["weight"],
         verified=r["verified"],
         primary=r["primary"],
+        **attribution_response(r),
     )
 
 
@@ -4630,7 +4638,7 @@ async def list_entity_contacts(
     await _assert_entity_exists(pool, entity_id)
 
     rows = await pool.fetch(
-        """
+        f"""
         SELECT
             f.id,
             f.predicate,
@@ -4640,7 +4648,8 @@ async def list_entity_contacts(
             f.last_seen,
             f.weight,
             f.verified,
-            f."primary"
+            f."primary",
+            {attribution_select_sql()}
         FROM relationship.entity_facts f
         WHERE f.subject   = $1
           AND f.predicate LIKE 'has-%'
@@ -4898,16 +4907,17 @@ async def verify_entity_contact(
     target_row = await _resolve_contact_fact_by_hash(pool, entity_id, predicate, value_hash)
     fact_id: UUID = target_row["id"]
 
-    # Exact-id verification: the row's effective packet is left as stored.
-    await pool.execute(
-        """
-        UPDATE relationship.entity_facts
-        SET verified   = true,
-            updated_at = now()
-        WHERE id = $1
-        """,
-        fact_id,
-    )
+    async with pool.acquire() as conn, conn.transaction():
+        try:
+            await decide_identity_fact(
+                conn, entity_id=entity_id, fact_id=fact_id, decision="confirm"
+            )
+        except PermissionError as exc:
+            raise HTTPException(
+                403, detail={"code": "owner_required", "message": str(exc)}
+            ) from exc
+        except IdentityDecisionConflict as exc:
+            raise HTTPException(409, detail={"code": "fact_stale", "message": str(exc)}) from exc
 
     return MarkContactVerifiedResponse(verified=True, fact_id=fact_id)
 
@@ -5415,7 +5425,8 @@ async def list_entity_facts(
             f."primary",
             f.validity,
             f.created_at,
-            {identity_staleness_band_sql("f")} AS staleness_band
+            {identity_staleness_band_sql("f")} AS staleness_band,
+            {attribution_select_sql()}
         FROM relationship.entity_facts f
         WHERE {" AND ".join(where)}
         ORDER BY f.created_at DESC, f.id DESC
@@ -5449,6 +5460,7 @@ async def list_entity_facts(
             created_at=r["created_at"],
             store="identity",
             staleness_band=r["staleness_band"],
+            **attribution_response(r),
         )
         for r in page_rows
     ]
@@ -6055,6 +6067,7 @@ def _compare_fact_from_identity_row(r: Any) -> Any:
         observed_at=r["observed_at"],
         last_seen=r["last_seen"],
         staleness_band=r["staleness_band"],
+        **attribution_response(r),
     )
 
 
@@ -6098,7 +6111,8 @@ async def _fetch_identity_facts_for_compare(pool, entity_id: UUID) -> list[Any]:
             f."primary",
             f.observed_at,
             f.last_seen,
-            {identity_staleness_band_sql("f")} AS staleness_band
+            {identity_staleness_band_sql("f")} AS staleness_band,
+            {attribution_select_sql()}
         FROM relationship.entity_facts f
         WHERE f.subject = $1
           AND f.validity = 'active'
@@ -7112,7 +7126,8 @@ async def get_entity_core_dates(
             f.src,
             f.conf,
             f.verified,
-            {identity_staleness_band_sql("f")} AS staleness_band
+            {identity_staleness_band_sql("f")} AS staleness_band,
+            {attribution_select_sql()}
         FROM relationship.entity_facts f
         WHERE f.subject = $1
           AND f.validity = 'active'
@@ -7152,3 +7167,86 @@ async def get_entity_core_dates(
 
     items.sort(key=lambda e: e.days_until)
     return CoreDatesResponse(items=items)
+
+
+@router.get("/entities/{entity_id}/identity-candidates")
+async def list_identity_candidates(entity_id: UUID, db: DatabaseManager = Depends(_get_db_manager)):
+    """Protected review surface, never used for reachability or delivery."""
+    from butlers.core.fact_authority import current_fact_write_context
+
+    CandidateFact = _models_module.CandidateFact
+    CandidateFactsResponse = _models_module.CandidateFactsResponse
+
+    if not current_fact_write_context().owner_class:
+        raise HTTPException(403, detail={"code": "owner_required"})
+    rows = await _pool(db).fetch(
+        f"SELECT f.*, {attribution_select_sql()} FROM relationship.entity_facts f "
+        "WHERE f.subject=$1 AND f.validity='candidate' ORDER BY f.created_at DESC",
+        entity_id,
+    )
+    return CandidateFactsResponse(
+        facts=[
+            CandidateFact(**_row_to_contact_fact(row).model_dump(), validity="candidate")
+            for row in rows
+        ]
+    )
+
+
+@router.post("/entities/{entity_id}/identity-facts/{fact_id}/{decision}")
+async def owner_identity_fact_decision(
+    entity_id: UUID,
+    fact_id: UUID,
+    decision: Literal["adopt", "reject"],
+    db: DatabaseManager = Depends(_get_db_manager),
+):
+    """Admit the exact owner action and commit all domain effects or none."""
+    pool = _pool(db)
+    async with pool.acquire() as conn, conn.transaction():
+        try:
+            result = await decide_identity_fact(
+                conn, entity_id=entity_id, fact_id=fact_id, decision=decision
+            )
+            if not result["replayed"]:
+                from butlers.api.routers.audit import append
+
+                await append(
+                    conn,
+                    authenticated_principal(),
+                    "relationship.identity." + decision,
+                    target=str(fact_id),
+                    metadata={"entity_id": str(entity_id)},
+                    result="success",
+                )
+            return result
+        except PermissionError as exc:
+            raise HTTPException(
+                403, detail={"code": "owner_required", "message": str(exc)}
+            ) from exc
+        except LookupError as exc:
+            raise HTTPException(404, detail={"code": "fact_missing", "message": str(exc)}) from exc
+        except IdentityDecisionConflict as exc:
+            raise HTTPException(409, detail={"code": "fact_stale", "message": str(exc)}) from exc
+
+
+@router.get("/entities/{entity_id}/identity-facts/{fact_id}/decision")
+async def read_identity_fact_decision(
+    entity_id: UUID,
+    fact_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+):
+    """Read an exact committed receipt under fresh request admission; never resend."""
+    from butlers.core.fact_authority import current_fact_write_context
+
+    if not current_fact_write_context().owner_class:
+        raise HTTPException(403, detail={"code": "owner_required"})
+    row = await _pool(db).fetchrow(
+        "SELECT d.fact_result_id AS fact_id,d.decision,d.decided_at "
+        "FROM relationship.fact_identity_decisions d "
+        "JOIN relationship.entity_facts f ON f.id=d.fact_id "
+        "WHERE d.fact_id=$1 AND f.subject=$2",
+        fact_id,
+        entity_id,
+    )
+    if row is None:
+        raise HTTPException(404, detail={"code": "decision_unknown"})
+    return {**dict(row), "replayed": True}

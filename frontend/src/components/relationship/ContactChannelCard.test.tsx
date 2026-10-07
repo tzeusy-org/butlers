@@ -28,7 +28,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
@@ -36,8 +36,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ContactChannelCard, ExpandedContactInfoRow } from "@/components/relationship/ContactChannelCard";
 import { sortChannelsPrimaryFirst } from "@/components/relationship/contact-channel-utils";
-import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret } from "@/hooks/use-entities";
+import { useIdentityCandidates, useDecideIdentityCandidate, useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret } from "@/hooks/use-entities";
 import { apiFetch } from "@/api/client";
+import * as apiClient from "@/api/client";
+import { IdentityCandidateReview } from "./IdentityCandidateReview";
+import { FactReporterLine } from "./FactReporterLine";
 import type { LinkedContactSummary, ContactInfoEntry } from "@/api/types";
 
 // ---------------------------------------------------------------------------
@@ -45,6 +48,8 @@ import type { LinkedContactSummary, ContactInfoEntry } from "@/api/types";
 // ---------------------------------------------------------------------------
 
 vi.mock("@/hooks/use-entities", () => ({
+  useIdentityCandidates: vi.fn(() => ({ data: { facts: [] }, isPending: false, isError: false, refetch: vi.fn() })),
+  useDecideIdentityCandidate: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEntityLinkedContacts: vi.fn(),
   useAddEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useDeleteEntityContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -1079,5 +1084,47 @@ describe("ExpandedContactInfoRow — structured 409 error toast", () => {
     expect(shown).toContain(sentence);
     expect(shown).not.toContain("{");
     cleanup();
+  });
+});
+
+
+describe("reported identity review", () => {
+  it("keeps reporter and confirmation separate and reads an uncertain decision without resending", async () => {
+    cleanup();
+    const refetch = vi.fn();
+    const mutateAsync = vi.fn().mockRejectedValue(new Error("lost response"));
+    vi.mocked(useIdentityCandidates).mockReturnValue({
+      data: { facts: [{ id: "candidate-exact", object: "reported@example.test", validity: "candidate",
+        content_authority: "third_party", reported_by: { entity_id: "reporter", name: "Reporter", availability: "available" } }] },
+      isPending: false, isError: false, refetch,
+    } as unknown as ReturnType<typeof useIdentityCandidates>);
+    vi.mocked(useDecideIdentityCandidate).mockReturnValue({ mutateAsync, isPending: false } as unknown as ReturnType<typeof useDecideIdentityCandidate>);
+    const receipt = vi.spyOn(apiClient, "getIdentityDecision").mockResolvedValue({
+      fact_id: "candidate-exact", decision: "adopt", decided_at: "2026-01-01T00:00:00Z", replayed: true,
+    });
+    render(<MemoryRouter><IdentityCandidateReview entityId="entity-001" /></MemoryRouter>);
+    expect(screen.getByText("Reported by Reporter")).toBeTruthy();
+    expect(screen.getByText("Unavailable for messages until adopted.")).toBeTruthy();
+    expect(screen.queryByText("Confirmed by you")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Adopt reported@example.test" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Outcome not confirmed"));
+    expect(mutateAsync).toHaveBeenCalledExactlyOnceWith({ entityId: "entity-001", factId: "candidate-exact", decision: "adopt" });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Channel adoption recorded."));
+    expect(receipt).toHaveBeenCalledExactlyOnceWith("entity-001", "candidate-exact");
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+    expect(refetch).toHaveBeenCalledTimes(1);
+    receipt.mockRestore();
+    cleanup();
+    const available = renderToStaticMarkup(<MemoryRouter><FactReporterLine fact={{ reported_by: { entity_id: "reporter", name: "Reporter", availability: "available" }, confirmed_at: "2026-01-01T00:00:00Z" }} /></MemoryRouter>);
+    expect(available).toContain("Reported by Reporter");
+    expect(available).toContain('href="/entities/reporter"');
+    expect(available).toContain("Confirmed by you");
+    const unavailable = renderToStaticMarkup(<FactReporterLine fact={{ reported_by: { entity_id: null, name: null, availability: "unavailable" }, confirmed_at: "2026-01-01T00:00:00Z" }} />);
+    expect(unavailable).toContain("Reported by an unknown sender (reporter unavailable)");
+    expect(unavailable).not.toContain("href=");
+    expect(unavailable).not.toContain("Reported by Reporter");
+    expect(unavailable).toContain("Confirmed by you");
+    vi.mocked(useIdentityCandidates).mockReturnValue({ data: { facts: [] }, isPending: false, isError: false, refetch: vi.fn() } as unknown as ReturnType<typeof useIdentityCandidates>);
   });
 });

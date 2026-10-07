@@ -2249,7 +2249,7 @@ export interface Label {
  * When secured=true and value is null, the value is masked.
  * Use GET /relationship/entities/{entityId}/secrets/{infoId} to retrieve the real value.
  */
-export interface ContactInfoEntry {
+export interface ContactInfoEntry extends FactAttribution {
   id: string;
   type: string;
   value: string | null; // null when secured=true and not yet revealed
@@ -7518,7 +7518,7 @@ export interface CompareEntitiesRequest {
  * row belongs to so the two-column diff can place it. ``last_seen`` is null on
  * narrative-store rows (no ``last_seen`` column).
  */
-export interface CompareFact {
+export interface CompareFact extends FactAttribution {
   id: string;
   entity_id: string;
   predicate: string;
@@ -9117,7 +9117,7 @@ export type EntityFactStalenessBand = "fresh" | "aging" | "stale";
  * Note: ``source_event_id`` is not yet a column in relationship.entity_facts.
  * Use ``src`` for source attribution until that column is added.
  */
-export interface EntityFact {
+export interface EntityFact extends FactAttribution {
   id: string;
   subject: string;
   predicate: string;
@@ -9935,7 +9935,7 @@ export interface SecretsAuditParams {
  * `object` is the fact value (e.g. "alice@example.com").
  * `value_hash` is SHA-256[:16] of the object, used as the DELETE path segment.
  */
-export interface ContactFact {
+export interface ContactFact extends FactAttribution {
   id: string;
   predicate: string;
   object: string;
@@ -10496,4 +10496,20 @@ export interface TasteWorksParams {
 export interface TasteVerdictsParams {
   offset?: number;
   limit?: number;
+}
+
+export interface FactAttribution {
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  reported_by?: {
+    entity_id: string | null;
+    name: string | null;
+    availability: "available" | "unavailable" | "unresolved" | "legacy_unknown" | "system";
+  } | null;
+  confirmed_at?: string | null;
+  confirmed_by_entity_id?: string | null;
+  confirmation_source?: string | null;
+}
+
+export interface CandidateIdentityFact extends ContactFact {
+  validity: "candidate";
 }

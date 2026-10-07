@@ -8,140 +8,130 @@ serves as the canonical RDF (subject-predicate-object) registry for both relatio
 (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`, `has-website`)
 predicates. This table **supersedes** RFC 0004 §3 ("Contacts and Contact Info") as the
 canonical channel-identity registry.
+- **Schema location:** `relationship` schema (NOT `public`). Cross-butler reads go through
+  Switchboard / MCP, consistent with RFC 0006 schema isolation. A single triple table avoids
+  the dual-write trap of putting contact-triples in `public` and relational-triples in
+  `relationship`.
+- **Single table for both predicate families.** Contact-facts and relational-facts live in
+  ONE `relationship.entity_facts` table (NOT two). Rationale: RDF purity (subject-predicate-object
+  is the contract); identical column shape across predicate families; query simplicity
+  (`SELECT * FROM relationship.entity_facts WHERE subject = $1`); storage cost is identical;
+  resolves the Phase 1 Amendment 1.1 open question.
+- **Schema:**
+- | Column | Type | Notes |
+  |---|---|---|
+  | `id` | UUID PK | |
+  | `subject` | UUID NOT NULL | FK to `public.entities(id)` |
+  | `predicate` | TEXT NOT NULL | From `relationship.entity_predicate_registry` |
+  | `object` | TEXT NOT NULL | Literal value (for `has-*` predicates) or `entity_id::text` (for relational predicates) |
+  | `object_kind` | TEXT NOT NULL | `'literal'` or `'entity'`; informs how to interpret `object` |
+  | `src` | TEXT NOT NULL | Authoring butler |
+  | `conf` | FLOAT NOT NULL DEFAULT 1.0 | 0..1 |
+  | `last_seen` | TIMESTAMPTZ NULL | |
+  | `observed_at` | TIMESTAMPTZ NULL | When the fact was actually observed, distinct from assertion time (`created_at`). Added by migration `rel_021_entity_v3_lifecycle`; backfilled by `scripts/backfill_entity_fact_observed_at.py`. Immutable on supersession. |
+  | `weight` | INT NULL | Relational aggregation weight |
+  | `verified` | BOOL NOT NULL DEFAULT false | Owner-confirmed |
+  | `primary` | BOOL NULL | Primary-of-kind for multi-valued contact preds |
+  | `validity` | TEXT NOT NULL DEFAULT 'active' | `active \| retracted \| superseded` |
+  | `effective_period_id` | UUID NULL | Stable identity of one effective occurrence; NULL is the backward-compatible default occurrence; the all-zero UUID is reserved and rejected |
+  | `effective_from` | TIMESTAMPTZ NULL | Inclusive normalized lower effective bound; interpretation comes from `effective_from_precision` |
+  | `effective_from_precision` | TEXT NULL | `instant \| day \| month \| year \| unbounded`; NULL with a NULL bound means unknown |
+  | `effective_to` | TIMESTAMPTZ NULL | Exclusive normalized upper effective bound; interpretation comes from `effective_to_precision` |
+  | `effective_to_precision` | TEXT NULL | `instant \| day \| month \| year \| unbounded`; NULL with a NULL bound means unknown |
+  | `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
+  | `updated_at` | TIMESTAMPTZ NOT NULL | |
+- Effective time SHALL be independent of assertion time (`created_at`), observation time
+  (`observed_at` and `last_seen`), confidence (`conf`), and assertion lifecycle (`validity`). No
+  effective field SHALL default from or be backfilled from any of those axes. `validity='active'`
+  means the current assertion version, not "effective at the current clock time". An active assertion
+  MAY describe a closed effective interval, and a retracted or superseded assertion SHALL retain the
+  effective packet it had when active.
+- The effective interval SHALL be half-open `[effective_from, effective_to)`: a concrete lower bound
+  is included and a concrete upper bound is excluded. Precision applies independently to each bound.
+  The only concrete precision values SHALL be `instant`, `day`, `month`, and `year`; `unbounded` SHALL
+  be the only non-concrete string value. A SQL NULL precision SHALL be the sole representation of an
+  unknown bound, and the string `unknown` SHALL be rejected.
+- For each bound, a non-NULL timestamp SHALL require a concrete precision, and a concrete precision
+  SHALL require a non-NULL timestamp. A NULL timestamp MAY have NULL precision, meaning that boundary
+  is unknown, or `unbounded` precision, meaning the caller explicitly asserts no boundary in that
+  direction. Both bounds unknown SHALL mean the temporal extent is unspecified, never that the fact
+  was true forever. Both bounds `unbounded` SHALL explicitly mean all time. When both timestamps are
+  concrete, `effective_from` MUST be earlier than `effective_to`; equality and reversal SHALL be
+  rejected by both writer validation and a database CHECK constraint.
+- The migration SHALL name and enforce `ck_ef_effective_from_shape` and
+  `ck_ef_effective_to_shape` for the timestamp/precision pair rules,
+  `ck_ef_effective_from_canonical` and `ck_ef_effective_to_canonical` for UTC unit-start alignment of
+  stored `day`, `month`, and `year` bounds, `ck_ef_effective_range` for the strict concrete range, and
+  `ck_ef_effective_period_nonzero` for the reserved UUID. These constraints SHALL accept every
+  unknown, unbounded, and partial-bound combination described above and SHALL reject every second
+  encoding of the same bound state.
+- Stored timestamps SHALL be canonical UTC instants. `instant` input MUST carry `Z` or a numeric UTC
+  offset, MUST NOT be timezone-naive, and SHALL be converted to UTC without losing PostgreSQL-supported
+  sub-second precision. `day`, `month`, and `year` inputs SHALL respectively use the civil forms
+  `YYYY-MM-DD`, `YYYY-MM`, and `YYYY`, with no offset or time component. Using the proleptic Gregorian
+  calendar, a coarse lower bound SHALL normalize to 00:00:00 UTC at the first day of its named unit;
+  a coarse upper bound SHALL normalize to 00:00:00 UTC at the first day after its named unit. Invalid
+  calendar values, malformed input, precision/value mismatches, and upper-bound normalization overflow
+  MUST fail before any write.
+- `effective_period_id` SHALL identify one occurrence of the same SPO triple. NULL SHALL identify the
+  single backward-compatible default occurrence used by legacy rows and callers. A caller asserting a
+  genuinely repeated period SHALL supply a stable non-zero UUID distinct from the earlier occurrence
+  and SHALL reuse that UUID for replay. A temporal correction SHALL retain the occurrence id. This
+  identity rule distinguishes a repeated period from a correction without relying on overlap policy.
+- **Indexes (required):**
+  - `(subject, predicate)` — primary access pattern
+  - `(predicate, object) WHERE object_kind = 'literal'` — reverse-lookup for ingestion
+    routing (e.g. "incoming Telegram chat 12345 → which entity")
+  - `(predicate) WHERE validity = 'active'` — Concentration aggregation
+  - `(last_seen DESC)` — stale detection, Finder tie-break
+  - `(subject) WHERE validity = 'active' AND predicate LIKE 'has-%'` — contacts endpoint
+- **Uniqueness (pre-temporal contract):** `UNIQUE (subject, predicate, object) WHERE validity = 'active'`.
+  The final schema SHALL enforce active uniqueness over `(subject, predicate, object,
+  COALESCE(effective_period_id, '00000000-0000-0000-0000-000000000000'::uuid))`, and the all-zero
+  UUID SHALL be rejected as an explicit `effective_period_id`. The occurrence-scoped rule permits
+  multiple active repeated periods for one SPO. It SHALL NOT enforce predicate cardinality or period
+  overlap; that separately owned policy belongs to `bu-4ss0u`.
+- The uniqueness transition SHALL use two schema stages. The expand migration SHALL add the temporal
+  columns, constraints, and occurrence index while retaining the deployed
+  `uq_ef_spo_active (subject, predicate, object) WHERE validity='active'` index unchanged. The deployed
+  writer's inferred `ON CONFLICT` target MUST continue preparing and executing throughout that stage.
+  While both indexes exist, the legacy index SHALL intentionally prevent multiple active occurrences.
+- Only after every Relationship instance is proven to contain the complete compatible/fenced mutator
+  inventory, and every old image is proven absent, MAY a later cutover migration drop
+  `uq_ef_spo_active`. Temporal assertions, corrections, and repeated-period writes MUST remain disabled
+  until that cutover. The final writer SHALL use targetless `ON CONFLICT DO NOTHING` plus locked
+  re-read/CAS behavior so it remains valid before and after the drop. Every mutator SHALL treat
+  presence of the legacy index as the fail-closed `temporal_cutover_pending` capability state where
+  applicable, checked before approval parking or persistence. Central-writer compatibility alone SHALL
+  NOT authorize cutover.
+- Schema rollback SHALL be allowed only while temporal writes have remained disabled, or during a
+  quiesced no-write window after proving there is at most one active row per SPO and no temporal value
+  would be lost. Once any temporal write is admitted, automatic downgrade and old-writer rollback MUST
+  be refused: the legacy index may conflict with repeated occurrences, and old code does not preserve
+  temporal packets. Recovery SHALL roll forward or follow a separately reviewed data-preserving plan;
+  it MUST NOT delete, choose, supersede, or flatten rows to recreate the legacy index.
+- **Schema boundary with `memory.facts` (R2 #3):** the table is `relationship.entity_facts`
+  (schema-qualified). A separate `memory.facts` table exists under the memory module schema
+  per RFC 0006 (`src/butlers/modules/memory/migrations/001_memory_schema.py:106`); the two
+  tables are isolated by schema and MUST NOT be cross-joined. Migration beads and all SQL
+  authored under this change MUST reference the schema-qualified name `relationship.entity_facts`
+  throughout — never bare `facts`.
+- Effective-time support SHALL NOT add temporal fields to narrative memory `facts`, copy or infer
+  temporal values between the stores, or create a cross-store query. Structural registry facts remain
+  in `relationship.entity_facts`; episodic and coordination facts remain narrative memory under the
+  separate `relational-edges-single-home` boundary.
+- Existing assertion-current readers SHALL continue to select `validity='active'` without an implicit
+  comparison between `now()` and either effective bound. `bu-1ypjo` owns opt-in `as_of` selection and
+  any new owner REST surface. Storage of an effective packet SHALL NOT itself change a reader's time
+  slice.
+- Identity fact content authority and original author SHALL be stored independently of confidence, source and effective time. Add nullable private authority_entity_created_at TIMESTAMPTZ as the frozen source-captured lifecycle witness and nullable content_authority with owner/owner_device/third_party/system/mixed CHECK, nullable authority_entity_id FK to public.entities ON DELETE SET NULL, and nullable immutable authority_original_entity_id UUID without an FK. The server SHALL stamp both author IDs only from actual admitted source attribution; a non-NULL live pointer SHALL require a non-NULL identical original token, enforced by authority_entity_id IS NULL OR (authority_original_entity_id IS NOT NULL AND authority_entity_id = authority_original_entity_id AND authority_entity_created_at IS NOT NULL), not a NULL-permissive equality CHECK. The original UUID SHALL be provenance only, never caller-set, authentication, channel lookup or an automatic join to a recreated entity. Legacy author IDs SHALL remain NULL. Within an assertion version content authority and original author token SHALL be immutable; permitted FK SET NULL SHALL affect only live availability. Preserving/correcting/replaying an existing report SHALL carry its frozen original token without rebinding an unavailable author; a genuinely new admitted reporter assertion SHALL stamp that reporter on its new version while preserving the earlier version unchanged. Existing NULL rows SHALL remain unclassified and active resolution SHALL not guess authors. validity SHALL additionally permit candidate. Candidate and active occurrence indexes SHALL be separate; neither deployed active index or temporal transition rule is changed by this authority amendment. Server-written owner confirmation SHALL remain columns on the same fact, separate from original reporter; populated rollback SHALL refuse loss of authority, confirmation, candidates or effective packets. Counts SHALL report legacy classification without row contents.
+- Authorized companion cleanup SHALL preserve the full existing subject/object all-version cascade and atomic evidence/projection cleanup. If the deleted entity is only the reporter of an otherwise surviving fact, the nullable live author pointer SHALL clear in that cleanup transaction without vetoing deletion or deleting the fact. Original token, stored authority, confirmation, assertion/effective packet, evidence and unrelated projection SHALL remain unchanged. New attribution/confirmation/context/receipt FKs SHALL not introduce RESTRICT or reporter-CASCADE semantics. No readable author identity SHALL be retained or fabricated merely to keep a display label.
+- Assertion attribution mode is explicit and private. A genuinely new assertion from a different admitted reporter or content authority SHALL stamp that source's actual authority and original reporter token on its NEW assertion version, keeping the earlier version's token and authority unchanged. Existing owner-active protection, candidate selection, temporal CAS and evidence rules still decide whether that proposed new assertion may become active, candidate or parked; a new reporter never overrides those rules. An exact unchanged comparison includes content authority, original reporter token and the frozen nullable source-captured lifecycle witness as well as the existing assertion fields. A genuinely fresh report from a recreated same-UUID entity with a different captured creation time is distinct attribution, not a repair of the old report. Preserving, correcting, confirming, adopting or replaying an existing admitted report SHALL retain that report's frozen authority, original token and witness; confirmation remains separate. Any necessary replacement for that preservation operation carries the frozen attribution from the selected report, rather than a different ambient caller. Live-FK SET NULL alone SHALL neither create a successor nor change authority/confirmation. Thus attribution is immutable WITHIN an assertion version; copying old attribution is required for preservation of that report, never a way to label a genuinely new reporter's assertion as the old reporter's.
+- The lifecycle witness SHALL remain immutable per assertion version, NULL for legacy/unknown evidence, and captured only by the actual private source producer under REQ-relationship-facts-006. It SHALL not be a public MCP/API input or output. Its schema shape CHECK is not source authentication; writer/current-entity comparison and real producer proof remain mandatory.
 
-**Schema location:** `relationship` schema (NOT `public`). Cross-butler reads go through
-Switchboard / MCP, consistent with RFC 0006 schema isolation. A single triple table avoids
-the dual-write trap of putting contact-triples in `public` and relational-triples in
-`relationship`.
-
-**Single table for both predicate families.** Contact-facts and relational-facts live in
-ONE `relationship.entity_facts` table (NOT two). Rationale: RDF purity (subject-predicate-object
-is the contract); identical column shape across predicate families; query simplicity
-(`SELECT * FROM relationship.entity_facts WHERE subject = $1`); storage cost is identical;
-resolves the Phase 1 Amendment 1.1 open question.
-
-**Schema:**
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | UUID PK | |
-| `subject` | UUID NOT NULL | FK to `public.entities(id)` |
-| `predicate` | TEXT NOT NULL | From `relationship.entity_predicate_registry` |
-| `object` | TEXT NOT NULL | Literal value (for `has-*` predicates) or `entity_id::text` (for relational predicates) |
-| `object_kind` | TEXT NOT NULL | `'literal'` or `'entity'`; informs how to interpret `object` |
-| `src` | TEXT NOT NULL | Authoring butler |
-| `conf` | FLOAT NOT NULL DEFAULT 1.0 | 0..1 |
-| `last_seen` | TIMESTAMPTZ NULL | |
-| `observed_at` | TIMESTAMPTZ NULL | When the fact was actually observed, distinct from assertion time (`created_at`). Added by migration `rel_021_entity_v3_lifecycle`; backfilled by `scripts/backfill_entity_fact_observed_at.py`. Immutable on supersession. |
-| `weight` | INT NULL | Relational aggregation weight |
-| `verified` | BOOL NOT NULL DEFAULT false | Owner-confirmed |
-| `primary` | BOOL NULL | Primary-of-kind for multi-valued contact preds |
-| `validity` | TEXT NOT NULL DEFAULT 'active' | `active \| retracted \| superseded` |
-| `effective_period_id` | UUID NULL | Stable identity of one effective occurrence; NULL is the backward-compatible default occurrence; the all-zero UUID is reserved and rejected |
-| `effective_from` | TIMESTAMPTZ NULL | Inclusive normalized lower effective bound; interpretation comes from `effective_from_precision` |
-| `effective_from_precision` | TEXT NULL | `instant \| day \| month \| year \| unbounded`; NULL with a NULL bound means unknown |
-| `effective_to` | TIMESTAMPTZ NULL | Exclusive normalized upper effective bound; interpretation comes from `effective_to_precision` |
-| `effective_to_precision` | TEXT NULL | `instant \| day \| month \| year \| unbounded`; NULL with a NULL bound means unknown |
-| `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
-| `updated_at` | TIMESTAMPTZ NOT NULL | |
-
-Effective time SHALL be independent of assertion time (`created_at`), observation time
-(`observed_at` and `last_seen`), confidence (`conf`), and assertion lifecycle (`validity`). No
-effective field SHALL default from or be backfilled from any of those axes. `validity='active'`
-means the current assertion version, not "effective at the current clock time". An active assertion
-MAY describe a closed effective interval, and a retracted or superseded assertion SHALL retain the
-effective packet it had when active.
-
-The effective interval SHALL be half-open `[effective_from, effective_to)`: a concrete lower bound
-is included and a concrete upper bound is excluded. Precision applies independently to each bound.
-The only concrete precision values SHALL be `instant`, `day`, `month`, and `year`; `unbounded` SHALL
-be the only non-concrete string value. A SQL NULL precision SHALL be the sole representation of an
-unknown bound, and the string `unknown` SHALL be rejected.
-
-For each bound, a non-NULL timestamp SHALL require a concrete precision, and a concrete precision
-SHALL require a non-NULL timestamp. A NULL timestamp MAY have NULL precision, meaning that boundary
-is unknown, or `unbounded` precision, meaning the caller explicitly asserts no boundary in that
-direction. Both bounds unknown SHALL mean the temporal extent is unspecified, never that the fact
-was true forever. Both bounds `unbounded` SHALL explicitly mean all time. When both timestamps are
-concrete, `effective_from` MUST be earlier than `effective_to`; equality and reversal SHALL be
-rejected by both writer validation and a database CHECK constraint.
-
-The migration SHALL name and enforce `ck_ef_effective_from_shape` and
-`ck_ef_effective_to_shape` for the timestamp/precision pair rules,
-`ck_ef_effective_from_canonical` and `ck_ef_effective_to_canonical` for UTC unit-start alignment of
-stored `day`, `month`, and `year` bounds, `ck_ef_effective_range` for the strict concrete range, and
-`ck_ef_effective_period_nonzero` for the reserved UUID. These constraints SHALL accept every
-unknown, unbounded, and partial-bound combination described above and SHALL reject every second
-encoding of the same bound state.
-
-Stored timestamps SHALL be canonical UTC instants. `instant` input MUST carry `Z` or a numeric UTC
-offset, MUST NOT be timezone-naive, and SHALL be converted to UTC without losing PostgreSQL-supported
-sub-second precision. `day`, `month`, and `year` inputs SHALL respectively use the civil forms
-`YYYY-MM-DD`, `YYYY-MM`, and `YYYY`, with no offset or time component. Using the proleptic Gregorian
-calendar, a coarse lower bound SHALL normalize to 00:00:00 UTC at the first day of its named unit;
-a coarse upper bound SHALL normalize to 00:00:00 UTC at the first day after its named unit. Invalid
-calendar values, malformed input, precision/value mismatches, and upper-bound normalization overflow
-MUST fail before any write.
-
-`effective_period_id` SHALL identify one occurrence of the same SPO triple. NULL SHALL identify the
-single backward-compatible default occurrence used by legacy rows and callers. A caller asserting a
-genuinely repeated period SHALL supply a stable non-zero UUID distinct from the earlier occurrence
-and SHALL reuse that UUID for replay. A temporal correction SHALL retain the occurrence id. This
-identity rule distinguishes a repeated period from a correction without relying on overlap policy.
-
-**Indexes (required):**
-- `(subject, predicate)` — primary access pattern
-- `(predicate, object) WHERE object_kind = 'literal'` — reverse-lookup for ingestion
-  routing (e.g. "incoming Telegram chat 12345 → which entity")
-- `(predicate) WHERE validity = 'active'` — Concentration aggregation
-- `(last_seen DESC)` — stale detection, Finder tie-break
-- `(subject) WHERE validity = 'active' AND predicate LIKE 'has-%'` — contacts endpoint
-
-**Uniqueness (pre-temporal contract):** `UNIQUE (subject, predicate, object) WHERE validity = 'active'`.
-The final schema SHALL enforce active uniqueness over `(subject, predicate, object,
-COALESCE(effective_period_id, '00000000-0000-0000-0000-000000000000'::uuid))`, and the all-zero
-UUID SHALL be rejected as an explicit `effective_period_id`. The occurrence-scoped rule permits
-multiple active repeated periods for one SPO. It SHALL NOT enforce predicate cardinality or period
-overlap; that separately owned policy belongs to `bu-4ss0u`.
-
-The uniqueness transition SHALL use two schema stages. The expand migration SHALL add the temporal
-columns, constraints, and occurrence index while retaining the deployed
-`uq_ef_spo_active (subject, predicate, object) WHERE validity='active'` index unchanged. The deployed
-writer's inferred `ON CONFLICT` target MUST continue preparing and executing throughout that stage.
-While both indexes exist, the legacy index SHALL intentionally prevent multiple active occurrences.
-
-Only after every Relationship instance is proven to contain the complete compatible/fenced mutator
-inventory, and every old image is proven absent, MAY a later cutover migration drop
-`uq_ef_spo_active`. Temporal assertions, corrections, and repeated-period writes MUST remain disabled
-until that cutover. The final writer SHALL use targetless `ON CONFLICT DO NOTHING` plus locked
-re-read/CAS behavior so it remains valid before and after the drop. Every mutator SHALL treat
-presence of the legacy index as the fail-closed `temporal_cutover_pending` capability state where
-applicable, checked before approval parking or persistence. Central-writer compatibility alone SHALL
-NOT authorize cutover.
-
-Schema rollback SHALL be allowed only while temporal writes have remained disabled, or during a
-quiesced no-write window after proving there is at most one active row per SPO and no temporal value
-would be lost. Once any temporal write is admitted, automatic downgrade and old-writer rollback MUST
-be refused: the legacy index may conflict with repeated occurrences, and old code does not preserve
-temporal packets. Recovery SHALL roll forward or follow a separately reviewed data-preserving plan;
-it MUST NOT delete, choose, supersede, or flatten rows to recreate the legacy index.
-
-**Schema boundary with `memory.facts` (R2 #3):** the table is `relationship.entity_facts`
-(schema-qualified). A separate `memory.facts` table exists under the memory module schema
-per RFC 0006 (`src/butlers/modules/memory/migrations/001_memory_schema.py:106`); the two
-tables are isolated by schema and MUST NOT be cross-joined. Migration beads and all SQL
-authored under this change MUST reference the schema-qualified name `relationship.entity_facts`
-throughout — never bare `facts`.
-
-Effective-time support SHALL NOT add temporal fields to narrative memory `facts`, copy or infer
-temporal values between the stores, or create a cross-store query. Structural registry facts remain
-in `relationship.entity_facts`; episodic and coordination facts remain narrative memory under the
-separate `relational-edges-single-home` boundary.
-
-Existing assertion-current readers SHALL continue to select `validity='active'` without an implicit
-comparison between `now()` and either effective bound. `bu-1ypjo` owns opt-in `as_of` selection and
-any new owner REST surface. Storage of an effective packet SHALL NOT itself change a reader's time
-slice.
+ID: REQ-relationship-facts-001
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
+Scope: v1-mandatory
 
 #### Scenario: Triple store accepts contact and relational predicates in one table
 - **WHEN** `relationship_assert_fact()` is called with a contact predicate (`has-email`,
@@ -237,6 +227,38 @@ slice.
 - **AND** no migration or operator path may discard or collapse temporal rows merely to recreate the
   legacy active-SPO index
 
+
+#### Scenario: Legacy authority is unknown without disabling resolution
+
+- **WHEN** upgrade finds an active legacy fact with NULL authority
+- **THEN** it SHALL retain its row/packet and existing resolution eligibility
+- **AND** legacy counts SHALL not guess an author or owner confirmation
+
+
+#### Scenario: Reporter deletion preserves the surviving report
+
+- **WHEN** an authorized Google or Steam companion hard delete removes an entity that is only the reporter of another surviving subject/object's fact
+- **THEN** the deletion SHALL commit and clear only that fact's live author link
+- **AND** its id, validity, original reporter token, authority, confirmation, confidence, full effective packet, evidence and unrelated projection SHALL remain unchanged
+- **AND** subject/object all-version cascade and an unreferenced cleanup positive SHALL still execute through their actual owning paths
+
+
+#### Scenario: Reporter deletion rollback and concurrent writer remain coherent
+
+- **WHEN** a real local cleanup transaction is forced to fail, or reporter deletion races an actually admitted writer
+- **THEN** rollback SHALL restore the entity, live author links and attached effects, or the winning committed order SHALL retain original attribution with a truthful live or deleted-author state
+- **AND** a stale caller or recreated UUID SHALL not relabel, rebind, authenticate or resolve a previously deleted author
+- **AND** separate committed readback SHALL witness the selected order and a valid companion cleanup SHALL succeed
+
+
+#### Scenario: A genuinely new reporter is not labelled as the earlier reporter
+
+- **WHEN** two genuinely admitted different reporters assert the same eligible SPO/occurrence with changed report attribution
+- **THEN** any new assertion version SHALL stamp the actual new reporter and authority, while the prior version retains its original reporter
+- **AND** existing owner-active protection, candidate/parking policy, temporal CAS and evidence rules SHALL remain enforced
+- **AND** correction, confirmation and exact replay of the first report SHALL preserve that report's frozen attribution rather than the ambient second reporter
+- **AND** an exact unchanged replay and live-FK nulling alone SHALL create no new assertion version
+
 ### Requirement: Central writer — `relationship_assert_fact()`
 
 ALL writes into `relationship.entity_facts` MUST go through a single MCP tool
@@ -244,134 +266,117 @@ ALL writes into `relationship.entity_facts` MUST go through a single MCP tool
 verified, object_kind)` exposed by the relationship butler. No butler MAY issue a direct
 `INSERT INTO relationship.entity_facts` or `UPDATE relationship.entity_facts` from outside the
 relationship butler's schema role.
-
-The temporal extension SHALL add optional `effective_period_id`, `effective_from`,
-`effective_from_precision`, `effective_to`, `effective_to_precision`, and `corrects_fact_id`
-arguments at the writer boundary. The public MCP wrapper SHALL continue keeping `src` and
-`observed_at` server-held. Temporal values are caller-controlled assertion content, not provenance.
-
-The wire contract SHALL treat omission and explicit JSON null identically; it SHALL NOT depend on
-whether an optional key was present. When all five stored temporal values and `corrects_fact_id` are
-omitted/null, the request SHALL mean an ordinary assertion with no temporal intent. It SHALL use the
-default occurrence: if no active default occurrence exists, the writer SHALL create it with unknown
-bounds; if one exists, unchanged comparison and any non-temporal replacement SHALL use and preserve
-that row's stored packet, including known bounds.
-
-When any stored temporal value is non-null and `corrects_fact_id` is omitted/null, the request SHALL
-be an explicit temporal assertion/replay whose values are the desired packet. When
-`corrects_fact_id` is non-null, correction mode SHALL be selected even if every other temporal
-argument is omitted/null; the desired replacement then has unknown bounds and inherits the target
-row's occurrence id. A supplied period id in correction mode MUST match the target. For either bound,
-`unbounded` requires a null/omitted timestamp, a concrete precision requires a concrete value, and a
-concrete value requires concrete precision. Correction input SHALL be a complete desired replacement
-packet, not a partial patch. Clearing a known packet to unknown MUST use explicit correction mode.
-
-The central writer is responsible for:
-- Predicate validation against `relationship.entity_predicate_registry`.
-- Dedup (pre-temporal contract: `ON CONFLICT (subject, predicate, object) WHERE validity='active' DO UPDATE`).
-- Provenance enforcement (every triple has `src`, `conf`, `verified`).
-- Supersession on update (mark prior row `validity='superseded'`, insert new row).
-- Canonical validation and UTC normalization of the complete temporal packet before approval,
-  deduplication, correction, evidence, coverage, or projection writes.
-- Occurrence-scoped deduplication using the normalized SPO and `effective_period_id`, with NULL
-  mapped only to the reserved default-occurrence sentinel in the active unique index.
-- Explicit temporal correction only when `corrects_fact_id` identifies the exact active row in the
-  same SPO occurrence.
-- Targetless `ON CONFLICT DO NOTHING` insertion followed by locked re-read/CAS handling, so the new
-  writer remains valid with the old index, both indexes, or only the final occurrence index.
-
-The pre-temporal dedup statement above SHALL remain executable while the legacy index exists. The
-new writer SHALL check for that index before approval parking or persistence. While it exists, an
-all-omitted/all-null request SHALL keep the old single-slot behavior and any non-null temporal value
-or correction target SHALL fail `temporal_cutover_pending` without writes. Once the index is absent,
-the writer SHALL enable occurrence-scoped temporal behavior and MUST NOT collapse distinct explicit
-periods.
-
-**Transaction-safety (Amendment 14, binding):** `relationship_assert_fact()` MUST be safe
-to call from within an open `asyncpg` transaction. It MUST NOT require its own outer
-transaction wrapper, MUST NOT open a nested transaction that would deadlock on the existing
-connection, and MUST NOT panic when invoked from a caller that already holds a pool
-connection. **Idempotency (Amendment 14, binding):** the writer MUST be idempotent on
-`(subject, predicate, object)` — repeated calls with identical identity arguments produce
-exactly one active row, not duplicates; supersession semantics apply when `(src, conf,
-verified, lastSeen)` differ across calls.
-
-Temporal idempotency SHALL refine that rule by occurrence. Replaying the same SPO, occurrence id,
-normalized temporal packet, and assertion fields SHALL return the existing active fact id and SHALL
-NOT create or supersede a fact row. Existing evidence behavior remains additive and deduplicated.
-For the default NULL occurrence, omitted and explicit-null temporal arguments SHALL preserve an
-existing packet and SHALL create unknown only when the slot is empty. For an explicit period, an
-occupied occurrence whose temporal packet differs SHALL fail unless `corrects_fact_id` names its
-exact active row.
-
-A temporal correction SHALL be an immutable-version replacement. `corrects_fact_id` MUST resolve to
-an active row with the same subject, predicate, and object. An omitted/null period id SHALL inherit
-that row's occurrence id, while a supplied id MUST match it. The writer SHALL lock that occurrence,
-mark exactly the named row superseded, insert one active replacement with the complete desired
-packet, keep the old packet unchanged, and carry its evidence forward. `corrects_fact_id` SHALL be
-operation input only and SHALL NOT become stored temporal state.
-
-An exact correction retry SHALL be idempotent when the named target is already superseded and the
-one active row for that occurrence has the same complete desired packet and assertion fields: the
-writer SHALL return the active successor as unchanged. A different successor SHALL make the retry
-fail stale. A retracted target SHALL NOT serve as an idempotent correction witness.
-
-Two concurrent identical replays SHALL converge on the same active row. Two different corrections
-that name the same active fact id SHALL use compare-and-swap semantics: the transaction that
-successfully locks the named row while active and commits first SHALL succeed, and the other SHALL
-fail as a stale correction after observing that the named id is no longer active. The losing
-transaction MUST leave no fact, evidence, coverage, approval-context, or graph-projection write. It
-MUST NOT silently correct the winner's replacement.
-
-**Owner-gate carry-forward (RFC 0017, binding):** when `subject` resolves to the owner
-entity, `relationship_assert_fact()` MUST NOT write the triple directly; instead it MUST
-emit a `pending_action` for owner approval through the central writer's owner carve-out
-(`roster/relationship/tools/relationship_assert_fact.py::_create_pending_action`, inherited by
-`roster/relationship/tools/channel.py::channel_add`) per RFC 0017 §2.3. The owner
-approves the pending action via the existing approval ceremony; only after approval does
-the triple land as `validity='active'`. Non-owner subjects are written directly without the
-approval hop.
-
-The normalized temporal packet, resolved effective period id, and correction target SHALL survive
-owner parking in `pending_actions.tool_args` because they are part of the assertion being reviewed.
-The parked JSON SHALL contain all six temporal keys: JSON null for unknown/default values,
-normalized UTC strings for concrete bounds, and canonical strings for UUIDs. Approval deduplication
-and verification SHALL compare that whole canonical packet as well as the SPO identity and SHALL
-reject any altered packet. Approved replay SHALL restore the parked temporal values together with
-the server-recorded source, observation time, evidence, session, and approval action id. A
-pre-temporal pending action with none of the keys SHALL normalize to the all-null/default packet. A
-failed or stale replay SHALL roll back every fact, evidence, coverage, approval-context, and
-graph-projection effect.
-
-Before parking, the writer SHALL resolve the request against the current occurrence. For an ordinary
-reassertion over a known default occurrence, the parked packet SHALL contain that row's stored values,
-not all nulls. `relationship.fact_approval_context` SHALL add
-`temporal_request_mode TEXT NULL CHECK (temporal_request_mode IN ('ordinary', 'explicit',
-'correction'))` and `temporal_base_fact_id UUID NULL`. Approved replay SHALL verify that frozen mode
-and base. A preserve action requires its base to remain active. A no-base ordinary create may insert
-unknown only while the default slot is empty or already contains the identical unknown packet; a
-known row appearing in that slot makes the replay stale. Later ordinary provenance replacement of an
-approved known fact SHALL again preserve its packet.
-
-**Owner-gate trusted-source exemption (as built):** the owner gate has a
-trusted-source carve-out (`roster/relationship/tools/relationship_assert_fact.py::_OWNER_AUTO_APPLY_SOURCES`,
-checked in `_assert_on_conn`).
-When `src` is an owner-self source (`"owner-bootstrap"` from daemon startup, or
-`"owner-self"` from owner-setup tools) or a trusted internal-derivation source
-(`"interaction_sync"`), an owner-subject write is auto-applied directly instead of being
-parked for approval (`_OWNER_AUTO_APPLY_SOURCES`). These source strings are server-set: the
-MCP tool wrapper hardcodes `src` and the dashboard API rejects the trusted values via a
-Pydantic validator, so external callers (LLM sessions, HTTP) cannot spoof them. This lets
-the daemon self-register owner identity handles and lets structured-data jobs derive owner
-facts without a human approval hop.
-
-Trusted-source exemption SHALL change only whether approval parking occurs. It SHALL NOT weaken
-temporal validation, occurrence uniqueness, explicit-correction preconditions, atomic evidence, or
-concurrency behavior.
-
-Temporal admission SHALL cover every production mutation path, not only the central insert helper.
-The transition's exact inventory SHALL include:
-
+- The temporal extension SHALL add optional `effective_period_id`, `effective_from`,
+  `effective_from_precision`, `effective_to`, `effective_to_precision`, and `corrects_fact_id`
+  arguments at the writer boundary. The public MCP wrapper SHALL continue keeping `src` and
+  `observed_at` server-held. Temporal values are caller-controlled assertion content, not provenance.
+- The wire contract SHALL treat omission and explicit JSON null identically; it SHALL NOT depend on
+  whether an optional key was present. When all five stored temporal values and `corrects_fact_id` are
+  omitted/null, the request SHALL mean an ordinary assertion with no temporal intent. It SHALL use the
+  default occurrence: if no active default occurrence exists, the writer SHALL create it with unknown
+  bounds; if one exists, unchanged comparison and any non-temporal replacement SHALL use and preserve
+  that row's stored packet, including known bounds.
+- When any stored temporal value is non-null and `corrects_fact_id` is omitted/null, the request SHALL
+  be an explicit temporal assertion/replay whose values are the desired packet. When
+  `corrects_fact_id` is non-null, correction mode SHALL be selected even if every other temporal
+  argument is omitted/null; the desired replacement then has unknown bounds and inherits the target
+  row's occurrence id. A supplied period id in correction mode MUST match the target. For either bound,
+  `unbounded` requires a null/omitted timestamp, a concrete precision requires a concrete value, and a
+  concrete value requires concrete precision. Correction input SHALL be a complete desired replacement
+  packet, not a partial patch. Clearing a known packet to unknown MUST use explicit correction mode.
+- The central writer is responsible for:
+  - Predicate validation against `relationship.entity_predicate_registry`.
+  - Dedup (pre-temporal contract: `ON CONFLICT (subject, predicate, object) WHERE validity='active' DO UPDATE`).
+  - Provenance enforcement (every triple has `src`, `conf`, `verified`).
+  - Supersession on update (mark prior row `validity='superseded'`, insert new row).
+  - Canonical validation and UTC normalization of the complete temporal packet before approval,
+    deduplication, correction, evidence, coverage, or projection writes.
+  - Occurrence-scoped deduplication using the normalized SPO and `effective_period_id`, with NULL
+    mapped only to the reserved default-occurrence sentinel in the active unique index.
+  - Explicit temporal correction only when `corrects_fact_id` identifies the exact active row in the
+    same SPO occurrence.
+  - Targetless `ON CONFLICT DO NOTHING` insertion followed by locked re-read/CAS handling, so the new
+    writer remains valid with the old index, both indexes, or only the final occurrence index.
+- The pre-temporal dedup statement above SHALL remain executable while the legacy index exists. The
+  new writer SHALL check for that index before approval parking or persistence. While it exists, an
+  all-omitted/all-null request SHALL keep the old single-slot behavior and any non-null temporal value
+  or correction target SHALL fail `temporal_cutover_pending` without writes. Once the index is absent,
+  the writer SHALL enable occurrence-scoped temporal behavior and MUST NOT collapse distinct explicit
+  periods.
+- **Transaction-safety (Amendment 14, binding):** `relationship_assert_fact()` MUST be safe
+  to call from within an open `asyncpg` transaction. It MUST NOT require its own outer
+  transaction wrapper, MUST NOT open a nested transaction that would deadlock on the existing
+  connection, and MUST NOT panic when invoked from a caller that already holds a pool
+  connection. **Idempotency (Amendment 14, binding):** the writer MUST be idempotent on
+  `(subject, predicate, object)` — repeated calls with identical identity arguments produce
+  exactly one active row, not duplicates; supersession semantics apply when `(src, conf,
+  verified, lastSeen)` differ across calls.
+- Temporal idempotency SHALL refine that rule by occurrence. Replaying the same SPO, occurrence id,
+  normalized temporal packet, and assertion fields SHALL return the existing active fact id and SHALL
+  NOT create or supersede a fact row. Existing evidence behavior remains additive and deduplicated.
+  For the default NULL occurrence, omitted and explicit-null temporal arguments SHALL preserve an
+  existing packet and SHALL create unknown only when the slot is empty. For an explicit period, an
+  occupied occurrence whose temporal packet differs SHALL fail unless `corrects_fact_id` names its
+  exact active row.
+- A temporal correction SHALL be an immutable-version replacement. `corrects_fact_id` MUST resolve to
+  an active row with the same subject, predicate, and object. An omitted/null period id SHALL inherit
+  that row's occurrence id, while a supplied id MUST match it. The writer SHALL lock that occurrence,
+  mark exactly the named row superseded, insert one active replacement with the complete desired
+  packet, keep the old packet unchanged, and carry its evidence forward. `corrects_fact_id` SHALL be
+  operation input only and SHALL NOT become stored temporal state.
+- An exact correction retry SHALL be idempotent when the named target is already superseded and the
+  one active row for that occurrence has the same complete desired packet and assertion fields: the
+  writer SHALL return the active successor as unchanged. A different successor SHALL make the retry
+  fail stale. A retracted target SHALL NOT serve as an idempotent correction witness.
+- Two concurrent identical replays SHALL converge on the same active row. Two different corrections
+  that name the same active fact id SHALL use compare-and-swap semantics: the transaction that
+  successfully locks the named row while active and commits first SHALL succeed, and the other SHALL
+  fail as a stale correction after observing that the named id is no longer active. The losing
+  transaction MUST leave no fact, evidence, coverage, approval-context, or graph-projection write. It
+  MUST NOT silently correct the winner's replacement.
+- **Owner-gate carry-forward (RFC 0017, binding):** when `subject` resolves to the owner
+  entity, `relationship_assert_fact()` MUST NOT write the triple directly; instead it MUST
+  emit a `pending_action` for owner approval through the central writer's owner carve-out
+  (`roster/relationship/tools/relationship_assert_fact.py::_create_pending_action`, inherited by
+  `roster/relationship/tools/channel.py::channel_add`) per RFC 0017 §2.3. The owner
+  approves the pending action via the existing approval ceremony; only after approval does
+  the triple land as `validity='active'`. Non-owner subjects are written directly without the
+  approval hop.
+- The normalized temporal packet, resolved effective period id, and correction target SHALL survive
+  owner parking in `pending_actions.tool_args` because they are part of the assertion being reviewed.
+  The parked JSON SHALL contain all six temporal keys: JSON null for unknown/default values,
+  normalized UTC strings for concrete bounds, and canonical strings for UUIDs. Approval deduplication
+  and verification SHALL compare that whole canonical packet as well as the SPO identity and SHALL
+  reject any altered packet. Approved replay SHALL restore the parked temporal values together with
+  the server-recorded source, observation time, evidence, session, and approval action id. A
+  pre-temporal pending action with none of the keys SHALL normalize to the all-null/default packet. A
+  failed or stale replay SHALL roll back every fact, evidence, coverage, approval-context, and
+  graph-projection effect.
+- Before parking, the writer SHALL resolve the request against the current occurrence. For an ordinary
+  reassertion over a known default occurrence, the parked packet SHALL contain that row's stored values,
+  not all nulls. `relationship.fact_approval_context` SHALL add
+  `temporal_request_mode TEXT NULL CHECK (temporal_request_mode IN ('ordinary', 'explicit',
+  'correction'))` and `temporal_base_fact_id UUID NULL`. Approved replay SHALL verify that frozen mode
+  and base. A preserve action requires its base to remain active. A no-base ordinary create may insert
+  unknown only while the default slot is empty or already contains the identical unknown packet; a
+  known row appearing in that slot makes the replay stale. Later ordinary provenance replacement of an
+  approved known fact SHALL again preserve its packet.
+- **Owner-gate trusted-source exemption (as built):** the owner gate has a
+  trusted-source carve-out (`roster/relationship/tools/relationship_assert_fact.py::_OWNER_AUTO_APPLY_SOURCES`,
+  checked in `_assert_on_conn`).
+  When `src` is an owner-self source (`"owner-bootstrap"` from daemon startup, or
+  `"owner-self"` from owner-setup tools) or a trusted internal-derivation source
+  (`"interaction_sync"`), an owner-subject write is auto-applied directly instead of being
+  parked for approval (`_OWNER_AUTO_APPLY_SOURCES`). These source strings are server-set: the
+  MCP tool wrapper hardcodes `src` and the dashboard API rejects the trusted values via a
+  Pydantic validator, so external callers (LLM sessions, HTTP) cannot spoof them. This lets
+  the daemon self-register owner identity handles and lets structured-data jobs derive owner
+  facts without a human approval hop.
+- Trusted-source exemption SHALL change only whether approval parking occurs. It SHALL NOT weaken
+  temporal validation, occurrence uniqueness, explicit-correction preconditions, atomic evidence, or
+  concurrency behavior.
+- Temporal admission SHALL cover every production mutation path, not only the central insert helper.
+  The transition's exact inventory SHALL include:
 - central insert/supersession, SPO retraction, and preferred-channel helpers in
   `roster/relationship/tools/relationship_assert_fact.py`;
 - owner-handle bootstrap in `src/butlers/owner_bootstrap.py`;
@@ -384,15 +389,12 @@ The transition's exact inventory SHALL include:
 - hard-delete FK cascades from Google and Steam companion-entity deletion; and
 - historical direct DML in Relationship migrations 019, 027, and 028, which SHALL remain ordered
   before temporal expansion and SHALL NOT become post-cutover repair paths.
-
-The implementation SHALL add a static production-DML inventory guard. Any direct
-`relationship.entity_facts` INSERT, UPDATE, DELETE, or mutating helper absent from the exact
-inventory SHALL block cutover. Every inventoried path SHALL either preserve each selected row's id,
-occurrence id, bounds, precision, evidence, and projection as its operation permits, or reject an
-unsupported/ambiguous request before its first write.
-
-Occurrence-safe behavior SHALL be:
-
+- The implementation SHALL add a static production-DML inventory guard. Any direct
+  `relationship.entity_facts` INSERT, UPDATE, DELETE, or mutating helper absent from the exact
+  inventory SHALL block cutover. Every inventoried path SHALL either preserve each selected row's id,
+  occurrence id, bounds, precision, evidence, and projection as its operation permits, or reject an
+  unsupported/ambiguous request before its first write.
+- Occurrence-safe behavior SHALL be:
 - Ordinary central-writer provenance reassertion preserves the active occurrence's packet. Explicit
   correction remains the only way to clear or change it.
 - Owner bootstrap is insert-only unknown-default behavior. It SHALL no-op when any active occurrence
@@ -424,13 +426,17 @@ Occurrence-safe behavior SHALL be:
   SHALL remove every corresponding projection in the same transaction. Explicit Google/Steam
   companion-entity hard delete SHALL retain its destructive all-version FK cascade and SHALL remove
   all attached evidence/projections atomically rather than choosing an occurrence.
+- A row SHALL be temporal-bearing when any effective bound or precision is non-null or when its period
+  id is non-null. The later index cutover MUST remain unauthorized until the exact deployed image
+  contains the complete inventory and each compatible behavior or fence, old images are absent, the
+  static inventory is clean, and the named real-PostgreSQL transition/mutator tests pass.
+- This single-ingress contract preserves RFC 0006 schema isolation and RDF integrity.
+- The central writer SHALL select a private entrypoint-derived FactWriteContext on its actual writing connection/transaction. A caller argument, confidence, actor/source label or transport locator SHALL not select owner authority. Authority and the immutable original author token SHALL participate in unchanged/supersession comparison and frozen approval provenance; live-author availability SHALL not create a new assertion or rebind history. Approved replay SHALL use the original server-held author token, with a NULL live link after authorized deletion, without caller substitution. The ordinary source-derived live reporter lookup SHALL participate in sorted entity locks; no author FK or new attribution record SHALL veto the already governed Google/Steam all-version cleanup. Registered public MCP without an admitted binding SHALL not impersonate internal no-context SYSTEM. The public MCP tool SHALL expose no verified/content_authority/authority_entity_id/authority_original_entity_id/authority_entity_created_at/trusted-source input; legacy approved verified kwargs SHALL be privately normalized only after actual executor task/tool/digest binding. A new third-party/mixed contact handle for a known non-transitory person SHALL return candidate without active coverage/projection/gap effects; internal SYSTEM/existing server-owned exemptions and owner-subject policy SHALL remain explicit. Existing temporal normalization, before-parking fence, CAS, packet identity and receipt behavior remain mandatory.
+- Assertion attribution mode is explicit and private. A genuinely new assertion from a different admitted reporter or content authority SHALL stamp that source's actual authority and original reporter token on its NEW assertion version, keeping the earlier version's token and authority unchanged. Existing owner-active protection, candidate selection, temporal CAS and evidence rules still decide whether that proposed new assertion may become active, candidate or parked; a new reporter never overrides those rules. An exact unchanged comparison includes content authority, original reporter token and the frozen nullable source-captured lifecycle witness as well as the existing assertion fields. A genuinely fresh report from a recreated same-UUID entity with a different captured creation time is distinct attribution, not a repair of the old report. Preserving, correcting, confirming, adopting or replaying an existing admitted report SHALL retain that report's frozen authority, original token and witness; confirmation remains separate. Any necessary replacement for that preservation operation carries the frozen attribution from the selected report, rather than a different ambient caller. Live-FK SET NULL alone SHALL neither create a successor nor change authority/confirmation. Thus attribution is immutable WITHIN an assertion version; copying old attribution is required for preservation of that report, never a way to label a genuinely new reporter's assertion as the old reporter's.
 
-A row SHALL be temporal-bearing when any effective bound or precision is non-null or when its period
-id is non-null. The later index cutover MUST remain unauthorized until the exact deployed image
-contains the complete inventory and each compatible behavior or fence, old images are absent, the
-static inventory is clean, and the named real-PostgreSQL transition/mutator tests pass.
-
-This single-ingress contract preserves RFC 0006 schema isolation and RDF integrity.
+ID: REQ-relationship-facts-002
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
+Scope: v1-mandatory
 
 #### Scenario: Direct SQL writes are blocked
 - **WHEN** any butler other than relationship attempts `INSERT INTO relationship.entity_facts`
@@ -603,6 +609,12 @@ This single-ingress contract preserves RFC 0006 schema isolation and RDF integri
 - **THEN** the replacement MUST copy the occurrence id and effective packet unchanged
 - **AND** evidence carry-forward MUST copy ledger references to the replacement without changing the
   superseded row's evidence or temporal fields
+
+#### Scenario: Third-party verified request is an attributed candidate
+
+- **WHEN** a genuinely admitted third-party invocation asserts a known person's phone with a deprecated library verified=True
+- **THEN** committed authority SHALL be third_party, author SHALL be the actual resolved sender, verified SHALL be false and validity SHALL be candidate
+- **AND** no public MCP parameter SHALL let the caller select confirmation, authority or author
 
 #### Scenario: Passing the upper bound does not mutate assertion lifecycle
 

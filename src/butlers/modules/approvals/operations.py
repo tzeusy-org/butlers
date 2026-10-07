@@ -611,6 +611,10 @@ async def create_approval_rule(
         occurred_at=now,
     )
 
+    if rule.tool_name == "relationship_assert_fact":
+        from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+        await record_admitted_rule(pool, rule.id)
     if decision_memory_writer is not None:
         await decision_memory_writer.record_standing_rule(rule, active=True)
 
@@ -718,6 +722,10 @@ async def create_rule_from_action(
         occurred_at=now,
     )
 
+    if rule.tool_name == "relationship_assert_fact":
+        from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+        await record_admitted_rule(pool, rule.id)
     if decision_memory_writer is not None:
         await decision_memory_writer.record_standing_rule(rule, active=True)
 

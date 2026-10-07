@@ -282,7 +282,7 @@ async def run(
                 conf=conf,
                 last_seen=last_seen,
             )
-            if result.outcome == "pending_approval":
+            if result.outcome in {"pending_approval", "candidate"}:
                 # Owner carve-out (RFC 0017 §2.3): the write was parked for human
                 # approval — entity_facts NOT written yet.  Leave the source row
                 # active so the edge survives if the owner rejects or the

@@ -212,7 +212,8 @@ async def execute_approved_action(
         try:
             async with _approval_write_transaction(pool) as write_target:
                 existing_row = await write_target.fetchrow(
-                    "SELECT status, execution_result, session_id, decided_by, origin "
+                    "SELECT status, execution_result, session_id, decided_by, origin, "
+                    "tool_name, tool_args "
                     "FROM pending_actions WHERE id = $1 FOR UPDATE",
                     action_id,
                 )
@@ -242,6 +243,27 @@ async def execute_approved_action(
                         ),
                     )
 
+                dispatch_args = tool_args
+                if tool_name == "relationship_assert_fact":
+                    stored_args = existing_row.get("tool_args")
+                    if isinstance(stored_args, str):
+                        stored_args = json.loads(stored_args)
+                    if (
+                        existing_row.get("tool_name") != tool_name
+                        or not isinstance(stored_args, dict)
+                        or approval_tool_args_digest(stored_args)
+                        != approval_tool_args_digest(tool_args)
+                    ):
+                        return ExecutionResult(
+                            success=False, error="approved original argument binding mismatch"
+                        )
+                    # Legacy keyword retirement is private and happens only AFTER
+                    # binding the exact locked stored approval arguments. The
+                    # execution context continues to hash the ORIGINAL record.
+                    dispatch_args = {
+                        key: value for key, value in stored_args.items() if key != "verified"
+                    }
+
                 try:
                     authorized_task = asyncio.current_task()
                     if authorized_task is None:
@@ -256,7 +278,7 @@ async def execute_approved_action(
                     )
                     context_token = set_approval_execution_context(execution_context)
                     try:
-                        raw_result = tool_fn(**tool_args)
+                        raw_result = tool_fn(**dispatch_args)
                         if inspect.isawaitable(raw_result):
                             raw_result = await raw_result
                     finally:

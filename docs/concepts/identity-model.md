@@ -180,3 +180,27 @@ psql -h localhost -U butlers -d butlers -c \
 - [Switchboard Routing](switchboard-routing.md) --- how identity preambles are injected during routing
 - [Modules and Connectors](modules-and-connectors.md) --- how connectors provide sender identity
 - [Trigger Flow](trigger-flow.md) --- how identity-resolved messages become sessions
+
+## Report authority and channel adoption
+
+Relationship stores the original report independently of confidence: content authority, a
+nullable live reporter, the inert original UUID and its source-captured `created_at` witness.
+New report versions use the new admitted reporter. Corrections, confirmation, adoption and
+approval replay retain the selected original report. Authorized Google/Steam entity deletion
+retains its governed subject/object cascade; reporter-only deletion clears the live link while
+the surviving report stays attributed as unavailable. The original UUID never joins a recreated
+entity. Legacy NULL authority stays resolvable and unknown; no backfill guesses an owner.
+
+Third-party or mixed channel reports on a known person remain candidates. They do not supply
+inbound identity, outbound reachability, coverage, graph edges or established gap answers. The
+protected contact card's exact Adopt/Reject operation records its effects and decision receipt
+in one Relationship transaction. A lost acknowledgment requires decision readback, not an
+automatic resend. Owner confirmation is displayed separately from the original reporter.
+
+Switchboard has no direct Relationship fact grant. It calls the registered, read-only owning
+`identity_resolve_channels(channel_type, channel_values)` MCP boundary, which preserves the
+canonical normalization and ambiguity rules. The deterministic unidentified-sender hook calls
+`identity_assert_sender_channel` on that same owner; its public-entity reservation still
+deduplicates ingress when the owning writer is unavailable. These results attribute identity;
+they do not authenticate a channel. No channel-mapping revision/current-at-COMMIT guarantee is
+introduced by an entity lifetime witness.

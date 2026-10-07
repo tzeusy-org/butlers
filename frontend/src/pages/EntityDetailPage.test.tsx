@@ -58,6 +58,8 @@ vi.mock("@/hooks/use-memory", () => ({
 
 // Relationship-scoped hooks consumed by the consolidated page
 vi.mock("@/hooks/use-entities", () => ({
+  useIdentityCandidates: vi.fn(() => ({ data: { facts: [] }, isPending: false, isError: false, refetch: vi.fn() })),
+  useDecideIdentityCandidate: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   ENTITY_CADENCE_REFRESH_MS: 30_000,
   ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   // EntityDetailPage renders EntityVerbRail (bu-6t8ix.4); its four write verbs each

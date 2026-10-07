@@ -41,7 +41,25 @@ class Label(BaseModel):
     color: str | None = None
 
 
-class ContactInfoEntry(BaseModel):
+class FactReporter(BaseModel):
+    """Available live reporter; unavailable history never fabricates a name."""
+
+    entity_id: UUID | None = None
+    name: str | None = None
+    availability: Literal["available", "unavailable", "unresolved", "legacy_unknown", "system"]
+
+
+class FactAttribution(BaseModel):
+    content_authority: Literal["owner", "owner_device", "third_party", "system", "mixed"] | None = (
+        None
+    )
+    reported_by: FactReporter | None = None
+    confirmed_at: datetime | None = None
+    confirmed_by_entity_id: UUID | None = None
+    confirmation_source: str | None = None
+
+
+class ContactInfoEntry(FactAttribution):
     """A single contact_info row for a contact.
 
     The ``value`` field is set to ``None`` when ``secured=True`` and the
@@ -1126,7 +1144,7 @@ class PromoteEntityRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ContactFact(BaseModel):
+class ContactFact(FactAttribution):
     """One contact-fact triple returned by ``GET /entities/{id}/contacts``.
 
     ``id`` is the fact UUID in ``relationship.entity_facts``.
@@ -1483,7 +1501,7 @@ class ActivityResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class EntityFactEntry(BaseModel):
+class EntityFactEntry(FactAttribution):
     """One triple from ``relationship.entity_facts`` for the entity provenance grid.
 
     Returned by ``GET /entities/{id}/facts`` — the Workbench-mode provenance
@@ -1694,7 +1712,7 @@ class CompareRequest(BaseModel):
     entity_b: UUID = Field(..., description="UUID of the second entity to compare.")
 
 
-class CompareFact(BaseModel):
+class CompareFact(FactAttribution):
     """One fact row in a compare block, carrying full provenance.
 
     Used for the per-entity ``identity_facts`` / ``narrative_facts`` blocks and
@@ -1794,3 +1812,18 @@ class DismissPairResponse(BaseModel):
     entity_b: UUID
     outcome: Literal["dismissed"]
     shared_facts: list[CompareFact]
+
+
+class IdentityFactDecisionResponse(BaseModel):
+    fact_id: UUID
+    decision: Literal["adopt", "reject", "confirm"]
+    decided_at: datetime
+    replayed: bool
+
+
+class CandidateFact(ContactFact):
+    validity: Literal["candidate"] = "candidate"
+
+
+class CandidateFactsResponse(BaseModel):
+    facts: list[CandidateFact]

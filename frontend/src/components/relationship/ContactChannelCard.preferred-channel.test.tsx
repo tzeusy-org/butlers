@@ -70,6 +70,8 @@ vi.mock("@/components/ui/select", () => ({
 }));
 
 vi.mock("@/hooks/use-entities", () => ({
+  useIdentityCandidates: vi.fn(() => ({ data: { facts: [] }, isPending: false, isError: false, refetch: vi.fn() })),
+  useDecideIdentityCandidate: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEntityLinkedContacts: vi.fn(),
   useAddEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useDeleteEntityContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

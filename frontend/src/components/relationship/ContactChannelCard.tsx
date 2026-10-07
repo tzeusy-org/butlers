@@ -48,6 +48,8 @@ import {
 import { labelFillColors } from "@/lib/visual-token-roles";
 import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret, useSetPreferredChannel, useClearPreferredChannel } from "@/hooks/use-entities";
 import { sortChannelsPrimaryFirst } from "./contact-channel-utils";
+import { IdentityCandidateReview } from "./IdentityCandidateReview";
+import { FactReporterLine } from "./FactReporterLine";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -433,7 +435,10 @@ export function ExpandedContactInfoRow({
         {entry.secured ? (
           <SecuredChannelEntry entry={entry} entityId={entityId} />
         ) : (
-          <ChannelValue entry={entry} />
+          <>
+            <ChannelValue entry={entry} />
+            <FactReporterLine fact={entry} />
+          </>
         )}
       </span>
       {/* Edit/Delete/Verify affordances — entity_facts rows only (non-secured) */}
@@ -898,6 +903,7 @@ export function ContactChannelCard({
         className="space-y-2"
       >
         <h2 className="text-lg font-semibold">Channels</h2>
+      <IdentityCandidateReview entityId={entityId} />
         <div className="space-y-2" data-testid="contact-channel-card-skeleton">
           <div className="h-8 bg-muted rounded" />
           <div className="h-8 bg-muted rounded" />

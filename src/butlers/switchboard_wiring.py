@@ -211,6 +211,11 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
             detail = result.get("error") if isinstance(result, dict) else None
             raise RuntimeError(f"Unknown-sender owner notification failed: {detail or result}")
 
+    from butlers.core.fact_authority import FactSourceContextRegistry, register_source_registry
+
+    daemon._fact_source_registry = FactSourceContextRegistry(pool)
+    register_source_registry(daemon._fact_source_registry)
+
     pipeline = MessagePipeline(
         switchboard_pool=pool,
         dispatch_fn=daemon.spawner.trigger,
@@ -391,7 +396,22 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
             opaque_route_ref(row_id) if raw_content_blind_recovery else row_id
         )
         try:
-            parsed = parse_route_envelope(route_envelope)
+            # This private field is written only after the fixed source verifier
+            # accepted the original route. It is never part of the public ABI.
+            public_envelope = dict(route_envelope)
+            frozen_report = public_envelope.pop("_fact_source_report", None)
+            public_envelope.pop("_fact_source_receipt", None)
+            parsed = parse_route_envelope(public_envelope)
+            if frozen_report is not None:
+                from butlers.core.fact_authority import _current_report
+
+                receiver = daemon._fact_receiver_registry
+                recovered_report = await receiver.recover_report(
+                    row_id,
+                    processing_claim_id,
+                    daemon.config.switchboard_url,
+                )
+                _current_report.set(recovered_report)
         except Exception as exc:
             failure_class = type(exc).__name__
             logger.warning(

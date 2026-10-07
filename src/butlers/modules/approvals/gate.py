@@ -750,6 +750,12 @@ def _make_gate_wrapper(
 
         matching_rule = match_standing_rule(tool_name, tool_args, rules)
 
+        if tool_name == "relationship_assert_fact" and matching_rule is not None:
+            from butlers.tools.relationship.fact_authority import admitted_rule_report
+
+            if await admitted_rule_report(pool, matching_rule["id"]) is None:
+                matching_rule = None
+
         # Safety-critical gating: a standing rule may only auto-approve when it
         # pins every safety-critical argument the owning module declared via
         # tool_metadata().  An unpinned safety-critical arg means the rule is
@@ -770,6 +776,12 @@ def _make_gate_wrapper(
         if matching_rule is not None and resolved_contact is not None and not unpinned_critical:
             # Target with a matching standing rule: auto-approve.
             rule_id = matching_rule["id"]
+
+            if tool_name == "relationship_assert_fact":
+                from butlers.tools.relationship.fact_authority import prepare_rule_assertion
+
+                tool_args = await prepare_rule_assertion(pool, action_id, tool_args, rule_id)
+                safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
             await pool.execute(
                 "INSERT INTO pending_actions "

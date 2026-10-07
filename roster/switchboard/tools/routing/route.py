@@ -540,7 +540,29 @@ async def route(
                 if call_fn is not None:
                     result = await call_fn(endpoint_url, tool_name, route_args)
                 else:
-                    result = await _call_butler_tool(endpoint_url, tool_name, route_args)
+                    from butlers.core.fact_authority import source_transport_headers
+
+                    headers = (
+                        source_transport_headers(target_butler)
+                        if tool_name == "route.execute"
+                        else {}
+                    )
+                    if headers:
+                        # A capability is request-specific: never share the
+                        # endpoint-cached MCP session with unrelated reports.
+                        from fastmcp.client.transports import StreamableHttpTransport
+
+                        async with MCPClient(
+                            StreamableHttpTransport(endpoint_url, headers=headers)
+                        ) as peer:
+                            result = await peer.call_tool(
+                                tool_name, route_args, raise_on_error=False
+                            )
+                            if getattr(result, "isError", False):
+                                raise TransportRejected(_extract_mcp_error_text(result))
+                            result = _extract_fact_route_result(result)
+                    else:
+                        result = await _call_butler_tool(endpoint_url, tool_name, route_args)
             except Exception as exc:
                 transport = classify_transport_exception(exc)
                 retryable = is_retryable_route_exception(exc)
@@ -800,3 +822,18 @@ async def _log_routing(
         entity_id,
         sender_roles,
     )
+
+
+def _extract_fact_route_result(result: Any) -> Any:
+    """Decode the same structured/text result as the cached routing client."""
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        return structured
+    for content in getattr(result, "content", ()):
+        text = getattr(content, "text", None)
+        if text is not None:
+            try:
+                return json.loads(text)
+            except (ValueError, TypeError):
+                return text
+    return result

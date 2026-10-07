@@ -850,6 +850,10 @@ class TestMcpSurface:
         params = inspect.signature(tool.fn).parameters
         assert "src" not in params
         assert "observed_at" not in params
+        # REQ-relationship-facts-006: owner confirmation is server-derived.
+        assert "verified" not in params
+        assert "content_authority" not in params
+        assert "authority_entity_id" not in params
         with pytest.raises(TypeError):
             await tool.fn(
                 subject=uuid.uuid4(),
@@ -859,7 +863,7 @@ class TestMcpSurface:
             )
 
     async def test_assert_tool_accepts_the_dispatch_replay_shape(self, monkeypatch):
-        """Approval dispatch replays stored tool_args verbatim; the signature must fit."""
+        """New replay uses the public shape; legacy flags normalize privately."""
         import importlib
         from unittest.mock import AsyncMock, MagicMock
 
@@ -891,7 +895,6 @@ class TestMcpSurface:
             "object": "owner@example.test",
             "object_kind": "literal",
             "conf": 1.0,
-            "verified": False,
             "approval_action_id": str(action_id),
             # The canonical effective-time keys every parked action now carries.
             "effective_period_id": str(uuid.uuid4()),
