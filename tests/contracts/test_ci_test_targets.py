@@ -1,3 +1,4 @@
+# Isolated hosted scoped-positive control; no behavior or test-node change.
 """Keep local CI lanes and hosted file shards contractually aligned."""
 
 from __future__ import annotations
