@@ -113,6 +113,16 @@ curl -s http://localhost:41200/api/ingestion/connectors/summaries | python3 -m j
   finished its first transport attempt reports `degraded` with detail such as `transport=starting`,
   never a fourth state.
 
+### Gmail classification admission
+
+The optional fixed `capabilities.known_contact_check` object carries version=1, state/reason, strict nonnegative query generation, UTC last-success, process instance UUID and a nullable admission epoch UUID. Gmail startup sends unloaded/not_loaded, generation0, no success and no epoch; the server stores unknown and issues a fresh ordering epoch. Normal evidence must match the admitted instance/epoch and monotonically advance generation. Same-generation mutation and old instance/epoch/generation are refused before registry/counter/liveness mutation; identical duplicates cannot renew successful-query freshness. Legacy or malformed metadata is classification unknown. Capabilities bind as Python objects through the production JSONB codec; unrelated flags retain their contract. Existing historical JSON strings are not reinterpreted as authority.
+
+The optional `classification_ack` contains admitted, instance_id, generation, request_admission_epoch, admission_epoch and a closed reason. Instance/generation/request epoch echo the exact request, including refusals. Startup echoes null and returns a new epoch; normal admitted replies return the sent epoch; refusals return no adoptable epoch. These public epochs order observations under existing heartbeat registration; they are not authentication credentials or new caller authority.
+
+For opted-in Gmail, one publisher slot covers latest request assembly, send and exact ACK adoption. The two-second bound includes queue wait. Cancellation/timeout retires the attempt before releasing the slot; late replies cannot adopt or clear newer admission. Transport tails receive cancellation and bounded cleanup. A late no-epoch startup can still make the SERVER conservatively unknown; client retirement does not undo that observation. Subsequent refusal/handshake/loaded publication restores current admission without changing local query history. Generic periodic/default-disabled heartbeat behavior and provider health remain unchanged.
+
+The Gmail primary writer takes an endpoint transaction advisory lock, then the registry row, and commits before existing best-effort partition/log work. The seven-day heartbeat log is not classification authority. New classification metadata is removed from capability diagnostics before logging, and malformed fields are normalized before generic validation errors. New diagnostics contain closed outcomes, no contact/error/token/epoch payloads.
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md) -- What connectors are and how they work

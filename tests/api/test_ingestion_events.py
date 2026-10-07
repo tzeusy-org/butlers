@@ -1762,21 +1762,114 @@ async def test_event_rollup_skips_write_when_no_sessions(app):
 # ---------------------------------------------------------------------------
 
 
+# REQ-dashboard-ingestion-dispatch-console-003: mocked section failures/current evidence; SQL is V3/V4.
 async def test_dropped_known_reports_counts_and_routes_before_catch_all(app):
-    """GET /dropped-known returns the aggregate, not the /{request_id} 404."""
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value={"dropped": 3, "episodes": 2})
-    _app_with_mock_db(app, shared_pool=pool)
+    """Readable counts survive current-evidence failures; empty authority is explicit."""
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
 
+    from butlers.connectors.known_contact_state import CLASSIFICATION_KEY, KnownContactSnapshot
+
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {"dropped": 3, "episodes": 2}
+    pool.fetch.return_value = []
+    manager = _app_with_mock_db(app, shared_pool=pool)
+    registry = AsyncMock()
+    registry.fetch.return_value = []
+    manager.pool.side_effect = None
+    manager.pool.return_value = registry
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/ingestion/events/dropped-known", params={"window": "7d"})
-
-    assert resp.status_code == 200
-    assert resp.json() == {"available": True, "window": "7d", "dropped": 3, "episodes": 2}
-    sql = pool.fetchrow.await_args.args[0]
-    assert "drop_context,important_dropped" in sql
+        assert resp.status_code == 200
+        positive = resp.json()
+        assert positive == {
+            "available": True,
+            "window": "7d",
+            "dropped": 3,
+            "episodes": 2,
+            "counts_available": True,
+            "classification_available": True,
+            "uncertain_drops": 0,
+            "availability_reason": "none",
+        }
+        assert "drop_context,important_dropped" in pool.fetchrow.await_args.args[0]
+        now = datetime.now(UTC)
+        instance = uuid4()
+        snapshot = KnownContactSnapshot(
+            state="loaded",
+            reason="none",
+            generation=2,
+            last_success_at=now,
+        )
+        runtime = {
+            "connector_type": "gmail",
+            "operational_role": "runtime_instance",
+            "archived_at": None,
+            "deleted_at": None,
+            "instance_id": instance,
+            "last_heartbeat_at": now,
+            "capabilities": {
+                CLASSIFICATION_KEY: {
+                    **snapshot.projection(),
+                    "instance_id": str(instance),
+                    "admission_epoch": str(uuid4()),
+                }
+            },
+        }
+        registry.fetch.return_value = [runtime]
+        assert (await client.get("/api/ingestion/events/dropped-known")).json()["available"] is True
+        for changes in [
+            {"operational_role": "unknown"},
+            {"capabilities": {}},
+            {"capabilities": "legacy-string"},
+            {"instance_id": uuid4()},
+            {"last_heartbeat_at": now - timedelta(seconds=301)},
+            {"last_heartbeat_at": now + timedelta(hours=1)},
+            {
+                "capabilities": {
+                    CLASSIFICATION_KEY: {
+                        **runtime["capabilities"][CLASSIFICATION_KEY],
+                        "generation": True,
+                    }
+                }
+            },
+            {
+                "capabilities": {
+                    CLASSIFICATION_KEY: {
+                        **runtime["capabilities"][CLASSIFICATION_KEY],
+                        "last_success_at": (now - timedelta(seconds=901)).isoformat(),
+                    }
+                }
+            },
+        ]:
+            registry.fetch.return_value = [runtime, {**runtime, **changes}]
+            unknown = (await client.get("/api/ingestion/events/dropped-known")).json()
+            assert unknown["available"] is False and unknown["dropped"] == 3
+            assert unknown["counts_available"] is True
+            assert unknown["availability_reason"] == "classification_unknown"
+        for excluded in [
+            {"operational_role": "checkpoint"},
+            {"archived_at": now},
+            {"deleted_at": now},
+            {"connector_type": "telegram_bot"},
+        ]:
+            registry.fetch.return_value = [{**runtime, **excluded, "capabilities": None}]
+            assert (await client.get("/api/ingestion/events/dropped-known")).json()[
+                "available"
+            ] is True
+        registry.fetch.return_value = [runtime]
+        pool.fetch.return_value = [{"classification": None}]
+        uncertain = (await client.get("/api/ingestion/events/dropped-known")).json()
+        assert uncertain["classification_available"] is True and uncertain["available"] is False
+        assert uncertain["uncertain_drops"] == 1 and uncertain["dropped"] == 3
+        assert uncertain["availability_reason"] == "historical_uncertainty"
+        pool.fetch.return_value = []
+        registry.fetch.side_effect = RuntimeError("private contact error-tail")
+        unreadable = (await client.get("/api/ingestion/events/dropped-known")).json()
+        assert unreadable["availability_reason"] == "registry_unavailable"
+        assert unreadable["available"] is False and unreadable["dropped"] == 3
 
 
 @pytest.mark.parametrize("failure", ["read_error", "no_pool"])
@@ -1795,7 +1888,16 @@ async def test_dropped_known_degrades_instead_of_reading_zero(app, failure):
         resp = await client.get("/api/ingestion/events/dropped-known")
 
     assert resp.status_code == 200
-    assert resp.json() == {"available": False, "window": "24h", "dropped": 0, "episodes": 0}
+    assert resp.json() == {
+        "available": False,
+        "window": "24h",
+        "dropped": 0,
+        "episodes": 0,
+        "counts_available": False,
+        "classification_available": False,
+        "uncertain_drops": None,
+        "availability_reason": "counts_unavailable",
+    }
 
 
 async def test_histogram_routes_before_request_id_catch_all(app):

@@ -12,13 +12,18 @@ Three-layer pipeline (applied in order):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from prometheus_client import Counter
+
+from butlers.connectors.known_contact_state import KnownContactSnapshot
 
 if TYPE_CHECKING:
     import asyncpg
@@ -502,57 +507,83 @@ class GmailPolicyEvaluator:
         # expression `time.monotonic() - 0.0 < ttl` evaluated to False, silently
         # skipping the first DB refresh and returning an empty frozenset.
         self._cache_loaded_at: float = float("-inf")
+        self._snapshot = KnownContactSnapshot()
+        self._refresh_lock = asyncio.Lock()
 
     def _cache_expired(self) -> bool:
         return (time.monotonic() - self._cache_loaded_at) >= self._ttl
 
-    async def _refresh_from_db(self) -> None:
-        """Reload the contact set from DB.  On failure, retain previous cache."""
-        if self._db_pool is None:
-            logger.debug("GmailPolicyEvaluator: no DB pool configured; skipping DB refresh")
-            return
+    def _transition(self, state: str, reason: str, *, success: datetime | None = None) -> None:
+        self._snapshot = KnownContactSnapshot(
+            contacts=self._cache,
+            state=state,
+            reason=reason,
+            generation=self._snapshot.generation + 1,
+            last_success_at=success if success is not None else self._snapshot.last_success_at,
+        )
 
-        try:
-            # Resolve priority-contact emails from relationship.entity_facts (has-email)
-            # via the contact's directly-linked entity_id (core_131 — entity_id column on
-            # priority_contacts; no longer joins through public.contacts).  Falls back
-            # gracefully if the tables do not yet exist (schema-not-ready guard in the
-            # except block).
-            rows = await self._db_pool.fetch(
-                """
-                SELECT DISTINCT ef.object AS value
-                FROM public.priority_contacts pc
-                JOIN relationship.entity_facts ef ON ef.subject = pc.entity_id
-                WHERE ef.predicate  = 'has-email'
-                  AND ef.object_kind = 'literal'
-                  AND ef.validity   = 'active'
-                  AND ef.object IS NOT NULL
-                  AND pc.entity_id IS NOT NULL
-                """
-            )
-            self._cache = frozenset(_normalize_email(row["value"]) for row in rows)
-            self._cache_loaded_at = time.monotonic()
-            logger.debug(
-                "GmailPolicyEvaluator: refreshed %d priority contact emails from entity_facts",
-                len(self._cache),
-            )
-        except Exception:
-            logger.warning(
-                "GmailPolicyEvaluator: DB refresh failed; retaining previous cache (%d entries)",
-                len(self._cache),
-                exc_info=True,
-            )
+    def peek_snapshot(self) -> KnownContactSnapshot:
+        """Read one atomic generation, aging it without initiating a query."""
+        if self._snapshot.state == "loaded" and self._cache_expired():
+            self._transition("stale", "ttl_expired")
+        return self._snapshot
+
+    async def get_snapshot(
+        self,
+        observer: Callable[[], Awaitable[None]] | None = None,
+    ) -> KnownContactSnapshot:
+        """Refresh atomically; publication never changes the query's truth.
+
+        The optional observer owns a bounded publication path. Cancellation of
+        an unfinished query is unknown; cancellation after its success leaves
+        that success intact and propagates to the owning caller.
+        """
+
+        async def notify() -> None:
+            if observer is not None:
+                try:
+                    await observer()
+                except Exception:
+                    logger.warning("Gmail classification publication unavailable")
+
+        async with self._refresh_lock:
+            if not self._cache_expired():
+                return self.peek_snapshot()
+            self._transition("unloaded", "refreshing")
+            try:
+                await notify()
+                if self._db_pool is None:
+                    self._transition("unloaded", "no_pool")
+                else:
+                    rows = await self._db_pool.fetch(
+                        """
+                        SELECT DISTINCT ef.object AS value
+                        FROM public.priority_contacts pc
+                        JOIN relationship.entity_facts ef ON ef.subject = pc.entity_id
+                        WHERE ef.predicate = 'has-email'
+                          AND ef.object_kind = 'literal'
+                          AND ef.validity = 'active'
+                          AND ef.object IS NOT NULL
+                          AND pc.entity_id IS NOT NULL
+                        """
+                    )
+                    self._cache = frozenset(_normalize_email(row["value"]) for row in rows)
+                    self._cache_loaded_at = time.monotonic()
+                    self._transition("loaded", "none", success=datetime.now(UTC))
+            except asyncio.CancelledError:
+                self._transition("failed", "refresh_cancelled")
+                raise
+            except Exception:
+                self._transition("failed", "refresh_failed")
+                # Never log DB error tails or contact identities.
+                logger.warning("GmailPolicyEvaluator: DB refresh failed; retaining previous cache")
+            # Deliberately outside the query exception/cancellation boundary.
+            await notify()
+            return self.peek_snapshot()
 
     async def get_known_contacts(self) -> frozenset[str]:
-        """Return the current set of known-contact email addresses.
-
-        Refreshes from DB if the cache has expired.  Returns an empty set
-        if the DB has never been successfully loaded.
-        """
-        if self._cache_expired():
-            await self._refresh_from_db()
-
-        return self._cache
+        """Compatible contact-set read, retaining cached positives on failure."""
+        return (await self.get_snapshot()).contacts
 
     async def is_priority_sender(self, sender_address: str) -> bool:
         """Return True if ``sender_address`` is a recognized priority contact."""

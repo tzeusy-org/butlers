@@ -239,17 +239,19 @@ function droppedKnownClauses(
   summary: IngestionDroppedKnownSummary | undefined,
   isError: boolean,
 ): VerdictClause[] {
-  if (isError || !summary || !summary.available) {
-    return [{ key: "dropped-known-unknown", text: "gate harm unknown" }];
-  }
-  if (summary.dropped <= 0) return [];
-  return [
-    {
+  const clauses: VerdictClause[] = [];
+  if (summary?.counts_available && summary.dropped > 0) {
+    clauses.push({
       key: "dropped-known",
       text: `${summary.dropped.toLocaleString()} dropped from people you know`,
       href: DROPPED_KNOWN_HREF,
-    },
-  ];
+    });
+  }
+  if (isError || !summary?.available || !summary.counts_available ||
+      !summary.classification_available || summary.uncertain_drops !== 0) {
+    clauses.push({ key: "dropped-known-unknown", text: "gate harm unknown" });
+  }
+  return clauses;
 }
 
 /** Verdict above the filters pipeline. */

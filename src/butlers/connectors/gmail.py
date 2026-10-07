@@ -49,6 +49,7 @@ import os
 import re
 import signal
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
 from html.parser import HTMLParser
@@ -727,9 +728,14 @@ class GmailConnectorRuntime:
         Called before each poll cycle so that the in-memory contact set stays
         current without blocking individual message evaluations.
         """
-        known_contacts = await self._gmail_policy_evaluator.get_known_contacts()
+        snapshot = await self._gmail_policy_evaluator.get_snapshot(self._publish_known_contacts)
+        known_contacts = snapshot.contacts
         self._policy_tier_assigner.known_contacts = known_contacts
         await self._refresh_sent_message_ids()
+
+    async def _publish_known_contacts(self) -> None:
+        if self._heartbeat is not None:
+            await self._heartbeat.publish_once()
 
     async def _refresh_sent_message_ids(self) -> None:
         """Refresh PolicyTierAssigner.sent_message_ids from the owner's SENT mailbox.
@@ -995,6 +1001,7 @@ class GmailConnectorRuntime:
             get_health_state=self._get_health_state,
             get_checkpoint=self._get_checkpoint,
             get_capabilities=self._get_capabilities,
+            get_contact_snapshot=self._gmail_policy_evaluator.peek_snapshot,
         )
 
         self._heartbeat.start()
@@ -1070,6 +1077,8 @@ class GmailConnectorRuntime:
 
         # Start heartbeat
         self._start_heartbeat()
+        # Publish unloaded before provider work; failure never blocks ingestion.
+        await self._publish_known_contacts()
 
         # Start Pub/Sub webhook server if enabled
         if self._config.gmail_pubsub_enabled:
@@ -2159,11 +2168,18 @@ class GmailConnectorRuntime:
                 except (ValueError, OSError):
                     _observed_at = datetime.now(UTC).isoformat()
 
+                # Capture query truth once, independently of provider event time.
+                _snapshot = self._gmail_policy_evaluator.peek_snapshot()
+                _classification = _snapshot.historical(datetime.now(UTC))
+                _tier_assigner = replace(
+                    self._policy_tier_assigner, known_contacts=_snapshot.contacts
+                )
+
                 # Evaluate label filter + tier policy
                 policy_result = evaluate_message_policy(
                     message_data,
                     label_filter=self._label_filter,
-                    tier_assigner=self._policy_tier_assigner,
+                    tier_assigner=_tier_assigner,
                     endpoint_identity=self._config.connector_endpoint_identity,
                 )
 
@@ -2172,9 +2188,7 @@ class GmailConnectorRuntime:
                 # Checked against the sender directly: the label-filter drop returns
                 # before tier assignment, so assignment_rule cannot carry this.
                 _important_dropped_basis = (
-                    RULE_KNOWN_CONTACT
-                    if self._policy_tier_assigner.is_known_contact(_from_header)
-                    else None
+                    RULE_KNOWN_CONTACT if _tier_assigner.is_known_contact(_from_header) else None
                 )
 
                 # Tier 3: skip — do not submit to Switchboard
@@ -2204,6 +2218,7 @@ class GmailConnectorRuntime:
                             raw={},
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
+                            classification=_classification,
                         ),
                     )
                     return
@@ -2243,6 +2258,7 @@ class GmailConnectorRuntime:
                             raw={},
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
+                            classification=_classification,
                         ),
                     )
                     return
@@ -2279,6 +2295,7 @@ class GmailConnectorRuntime:
                             raw={},
                             policy_tier=policy_result.policy_tier,
                             important_dropped_basis=_important_dropped_basis,
+                            classification=_classification,
                         ),
                     )
                     return

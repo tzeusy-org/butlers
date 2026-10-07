@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -14,7 +14,12 @@ vi.mock("@/api/index.ts", () => ({
   getIngestionEventSessions: vi.fn(),
   getIngestionWindowRollup: vi.fn(), getIngestionEventsHistogram: vi.fn(),
   getIngestionEventReplays: vi.fn(), getIngestionEventSenderContact: vi.fn(),
-  getIngestionEventPayload: vi.fn(),
+  getIngestionEventPayload: vi.fn(), getIngestionDroppedKnown: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-ingestion", () => ({
+  usePipelineStats: () => ({ data: { aggregates_available: true, ingested: 2, filtered: 0 }, isLoading: false, isError: false }),
+  useConnectorSummaries: vi.fn(),
 }));
 
 function setup() {
@@ -29,6 +34,7 @@ const page = (id: string, cursor: string | null) => ({
 }) as Awaited<ReturnType<typeof api.listIngestionEvents>>;
 
 afterEach(() => {
+  cleanup();
   vi.resetAllMocks();
   vi.useRealTimers();
 });
@@ -265,4 +271,39 @@ it("reconciles active drawer and aggregate reads every 30 seconds without bus ev
   unmount();
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   for (const read of readers) expect(read).toHaveBeenCalledTimes(3);
+});
+
+
+it("composes the actual dropped-known query and opener through loading, partial failure and healthy zero", async () => {
+  const { MemoryRouter } = await import("react-router");
+  const { IngestionFiltersVerdictOpener } = await import("@/components/ingestion/dispatch/IngestionVerdictOpeners");
+  const { client, wrapper } = setup();
+  let resolve!: (value: Awaited<ReturnType<typeof api.getIngestionDroppedKnown>>) => void;
+  vi.mocked(api.getIngestionDroppedKnown).mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  render(<MemoryRouter><IngestionFiltersVerdictOpener /></MemoryRouter>, { wrapper });
+  expect(screen.getByTestId("ingestion-filters-verdict-skeleton")).toBeTruthy();
+  expect(screen.queryByText(/All gates clear/)).toBeNull();
+  await act(async () => { resolve({ available: false, counts_available: true,
+    classification_available: false, uncertain_drops: 0, availability_reason: "classification_unknown",
+    window: "24h", dropped: 0, episodes: 0 }); });
+  await waitFor(() => expect(screen.getByText("gate harm unknown")).toBeTruthy());
+  expect(api.getIngestionDroppedKnown).toHaveBeenCalledWith("24h", expect.any(AbortSignal));
+  expect(screen.queryByText(/All gates clear/)).toBeNull();
+  await act(async () => { client.setQueryData(ingestionEventKeys.droppedKnown("24h"), {
+    available: true, counts_available: true, classification_available: true, uncertain_drops: 0,
+    availability_reason: "none", window: "24h", dropped: 3, episodes: 2,
+  }); });
+  vi.mocked(api.getIngestionDroppedKnown).mockRejectedValueOnce(new Error("unavailable"));
+  await act(async () => { await client.refetchQueries({ queryKey: ingestionEventKeys.droppedKnown("24h") }); });
+  await waitFor(() => expect(screen.getByText("gate harm unknown")).toBeTruthy());
+  expect(screen.getByText("3 dropped from people you know").closest("a")?.getAttribute("href"))
+    .toBe("/ingestion?statuses=filtered&range=24h");
+  expect(screen.queryByText(/All gates clear/)).toBeNull();
+  vi.mocked(api.getIngestionDroppedKnown).mockResolvedValueOnce({ available: true,
+    counts_available: true, classification_available: true, uncertain_drops: 0,
+    availability_reason: "none", window: "24h", dropped: 0, episodes: 0 });
+  await act(async () => { await client.refetchQueries({ queryKey: ingestionEventKeys.droppedKnown("24h") }); });
+  await waitFor(() => expect(screen.getByText(/All gates clear/)).toBeTruthy());
+  expect(screen.queryByText("gate harm unknown")).toBeNull();
+  client.clear();
 });

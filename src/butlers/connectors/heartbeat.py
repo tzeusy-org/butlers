@@ -30,6 +30,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
+from butlers.connectors.known_contact_state import (
+    CLASSIFICATION_KEY,
+    KnownContactSnapshot,
+    parse_ack,
+)
+
 if TYPE_CHECKING:
     from butlers.connectors.mcp_client import CachedMCPClient
     from butlers.connectors.metrics import ConnectorMetrics
@@ -147,6 +153,7 @@ class ConnectorHeartbeat:
         get_health_state: Callable[[], tuple[str, str | None]],
         get_checkpoint: Callable[[], tuple[str | None, datetime | None]] | None = None,
         get_capabilities: Callable[[], dict[str, object]] | None = None,
+        get_contact_snapshot: Callable[[], KnownContactSnapshot] | None = None,
     ) -> None:
         """Initialize heartbeat task.
 
@@ -165,6 +172,13 @@ class ConnectorHeartbeat:
         self._get_health_state = get_health_state
         self._get_checkpoint = get_checkpoint
         self._get_capabilities = get_capabilities
+        self._get_contact_snapshot = get_contact_snapshot
+        self._publication_lock = asyncio.Lock()
+        self._admission_epoch: str | None = None
+        self._last_acknowledged_generation: int | None = None
+        self._attempt_sequence = 0
+        self._active_attempt: int | None = None
+        self._transport_tails: set[asyncio.Task] = set()
 
         # Generate stable instance_id for this process
         self._instance_id = uuid4()
@@ -217,22 +231,33 @@ class ConnectorHeartbeat:
 
     async def stop(self) -> None:
         """Stop the heartbeat background task gracefully."""
-        if self._task is None:
+        task = self._task
+        if task is not None:
+            logger.info(
+                "Stopping heartbeat task: connector_type=%s, endpoint_identity=%s",
+                self._config.connector_type,
+                self._config.endpoint_identity,
+            )
+
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancellation of the periodic publisher retires its active transport
+        # in publish_once's finally. Drain after the owner has finished so that
+        # newly retired task receives the same bounded cleanup as older tails.
+        tails = set(self._transport_tails)
+        if tails:
+            for tail in tails:
+                tail.cancel()
+            await asyncio.wait(tails, timeout=0.1)
+        if task is None:
             return
 
-        logger.info(
-            "Stopping heartbeat task: connector_type=%s, endpoint_identity=%s",
-            self._config.connector_type,
-            self._config.endpoint_identity,
-        )
-
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-
-        self._task = None
+        if self._task is task:
+            self._task = None
         logger.info(
             "Heartbeat task stopped: connector_type=%s, endpoint_identity=%s",
             self._config.connector_type,
@@ -263,8 +288,8 @@ class ConnectorHeartbeat:
             )
             raise
 
-    async def _send_heartbeat(self) -> None:
-        """Collect metrics, build envelope, and submit heartbeat."""
+    def _build_envelope(self) -> dict:
+        """Build after acquiring the opted-in publication slot."""
         # Calculate uptime
         uptime_s = int(time.time() - self._start_time)
 
@@ -322,6 +347,16 @@ class ConnectorHeartbeat:
             if capabilities:
                 envelope["capabilities"] = capabilities
 
+        return envelope
+
+    async def _send_heartbeat(self) -> None:
+        if self._get_contact_snapshot is not None:
+            await self.publish_once()
+            return
+        envelope = self._build_envelope()
+        state = envelope["status"]["state"]
+        uptime_s = envelope["status"]["uptime_s"]
+
         # Submit via MCP
         try:
             result = await self._mcp_client.call_tool("connector.heartbeat", envelope)
@@ -353,6 +388,91 @@ class ConnectorHeartbeat:
                 self._config.connector_type,
                 self._config.endpoint_identity,
             )
+
+    def _retire_transport(self, task: asyncio.Task) -> None:
+        """Retired results have no adoption path, even if cancellation is delayed."""
+        self._transport_tails.add(task)
+        task.cancel()
+
+        def finished(done: asyncio.Task) -> None:
+            self._transport_tails.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+
+    async def publish_once(self, *, timeout_s: float = 2.0) -> bool:
+        """Bound queue wait, send and exact-request ACK adoption in one slot.
+
+        Query success and provider health are independent of this result.
+        A late startup can still conservatively invalidate server evidence;
+        retiring a client response does not undo a server observation.
+        """
+        if not self._config.enabled or self._get_contact_snapshot is None:
+            return False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        acquired = False
+        task: asyncio.Task | None = None
+        try:
+            await asyncio.wait_for(self._publication_lock.acquire(), timeout=max(0, timeout_s))
+            acquired = True
+            self._attempt_sequence += 1
+            attempt = self._attempt_sequence
+            self._active_attempt = attempt
+            snapshot = self._get_contact_snapshot()
+            if self._admission_epoch is None:
+                snapshot = KnownContactSnapshot()
+            sent = {
+                **snapshot.projection(),
+                "instance_id": str(self._instance_id),
+                "admission_epoch": self._admission_epoch,
+            }
+            envelope = self._build_envelope()
+            envelope["capabilities"] = {
+                **envelope.get("capabilities", {}),
+                # Transport receives its own fixed-value copy; ACK validation
+                # retains the private captured request even if arguments mutate.
+                CLASSIFICATION_KEY: dict(sent),
+            }
+            task = asyncio.create_task(self._mcp_client.call_tool("connector.heartbeat", envelope))
+            done, _ = await asyncio.wait({task}, timeout=max(0, deadline - loop.time()))
+            if not done or loop.time() >= deadline:
+                logger.warning("Gmail classification publication outcome=timeout")
+                return False
+            result = task.result()
+            ack = (
+                parse_ack(result.get("classification_ack"), sent)
+                if isinstance(result, dict) and result.get("status") == "accepted"
+                else None
+            )
+            if ack is None or self._active_attempt != attempt:
+                logger.warning("Gmail classification publication outcome=invalid_ack")
+                return False
+            if ack["admitted"]:
+                self._admission_epoch = ack["admission_epoch"]
+                self._last_acknowledged_generation = sent["generation"]
+                return True
+            if self._admission_epoch == sent["admission_epoch"]:
+                self._admission_epoch = None
+            logger.warning("Gmail classification publication outcome=refused")
+            return False
+        except TimeoutError:
+            logger.warning("Gmail classification publication outcome=timeout")
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Gmail classification publication outcome=failed")
+            return False
+        finally:
+            if acquired:
+                self._active_attempt = None
+                if task is not None and not task.done():
+                    self._retire_transport(task)
+                elif task is not None and not task.cancelled():
+                    task.exception()
+                self._publication_lock.release()
 
     def _collect_counters(self) -> CounterRead:
         """Collect current counter values from Prometheus metrics.

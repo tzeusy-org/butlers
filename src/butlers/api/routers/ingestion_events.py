@@ -52,6 +52,8 @@ from butlers.api.models.ingestion_event import (
 )
 from butlers.api.routers.audit import append as _audit_append
 from butlers.core.ingestion_events import (
+    ingestion_classification_uncertainty,
+    ingestion_current_classification_available,
     ingestion_dropped_known_summary,
     ingestion_event_get,
     ingestion_event_get_inbox_lifecycle,
@@ -625,14 +627,39 @@ async def get_ingestion_dropped_known(
     can say the harm is unknown instead of rendering an all-clear. Registered
     before ``/{request_id}`` so the literal path is not captured.
     """
-    from_dt = _datetime.now(UTC) - _DROPPED_KNOWN_WINDOWS[window]
+    now = _datetime.now(UTC)
+    from_dt = now - _DROPPED_KNOWN_WINDOWS[window]
     try:
         pool = db.credential_shared_pool()
-        counts = await ingestion_dropped_known_summary(pool, from_dt=from_dt)
+        counts = await ingestion_dropped_known_summary(pool, from_dt=from_dt, to_dt=now)
+        uncertain = await ingestion_classification_uncertainty(pool, from_dt=from_dt, to_dt=now)
     except Exception:
-        logger.warning("dropped-known: aggregate unavailable", exc_info=True)
-        return IngestionDroppedKnownSummary(available=False, window=window)
-    return IngestionDroppedKnownSummary(available=True, window=window, **counts)
+        logger.warning("dropped-known: aggregate unavailable")
+        return IngestionDroppedKnownSummary(
+            available=False,
+            window=window,
+            availability_reason="counts_unavailable",
+        )
+    try:
+        classification = await ingestion_current_classification_available(
+            db.pool("switchboard"), now=now
+        )
+        reason = "none" if classification else "classification_unknown"
+    except Exception:
+        classification = False
+        reason = "registry_unavailable"
+        logger.warning("dropped-known: registry unavailable")
+    if classification and uncertain:
+        reason = "historical_uncertainty"
+    return IngestionDroppedKnownSummary(
+        available=classification and uncertain == 0,
+        window=window,
+        **counts,
+        counts_available=True,
+        classification_available=classification,
+        uncertain_drops=uncertain,
+        availability_reason=reason,
+    )
 
 
 # ---------------------------------------------------------------------------

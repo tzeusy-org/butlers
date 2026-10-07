@@ -42,13 +42,18 @@ import base64
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.connectors.known_contact_state import (
+    CLASSIFICATION_KEY,
+    current_available,
+    historical_available,
+)
 from butlers.core.pricing import PricingConfig, estimate_session_cost
 
 logger = logging.getLogger(__name__)
@@ -1699,7 +1704,7 @@ _DROPPED_KNOWN_OPEN_STATUSES = ["filtered", "replay_failed"]
 
 
 async def ingestion_dropped_known_summary(
-    pool: asyncpg.Pool, *, from_dt: datetime
+    pool: asyncpg.Pool, *, from_dt: datetime, to_dt: datetime | None = None
 ) -> dict[str, int]:
     """Count unanswered drops of messages from known contacts since ``from_dt``.
 
@@ -1715,13 +1720,73 @@ async def ingestion_dropped_known_summary(
                count(DISTINCT (filter_reason, sender_identity)) AS episodes
         FROM connectors.filtered_events
         WHERE received_at >= $1
+          AND received_at <= $3
           AND status = ANY($2::text[])
           AND full_payload #>> '{drop_context,important_dropped}' = 'true'
         """,
         from_dt,
         _DROPPED_KNOWN_OPEN_STATUSES,
+        to_dt or datetime.now(UTC),
     )
     return {"dropped": int(row["dropped"]), "episodes": int(row["episodes"])}
+
+
+async def ingestion_classification_uncertainty(
+    pool: asyncpg.Pool,
+    *,
+    from_dt: datetime,
+    to_dt: datetime,
+) -> int:
+    """Read only fixed historical projections; queueing does not resolve harm."""
+    rows = await pool.fetch(
+        """
+        SELECT full_payload #> '{drop_context,classification}' AS classification
+        FROM connectors.filtered_events
+        WHERE connector_type = 'gmail' AND received_at >= $1 AND received_at <= $2
+          AND status = ANY($3::text[])
+        """,
+        from_dt,
+        to_dt,
+        ["filtered", "replay_failed", "replay_pending"],
+    )
+    return sum(not historical_available(row["classification"]) for row in rows)
+
+
+async def ingestion_current_classification_available(
+    pool: asyncpg.Pool,
+    *,
+    now: datetime,
+) -> bool:
+    """All applicable accounts need complete, last-admitted runtime evidence.
+
+    Filter authority in Python too: a canned wrong-role row cannot certify an
+    executable process. Only a successful complete read proves no applicable
+    accounts. No read can infer a restart before its first server observation.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT connector_type, operational_role, archived_at, deleted_at,
+               instance_id, last_heartbeat_at, capabilities
+        FROM switchboard.connector_registry WHERE connector_type = 'gmail'
+        """
+    )
+    for row in rows:
+        if row["connector_type"] != "gmail" or row["archived_at"] or row["deleted_at"]:
+            continue
+        role = row["operational_role"]
+        if role == "checkpoint":
+            continue
+        if role != "runtime_instance":
+            return False
+        capabilities = row["capabilities"]
+        if not isinstance(capabilities, dict) or not current_available(
+            capabilities.get(CLASSIFICATION_KEY),
+            instance=row["instance_id"],
+            heartbeat=row["last_heartbeat_at"],
+            now=now,
+        ):
+            return False
+    return True
 
 
 async def ingestion_window_rollup(

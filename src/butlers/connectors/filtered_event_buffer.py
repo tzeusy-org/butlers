@@ -545,6 +545,7 @@ class FilteredEventBuffer:
         normalized_text: str | None = None,
         policy_tier: str | None = None,
         important_dropped_basis: str | None = None,
+        classification: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build an ``ingest.v1``-shaped payload dict for storage.
 
@@ -599,4 +600,15 @@ class FilteredEventBuffer:
                 "important_dropped": True,
                 "basis": important_dropped_basis,
             }
+        if classification is not None:
+            # The producer freezes a fixed, content-free projection, never contacts.
+            from butlers.connectors.known_contact_state import parse_projection, utc_timestamp
+
+            projection = parse_projection(classification)
+            observed = utc_timestamp(classification.get("observed_at"))
+            if projection is not None and observed is not None:
+                stored.setdefault(DROP_CONTEXT_KEY, {})["classification"] = {
+                    **projection,
+                    "observed_at": observed.isoformat(),
+                }
         return stored

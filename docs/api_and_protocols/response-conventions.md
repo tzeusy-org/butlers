@@ -158,6 +158,12 @@ does not invent USD.
   field). When unpinned, commit current rows and cursor before fetching older data, so a failed page
   stays visible and retries the same cursor.
 
+### Known-contact harm availability
+
+`GET /api/ingestion/events/dropped-known` returns `available`, `counts_available`, `classification_available`, nullable `uncertain_drops`, and a closed `availability_reason` alongside counts/window. Overall availability requires both complete reads, valid fresh last-admitted evidence for every applicable Gmail runtime, and zero historical uncertainty. The authoritative registry read uses the owning Switchboard pool; the filtered store uses its shared pool. Checkpoint/archived/deleted/foreign rows do not certify runtime classification; unknown roles, legacy/missing/invalid metadata or read failures are unknown. Only a successful complete read proves no applicable accounts.
+
+Readable positive counts remain lower bounds when classification is unknown. A failed filtered read returns zero placeholders with `counts_available=false`; those are not evidence of no harm. A registry failure preserves readable counts with classification unavailable. Open uncertain Gmail history includes filtered, replay_failed and replay_pending in the received-at window; recovered current evidence does not rewrite old uncertainty. Replay completion or leaving the window may resolve that uncertainty. The actual query/opener retains the count door plus unknown on partial/error states, renders loading status, and shows calm zero only with proven availability. No automatic replay is added.
+
 ## Related Pages
 
 - [Dashboard API](dashboard-api.md) --- application factory, router discovery, SSE streaming
