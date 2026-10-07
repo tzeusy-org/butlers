@@ -169,6 +169,8 @@ identities in whatever state something else happened to create them in.
 
 Complete heartbeat recording SHALL be established only by post-serialization database-clock-stamped paired existing writes under a catalog-verified closed trusted migration-owned trigger chain, and SHALL not be a caller-writable timestamp, capability key or stale matching row. Normal permitted runtime DML SHALL not backdate or forge coverage, mutate accepted history, or bypass guard validation. Legacy unpaired writes SHALL remain supported but invalidate coverage. No extra per-heartbeat DML statements, new roles/grants or retention policy SHALL be introduced. Trusted migration/admin DDL and backup authority remain outside this ordinary-runtime guarantee.
 
+An unpaired heartbeat tuple mutation SHALL leave a negative-only transaction-scoped endpoint witness. A later same-endpoint history append in that transaction SHALL refuse before waiting for the endpoint serialization lock. This witness SHALL never mint coverage or require a persistent write. Session unlocks and successful savepoints SHALL not erase it; rolling back its savepoint SHALL roll back both the witness and the mutation. Failure to establish the witness SHALL refuse the mutation rather than allow a reverse pair. Correctly ordered pairs, unchanged settings/cursor edits, other endpoints and standalone legacy registry-only transactions SHALL remain supported.
+
 ID: REQ-connector-base-spec-005
 Source: bu-s11n0s.5 complete-protocol D1-D6; heart-and-soul/vision.md failure and staleness honesty; owner-timezone-context and dashboard-design-language temporal contracts
 Scope: v1-mandatory

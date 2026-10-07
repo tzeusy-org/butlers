@@ -122,8 +122,8 @@ def upgrade() -> None:
                    OR actual.tgconstraint <> 0 OR actual.tgnargs <> 0 OR actual.tgqual IS NOT NULL
                    OR actual.proowner <> trusted_owner OR actual.proname <> expected.function_name
                    OR actual.nspname <> {literal}
-                   OR actual.tgparentid <> CASE WHEN relation.oid IN (parent_oid, registry_oid)
-                                               THEN 0 ELSE parent_trigger END THEN
+                   OR actual.tgparentid <> (CASE WHEN relation.oid IN (parent_oid, registry_oid)
+                                                THEN 0::oid ELSE parent_trigger END) THEN
                     RAISE EXCEPTION 'heartbeat recording catalog unavailable' USING ERRCODE = '55000';
                 END IF;
             END LOOP;
@@ -207,6 +207,7 @@ def upgrade() -> None:
     op.execute(f"""
     CREATE FUNCTION {home}.stamp_heartbeat_history_row() RETURNS trigger
     LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $fn$
+    DECLARE reversed_key bigint;
     BEGIN
         PERFORM {home}.heartbeat_recording_catalog();
         IF (TG_RELID <> '{home}.connector_heartbeat_log'::regclass
@@ -215,6 +216,18 @@ def upgrade() -> None:
                   AND inhrelid = TG_RELID))
            OR TG_WHEN <> 'BEFORE' OR TG_LEVEL <> 'ROW' OR TG_OP <> 'INSERT' THEN
             RAISE EXCEPTION 'heartbeat history is append only' USING ERRCODE = '42501';
+        END IF;
+        -- An unpaired registry mutation earlier in THIS transaction leaves a
+        -- negative-only transaction lock. Refuse before taking the endpoint
+        -- lock: the reverse path already owns its registry row. Session unlock
+        -- cannot erase a transaction lock, and caller locks only cause refusal.
+        reversed_key := hashtextextended(
+            'heartbeat-registry-first:' || NEW.connector_type || ':' || NEW.endpoint_identity, 0);
+        IF EXISTS (SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted
+              AND mode = 'ExclusiveLock' AND objsubid = 1
+              AND ((classid::bigint << 32) | objid::bigint) = reversed_key) THEN
+            RAISE EXCEPTION 'heartbeat paired write order invalid' USING ERRCODE = '55000';
         END IF;
         PERFORM pg_advisory_xact_lock(hashtextextended(
             'connector-classification:' || NEW.connector_type || ':' || NEW.endpoint_identity, 0));
@@ -269,9 +282,18 @@ def upgrade() -> None:
             IF NEW.instance_id IS DISTINCT FROM OLD.instance_id THEN prior := NULL; END IF;
         END IF;
         -- Registry-only legacy callers never wait for the endpoint after
-        -- acquiring their row. No reverse row -> advisory lock ordering.
+        -- acquiring their row. A distinct, nonblocking transaction lock only
+        -- remembers an unpaired heartbeat mutation for later append refusal;
+        -- it cannot mint coverage, and adds no persistent write.
         NEW.heartbeat_history_coverage :=
             {home}.derive_heartbeat_recording_coverage(NEW, prior);
+        IF NEW.heartbeat_history_coverage IS NULL AND NEW.last_heartbeat_at IS NOT NULL THEN
+            IF NOT pg_try_advisory_xact_lock(hashtextextended(
+                'heartbeat-registry-first:' || NEW.connector_type || ':' || NEW.endpoint_identity,
+                0)) THEN
+                RAISE EXCEPTION 'heartbeat paired write order unavailable' USING ERRCODE = '55000';
+            END IF;
+        END IF;
         RETURN NEW;
     END;
     $fn$;

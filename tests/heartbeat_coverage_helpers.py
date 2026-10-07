@@ -184,8 +184,9 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
             > before_restart
         )
 
-        # Direct paired SQL follows log -> registry in the same real xid. The
-        # reversed registry-first pair remains compatible but does not mint.
+        # Direct paired SQL follows log -> registry in the same real xid.
+        # Registry-first/history-later work must REFUSE and roll back both
+        # writes, including across successful savepoints and session unlocks.
         direct_insert = """INSERT INTO connector_heartbeat_log (
             connector_type,endpoint_identity,instance_id,state,error_message,uptime_s,
             counter_messages_ingested,counter_messages_failed,counter_source_api_calls,
@@ -195,20 +196,63 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
             counter_checkpoint_saves,counter_dedupe_accepted,clock_timestamp()
             FROM connector_registry WHERE endpoint_identity='paired-positive'
             RETURNING received_at"""
-        async with runtime.acquire() as connection:
-            async with connection.transaction():
-                await connection.execute(
-                    "UPDATE connector_registry SET last_heartbeat_at=clock_timestamp() "
-                    "WHERE endpoint_identity='paired-positive'"
-                )
-                await connection.fetchval(direct_insert)
-        assert (
-            await admin.fetchval(
-                "SELECT heartbeat_history_coverage FROM connector_registry "
-                "WHERE endpoint_identity='paired-positive'"
-            )
-            is None
+        reversed_key = "hashtextextended('heartbeat-registry-first:telegram_bot:paired-positive',0)"
+        own_reversed_marker = (
+            "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' "
+            "AND pid=pg_backend_pid() AND granted AND mode='ExclusiveLock' "
+            f"AND objsubid=1 AND ((classid::bigint << 32) | objid::bigint)={reversed_key})"
         )
+
+        async def committed_pair_state():
+            # Independent pool/acquisition: no transaction-local readback can
+            # masquerade as successful rollback or durable paired acceptance.
+            return (
+                await admin.fetchval(
+                    "SELECT to_jsonb(r) FROM connector_registry r "
+                    "WHERE endpoint_identity='paired-positive'"
+                ),
+                await admin.fetchval(
+                    "SELECT count(*) FROM connector_heartbeat_log "
+                    "WHERE endpoint_identity='paired-positive'"
+                ),
+            )
+
+        for reversal in ("ordinary", "session-unlock", "successful-savepoint"):
+            before_pair = await committed_pair_state()
+            try:
+                async with runtime.acquire() as connection:
+                    async with connection.transaction():
+                        if reversal == "successful-savepoint":
+                            async with connection.transaction():
+                                await connection.execute(
+                                    "UPDATE connector_registry "
+                                    "SET last_heartbeat_at=clock_timestamp() "
+                                    "WHERE endpoint_identity='paired-positive'"
+                                )
+                        else:
+                            await connection.execute(
+                                "UPDATE connector_registry SET last_heartbeat_at=clock_timestamp() "
+                                "WHERE endpoint_identity='paired-positive'"
+                            )
+                        assert await connection.fetchval(own_reversed_marker)
+                        if reversal == "session-unlock":
+                            await connection.execute("SELECT pg_advisory_unlock_all()")
+                            assert await connection.fetchval(own_reversed_marker)
+                        await connection.fetchval(direct_insert)
+            except asyncpg.ObjectNotInPrerequisiteStateError as exc:
+                assert exc.sqlstate == "55000", reversal
+                assert exc.message == "heartbeat paired write order invalid", reversal
+            else:
+                raise AssertionError(f"{reversal}: reversed paired writes committed")
+            assert await committed_pair_state() == before_pair, reversal
+
+        # A standalone legacy refresh still commits, clears coverage, and has
+        # no transaction marker in a later correctly ordered transaction.
+        await runtime.execute(
+            "UPDATE connector_registry SET last_heartbeat_at=clock_timestamp() "
+            "WHERE endpoint_identity='paired-positive'"
+        )
+        assert (await committed_pair_state())[0]["heartbeat_history_coverage"] is None
         async with runtime.acquire() as connection:
             async with connection.transaction():
                 await connection.fetchval("SELECT switchboard.heartbeat_recording_catalog()")
@@ -228,6 +272,108 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
                 "FROM connector_registry WHERE endpoint_identity='paired-positive'"
             )
             == "1"
+        )
+
+        # A rolled-back savepoint releases the negative-only witness along
+        # with its registry mutation. The same outer transaction can then pair
+        # correctly; a surviving marker would make this positive fail.
+        async with runtime.acquire() as connection:
+            async with connection.transaction():
+                try:
+                    async with connection.transaction():
+                        await connection.execute(
+                            "UPDATE connector_registry SET last_heartbeat_at=clock_timestamp() "
+                            "WHERE endpoint_identity='paired-positive'"
+                        )
+                        assert await connection.fetchval(own_reversed_marker)
+                        raise ValueError("rollback only this test savepoint")
+                except ValueError:
+                    pass
+                assert not await connection.fetchval(own_reversed_marker)
+                await connection.fetchval("SELECT switchboard.heartbeat_recording_catalog()")
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended("
+                    "'connector-classification:telegram_bot:paired-positive',0))"
+                )
+                stamp = await connection.fetchval(direct_insert)
+                await connection.execute(
+                    "UPDATE connector_registry SET last_heartbeat_at=$1 "
+                    "WHERE endpoint_identity='paired-positive'",
+                    stamp,
+                )
+        assert (await committed_pair_state())[0]["heartbeat_history_coverage"]["version"] == 1
+
+        # Caller-acquired locks can only deny their own append, never mint
+        # coverage. No role/grant change is needed to exercise this negative.
+        before_pair = await committed_pair_state()
+        try:
+            async with runtime.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute(f"SELECT pg_advisory_xact_lock({reversed_key})")
+                    await connection.fetchval(direct_insert)
+        except asyncpg.ObjectNotInPrerequisiteStateError as exc:
+            assert exc.sqlstate == "55000"
+            assert exc.message == "heartbeat paired write order invalid"
+        else:
+            raise AssertionError("caller-acquired negative marker minted history")
+        assert await committed_pair_state() == before_pair
+
+        # A peer-held negative key cannot make an unpaired update silently
+        # omit its witness. Try-lock failure refuses immediately and preserves
+        # the committed row; no row -> endpoint blocking wait is introduced.
+        before_pair = await committed_pair_state()
+        async with admin.acquire() as blocker:
+            async with blocker.transaction():
+                await blocker.execute(f"SELECT pg_advisory_xact_lock({reversed_key})")
+                try:
+                    await asyncio.wait_for(
+                        runtime.execute(
+                            "UPDATE connector_registry SET last_heartbeat_at=clock_timestamp() "
+                            "WHERE endpoint_identity='paired-positive'"
+                        ),
+                        3,
+                    )
+                except asyncpg.ObjectNotInPrerequisiteStateError as exc:
+                    assert exc.sqlstate == "55000"
+                    assert exc.message == "heartbeat paired write order unavailable"
+                else:
+                    raise AssertionError("peer interference omitted the negative witness")
+        assert await committed_pair_state() == before_pair
+
+        # A registry-only endpoint does not block or refuse another exact pair
+        # in the SAME transaction. Settings/cursor-only edits on the paired
+        # endpoint also preserve the positive without making a false marker.
+        other_payload = _payload("registry-only-independent")
+        await heartbeat(runtime, other_payload)
+        async with runtime.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    "UPDATE connector_registry SET last_heartbeat_at=clock_timestamp() "
+                    "WHERE endpoint_identity='registry-only-independent'"
+                )
+                await connection.execute(
+                    "UPDATE connector_registry SET checkpoint_cursor='pair-after-settings' "
+                    "WHERE endpoint_identity='paired-positive'"
+                )
+                assert not await connection.fetchval(own_reversed_marker)
+                await connection.fetchval("SELECT switchboard.heartbeat_recording_catalog()")
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended("
+                    "'connector-classification:telegram_bot:paired-positive',0))"
+                )
+                stamp = await connection.fetchval(direct_insert)
+                await connection.execute(
+                    "UPDATE connector_registry SET last_heartbeat_at=$1 "
+                    "WHERE endpoint_identity='paired-positive'",
+                    stamp,
+                )
+        assert (await committed_pair_state())[0]["heartbeat_history_coverage"]["version"] == 1
+        assert (
+            await admin.fetchval(
+                "SELECT heartbeat_history_coverage FROM connector_registry "
+                "WHERE endpoint_identity='registry-only-independent'"
+            )
+            is None
         )
 
         # Required registry failure rolls back a successfully attempted append.
