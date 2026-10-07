@@ -402,9 +402,10 @@ def test_ci_cleanup_refuses_malformed_free_space_before_reclamation(
 def _exercise_browser_installer(root: Path) -> None:
     """Actual shell/group lifecycle with synthetic install/OS/browser boundaries.
 
-    Only wall-clock literals are scaled in this routine control; its100ms grace
-    lets synthetic Python children install their signal handlers reliably.
-    The ignored one-shot receipt exercises unchanged110/120/380 deadlines;
+    Only wall-clock literals are scaled in this routine control. Healthy
+    boundaries include a deliberate 200 ms startup delay within a two-second
+    allowance; stall pairs witness handler readiness before TERM/KILL checks.
+    The ignored one-shot receipt exercises unchanged 110/120/380 deadlines;
     actual apt/Chromium execution belongs to the hosted frontend-e2e job.
     """
     source = (REPO_ROOT / "frontend/scripts/install-playwright-browsers.mjs").read_text()
@@ -413,18 +414,18 @@ def _exercise_browser_installer(root: Path) -> None:
     assert "BACKOFF_MS = 10_000" in source
     assert "TOTAL_MS = 380_000" in source
     scaled = (
-        source.replace("110_000", "110")
-        .replace("120_000", "210")
+        source.replace("110_000", "2_000")
+        .replace("120_000", "2_500")
         .replace("10_000", "10")
-        .replace("380_000", "3_800")
+        .replace("380_000", "8_000")
     )
-    for mode, expected_calls, expected_exit in [
-        ("cold", 1, 0),
-        ("warm", 1, 0),
-        ("fail-once", 2, 0),
-        ("invalid-cache", 2, 0),
-        ("exhaust", 3, 1),
-        ("stall", 3, 1),
+    for mode, expected_calls, expected_probes, expected_exit in [
+        ("cold", 1, 1, 0),
+        ("warm", 1, 1, 0),
+        ("fail-once", 2, 1, 0),
+        ("invalid-cache", 2, 2, 0),
+        ("exhaust", 3, 0, 1),
+        ("stall", 3, 0, 1),
     ]:
         directory = root / mode
         scripts = directory / "scripts"
@@ -434,24 +435,32 @@ def _exercise_browser_installer(root: Path) -> None:
         (scripts / "install-playwright-browsers.mjs").write_text(scaled)
         (scripts / "playwright-cache-version.mjs").write_text("// synthetic browser boundary\n")
         ledger = directory / "ledger.json"
-        ledger.write_text(json.dumps({"calls": [], "probes": 0, "pids": []}))
+        ledger.write_text(json.dumps({"calls": [], "probes": 0, "pids": [], "ready": []}))
         program = r"""import json, os, signal, subprocess, sys, time
 from pathlib import Path
+time.sleep(0.2)  # Ordinary slow fixture launch must not fail a healthy boundary.
 p = Path(os.environ["M3_INSTALL_LEDGER"])
 data = json.loads(p.read_text())
 mode = os.environ["M3_INSTALL_MODE"]
 if Path(sys.argv[0]).name == "node":
     data["probes"] += 1
+    data["ready"].append({"boundary": "probe", "pid": os.getpid()})
     p.write_text(json.dumps(data))
     sys.exit(1 if mode == "invalid-cache" and data["probes"] == 1 else 0)
 data["calls"].append(sys.argv[1:])
-p.write_text(json.dumps(data))
 if mode == "stall":
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    child = subprocess.Popen([sys.executable, "-c", "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)"])
+    signal.signal(signal.SIGTERM, lambda *_: (p.parent / f"term-{os.getpid()}").touch())
+    child_program = "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,lambda *_: Path('term-'+str(os.getpid())).touch());print('ready',flush=True);time.sleep(60)"
+    child = subprocess.Popen([sys.executable, "-c", child_program], cwd=p.parent, stdout=subprocess.PIPE, text=True)
     data["pids"].extend([os.getpid(), child.pid])
     p.write_text(json.dumps(data))
+    assert child.stdout.readline() == "ready\n", "stall child never installed its TERM handler"
+    child.stdout.close()
+    data["ready"].append({"boundary": "stall-pair", "pids": [os.getpid(), child.pid]})
+    p.write_text(json.dumps(data))
     time.sleep(60)
+data["ready"].append({"boundary": "install", "pid": os.getpid()})
+p.write_text(json.dumps(data))
 if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
     sys.exit(1)
 """
@@ -472,17 +481,26 @@ if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=10,
+                timeout=15,
             )
             data = json.loads(ledger.read_text())
-            assert result.returncode == expected_exit, result.stderr
-            assert len(data["calls"]) == expected_calls, data
+            assert result.returncode == expected_exit, (mode, data, result.stderr)
+            assert len(data["calls"]) == expected_calls, (mode, data)
+            assert data["probes"] == expected_probes, (mode, data)
+            assert len(data["ready"]) == expected_calls + expected_probes, (mode, data)
             for index, args in enumerate(data["calls"]):
                 assert args == ["install", "--with-deps", "chromium"] + (
                     ["--force"] if index else []
                 )
             if expected_exit == 0:
                 assert data["probes"] >= 1
+            if mode == "stall":
+                ready_pids = [pid for pair in data["ready"] for pid in pair["pids"]]
+                assert ready_pids == data["pids"] and len(ready_pids) == 6, data
+                for pid in ready_pids:
+                    assert (directory / f"term-{pid}").exists(), (
+                        f"ready stall member {pid} never witnessed TERM before KILL"
+                    )
             for pid in data["pids"]:
                 stat = Path(f"/proc/{pid}/stat")
                 assert not stat.exists() or stat.read_text().split()[2] == "Z", (
