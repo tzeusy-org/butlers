@@ -77,6 +77,7 @@ async def upcoming_dates(pool: asyncpg.Pool, days_ahead: int = 30) -> list[dict[
         JOIN contact_entity_map cem ON cem.contact_id = d.contact_id
         JOIN public.entities e ON e.id = cem.entity_id
         WHERE e.listed = true
+          AND e.posture = 'active'
           AND d.contact_id IS NOT NULL
 
         UNION ALL
@@ -90,6 +91,7 @@ async def upcoming_dates(pool: asyncpg.Pool, days_ahead: int = 30) -> list[dict[
         FROM important_dates d
         JOIN public.entities e ON e.id = d.local_entity_id
         WHERE d.contact_id IS NULL
+          AND e.posture = 'active'
           AND d.local_entity_id IS NOT NULL
           AND (
               NOT EXISTS (SELECT 1 FROM contact_entity_map cem2

@@ -36,7 +36,9 @@ prompt = """
 You have MCP tools wired into this session. Use them directly — do NOT explore
 the codebase, read source files, probe HTTP endpoints, or run shell commands.
 
-1. Call `upcoming_dates(days_ahead=7)` to get birthdays and anniversaries.
+1. Call `upcoming_dates(days_ahead=7)` to get birthdays and anniversaries for
+   currently active people only. If the read fails, send no reminder or all-clear;
+   do not fall back to an unfiltered query or remembered dates.
 2. If the result is empty, exit silently (no notification needed).
 3. If dates are found, draft a concise reminder and deliver via
    notify(channel="telegram", intent="send", message=<reminders>).

@@ -216,6 +216,37 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   `ON CONFLICT` branch. Never derive the role from the identity string, surface `unknown` as
   `unclassified`, and make every new writer declare a role and every new consumer filter by it.
 
+## Filtered preview bearer redaction
+
+`FilteredEventBuffer.record()` scrubs `subject_or_preview` before it enters the in-memory queue.
+It uses the existing bearer detector and typed placeholders, provider-domain hints from the envelope,
+and aggressive numeric-code detection for the actual Telegram service sender `777000` or an envelope
+service participant. On detector/extraction failure it withholds the preview as null without logging
+its contents. None, ordinary numbers, date/time guards and existing placeholders retain their
+existing detector semantics. Payloads, replay/drop decisions, status and other columns are unchanged;
+this is not a claim that every payload or producer log is free of secrets, and it does not produce
+an authentication artifact.
+
+`scripts/scrub_filtered_event_previews.py` is a one-shot historical preview repair, never a startup
+job or migration. The CLI defaults to dry run and requires an explicit existing database target and
+operator identity through the normal database environment helpers. It never provisions credentials
+or grants, and never prints a DSN, sender, subject, code or row payload. Source implementation and
+disposable tests do not authorize live `--apply` or writer quiescence. Separately authorize those
+operations and establish that writers are fixed or quiescent before claiming a historical cutoff
+complete. No deployed inventory has been inspected for this change.
+
+An example command shape is `uv run --no-sync python scripts/scrub_filtered_event_previews.py
+--cutoff <timestamp-with-offset> --batch-size 500` under the existing operator's protected environment.
+Dry run reports potential changes; `--apply` irreversibly replaces previews. There is no recovery of
+redacted bearer text and code rollback does not restore it. Each bounded apply batch locks rows in
+`(received_at,id)` order, without SKIP LOCKED, changes only the preview, commits, then reads back through
+a separate acquisition. Receipt fields are content-free counts, phase, cutoff, last verified cursor,
+detector SHA256, error class and SQLSTATE. A rollback is INCOMPLETE; a lost commit/readback acknowledgement
+is UNKNOWN and retains the previous cursor. Restart using both `--resume-time` and `--resume-id`, or
+repeat the cutoff from the beginning: placeholders are idempotent. Retention deletions are not reversed
+or extended. Backdated rows inserted behind a cursor by an old writer require a new complete pass.
+A dry run is not a stable-snapshot or applied-repair claim.
+
 ## Related Pages
 
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema

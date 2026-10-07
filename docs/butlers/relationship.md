@@ -170,6 +170,20 @@ gate remain required; source inspection and collection alone are not runtime pro
   `extra_metadata.source == "interaction_sync"`; `email`, `interview` and `calendar_event`
   interactions weigh `0.2`.
 
+## Upcoming date push
+
+The registered `upcoming_dates` tool selects only `public.entities.posture = 'active'`
+in both contact-anchored and contactless entity-anchored UNION arms. Existing listed/archive
+mapping, ordering, anniversaries and year wrapping remain in effect. The 08:00
+`upcoming-dates-check` prompt calls `upcoming_dates(days_ahead=7)`: an empty successful read
+is silent, and a failed read must not become a reminder or an all-clear via a fallback query.
+This is a read-time selection contract; prompt registration does not prove an LLM obeyed it,
+a notification was delivered, or a deployed fleet was exercised.
+
+Memorial, quiet and no_contact people remain available to appropriate history/display readers.
+Reactivation makes the date eligible again. The separately adopted calendar remembrance overlay
+retains its own policy; this birthday push introduces no memorial opt-in or changed posture writer.
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes people-related messages here

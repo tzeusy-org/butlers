@@ -82,11 +82,72 @@ def test_record_multiple_events() -> None:
         )
     assert len(buf) == 3
 
+    for sender, preview, expected, payload in [
+        (
+            "person@example.test",
+            "Your verification code is 482913",
+            "Your verification code is [auth-code withheld: example.test]",
+            {"source": {"provider": "gmail"}},
+        ),
+        (
+            "777000",
+            "482913",
+            "[auth-code withheld: telegram]",
+            {"source": {"provider": "telegram"}, "sender": {"identity": "other"}},
+        ),
+        (
+            "person@example.test",
+            "482913",
+            "[auth-code withheld: example.test]",
+            {"sender": {"participants": ["777000"]}},
+        ),
+        ("person@example.test", "Order 482913 on 2031-03-09", "Order 482913 on 2031-03-09", {}),
+        ("777000", "2031-03-09 at 12:34", "2031-03-09 at 12:34", {}),
+        ("777000", None, None, {}),
+        (
+            "person@example.test",
+            "[auth-code withheld: example.test]",
+            "[auth-code withheld: example.test]",
+            {},
+        ),
+    ]:
+        buf.record(
+            external_message_id="scrub",
+            source_channel="email",
+            sender_identity=sender,
+            subject_or_preview=preview,
+            filter_reason="validation_error",
+            full_payload=payload,
+        )
+        assert buf._rows[-1][6] == expected
+        assert buf._rows[-1][5] == sender and buf._rows[-1][9] == payload
+
+    with patch(
+        "butlers.ingestion_bearer_scrub.scrub_text", side_effect=RuntimeError("private code 482913")
+    ):
+        buf.record(
+            external_message_id="failure",
+            source_channel="email",
+            sender_identity="777000",
+            subject_or_preview="482913",
+            filter_reason="validation_error",
+            full_payload={},
+        )
+    assert buf._rows[-1][6] is None
+
 
 async def test_flush_clears_buffer() -> None:
     """flush() must clear the buffer after successful write."""
     buf = _make_buffer()
     _record_one(buf)
+    buf.record(
+        external_message_id="auth",
+        source_channel="telegram",
+        sender_identity="777000",
+        subject_or_preview="482913",
+        filter_reason="validation_error",
+        full_payload={"source": {"provider": "telegram"}},
+    )
 
     mock_conn = AsyncMock()
     mock_pool = MagicMock()
@@ -98,6 +159,18 @@ async def test_flush_clears_buffer() -> None:
 
     await buf.flush(pool=mock_pool)
     assert len(buf) == 0
+    bound = mock_conn.executemany.await_args.args[1]
+    assert bound[0][6] == "Hello"
+    assert bound[1][6] == "[auth-code withheld: telegram]" and "482913" not in bound[1][6]
+    from datetime import UTC, datetime
+
+    from scripts.scrub_filtered_event_previews import scrub_existing_previews
+
+    for size in (0, 501):
+        with pytest.raises(ValueError, match="batch_size"):
+            await scrub_existing_previews(mock_pool, cutoff=datetime.now(UTC), batch_size=size)
+    with pytest.raises(ValueError, match="offset"):
+        await scrub_existing_previews(mock_pool, cutoff=datetime(2031, 3, 6))
 
 
 # Spec: REQ-core-fleet-events-010

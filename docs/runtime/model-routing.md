@@ -309,6 +309,16 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
 - **Account key** is `model_catalog.allowance_account`, or the entry's `runtime_type` when NULL.
   It is catalog identity (it says which provider account an entry draws on), not an operational
   limit; the one-hour default window is a code constant, not a setting.
+- **Catalog writer**: the existing Models Add/Edit forms and catalog POST/PUT expose
+  `allowance_account`. A non-null label is a strict lowercase slug of 1–64 characters,
+  `[a-z0-9][a-z0-9_-]{0,63}`. It is a global grouping key: reusing a label across runtimes
+  groups their allowance state. A create omission or null uses the runtime default;
+  an omitted update preserves the label, explicit null clears it, and a valid label replaces it.
+  The editor trims a nonblank label; a blank field sends null. API callers must send the exact
+  slug without whitespace. Priority and enabled changes preserve the account.
+  Labels do not select or provision credentials, and no account is guessed or backfilled.
+  Resolver cache behavior remains unchanged: process-local decisions can persist for five seconds;
+  saving a field does not promise immediate invalidation in every daemon.
 - **Exclusion**: every resolver (`_RESOLVE_SQL`, the intent-aware candidate query, and
   `_NEXT_SAME_TIER_SQL`) drops every entry on an account with `state='exhausted'` and
   `reset_at > now()`, even entries never attempted. The receipt records them as

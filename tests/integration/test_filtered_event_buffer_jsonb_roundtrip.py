@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -123,6 +123,338 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
     )
     assert stored["source"]["channel"] == "email"
     assert stored["payload"]["normalized_text"] == "Hello"
+
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch
+
+    from butlers.connectors import filtered_event_buffer as buffer_module
+    from scripts.scrub_filtered_event_previews import scrub_existing_previews
+    from tests.three_seams_helpers import baseline_function
+
+    old_record = baseline_function("record", vars(buffer_module))
+    old_buffer = FilteredEventBuffer(connector_type="gmail", endpoint_identity="synthetic-old")
+    old_record(
+        old_buffer,
+        external_message_id="causal-old",
+        source_channel="email",
+        sender_identity="person@example.test",
+        subject_or_preview="Your verification code is 482913",
+        filter_reason="validation_error",
+        full_payload={"source": {"provider": "gmail"}},
+    )
+    await old_buffer.flush(pool)
+    assert (
+        await pool.fetchval(
+            "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id='causal-old'"
+        )
+        == "Your verification code is 482913"
+    )
+    current_buffer = FilteredEventBuffer(
+        connector_type="telegram_user", endpoint_identity="synthetic-current"
+    )
+    for name, sender, preview, expected, payload in [
+        (
+            "gmail-code",
+            "person@example.test",
+            "Your verification code is 482913",
+            "Your verification code is [auth-code withheld: example.test]",
+            {"source": {"provider": "gmail"}},
+        ),
+        (
+            "telegram-code",
+            "777000",
+            "482913",
+            "[auth-code withheld: telegram]",
+            {"source": {"provider": "telegram"}, "sender": {"identity": "other"}},
+        ),
+        (
+            "participant",
+            "other",
+            "482913",
+            "[auth-code withheld: telegram_user]",
+            {"sender": {"participants": ["777000"]}},
+        ),
+        (
+            "ordinary",
+            "person@example.test",
+            "Order 482913 on 2031-03-09",
+            "Order 482913 on 2031-03-09",
+            {},
+        ),
+        ("null", "777000", None, None, {}),
+    ]:
+        current_buffer.record(
+            external_message_id=name,
+            source_channel="email",
+            sender_identity=sender,
+            subject_or_preview=preview,
+            filter_reason="validation_error",
+            full_payload=payload,
+        )
+        await current_buffer.flush(pool)
+        async with pool.acquire() as readback:
+            persisted = await readback.fetchrow(
+                "SELECT * FROM connectors.filtered_events WHERE external_message_id=$1", name
+            )
+        assert persisted["subject_or_preview"] == expected
+        assert persisted["sender_identity"] == sender and persisted["full_payload"] == payload
+        assert (
+            persisted["filter_reason"] == "validation_error" and persisted["status"] == "filtered"
+        )
+        assert (
+            persisted["source_channel"] == "email"
+            and persisted["endpoint_identity"] == "synthetic-current"
+        )
+        assert persisted["error_detail"] is None
+    with patch(
+        "butlers.ingestion_bearer_scrub.scrub_text", side_effect=RuntimeError("private 482913")
+    ):
+        current_buffer.record(
+            external_message_id="detector-error",
+            source_channel="telegram",
+            sender_identity="777000",
+            subject_or_preview="482913",
+            filter_reason="validation_error",
+            full_payload={},
+        )
+    await current_buffer.flush(pool)
+    assert (
+        await pool.fetchval(
+            "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id='detector-error'"
+        )
+        is None
+    )
+
+    cutoff = datetime.now(UTC)
+    # Historical operator rows use the same real table/codec, including a legacy
+    # JSONB string and malformed hint payload. Nothing here reaches deployed data.
+    for name, sender, payload in [
+        ("historic-telegram", "777000", {}),
+        ("historic-legacy", "777000", json.dumps({"source": {"provider": "telegram"}})),
+        ("historic-malformed", "777000", "not-json"),
+    ]:
+        await pool.execute(
+            "INSERT INTO connectors.filtered_events(received_at,connector_type,endpoint_identity,external_message_id,source_channel,sender_identity,subject_or_preview,filter_reason,status,full_payload) VALUES($1,'telegram_user','synthetic-history',$2,'telegram',$3,'482913','validation_error','filtered',$4::jsonb)",
+            cutoff,
+            name,
+            sender,
+            payload,
+        )
+    # Both a future row and a pre-existing typed placeholder are planted positive
+    # sentinels for cutoff exclusion and idempotence.
+    await pool.execute(
+        "INSERT INTO connectors.filtered_events(received_at,connector_type,endpoint_identity,external_message_id,source_channel,sender_identity,subject_or_preview,filter_reason,status,full_payload) VALUES($1,'telegram_user','synthetic-history','future','telegram','777000','482913','validation_error','filtered','{}'::jsonb)",
+        cutoff + timedelta(seconds=1),
+    )
+    before = {
+        r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
+    }
+    dry = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2, dry_run=True)
+    assert dry.verdict == "DRY-RUN" and dry.changed == 4
+    assert {
+        r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
+    } == before
+
+    class FaultPool:
+        """Inject failures around real transactions; never replace SQL results."""
+
+        def __init__(self, fault):
+            self.fault = fault
+            self.updates = 0
+            self.fired = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            async with pool.acquire() as conn:
+                parent = self
+
+                class Connection:
+                    async def fetch(self, *args):
+                        return await conn.fetch(*args)
+
+                    async def fetchrow(self, *args):
+                        if parent.fault == "readback" and not parent.fired:
+                            parent.fired = True
+                            raise TimeoutError("synthetic independent readback failure")
+                        return await conn.fetchrow(*args)
+
+                    async def execute(self, sql, *args):
+                        if sql.startswith("UPDATE"):
+                            parent.updates += 1
+                            if parent.fault == "rollback" and parent.updates == 2:
+                                raise LookupError("synthetic batch failure")
+                        return await conn.execute(sql, *args)
+
+                    @asynccontextmanager
+                    async def transaction(self):
+                        async with conn.transaction():
+                            yield
+                        if parent.fault == "lost-ack" and not parent.fired:
+                            parent.fired = True
+                            raise TimeoutError("synthetic acknowledgement loss after commit")
+
+                yield Connection()
+
+    failed = await scrub_existing_previews(FaultPool("rollback"), cutoff=cutoff, batch_size=500)
+    assert failed.verdict == "INCOMPLETE" and failed.phase == "update" and failed.cursor is None
+    assert {
+        r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
+    } == before
+    unknown = await scrub_existing_previews(FaultPool("lost-ack"), cutoff=cutoff, batch_size=500)
+    assert unknown.verdict == "UNKNOWN" and unknown.phase == "commit" and unknown.cursor is None
+    # Independent witness proves the durable write even though its caller lost ack.
+    assert "482913" not in await pool.fetchval(
+        "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id='causal-old'"
+    )
+    recovered = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2)
+    assert recovered.verdict == "COMPLETE" and recovered.changed == 0
+    after = {r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")}
+    for key, row in after.items():
+        expected = before[key]
+        assert {k: v for k, v in row.items() if k != "subject_or_preview"} == {
+            k: v for k, v in expected.items() if k != "subject_or_preview"
+        }
+        if row["external_message_id"] == "future":
+            assert row["subject_or_preview"] == "482913"
+        elif (
+            row["external_message_id"].startswith("historic-")
+            or row["external_message_id"] == "causal-old"
+        ):
+            assert (
+                "withheld:" in row["subject_or_preview"]
+                and "482913" not in row["subject_or_preview"]
+            )
+    again = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2)
+    assert again.verdict == "COMPLETE" and again.changed == 0
+    resume = (datetime.fromisoformat(again.cursor[0]), __import__("uuid").UUID(again.cursor[1]))
+    resumed = await scrub_existing_previews(pool, cutoff=cutoff, resume_after=resume, batch_size=2)
+    assert resumed.verdict == "COMPLETE" and resumed.scanned == 0
+
+    # Detector failure during historical apply withholds only the preview.
+    await pool.execute(
+        "UPDATE connectors.filtered_events SET subject_or_preview='482913' WHERE external_message_id='historic-telegram'"
+    )
+    before_failure = await pool.fetchrow(
+        "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+    )
+    with patch(
+        "butlers.ingestion_bearer_scrub.scrub_text", side_effect=RuntimeError("private 482913")
+    ):
+        withheld = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2)
+    assert withheld.verdict == "COMPLETE"
+    after_failure = await pool.fetchrow(
+        "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+    )
+    assert after_failure["subject_or_preview"] is None
+    assert {k: v for k, v in dict(after_failure).items() if k != "subject_or_preview"} == {
+        k: v for k, v in dict(before_failure).items() if k != "subject_or_preview"
+    }
+    # The detector was deliberately failed on every non-null eligible preview;
+    # the future-cutoff sentinel remains untouched.
+    after = {r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")}
+
+    await pool.execute(
+        "UPDATE connectors.filtered_events SET subject_or_preview='482913' WHERE external_message_id='historic-telegram'"
+    )
+    readback_unknown = await scrub_existing_previews(FaultPool("readback"), cutoff=cutoff)
+    assert (
+        readback_unknown.verdict == "UNKNOWN"
+        and readback_unknown.phase == "readback"
+        and readback_unknown.cursor is None
+    )
+    assert "withheld:" in await pool.fetchval(
+        "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+    )
+    assert (await scrub_existing_previews(pool, cutoff=cutoff)).changed == 0
+    # Retention may remove an already verified row. A repair must not resurrect it.
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM connectors.filtered_events WHERE external_message_id='historic-malformed'"
+        )
+        == 1
+    )
+    await pool.execute(
+        "DELETE FROM connectors.filtered_events WHERE external_message_id='historic-malformed'"
+    )
+    assert (await scrub_existing_previews(pool, cutoff=cutoff)).verdict == "COMPLETE"
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM connectors.filtered_events WHERE external_message_id='historic-malformed'"
+        )
+        == 0
+    )
+    after = {r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")}
+
+    # No SKIP LOCKED shortcut: a real second connection holds an eligible row.
+    async with pool.acquire() as locked:
+        txn = locked.transaction()
+        await txn.start()
+        try:
+            await locked.fetchrow(
+                "SELECT id FROM connectors.filtered_events WHERE external_message_id='causal-old' FOR UPDATE"
+            )
+            blocked = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=500)
+            assert (
+                blocked.verdict == "INCOMPLETE"
+                and blocked.sqlstate == "55P03"
+                and blocked.cursor is None
+            )
+        finally:
+            await txn.rollback()
+    assert (await scrub_existing_previews(pool, cutoff=cutoff)).verdict == "COMPLETE"
+    # Disposable unsupported operator demonstrates both SELECT and UPDATE denial;
+    # no production grant widening or live identity inspection is involved.
+    await pool.execute("CREATE ROLE preview_scrub_denied NOLOGIN")
+    try:
+
+        class DeniedPool:
+            @asynccontextmanager
+            async def acquire(self):
+                async with pool.acquire() as connection:
+                    await connection.execute("SET ROLE preview_scrub_denied")
+                    try:
+                        yield connection
+                    finally:
+                        await connection.execute("RESET ROLE")
+
+        denied = await scrub_existing_previews(DeniedPool(), cutoff=cutoff)
+        assert denied.verdict == "INCOMPLETE" and denied.sqlstate == "42501"
+        assert {
+            r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
+        } == after
+        await pool.execute(
+            "GRANT USAGE ON SCHEMA connectors TO preview_scrub_denied; GRANT SELECT ON connectors.filtered_events TO preview_scrub_denied"
+        )
+        await pool.execute(
+            "UPDATE connectors.filtered_events SET subject_or_preview='482913' WHERE external_message_id='historic-telegram'"
+        )
+        # SELECT alone is sufficient for dry run, but FOR UPDATE and UPDATE
+        # both require write privilege. Classify the first reached failure honestly.
+        assert (
+            await scrub_existing_previews(DeniedPool(), cutoff=cutoff, dry_run=True)
+        ).verdict == "DRY-RUN"
+        async with DeniedPool().acquire() as denied_connection:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await denied_connection.execute(
+                    "UPDATE connectors.filtered_events SET subject_or_preview=NULL WHERE external_message_id='historic-telegram'"
+                )
+        pre_denial = await pool.fetchrow(
+            "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+        )
+        denied_write = await scrub_existing_previews(DeniedPool(), cutoff=cutoff)
+        assert (
+            denied_write.verdict == "INCOMPLETE"
+            and denied_write.phase == "select"
+            and denied_write.sqlstate == "42501"
+        )
+        assert (
+            await pool.fetchrow(
+                "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+            )
+            == pre_denial
+        )
+    finally:
+        await pool.execute("DROP OWNED BY preview_scrub_denied; DROP ROLE preview_scrub_denied")
 
 
 @pytest.mark.pg_clock

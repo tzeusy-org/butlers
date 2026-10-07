@@ -5227,6 +5227,8 @@ export interface ModelCatalogEntry {
   /** Number of qualifying (success + runtime_failure) attempts in the
    *  evidence window, regardless of whether that met the min-samples bar. */
   routing_sample_count: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** Current server-owned cascade impact for one catalog deletion. */
@@ -5306,6 +5308,8 @@ export interface ModelCatalogCreate {
   enabled?: boolean;
   priority?: number;
   session_timeout_s?: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** Request body for updating a catalog entry (all fields optional). */
@@ -5318,6 +5322,8 @@ export interface ModelCatalogUpdate {
   enabled?: boolean;
   priority?: number;
   session_timeout_s?: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** A single per-butler model override joined with catalog alias. */

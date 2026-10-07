@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -277,6 +278,46 @@ def scrub_stored_record(
     # The payload subtree embeds normalized_text, so one artifact can hit in both;
     # count the text hits (or the raw-only hits) once.
     return result, new_text, text_hits or json_hits
+
+
+def scrub_filtered_preview(
+    preview: str | None,
+    *,
+    connector_type: str,
+    sender_identity: str,
+    full_payload: object,
+) -> str | None:
+    """Withhold bearer text before buffering or repairing a visibility preview.
+
+    Legacy JSONB strings can supply hints, but cannot override the actual row
+    sender. A detector failure withholds the preview without logging its text.
+    Replay payloads and authentication-artifact production stay separate.
+    """
+    if preview is None:
+        return None
+    try:
+        if isinstance(full_payload, str):
+            try:
+                full_payload = json.loads(full_payload)
+            except ValueError:
+                full_payload = None
+        payload = full_payload if isinstance(full_payload, Mapping) else {}
+        source = payload.get("source")
+        provider = source.get("provider") if isinstance(source, Mapping) else None
+        if not isinstance(provider, str):
+            provider = connector_type
+        sender = payload.get("sender")
+        aggressive = is_auth_service_sender({"identity": sender_identity}) or (
+            isinstance(sender, Mapping) and is_auth_service_sender(sender)
+        )
+        text, _ = scrub_text(
+            preview,
+            provider_domain=provider_domain_for(sender_identity, provider),
+            aggressive=aggressive,
+        )
+        return text
+    except Exception:
+        return None
 
 
 def scrub_message_text(text: str, *, source: Mapping[str, Any], sender: Mapping[str, Any]) -> str:

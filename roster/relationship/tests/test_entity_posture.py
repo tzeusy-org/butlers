@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -44,7 +45,7 @@ def migrated_db_url(postgres_container) -> str:
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["core", "memory", "relationship"],
+        chains=["core", "memory", "relationship", "contacts"],
     )
 
 
@@ -53,8 +54,9 @@ async def pool(migrated_db_url: str) -> AsyncIterator[asyncpg.Pool]:
     connection_pool = await asyncpg.create_pool(
         migrated_db_url, min_size=1, max_size=2, init=register_jsonb_codec
     )
-    # The entity-anchored important_dates arm the producers query is added by the
-    # contacts module's migration (contacts_004), which this chain set does not run.
+    # contacts_004 supplies the entity anchor AND nullable contact_id required by
+    # the contactless arm. Retain this original idempotent fixture guard as a no-op
+    # after the canonical contacts chain; do not hand-copy its schema constraints.
     await connection_pool.execute(
         "ALTER TABLE important_dates ADD COLUMN IF NOT EXISTS local_entity_id UUID"
     )
@@ -94,6 +96,101 @@ async def test_posture_gates_birthday_count_and_is_reversible(pool: asyncpg.Pool
 
     await entity_set_posture(pool, entity_id, "active")
     assert await _count_birthdays_on(pool, _TOMORROW) == 1
+
+    from fastmcp import FastMCP
+
+    from butlers.modules._roster_relationship import RelationshipModule, RelationshipModuleConfig
+    from butlers.tools.relationship import dates
+    from tests.three_seams_helpers import baseline_function
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2031, 3, 6, tzinfo=UTC)
+
+    # Position literal empty before other planted dates. Keep all original count
+    # and reversible writer assertions above, with a three-days-ahead birthday.
+    await pool.execute(
+        "UPDATE important_dates SET month=3,day=9 WHERE contact_id IN (SELECT contact_id FROM contact_entity_map WHERE entity_id=$1)",
+        entity_id,
+    )
+    await entity_set_posture(pool, entity_id, "memorial")
+    old = baseline_function("upcoming_dates", {**vars(dates), "datetime": FrozenDateTime})
+    assert len(await old(pool, 7)) == 1  # actual old SQL leaks the sole memorial
+    with patch.object(dates, "datetime", FrozenDateTime):
+        assert await dates.upcoming_dates(pool, 7) == []
+        await entity_set_posture(pool, entity_id, "active")
+        assert [r["contact_name"] for r in await dates.upcoming_dates(pool, 7)] == ["Person Count"]
+        # Both UNION arms must exclude each posture while finding planted active
+        # positives; SQL mutations independently neutralize each predicate.
+        for anchored in (False, True):
+            for posture in ("active", "memorial", "quiet", "no_contact"):
+                name = f"Arm {anchored} {posture}"
+                if anchored:
+                    target = await pool.fetchval(
+                        "INSERT INTO public.entities(canonical_name,entity_type) VALUES($1,'person') RETURNING id",
+                        name,
+                    )
+                    await pool.execute(
+                        "INSERT INTO important_dates(local_entity_id,label,month,day) VALUES($1,'Anniversary',3,9)",
+                        target,
+                    )
+                else:
+                    target = await _person_with_birthday(pool, name, date(2031, 3, 9))
+                await entity_set_posture(pool, target, posture)
+        current = await dates.upcoming_dates(pool, 7)
+        assert {r["contact_name"] for r in current} == {
+            "Person Count",
+            "Arm False active",
+            "Arm True active",
+        }
+        import inspect
+
+        for occurrence in (0, 1):
+            src = inspect.getsource(dates.upcoming_dates)
+            needle = "          AND e.posture = 'active'\n"
+            at = [i for i in range(len(src)) if src.startswith(needle, i)][occurrence]
+            changed = src[:at] + src[at + len(needle) :]
+            ns = {**vars(dates), "datetime": FrozenDateTime}
+            exec(compile(changed, "posture-arm-control", "exec"), ns)
+            wrong = await ns["upcoming_dates"](pool, 7)
+            assert any(r["contact_name"] == f"Arm {bool(occurrence)} memorial" for r in wrong)
+            assert any(r["contact_name"] == "Arm True active" for r in wrong)
+        module = RelationshipModule()
+        mcp = FastMCP("posture-control")
+        await module.register_tools(
+            mcp,
+            RelationshipModuleConfig(
+                groups=[
+                    "contacts",
+                    "contacts_extended",
+                    "interactions",
+                    "relationships",
+                    "social",
+                    "notes",
+                    "tracking",
+                    "management",
+                ]
+            ),
+            SimpleNamespace(pool=pool),
+            "relationship",
+        )
+        tool = await mcp.get_tool("upcoming_dates")
+        assert await tool.fn(days_ahead=7) == current
+        # Failed real SQL is not an empty result; restore via rollback and prove
+        # the active data is still visible from a fresh acquisition.
+        async with pool.acquire() as connection:
+            transaction = connection.transaction()
+            await transaction.start()
+            try:
+                await connection.execute(
+                    "ALTER TABLE public.entities RENAME COLUMN posture TO posture_hidden"
+                )
+                with pytest.raises(asyncpg.UndefinedColumnError):
+                    await dates.upcoming_dates(connection, 7)
+            finally:
+                await transaction.rollback()
+        assert await dates.upcoming_dates(pool, 7) == current
 
 
 async def test_briefing_has_no_birthday_highlight_for_a_memorial_person(
