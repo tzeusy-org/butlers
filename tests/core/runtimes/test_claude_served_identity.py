@@ -129,6 +129,71 @@ async def test_claude_served_identity_conformance(tmp_path):
     assert cost(0) == "0.000000000"
     assert model_id("claude-opus-4-6[1m]") == "claude-opus-4-6[1m]"
     assert model_id("https://example.invalid/model") is None
+    # Canonical Codex input is uncached; an absent cache counter is not zero.
+    missing = object()
+    for cached, expected_input in (
+        (missing, None),
+        (None, None),
+        (True, None),
+        (-1, None),
+        (2**63, None),
+        ("0", None),
+        (101, None),
+        (0, 100),
+        (95, 5),
+    ):
+        raw_usage = {"input_tokens": 100, "output_tokens": 3}
+        if cached is not missing:
+            raw_usage["cached_input_tokens"] = cached
+        observed = stream_evidence(
+            "codex", json.dumps({"type": "turn.completed", "usage": raw_usage})
+        )
+        normalized = observed["executions"][0]["aggregate_usage"]
+        assert normalized["output_tokens"] == 3
+        assert normalized["cache_read_input_tokens"] == token(raw_usage.get("cached_input_tokens"))
+        assert normalized["input_tokens"] == expected_input
+        assert normalized["cache_creation_input_tokens"] is None
+    written = stream_evidence(
+        "codex",
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 3,
+                    "cached_input_tokens": 95,
+                    "cache_write_input_tokens": 2,
+                },
+            }
+        ),
+    )["executions"][0]
+    assert written["aggregate_usage"]["input_tokens"] is None
+    assert written["aggregate_usage"]["cache_creation_input_tokens"] == 2
+    assert written["cache_overlap_state"] == "unknown"
+    # JSON permits escaped lone surrogates; diagnostic identity must not turn
+    # the actual adapter's ordinary success into an encoding exception.
+    for invalid_model in ("\ud800", "\udfff", "claude-opus-4-6\ud800"):
+        assert model_id(invalid_model) is None
+        response, actual_tools, actual_usage = await invoke(
+            [
+                {**init, "model": invalid_model},
+                {
+                    **final,
+                    "modelUsage": {
+                        invalid_model: models["claude-opus-4-6"],
+                        "claude-sonnet-4-6": models["claude-sonnet-4-6"],
+                    },
+                },
+            ]
+        )
+        assert response == "synthetic response" and actual_tools == tools
+        assert actual_usage == usage
+        safe_execution = adapter.last_process_info["served"]["executions"][0]
+        assert [row["model_id"] for row in safe_execution["reported_models"]] == [
+            "claude-sonnet-4-6"
+        ]
+        assert [row["model_id"] for row in safe_execution["model_usage"]] == ["claude-sonnet-4-6"]
+        assert safe_execution["malformed_identity"] is True
     # Fixed-image reader refuses nonregular, duplicate and malformed manifests.
     manifest = tmp_path / "manifest"
     manifest.write_text("├── @anthropic-ai/claude-code@2.1.179\n└── @openai/codex@0.159.2\n")

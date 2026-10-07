@@ -80,7 +80,9 @@ def token(value: object) -> int | None:
 
 
 def model_id(value: object) -> str | None:
-    if isinstance(value, str) and len(value.encode("utf-8")) <= 128 and _MODEL.fullmatch(value):
+    # The allowlist is ASCII, so its character and UTF-8 byte limits coincide.
+    # Check without encoding untrusted JSON strings (which may contain a lone surrogate).
+    if isinstance(value, str) and len(value) <= 128 and _MODEL.fullmatch(value):
         return value
     return None
 
@@ -261,7 +263,7 @@ def stream_evidence(
             raw = raw if isinstance(raw, dict) else {}
             inclusive, cached = (
                 token(raw.get("input_tokens")),
-                token(raw.get("cached_input_tokens", 0)),
+                token(raw.get("cached_input_tokens")),
             )
             final["aggregate_usage"] = {
                 "input_tokens": inclusive - cached

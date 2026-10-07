@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -109,6 +110,15 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
     fake_adapter = AsyncMock()
     fake_adapter.invoke = AsyncMock(
         return_value=("FORWARD: looks real", [], {"input_tokens": 7, "output_tokens": 3})
+    )
+    # create_worker is synchronous even when the invocation is async. Each
+    # detached worker starts without process metadata; the real ledger write
+    # and all purpose/identity/null readback assertions below remain unchanged.
+    fake_adapter.create_worker = lambda: SimpleNamespace(
+        invoke=AsyncMock(
+            return_value=("FORWARD: looks real", [], {"input_tokens": 7, "output_tokens": 3})
+        ),
+        last_process_info=None,
     )
 
     with (
