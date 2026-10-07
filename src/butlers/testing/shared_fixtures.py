@@ -45,3 +45,26 @@ def mock_spawner() -> MockSpawner:
 
 
 __all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
+
+
+@pytest.fixture(autouse=True)
+def _custody_startup_for_simulated_database(monkeypatch):
+    from unittest.mock import Mock
+
+    from butlers.core import custody_lifecycle
+
+    actual_start = custody_lifecycle.start_daemon_custody
+
+    async def start(daemon):
+        database = daemon.db
+        if isinstance(database, Mock) or isinstance(getattr(database, "pool", None), Mock):
+            # A MagicMock daemon has no constructor-created field until the
+            # faithful infrastructure fixture allocates it. This is absence,
+            # never an admission/principal/currentness result.
+            if isinstance(daemon, Mock) and isinstance(daemon._custody_runtime, Mock):
+                daemon._custody_runtime = None
+            assert daemon._custody_runtime is None
+            return
+        await actual_start(daemon)
+
+    monkeypatch.setattr(custody_lifecycle, "start_daemon_custody", start)

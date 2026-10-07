@@ -8219,10 +8219,14 @@ BEGIN
     -- Explicit ACL entries alone miss effective inherited/predefined access
     -- and column-only grants. Check the actual fixed protected relations for
     -- every existing runtime role; no arbitrary catalog selector is accepted.
+    -- Existing managed roles deliberately retain LOGIN/INHERIT. Neither LOGIN
+    -- nor a role name supplies host enrollment or a bound writer; rejecting
+    -- LOGIN here would contradict the unchanged bootstrap/legacy contract.
+    -- The separately adopted dashboard_auth_api NOLOGIN contract still holds.
     IF EXISTS(SELECT FROM pg_catalog.pg_roles runtime
         WHERE (runtime.rolname ~ '^butler_[A-Za-z_][A-Za-z0-9_]*_rw$'
                OR runtime.rolname IN ('connector_writer','dashboard_auth_api'))
-          AND (runtime.rolcanlogin
+          AND ((runtime.rolname='dashboard_auth_api' AND runtime.rolcanlogin)
                OR pg_catalog.has_schema_privilege(runtime.oid,'custody_admission','USAGE,CREATE')
                OR EXISTS(SELECT FROM pg_catalog.pg_class relation
                    JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace

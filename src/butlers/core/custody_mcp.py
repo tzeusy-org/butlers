@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -229,8 +230,67 @@ class CustodyJsonRpcGuard:
     tool admission occurs in its execution task on the committing writer.
     """
 
-    def __init__(self, app: Any) -> None:
+    # An HTTP request resource policy, distinct from the protected INNER wire.
+    # Generic tools may carry large document arguments; the custody 8KiB wire
+    # limit must never become their request limit. Constructor settings are
+    # trusted server configuration, not caller-provided authority.
+    _ENVELOPE_LIMIT = WIRE_LIMIT * 6 + 2048
+    _REQUEST_LIMIT = 16 * 1024 * 1024
+    _READ_TIMEOUT_SECONDS = 10.0
+
+    def __init__(
+        self,
+        app: Any,
+        *,
+        request_limit: int = _REQUEST_LIMIT,
+        read_timeout_seconds: float = _READ_TIMEOUT_SECONDS,
+    ) -> None:
+        if type(request_limit) is not int or request_limit < self._ENVELOPE_LIMIT:
+            raise ValueError("MCP request limit must cover the custody envelope")
+        if (
+            type(read_timeout_seconds) not in (int, float)
+            or not math.isfinite(read_timeout_seconds)
+            or read_timeout_seconds <= 0
+        ):
+            raise ValueError("MCP read deadline must be positive")
         self._app = app
+        self._request_limit = request_limit
+        self._read_timeout_seconds = read_timeout_seconds
+
+    @staticmethod
+    def _custody_prefix(raw: bytes) -> bool:
+        """Recognize a complete small envelope before oversized trailing bytes.
+
+        This is only resource classification: the duplicate-preserving strict
+        validator still runs before dispatch. An incomplete/late-named generic
+        envelope retains the larger server bound, never unlimited consumption.
+        Recognize the SDK's encodings too; a forbidden UTF16 custody envelope
+        cannot bypass the early cap through its encoding.
+        """
+        try:
+            text = raw.decode(json.detect_encoding(raw))
+            envelope, _ = json.JSONDecoder().raw_decode(text.lstrip())
+        except (ValueError, UnicodeError, RecursionError):
+            return False
+        if type(envelope) is not dict or envelope.get("method") != "tools/call":
+            return False
+        params = envelope.get("params")
+        return type(params) is dict and str(params.get("name", "")).startswith("custody.")
+
+    @staticmethod
+    async def _refuse(send, status: int) -> None:
+        payload = b'{"jsonrpc":"2.0","id":null,"error":{"code":-32602,"message":"custody invalid"}}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(payload)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": payload})
 
     def __getattr__(self, name: str) -> Any:
         # Preserve Starlette route/lifespan inspection, as the existing
@@ -270,7 +330,7 @@ class CustodyJsonRpcGuard:
                 json.loads(raw.decode("utf-8"))
             except (ValueError, UnicodeError, RecursionError):
                 return False
-            if duplicate or len(raw) > WIRE_LIMIT * 6 + 2048:
+            if duplicate or len(raw) > CustodyJsonRpcGuard._ENVELOPE_LIMIT:
                 return False
             if envelope.keys() != {"jsonrpc", "id", "method", "params"}:
                 return False
@@ -308,35 +368,54 @@ class CustodyJsonRpcGuard:
         ):
             await self._app(scope, receive, send)
             return
-        messages, body = [], bytearray()
-        while True:
-            message = await receive()
-            messages.append(message)
-            if message["type"] != "http.request":
-                break
-            body.extend(message.get("body", b""))
-            if not message.get("more_body", False):
-                break
+        body = bytearray()
+        custody = False
+        refusal = None
+        # A total read deadline bounds an infinite sequence of empty/chunky
+        # messages as well as a silent peer. Cancellation remains cancellation;
+        # a disconnect never invokes or instruments a partially read request.
+        try:
+            async with asyncio.timeout(self._read_timeout_seconds):
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return
+                    if message["type"] != "http.request":
+                        refusal = 400
+                        break
+                    chunk = message.get("body", b"")
+                    size = len(body) + len(chunk)
+                    if size > self._request_limit:
+                        refusal = 413
+                        break
+                    if not custody and len(body) < self._ENVELOPE_LIMIT:
+                        prefix = bytes(body) + chunk[: self._ENVELOPE_LIMIT - len(body)]
+                        custody = self._custody_prefix(prefix)
+                    if custody and size > self._ENVELOPE_LIMIT:
+                        refusal = 413
+                        break
+                    # Check before retaining/copying this potentially huge
+                    # chunk. ASGI server delivery itself is outside this guard;
+                    # we retain at most the selected bound, never all overflow.
+                    body.extend(chunk)
+                    if not message.get("more_body", False):
+                        break
+        except TimeoutError:
+            refusal = 408
+        if refusal is not None:
+            await self._refuse(send, refusal)
+            return
         if not self._valid_custody(bytes(body)):
-            payload = (
-                b'{"jsonrpc":"2.0","id":null,"error":{"code":-32602,"message":"custody invalid"}}'
-            )
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 400,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"content-length", str(len(payload)).encode()),
-                    ],
-                }
-            )
-            await send({"type": "http.response.body", "body": payload})
+            await self._refuse(send, 400)
             return
 
+        replayed = False
+
         async def replay():
-            if messages:
-                return messages.pop(0)
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
             return await receive()
 
         await self._app(scope, replay, send)

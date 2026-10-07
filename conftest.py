@@ -106,10 +106,16 @@ from butlers.modules.registry import default_registry as _default_registry  # no
 from butlers.testing.shared_fixtures import (  # noqa: E402
     MockSpawner,
     SpawnerResult,
+    _custody_startup_for_simulated_database,
     mock_spawner,
 )
 
-__all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
+__all__ = [
+    "MockSpawner",
+    "SpawnerResult",
+    "mock_spawner",
+    "_custody_startup_for_simulated_database",
+]
 
 _default_registry()
 

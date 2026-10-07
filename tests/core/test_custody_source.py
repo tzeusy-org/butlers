@@ -1215,6 +1215,89 @@ async def test_registered_mcp_tool_guard_orders_verification_commit_and_clears_c
         )
         return sent[0]["status"]
 
+    # Actual receive-boundary controls, not a Tool/SQL admission substitute.
+    # Overflow must not retain/drain a following chunk or reach instrumentation.
+    limit = CustodyJsonRpcGuard._ENVELOPE_LIMIT
+
+    async def streamed_request(chunks, *, request_limit=2 * limit):
+        consumed = []
+        sent = []
+
+        async def receive():
+            index = len(consumed)
+            consumed.append(index)
+            return {
+                "type": "http.request",
+                "body": chunks[index],
+                "more_body": index + 1 < len(chunks),
+            }
+
+        async def send(message):
+            sent.append(message)
+
+        await CustodyJsonRpcGuard(delegate, request_limit=request_limit)(
+            {"type": "http", "method": "POST", "path": "/mcp"}, receive, send
+        )
+        return sent[0]["status"], consumed
+
+    exact = raw + b" " * (limit - len(raw))
+    assert await streamed_request([raw, exact[len(raw) :]]) == (202, [0, 1])
+    assert raw_events == ["delegated", exact]
+    raw_events.clear()
+    assert await streamed_request([raw, b" " * limit, b"never consumed"]) == (413, [0, 1])
+    assert raw_events == []
+    # A single huge ASGI delivery is inspected before retaining its overflow.
+    assert await streamed_request([raw + b" " * 100_000]) == (413, [0])
+    assert raw_events == []
+    generic = json.dumps(envelope | {"params": {"name": "ordinary", "arguments": {}}}).encode()
+    large_generic = generic + b" " * (2 * limit - len(generic))
+    assert await streamed_request([large_generic]) == (202, [0])
+    assert raw_events == ["delegated", large_generic]  # Generic is NOT the8KiB wire.
+    raw_events.clear()
+    assert await streamed_request([large_generic, b"overflow", b"never consumed"]) == (
+        413,
+        [0, 1],
+    )
+    assert raw_events == []
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def silent_receive():
+        await asyncio.Event().wait()
+
+    await CustodyJsonRpcGuard(delegate, read_timeout_seconds=0.005)(
+        {"type": "http", "method": "POST", "path": "/messages"}, silent_receive, send
+    )
+    assert sent[0]["status"] == 408 and raw_events == []
+    sent.clear()
+
+    async def disconnect_receive():
+        return {"type": "http.disconnect"}
+
+    await CustodyJsonRpcGuard(delegate)(
+        {"type": "http", "method": "POST", "path": "/mcp"}, disconnect_receive, send
+    )
+    assert sent == [] and raw_events == []
+    receiving = asyncio.Event()
+
+    async def cancelled_receive():
+        receiving.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        CustodyJsonRpcGuard(delegate)(
+            {"type": "http", "method": "POST", "path": "/mcp"}, cancelled_receive, send
+        )
+    )
+    await receiving.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sent == [] and raw_events == []
+
     ordinary_encoded = json.dumps(
         {
             "jsonrpc": "2.0",

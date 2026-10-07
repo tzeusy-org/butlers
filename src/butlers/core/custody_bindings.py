@@ -19,6 +19,12 @@ import asyncpg
 from opentelemetry.instrumentation.utils import suppress_instrumentation
 
 from butlers.core.custody_admission import CustodyAdmission, CustodyWriter
+from butlers.core.custody_native import (
+    _installed_publishers,
+)
+from butlers.core.custody_native import (
+    native_channel_mutation as native_channel_mutation,
+)
 from butlers.core.custody_source import CustodyError, digest, utc_timestamp
 from butlers.identity import (
     _TELEGRAM_PREFIX_CHANNEL_TYPES,
@@ -33,7 +39,7 @@ _OBSERVATION_LIFETIME = timedelta(minutes=5)
 _MUTATION_ORIGIN_LIMIT = 2048
 # asyncpg.Pool is not weak-referenceable. Actual runtime shutdown unregisters
 # this allocation before closing its pool; a failed startup uses the same path.
-_installed_publishers: dict[asyncpg.Pool, CustodyChannelBindings] = {}
+# Registry lives in the dependency-light native hook used by operator commands.
 
 
 def install_binding_publisher(pool: asyncpg.Pool, publisher: CustodyChannelBindings) -> None:
@@ -70,27 +76,6 @@ def remove_binding_publisher(pool: asyncpg.Pool, publisher: CustodyChannelBindin
 def owning_binding_publisher(pool: asyncpg.Pool) -> CustodyChannelBindings | None:
     """Native code's fixed actual-pool lookup; never a model-facing operation."""
     return _installed_publishers.get(pool)
-
-
-@asynccontextmanager
-async def native_channel_mutation(
-    pool: asyncpg.Pool, connection: asyncpg.Connection, entity_ids: Iterable[uuid.UUID]
-) -> AsyncIterator[asyncpg.Connection]:
-    """Fixed native owning hook; no request selects its publisher or authority.
-
-    Call before the native transaction/entity/fact locks. A connection already
-    inside a genuine bound custody transaction reuses THAT writer. An already
-    open unbound transaction cannot establish first-lock order by a savepoint:
-    its outer caller must install the same constructor allocation earlier.
-    Legacy unallocated pools retain their existing behavior, without any claim
-    of custody currentness. The complete native-writer universe is mandatory.
-    """
-    publisher = owning_binding_publisher(pool)
-    if publisher is None:
-        yield connection
-    else:
-        async with publisher.native_mutation(connection, entity_ids) as writer:
-            yield writer._connection
 
 
 async def native_entity_write(

@@ -692,3 +692,33 @@ and command receipts must not be credited as completed containment. Remaining
 B/C/D, selection/security questions, real Finance/device/evidence/foreign auth
 producer, independent deployments and whole criteria remain required. This
 SOURCE-A candidate is for exact-head review/CI and carries no delivery approval.
+
+## Request resource policy and legacy-role compatibility
+
+The constructor-fixed CustodyJsonRpcGuard HTTP boundary uses a16MiB generic
+MCP request cap and a10-second total body-read deadline. This server resource
+policy is distinct from the8192-byte inner custody-wire.v1 limit. An already
+recognized custody envelope is refused before retaining overflow beyond51200
+bytes (sixfold JSON escaping plus2048 framing bytes); incomplete/late-named
+requests retain the larger finite server cap until strict classification.
+The final duplicate-preserving custody check still precedes SDK instrumentation.
+Generic document arguments larger than the custody bound remain supported;
+no8KiB generic limit or admission verdict is introduced. Disconnect/cancellation
+never forwards a partial request. The server's delivered ASGI chunk is outside
+this wrapper's allocation; the wrapper checks length before retaining/copying
+its overflow and does not accumulate empty-message objects.
+
+Existing bootstrap-managed runtime roles intentionally retain LOGIN/INHERIT.
+LOGIN is not a custody principal: trusted host enrollment, anchor/writer binding,
+current source and online challenge/COMMIT checks remain mandatory. The catalog
+prover checks ancestry/private schema/table/column/function privileges and RLS,
+without inventing a NOLOGIN prerequisite. The restricted dashboard channel
+retains its separately adopted role contract. No role, LOGIN, credential or
+privilege is newly provisioned by this compatibility correction.
+
+The audited standalone PEP723 merge command uses the dependency-light native
+mutation seam. It sees the same actual-pool publisher registry installed only
+by constructor-validated enrollment. It neither imports daemon infrastructure
+merely for --help nor supplies a new source/caller trust selector. Legacy
+unallocated writer behavior remains explicit without custody-currentness credit;
+complete native writer coverage and genuine migrated controls remain required.

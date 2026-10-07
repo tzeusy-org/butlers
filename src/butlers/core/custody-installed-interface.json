@@ -584,7 +584,7 @@
     },
     {
       "signature": "custody_admission.prove_interface()",
-      "body_sha256": "ff6b811dc129c36195e3f189fde92415401bf6fa0d9f50587cb9ec5897dca67d",
+      "body_sha256": "15206be5f82d49e91d2fa1b9e2f6bccc8f21238aa8b6930b06ae30ed6a1e7c18",
       "argument_names": [],
       "return_type": "jsonb",
       "language": "plpgsql",

@@ -604,13 +604,14 @@ class TestStep6DbRoleWiring:
     Behavioral replacement for the former source-string tests (bu-qi2ic 3.1-3.3):
     drives lifecycle.run_startup with a recording fake Database and asserts the
     DB-isolation role wiring (butler_{schema}_rw, applied before connect, skipped
-    when schema is None or the db is injected).
+    from the configured butler name when schema is None, skipped for an injected db).
     """
 
     def _make_daemon(self, *, schema: str | None, injected_db=None) -> Any:
         daemon = MagicMock()
         daemon.db = injected_db
         daemon.config.db_name = "butlers"
+        daemon.config.name = "legacy"
         daemon.config.db_schema = schema
         return daemon
 
@@ -652,13 +653,14 @@ class TestStep6DbRoleWiring:
         assert fake_db.role_at_connect == "butler_health_rw"
 
     async def test_role_not_set_when_schema_is_none(self) -> None:
-        """db_schema None: no role is assigned on the non-injected path."""
+        """Legacy no-schema startup still uses the configured owning runtime role."""
         fake_db = _RecordingDatabase()
         daemon = self._make_daemon(schema=None)
 
         await self._run_until_connect(daemon, fake_db)
 
-        assert fake_db.role_at_connect is None
+        assert fake_db.role_at_connect == "butler_legacy_rw"
+        assert fake_db.strict_role_enforcement is True
 
     async def test_injected_db_path_skips_role_wiring(self) -> None:
         """Injected db: role wiring is skipped (the from_env/connect path never runs)."""

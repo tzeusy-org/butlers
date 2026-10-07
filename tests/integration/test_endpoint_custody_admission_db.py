@@ -103,6 +103,13 @@ async def test_installed_schema_real_roles_and_same_acquired_writer(
         stack.push_async_callback(admin.close)
         await register_jsonb_codec(admin)
         await admin.execute("SELECT custody_admission.install_interface()")
+        # Existing production bootstrap preserves normal runtime LOGIN roles.
+        # LOGIN is not enrollment, source authority or a bound writer. This
+        # positive reaches the exact prover that previously rejected all real
+        # normal migrated fixtures; the real denials below remain mandatory.
+        assert await admin.fetchval(
+            "SELECT rolcanlogin FROM pg_roles WHERE rolname='butler_relationship_rw'"
+        )
         proof = await admin.fetchval("SELECT custody_admission.prove_interface()")
         verify_installed_functions(proof)
         await admin.execute("SELECT custody_admission.install_interface()")
