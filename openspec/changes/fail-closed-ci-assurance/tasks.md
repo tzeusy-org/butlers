@@ -4,15 +4,15 @@
 - [x] Implement all-needs typed consumer, exact five-mode policy, independent preflight/changes/guards/planner and preserved heavy classification.
 - [x] Move four exact static commands into enforcing guards, preserve UV setup policy, and mirror nonmutating Makefile survivors.
 - [x] Preserve every existing make/cleanup/smoke/manifest/coverage/privacy positive and prove actual reached gate/guard controls.
-- [ ] Complete proportional collection/planner/budget/shards/hygiene/guards and exact-source hosted CI.
-- [ ] Capture real format/Ruff red canaries and genuine scoped hosted green, with exact source and terminal receipts.
-- [ ] Complete independent source review/protected source landing and M1 no-gain report without whole-original closure.
+- [x] Complete proportional collection/planner/budget/shards/hygiene/guards and exact-source hosted CI.
+- [x] Capture real format/Ruff red canaries and genuine scoped hosted green, with exact source and terminal receipts.
+- [x] Complete independent source review/protected source landing and M1 no-gain report without whole-original closure.
 
-## M2: independent complete coverage (source release pending)
+## M2: independent complete coverage (source released; hosted observations pending)
 
-- [ ] Extract non-required same-run merge-group coverage/report/badge while keeping required check gate-only.
-- [ ] Disable PR instrumentation/uploads and preserve local runner coverage compatibility, selected population and sanitized JUnit.
-- [ ] Validate all ten CoverageData inputs individually before combine; one corrupt/nine valid must reject and ten valid must report.
+- [x] Extract non-required same-run merge-group coverage/report/badge while keeping required check gate-only.
+- [x] Disable PR instrumentation/uploads and preserve local runner coverage compatibility, selected population and sanitized JUnit.
+- [x] Validate all ten CoverageData inputs individually before combine; one corrupt/nine valid must reject and ten valid must report.
 - [ ] Capture two real merge-group report uploads and about5s check, separate from source assertions.
 
 ## M3: finite execution and browser installation (source release pending)
