@@ -11,6 +11,8 @@ Dependency note (non-normative): the attention episode reissue endpoint and its 
 ### Requirement: Model Catalog Settings API
 The dashboard SHALL expose REST endpoints for full CRUD management of the global model catalog with **server-side sort** `(complexity_tier, priority DESC, enabled DESC, alias ASC)`.
 
+The API SHALL accept and round-trip the existing catalog's nullable allowance_account field, validating non-null values as strict strings of 1–64 characters matching the complete lowercase slug [a-z0-9][a-z0-9_-]{0,63}; it SHALL distinguish omitted update fields from explicit null.
+
 #### Scenario: List catalog entries (server-sorted)
 - **WHEN** `GET /api/settings/models` is called
 - **THEN** all model catalog entries are returned in the canonical sort order `(complexity_tier ASC under tier order [reasoning, workhorse, cheap, specialty, local, legacy], priority DESC, enabled DESC, alias ASC)`
@@ -45,6 +47,21 @@ The dashboard SHALL expose REST endpoints for full CRUD management of the global
   other content-bearing fields
 - **AND** an unknown entry returns 404 rather than a fabricated zero
 
+#### Scenario: Account assignment round-trips through catalog writers
+- **WHEN** POST or PUT supplies a valid allowance_account
+- **THEN** the actual catalog writer SHALL persist it and list/create/update/full-entry priority responses SHALL expose the same nullable value
+- **AND** all existing sort, field, audit and failure contracts SHALL remain intact
+
+#### Scenario: Omitted account retains and explicit null clears
+- **WHEN** a PUT omits allowance_account, supplies it as null, or supplies a valid replacement
+- **THEN** the old value SHALL respectively remain, become SQL NULL, or become the replacement
+- **AND** a null-only allowance_account update SHALL not be discarded as an empty update
+
+#### Scenario: Invalid account label is rejected before mutation
+- **WHEN** a non-null allowance_account is not a strict valid slug, including whitespace, a terminal newline, uppercase, email/path, a non-string or more than 64 characters
+- **THEN** the API SHALL return 422 before mutation or a success audit
+- **AND** omitted/null create SHALL preserve the runtime default without credential inference
+
 ### Requirement: Butler Model Override API
 The dashboard SHALL expose REST endpoints for managing per-butler model overrides.
 
@@ -63,6 +80,13 @@ The dashboard SHALL expose REST endpoints for managing per-butler model override
 
 ### Requirement: Model Catalog Settings UI
 The dashboard settings page SHALL include a model catalog management section with full CRUD capabilities and an alias editor.
+Models SHALL implement REQ-models-vision-proof-001 through009: declared capability chips, separate latest-check/applied-proof status, explicit bounded Verify confirmation and durable progress, cancellation/reconnect, and distinct Enable/Apply/Refresh CAS actions. There SHALL be no unchecked vision=true editor. Ordinary text verification SHALL remain separate. Missing live authorization disables invocation with a bounded reason; source deployment alone grants none.
+
+ID: REQ-dashboard-model-settings-004
+Source: owner-adopted Models vision contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; canonical dashboard-model-settings baseline
+Scope: v1-mandatory
+
+The existing add/edit catalog form SHALL expose the optional nonsecret allowance-account label with accessible validation and nullable round-trip behavior; it SHALL NOT add an allowance state/countdown page or credential picker.
 
 #### Scenario: Catalog table display
 - **WHEN** the settings page loads the model catalog section
@@ -102,6 +126,21 @@ The dashboard settings page SHALL include a model catalog management section wit
 #### Scenario: Toggle enabled inline
 - **WHEN** the operator clicks the enabled toggle on a catalog row
 - **THEN** the entry's enabled state is toggled immediately via API mutation with a confirmation toast
+
+#### Scenario: Models exposes evidence and application separately
+
+- **WHEN** owner inspects a historical true or stale managed row with a fresh unapplied pass
+- **THEN** UI shows the declaration and latest pass without claiming applicable managed proof; explicit Apply/Refresh remains required
+
+#### Scenario: Existing editor assigns and clears an account label
+- **WHEN** an operator opens the existing Add Model or Edit dialog
+- **THEN** an accessible Allowance account input SHALL show the current label or blank and explain that blank uses the runtime default
+- **AND** valid input SHALL be saved through the existing catalog mutation; clearing it SHALL send explicit null
+- **AND** invalid input SHALL show an inline error and prevent save, while the existing defaults and other form behavior remain
+
+#### Scenario: Catalog refresh preserves account labels
+- **WHEN** an operator edits another catalog field, toggles enabled, or steps priority
+- **THEN** the account label SHALL retain its current value and remain available in the full-entry response/editor
 
 ### Requirement: Per-Butler Model Override UI
 Each butler's detail page SHALL include model override configuration in a section accessible from the config or a dedicated tab.

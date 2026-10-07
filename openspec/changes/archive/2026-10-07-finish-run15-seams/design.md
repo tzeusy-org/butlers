@@ -54,3 +54,14 @@ The command requires an explicitly configured target database/connection environ
 Implementation allocation: preserve the full existing account-grouping PostgreSQL node and append the API same-runtime contract; all three seam controls have zero collected growth. The immutable public baseline function fixture is checked by SHA256 and executes only in the same disposable migrated test database. Full SQL/hosted proof remains pending until its exact-head receipts exist.
 
 Actual fixture refinement: the Relationship module fixture now runs canonical contacts after core/memory/relationship. contacts_004 supplies both local_entity_id and nullable contact_id; the original ADD-column guard remains an idempotent no-op. No schema is hand-copied and no applied migration is edited. SQL proof awaits hosted execution.
+
+
+Author source/native adoption status (2026-10-07): the full PRIMARY design above is retained as
+its original planning authority. Source0bd75483390707cc88d7325b2e9e45f80c9d7101 now has actual
+normal PR37584613535 terminal SUCCESS and independent HIGH source review PASS. Its three
+owning disposable-PG nodes exercise account writers/readers, active posture and the current
+nineteen-case persisted preview/history matrix, including real restricted-role denials. The
+previous prospective SQL wording above is historical; no mock/source-only result is credited as
+SQL. This author phase applies only the complete own native union through normal validated
+archive. New-head CI/focused review/protected delivery remain pending. Source/native adoption
+does not authorize live --apply, writer quiescence, foreign vision work or deployed fleet claims.
