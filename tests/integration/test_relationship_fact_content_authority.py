@@ -1133,6 +1133,74 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
         await resolve_contact_by_channel(env.rel, "email", rule_args["object"])
     ).entity_id == subject
 
+    # Ordinary standing permission above works before the held cutover.
+    # Actual admitted rules with explicit/correction input must still refuse
+    # at the same bridge, before a pending/context/evidence/use-count effect.
+    from butlers.tools.relationship.fact_temporal import CUTOVER_PENDING, TemporalError
+
+    assert await env.rel.fetchval("SELECT to_regclass('relationship.uq_ef_spo_active') IS NOT NULL")
+    for kind, temporal_args in (
+        (
+            "explicit",
+            rule_args
+            | {
+                "object": f"fenced-{subject}@example.test",
+                "effective_from": "2026",
+                "effective_from_precision": "year",
+            },
+        ),
+        ("correction", rule_args | {"corrects_fact_id": automatic["fact_id"]}),
+    ):
+        temporal_constraints = {
+            key: {"type": "exact", "value": value} for key, value in temporal_args.items()
+        }
+        async with _owner_app(env) as (client, _service, headers):
+
+            @client._transport.app.post(f"/api/test-temporal-rule/{kind}")
+            async def create_temporal_rule():
+                return await create_approval_rule(
+                    env.rel,
+                    "relationship_assert_fact",
+                    temporal_constraints,
+                    "Synthetic explicitly bounded temporal permission",
+                )
+
+            admitted = await client.post(f"/api/test-temporal-rule/{kind}", headers=headers)
+            assert admitted.status_code == 200 and "error" not in admitted.json()
+            temporal_rule_id = uuid.UUID(admitted.json()["id"])
+        assert (await admitted_rule_report(env.rel, temporal_rule_id)).owner_class
+        effect_tables = (
+            "relationship.entity_facts",
+            "relationship.pending_actions",
+            "relationship.fact_approval_context",
+            "relationship.fact_evidence",
+            "relationship.fact_coverage",
+            "relationship.knowledge_gaps",
+            "relationship.approval_events",
+            "public.entity_graph_edges",
+        )
+        before = {
+            table: await env.admin.fetchval(f"SELECT count(*) FROM {table}")  # noqa: S608
+            for table in effect_tables
+        }
+        original_rule = await env.rel.fetchrow(
+            "SELECT * FROM approval_rules WHERE id=$1", temporal_rule_id
+        )
+        async with _context(report):
+            with pytest.raises(TemporalError) as refused:
+                await gate(**temporal_args, why="Synthetic temporal fence must remain", evidence=[])
+        assert refused.value.code == CUTOVER_PENDING
+        # New acquisitions see no committed side effect, including the rule's
+        # use counter; the initial ordinary rule/fact is the positive witness.
+        assert {
+            table: await env.admin.fetchval(f"SELECT count(*) FROM {table}")  # noqa: S608
+            for table in effect_tables
+        } == before
+        assert (
+            await env.rel.fetchrow("SELECT * FROM approval_rules WHERE id=$1", temporal_rule_id)
+            == original_rule
+        )
+
     creation_event = await env.rel.fetchval(
         "SELECT creation_event_id FROM fact_approval_rule_context WHERE rule_id=$1", rule_id
     )
@@ -1933,9 +2001,9 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
 async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_container):
     from butlers.api.routers.conversations import _persist_dashboard_user_message
 
-    # Start below the additive common-table migration. Relationship is absent
-    # both before and after the ordinary core upgrade; dashboard cannot depend
-    # on a roster daemon having started.
+    # Normal bootstrap creates the managed Relationship namespace. Core-only
+    # migrations install none of its feature tables, before or after the
+    # additive common-table upgrade; dashboard cannot depend on its daemon.
     core_url = await asyncio.to_thread(
         create_migrated_test_db,
         postgres_container,
@@ -1944,7 +2012,15 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         revisions={"core": "core_258"},  # pinned-revision: exercise pre-stamp core-only topology
     )
     core = await asyncpg.create_pool(core_url, init=register_jsonb_codec)
-    assert await core.fetchval("SELECT to_regnamespace('relationship')") is None
+    assert await core.fetchval("SELECT to_regnamespace('relationship')") is not None
+    feature_tables = ("entity_facts", "fact_approval_context", "fact_identity_decisions")
+    for table in feature_tables:
+        assert await core.fetchval("SELECT to_regclass($1)", f"relationship.{table}") is None
+        # The ordinary migrated owning topology is a genuine present-table
+        # companion, not hand-created DDL in the core-only database.
+        assert await env.rel.fetchval("SELECT to_regclass($1)", f"relationship.{table}") is not None
+    assert await core.fetchval("SELECT to_regclass('switchboard.butler_registry')") is None
+    assert await env.sw.fetchval("SELECT to_regclass('switchboard.butler_registry')") is not None
     core_owner = await core.fetchval(
         "INSERT INTO public.entities(canonical_name,entity_type,roles) "
         "VALUES('Synthetic core-only owner','person',ARRAY['owner']) RETURNING id"
@@ -1995,7 +2071,10 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         ).status_code == 200
     await run_migrations(core_url, chain="core")
     await core.expire_connections()
-    assert await core.fetchval("SELECT to_regnamespace('relationship')") is None
+    assert await core.fetchval("SELECT to_regnamespace('relationship')") is not None
+    for table in feature_tables:
+        assert await core.fetchval("SELECT to_regclass($1)", f"relationship.{table}") is None
+    assert await core.fetchval("SELECT to_regclass('switchboard.butler_registry')") is None
     assert (
         await core.fetchval(
             "SELECT fact_owner_admission FROM public.dashboard_messages WHERE id=$1", message_id

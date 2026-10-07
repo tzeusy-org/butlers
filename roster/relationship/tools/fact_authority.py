@@ -400,7 +400,8 @@ async def prepare_rule_assertion(
         )
         from butlers.tools.relationship.fact_temporal import require_temporal_admission
 
-        await require_temporal_admission(conn)
+        if temporal.has_temporal_intent:
+            await require_temporal_admission(conn)
         parked = await _parked_arguments(
             conn,
             temporal,
