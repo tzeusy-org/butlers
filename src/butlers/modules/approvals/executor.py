@@ -207,6 +207,7 @@ async def execute_approved_action(
         # update waits here instead of marking the row terminal while a handler
         # is already allowed to perform its side effect.
         failed_execution: ExecutionResult | None = None
+        execution_result: ExecutionResult | None = None
         action_origin: str | None = None
         now = datetime.now(UTC)
         try:
@@ -361,6 +362,23 @@ async def execute_approved_action(
                 tool_name,
                 exc,
             )
+            if tool_name == "relationship_assert_fact" and execution_result is not None:
+                # The owning fact writer commits on its own connection. A
+                # terminal approval acknowledgement failure cannot roll that
+                # fact back or truthfully report that the write failed. Preserve
+                # a readback locator and leave the pending action nonterminal.
+                return ExecutionResult(
+                    success=False,
+                    result={
+                        "outcome": "unknown",
+                        "fact_id": (execution_result.result or {}).get("fact_id"),
+                    },
+                    error=(
+                        "Fact write returned, but approval acknowledgement is unknown. "
+                        "Check the stored fact and action before retrying."
+                    ),
+                    executed_at=now,
+                )
             return ExecutionResult(
                 success=False,
                 error=f"Could not persist execution outcome: {exc}",

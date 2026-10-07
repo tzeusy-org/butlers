@@ -713,18 +713,23 @@ async def _resolve_approved_action(
             "tool_args_digest"
         ) != approval_tool_args_digest(stored_args):
             raise ValueError("fact confirmation does not match the actual stored approval")
-        try:
-            event_id = uuid.UUID(decision_data["approval_event_id"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("fact confirmation has no recorded approval event") from exc
-        if not await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM approval_events WHERE id=$1 "
-            "AND action_id=$2 AND event_type='action_approved')",
-            event_id,
-            action_id,
-        ):
-            raise ValueError("fact confirmation does not match the recorded approval event")
-        decision = FactWriteContext.from_record(decision_data)
+        if decision_data.get("confirmation_source") == "standing_rule":
+            from butlers.tools.relationship.fact_authority import approved_rule_confirmation
+
+            decision = await approved_rule_confirmation(conn, action_id, decision_data)
+        else:
+            try:
+                event_id = uuid.UUID(decision_data["approval_event_id"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("fact confirmation has no recorded approval event") from exc
+            if not await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM approval_events WHERE id=$1 "
+                "AND action_id=$2 AND event_type='action_approved')",
+                event_id,
+                action_id,
+            ):
+                raise ValueError("fact confirmation does not match the recorded approval event")
+            decision = FactWriteContext.from_record(decision_data)
         report = replace(
             report,
             confirmation_entity_id=decision.confirmation_entity_id,
@@ -1103,7 +1108,7 @@ async def _upsert_fact(
     if predicate in IDENTITY_PREDICATES:
         from butlers.tools.relationship.identity_slots import lock_identity_slot
 
-        await lock_identity_slot(conn, predicate, object)
+        await lock_identity_slot(conn, predicate, object, subject)
     verified = fact_context.verified
 
     write: dict[str, Any] = dict(
@@ -2439,7 +2444,7 @@ async def assert_prefers_channel(
         )
         from butlers.tools.relationship.fact_identity_decisions import lock_identity_slot
 
-        await lock_identity_slot(c, PREFERS_CHANNEL_PREDICATE, channel)
+        await lock_identity_slot(c, PREFERS_CHANNEL_PREDICATE, channel, subject)
         await _fence_prefers_channel(c, subject)
         packet = EvidencePacket(
             items=(),

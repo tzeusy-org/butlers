@@ -175,7 +175,10 @@ def _protected_transition_insert():
     """
     path = Path(__file__).parent / "fixtures/protected_461_transition_insert.py.txt"
     source = path.read_bytes()
-    if hashlib.sha256(source).hexdigest() != "7f8c3d5fe907a780f8826843c6c6d15d9322f59135886295a2a635c67c8bc820":
+    if (
+        hashlib.sha256(source).hexdigest()
+        != "7f8c3d5fe907a780f8826843c6c6d15d9322f59135886295a2a635c67c8bc820"
+    ):
         raise RuntimeError("protected transition writer fixture changed")
     namespace = {
         "PACKET_COLUMNS": fact_temporal.PACKET_COLUMNS,

@@ -121,7 +121,11 @@ async def locked_report(
 async def should_hold_candidate(
     conn: Any, subject: uuid.UUID, predicate: str, report: FactWriteContext
 ) -> bool:
-    if predicate not in IDENTITY_PREDICATES or report.authority not in {"third_party", "mixed"}:
+    if (
+        predicate not in IDENTITY_PREDICATES
+        or report.authority not in {"third_party", "mixed"}
+        or report.verified
+    ):
         return False
     entity = await conn.fetchrow(
         "SELECT entity_type,metadata FROM public.entities WHERE id=$1", subject
@@ -241,6 +245,16 @@ async def record_admitted_rule(pool: Any, rule_id: uuid.UUID) -> None:
             yield pool
 
     async with connection_scope() as conn, conn.transaction():
+        reachable = await conn.fetchval(
+            "SELECT COALESCE((SELECT has_schema_privilege(oid,'USAGE') "
+            "FROM pg_namespace WHERE nspname='relationship'),false)"
+        )
+        if not reachable or not await conn.fetchval(
+            "SELECT to_regclass('relationship.fact_approval_rule_context') IS NOT NULL"
+        ):
+            # Generic/core-only approval storage remains usable. An optional
+            # foreign or not-yet-installed hook cannot supply fact confirmation.
+            return
         row = await conn.fetchrow("SELECT * FROM approval_rules WHERE id=$1", rule_id)
         if row is None or row["tool_name"] != "relationship_assert_fact":
             return
@@ -276,6 +290,8 @@ async def admitted_rule_report(pool: Any, rule_id: uuid.UUID) -> FactWriteContex
         "SELECT r.created_at,r.arg_constraints,r.active,r.expires_at,r.max_uses,r.use_count, "
         "c.rule_created_at,c.rule_args_digest,c.owner_report "
         "FROM approval_rules r JOIN relationship.fact_approval_rule_context c ON c.rule_id=r.id "
+        "JOIN approval_events e ON e.id::text=c.creation_event_id "
+        "AND e.rule_id=r.id AND e.event_type='rule_created' "
         "WHERE r.id=$1 AND r.tool_name='relationship_assert_fact'",
         rule_id,
     )
@@ -290,6 +306,55 @@ async def admitted_rule_report(pool: Any, rule_id: uuid.UUID) -> FactWriteContex
         return None
     report = FactWriteContext.from_record(row["owner_report"])
     return report if report.owner_class else None
+
+
+async def approved_rule_confirmation(
+    conn: Any, action_id: uuid.UUID, decision: dict[str, Any]
+) -> FactWriteContext:
+    """Bind the accepted standing permission to its real creation/action events.
+
+    Rule eligibility is admitted before automatic execution. A later revocation
+    does not retroactively invalidate an already admitted request, and this
+    read does not reacquire the executor's pending-row lock on another checkout.
+    """
+    from butlers.modules.approvals.execution_context import approval_tool_args_digest
+    from butlers.modules.approvals.rules import _args_match_constraints
+
+    try:
+        rule_id = uuid.UUID(decision["rule_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("fact confirmation has no recorded standing rule") from exc
+    row = await conn.fetchrow(
+        "SELECT a.tool_args,r.created_at,r.arg_constraints,"
+        "c.rule_created_at,c.rule_args_digest,c.owner_report "
+        "FROM pending_actions a JOIN approval_rules r ON r.id=a.approval_rule_id "
+        "JOIN relationship.fact_approval_rule_context c ON c.rule_id=r.id "
+        "JOIN approval_events creation ON creation.id::text=c.creation_event_id "
+        "AND creation.rule_id=r.id AND creation.event_type='rule_created' "
+        "WHERE a.id=$1 AND r.id=$2 AND a.tool_name='relationship_assert_fact' "
+        "AND r.tool_name='relationship_assert_fact' "
+        "AND EXISTS(SELECT 1 FROM approval_events approval WHERE approval.action_id=a.id "
+        "AND approval.rule_id=r.id AND approval.event_type='action_auto_approved')",
+        action_id,
+        rule_id,
+    )
+    if (
+        row is None
+        or row["created_at"] != row["rule_created_at"]
+        or approval_tool_args_digest(row["arg_constraints"]) != row["rule_args_digest"]
+        or not _args_match_constraints(row["tool_args"], row["arg_constraints"])
+    ):
+        raise ValueError("fact confirmation does not match standing permission lineage")
+    original_owner = FactWriteContext.from_record(row["owner_report"])
+    report = FactWriteContext.from_record(decision)
+    if (
+        not original_owner.owner_class
+        or report.confirmation_source != "standing_rule"
+        or report.confirmed_at is None
+        or report.confirmation_original_entity_id != original_owner.original_entity_id
+    ):
+        raise ValueError("fact confirmation does not match the admitted rule owner")
+    return report
 
 
 async def prepare_rule_assertion(

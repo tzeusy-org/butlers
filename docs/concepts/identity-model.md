@@ -196,6 +196,21 @@ inbound identity, outbound reachability, coverage, graph edges or established ga
 protected contact card's exact Adopt/Reject operation records its effects and decision receipt
 in one Relationship transaction. A lost acknowledgment requires decision readback, not an
 automatic resend. Owner confirmation is displayed separately from the original reporter.
+Adoption serializes canonical recipient slots, including the existing bounded phone suffix
+matches. A merge locks the complete affected slot union in one order. Preferred-channel
+serialization belongs to its actual subject; two reachable people may both prefer email.
+
+Fact approval replay binds the executor's locked original action and argument digest before
+retiring legacy `verified` keys. A standing permission additionally requires its actual
+owner-admitted creation record, `rule_created` and `action_auto_approved` events, stored rule
+birth and unchanged constraints matching the stored action. The subject's owner role is not
+an outbound-message bypass for fact confirmation. An admitted request may finish after a
+later revocation; this does not supply custody's commit-time currentness guarantee.
+
+The fact writer and executor acknowledgement commit on separate connections. If the fact
+handler returns but terminal acknowledgement fails, the result is explicitly unknown and
+retains the fact/action locators. Read the durable fact and action before retrying; replay of
+the same approved record preserves the selected report and avoids a second fact version.
 
 Switchboard has no direct Relationship fact grant. It calls the registered, read-only owning
 `identity_resolve_channels(channel_type, channel_values)` MCP boundary, which preserves the

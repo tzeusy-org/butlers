@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from urllib.parse import urlparse
 
 import asyncpg
 import httpx
@@ -28,6 +29,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
+from starlette.applications import Starlette
 
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
@@ -41,7 +43,12 @@ from butlers.migrations import run_migrations
 from butlers.modules._roster_relationship import RelationshipModule
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.operations import approve_action
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    _bootstrap_migration_prerequisites,
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 from butlers.tools.relationship.fact_authority import stored_gap_authority
 from butlers.tools.relationship.fact_identity_decisions import (
     IdentityDecisionConflict,
@@ -50,6 +57,7 @@ from butlers.tools.relationship.fact_identity_decisions import (
 )
 from butlers.tools.relationship.relationship_assert_fact import (
     AssertOutcome,
+    assert_prefers_channel,
     relationship_assert_fact,
 )
 from butlers.tools.switchboard.registry.registry import register_butler
@@ -101,6 +109,15 @@ async def env(postgres_container):
         ("relationship", "relationship"),
     ):
         await run_migrations(url, chain=chain, schema=schema)
+    # Replay the genuine privileged bootstrap against this disposable database
+    # after all chains, so its grant loop cannot be mistaken for an ACL boundary.
+    # Domain controls below still execute under the actual runtime SET ROLE pools.
+    parsed = urlparse(url)
+    await asyncio.to_thread(
+        _bootstrap_migration_prerequisites,
+        migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/")),
+        parsed.username,
+    )
 
     async def pool(schema, role=None):
         async def setup(conn):
@@ -130,6 +147,7 @@ async def env(postgres_container):
     finally:
         await approvals.on_shutdown()
         await asyncio.gather(rel.close(), switchboard.close(), admin.close())
+        _ISSUERS.clear()
 
 
 async def _person(env, *, name="Synthetic person", metadata=None):
@@ -141,18 +159,80 @@ async def _person(env, *, name="Synthetic person", metadata=None):
     )
 
 
+_ISSUERS: list[FactSourceContextRegistry] = []
+
+
+def _source_issuer(env):
+    issuer = FactSourceContextRegistry(env.sw)
+    _ISSUERS.append(issuer)
+    return issuer
+
+
 async def _report(env, entity, authority="third_party"):
-    birth = await env.admin.fetchval("SELECT created_at FROM public.entities WHERE id=$1", entity)
-    return FactWriteContext(authority, entity, birth, entity)
+    """Capture through the actual owning MCP and accepted-row producer.
+
+    A synthetic legacy handle is fixture input, not sender authentication.
+    The expected authority checks the source-derived result; it cannot supply it.
+    """
+    address = f"{entity}@example.test"
+    await env.admin.execute(
+        "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
+        "VALUES($1,'has-email',$2,'literal','legacy') ON CONFLICT DO NOTHING",
+        entity,
+        address,
+    )
+    async with _registered(env):
+        issuer = _source_issuer(env)
+        report = await issuer.capture_accepted_report(await _accepted(env, address), entity)
+    assert report.authority == authority
+    return report
 
 
 @asynccontextmanager
 async def _context(report):
-    token = admission._current_report.set(report)
+    """Online source verification precedes the direct owning-writer scope.
+
+    This uses real disposable HTTP and the production verifier. An arbitrary
+    typed report/copy cannot enter the fixture: it must be the actual object
+    captured from an issuer's durable accepted row. MCP invocation and runtime
+    guard coverage remains a separate registered-tool assertion below.
+    """
+    issuer = next(
+        (
+            source
+            for source in _ISSUERS
+            if any(value is report for value in source._reports.values())
+        ),
+        None,
+    )
+    if issuer is None:
+        if report != FactWriteContext("system"):
+            raise ValueError("test report lacks an actual accepted-source producer")
+        # Existing no-context trusted internal policy; never a caller SYSTEM flag.
+        token = admission._current_report.set(None)
+        try:
+            yield
+        finally:
+            admission._current_report.reset(token)
+        return
+    request_id = next(key for key, value in issuer._reports.items() if value is report)
+    capability = issuer.issue(request_id, "relationship")
+    source_token = admission._incoming_source.set(capability)
+    receipt_token = admission._incoming_receipt.set(None)
     try:
-        yield
+        async with _tcp(Starlette(routes=[issuer.route()])) as endpoint:
+            verified = await admission.admit_incoming_source(
+                "relationship", str(uuid.uuid4()), endpoint
+            )
+            assert verified.to_record() == report.to_record()
+            token = admission._current_report.set(verified)
+            try:
+                yield
+            finally:
+                admission._current_report.reset(token)
     finally:
-        admission._current_report.reset(token)
+        admission._incoming_receipt.reset(receipt_token)
+        admission._incoming_source.reset(source_token)
 
 
 async def _assert(env, subject, predicate, value, report, **kwargs):
@@ -168,10 +248,12 @@ async def _registered(env):
     mcp = FastMCP("relationship")
     await module.register_tools(mcp, None, SimpleNamespace(pool=env.rel), "relationship")
     app = ButlerDaemon._build_mcp_http_app(mcp, butler_name="relationship")
-    async with _tcp(app) as endpoint:
-        await register_butler(env.sw, "relationship", endpoint + "/mcp")
-        yield endpoint
-    await module.on_shutdown()
+    try:
+        async with _tcp(app) as endpoint:
+            await register_butler(env.sw, "relationship", endpoint + "/mcp")
+            yield endpoint
+    finally:
+        await module.on_shutdown()
 
 
 async def _accepted(env, sender, *, channel="email", metadata=None, text="Synthetic report"):
@@ -270,8 +352,10 @@ async def test_registered_source_resolver_and_writer_are_role_owned(env):
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await conn.fetchval("SELECT count(*) FROM relationship.entity_facts")
     async with _registered(env) as endpoint:
-        issuer = FactSourceContextRegistry(env.sw)
+        issuer = _source_issuer(env)
         accepted = await _accepted(env, address)
+        with pytest.raises(ValueError, match="sender resolution mismatch"):
+            await issuer.capture_accepted_report(accepted, subject)
         report = await issuer.capture_accepted_report(accepted, reporter)
         assert report.authority == "third_party" and report.live_entity_id == reporter
         assert (
@@ -342,6 +426,71 @@ async def test_registered_source_resolver_and_writer_are_role_owned(env):
             with pytest.raises(ValueError, match="unavailable"):
                 await issuer.verify(cap, "relationship", "incarnation", "invocation")
 
+            second_cap = issuer.issue(owner_id, "relationship")
+            await issuer.verify(second_cap, "relationship", "first-incarnation", "same-invocation")
+            with pytest.raises(ValueError, match="already claimed"):
+                await issuer.verify(
+                    second_cap, "relationship", "other-incarnation", "same-invocation"
+                )
+
+            # A fresh issuer has no old in-memory report. Recovery must obtain
+            # the actual receiver's current durable processing lease, then
+            # reuse the original source-owned frozen report and exact digest.
+            from butlers.core.route_inbox import route_inbox_claim_processing, route_inbox_insert
+
+            original_row = await env.sw.fetchrow(
+                "SELECT request_context,raw_payload,normalized_text FROM message_inbox WHERE id=$1",
+                owner_id,
+            )
+            receipt = {
+                "request_id": str(owner_id),
+                "digest": admission.accepted_source_digest(original_row),
+            }
+            local_row = await route_inbox_insert(
+                env.rel, route_envelope={"_fact_source_receipt": receipt}
+            )
+            processing_claim = await route_inbox_claim_processing(env.rel, local_row)
+            assert processing_claim is not None
+            receiver = admission.FactReceiverContextRegistry(env.rel, "relationship")
+            restarted = _source_issuer(env)
+            assert owner_id not in restarted._reports
+            receipt_token = admission._incoming_receipt.set(None)
+            try:
+                async with (
+                    _tcp(Starlette(routes=[receiver.route()])) as receiver_url,
+                    _tcp(
+                        Starlette(routes=[restarted.route(), restarted.recovery_route()])
+                    ) as source_url,
+                ):
+                    await register_butler(env.sw, "relationship", receiver_url + "/mcp")
+                    recovered = await receiver.recover_report(
+                        local_row, processing_claim, source_url
+                    )
+                    assert recovered.to_record() == owner_report.to_record()
+                    assert admission._incoming_receipt.get() == receipt
+                    with pytest.raises(httpx.HTTPStatusError):
+                        await receiver.recover_report(local_row, uuid.uuid4(), source_url)
+                    with pytest.raises(ValueError, match="unavailable"):
+                        await receiver.recover_report(local_row, processing_claim, None)
+                    await env.sw.execute(
+                        "UPDATE message_inbox SET normalized_text='Changed synthetic content' WHERE id=$1",
+                        owner_id,
+                    )
+                    with pytest.raises(httpx.HTTPStatusError):
+                        await receiver.recover_report(local_row, processing_claim, source_url)
+                    await env.sw.execute(
+                        "UPDATE message_inbox SET normalized_text=$2 WHERE id=$1",
+                        owner_id,
+                        original_row["normalized_text"],
+                    )
+                    restored = await receiver.recover_report(
+                        local_row, processing_claim, source_url
+                    )
+                    assert restored.to_record() == owner_report.to_record()
+            finally:
+                admission._incoming_receipt.reset(receipt_token)
+                await register_butler(env.sw, "relationship", endpoint + "/mcp")
+
         finally:
             admission.settle_invocation(invocation)
             admission._pipeline_source.reset(source_token)
@@ -378,6 +527,18 @@ async def test_caller_verified_and_context_copy_cannot_mint_owner_report(env):
         is True
     )
     report = await _report(env, await _person(env))
+    # A copied typed value is not the source-owned private producer object.
+    with pytest.raises(ValueError, match="actual accepted-source producer"):
+        async with _context(FactWriteContext.from_record(report.to_record())):
+            await relationship_assert_fact(
+                env.rel, subject, "has-email", "copied-context@example.test", src="relationship"
+            )
+    assert (
+        await env.admin.fetchval(
+            "SELECT count(*) FROM relationship.entity_facts WHERE object='copied-context@example.test'"
+        )
+        == 0
+    )
     corrected = await _assert(
         env, subject, "has-email", "new-unverified@example.test", report, verified=True, conf=0.99
     )
@@ -411,7 +572,7 @@ async def test_caller_verified_and_context_copy_cannot_mint_owner_report(env):
     )
 
 
-async def test_protected_adoption_rejection_and_unknown_ack_readback(env):
+async def test_protected_adoption_rejection_and_unknown_ack_readback(env, monkeypatch):
     subject, reporter = await _person(env), await _person(env)
     report = await _report(env, reporter)
     adopt = await _assert(env, subject, "has-email", "adopted@example.test", report)
@@ -431,6 +592,41 @@ async def test_protected_adoption_rejection_and_unknown_ack_readback(env):
             headers=headers,
         )
         assert rejection.status_code == 200
+        unknown = await _assert(env, subject, "has-email", "unknown-ack@example.test", report)
+        unknown_path = f"/api/relationship/entities/{subject}/identity-facts/{unknown.fact_id}"
+        actual_transport = client._transport.handle_async_request
+
+        async def lose_only_completed_ack(request):
+            response = await actual_transport(request)
+            if request.url.path == unknown_path + "/adopt":
+                assert response.status_code == 200
+                raise httpx.ReadError("synthetic response loss after actual committed mutation")
+            return response
+
+        with monkeypatch.context() as patch:
+            patch.setattr(client._transport, "handle_async_request", lose_only_completed_ack)
+            with pytest.raises(httpx.ReadError, match="response loss"):
+                await client.post(unknown_path + "/adopt", headers=headers)
+        # Unknown ACK is resolved through the protected durable readback door,
+        # not guessed from the response loss or a duplicate domain operation.
+        unknown_receipt = await client.get(unknown_path + "/decision", headers=headers)
+        assert unknown_receipt.status_code == 200
+        assert unknown_receipt.json()["decision"] == "adopt"
+        assert (await client.post(unknown_path + "/adopt", headers=headers)).json()["replayed"]
+        async with env.admin.acquire() as independent_readback:
+            assert (
+                await independent_readback.fetchval(
+                    "SELECT count(*) FROM relationship.fact_identity_decisions WHERE fact_id=$1",
+                    unknown.fact_id,
+                )
+                == 1
+            )
+            assert (
+                await independent_readback.fetchval(
+                    "SELECT validity FROM relationship.entity_facts WHERE id=$1", unknown.fact_id
+                )
+                == "active"
+            )
         assert (
             await client.get(
                 f"/api/relationship/entities/{subject}/identity-candidates", headers=headers
@@ -500,7 +696,7 @@ async def test_report_versions_birth_witness_and_author_deletion(env):
     subject, first, second = await _person(env), await _person(env), await _person(env)
     # Capture both birth witnesses on the actual accepted-source producer.
     async with _registered(env):
-        issuer = FactSourceContextRegistry(env.sw)
+        issuer = _source_issuer(env)
         for entity in (first, second):
             await env.admin.execute(
                 "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
@@ -559,7 +755,7 @@ async def test_report_versions_birth_witness_and_author_deletion(env):
             delete_first,
             f"{delete_first}@example.test",
         )
-        issuer = FactSourceContextRegistry(env.sw)
+        issuer = _source_issuer(env)
         old_source = await issuer.capture_accepted_report(
             await _accepted(env, f"{delete_first}@example.test"), delete_first
         )
@@ -677,7 +873,7 @@ async def test_family_gate_and_stored_gap_authority(env):
     assert owner_positive.fact_id and owner_positive.outcome is not AssertOutcome.pending_approval
 
 
-async def test_approval_replay_original_args_and_legacy_normalization(env):
+async def test_approval_replay_original_args_and_legacy_normalization(env, monkeypatch):
     from butlers.modules.approvals.executor import execute_approved_action
 
     subject = await _person(env)
@@ -758,6 +954,193 @@ async def test_approval_replay_original_args_and_legacy_normalization(env):
         == "executed"
     )
 
+    # Owner confirmation admits this exact identity assertion. The original
+    # reporter remains third-party; confirmation makes its handle eligible.
+    assert row["validity"] == "active"
+    assert (
+        await resolve_contact_by_channel(env.rel, "email", args["object"])
+    ).entity_id == env.owner
+
+    from butlers.config import DEFAULT_APPROVAL_RULE_PRECEDENCE, ApprovalRiskTier
+    from butlers.modules.approvals.gate import _make_gate_wrapper
+    from butlers.modules.approvals.operations import create_approval_rule
+    from butlers.tools.relationship.fact_authority import admitted_rule_report
+
+    rule_args = {
+        "subject": str(subject),
+        "predicate": "has-email",
+        "object": f"standing-{subject}@example.test",
+        "object_kind": "literal",
+    }
+    constraints = {key: {"type": "exact", "value": value} for key, value in rule_args.items()}
+    # The actual protected creation request supplies owner admission. Actor
+    # spelling on an ordinary rule cannot supply that private lineage.
+    async with _owner_app(env) as (client, _service, headers):
+
+        @client._transport.app.post("/api/test-rule")
+        async def create_rule():
+            return await create_approval_rule(
+                env.rel, "relationship_assert_fact", constraints, "Synthetic bounded permission"
+            )
+
+        assert (await client.post("/api/test-rule")).status_code == 401
+        created = await client.post("/api/test-rule", headers=headers)
+        assert created.status_code == 200 and "error" not in created.json()
+        rule_id = uuid.UUID(created.json()["id"])
+    assert (await admitted_rule_report(env.rel, rule_id)).owner_class
+    gate = _make_gate_wrapper(
+        "relationship_assert_fact",
+        handler,
+        env.rel,
+        48,
+        ApprovalRiskTier.MEDIUM,
+        DEFAULT_APPROVAL_RULE_PRECEDENCE,
+        butler_name="relationship",
+    )
+    async with _context(report):
+        automatic = await asyncio.wait_for(
+            gate(**rule_args, why="Synthetic exact standing permission", evidence=[]), 5
+        )
+    assert "error" not in automatic and automatic["outcome"] == "inserted"
+    async with env.admin.acquire() as separate_readback:
+        automatic_row = await separate_readback.fetchrow(
+            "SELECT * FROM relationship.entity_facts WHERE id=$1", uuid.UUID(automatic["fact_id"])
+        )
+        assert automatic_row["validity"] == "active" and automatic_row["verified"]
+        assert automatic_row["content_authority"] == "third_party"
+        assert automatic_row["authority_original_entity_id"] == report.original_entity_id
+        assert automatic_row["confirmed_by_original_entity_id"] == env.owner
+        assert automatic_row["confirmation_source"] == "standing_rule"
+        assert (
+            await separate_readback.fetchval(
+                "SELECT use_count FROM relationship.approval_rules WHERE id=$1", rule_id
+            )
+            == 1
+        )
+        assert (
+            await separate_readback.fetchval(
+                "SELECT count(*) FROM relationship.approval_events e "
+                "JOIN relationship.pending_actions a ON a.id=e.action_id "
+                "WHERE e.event_type='action_auto_approved' AND e.rule_id=$1 "
+                "AND a.approval_rule_id=$1 AND a.status='executed'",
+                rule_id,
+            )
+            == 1
+        )
+    assert (
+        await resolve_contact_by_channel(env.rel, "email", rule_args["object"])
+    ).entity_id == subject
+
+    creation_event = await env.rel.fetchval(
+        "SELECT creation_event_id FROM fact_approval_rule_context WHERE rule_id=$1", rule_id
+    )
+    # A planted wrong creation-event selector neutralizes the new lineage
+    # predicate. It cannot become owner permission merely from a copied rule ID.
+    await env.rel.execute(
+        "UPDATE fact_approval_rule_context SET creation_event_id=$2 WHERE rule_id=$1",
+        rule_id,
+        str(uuid.uuid4()),
+    )
+    assert await admitted_rule_report(env.rel, rule_id) is None
+    await env.rel.execute(
+        "UPDATE fact_approval_rule_context SET creation_event_id=$2 WHERE rule_id=$1",
+        rule_id,
+        creation_event,
+    )
+    assert (await admitted_rule_report(env.rel, rule_id)).owner_class
+
+    forged_args = rule_args | {"object": f"forged-rule-{subject}@example.test"}
+    forged = await create_approval_rule(
+        env.rel,
+        "relationship_assert_fact",
+        {key: {"type": "exact", "value": value} for key, value in forged_args.items()},
+        "Synthetic caller actor is not admission",
+        actor_id="owner",
+    )
+    assert await admitted_rule_report(env.rel, uuid.UUID(forged["id"])) is None
+    async with _context(report):
+        waiting = await gate(**forged_args, why="Synthetic unadmitted permission", evidence=[])
+    assert waiting["status"] == "pending_approval"
+    assert (
+        await env.admin.fetchval(
+            "SELECT count(*) FROM relationship.entity_facts WHERE object=$1", forged_args["object"]
+        )
+        == 0
+    )
+
+    # Fact COMMIT and terminal approval acknowledgement are separate. Inject a
+    # transport failure only at the latter's write after the real fact handler
+    # has returned; no SQL query or writer result is mocked.
+    from butlers.modules.approvals import executor
+
+    uncertain_action = await _assert(
+        env,
+        env.owner,
+        "has-email",
+        f"uncertain-{subject}@example.test",
+        report,
+        why="Synthetic approval acknowledgement control",
+    )
+    assert uncertain_action.action_id
+    async with _owner_app(env) as (client, _service, headers):
+
+        @client._transport.app.post("/api/test-approve-uncertain")
+        async def approve_uncertain():
+            return await approve_action(env.rel, str(uncertain_action.action_id))
+
+        approved = await client.post("/api/test-approve-uncertain", headers=headers)
+        assert approved.status_code == 200 and "error" not in approved.json()
+    uncertain_args = await env.rel.fetchval(
+        "SELECT tool_args FROM pending_actions WHERE id=$1", uncertain_action.action_id
+    )
+    original_transaction = executor._approval_write_transaction
+
+    @asynccontextmanager
+    async def lose_terminal_ack(pool):
+        async with original_transaction(pool) as actual_connection:
+
+            class AckLoss:
+                def __getattr__(self, name):
+                    return getattr(actual_connection, name)
+
+                async def execute(self, query, *values):
+                    if query.startswith("UPDATE pending_actions SET status = $1, execution_result"):
+                        raise ConnectionError("planted terminal acknowledgement interruption")
+                    return await actual_connection.execute(query, *values)
+
+            yield AckLoss()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(executor, "_approval_write_transaction", lose_terminal_ack)
+        uncertain = await execute_approved_action(
+            env.rel, uncertain_action.action_id, "relationship_assert_fact", uncertain_args, handler
+        )
+    assert not uncertain.success and uncertain.result["outcome"] == "unknown"
+    uncertain_fact = uuid.UUID(uncertain.result["fact_id"])
+    async with env.admin.acquire() as separate_readback:
+        assert (
+            await separate_readback.fetchval(
+                "SELECT validity FROM relationship.entity_facts WHERE id=$1", uncertain_fact
+            )
+            == "active"
+        )
+        pending = await separate_readback.fetchrow(
+            "SELECT status,execution_result FROM relationship.pending_actions WHERE id=$1",
+            uncertain_action.action_id,
+        )
+        assert pending["status"] == "approved" and pending["execution_result"] is None
+    acknowledged = await execute_approved_action(
+        env.rel, uncertain_action.action_id, "relationship_assert_fact", uncertain_args, handler
+    )
+    assert acknowledged.success and uuid.UUID(acknowledged.result["fact_id"]) == uncertain_fact
+    assert (
+        await env.admin.fetchval(
+            "SELECT count(*) FROM relationship.entity_facts WHERE object=$1",
+            uncertain_args["object"],
+        )
+        == 1
+    )
+
 
 async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env):
     reporter = await _person(env)
@@ -786,6 +1169,85 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
         "SELECT validity FROM relationship.entity_facts WHERE object=$1", handle
     )
     assert sorted(row["validity"] for row in rows) == ["active", "candidate"]
+    # The adopted core233 phone fallback treats these spellings as one
+    # identity. Two real transactions on different subjects must serialize
+    # that bounded suffix universe rather than adopting an ambiguous pair.
+    phone_left, phone_right = await _person(env), await _person(env)
+    phone_a = await _assert(env, phone_left, "has-phone", "+12025550123", report)
+    phone_b = await _assert(env, phone_right, "has-phone", "+2025550123", report)
+    async with env.rel.acquire() as holding, env.rel.acquire() as competing:
+        held = holding.transaction()
+        await held.start()
+        blocked_phone = None
+        try:
+            async with _context(owner):
+                phone_adopted = await decide_identity_fact(
+                    holding, entity_id=phone_left, fact_id=phone_a.fact_id, decision="adopt"
+                )
+            assert phone_adopted["decision"] == "adopt"
+            competing_pid = await competing.fetchval("SELECT pg_backend_pid()")
+
+            async def competing_phone_adoption():
+                async with _context(owner), competing.transaction():
+                    return await decide_identity_fact(
+                        competing,
+                        entity_id=phone_right,
+                        fact_id=phone_b.fact_id,
+                        decision="adopt",
+                    )
+
+            blocked_phone = asyncio.create_task(competing_phone_adoption())
+            # Equal-spelling keys would let the suffix-alias adopter commit
+            # against a snapshot without the uncommitted first phone. The
+            # actual backend must wait before it can inspect that slot.
+            await _wait_for_lock(env.admin, competing_pid)
+            await held.commit()
+            with pytest.raises(IdentityDecisionConflict):
+                await asyncio.wait_for(blocked_phone, 5)
+        finally:
+            if holding.is_in_transaction():
+                await held.rollback()
+            if blocked_phone is not None:
+                if not blocked_phone.done():
+                    blocked_phone.cancel()
+                await asyncio.gather(blocked_phone, return_exceptions=True)
+    async with env.admin.acquire() as separate_phone_readback:
+        assert sorted(
+            row["validity"]
+            for row in await separate_phone_readback.fetch(
+                "SELECT validity FROM relationship.entity_facts WHERE id=ANY($1::uuid[])",
+                [phone_a.fact_id, phone_b.fact_id],
+            )
+        ) == ["active", "candidate"]
+    resolved_phone = await resolve_contact_by_channel(
+        env.rel, "whatsapp_jid", "12025550123@s.whatsapp.net"
+    )
+    assert resolved_phone is not None
+    assert resolved_phone.entity_id == phone_left
+    # Preference is single-valued per subject, not a shared recipient slot.
+    # Both reachable people may independently adopt their email preference.
+    preferences = []
+    for entity in (phone_left, phone_right):
+        reachable = await _assert(
+            env, entity, "has-email", f"preferred-{entity}@example.test", owner
+        )
+        async with _context(report):
+            preference = await assert_prefers_channel(env.rel, entity, "email")
+        assert reachable.fact_id != preference.fact_id
+        preferences.append((entity, preference.fact_id))
+    preference_results = await asyncio.wait_for(
+        asyncio.gather(*(choose(entity, fact) for entity, fact in preferences)), 5
+    )
+    assert all(result["decision"] == "adopt" for result in preference_results)
+    async with env.admin.acquire() as separate_preference_readback:
+        assert (
+            await separate_preference_readback.fetchval(
+                "SELECT count(*) FROM relationship.entity_facts "
+                "WHERE id=ANY($1::uuid[]) AND predicate='prefers-channel' AND validity='active'",
+                [fact for _entity, fact in preferences],
+            )
+            == 2
+        )
     # A failed outer domain transaction leaves candidate, effects and receipt
     # untouched. The positive after rollback commits and is separately readable.
     extra = await _assert(env, left, "has-email", f"rollback-{left}@example.test", report)
@@ -810,6 +1272,33 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
     )
     await choose(left, extra.fact_id)
 
+    contested = await _assert(env, left, "has-email", f"decision-{left}@example.test", report)
+    async with _owner_app(env) as (client, _service, headers):
+        path = f"/api/relationship/entities/{left}/identity-facts/{contested.fact_id}"
+        replies = await asyncio.wait_for(
+            asyncio.gather(
+                client.post(path + "/adopt", headers=headers),
+                client.post(path + "/reject", headers=headers),
+            ),
+            5,
+        )
+        assert sorted(reply.status_code for reply in replies) == [200, 409]
+        receipt = await client.get(path + "/decision", headers=headers)
+        assert receipt.status_code == 200
+        chosen = receipt.json()["decision"]
+        assert chosen in {"adopt", "reject"}
+    async with env.admin.acquire() as independent_readback:
+        assert await independent_readback.fetchval(
+            "SELECT validity FROM relationship.entity_facts WHERE id=$1", contested.fact_id
+        ) == ("active" if chosen == "adopt" else "retracted")
+        assert (
+            await independent_readback.fetchval(
+                "SELECT count(*) FROM relationship.fact_identity_decisions WHERE fact_id=$1",
+                contested.fact_id,
+            )
+            == 1
+        )
+
     from butlers.tools.relationship.entity_merge import merge_entity_pair
 
     source, target = await _person(env), await _person(env)
@@ -823,6 +1312,52 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
     assert moved["subject"] == target and moved["validity"] == "candidate"
     assert moved["authority_original_entity_id"] == reporter
     assert await resolve_contact_by_channel(env.rel, "email", moved["object"]) is None
+    # Merge wins its actual row locks before a stale exact-row adoption starts.
+    # The adopter must recheck after waiting, not silently retarget its command.
+    racing_source, racing_target = await _person(env), await _person(env)
+    racing = await _assert(
+        env, racing_source, "has-email", f"merge-race-{racing_source}@example.test", report
+    )
+    async with env.rel.acquire() as merging, env.rel.acquire() as adopting:
+        transaction = merging.transaction()
+        await transaction.start()
+
+        @asynccontextmanager
+        async def merge_connection():
+            yield merging
+
+        await merge_entity_pair(
+            SimpleNamespace(acquire=merge_connection),
+            source_entity_id=racing_source,
+            target_entity_id=racing_target,
+            target_schemas=(),
+        )
+        pid = await adopting.fetchval("SELECT pg_backend_pid()")
+
+        async def stale_adoption():
+            async with _context(owner), adopting.transaction():
+                return await decide_identity_fact(
+                    adopting, entity_id=racing_source, fact_id=racing.fact_id, decision="adopt"
+                )
+
+        delayed = asyncio.create_task(stale_adoption())
+        await _wait_for_lock(env.admin, pid)
+        await transaction.commit()
+        with pytest.raises(IdentityDecisionConflict):
+            await asyncio.wait_for(delayed, 5)
+    assert (
+        await env.admin.fetchval(
+            "SELECT count(*) FROM relationship.fact_identity_decisions WHERE fact_id=$1",
+            racing.fact_id,
+        )
+        == 0
+    )
+    await choose(racing_target, racing.fact_id)
+    assert (
+        await resolve_contact_by_channel(
+            env.rel, "email", f"merge-race-{racing_source}@example.test"
+        )
+    ).entity_id == racing_target
     assert (
         await env.admin.fetchval(
             "SELECT validity FROM relationship.entity_facts WHERE id=$1", extra.fact_id
@@ -849,7 +1384,16 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
     ]
     for account, delete in accounts:
         report = await _report(env, account.entity_id)
-        surviving = await _assert(env, subject, "has-email", f"{account.id}@example.test", report)
+        evidence = [
+            {
+                "type": "url",
+                "ref": "https://example.test/synthetic-cleanup",
+                "note": "Synthetic reference",
+            }
+        ]
+        surviving = await _assert(
+            env, subject, "has-email", f"{account.id}@example.test", report, evidence=evidence
+        )
         attached = await _assert(
             env,
             account.entity_id,
@@ -857,6 +1401,7 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
             str(subject),
             FactWriteContext("system"),
             object_kind="entity",
+            evidence=evidence,
         )
         subject_old = await _assert(
             env, account.entity_id, "knows", str(subject), report, object_kind="entity"
@@ -868,11 +1413,74 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
             str(account.entity_id),
             FactWriteContext("system"),
             object_kind="entity",
+            evidence=evidence,
         )
         object_new = await _assert(
             env, subject, "knows", str(account.entity_id), report, object_kind="entity"
         )
         assert object_old.fact_id != object_new.fact_id
+        before_survivor = dict(
+            await env.admin.fetchrow(
+                "SELECT * FROM relationship.entity_facts WHERE id=$1", surviving.fact_id
+            )
+        )
+        victims = [attached.fact_id, subject_old.fact_id, object_old.fact_id, object_new.fact_id]
+        before_evidence = [
+            dict(row)
+            for row in await env.admin.fetch(
+                "SELECT * FROM relationship.fact_evidence WHERE fact_id=$1 ORDER BY id",
+                surviving.fact_id,
+            )
+        ]
+        assert before_evidence
+        assert (
+            await env.admin.fetchval(
+                "SELECT count(*) FROM relationship.fact_evidence WHERE fact_id=ANY($1::uuid[])",
+                victims,
+            )
+            >= 4
+        )
+        assert (
+            await env.admin.fetchval(
+                "SELECT count(*) FROM public.entity_graph_edges WHERE source_id=ANY($1::uuid[])",
+                victims,
+            )
+            == 2
+        )
+        # The production cleanup executes against one genuine acquired
+        # connection; its nested transaction is a savepoint. A planted outer
+        # rollback must restore both destructive cascades and nullable author.
+        async with env.admin.acquire() as connection:
+
+            @asynccontextmanager
+            async def held_connection():
+                yield connection
+
+            with pytest.raises(RuntimeError, match="planted cleanup rollback"):
+                async with connection.transaction():
+                    await delete(
+                        SimpleNamespace(acquire=held_connection), account.id, hard_delete=True
+                    )
+                    raise RuntimeError("planted cleanup rollback")
+        async with env.admin.acquire() as rollback_readback:
+            assert (
+                await rollback_readback.fetchval(
+                    "SELECT count(*) FROM relationship.entity_facts WHERE id=ANY($1::uuid[])",
+                    victims,
+                )
+                == 4
+            )
+            assert (
+                dict(
+                    await rollback_readback.fetchrow(
+                        "SELECT * FROM relationship.entity_facts WHERE id=$1", surviving.fact_id
+                    )
+                )
+                == before_survivor
+            )
+            assert await rollback_readback.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM public.entities WHERE id=$1)", account.entity_id
+            )
         await delete(env.admin, account.id, hard_delete=True)
         assert (
             await env.admin.fetchval(
@@ -909,6 +1517,32 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
             and row["authority_original_entity_id"] == account.entity_id
         )
         assert row["content_authority"] == "third_party" and row["validity"] == "candidate"
+        assert dict(row) == before_survivor | {"authority_entity_id": None}
+        assert [
+            dict(item)
+            for item in await env.admin.fetch(
+                "SELECT * FROM relationship.fact_evidence WHERE fact_id=$1 ORDER BY id",
+                surviving.fact_id,
+            )
+        ] == before_evidence
+        assert (
+            await env.admin.fetchval(
+                "SELECT count(*) FROM public.entity_graph_edges WHERE source_id=ANY($1::uuid[])",
+                victims,
+            )
+            == 0
+        )
+
+    # A companion with no Relationship references remains ordinarily deletable.
+    spare_google = await create_google_account(env.admin, email=f"spare-{subject}@example.test")
+    spare_steam = await create_steam_account(
+        env.admin, steam_id=76561198100000000 + subject.int % 100000
+    )
+    for spare, delete in ((spare_google, google_delete), (spare_steam, steam_delete)):
+        await delete(env.admin, spare.id, hard_delete=True)
+        assert not await env.admin.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM public.entities WHERE id=$1)", spare.entity_id
+        )
 
 
 async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_container):
@@ -1010,6 +1644,110 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         == original
     )
     await core.close()
+
+    from butlers.api.conversation_envelope import build_dashboard_envelope
+    from butlers.api.routers.conversations import _submit_to_switchboard
+
+    # Real protected API writers stamp the exact content before transport.
+    # This acceptance adapter stores synthetic local ingress; it does not
+    # authenticate an external transport or replace the source verifier.
+    live_conversation, live_message = uuid.uuid4(), uuid.uuid4()
+    await env.admin.execute(
+        "INSERT INTO public.dashboard_conversations(id,butler_name) VALUES($1,'relationship')",
+        live_conversation,
+    )
+    captured_envelopes = []
+
+    class AcceptedLocalIngress:
+        async def call_tool(self, name, envelope):
+            assert name == "ingest"
+            captured_envelopes.append(envelope)
+            accepted = await _accepted(
+                env,
+                envelope["sender"]["identity"],
+                channel="dashboard",
+                metadata=envelope["payload"]["raw"],
+                text=envelope["payload"]["normalized_text"],
+            )
+            return SimpleNamespace(
+                is_error=False,
+                content=[SimpleNamespace(text='{"request_id":"' + str(accepted) + '"}')],
+            )
+
+    async def local_client(name):
+        assert name == "switchboard"
+        return AcceptedLocalIngress()
+
+    async with _owner_app(env) as (client, _service, headers):
+
+        @client._transport.app.post("/api/test-dashboard-submit")
+        async def submit_dashboard():
+            durable, inserted = await _persist_dashboard_user_message(
+                env.admin,
+                conversation_id=live_conversation,
+                message="Synthetic admitted owner content",
+                message_id=live_message,
+            )
+            assert inserted
+            envelope = build_dashboard_envelope(
+                conversation_id=live_conversation,
+                message_id=live_message,
+                message_text=durable["content"],
+                conversation_context=[{"role": "assistant", "content": "Synthetic prior context"}],
+            )
+            return await _submit_to_switchboard(
+                "relationship",
+                envelope,
+                mcp_mgr=SimpleNamespace(get_client=local_client),
+                owner_source_pool=env.admin,
+            )
+
+        assert (await client.post("/api/test-dashboard-submit")).status_code == 401
+        received = await client.post("/api/test-dashboard-submit", headers=headers)
+        assert received.status_code == 200
+    issuer = _source_issuer(env)
+    accepted_id = uuid.UUID(received.json()["request_id"])
+    device = await issuer.capture_accepted_report(accepted_id, None)
+    assert device.authority == "owner_device" and device.original_entity_id == env.owner
+    # Capture/recovery does not upgrade an old unstamped row or a locator whose
+    # actual text differs. Both companions are durably planted before reading.
+    envelope = captured_envelopes[0]
+    wrong_text = await _accepted(
+        env,
+        envelope["sender"]["identity"],
+        channel="dashboard",
+        metadata=envelope["payload"]["raw"] | {"message": "Different synthetic content"},
+        text=envelope["payload"]["normalized_text"],
+    )
+    assert (await issuer.capture_accepted_report(wrong_text, None)).authority == "third_party"
+    unstamped = uuid.uuid4()
+    await env.admin.execute(
+        "INSERT INTO public.dashboard_messages(id,conversation_id,role,content) "
+        "VALUES($1,$2,'user','Synthetic unadmitted row')",
+        unstamped,
+        live_conversation,
+    )
+    legacy_id = await _accepted(
+        env,
+        "dashboard:operator",
+        channel="dashboard",
+        metadata={"message_id": str(unstamped), "message": "Synthetic unadmitted row"},
+        text="Synthetic unadmitted row",
+    )
+    legacy_report = await issuer.capture_accepted_report(legacy_id, None)
+    assert legacy_report.authority == "third_party" and legacy_report.original_entity_id is None
+    written = await _assert(
+        env, await _person(env), "has-email", "dashboard-owner@example.test", device
+    )
+    async with env.admin.acquire() as readback:
+        actual = await readback.fetchrow(
+            "SELECT * FROM relationship.entity_facts WHERE id=$1", written.fact_id
+        )
+        assert actual["content_authority"] == "owner_device" and actual["verified"]
+        assert actual["authority_original_entity_id"] == env.owner
+        assert actual["validity"] == "active"
+    recovered = await _source_issuer(env).capture_accepted_report(accepted_id, None)
+    assert recovered.to_record() == device.to_record()
     # Classified data makes downgrade refusal causal, not an empty-store test.
     migration = (
         Path(__file__).resolve().parents[2]

@@ -186,22 +186,16 @@ async def _lock_candidate_reports(conn: asyncpg.Connection, source: UUID, target
     The caller owns both entity rows. Duplicate default/occurrence reports keep
     the target row and preserve the losing original as superseded history.
     """
-    from butlers.tools.relationship.identity_slots import (
-        identity_slot_key,
-        lock_identity_slot,
-    )
+    from butlers.tools.relationship.identity_slots import lock_identity_slots
 
     rows = await conn.fetch(
-        "SELECT predicate,object FROM relationship.entity_facts "
+        "SELECT subject,predicate,object FROM relationship.entity_facts "
         "WHERE subject=ANY($1::uuid[]) AND validity='candidate' ORDER BY id",
         [source, target],
     )
-    slots = {
-        identity_slot_key(row["predicate"], row["object"]): (row["predicate"], row["object"])
-        for row in rows
-    }
-    for key in sorted(slots):
-        await lock_identity_slot(conn, *slots[key])
+    await lock_identity_slots(
+        conn, ((row["predicate"], row["object"], row["subject"]) for row in rows)
+    )
     await conn.fetch(
         "SELECT id FROM relationship.entity_facts WHERE subject=ANY($1::uuid[]) "
         "AND validity='candidate' ORDER BY id FOR UPDATE",

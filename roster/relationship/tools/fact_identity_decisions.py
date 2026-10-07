@@ -25,6 +25,10 @@ class IdentityDecisionConflict(ValueError):
 
 async def _has_other_live_identity(conn: Any, row: Any) -> bool:
     predicate, value = row["predicate"], row["object"]
+    if predicate == "prefers-channel":
+        # A preferred channel belongs to one subject, not a shared recipient
+        # identity. Another person's email preference is not a collision.
+        return False
     if predicate == "has-phone":
         digits = "".join(c for c in value if c.isdigit())
         return bool(
@@ -89,7 +93,7 @@ async def decide_identity_fact(
     )
     # Entity locks precede identity-slot locks across writer and decision paths,
     # including callers that already own merge/lifecycle entity locks.
-    await lock_identity_slot(conn, initial["predicate"], initial["object"])
+    await lock_identity_slot(conn, initial["predicate"], initial["object"], entity_id)
     row = await conn.fetchrow(
         f"SELECT *, {PACKET_COLUMNS} FROM relationship.entity_facts WHERE id=$1 FOR UPDATE", fact_id
     )
