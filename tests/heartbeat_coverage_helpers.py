@@ -635,28 +635,100 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
             )
         await heartbeat(runtime, _payload("restored-positive"))
 
-        # Trigger functions copied onto a runtime-created lookalike cannot
-        # mint server evidence; canonical owner/definition and TG_RELID differ.
+        # Runtime cannot create TEMP material under the canonical database
+        # grants. The existing fixture owner prepares ONE same-session object;
+        # its narrow relation ACL is disposable setup, never a runtime grant.
+        # Copied trigger functions still cannot mint canonical server evidence.
         async with runtime.acquire() as connection:
-            await connection.execute(
-                "CREATE TEMP TABLE coverage_lookalike "
-                "(LIKE switchboard.connector_heartbeat_log INCLUDING DEFAULTS)"
-            )
-            await connection.execute(
-                "CREATE TRIGGER lookalike BEFORE INSERT ON coverage_lookalike "
-                "FOR EACH ROW EXECUTE FUNCTION switchboard.stamp_heartbeat_history_row()"
+            backend_pid = await connection.fetchval("SELECT pg_backend_pid()")
+            assert not await connection.fetchval(
+                "SELECT has_database_privilege(current_user,current_database(),'TEMP')"
             )
             try:
                 await connection.execute(
-                    "INSERT INTO coverage_lookalike (connector_type, "
-                    "endpoint_identity,state,received_at) VALUES ('telegram_bot','lookalike','healthy',clock_timestamp())"
+                    "CREATE TEMP TABLE coverage_lookalike "
+                    "(LIKE switchboard.connector_heartbeat_log INCLUDING DEFAULTS)"
                 )
-            except asyncpg.InsufficientPrivilegeError:
-                pass
+            except asyncpg.InsufficientPrivilegeError as denied:
+                assert denied.sqlstate == "42501"
             else:
-                raise AssertionError("lookalike trigger context minted a receipt")
-            assert await connection.fetchval("SELECT count(*) FROM coverage_lookalike") == 0
-            await connection.execute("DROP TABLE coverage_lookalike")
+                raise AssertionError("runtime created TEMP material without database permission")
+            assert (
+                await connection.fetchval("SELECT to_regclass('pg_temp.coverage_lookalike')")
+                is None
+            )
+            await _setup_admin(connection)
+            try:
+                await connection.execute(
+                    "CREATE TEMP TABLE coverage_lookalike "
+                    "(LIKE switchboard.connector_heartbeat_log INCLUDING DEFAULTS)"
+                )
+                assert await connection.fetchval(
+                    "SELECT relpersistence='t' AND relnamespace=pg_my_temp_schema() "
+                    "AND relowner=(SELECT oid FROM pg_roles WHERE rolname=session_user) "
+                    "FROM pg_class WHERE oid='pg_temp.coverage_lookalike'::regclass"
+                )
+                await connection.execute(
+                    "GRANT SELECT, INSERT, TRIGGER ON pg_temp.coverage_lookalike "
+                    'TO "butler_switchboard_rw"'
+                )
+                await _setup_runtime(connection)
+                assert await connection.fetchval("SELECT pg_backend_pid()") == backend_pid
+                assert not await connection.fetchval(
+                    "SELECT has_database_privilege(current_user,current_database(),'TEMP')"
+                )
+                assert await connection.fetchval(
+                    "SELECT has_table_privilege(current_user,'pg_temp.coverage_lookalike', "
+                    "'SELECT') AND has_table_privilege(current_user, "
+                    "'pg_temp.coverage_lookalike','INSERT') AND has_table_privilege(current_user, "
+                    "'pg_temp.coverage_lookalike','TRIGGER') AND NOT has_table_privilege("
+                    "current_user,'pg_temp.coverage_lookalike','UPDATE,DELETE,TRUNCATE,REFERENCES') "
+                    "AND NOT pg_has_role(current_user, "
+                    "(SELECT relowner FROM pg_class "
+                    "WHERE oid='pg_temp.coverage_lookalike'::regclass),'MEMBER')"
+                )
+                await connection.execute(
+                    "CREATE TRIGGER lookalike BEFORE INSERT ON coverage_lookalike "
+                    "FOR EACH ROW EXECUTE FUNCTION switchboard.stamp_heartbeat_history_row()"
+                )
+                try:
+                    await connection.execute(
+                        "INSERT INTO coverage_lookalike (connector_type, "
+                        "endpoint_identity,state,received_at) VALUES ('telegram_bot','lookalike','healthy',clock_timestamp())"
+                    )
+                except asyncpg.InsufficientPrivilegeError as refused:
+                    assert refused.sqlstate == "42501"
+                else:
+                    raise AssertionError("lookalike trigger context minted a receipt")
+                assert await connection.fetchval("SELECT count(*) FROM coverage_lookalike") == 0
+            finally:
+                await _setup_admin(connection)
+                try:
+                    if await connection.fetchval(
+                        "SELECT to_regclass('pg_temp.coverage_lookalike')"
+                    ):
+                        await connection.execute("DROP TABLE coverage_lookalike")
+                finally:
+                    await _setup_runtime(connection)
+            assert await connection.fetchval("SELECT pg_backend_pid()") == backend_pid
+            assert (
+                await connection.fetchval("SELECT to_regclass('pg_temp.coverage_lookalike')")
+                is None
+            )
+        lookalike_ack = await heartbeat(runtime, _payload("lookalike-restored-positive"))
+        lookalike_row = await admin.fetchrow(
+            "SELECT r.last_heartbeat_at,r.heartbeat_history_coverage,l.received_at "
+            "FROM connector_registry r JOIN connector_heartbeat_log l "
+            "USING(connector_type,endpoint_identity) "
+            "WHERE r.endpoint_identity='lookalike-restored-positive'"
+        )
+        assert lookalike_ack.status == "accepted"
+        assert lookalike_row["heartbeat_history_coverage"]["version"] == 1
+        assert (
+            lookalike_ack.server_time
+            == lookalike_row["last_heartbeat_at"].isoformat()
+            == lookalike_row["received_at"].isoformat()
+        )
         assert not await runtime.fetchval(
             "SELECT has_table_privilege(current_user, "
             "'switchboard.connector_heartbeat_log', 'TRUNCATE')"
