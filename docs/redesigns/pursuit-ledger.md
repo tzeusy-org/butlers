@@ -10,17 +10,17 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 
 | Run | Date | Ranked moves | Epic | Dossier |
 |---|---|---|---|---|
-| 01 (audit) | 2026-07-03 | 14 |: | [2026-07-03-jarvis-audit.md](2026-07-03-jarvis-audit.md) |
-| 02 | 2026-07-04 | 15 |: | [2026-07-04-jarvis-pursuit.md](2026-07-04-jarvis-pursuit.md) |
-| 03 | 2026-07-10 | 15 |: | [2026-07-10-jarvis-pursuit.md](2026-07-10-jarvis-pursuit.md) |
-| 04 | 2026-07-12 | 15 |: | [2026-07-12-jarvis-pursuit.md](2026-07-12-jarvis-pursuit.md) |
+| 01 (audit) | 2026-07-03 | 14 | bu-86c4c | [2026-07-03-jarvis-audit.md](2026-07-03-jarvis-audit.md) |
+| 02 | 2026-07-04 | 15 | bu-qvnce | [2026-07-04-jarvis-pursuit.md](2026-07-04-jarvis-pursuit.md) |
+| 03 | 2026-07-10 | 15 | one epic per move (no umbrella) | [2026-07-10-jarvis-pursuit.md](2026-07-10-jarvis-pursuit.md) |
+| 04 | 2026-07-12 | 15 | bu-hmdqz | [2026-07-12-jarvis-pursuit.md](2026-07-12-jarvis-pursuit.md) |
 | 05 | 2026-07-17 | 15 | bu-kqnum | [2026-07-17-jarvis-pursuit.md](2026-07-17-jarvis-pursuit.md) |
 | 06 | 2026-07-22 | 15 | bu-27dxl | [2026-07-22-jarvis-pursuit.md](2026-07-22-jarvis-pursuit.md) |
 | 07 | 2026-07-25 | 16 | bu-ep4ks | [2026-07-25-jarvis-pursuit.md](2026-07-25-jarvis-pursuit.md) |
 |: (talk-to-butlers) | 2026-07-28 | (see dossier) |: | [2026-07-28-talk-to-butlers-maturity-pursuit.md](2026-07-28-talk-to-butlers-maturity-pursuit.md) |
 | 08 | 2026-08-09 | 15 | bu-6jv4m | [2026-08-09-jarvis-pursuit.md](2026-08-09-jarvis-pursuit.md) |
-| 09 | 2026-09-01 | (see dossier) | bu-7exe4 | [2026-09-01-jarvis-pursuit.md](2026-09-01-jarvis-pursuit.md) |
-| 10 (dashboard chat) | 2026-09-02 | (see dossier) | bu-0ynlk | [2026-09-02-dashboard-chat-pursuit.md](2026-09-02-dashboard-chat-pursuit.md) |
+| 09 | 2026-09-01 | 15 | bu-7exe4 | [2026-09-01-jarvis-pursuit.md](2026-09-01-jarvis-pursuit.md) |
+| 10 (dashboard chat) | 2026-09-02 | 15 | bu-0ynlk | [2026-09-02-dashboard-chat-pursuit.md](2026-09-02-dashboard-chat-pursuit.md) |
 | 11 | 2026-09-03 | 15 | bu-8cdl1 | [2026-09-03-jarvis-pursuit.md](2026-09-03-jarvis-pursuit.md) |
 | 12 | 2026-09-05 | 15 | bu-2jtfw | [2026-09-05-jarvis-pursuit.md](2026-09-05-jarvis-pursuit.md) |
 | 13 | 2026-09-12 | 15 | bu-h40h2b | [2026-09-12-jarvis-pursuit.md](2026-09-12-jarvis-pursuit.md) |
@@ -54,7 +54,7 @@ Verdicts per surface key across runs (blank: not tiered that run; keys were norm
 
 Titles only; packets live in the epic's child beads and in the run's data file (`jq '.synthesis.ranked_moves'`).
 
-### 01 (audit) (2026-07-03) · epic none
+### 01 (audit) (2026-07-03) · epic bu-86c4c
 
 1. Truth amnesty: purge every fabricated datum and make degraded states structural
 2. The drill-down contract: every signal is a door, and trace_id is the spine
@@ -71,7 +71,7 @@ Titles only; packets live in the epic's child beads and in the run's data file (
 13. One butler console: kill the mode toggle, unify the run verbs
 14. Orphan and cruft purge: retire the vestiges, delete the dead code
 
-### 02 (2026-07-04) · epic none
+### 02 (2026-07-04) · epic bu-qvnce
 
 1. Honest aggregation: purge server-side zero-fill and adopt the degraded envelope fleet-wide
 2. Confirmed-lies hotfix batch: seven verified fabrications, each a few lines
@@ -89,7 +89,7 @@ Titles only; packets live in the epic's child beads and in the run's data file (
 14. Interaction-speed consolidation: one socket, poll-policy tokens, intent prefetch, never-blank floor
 15. Turn on the cross-butler knowledge plane: memory_catalog enable + backfill
 
-### 03 (2026-07-10) · epic none
+### 03 (2026-07-10) · one epic per move: bu-tdd4k, bu-jad4j, bu-tpudw, bu-10fgt, bu-lkzsf, bu-533qx, bu-9r3hd, bu-ckkpz, bu-5ud8p, bu-1mq1d, bu-7o89u, bu-gcz9e, bu-01r64, bu-os64u, bu-sd0l7
 
 1. Unbreak and mirror the proactivity spine
 2. Consume the orphaned honesty flags: the batch the epic left one layer short
@@ -107,7 +107,7 @@ Titles only; packets live in the epic's child beads and in the run's data file (
 14. Close the governance loop: archive sweep, lifecycle clause, status cadence
 15. Dead-code amnesty + knip CI gate
 
-### 04 (2026-07-12) · epic none
+### 04 (2026-07-12) · epic bu-hmdqz
 
 1. Repoint the live stack at main and finish the deploy spine's last mile
 2. Close the model-selection loop: failover auth vocabulary, stderr matching, catalog breaker, hourly verify
@@ -197,6 +197,42 @@ Titles only; packets live in the epic's child beads and in the run's data file (
 13. Make one typed shell-capability manifest own routing, discovery, and warmup
 14. Finish the owner-time migration as a repository invariant
 15. Make visual token roles type-safe and spec-authoritative
+
+### 09 (2026-09-01) · epic bu-7exe4
+
+1. Per-attempt spend truth
+2. Conversation identity fix on the primary channel
+3. Ceiling edit consequence gate
+4. Settings/permissions process-fidelity repair
+5. Status words stop impersonating calm on ingestion
+6. One attention budget
+7. One merge authority with a rebind ledger
+8. Shell scroll memory
+9. Ship the dropped model-resolution receipt
+10. First-frame identity
+11. One measured focus token
+12. Advertise the chords where destinations live
+13. Voice egress: answer in the room that was heard
+14. Turn-closure ledger + continuity receipt
+15. Insight feedback verbs + expired-unseen accounting
+
+### 10 (dashboard chat) (2026-09-02) · epic bu-0ynlk
+
+1. Propose-then-act: kill the confirm-after-write theatre
+2. The question lane, with a truthful decline
+3. Concierge staffer + dashboard_read module + RFC 0012
+4. Page-context v2: typed, visible, removable, redacted
+5. Thread integrity: one row, a session link, inspectable work
+6. Read fast lane + lane-aware budgets
+7. Real streaming, phase truth, reconnect
+8. Actions from chat: proposal cards on the approval spine
+9. conversation_recall + message-level search
+10. Chat-to-graph provenance + a resolved owner
+11. Postures + addressability: docked rail and /chat
+12. Answers that render: markdown, citations, attribution
+13. Accessibility batch
+14. Composer, suggestions, thread management
+15. The owner thread spine
 
 ### 11 (2026-09-03) · epic bu-8cdl1
 
@@ -312,3 +348,25 @@ Titles only; packets live in the epic's child beads and in the run's data file (
 13. A retired-surfaces registry with a guard, and the first verified retirement wave
 14. One home per backend mechanism: a connector ingest, pool and health kit, one router DB dependency, and an AST duplicate ratchet
 15. A guidance diet with a staleness guard: bd prime under 10 KB, AGENTS.md under the 32 KiB cap, and dead references failing at PR time
+
+## Post-hoc review: runs 01-10 (2026-10-08)
+
+Every ranked move in runs 01-10 was filed as a bead, and every PR cited at closure is on main with no
+reverts. Runs 01-04 are complete; runs 05-10 carry residue. What remains open after the review's
+tracker cleanup, and where it is tracked:
+
+| Residue | Run | Tracked in |
+|---|---|---|
+| Telegram thread identity is per message, so provider resume never fires | 09 | bu-7exe4.2 (gated on bu-psarp, bu-xf54r) |
+| Memory search renders in-flight as empty; `pools_failed` read by one surface | 05 | bu-kqnum.14 (raised to P1) |
+| Token streaming titled shipped but the runtime still waits on the whole reply | 10 | bu-60pwv6.11 |
+| Decision Desk half-built and dark on dev | 03 | bu-ckkpz.3 (owner decision) |
+| Wake-evidence morning flush; secrets single-park and cron lint (dropped slices) | 05 | bu-kqnum.3.6, bu-kqnum.3.7 |
+| Consolidation throughput policy (dropped slices) | 05 | bu-de1hrl |
+| Connectors on main outside the v1 connector set | 06, 07 | bu-z1zzu9 (owner decision) |
+| Production deploy path disagrees with topology after three rebuilds | 03-05 | bu-u03nw8 |
+| Run-09 gate closed 2026-09-15 with no recorded actor, open again now | 09 | bu-xf54r (owner record) |
+
+Process lessons: beads from runs 01-04 had no acceptance criteria and closed on merge, which is how
+gaps survived to the next run's QC; early runs often shipped behavior before the spec delta; and
+reconciliation and review beads, not outcomes, drove most of the bead count in runs 05-06.
