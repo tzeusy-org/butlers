@@ -565,7 +565,10 @@ The ordinary backup excludes exactly `custody_admission` and
 fenced authority. It also omits the exact fifteen published custody function
 signatures, including their function ACL, comment and security-label entries.
 The producer captures their catalog in the dump's exported snapshot, writes a
-custom archive, and selects its TOC before rendering ordinary SQL. Missing,
+custom archive, and selects its TOC before rendering ordinary SQL with explicit
+`pg_restore --file=-`; no database destination is supplied. The PostgreSQL
+output-destination requirement is exercised by the strict transport control;
+that software control is not actual archive or restore evidence. Missing,
 extra, duplicate, changed or malformed custody catalog/TOC entries fail the run
 without publication. Ordinary functions, owners, ACLs, data and the cost-claim
 carrier remain on their existing paths. This is fixed archive selection, not

@@ -445,10 +445,10 @@ fi
   ' "${SNAPSHOT_DIR}/ordinary.toc" > "${SNAPSHOT_DIR}/ordinary.selected" \
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
   # END fixed custody TOC selector.
-  # No --dbname: pg_restore renders the selected archive to ordinary SQL only;
+  # Explicit stdout and no --dbname: pg_restore renders ordinary SQL only;
   # it does not execute a restore. Existing owners/ACLs and all other entries
   # survive unchanged, followed by the original scoped cost-claim row carrier.
-  pg_restore --use-list="${SNAPSHOT_DIR}/ordinary.selected" \
+  pg_restore --file=- --use-list="${SNAPSHOT_DIR}/ordinary.selected" \
     "${SNAPSHOT_DIR}/ordinary.archive" \
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
 

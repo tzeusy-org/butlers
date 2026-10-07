@@ -419,6 +419,90 @@ async def test_dispatch_and_usage_evidence_store_only_closed_purpose_lanes(
         with pytest.raises(asyncpg.RaiseError, match="purpose-lane evidence exists"):
             await pool.execute(statements[0])
 
+        # The public carriers are shared across schema-scoped core histories.
+        # Each still-present carrier must independently refuse populated
+        # rollback, including when the other carrier has no lane evidence.
+        tables = ("model_dispatch_attempts", "token_usage_ledger")
+        before = {
+            table: await pool.fetch(f"SELECT id,purpose_lane FROM public.{table} ORDER BY id")
+            for table in tables
+        }
+        async with pool.acquire() as connection:
+            for populated in tables:
+                transaction = connection.transaction()
+                await transaction.start()
+                try:
+                    other = next(table for table in tables if table != populated)
+                    await connection.execute(f"UPDATE public.{other} SET purpose_lane=NULL")
+                    with pytest.raises(asyncpg.RaiseError, match="purpose-lane evidence exists"):
+                        async with connection.transaction():
+                            await connection.execute(statements[0])
+                    assert (
+                        await connection.fetch(
+                            f"SELECT id,purpose_lane FROM public.{populated} ORDER BY id"
+                        )
+                        == before[populated]
+                    )
+                finally:
+                    await transaction.rollback()
+
+            # Run the actual revision DDL twice, without changing version rows
+            # or adding stand-in columns to conceal a replay failure. These
+            # isolated table/CHECK controls complement the full owning
+            # custody fixture's real Alembic multi-schema deep lifecycle.
+            transaction = connection.transaction()
+            await transaction.start()
+            try:
+                for table in tables:
+                    await connection.execute(f"UPDATE public.{table} SET purpose_lane=NULL")
+                for _ in range(2):
+                    for statement in statements:
+                        await connection.execute(statement)
+                for table in tables:
+                    assert not await connection.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_attribute "
+                        "WHERE attrelid=$1::regclass AND attname='purpose_lane' "
+                        "AND NOT attisdropped)",
+                        f"public.{table}",
+                    )
+                    # Prior unguarded predicate: actual UndefinedColumn RED
+                    # on absent own-column state, never missing-helper proof.
+                    with pytest.raises(asyncpg.UndefinedColumnError):
+                        async with connection.transaction():
+                            await connection.fetchval(
+                                f"SELECT EXISTS(SELECT 1 FROM public.{table} "
+                                "WHERE purpose_lane IS NOT NULL)"
+                            )
+                upgrade_statements = []
+                mocked_op.execute.side_effect = upgrade_statements.append
+                with patch.object(module, "op", mocked_op):
+                    module.upgrade()
+                for _ in range(2):
+                    for statement in upgrade_statements:
+                        await connection.execute(statement)
+                for table in tables:
+                    restored = await connection.fetch(
+                        f"SELECT id,purpose_lane FROM public.{table} ORDER BY id"
+                    )
+                    assert [tuple(row) for row in restored] == [
+                        (row["id"], None) for row in before[table]
+                    ]
+                    assert await connection.fetchval(
+                        "SELECT convalidated FROM pg_catalog.pg_constraint "
+                        "WHERE conrelid=$1::regclass AND conname=$2",
+                        f"public.{table}",
+                        f"ck_{table}_purpose_lane",
+                    )
+            finally:
+                await transaction.rollback()
+        # Separate acquisition proves rollback retained the original planted
+        # evidence after every refusal/replay control above.
+        for table in tables:
+            assert (
+                await pool.fetch(f"SELECT id,purpose_lane FROM public.{table} ORDER BY id")
+                == before[table]
+            )
+
 
 def test_shared_preflight_delegates_complete_core_198_durable_evidence_predicate() -> None:
     """A trusted bootstrap with durable evidence must remain a refusal."""

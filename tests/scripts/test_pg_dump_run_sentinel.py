@@ -164,13 +164,33 @@ done
 # still executes and validates the captured catalog/TOC; no SQL is modeled here.
 _FAKE_PG_RESTORE = """#!/bin/sh
 set -eu
-if [ "$1" = "--list" ]; then
+listing=0
+selected=""
+output=""
+archive=""
+for arg in "$@"; do
+  case "${arg}" in
+    --list) listing=1 ;;
+    --use-list=*) selected=${arg#--use-list=} ;;
+    --file=*) output=${arg#--file=} ;;
+    -*) echo "synthetic pg_restore: unsupported or database-target option" >&2; exit 2 ;;
+    *) [ -z "${archive}" ] || exit 2; archive=${arg} ;;
+  esac
+done
+[ -f "${archive}" ] || exit 2
+if [ "${listing}" -eq 1 ]; then
+  [ -z "${selected}" ] && [ -z "${output}" ] || exit 2
   [ "${FAKE_PG_RESTORE_MODE:-ok}" != "listfail" ] || exit 7
   printf '%s\\n' '1; 1259 100 TABLE public entities bootstrap'
 else
+  # PostgreSQL requires an output destination outside TOC listing. This
+  # transport only renders SQL to stdout and can never connect to a database.
+  [ "${output}" = "-" ] && [ -f "${selected}" ] || {
+    echo "synthetic pg_restore: SQL rendering requires explicit stdout" >&2
+    exit 2
+  }
   [ "${FAKE_PG_RESTORE_MODE:-ok}" != "renderfail" ] || exit 8
-  shift
-  cat "$1"
+  cat "${archive}"
 fi
 """
 

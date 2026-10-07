@@ -125,7 +125,16 @@ To create a new module migration chain:
 Core migrations may be replayed once for each target schema even when they
 create a database-global `public` object. Such a migration must be guarded and
 idempotent: the first target installs the object and every later target proves
-the finalized catalog shape before it no-ops. Do not add an accidental
+the finalized catalog shape before it no-ops. Shared public-column rollback
+must likewise tolerate an earlier schema already removing that revision's own
+column. `core_238` locks its two canonical purpose-lane carriers before checking
+live column presence and non-NULL evidence; either populated carrier refuses,
+and only an actually absent own column is a replay no-op. Base-table absence,
+permission failures and protected rollback preflight still fail normally. The
+existing deep multi-schema lifecycle and bounded purpose-lane SQL species must
+prove repeated rollback/reapplication and separate retained-evidence readback.
+Do not repair this lifecycle by stamping versions or inserting fixture columns.
+Do not add an accidental
 dependency on a specialist schema merely because a Switchboard consumer will
 arrive later.
 
