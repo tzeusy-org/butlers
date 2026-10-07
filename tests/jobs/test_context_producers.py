@@ -1544,7 +1544,54 @@ class TestContextProducersIntegration:
                 value="manual place",
                 metadata={"source": "manual"},
             )
-            await owned.execute("UPDATE calendar_events SET ends_at=now()-interval '1 second'")
+            # A different source's future event makes the old broad expiry
+            # statement deterministically invalid under the canonical CHECK.
+            # Keep the failure in a savepoint and verify rollback after commit.
+            other_sid = await owned.fetchval(
+                "INSERT INTO calendar_sources(source_key,source_kind) VALUES('interval-positive-source','provider') RETURNING id"
+            )
+            future = await _project_synthetic_calendar(
+                owned,
+                other_sid,
+                {
+                    **base,
+                    "id": "interval-validity-positive",
+                    "summary": "Synthetic future ordinary event",
+                    "eventType": "default",
+                    "start": {"dateTime": (now + timedelta(days=2)).isoformat()},
+                    "end": {"dateTime": (now + timedelta(days=2, hours=1)).isoformat()},
+                },
+            )
+            windows_sql = (
+                "SELECT id,source_id,starts_at,ends_at,status FROM calendar_events ORDER BY id"
+            )
+            before_windows = await owned.fetch(windows_sql)
+            assert any(r["source_id"] == sid and r["status"] == "confirmed" for r in before_windows)
+            assert any(
+                r["id"] == future["id"] and r["status"] == "confirmed" for r in before_windows
+            )
+            async with owned.acquire() as conn:
+                async with conn.transaction():
+                    with pytest.raises(asyncpg.CheckViolationError) as rejected_expiry:
+                        async with conn.transaction():
+                            await conn.execute(
+                                "UPDATE calendar_events SET ends_at=now()-interval '1 second'"
+                            )
+                    assert rejected_expiry.value.sqlstate == "23514"
+                    assert rejected_expiry.value.constraint_name == "calendar_events_window_check"
+            # This pool acquisition follows the outer transaction's commit.
+            assert await owned.fetch(windows_sql) == before_windows
+            # Prepare successful absence only for this fixture's source. Status
+            # cancellation preserves every interval and the unrelated positive.
+            await owned.execute(
+                "UPDATE calendar_events SET status='cancelled' WHERE source_id=$1", sid
+            )
+            after_windows = await owned.fetch(windows_sql)
+            assert [tuple(r)[:4] for r in after_windows] == [tuple(r)[:4] for r in before_windows]
+            assert all(r["status"] == "cancelled" for r in after_windows if r["source_id"] == sid)
+            assert [r for r in after_windows if r["source_id"] != sid] == [
+                r for r in before_windows if r["source_id"] != sid
+            ]
             await run_calendar_context_producer(owned)
             assert (
                 await reader.fetchval(

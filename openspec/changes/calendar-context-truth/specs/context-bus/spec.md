@@ -221,7 +221,6 @@ Scope: v1-mandatory
 
 ### Requirement: Calendar Context Attendance and Typed Truth
 The deterministic General calendar producer SHALL publish context only from active confirmed eligible projection truth. It SHALL reuse the established self-attendee decline and transparency rule for meeting/focus and OOO, preserving tentative, needsAction, guest-decline and missing/malformed metadata compatibility. Explicit OOO has priority over meeting/focus and asserts away; explicit focusTime asserts focused structurally; valid workingLocation asserts only a separate working_location qualifier. Ordinary default-family events retain the existing title fallback and provenance exclusions. Calendar resource titles SHALL not create typed OOO or working-location authority. Successful absence SHALL clear meeting/focused and clear calendar-marked away/location, preserving unrelated writers and non-calendar away/location assertions.
-
 - The producer SHALL capture one database wall-clock observation after obtaining its scoped serialization lock and reuse that observation for eligibility, expiry, every ordinary set and clear. Structural focusTime SHALL publish fixed `focus time` and omit its source title from context metadata; ordinary and future/default-family title fallback SHALL remain intact.
 
 ID: REQ-context-bus-006
