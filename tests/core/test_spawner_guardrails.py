@@ -762,6 +762,7 @@ class TestSpawnerUndeliveredReplyAccounting:
     async def test_route_reply_with_failed_notify_marks_session_failed(
         self, tmp_path: Path
     ) -> None:
+        """REQ-core-spawner-008: ordinary delivery failure creates no investigation."""
         # One notify attempt whose result is null (boundary rejection shape).
         adapter = _SuccessAdapter(
             result_text="I replied (allegedly).",
@@ -770,6 +771,9 @@ class TestSpawnerUndeliveredReplyAccounting:
         spawner, _mock_pool = _make_spawner(adapter, tmp_path)
 
         with (
+            patch(
+                "butlers.core.healing.dispatch_healing", new_callable=AsyncMock
+            ) as local_dispatch,
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
             patch(
@@ -807,6 +811,7 @@ class TestSpawnerUndeliveredReplyAccounting:
             result = await spawner.trigger("Did I miss the Dr Ng followup?", "route")
 
         # The runtime invocation itself succeeded (memory/route flow unaffected).
+        local_dispatch.assert_not_awaited()
         assert result.success is True
         # But the session row is recorded as a failed delivery.
         mock_complete.assert_awaited_once()

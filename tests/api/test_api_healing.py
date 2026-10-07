@@ -274,6 +274,36 @@ async def test_retry_without_dispatch_fn_daemon_unreachable_reports_not_dispatch
     # We attempted the owning butler's daemon before giving up.
     mgr.get_client.assert_awaited()
 
+    # The same endpoint must be honest for reachable REAL relay-only MCP servers.
+    from contextlib import AsyncExitStack
+
+    from fastmcp import Client, FastMCP
+
+    from butlers.modules.self_healing import SelfHealingModule
+
+    async with AsyncExitStack() as stack:
+        clients = {}
+        for name in ("general", "health"):
+            server = FastMCP(name)
+            module = SelfHealingModule()
+            await module.register_tools(server, None, None, name)
+            clients[name] = await stack.enter_async_context(Client(server))
+            positive = (await clients[name].call_tool("get_healing_status", {})).data
+            assert positive["attempts"] == []
+        mgr = _make_mcp_manager(butler_names=list(clients))
+        mgr.get_client = AsyncMock(side_effect=lambda name: clients[name])
+        app, pool = _build_app(mcp_manager=mgr)
+        pool.fetchrow = AsyncMock(side_effect=_retry_fetchrow_sequence())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as reachable:
+            retry = await reachable.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
+        assert retry.status_code == 201
+        assert retry.json()["status"] == "investigating"
+        assert retry.json()["dispatched"] is False
+        assert {call.args[0] for call in mgr.get_client.await_args_list} == set(clients)
+        assert mgr.invalidate_client.await_count == 2
+
 
 async def test_retry_redispatches_via_daemon_mcp_and_reports_dispatched():
     """Cross-process path: retry invokes the daemon retry_healing MCP tool and reports True."""

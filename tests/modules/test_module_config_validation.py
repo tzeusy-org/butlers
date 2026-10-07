@@ -342,10 +342,15 @@ class TestUnconfiguredRequiredSchemaModules:
     async def test_unconfigured_modules_are_skipped(self, tmp_path: Path) -> None:
         """Absent config skips all modules with a config_schema (explicit config required)."""
         butler_dir = _make_butler_toml(tmp_path, modules={})
-        registry = _make_registry(StrictModule, AllDefaultsModule)
+        registry = _make_registry(StrictModule, AllDefaultsModule, NoSchemaModule)
         patches = _patch_infra()
 
         with (
+            patch.object(NoSchemaModule, "on_startup", new_callable=AsyncMock) as omitted_start,
+            patch.object(NoSchemaModule, "register_tools", new_callable=AsyncMock) as omitted_tools,
+            patch.object(
+                NoSchemaModule, "migration_revisions", return_value=None
+            ) as omitted_migration,
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
@@ -365,6 +370,10 @@ class TestUnconfiguredRequiredSchemaModules:
         loaded_names = {mod.name for mod in daemon._modules}
         assert "strict_mod" not in loaded_names
         assert "defaults_mod" not in loaded_names
+        assert "no_schema_mod" not in loaded_names
+        omitted_start.assert_not_awaited()
+        omitted_tools.assert_not_awaited()
+        omitted_migration.assert_not_called()
 
     async def test_defaults_module_loads_with_empty_config(self, tmp_path: Path) -> None:
         """An empty config section is enough to load a module with all-default fields."""

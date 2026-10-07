@@ -24,7 +24,7 @@ The daemon reads `butler.toml` from the config directory, parses it into a `Butl
 
 ### Phase 3: Initialize Modules (Topological Order)
 
-The `ModuleRegistry` instantiates modules in dependency order. The daemon skips a module only when its required configuration is omitted from `[modules.*]`; optional-config modules may still start with defaults. Dependency cycles are startup-blocking errors.
+The `ModuleRegistry` instantiates modules in dependency order. The daemon admits only names explicitly declared in `[modules.*]`, independent of configuration schema shape. Unknown declarations fail before database provisioning or migrations. Discovery, successful startup and user-enabled state are separate sets. Dependency cycles are startup-blocking errors.
 
 ### Phase 4: Validate Module Configs
 

@@ -158,9 +158,12 @@ The spawner SHALL use an `asyncio.Semaphore` with a configurable concurrency lim
 - **THEN** the invocation is rejected immediately with a queue-full error
 
 ### Requirement: Spawner Session Lifecycle
-Each invocation creates a session record before the runtime call and completes it after, regardless of success or failure. Sessions are trace-correlated via OpenTelemetry span context. After completing a runtime invocation, the spawner SHALL check `runtime.last_process_info` and, if non-null and a session_id and database pool are available, write the process metadata to the `session_process_logs` table via `session_process_log_write()`. This applies to both the success path (after `session_complete` with `success=True`) and the error path (after `session_complete` with `success=False`). The write is best-effort: exceptions are caught and logged at DEBUG level without affecting the session result or propagating to the caller. On the error path, after all existing error handling (session_complete, process log, runtime reset, audit entry), the spawner SHALL invoke the self-healing dispatcher as a **fallback** — this catches hard crashes where the butler agent never got a chance to call the `report_error` MCP tool.
+Each invocation creates a session record before the runtime call and completes it after, regardless of success or failure. Sessions are trace-correlated via OpenTelemetry span context. After completing a runtime invocation, the spawner SHALL check `runtime.last_process_info` and, if non-null and a session_id and database pool are available, write the process metadata to the `session_process_logs` table via `session_process_log_write()`. This applies to both the success path (after `session_complete` with `success=True`) and the error path (after `session_complete` with `success=False`). The write is best-effort: exceptions are caught and logged at DEBUG level without affecting the session result or propagating to the caller. The error path SHALL preserve ordinary failure evidence and cleanup without dispatching a per-butler investigation; QA owns independent session/log discovery under RFC 0015.
+On the normal-completion (non-raising) path the spawner SHALL additionally run delivery accounting (see the **Interactive Reply Delivery Accounting** requirement) before persisting the session. Delivery accounting MAY downgrade the persisted session record to `success=False` even though the runtime invocation itself completed cleanly. Because this runs on the success path and does not raise, it SHALL NOT trigger same-tier failover or a per-butler investigation dispatcher.
 
-On the normal-completion (non-raising) path the spawner SHALL additionally run delivery accounting (see the **Interactive Reply Delivery Accounting** requirement) before persisting the session. Delivery accounting MAY downgrade the persisted session record to `success=False` even though the runtime invocation itself completed cleanly. Because this runs on the success path and does not raise, it SHALL NOT trigger same-tier failover or the self-healing fallback dispatcher.
+ID: REQ-core-spawner-005
+Source: RFC 0015 centralized QA discovery/dispatch; bu-1fe7xv rounds 3-4; core-spawner existing session evidence contract
+Scope: v1-mandatory
 
 #### Scenario: Successful session
 - **WHEN** a runtime invocation completes successfully
@@ -169,19 +172,9 @@ On the normal-completion (non-raising) path the spawner SHALL additionally run d
 
 #### Scenario: Failed session — spawner fallback dispatch
 - **WHEN** a runtime invocation raises an exception
-- **THEN** `session_complete()` is called with `success=False`, the error message, and duration
+- **THEN** `session_complete()` is called with `success=False`, the original error message, and duration
 - **AND** the runtime adapter's `reset()` method is called for cleanup
-- **AND** the self-healing dispatcher is invoked via `asyncio.create_task()` as a **fallback** with the raw exception, traceback, session_id, butler config, and trigger_source
-
-#### Scenario: Fallback is secondary to module path
-- **WHEN** a butler agent called `report_error` during its session for the same error before the session crashed
-- **AND** the spawner fallback also fires for the same exception
-- **THEN** the novelty gate deduplicates — the second dispatch (fallback) sees the active attempt from the first (module) and appends the session ID instead of creating a duplicate
-
-#### Scenario: Dispatcher receives exception and traceback
-- **WHEN** the spawner invokes the fallback dispatcher from the except block
-- **THEN** it captures `sys.exc_info()` BEFORE any cleanup code runs
-- **AND** passes the live traceback to `dispatch_healing()` for fingerprinting
+- **AND** no per-butler investigation task is created by the Spawner
 
 #### Scenario: Process log written after successful runtime invocation
 - **WHEN** the spawner completes a runtime invocation successfully
@@ -197,10 +190,20 @@ On the normal-completion (non-raising) path the spawner SHALL additionally run d
 - **WHEN** the `session_process_log_write()` call raises any exception
 - **THEN** the exception is logged at DEBUG level and the spawner continues normally
 
+#### Scenario: Fallback is secondary to module path
+- **WHEN** a registered relay reports an agent-observed error and a runtime invocation independently fails
+- **THEN** the report is received through the centralized QA boundary and ordinary Spawner failure evidence remains available
+- **AND** no additional per-butler fallback investigation is dispatched
+
+#### Scenario: Dispatcher receives exception and traceback
+- **WHEN** a runtime raises an exception with traceback evidence
+- **THEN** the Spawner preserves its ordinary failure, process and captured-tool evidence without passing an exception/traceback to a local investigation dispatcher
+- **AND** agent-reported structured exceptions retain fingerprint/traceback handling at the centralized report_error relay boundary
+
 #### Scenario: Healing dispatcher failure is non-fatal
-- **WHEN** the fallback dispatcher task raises an exception
-- **THEN** the exception is logged at WARNING level
-- **AND** the original `SpawnerResult` is unaffected (already returned)
+- **WHEN** QA reception is unavailable while a runtime invocation fails
+- **THEN** the original session error, reset and finally cleanup remain authoritative
+- **AND** no per-butler fallback dispatcher is invoked or allowed to mask that error
 
 #### Scenario: Finally block exceptions do not trigger healing
 - **WHEN** an exception occurs in the spawner's `finally` block (metrics, span cleanup, context clearing)
@@ -209,18 +212,23 @@ On the normal-completion (non-raising) path the spawner SHALL additionally run d
 ### Requirement: Trigger Source Tracking
 Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, and `schedule:<task-name>`. The trigger source SHALL be passed through to session creation for audit.
 
+ID: REQ-core-spawner-006
+Source: core-spawner trigger audit; RFC 0015 centralized QA; bu-lsxqb0.6 and bu-1fe7xv rounds 3-4
+Scope: v1-mandatory
+
 #### Scenario: Schedule trigger source
 - **WHEN** a task named `daily_digest` fires via the scheduler
 - **THEN** the session's `trigger_source` is `"schedule:daily_digest"`
 
 #### Scenario: Healing trigger source
-- **WHEN** the self-healing module or fallback dispatcher spawns an investigation agent
+- **WHEN** an existing shared legacy healing dispatcher explicitly spawns an investigation session
 - **THEN** the session's `trigger_source` is `"healing"`
+- **AND** this does not enable direct investigation dispatch by the relay module or Spawner crash handler
 
 #### Scenario: Healing sessions skip fallback dispatcher
 - **WHEN** a session with `trigger_source = "healing"` fails
-- **THEN** the spawner fallback dispatcher is NOT invoked (no recursive healing)
-- **AND** the spawner's except block checks `trigger_source` BEFORE creating the dispatch task
+- **THEN** its failure remains recorded without invoking a per-butler fallback dispatcher
+- **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
 The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
@@ -556,26 +564,27 @@ When spawning a healing agent session (`trigger_source = "healing"`), the spawne
 - **AND** no other butler-specific credentials or env vars are passed
 
 ### Requirement: Healing Configuration in butler.toml
-The spawner SHALL support healing-related configuration that the self-healing module and fallback dispatcher both read.
+The daemon SHALL admit self_healing startup only when `[modules.self_healing]` is declared. Its relay config SHALL accept the existing six keys without permitting the reporting butler to override QA investigation policy. The Spawner SHALL have no separately enabled healing fallback.
+
+ID: REQ-core-spawner-007
+Source: RFC 0015 centralized QA; bu-1fe7xv rounds 2-4; core-modules explicit startup selection
+Scope: v1-mandatory
 
 #### Scenario: Default healing config
 - **WHEN** `butler.toml` has no `[modules.self_healing]` section
-- **THEN** the self-healing module is not loaded and the spawner fallback is also disabled
+- **THEN** self_healing remains available to registry discovery but is not admitted to startup or tool registration
+- **AND** no Spawner fallback is enabled
 
 #### Scenario: Healing config fields
 - **WHEN** `[modules.self_healing]` is present
-- **THEN** the following fields are recognized:
-  - `enabled` (bool, default: `true`) — module loaded
-  - `severity_threshold` (int, default: `2`)
-  - `max_concurrent` (int, default: `2`)
-  - `cooldown_minutes` (int, default: `60`)
-  - `circuit_breaker_threshold` (int, default: `5`)
-  - `timeout_minutes` (int, default: `30`)
+- **THEN** its schema accepts `enabled` (bool, default true), `severity_threshold` (int, default 2), `max_concurrent` (int, default 2), `cooldown_minutes` (int, default 60), `circuit_breaker_threshold` (int, default 5), and `timeout_minutes` (int, default 30)
+- **AND** `enabled=false` prevents report admission while the five legacy dispatch thresholds remain inert compatibility inputs
+- **AND** unknown extra fields are rejected
 
 #### Scenario: Spawner fallback uses module config
-- **WHEN** the spawner fallback fires for a hard crash
-- **THEN** it reads the self-healing module's config for gate thresholds
-- **AND** if the module is not loaded, the fallback is also disabled (no separate `[healing]` section needed)
+- **WHEN** a reporting butler sets legacy self_healing threshold values and submits a valid report while relay admission is enabled
+- **THEN** the report uses the same QA relay boundary without local dispatch gates or a local investigation
+- **AND** QA retains its own authoritative triage, concurrency, cooldown, breaker and timeout policy
 
 ### Requirement: Spawner resolves hot config fields per-spawn from the model catalog
 The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. These fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
@@ -702,18 +711,18 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 
 ### Requirement: Interactive Reply Delivery Accounting
 On the normal-completion (non-raising) path, the spawner SHALL evaluate whether a route-triggered interactive session attempted a reply via `notify()` but delivered nothing, and SHALL persist that session record with `success=False` and a human-readable reason in the session `error` column.
-
-This is a **third session outcome**, distinct from the two in the Spawner Session Lifecycle requirement: the runtime invocation completed successfully (it did not raise), yet the user received no reply. It is detected on the success path, NOT via a raised exception. Therefore it SHALL NOT trigger same-tier model failover and SHALL NOT trigger the self-healing fallback dispatcher. This is the explicit difference from the "Failed session - spawner fallback dispatch" scenario, which DOES heal: an undelivered interactive reply is not a crash, and re-running the runtime would not have helped.
-
+This is a **third session outcome**: the runtime invocation returned normally but the user received no reply. It is detected on the success path and SHALL NOT trigger same-tier model failover or a per-butler investigation dispatcher. Ordinary crash evidence and centralized QA discovery remain separate.
 The in-memory `SpawnerResult.success` SHALL remain `True` for this outcome so that downstream memory extraction and the route reply flow are unaffected; only the persisted session record reflects the undelivered delivery.
-
 **Delivered-status set.** A `notify()` tool-call counts as delivered only when its captured result is a dict whose `status` is in the delivered set `{ok, deferred}`. Every other outcome is undelivered, including legacy suppression results, `pending_approval`, `pending_missing_identifier`, `error`, a record whose `outcome` is `error`, and a record with no result dict at all (the schema-rejection / null-result incident shape). `deferred` is delivered because the notification is persisted to the deferred queue with a concrete `deliver_at` and will be attempted later.
-
 **Scope guards** (deliberately conservative, to avoid false positives):
 - only sessions whose `trigger_source` is `route` are considered;
 - only sessions whose captured routing-context source channel is in the interactive set (`telegram_bot`, `whatsapp`) are considered;
 - a session that made zero `notify()` attempts is left alone (the runtime may have legitimately decided no reply was warranted);
 - if any single `notify()` attempt delivered, the session is not flagged.
+
+ID: REQ-core-spawner-008
+Source: core-spawner delivery accounting; RFC 0015 central dispatch; bu-1fe7xv rounds 3-4
+Scope: v1-mandatory
 
 #### Scenario: Undelivered interactive reply recorded as failed without healing
 - **WHEN** a `route`-triggered session whose source channel is `telegram_bot` completes successfully without raising

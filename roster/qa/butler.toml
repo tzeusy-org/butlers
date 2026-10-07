@@ -58,3 +58,6 @@ enabled_sources = ["log_scanner", "session_records", "butler_reports", "tool_cal
 max_reactive_buffer = 50
 # UTC hour for daily removal of raw investigation_notes.evidence_lines.
 retention_cleanup_hour = 4
+
+# RFC 0015: report errors to QA; this module never dispatches locally.
+[modules.self_healing]

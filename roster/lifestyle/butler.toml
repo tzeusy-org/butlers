@@ -81,3 +81,6 @@ full_sync_interval_days = 6
 # account = ""              # Google account email (default: primary account)
 # max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
+
+# RFC 0015: report errors to QA; this module never dispatches locally.
+[modules.self_healing]

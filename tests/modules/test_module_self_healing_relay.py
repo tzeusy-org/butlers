@@ -10,10 +10,13 @@ Covers:
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import Client, FastMCP
 
+from butlers.core.healing import DispatchResult
+from butlers.core.spawn_hooks import clear_spawner, register_spawner
 from butlers.modules.self_healing import SelfHealingModule
 
 pytestmark = pytest.mark.unit
@@ -72,12 +75,39 @@ def _report_error_args(**overrides):
 
 
 class TestSwitchboardNotConnected:
-    async def test_no_client_fallback_and_no_calls(self):
+    async def test_no_client_fallback_and_no_calls(self, monkeypatch):
+        """Operational state must not turn failed QA admission into local dispatch."""
         mod = _make_module(switchboard_client=None)
-        mod._pool = None
-        mod._spawner = None
-        result = await mod._handle_report_error(**_report_error_args())
-        assert result["accepted"] is False and result["reason"] == "not_configured"
+        pool = AsyncMock()
+        pool.fetchrow.return_value = None
+        dispatch = AsyncMock(
+            return_value=DispatchResult(accepted=True, fingerprint="f" * 64, reason="dispatched")
+        )
+        monkeypatch.setattr(
+            "butlers.modules.self_healing.dispatch_healing", dispatch, raising=False
+        )
+        # Establish the counter positive; removal must not cause an AttributeError red.
+        assert (await dispatch()).accepted
+        dispatch.reset_mock()
+        spawner = MagicMock()
+        register_spawner(spawner)
+        mcp = FastMCP("operational-relay")
+        try:
+            await mod.register_tools(mcp, None, MagicMock(pool=pool), "general")
+            async with Client(mcp) as client:
+                result = (
+                    await client.call_tool(
+                        "report_error",
+                        {"error_type": "ValueError", "error_message": "synthetic report"},
+                    )
+                ).data
+            assert result["accepted"] is False
+            assert result["reason"] == "qa_unavailable"
+            dispatch.assert_not_awaited()
+            pool.fetchrow.assert_not_awaited()
+            spawner.trigger.assert_not_called()
+        finally:
+            clear_spawner()
 
 
 # ---------------------------------------------------------------------------
@@ -115,9 +145,15 @@ class TestQaRelayPrimaryPath:
     async def test_context_none_omitted(self):
         client, route_calls = _make_call_tool_mock()
         mod = _make_module(switchboard_client=client)
-        mod._pool = None
         await mod._handle_report_error(**_report_error_args())
         assert "context" not in route_calls[0]["args"]
+        # A successful route envelope must not hide actual target rejection.
+        client, route_calls = _make_call_tool_mock(route_result={"result": {"accepted": False}})
+        mod = _make_module(switchboard_client=client)
+        rejected = await mod._handle_report_error(**_report_error_args())
+        assert rejected["accepted"] is False
+        assert rejected["reason"] == "relay_failed"
+        assert len(route_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -136,13 +172,58 @@ class TestQaUnavailableFallback:
         ],
         ids=["not-in-registry", "list-raises", "route-error", "route-raises"],
     )
-    async def test_fallback_cases(self, setup):
+    async def test_fallback_cases(self, setup, monkeypatch):
         client, _ = _make_call_tool_mock(**setup)
         mod = _make_module(switchboard_client=client)
-        mod._pool = None
-        mod._spawner = None
-        result = await mod._handle_report_error(**_report_error_args())
-        assert result["accepted"] is False and result["reason"] == "not_configured"
+        pool = AsyncMock()
+        pool.fetchrow.return_value = None
+        mod._pool = pool
+        dispatch = AsyncMock(
+            return_value=DispatchResult(accepted=True, fingerprint="f" * 64, reason="dispatched")
+        )
+        redispatch = AsyncMock()
+        monkeypatch.setattr(
+            "butlers.modules.self_healing.dispatch_healing", dispatch, raising=False
+        )
+        monkeypatch.setattr(
+            "butlers.modules.self_healing.redispatch_attempt_by_id", redispatch, raising=False
+        )
+        spawner = MagicMock()
+        register_spawner(spawner)
+        try:
+            result = await mod._handle_report_error(**_report_error_args())
+        finally:
+            clear_spawner()
+        dispatch.assert_not_awaited()
+        redispatch.assert_not_awaited()
+        pool.fetchrow.assert_not_awaited()
+        spawner.trigger.assert_not_called()
+        assert result["accepted"] is False
+        expected = (
+            "qa_unavailable"
+            if "list_result" in setup or "list_raises" in setup
+            else "relay_timeout"
+            if "route_raises" in setup
+            else "relay_failed"
+        )
+        assert result["reason"] == expected
+        # Keep the existing four collected cases while positioning all malformed target controls.
+        if "route_result" in setup:
+            from mcp.types import CallToolResult, TextContent
+
+            for raw in (
+                {"result": {"accepted": False}},
+                {},
+                {"accepted": "true"},
+                {"result": None},
+                [],
+                CallToolResult(isError=True, content=[]),
+                CallToolResult(content=[TextContent(type="text", text="invalid JSON")]),
+            ):
+                client, calls = _make_call_tool_mock(route_result=raw)
+                refused = await _make_module(client)._handle_report_error(**_report_error_args())
+                assert refused["accepted"] is False and refused["reason"] == "relay_failed"
+                assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------

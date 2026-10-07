@@ -93,8 +93,8 @@ async def run_startup(daemon: Any) -> None:
         logger.warning(warning)
 
     # 3. Initialize modules (topological order). The registry instantiates
-    # every built-in module, then startup filters out modules that require
-    # explicit config but are omitted from [modules.*].
+    # every built-in module; startup rejects unknown declarations and admits
+    # only explicitly declared names, independent of config schema shape.
     daemon._modules = daemon._select_startup_modules(
         daemon._registry.load_all(daemon.config.modules)
     )

@@ -1106,10 +1106,10 @@ class TestSelfHealingToQaRelayIntegration:
         assert bf.fingerprint == result["fingerprint"]
 
     async def test_relay_falls_back_when_qa_not_registered(self):
-        """Falls back to direct dispatch when QA staffer not in Switchboard registry.
+        """Reports unavailable reception when QA is absent from Switchboard registry.
 
-        Confirms graceful degradation: missing QA registration → direct
-        dispatch path, not an error.
+        Confirms graceful degradation: missing QA registration → explicit unconfirmed
+        reception, never a local dispatcher.
         """
         from butlers.modules.self_healing import SelfHealingModule
 
@@ -1125,7 +1125,6 @@ class TestSelfHealingToQaRelayIntegration:
         sh_mod = SelfHealingModule()
         sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
         sh_mod._pool = None
-        sh_mod._spawner = None  # Forces not_configured on direct dispatch path
 
         result = await sh_mod._handle_report_error(
             error_type="RuntimeError",
@@ -1137,6 +1136,6 @@ class TestSelfHealingToQaRelayIntegration:
             severity_hint=None,
         )
 
-        # Falls back to direct dispatch (no pool/spawner → not_configured)
+        # Missing registration is explicit even when no investigation machinery is configured.
         assert result["accepted"] is False
-        assert result["reason"] == "not_configured"
+        assert result["reason"] == "qa_unavailable"

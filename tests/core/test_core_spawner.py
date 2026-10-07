@@ -788,20 +788,28 @@ class TestSpawnerInvocation:
         assert adapter.reset_calls == 1
 
     async def test_error_wrapping_and_reset_behavior(self, tmp_path: Path):
-        """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset."""
+        """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset. REQ-core-spawner-005"""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
         # Adapter error wrapped in result; reset called once
         adapter = MockAdapter(error="adapter connection failed")
-        result = await Spawner(config=config, config_dir=config_dir, runtime=adapter).trigger(
-            "fail", "tick"
-        )
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+        with patch(
+            "butlers.core.healing.dispatch_healing", new_callable=AsyncMock
+        ) as local_dispatch:
+            result = await spawner.trigger("fail", "tick")
+            local_dispatch.assert_not_awaited()
         assert result.error is not None
         assert "RuntimeError" in result.error and "adapter connection failed" in result.error
         assert result.output is None and result.duration_ms >= 0
         assert adapter.reset_calls == 1
+        # A subsequent real invocation proves ordinary concurrency/finally release.
+        adapter._error = None
+        adapter._result_text = "recovered ordinary output"
+        recovered = await spawner.trigger("recovered ordinary work", "tick")
+        assert recovered.success is True
 
         # Pre-invoke failure (before runtime invocation) → reset not called
         adapter2 = MockAdapter()

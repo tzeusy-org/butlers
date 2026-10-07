@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -257,7 +258,7 @@ class StubModuleWithBrokenWireRuntime(Module):
 
 
 async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> None:
-    """Daemon passes self.config.name as butler_name to register_tools()."""
+    """Daemon passes self.config.name as butler_name to register_tools(). REQ-core-modules-002"""
     registry = ModuleRegistry()
     registry.register(StubModuleCapturingButlerName)
 
@@ -265,8 +266,8 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
     patches = _patch_infra()
 
     with (
-        patches["db_from_env"],
-        patches["run_migrations"],
+        patches["db_from_env"] as db_factory,
+        patches["run_migrations"] as migrations,
         patches["validate_credentials"],
         patches["validate_module_credentials"],
         patches["init_telemetry"],
@@ -280,12 +281,98 @@ async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> No
         patches["recover_route_inbox"],
         patch.object(ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock),
     ):
+        # Exercise production load_all + run_startup selection, before DB work.
+        toml = butler_dir / "butler.toml"
+        valid_toml = toml.read_text()
+        toml.write_text(valid_toml + "\n[modules.unknown_startup_sentinel]\n")
+        rejected = ButlerDaemon(butler_dir, registry=registry)
+        with pytest.raises(ValueError, match="unknown_startup_sentinel"):
+            await rejected.start()
+        db_factory.assert_not_called()
+        migrations.assert_not_awaited()
+        assert not rejected._active_modules
+        assert not any(m.received_butler_name for m in rejected._registry.load_all({}))
+
+        toml.write_text(valid_toml)
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()
+        db_factory.assert_called()
+        migrations.assert_awaited()
 
     stub_mod = next(m for m in daemon._modules if m.name == "stub_capture_name")
     # Daemon must pass self.config.name ("test-butler" from the toml) as butler_name
     assert stub_mod.received_butler_name == "test-butler"
+    # Whole-roster production discovery/selection/lifecycle. External provider
+    # hooks are synthetic; SelfHealingModule hooks and registration execute.
+    from fastmcp import FastMCP
+
+    from butlers.config import load_config
+    from butlers.modules.registry import default_registry
+    from butlers.modules.self_healing import SelfHealingModule
+
+    class RegisteredBoundary(Exception):
+        pass
+
+    roster_root = Path(__file__).resolve().parents[2] / "roster"
+    rosters = sorted(roster_root.glob("*/butler.toml"))
+    assert len(rosters) == 13
+    for toml_path in rosters:
+        config = load_config(toml_path.parent)
+        assert "self_healing" in config.modules
+        registry = default_registry()
+        discovered = registry.load_all(config.modules)
+        started, registered = [], []
+        patches = _patch_infra()
+        with ExitStack() as stack:
+            for key, factory in patches.items():
+                if not key.startswith("mock_") and key != "FastMCP":
+                    stack.enter_context(factory)
+            stack.enter_context(patch("butlers.lifecycle.FastMCP", FastMCP))
+            stack.enter_context(patch("butlers.cli_auth.persistence.restore_tokens", AsyncMock()))
+            stack.enter_context(patch("butlers.lifecycle._ensure_owner_entity", AsyncMock()))
+            stack.enter_context(patch.object(ButlerDaemon, "_connect_switchboard", AsyncMock()))
+            stack.enter_context(patch.object(ButlerDaemon, "_register_core_tools"))
+            # Provider tool bodies are synthetic; their egress approval config is not this assertion seam.
+            stack.enter_context(
+                patch.object(ButlerDaemon, "_apply_approval_gates", AsyncMock(return_value={}))
+            )
+            stack.enter_context(
+                patch.object(
+                    ButlerDaemon, "_start_mcp_server", AsyncMock(side_effect=RegisteredBoundary)
+                )
+            )
+            for module in discovered:
+                original_start = type(module).on_startup
+                original_register = type(module).register_tools
+
+                async def start_hook(self, *args, _original=original_start, **kwargs):
+                    started.append(self.name)
+                    if isinstance(self, SelfHealingModule):
+                        await _original(self, *args, **kwargs)
+
+                async def registration(self, *args, _original=original_register, **kwargs):
+                    registered.append(self.name)
+                    if isinstance(self, SelfHealingModule):
+                        await _original(self, *args, **kwargs)
+
+                stack.enter_context(patch.object(type(module), "on_startup", start_hook))
+                stack.enter_context(patch.object(type(module), "register_tools", registration))
+                if not isinstance(module, SelfHealingModule):
+                    stack.enter_context(patch.object(type(module), "on_shutdown", AsyncMock()))
+            daemon = ButlerDaemon(tmp_path / config.name, registry=registry)
+            daemon.config = config
+            with pytest.raises(RegisteredBoundary):
+                await daemon.start()
+            expected = [m.name for m in discovered if m.name in config.modules]
+            assert started == expected, (config.name, daemon._module_statuses)
+            assert registered == expected, (config.name, daemon._module_statuses)
+            assert {t.name for t in (await daemon.mcp.list_tools())} == {
+                "report_error",
+                "get_healing_status",
+            }
+            healing = next(m for m in daemon._modules if m.name == "self_healing")
+            assert healing._butler_name == config.name
+            assert healing._pool is patches["mock_pool"]
 
 
 # ---------------------------------------------------------------------------

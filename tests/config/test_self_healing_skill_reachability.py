@@ -1,22 +1,4 @@
-"""bu-402cy: self-healing shared skill claim/symlink consistency guard.
-
-`roster/shared/BUTLER_SKILLS.md` advertises a `self-healing` shared skill in
-every butler's system prompt (the shared file is appended to all rosters —
-see `src/butlers/core/skills.py`). The `self_healing` module is opt-in per
-butler via `[modules.self_healing]` in `butler.toml` (by design — see
-`openspec/changes/archive/2026-03-18-butler-self-healing/design.md`), and no
-roster currently symlinks the shared skill into its `.agents/skills/`
-directory, so no butler can actually read it even if it did enable the
-module. The `BUTLER_SKILLS.md` entry is worded conditionally ("Only present
-when the `self_healing` module is enabled ... for your butler"), mirroring
-the established `cross-butler-delegation` pattern (see
-`test_delegation_guidance_reachability.py`).
-
-This test guards the claim↔reality gap going forward: it does not require
-today's zero rosters to carry the symlink, but if any roster's `butler.toml`
-ever gains `[modules.self_healing]`, that roster must also carry the shared
-skill symlink — otherwise the module's own skill becomes unreachable again.
-"""
+"""All-roster declared RFC 0015 relay guidance reachability."""
 
 from __future__ import annotations
 
@@ -63,8 +45,7 @@ def test_roster_enabling_self_healing_module_carries_the_skill(butler: str) -> N
     the inconsistency this bead fixed for the doc claim.
     """
     config = load_config(ROSTER_DIR / butler)
-    if "self_healing" not in config.modules:
-        pytest.skip(f"{butler} does not enable [modules.self_healing]")
+    assert "self_healing" in config.modules
 
     link = ROSTER_DIR / butler / ".agents" / "skills" / "self-healing"
     assert link.is_symlink(), (
@@ -75,7 +56,7 @@ def test_roster_enabling_self_healing_module_carries_the_skill(butler: str) -> N
     assert (link / "SKILL.md").is_file()
 
 
-def test_no_roster_currently_symlinks_self_healing_skill() -> None:
+def test_every_roster_carries_self_healing_skill() -> None:
     """Documents present-day ground truth (bu-402cy investigation).
 
     No roster symlinks the shared self-healing skill today, because no
@@ -88,4 +69,4 @@ def test_no_roster_currently_symlinks_self_healing_skill() -> None:
         for butler in ROSTERS_WITH_BUTLER_TOML
         if (ROSTER_DIR / butler / ".agents" / "skills" / "self-healing").exists()
     ]
-    assert linked == []
+    assert linked == list(ROSTERS_WITH_BUTLER_TOML)

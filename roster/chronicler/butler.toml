@@ -254,3 +254,6 @@ explicitly-opted-in surface — NOT part of day-close.
 3. Do NOT send any message yourself (no notify(), no summary, no commentary).
    Just report the tool's returned status. That is the entire task.
 """
+
+# RFC 0015: report errors to QA; this module never dispatches locally.
+[modules.self_healing]

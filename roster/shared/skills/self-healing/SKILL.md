@@ -1,251 +1,68 @@
 ---
 name: self-healing
-description: How to report unexpected errors for automated investigation via the report_error and get_healing_status MCP tools.
+description: Report unexpected errors to QA through report_error and inspect read-only healing history.
 ---
 
-# Self-Healing Protocol
+# Report unexpected errors
 
-When you encounter an unexpected error that appears to be a code bug, report it using the `report_error` tool. This triggers automated investigation and a proposed fix via PR — no human intervention needed to start the loop.
+Every roster declares the `self_healing` relay required by accepted RFC 0015.
+Use its tools when available and enabled. QA owns discovery, triage, investigation,
+recovery and publication; the reporting butler does not launch a healing agent.
 
----
-
-## When to Report
-
-**DO report** when:
-- An MCP tool raises an unexpected exception (not a validation error on your input)
-- A database query fails with an unexpected error (table missing, constraint violation, type mismatch)
-- An API call fails in a way that suggests a bug in the integration code
-- A data processing step produces an internal error you cannot recover from
-- You see an error that recurs across multiple attempts with the same input pattern
-
-**DO NOT report** when:
-- The error is caused by invalid user input (that is expected behaviour)
-- It is a transient network error or rate limit (retry first; report only if it persists)
-- You can handle and recover from the error cleanly
-- It is an `asyncio.CancelledError` or `KeyboardInterrupt` (these are intentional)
-- The error is in an external service you do not control (report it to the user instead)
-
----
-
-## How to Report
-
-Call `report_error` with as much structured context as possible:
+When an unexpected exception prevents ordinary work, preserve the original error
+and relevant session evidence. Supply the exception class, a short safe message,
+call site and useful diagnostic reasoning. Do not include credentials, user data
+or personal information. `error_message`, `traceback` and `context` are sensitive
+arguments, but that metadata does not make secret disclosure safe.
 
 ```python
-report_error(
-    error_type="asyncpg.exceptions.UndefinedTableError",   # required: fully qualified class name
-    error_message="relation \"butler_name.missing_table\" does not exist",  # required: exact message
-    traceback="Traceback (most recent call last):...",      # recommended: full traceback
-    call_site="src/butlers/modules/memory/tools/facts.py:memory_store_fact",  # your best guess
-    context="I was storing a new fact for the memory module. The table appears to be missing "
-            "from the schema — likely a migration that was not applied.",
-    tool_name="memory_store_fact",                         # which MCP tool raised the error
-    severity_hint="high",                                  # critical/high/medium/low
-)
-```
-
-### Parameter guidance
-
-| Parameter | What to include |
-|---|---|
-| `error_type` | Fully qualified exception class name. Check `type(exc).__name__` and `type(exc).__module__`. |
-| `error_message` | The exact exception message, unmodified. |
-| `traceback` | The full traceback string. Paste it verbatim — the system sanitises dynamic values. |
-| `call_site` | `<relative-file-path>:<function-name>` of where the error occurred. Omit line number. |
-| `context` | Your analysis (see below). |
-| `tool_name` | The MCP tool name if the error came from a specific tool call. |
-| `severity_hint` | `critical` = data loss/security; `high` = broken functionality; `medium` = degraded behaviour; `low` = cosmetic/non-blocking. |
-
-### Writing the context field
-
-The `context` field is the most valuable input for the healing agent. Include:
-- What operation you were performing and why
-- What you expected to happen vs. what actually happened
-- Relevant parameter patterns (describe types/shapes, NOT actual values)
-- Any hypotheses about the root cause
-- Whether the error is reproducible or intermittent
-
-Keep it under 500 words. Focus on what a developer would need to know to reproduce and fix the bug.
-
----
-
-## Data Safety
-
-**CRITICAL: Never include user data in error reports.**
-
-The healing agent creates a public GitHub PR. Any data you include may become public.
-
-**Never include:**
-- Actual user data values (names, emails, messages, calendar events, financial data)
-- The content of any session prompt or user instructions
-- Credentials, API keys, tokens, or passwords
-- Personally identifiable information of any kind
-- Database contents, user IDs that could be linked to individuals
-
-**Instead, describe patterns and types:**
-- "user's email address" not "john@example.com"
-- "the message body" not the actual message text
-- "a UUID-shaped ID" not the actual UUID value
-- "a date in ISO 8601 format" not the actual date
-
-The system automatically sanitises error messages and tracebacks, but your `context` field is free-form — you are responsible for keeping it clean.
-
----
-
-## Handling Responses
-
-### Accepted
-
-```json
-{"accepted": true, "fingerprint": "abc123...", "attempt_id": "...", "message": "Healing agent dispatched"}
-```
-
-A healing agent has been dispatched to investigate. Continue your session — attempt a workaround if possible, or inform the user the issue has been flagged for investigation. You do not need to wait for the healing agent to finish.
-
-### Already investigating
-
-```json
-{"accepted": false, "reason": "already_investigating", "attempt_id": "...", "message": "This error is already under investigation"}
-```
-
-This exact error is already being worked on. Continue your session — a fix may arrive via PR soon.
-
-### Rejected (other reasons)
-
-```json
-{"accepted": false, "reason": "cooldown", "message": "Cooldown period active..."}
-```
-
-The system has decided not to investigate at this time (cooldown, concurrency cap, circuit breaker, or no model available). This is fine — continue your session normally and do not retry `report_error` for the same error.
-
----
-
-## Checking Status
-
-If you encounter an error you previously reported (same exception type and call site pattern), you can optionally check its status:
-
-```python
-# Check by fingerprint (from a previous report_error response)
-get_healing_status(fingerprint="abc123...")
-
-# List recent attempts for this butler
-get_healing_status()
-```
-
-### Interpreting status
-
-| Status | Meaning |
-|---|---|
-| `investigating` | Healing agent is actively working on a fix |
-| `pr_open` | A fix PR has been created; awaiting human review |
-| `pr_merged` | Fix was merged — the error should resolve after the next deployment |
-| `failed` | Healing agent encountered an error or could not produce a fix |
-| `unfixable` | Agent determined this is not a code bug (external service, data issue) |
-| `timeout` | Agent exceeded the time limit |
-| `anonymization_failed` | Fix was produced but PR was blocked by PII detection |
-
-If status is `pr_merged`, note that a fix was deployed and the error may resolve after a restart.
-
----
-
-## For Healing Agents: Signaling an Unfixable Error
-
-> **This section is for healing agents** — Claude instances spawned inside a healing worktree to investigate a reported error.
-
-After investigating the root cause, you have two outcomes:
-
-### 1. Fixable — commit a code fix
-
-Write the fix, add tests, and commit as normal. The dispatcher detects commits on the branch and opens a PR automatically. Do NOT push yourself.
-
-### 2. Unfixable — create an UNFIXABLE file
-
-If you determine the error is **not a code bug** — for example:
-
-- An external service is down or behaving incorrectly
-- The error is caused by bad user data that needs operator intervention
-- A required infrastructure resource (database table, secret, environment variable) is missing and must be provisioned manually
-- The error is a known limitation with no viable code-level fix
-
-Then signal this by:
-
-1. Create a file named `UNFIXABLE` in the worktree root with a plain-text explanation (≤500 words). Include:
-   - Why this is not a code bug
-   - What the actual root cause is
-   - What a human operator should do to resolve it
-   - Any references to external services or infrastructure involved
-
-2. Commit the file:
-   ```bash
-   git add UNFIXABLE
-   git commit -m "chore: unfixable — <brief reason>"
-   ```
-
-3. Exit normally. The dispatcher detects the `UNFIXABLE` file after your session ends and transitions the attempt to `unfixable` status instead of opening a PR.
-
-**UNFIXABLE file content rules:**
-- Do NOT include user data, credentials, PII, or environment-specific values
-- Describe the problem in terms of system behaviour, not user inputs
-- Keep it factual and actionable for a human operator
-
-**Example UNFIXABLE file:**
-
-```
-Root cause: The external payment processor API is returning HTTP 503 errors.
-This is a transient upstream outage, not a bug in this butler's code.
-
-The API endpoint https://api.payments.example.com/v1/charge returns
-HTTP 503 with body {"error": "service_unavailable"} for all requests.
-
-Recommendation:
-1. Check the payment processor's status page for an active incident.
-2. If the outage persists > 1 hour, consider switching to the backup payment
-   provider configured in butler.toml under [modules.payments.fallback].
-3. No code changes are required — retry once the upstream service recovers.
-```
-
----
-
-## Examples
-
-### Good report
-
-```python
-report_error(
-    error_type="asyncpg.exceptions.ForeignKeyViolationError",
-    error_message="insert or update on table \"events\" violates foreign key constraint",
-    traceback="Traceback (most recent call last):\n  File \"src/butlers/modules/calendar/tools.py\", line 42, in create_event\n    ...",
-    call_site="src/butlers/modules/calendar/tools.py:create_event",
-    context=(
-        "I was trying to create a calendar event for the butler's schedule. "
-        "The foreign key violation suggests the referenced contact_id does not exist "
-        "in the contacts table. This may be a race condition where the contact record "
-        "is created after the event is inserted, or a missing ON CONFLICT clause. "
-        "The error is consistent across multiple attempts with valid-looking contact IDs."
-    ),
-    tool_name="calendar_create_event",
-    severity_hint="high",
-)
-```
-
-### Bad report (contains user data)
-
-```python
-# DO NOT DO THIS
 report_error(
     error_type="ValueError",
-    error_message="Invalid email address",
-    context="User john@example.com tried to schedule a meeting with alice@company.com at 2pm on March 15.",  # NEVER include actual user data
+    error_message="Unexpected synthetic response shape",
+    traceback="optional safe formatted traceback",
+    call_site="module.py:parse_response",
+    context="Expected a response object; observed a list. No user data included.",
+    tool_name="example_tool",
+    severity_hint="medium",
 )
 ```
 
-### Bad report (transient error — should not report)
+The seven actual arguments are `error_type`, `error_message`, optional `traceback`,
+`call_site`, `context`, `tool_name` and `severity_hint` (`critical`, `high`, `medium`,
+`low`). Omit unavailable optional values. The daemon supplies your identity; you
+cannot choose the target or reporting butler. The relay sends at most 200 message
+characters through Switchboard MCP to QA's `report_finding` tool.
+
+`accepted=true` means QA confirmed reception into its volatile report buffer. It
+is not durable finding storage, an investigation, a PR, a merge or a deployed fix.
+The returned fingerprint is a reporter hint; QA independently canonicalizes its
+received input and may derive a different fingerprint for truncated or missing
+call-site input.
+
+`accepted=false` includes an explicit reason: `disabled`, `qa_unavailable`,
+`relay_failed` or `relay_timeout`. The complete relay is bounded by two seconds.
+An uncertain route or timeout may occur after QA received the report; do not
+blindly retry or claim that no central finding exists. Preserve ordinary evidence
+and continue whatever work remains safe. There is no local fallback, retry tool,
+worktree, watchdog or investigation queue in this module.
+
+# Read history
 
 ```python
-# DO NOT DO THIS for rate limits or transient network errors
-report_error(
-    error_type="httpx.TimeoutException",
-    error_message="Request timed out",
-    context="The API timed out.",  # Retry first; only report if it's a systemic bug
-)
+get_healing_status(fingerprint="<reporter fingerprint>")
+get_healing_status()  # the five most recent attempts for this butler
 ```
+
+This is read-only historical attempt status. A missing row does not prove that QA
+never received a report, and an existing legacy active row does not block relay.
+A merged PR does not prove deployment. Do not use status or relay reception to
+promise a fixed running system. QA retains its own recursion barrier for QA-origin
+reports and its existing trusted investigation/publication workflow.
+
+# Configuration and unavailable tools
+
+`[modules.self_healing]` enables relay admission by default; `enabled=false` refuses
+reports. The five legacy dispatch threshold keys remain accepted but cannot set
+QA policy. Failed or user-disabled module state stays visible through daemon state.
+If the tools are unavailable, preserve the source evidence; do not create a local
+investigation or use unregistered tool names. `retry_healing` is not a relay tool.

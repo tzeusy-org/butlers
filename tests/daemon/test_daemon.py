@@ -1195,6 +1195,8 @@ async def _get_status_fn(butler_dir, patches, *, registry=None):
 
 async def test_status_tool(butler_dir: Path, butler_dir_with_modules: Path) -> None:
     """status() returns correct info fields; with modules lists their names; health=ok on SELECT 1."""
+    # Both fixtures share tmp_path; construct the intended declaration set at each phase.
+    _make_butler_toml(butler_dir)
     # No modules: basic fields + health=ok
     patches = _patch_infra()
     patches["mock_pool"].fetchval = AsyncMock(return_value=1)
@@ -1209,7 +1211,8 @@ async def test_status_tool(butler_dir: Path, butler_dir_with_modules: Path) -> N
     assert isinstance(result["uptime_seconds"], float)
     patches["mock_pool"].fetchval.assert_awaited_with("SELECT 1")
 
-    # With modules: module names and active statuses returned
+    # With modules: declarations must match the registry supplied to this fixture.
+    _make_butler_toml(butler_dir_with_modules, modules={"stub_a": {}, "stub_b": {}})
     registry = _make_registry(StubModuleA, StubModuleB)
     patches2 = _patch_infra()
     _, status_fn2 = await _get_status_fn(butler_dir_with_modules, patches2, registry=registry)

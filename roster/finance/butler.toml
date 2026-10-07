@@ -104,3 +104,6 @@ name = "calendar_overlay_contribution"
 cron = "50 6 * * *"
 dispatch_mode = "job"
 job_name = "calendar_overlay_contribution"
+
+# RFC 0015: report errors to QA; this module never dispatches locally.
+[modules.self_healing]

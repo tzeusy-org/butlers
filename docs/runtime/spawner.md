@@ -156,9 +156,15 @@ The session row is updated with the output, merged tool calls, duration, token u
 
 If the memory module is enabled and the session produced output, the spawner stores the session as an episode for future retrieval.
 
-## Self-Healing Integration
+## Central QA error discovery
 
-The spawner can be wired to a self-healing module via `wire_healing_module()`. When a session fails with a hard crash, the spawner's exception handler fires `dispatch_healing()` as a background task, which analyzes the failure and may attempt automatic recovery.
+Spawner failures retain their ordinary session error, captured effects, process logs,
+reset, audit and finally cleanup. The Spawner does not dispatch investigations.
+Accepted [RFC 0015](../../about/legends-and-lore/rfcs/0015-qa-staffer-discovery-investigation-pipeline.md)
+assigns independent session/log discovery and investigation to QA. Registered
+`report_error` relays agent-reported errors through Switchboard MCP; confirmed
+reception is not a dispatched investigation or deployed fix. An undelivered reply
+remains a persisted delivery failure without failover or local investigation.
 
 ## Adapter Pool
 

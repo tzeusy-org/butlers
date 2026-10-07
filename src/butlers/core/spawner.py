@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -706,9 +705,6 @@ class Spawner:
         self._metrics.ensure_registered()
         self._mcp_warmup_lock = asyncio.Lock()
         self._warmed_mcp_urls: set[str] = set()
-        # Self-healing module reference — wired by the daemon after module startup.
-        # When non-None, the spawner fallback fires on hard crashes.
-        self._healing_module: Any = None
 
         if runtime is not None:
             self._runtime = runtime
@@ -734,22 +730,6 @@ class Spawner:
                 DEFAULT_RUNTIME_TYPE: self._runtime,
             }
             self._adapter_pool_cfg = {DEFAULT_RUNTIME_TYPE: ""}
-
-    def wire_healing_module(self, healing_module: Any) -> None:
-        """Wire the self-healing module for spawner fallback dispatch.
-
-        Called by the butler daemon after the self-healing module's
-        ``on_startup()`` completes.  When wired, the spawner's except block
-        fires ``dispatch_healing()`` as a background task on hard crashes.
-
-        Parameters
-        ----------
-        healing_module:
-            A :class:`~butlers.modules.self_healing.SelfHealingModule` instance
-            (typed as ``Any`` to avoid a circular import).  Pass ``None`` to
-            unwire.
-        """
-        self._healing_module = healing_module
 
     @property
     def codex_auth_authority(self) -> CredentialStore | None:
@@ -3576,10 +3556,6 @@ class Spawner:
             return spawner_result
 
         except Exception as exc:
-            # Capture exc_info FIRST — before any cleanup code runs.
-            # The traceback object is live only until cleanup clears the frame.
-            _exc_type, _exc_value, _exc_tb = sys.exc_info()
-
             # Collect any tool calls captured before the failure (best-effort).
             # consume rather than discard so we preserve what ran before the error.
             # If the MCP-discovery recovery path already consumed the buffer to
@@ -3749,85 +3725,6 @@ class Spawner:
                 result="error",
                 error=error_msg,
             )
-
-            # Self-healing spawner fallback — secondary path for hard crashes.
-            # Fires only when:
-            #   1. trigger_source != "healing" (no recursive healing)
-            #   2. The self-healing module is loaded and wired
-            #   3. We have a DB pool and a valid session_id
-            if (
-                trigger_source != "healing"
-                and self._healing_module is not None
-                and self._pool is not None
-                and session_id is not None
-                and _exc_value is not None
-            ):
-                try:
-                    from butlers.core.healing import HealingConfig, dispatch_healing
-
-                    _healing_cfg_dict = {}
-                    _healing_cfg = getattr(self._healing_module, "_config", None)
-                    if _healing_cfg is not None and hasattr(_healing_cfg, "model_dump"):
-                        _healing_cfg_dict = _healing_cfg.model_dump()
-                    healing_config = HealingConfig.from_module_config(_healing_cfg_dict)
-
-                    # Resolve repo_root from the healing module if wired
-                    _repo_root = getattr(self._healing_module, "_repo_root", Path("."))
-
-                    # Resolve GH_TOKEN for PR creation
-                    _gh_token: str | None = None
-                    if self._credential_store is not None:
-                        try:
-                            _gh_token = await self._credential_store.resolve("GH_TOKEN")
-                        except Exception as _cred_exc:
-                            logger.debug(
-                                "Failed to resolve %s from credential store: %s",
-                                "GH_TOKEN",
-                                _cred_exc,
-                            )
-                    if _gh_token is None:
-                        _gh_token = os.environ.get("GH_TOKEN")
-
-                    _task_registry: list[asyncio.Task] | None = None
-                    if self._healing_module is not None and hasattr(
-                        self._healing_module, "_watchdog_tasks"
-                    ):
-                        _task_registry = self._healing_module._watchdog_tasks
-
-                    _fallback_task = asyncio.create_task(
-                        dispatch_healing(
-                            pool=self._pool,
-                            butler_name=self._config.name,
-                            session_id=session_id,
-                            fingerprint_input=(_exc_value, _exc_tb),
-                            config=healing_config,
-                            repo_root=_repo_root,
-                            spawner=self,
-                            agent_context=None,  # Hard crash — no agent context
-                            trigger_source=trigger_source,
-                            gh_token=_gh_token,
-                            task_registry=_task_registry,
-                            metrics=self._metrics,
-                        ),
-                        name=f"healing-fallback-{session_id}",
-                    )
-
-                    def _log_fallback_error(t: asyncio.Task) -> None:
-                        if not t.cancelled() and t.exception() is not None:
-                            logger.warning(
-                                "Self-healing fallback task failed (session=%s): %s",
-                                session_id,
-                                t.exception(),
-                            )
-
-                    _fallback_task.add_done_callback(_log_fallback_error)
-
-                except Exception:
-                    logger.warning(
-                        "Failed to schedule self-healing fallback for session %s",
-                        session_id,
-                        exc_info=True,
-                    )
 
             return spawner_result
 

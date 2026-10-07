@@ -97,3 +97,6 @@ dispatch_mode = "job"
 job_name = "context_producer_home_presence"
 
 [modules.google_drive]
+
+# RFC 0015: report errors to QA; this module never dispatches locally.
+[modules.self_healing]
