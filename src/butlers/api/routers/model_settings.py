@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -23,7 +24,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr, field_validator
 
 import butlers.api.routers.audit as audit
 from butlers.api.audit_emit import authenticated_principal
@@ -78,6 +79,7 @@ class ModelCatalogEntry(BaseModel):
     id: UUID
     alias: str
     runtime_type: str
+    allowance_account: str | None = None
     model_id: str
     extra_args: list[str] = Field(default_factory=list)
     complexity_tier: str
@@ -181,7 +183,20 @@ class DispatchAttemptEntry(BaseModel):
     resolution_receipt: dict[str, Any] | None = None
 
 
-class ModelCatalogCreate(BaseModel):
+class _AllowanceAccountInput(BaseModel):
+    """Labels group allowance state; they never select runtime credentials."""
+
+    allowance_account: StrictStr | None = None
+
+    @field_validator("allowance_account")
+    @classmethod
+    def validate_allowance_account(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value) is None:
+            raise ValueError("Use 1-64 lowercase letters, digits, underscores or hyphens")
+        return value
+
+
+class ModelCatalogCreate(_AllowanceAccountInput):
     """Request body for creating a catalog entry."""
 
     alias: str
@@ -195,7 +210,7 @@ class ModelCatalogCreate(BaseModel):
     capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
-class ModelCatalogUpdate(BaseModel):
+class ModelCatalogUpdate(_AllowanceAccountInput):
     """Request body for updating a catalog entry (all fields optional)."""
 
     alias: str | None = None
@@ -417,6 +432,7 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
         id=row["id"],
         alias=row["alias"],
         runtime_type=row["runtime_type"],
+        allowance_account=_row_value(row, "allowance_account", None),
         model_id=row["model_id"],
         extra_args=_coerce_extra_args(_row_value(row, "extra_args")),
         complexity_tier=row["complexity_tier"],
@@ -566,7 +582,7 @@ async def list_catalog_entries(
             mc.id, mc.alias, mc.runtime_type, mc.model_id, mc.extra_args,
             mc.complexity_tier, mc.enabled, mc.priority, mc.session_timeout_s,
             mc.last_verified_at, mc.last_verified_latency_ms, mc.last_verified_ok,
-            mc.last_verified_error, mc.capabilities,
+            mc.last_verified_error, mc.capabilities, mc.allowance_account,
             COALESCE(ua.usage_24h, 0) AS usage_24h,
             COALESCE(ua.usage_30d, 0) AS usage_30d,
             tl.limit_24h,
@@ -700,12 +716,12 @@ async def create_catalog_entry(
                 INSERT INTO public.model_catalog
                     (
                         alias, runtime_type, model_id, extra_args, complexity_tier,
-                        enabled, priority, session_timeout_s, capabilities
+                        enabled, priority, session_timeout_s, capabilities, allowance_account
                     )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
                 RETURNING id, alias, runtime_type, model_id, extra_args,
                           complexity_tier, enabled, priority, session_timeout_s,
-                          capabilities
+                          capabilities, allowance_account
                 """,
                 body.alias,
                 body.runtime_type,
@@ -716,6 +732,7 @@ async def create_catalog_entry(
                 body.priority,
                 body.session_timeout_s,
                 capabilities,
+                body.allowance_account,
             )
         except asyncpg.UniqueViolationError:
             raise HTTPException(
@@ -757,6 +774,8 @@ async def update_catalog_entry(
         _validate_complexity_tier(body.complexity_tier)
 
     updates = body.model_dump(exclude_none=True)
+    if "allowance_account" in body.model_fields_set:
+        updates["allowance_account"] = body.allowance_account
     if not updates:
         raise HTTPException(status_code=422, detail="No fields provided to update")
 
@@ -786,7 +805,7 @@ async def update_catalog_entry(
         f"UPDATE public.model_catalog SET {', '.join(set_parts)} "
         f"WHERE id = ${idx} "
         "RETURNING id, alias, runtime_type, model_id, extra_args, "
-        "complexity_tier, enabled, priority, session_timeout_s, capabilities, "
+        "complexity_tier, enabled, priority, session_timeout_s, capabilities, allowance_account, "
         "last_verified_at, last_verified_latency_ms, last_verified_ok, last_verified_error"
     )
 
@@ -917,7 +936,7 @@ async def update_model_priority(
         RETURNING id, alias, runtime_type, model_id, extra_args,
                   complexity_tier, enabled, priority, session_timeout_s,
                   last_verified_at, last_verified_latency_ms, last_verified_ok,
-                  last_verified_error
+                  last_verified_error, allowance_account
         """,
         body.delta,
         entry_id,

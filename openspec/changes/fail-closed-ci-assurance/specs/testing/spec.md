@@ -1,6 +1,6 @@
 # CI assurance contract
 
-The complete bu-ly3lv5.1 outcome is retained. M1 alone is released for source implementation; every unfinished coverage/timeout/observer task remains mandatory and unchecked.
+The complete bu-ly3lv5.1 outcome is retained. M1 is delivered and M2 is released for source implementation; every unfinished coverage observation, timeout and observer task remains mandatory and unchecked.
 
 ## MODIFIED Requirements
 
@@ -144,6 +144,8 @@ Scope: v1-mandatory
 - **THEN** coverage downloads all ten distinct non-empty shard artifacts, combines them, uploads the existing combined report and updates the badge
 - **AND** coverage is not a prerequisite or required status of check/guards/frontend
 - **AND** every input is read and validated individually before combination; combine warnings or a nine-of-ten partial success cannot publish a report or badge
+- **AND** each input is bound to the actual checkout, workflow run and attempt, declared lane/shard and current selected manifest by producer metadata and a raw-file digest
+- **AND** the exact ten-file population has readable CoverageData, the complete current measured source population and compatible tracing; extra, stale or mixed evidence fails before report/badge outputs
 
 #### Scenario: Reporting failure remains visible without falsifying gate evidence
 - **WHEN** a planted shard coverage artifact is missing/empty/corrupt or the reporting step fails

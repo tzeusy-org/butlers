@@ -182,7 +182,9 @@ class TestAccountScopedExclusion:
         after_live = await next_same_tier_candidate(pool, "general", "workhorse", [live])
         assert after_live is None, (dead_hi, dead_lo)
 
-    async def test_allowance_account_column_groups_entries_across_runtime_types(self, pool) -> None:
+    async def test_allowance_account_column_groups_entries_across_runtime_types(
+        self, pool, migrated_db_url
+    ) -> None:
         a = await _entry(pool, "a", runtime_type="codex", allowance_account="shared-plan")
         b = await _entry(pool, "b", runtime_type="opencode", allowance_account="shared-plan")
         c = await _entry(pool, "c", runtime_type="claude")
@@ -190,6 +192,153 @@ class TestAccountScopedExclusion:
 
         nxt = await next_same_tier_candidate(pool, "general", "workhorse", [])
         assert nxt is not None and nxt[3] == c, (a, b)
+
+        # Preserve the cross-runtime grouping proof above, then exercise the
+        # missing writer seam via the actual mounted API and three SQL consumers.
+        from types import SimpleNamespace
+
+        import httpx
+
+        from butlers.api.routers import model_settings
+        from butlers.db import register_jsonb_codec
+        from tests.api.auth_helpers import create_authenticated_domain_app
+        from tests.three_seams_helpers import baseline_function
+
+        # This dedicated codec-aware pool does not change the old string-JSON fixture.
+        api_pool = await asyncpg.create_pool(
+            migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+        )
+        try:
+            await api_pool.execute(
+                "TRUNCATE public.provider_allowance_states, public.model_catalog CASCADE"
+            )
+            db = SimpleNamespace(credential_shared_pool=lambda: api_pool)
+            old_writer = baseline_function("create_catalog_entry", vars(model_settings))
+            # Historical writer executes its real INSERT but drops the requested label.
+            for alias, account, priority in [("old-a", "acct-a", 90), ("old-b", "acct-b", 80)]:
+                await old_writer(
+                    model_settings.ModelCatalogCreate(
+                        alias=alias,
+                        runtime_type="codex",
+                        model_id=alias,
+                        allowance_account=account,
+                        priority=priority,
+                    ),
+                    db,
+                )
+            old_rows = await api_pool.fetch(
+                "SELECT id,allowance_account FROM public.model_catalog ORDER BY alias"
+            )
+            assert len(old_rows) == 2 and all(r["allowance_account"] is None for r in old_rows)
+            await mark_allowance_exhausted(
+                api_pool, old_rows[0]["id"], reset_at=_later(), attempt_id=None
+            )
+            clear_routing_decision_cache()
+            assert await resolve_model(api_pool, "general", Complexity.WORKHORSE) is None
+            assert await next_same_tier_candidate(api_pool, "general", "workhorse", []) is None
+            old_dispatch = await resolve_dispatch(
+                api_pool,
+                "general",
+                derive_dispatch_intent("external", Complexity.WORKHORSE),
+                allow_tier_fallthrough=False,
+            )
+            assert old_dispatch.selection is None
+            assert all(
+                c.outcome is CandidateOutcome.EXCLUDED_ALLOWANCE for c in old_dispatch.candidates
+            )
+
+            await api_pool.execute(
+                "TRUNCATE public.provider_allowance_states, public.model_catalog CASCADE"
+            )
+            app = create_authenticated_domain_app()
+            app.dependency_overrides[model_settings._get_db_manager] = lambda: db
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                entries = {}
+                for alias, account, priority in [
+                    ("same-a", "acct-a", 90),
+                    ("same-b", "acct-b", 80),
+                    ("sibling-a", "acct-a", 70),
+                    ("sentinel", "acct-c", 10),
+                ]:
+                    created = await client.post(
+                        "/api/settings/models",
+                        json={
+                            "alias": alias,
+                            "runtime_type": "codex",
+                            "model_id": alias,
+                            "allowance_account": account,
+                            "priority": priority,
+                        },
+                    )
+                    assert created.status_code == 201, created.text
+                    assert created.json()["data"]["allowance_account"] == account
+                    entries[alias] = uuid.UUID(created.json()["data"]["id"])
+                async with api_pool.acquire() as readback:
+                    actual = await readback.fetch(
+                        "SELECT alias,runtime_type,allowance_account FROM public.model_catalog"
+                    )
+                assert {r["alias"]: r["allowance_account"] for r in actual} == {
+                    "same-a": "acct-a",
+                    "same-b": "acct-b",
+                    "sibling-a": "acct-a",
+                    "sentinel": "acct-c",
+                }
+                assert {r["runtime_type"] for r in actual} == {"codex"}
+                await mark_allowance_exhausted(
+                    api_pool, entries["same-a"], reset_at=_later(), attempt_id=None
+                )
+                clear_routing_decision_cache()
+                resolved = await resolve_model(api_pool, "general", Complexity.WORKHORSE)
+                assert resolved is not None and resolved[3] == entries["same-b"]
+                nxt = await next_same_tier_candidate(api_pool, "general", "workhorse", [])
+                assert nxt is not None and nxt[3] == entries["same-b"]
+                resolution = await resolve_dispatch(
+                    api_pool,
+                    "general",
+                    derive_dispatch_intent("external", Complexity.WORKHORSE),
+                    allow_tier_fallthrough=False,
+                )
+                assert (
+                    resolution.selection is not None
+                    and resolution.selection[3] == entries["same-b"]
+                )
+                outcomes = {c.catalog_entry_id: c.outcome for c in resolution.candidates}
+                assert outcomes[entries["same-a"]] is CandidateOutcome.EXCLUDED_ALLOWANCE
+                assert outcomes[entries["sibling-a"]] is CandidateOutcome.EXCLUDED_ALLOWANCE
+                assert outcomes[entries["sentinel"]] is not CandidateOutcome.EXCLUDED_ALLOWANCE
+                for body, expected in [
+                    ({"priority": 81}, "acct-b"),
+                    ({"allowance_account": "acct-d"}, "acct-d"),
+                    ({"allowance_account": None}, None),
+                ]:
+                    updated = await client.put(
+                        f"/api/settings/models/{entries['same-b']}", json=body
+                    )
+                    assert (
+                        updated.status_code == 200
+                        and updated.json()["data"]["allowance_account"] == expected
+                    )
+                    assert (
+                        await api_pool.fetchval(
+                            "SELECT allowance_account FROM public.model_catalog WHERE id=$1",
+                            entries["same-b"],
+                        )
+                        == expected
+                    )
+                stepped = await client.put(
+                    f"/api/settings/models/{entries['same-a']}/priority", json={"delta": 1}
+                )
+                assert (
+                    stepped.status_code == 200
+                    and stepped.json()["data"]["allowance_account"] == "acct-a"
+                )
+                listed = await client.get("/api/settings/models")
+                assert listed.status_code == 200 and len(listed.json()["data"]) == 4
+        finally:
+            clear_routing_decision_cache()
+            await api_pool.close()
 
     async def test_exclusion_lifts_at_reset_at(self, pool) -> None:
         only = await _entry(pool, "codex-only", runtime_type="codex")

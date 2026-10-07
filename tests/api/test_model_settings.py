@@ -47,6 +47,7 @@ def _make_catalog_row(
     priority=0,
     session_timeout_s=1800,
     extra_args=None,
+    allowance_account=None,
 ):
     return {
         "id": entry_id or uuid.uuid4(),
@@ -54,6 +55,7 @@ def _make_catalog_row(
         "runtime_type": runtime_type,
         "model_id": model_id,
         "extra_args": json.dumps(extra_args or []),
+        "allowance_account": allowance_account,
         "complexity_tier": complexity_tier,
         # effective_tier mirrors complexity_tier in mock rows (SQL alias for
         # COALESCE(bmo.complexity_tier, mc.complexity_tier) in _RESOLVE_SQL).
@@ -125,7 +127,9 @@ def _app_with_pool(
 async def test_catalog_list_and_503(app):
     rows = [
         _make_catalog_row(alias="claude-haiku", complexity_tier="cheap"),
-        _make_catalog_row(alias="claude-sonnet", complexity_tier="workhorse"),
+        _make_catalog_row(
+            alias="claude-sonnet", complexity_tier="workhorse", allowance_account="plan-b"
+        ),
     ]
     # Happy path. Breaker state (bu-hmdqz.2) and routing score (bu-ep4ks.13)
     # are each fetched via a second, differently-shaped query
@@ -150,6 +154,7 @@ async def test_catalog_list_and_503(app):
             resp = await client.get("/api/settings/models")
     assert resp.status_code == 200
     assert len(resp.json()["data"]) == 2
+    assert [r["allowance_account"] for r in resp.json()["data"]] == [None, "plan-b"]
     assert resp.json()["data"][0]["breaker_open"] is False
     assert resp.json()["data"][0]["routing_score_insufficient_data"] is True
     breaker_batch.assert_awaited_once()
@@ -228,6 +233,19 @@ async def test_catalog_create_error_paths(
     ) as client:
         resp = await client.post("/api/settings/models", json=payload)
     assert resp.status_code == expected
+    if expected == 201:
+        assert resp.json()["data"]["allowance_account"] is None
+        invalid = [True, False, 12, 1.5, [], {}, "", " ", "a\n", "a\nb", "Upper", "a.b", "a" * 65]
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for account in invalid:
+                _, pool = _app_with_pool(app, fetchrow_result=created_row)
+                bad = await client.post(
+                    "/api/settings/models", json={**payload, "allowance_account": account}
+                )
+                assert bad.status_code == 422, repr(account)
+                pool.fetchrow.assert_not_awaited()
 
 
 async def test_catalog_create_writes_audit_on_success(app, audit_append_spy, monkeypatch):
@@ -237,7 +255,9 @@ async def test_catalog_create_writes_audit_on_success(app, audit_append_spy, mon
         lambda: "server-owner",
     )
     entry_id = uuid.uuid4()
-    created_row = _make_catalog_row(entry_id=entry_id, alias="new-model")
+    created_row = _make_catalog_row(
+        entry_id=entry_id, alias="new-model", allowance_account="plan-a"
+    )
     _, mock_pool = _app_with_pool(app, fetchrow_result=created_row)
 
     async with httpx.AsyncClient(
@@ -250,10 +270,13 @@ async def test_catalog_create_writes_audit_on_success(app, audit_append_spy, mon
                 "runtime_type": "codex",
                 "model_id": "gpt-5",
                 "complexity_tier": "workhorse",
+                "allowance_account": "plan-a",
             },
         )
 
     assert resp.status_code == 201
+    assert resp.json()["data"]["allowance_account"] == "plan-a"
+    assert mock_pool.fetchrow.await_args.args[-1] == "plan-a"
     route_calls = [
         call
         for call in audit_append_spy.call_args_list
@@ -411,7 +434,7 @@ async def test_resolve_model_preview_200_and_422_for_invalid(app):
 async def test_priority_stepper_200_and_clamp_at_zero(app, audit_append_spy):
     """PUT /api/settings/models/{id}/priority adjusts priority and calls audit.append."""
     entry_id = uuid.uuid4()
-    updated_row = _make_catalog_row(entry_id=entry_id, priority=5)
+    updated_row = _make_catalog_row(entry_id=entry_id, priority=5, allowance_account="plan-a")
     _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
 
     async with httpx.AsyncClient(
@@ -423,6 +446,7 @@ async def test_priority_stepper_200_and_clamp_at_zero(app, audit_append_spy):
         )
     assert resp.status_code == 200
     assert resp.json()["data"]["priority"] == 5
+    assert resp.json()["data"]["allowance_account"] == "plan-a"
     # The route emits an explicit audit entry with action "model.priority"; the
     # dashboard_audit_middleware ALSO routes through the same canonical
     # audit.append() spy as a fire-and-forget task, so the total count races
@@ -655,7 +679,11 @@ async def test_update_catalog_entry_200_writes_audit(app, audit_append_spy):
     """PUT /api/settings/models/{id} returns 200 and calls audit.append('model.update')."""
     entry_id = uuid.uuid4()
     updated_row = _make_catalog_row(
-        entry_id=entry_id, alias="renamed", complexity_tier="cheap", priority=3
+        entry_id=entry_id,
+        alias="renamed",
+        complexity_tier="cheap",
+        priority=3,
+        allowance_account="plan-b",
     )
     _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
 
@@ -689,6 +717,45 @@ async def test_update_catalog_entry_200_writes_audit(app, audit_append_spy):
     )
     assert route_calls[0].kwargs["target"] == str(entry_id)
     assert route_calls[0].kwargs["result"] == "success"
+
+    # Omission preserves the stored label; a null-only edit explicitly clears it.
+    assert data["allowance_account"] == "plan-b"
+    assert "allowance_account =" not in mock_pool.fetchrow.await_args.args[0]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for account in ("plan-c", "0_plan-x", "a" * 64, None):
+            _, pool = _app_with_pool(
+                app, fetchrow_result={**updated_row, "allowance_account": account}
+            )
+            changed = await client.put(
+                f"/api/settings/models/{entry_id}", json={"allowance_account": account}
+            )
+            assert changed.status_code == 200
+            assert changed.json()["data"]["allowance_account"] == account
+            sql, *params = pool.fetchrow.await_args.args
+            assert "allowance_account = $1" in sql and params == [account, entry_id]
+        for account in (
+            True,
+            False,
+            12,
+            1.5,
+            [],
+            {},
+            "",
+            " ",
+            "a\n",
+            "a\nb",
+            "Upper",
+            "a.b",
+            "a" * 65,
+        ):
+            _, pool = _app_with_pool(app, fetchrow_result=updated_row)
+            bad = await client.put(
+                f"/api/settings/models/{entry_id}", json={"allowance_account": account}
+            )
+            assert bad.status_code == 422, repr(account)
+            pool.fetchrow.assert_not_awaited()
 
 
 async def test_update_catalog_entry_422_invalid_tier(app, audit_append_spy):

@@ -939,6 +939,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Alias
 - Warning: Changing the alias may break existing butler override references.
 - Runtime type
+- Allowance account
+- Optional account label; blank uses runtime default.
 - Model ID
 - Complexity tier
 - Priority
@@ -4847,4 +4849,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3855*
+*Total strings: 3857*

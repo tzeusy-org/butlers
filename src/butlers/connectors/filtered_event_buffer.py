@@ -76,6 +76,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from butlers.ingestion_bearer_scrub import scrub_filtered_preview
+
 if TYPE_CHECKING:
     import asyncpg
 
@@ -337,7 +339,12 @@ class FilteredEventBuffer:
                 external_message_id,
                 source_channel,
                 sender_identity,
-                subject_or_preview,
+                scrub_filtered_preview(
+                    subject_or_preview,
+                    connector_type=self._connector_type,
+                    sender_identity=sender_identity,
+                    full_payload=full_payload,
+                ),
                 filter_reason,
                 status,
                 # Sanitize to JSON-safe primitives (e.g. datetimes -> str via

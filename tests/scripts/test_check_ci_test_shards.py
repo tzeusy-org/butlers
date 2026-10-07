@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -166,6 +167,8 @@ def test_lane_local_validation_allows_a_mixed_marker_file_in_both_lanes(
 def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("CI_COVERAGE", raising=False)
+    subprocess_run = subprocess.run
     _write_test_file(tmp_path, "tests/test_a.py")
     _write_manifest(tmp_path, "unit", 1, "tests/test_a.py\n")
     coverage_file = tmp_path / "coverage-unit-1.data"
@@ -201,6 +204,90 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
     assert "--cov=src/butlers" in command
     assert f"--junitxml={evidence_dir / 'raw-junit.xml'}" in command
     assert captured["kwargs"]["env"]["COVERAGE_FILE"] == str(coverage_file)
+
+    # Both exact opt-ins keep the entire lane command outside instrumentation.
+    original = command[:]
+    for flag in ("0", "1"):
+        monkeypatch.setenv("CI_COVERAGE", flag)
+        assert (
+            shards.run_shard(
+                lane="unit",
+                shard=1,
+                repo_root=tmp_path,
+                coverage_file=coverage_file if flag == "1" else None,
+                evidence_dir=evidence_dir,
+            )
+            == 0
+        )
+        selected = captured["command"]
+        assert [arg for arg in selected if not arg.startswith("--cov")] == [
+            arg for arg in original if not arg.startswith("--cov")
+        ]
+        assert any(arg.startswith("--cov") for arg in selected) == (flag == "1")
+        assert ("COVERAGE_FILE" in captured["kwargs"]["env"]) == (flag == "1")
+    for bad in ("", "true", "false", " 1", "1 ", "2"):
+        monkeypatch.setenv("CI_COVERAGE", bad)
+        with pytest.raises(ValueError, match="CI_COVERAGE"):
+            shards.run_shard(
+                lane="unit",
+                shard=1,
+                repo_root=tmp_path,
+                coverage_file=None,
+                evidence_dir=evidence_dir,
+            )
+    monkeypatch.setenv("CI_COVERAGE", "1")
+    with pytest.raises(ValueError, match="COVERAGE_FILE"):
+        shards.run_shard(
+            lane="unit",
+            shard=1,
+            repo_root=tmp_path,
+            coverage_file=None,
+            evidence_dir=evidence_dir,
+        )
+
+    # Execute real pytest/pytest-cov with the same selector/three workers, rather
+    # than infer output files from a mocked command. No project or Docker fixture.
+    with monkeypatch.context() as real:
+        for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_EVENT_NAME"):
+            real.delenv(name, raising=False)
+        real.setattr(shards.subprocess, "run", subprocess_run)
+        source = tmp_path / "src/butlers/example.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("value = 7\n")
+        (tmp_path / "tests/test_a.py").write_text(
+            "import runpy\ndef test_example():\n"
+            "    assert runpy.run_path('src/butlers/example.py')['value'] == 7\n"
+        )
+        receipts = []
+        for flag in ("0", "1"):
+            real.setenv("CI_COVERAGE", flag)
+            data = tmp_path / f"actual-{flag}/coverage.data"
+            evidence = tmp_path / f"actual-{flag}/evidence"
+            assert (
+                shards.run_shard(
+                    lane="unit",
+                    shard=1,
+                    repo_root=tmp_path,
+                    coverage_file=data if flag == "1" else None,
+                    evidence_dir=evidence,
+                )
+                == 0
+            )
+            assert (evidence / "raw-junit.xml").is_file()
+            assert data.exists() == (flag == "1")
+            assert (evidence / "coverage.json").exists() == (flag == "1")
+            assert data.with_suffix(".data.metadata.json").exists() == (flag == "1")
+            receipts.append(
+                {
+                    "flag": flag,
+                    "pytest_exit": 0,
+                    "junit": True,
+                    "coverage_data": data.exists(),
+                    "coverage_json": (evidence / "coverage.json").exists(),
+                }
+            )
+        (tmp_path / "coverage-mode-controls.json").write_text(json.dumps(receipts, indent=2))
+        print(f"coverage mode receipt: {tmp_path / 'coverage-mode-controls.json'}")
 
 
 def test_run_shard_retains_auto_workers_for_integration(

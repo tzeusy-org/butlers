@@ -161,8 +161,20 @@ Tests can use this to skip gracefully when Docker is not installed.
   recovery policy and frozen dev synchronization. Their command scopes match the former
   preflight commands and local `make check-guards`. Exact-once manifests, collected budgets,
   smoke/release cmd/SHA/duration/status/skips and sanitized artifacts stay in preflight.
-  Coverage still combines in check; extraction and finite-timeout changes in the active
-  `fail-closed-ci-assurance` plan remain unfinished. M1 makes no wall-clock gain claim.
+  Required check contains only the verdict step. The independent non-required `coverage`
+  job waits directly for all ten successful merge-group shards, reads each raw CoverageData
+  database and its checkout/run/attempt/lane/shard/manifest/digest metadata, requires the
+  complete measured source population and compatible tracing, then combines and publishes
+  the existing report and badge. Missing, empty, corrupt, stale or mismatched inputs fail
+  reporting before publication. Coverage reporting never changes required test verdicts.
+- Heavy shards receive exact `CI_COVERAGE=1` on merge-group and `0` on PRs. The standalone
+  runner defaults to `1`; any supplied value other than literal `0` or `1` fails. Only
+  enabled runs require `COVERAGE_FILE` and produce/upload raw coverage plus metadata. PRs
+  retain the same paths, markers, workers, maxfail and sanitized JUnit evidence without
+  instrumentation. Affected-only runs remain without coverage. Direct local CI targets
+  retain their existing coverage behavior. Actual merge-group uploads and timings remain
+  observation obligations; M1/M2 source changes claim no wall-clock gain. Finite-timeout
+  changes in the active `fail-closed-ci-assurance` plan remain unfinished.
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
   caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
 - Startup timeouts (before a container starts) are host contention: reduce load and rely on the
