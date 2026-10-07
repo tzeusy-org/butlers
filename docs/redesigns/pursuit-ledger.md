@@ -365,8 +365,9 @@ tracker cleanup, and where it is tracked:
 | Consolidation throughput policy (dropped slices) | 05 | bu-de1hrl |
 | Connectors on main outside the v1 connector set | 06, 07 | bu-z1zzu9 (owner decision) |
 | Production deploy path disagrees with topology after three rebuilds | 03-05 | bu-u03nw8 |
-| Run-09 gate closed 2026-09-15 with no recorded actor, open again now | 09 | bu-xf54r (owner record) |
 
 Process lessons: beads from runs 01-04 had no acceptance criteria and closed on merge, which is how
 gaps survived to the next run's QC; early runs often shipped behavior before the spec delta; and
-reconciliation and review beads, not outcomes, drove most of the bead count in runs 05-06.
+reconciliation and review beads, not outcomes, drove most of the bead count in runs 05-06. The run-09
+gate (bu-xf54r) was closed on 2026-09-15 with no recorded actor; the owner confirmed on 2026-10-08
+that it was their release, and the gate was re-closed to ratify it.
