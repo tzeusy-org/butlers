@@ -132,3 +132,24 @@ curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.to
 - [Modules and Connectors](modules-and-connectors.md) --- the module lifecycle and dependency resolution
 - [Tool Call Capture](../runtime/tool-call-capture.md) --- how tool executions are recorded for session logs
 - [LLM CLI Spawner](../runtime/spawner.md) --- how ephemeral MCP configs are generated
+
+## Private fact report admission
+
+The source daemon freezes canonical accepted-row attribution before classification or routing.
+A constructor-owned source registry selects the fixed Relationship resolver and locks the
+public entity lifetime witness. A registered invocation supplies `X-Butlers-Fact-Invocation`;
+a routed hop supplies `X-Butlers-Fact-Source`, verified online at the configured source daemon.
+These ephemeral values bind the target, process incarnation, invocation and expiry. They never
+appear in tool arguments, prompt context, URL query parameters or durable receipts. A runtime
+session locator, copied entity UUID or model-supplied `verified` flag cannot mint admission.
+All supported MCP runtime adapters carry the private headers. Guards clear private context on
+completion, failure and cancellation; accepted-row recovery preserves the original report and
+requires a current receiver processing claim. Restored-history admission is not established
+by these ephemeral registries.
+
+Relationship's public fact tool has no authority, author, `src` or `verified` selector. Internal
+no-request writers preserve their existing SYSTEM policy. Actual owner HTTP requests use the
+adopted OwnerAuth request-admission point: a later revocation may follow an already admitted
+operation. This is not custody currentness or cross-connection commit atomicity. Approval
+execution first binds the original stored tool/argument digest and executor task, then privately
+normalizes obsolete keywords; fact commit and terminal acknowledgment remain separate outcomes.

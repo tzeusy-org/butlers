@@ -126,9 +126,12 @@ async def entity_facts_channels_by_entity(
     """
     if not entity_ids:
         return {}
+    from butlers.tools.relationship.fact_identity_decisions import attribution_select_sql
+
     rows = await pool.fetch(
-        """
-        SELECT ef.subject AS entity_id, ef.id, ef.predicate, ef.object, ef."primary", ef.verified
+        f"""
+        SELECT ef.subject AS entity_id, ef.id, ef.predicate, ef.object, ef."primary", ef.verified,
+               {attribution_select_sql("ef")}
         FROM relationship.entity_facts ef
         WHERE ef.subject = ANY($1)
           AND ef.predicate LIKE 'has-%'

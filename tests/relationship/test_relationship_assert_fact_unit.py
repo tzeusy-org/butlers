@@ -158,6 +158,14 @@ async def test_supersession_insert_is_conflict_safe() -> None:
             "conf": 1.0,
             "verified": False,
             "last_seen": None,
+            "content_authority": None,
+            "authority_entity_id": None,
+            "authority_original_entity_id": None,
+            "authority_entity_created_at": None,
+            "confirmed_by_entity_id": None,
+            "confirmed_by_original_entity_id": None,
+            "confirmed_at": None,
+            "confirmation_source": None,
             **TemporalPacket().wire(),
         }
     )

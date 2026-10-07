@@ -180,3 +180,61 @@ psql -h localhost -U butlers -d butlers -c \
 - [Switchboard Routing](switchboard-routing.md) --- how identity preambles are injected during routing
 - [Modules and Connectors](modules-and-connectors.md) --- how connectors provide sender identity
 - [Trigger Flow](trigger-flow.md) --- how identity-resolved messages become sessions
+
+## Report authority and channel adoption
+
+Relationship stores the original report independently of confidence: content authority, a
+nullable live reporter, the inert original UUID and its source-captured `created_at` witness.
+New report versions use the new admitted reporter. Corrections, confirmation, adoption and
+approval replay retain the selected original report. Authorized Google/Steam entity deletion
+uses the existing subject FK and Relationship's generated `object_entity_id` UUID FK to cascade
+all subject/object versions. Literal objects produce NULL, including UUID-shaped literals;
+malformed entity UUIDs refuse migration rather than being reclassified. The object FK is
+installed `NOT VALID` to preserve existing well-typed orphan history; new reference changes
+must resolve. Reporter-only deletion clears the live link while
+the surviving report explicitly records deleted reporter availability. The original UUID never joins a recreated
+entity. Legacy NULL authority stays resolvable and unknown; no backfill guesses an owner.
+
+Third-party or mixed channel reports on a known person remain candidates. They do not supply
+inbound identity, outbound reachability, coverage, graph edges or established gap answers. The
+protected contact card's exact Adopt/Reject operation records its effects and decision receipt
+in one Relationship transaction. A lost acknowledgment requires decision readback, not an
+automatic resend. Compatible adoption returns the existing active occurrence as an explicit
+survivor, carries the candidate's typed evidence, and retains the superseded candidate and its
+original report. A different packet or ambiguous occurrence refuses without a decision receipt.
+Ordinary candidate reassertion preserves the stored default packet; it cannot clear a known bound.
+Owner confirmation is displayed separately from the original reporter. Responses distinguish
+`owner_asserted`, `owner_confirmed`, `legacy_verified`, and `unconfirmed`. Raw legacy verification
+renders as "Legacy verification: author unknown", including core-date and identity inspector rows.
+Deleted, forgotten and merged reporters are separate unavailable states without a navigation link.
+Only the selected candidate's decision controls are busy during its pending request.
+Adoption serializes canonical recipient slots, including the existing bounded phone suffix
+matches. A merge locks the complete affected slot union in one order. Preferred-channel
+serialization belongs to its actual subject; two reachable people may both prefer email.
+
+Fact approval replay binds the executor's locked original action and argument digest before
+retiring legacy `verified` keys. A standing permission additionally requires its actual
+owner-admitted creation record, `rule_created` and `action_auto_approved` events, stored rule
+birth and unchanged constraints matching the stored action. The subject's owner role is not
+an outbound-message bypass for fact confirmation. An admitted request may finish after a
+later revocation; this does not supply custody's commit-time currentness guarantee.
+
+The fact writer and executor acknowledgement commit on separate connections. If the fact
+handler returns but terminal acknowledgement fails, the result is explicitly unknown and
+retains the fact/action locators. Read the durable fact and action before retrying; replay of
+the same approved record preserves the selected report and avoids a second fact version.
+
+Switchboard has no direct Relationship fact grant. It calls the registered, read-only owning
+`identity_resolve_channels(channel_type, channel_values)` MCP boundary, which preserves the
+canonical normalization and ambiguity rules. The deterministic unidentified-sender hook calls
+`identity_assert_sender_channel` on that same owner; its public-entity reservation still
+deduplicates ingress when the owning writer is unavailable. These results attribute identity;
+they do not authenticate a channel. No channel-mapping revision/current-at-COMMIT guarantee is
+introduced by an entity lifetime witness.
+
+The dashboard's private stamp binds its first admitted turn to the canonical event, source endpoint,
+conversation/thread, sender, body/page context and pinned destination. The owning accepted-source
+reader compares that binding independently before borrowing owner-device attribution. Exact text
+and a copied message UUID alone are insufficient. Transport `observed_at` may change on a retry;
+the original stable binding and report remain frozen. This is request admission under the adopted
+trusted host boundary, not a custody COMMIT fence or external transport authentication proof.

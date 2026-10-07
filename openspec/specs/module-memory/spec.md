@@ -545,30 +545,32 @@ inside content). The value SHALL be one of `owner`, `owner_device`,
 other routed sender (including an unresolved one) yields `third_party`; a
 session with no routing context yields `system`. A write whose authority
 cannot be stamped SHALL fail rather than store an unstamped steering artifact.
+- Consolidation SHALL derive each fact and rule's authority as the weakest across
+  that artifact's validated evidence episodes: all owner-class evidence yields
+  `owner` (or `owner_device` when every episode is), evidence of one identical
+  non-owner authority keeps it, and any other combination, including evidence
+  whose authority is unknown (NULL), yields `mixed`. A consolidation update SHALL
+  NOT supersede an owner-class fact with a non-owner-class one.
+- A rule is *held* when its authority is not owner-class (or is NULL on a legacy
+  row) and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
+  `memory_context` Active Rules, and the discovery catalog (they are not written
+  to it, and any existing catalog row is staled). Profile Facts SHALL admit only
+  owner-class facts; an owner-anchored fact of any other authority SHALL be
+  eligible only for Task-Relevant Facts, rendered with an attribution naming its
+  sender (or marked unverified when the authority is NULL). Legacy rows are never
+  backfilled by guessing; the migration SHALL report how many legacy rules and
+  facts it left unclassified.
+- The owner SHALL be able to endorse a held rule. Endorsement sets `endorsed_at`
+  and `endorsed_by`, makes the rule visible to recall and to the catalog in the
+  same transaction, records an audit event, and is a no-op returning the same
+  receipt when repeated. Endorsement uses compare-and-swap against a retired or
+  forgotten rule: a retired or forgotten rule SHALL NOT be endorsed. Repeat
+  consolidation of an episode SHALL NOT downgrade an endorsed rule.
+- Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.
 
-Consolidation SHALL derive each fact and rule's authority as the weakest across
-that artifact's validated evidence episodes: all owner-class evidence yields
-`owner` (or `owner_device` when every episode is), evidence of one identical
-non-owner authority keeps it, and any other combination, including evidence
-whose authority is unknown (NULL), yields `mixed`. A consolidation update SHALL
-NOT supersede an owner-class fact with a non-owner-class one.
-
-A rule is *held* when its authority is not owner-class (or is NULL on a legacy
-row) and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
-`memory_context` Active Rules, and the discovery catalog (they are not written
-to it, and any existing catalog row is staled). Profile Facts SHALL admit only
-owner-class facts; an owner-anchored fact of any other authority SHALL be
-eligible only for Task-Relevant Facts, rendered with an attribution naming its
-sender (or marked unverified when the authority is NULL). Legacy rows are never
-backfilled by guessing; the migration SHALL report how many legacy rules and
-facts it left unclassified.
-
-The owner SHALL be able to endorse a held rule. Endorsement sets `endorsed_at`
-and `endorsed_by`, makes the rule visible to recall and to the catalog in the
-same transaction, records an audit event, and is a no-op returning the same
-receipt when repeated. Endorsement uses compare-and-swap against a retired or
-forgotten rule: a retired or forgotten rule SHALL NOT be endorsed. Repeat
-consolidation of an episode SHALL NOT downgrade an endorsed rule.
+ID: REQ-module-memory-013
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
+Scope: v1-mandatory
 
 #### Scenario: A third-party routed session cannot create standing guidance
 

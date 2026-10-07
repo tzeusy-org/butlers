@@ -1004,6 +1004,7 @@ async def create_temp_contact(
     pre_resolved_miss: bool = False,
     reservation_state_key: str | None = None,
     raise_on_error: bool = False,
+    resolver: Any = None,
 ) -> ResolvedContact | None:
     """Create a temporary entity for an unknown sender.
 
@@ -1064,13 +1065,14 @@ async def create_temp_contact(
         else f"Unknown ({channel_type} {channel_value})"
     )
     strict_failure: IdentityResolutionQueryError | None = None
+    lookup = resolver or resolve_contact_by_channel
 
     try:
         # Re-check via the triple store to avoid double-creation: if the channel
         # identifier already resolves to an entity, return that instead of
         # minting a duplicate.  This mirrors resolve_contact_by_channel().
         if not pre_resolved_miss:
-            existing_resolved = await resolve_contact_by_channel(
+            existing_resolved = await lookup(
                 pool,
                 lookup_channel_type,
                 channel_value,
@@ -1121,7 +1123,7 @@ async def create_temp_contact(
                 # present, the sender reservation row lock. A fact can land
                 # between the caller's miss and this lock; this strict query is
                 # the only recheck with a concrete race-closing purpose.
-                existing_in_txn = await resolve_contact_by_channel(
+                existing_in_txn = await lookup(
                     conn,
                     lookup_channel_type,
                     channel_value,

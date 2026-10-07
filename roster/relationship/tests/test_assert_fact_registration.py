@@ -74,7 +74,8 @@ async def test_assert_fact_resolvable_via_get_tool():
 async def test_approved_groups_register_expected_relationship_surface():
     """Eight approved groups expose 60 tools plus the mandatory fact writer."""
     names = await _register(_PRODUCTION_GROUPS)
-    assert len(names) == 61
+    assert len(names - {"identity_resolve_channels", "identity_assert_sender_channel"}) == 61
+    assert {"identity_resolve_channels", "identity_assert_sender_channel"} <= names
     assert {
         "address_add",
         "upcoming_dates",

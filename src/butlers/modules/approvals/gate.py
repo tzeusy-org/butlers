@@ -557,9 +557,9 @@ def _make_gate_wrapper(
 
     1. Resolves the target contact from tool_args using channel identity
        extraction and ``resolve_contact_by_channel()``.
-    2. If the target has the ``'owner'`` role: auto-approve immediately (no
-       standing rule required) for an entity-id target or any active, uniquely
-       verified owner channel association.
+    2. An outbound owner target auto-approves for an entity-id target or any
+       active, uniquely verified owner channel association. A Relationship
+       fact subject never supplies this outbound bypass.
     3. If the target has no owner bypass: check standing rules; auto-approve if
        a rule matches, otherwise pend.
     4. If the target is unresolvable: require approval (conservative default).
@@ -634,9 +634,21 @@ def _make_gate_wrapper(
         agent_summary = f"Tool '{tool_name}' called with args: {json.dumps(safe_tool_args)}"
 
         # --- Role-based target resolution ---
-        resolved_contact = await resolve_action_target_contact(pool, tool_args)
+        if tool_name == "relationship_assert_fact":
+            # A fact subject is the canonical entity target, not an outbound
+            # recipient. Resolution permits an admitted standing rule; owner
+            # subject alone must never supply the outbound owner bypass.
+            resolved_contact = await resolve_action_target_contact(
+                pool, {"entity_id": str(tool_args.get("subject", ""))}
+            )
+        else:
+            resolved_contact = await resolve_action_target_contact(pool, tool_args)
 
-        if resolved_contact is not None and "owner" in resolved_contact.roles:
+        if (
+            tool_name != "relationship_assert_fact"
+            and resolved_contact is not None
+            and "owner" in resolved_contact.roles
+        ):
             # Owner-directed outbound: auto-approve without any standing rule.
             # Every channel uses the same unique active owner-association rule.
             dossier_or_error = approval_hooks.validate_owner_dossier(
@@ -750,6 +762,12 @@ def _make_gate_wrapper(
 
         matching_rule = match_standing_rule(tool_name, tool_args, rules)
 
+        if tool_name == "relationship_assert_fact" and matching_rule is not None:
+            from butlers.tools.relationship.fact_authority import admitted_rule_report
+
+            if await admitted_rule_report(pool, matching_rule["id"]) is None:
+                matching_rule = None
+
         # Safety-critical gating: a standing rule may only auto-approve when it
         # pins every safety-critical argument the owning module declared via
         # tool_metadata().  An unpinned safety-critical arg means the rule is
@@ -770,6 +788,12 @@ def _make_gate_wrapper(
         if matching_rule is not None and resolved_contact is not None and not unpinned_critical:
             # Target with a matching standing rule: auto-approve.
             rule_id = matching_rule["id"]
+
+            if tool_name == "relationship_assert_fact":
+                from butlers.tools.relationship.fact_authority import prepare_rule_assertion
+
+                tool_args = await prepare_rule_assertion(pool, action_id, tool_args, rule_id)
+                safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
             await pool.execute(
                 "INSERT INTO pending_actions "
@@ -833,6 +857,15 @@ def _make_gate_wrapper(
 
             if exec_result.success:
                 return exec_result.result or {}
+            if (
+                tool_name == "relationship_assert_fact"
+                and (exec_result.result or {}).get("outcome") == "unknown"
+            ):
+                return {
+                    "error": exec_result.error,
+                    "action_id": str(action_id),
+                    **exec_result.result,
+                }
             return {"error": exec_result.error}
 
         # No rule matched (or unresolvable target, or a matching rule that left a

@@ -20,17 +20,19 @@ this file proves the migration as a schema transition on real PostgreSQL:
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import shutil
 import uuid
 from datetime import UTC, datetime
+from functools import lru_cache
+from pathlib import Path
 
 import asyncpg
 import pytest
 
 from butlers.tools.relationship import fact_temporal
 from butlers.tools.relationship.fact_evidence import EvidencePacket
-from butlers.tools.relationship.relationship_assert_fact import _insert_active_fact
 from roster.relationship.tests.evidence_schema import rel_035, simulate_temporal_cutover
 
 _docker = pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
@@ -161,8 +163,40 @@ async def _old_write(conn, subject, obj):
     )
 
 
+@lru_cache(maxsize=1)
+def _protected_transition_insert():
+    """Execute the exact protected461 transition SQL, outside current-source coverage.
+
+    rel035 is a historical pre-authority transition. Its fixture deliberately
+    lacks rel037 columns. This function's full body is copied from protected
+    main461e03b, whole module SHAe79360614b4f43279afe070d3a0c501e669c9fd0d04027da00d67b52b4d12e6b.
+    It proves that transition insert on the real old schema, not current
+    report admission. Temporal/evidence data inputs retain their actual types.
+    """
+    path = Path(__file__).parent / "fixtures/protected_461_transition_insert.py.txt"
+    source = path.read_bytes()
+    if (
+        hashlib.sha256(source).hexdigest()
+        != "7f8c3d5fe907a780f8826843c6c6d15d9322f59135886295a2a635c67c8bc820"
+    ):
+        raise RuntimeError("protected transition writer fixture changed")
+    namespace = {
+        "PACKET_COLUMNS": fact_temporal.PACKET_COLUMNS,
+        "UNKNOWN": fact_temporal.UNKNOWN,
+    }
+    exec(
+        compile(
+            "from __future__ import annotations\n" + source.decode(),
+            "protected-fixture://461e03b/relationship-transition-insert",
+            "exec",
+        ),
+        namespace,
+    )
+    return namespace["_insert_active_fact"]
+
+
 async def _new_write(conn, subject, obj, temporal=fact_temporal.UNKNOWN):
-    return await _insert_active_fact(
+    return await _protected_transition_insert()(
         conn,
         subject=subject,
         predicate="has-email",
