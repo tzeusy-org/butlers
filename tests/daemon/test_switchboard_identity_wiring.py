@@ -8,9 +8,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core import fact_authority
 from butlers.switchboard_wiring import wire_pipelines
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _restore_fact_source_registry(monkeypatch):
+    """Keep each wired mock daemon's registry within its test lifetime.
+
+    Registration still uses production code. Monkeypatch teardown restores
+    the previous registry without clearing any real daemon's live receipts.
+    """
+    monkeypatch.setattr(fact_authority, "_source_registry", fact_authority.source_registry())
 
 
 def _switchboard_daemon() -> SimpleNamespace:
@@ -35,6 +46,8 @@ async def test_wiring_enables_identity_and_uses_notify_v1_messenger_boundary():
     ):
         wire_pipelines(daemon, pool)
 
+    assert fact_authority.source_registry() is daemon._fact_source_registry
+    assert daemon._fact_source_registry.pool is pool
     kwargs = pipeline_cls.call_args.kwargs
     assert kwargs["enable_identity_resolution"] is True
     notify_owner_fn = kwargs["notify_owner_fn"]
