@@ -745,6 +745,60 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     assert badge["if"] == "${{ success() }}"
 
 
+def _historical_controls_coverage_receipt(tmp_path: Path) -> dict:
+    """Trace genuine old bodies and current code under the repository config."""
+    from coverage import CoverageData
+
+    script = tmp_path / "trace_historical_controls.py"
+    script.write_text(
+        "import sys, json, hashlib\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        "from butlers.api.routers import model_settings\n"
+        "from butlers.connectors import filtered_event_buffer\n"
+        "from butlers.tools.relationship import dates\n"
+        "from tests.three_seams_helpers import baseline_function\n"
+        "functions = {name: baseline_function(name, vars(module)) for name, module in [\n"
+        "    ('create_catalog_entry', model_settings), ('upcoming_dates', dates),\n"
+        "    ('record', filtered_event_buffer)]}\n"
+        "kwargs = dict(external_message_id='coverage-control', source_channel='email',\n"
+        "    sender_identity='777000', subject_or_preview='482913',\n"
+        "    filter_reason='validation_error', full_payload={})\n"
+        "old = filtered_event_buffer.FilteredEventBuffer(\n"
+        "    connector_type='telegram', endpoint_identity='synthetic:coverage')\n"
+        "functions['record'](old, **kwargs)\n"
+        "current = filtered_event_buffer.FilteredEventBuffer(\n"
+        "    connector_type='telegram', endpoint_identity='synthetic:coverage')\n"
+        "current.record(**kwargs)\n"
+        "assert old._rows[-1][6] == kwargs['subject_or_preview']\n"
+        "assert current._rows[-1][6] == '[auth-code withheld: telegram]'\n"
+        "print(json.dumps({name: function.__code__.co_filename\n"
+        "    for name, function in functions.items()}))\n"
+    )
+    data_file = tmp_path / "historical-controls.data"
+    result = subprocess.run(
+        [sys.executable, "-m", "coverage", "run", f"--data-file={data_file}", str(script)],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    data = CoverageData(basename=str(data_file))
+    data.read()
+    measured = set(data.measured_files())
+    expected = {str(path.resolve()) for path in (REPO_ROOT / "src/butlers").rglob("*.py")}
+    # The current-source positive prevents an absence-only green when no code ran.
+    current = str(REPO_ROOT / "src/butlers/connectors/filtered_event_buffer.py")
+    assert data.lines(current)
+    assert measured == expected, (sorted(measured - expected), sorted(expected - measured))
+    functions = json.loads(result.stdout)
+    fixture = json.loads((REPO_ROOT / "tests/fixtures/three_seams_baseline.json").read_text())
+    for name, filename in functions.items():
+        assert fixture[name]["git_sha"] in filename and fixture[name]["path"] in filename
+        assert not Path(filename).is_relative_to(REPO_ROOT / "src/butlers")
+    return {"source_count": len(measured), "historical_filenames": functions}
+
+
 def test_ci_coverage_report_rejects_any_bad_input_before_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -756,6 +810,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
     """
     from coverage import CoverageData
 
+    historical = _historical_controls_coverage_receipt(tmp_path)
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     import check_ci_coverage as reporter
 
@@ -966,6 +1021,7 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
                 "baseline_shell_sha256": hashlib.sha256(old.encode()).hexdigest(),
                 "fixed_shell_sha256": hashlib.sha256(fixed.encode()).hexdigest(),
                 "source_checkout": head,
+                "historical_control_source_identity": historical,
                 "controls": receipts,
             },
             indent=2,
