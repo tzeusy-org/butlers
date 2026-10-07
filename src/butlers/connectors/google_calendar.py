@@ -678,6 +678,8 @@ def scan_starting_soon(
     window_end = now + timedelta(minutes=lead_minutes)
 
     for event in events:
+        if event.get("eventType") in {"outOfOffice", "workingLocation"}:
+            continue
         if _is_event_cancelled(event):
             continue
 
@@ -763,6 +765,8 @@ def scan_starting_soon_on_restart(
     window_end = now + timedelta(minutes=lead_minutes)
 
     for event in events:
+        if event.get("eventType") in {"outOfOffice", "workingLocation"}:
+            continue
         if _is_event_cancelled(event):
             continue
 
@@ -1668,6 +1672,8 @@ class CalendarConnectorRuntime:
             del self._upcoming_events[eid]
 
         for event_id, (event, start_dt) in list(self._upcoming_events.items()):
+            if event.get("eventType") in {"outOfOffice", "workingLocation"}:
+                continue
             summary = event.get("summary", "(no title)")
             for lead_minutes in self._config.all_lead_minutes:
                 notify_at = start_dt - timedelta(minutes=lead_minutes)

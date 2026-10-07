@@ -74,6 +74,14 @@ def test_overlap_detected():
     # pair_id is the canonical, order-independent id.
     assert issue.pair_id == overlap_pair_id("a", "b") == overlap_pair_id("b", "a")
 
+    from dataclasses import replace
+
+    status = replace(a, counts_toward_day_load=False)
+    typed = detect_conflict_issues([status, b], overloaded_day_hours=1.0)
+    assert len([i for i in typed if i.kind == "overlap"]) == 1
+    assert [i for i in typed if i.kind == "overloaded_day"] == []
+    assert a.counts_toward_day_load is True
+
 
 def test_adjacent_events_do_not_overlap():
     # Half-open [start, end): b starting exactly when a ends is NOT an overlap.
@@ -628,6 +636,7 @@ async def test_conflicts_endpoint_excludes_owner_declined_event(app):
     assert [i for i in data["issues"] if i["kind"] in ("overlap", "back_to_back")] == []
 
 
+# REQ-calendar-conflict-overcommitment-radar-001: existing behavioral controls below; SQL credit is separate.
 async def test_conflicts_endpoint_excludes_declined_from_overloaded_day_hours(app):
     kept = _ws_row(entry_id="a", title="Workshop", start=_DAY, minutes=4 * 60)
     declined = _ws_row(
@@ -642,6 +651,24 @@ async def test_conflicts_endpoint_excludes_declined_from_overloaded_day_hours(ap
     data = (await _get(app)).json()["data"]
 
     assert [i for i in data["issues"] if i["kind"] == "overloaded_day"] == []
+
+    for kind in ("outOfOffice", "workingLocation"):
+        status_only = _ws_row(
+            entry_id="status", title="Declared status", start=_DAY, minutes=8 * 60
+        )
+        status_only["event_type"] = kind
+        built, _ = _build_app(app, workspace_rows={"general": [kept, status_only]})
+        actual = (await _get(built)).json()["data"]
+        assert [i for i in actual["issues"] if i["kind"] == "overloaded_day"] == []
+        assert len([i for i in actual["issues"] if i["kind"] == "overlap"]) == 1
+    for kind in ("default", "futureProviderType"):
+        extra = _ws_row(
+            entry_id="extra", title="Meeting", start=_DAY + timedelta(hours=5), minutes=4 * 60
+        )
+        extra["event_type"] = kind
+        built, _ = _build_app(app, workspace_rows={"general": [kept, extra]})
+        actual = (await _get(built)).json()["data"]
+        assert len([i for i in actual["issues"] if i["kind"] == "overloaded_day"]) == 1
 
 
 async def test_conflicts_endpoint_excludes_transparent_event(app):

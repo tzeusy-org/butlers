@@ -247,18 +247,24 @@ async def run_relationship_calendar_prep_contribution(
         SELECT ce.id AS event_id,
                ce.title AS title,
                ce.starts_at AS starts_at,
+               ce.event_type AS event_type,
                array_agg(DISTINCT cee.entity_id) AS entity_ids
         FROM calendar_event_entities cee
         JOIN calendar_events ce ON ce.id = cee.event_id
         WHERE ce.starts_at >= $1
           AND ce.starts_at < $2
           AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
-        GROUP BY ce.id, ce.title, ce.starts_at
+          AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
+        GROUP BY ce.id, ce.title, ce.starts_at, ce.event_type
         ORDER BY ce.starts_at ASC
         """,
         window_start,
         window_end,
     )
+
+    event_rows = [
+        r for r in event_rows if r.get("event_type") not in {"outOfOffice", "workingLocation"}
+    ]
 
     # Collect the full set of attendee entity ids so per-attendee lookups can be
     # batched into one query each (instead of N+1 per event).
@@ -339,6 +345,7 @@ async def run_relationship_calendar_prep_contribution(
             WHERE cee.entity_id = ANY($1::uuid[])
               AND ce.starts_at < $2
               AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
+              AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
             ORDER BY cee.entity_id, ce.starts_at DESC
             """,
             entity_id_list,
@@ -599,18 +606,24 @@ async def run_email_calendar_prep_contribution(
         SELECT ce.id AS event_id,
                ce.title AS title,
                ce.starts_at AS starts_at,
+               ce.event_type AS event_type,
                array_agg(DISTINCT cee.entity_id) AS entity_ids
         FROM calendar_event_entities cee
         JOIN calendar_events ce ON ce.id = cee.event_id
         WHERE ce.starts_at >= $1
           AND ce.starts_at < $2
           AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
-        GROUP BY ce.id, ce.title, ce.starts_at
+          AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
+        GROUP BY ce.id, ce.title, ce.starts_at, ce.event_type
         ORDER BY ce.starts_at ASC
         """,
         window_start,
         window_end,
     )
+
+    event_rows = [
+        r for r in event_rows if r.get("event_type") not in {"outOfOffice", "workingLocation"}
+    ]
 
     all_entity_ids: set[Any] = set()
     for row in event_rows:

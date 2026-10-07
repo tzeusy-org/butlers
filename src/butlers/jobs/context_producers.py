@@ -19,10 +19,10 @@ permanently pinned; the signal simply expires.
 
 Producers and their sources
 ---------------------------
-- **calendar → meeting / focused** (writer ``general``): the currently-active
-  event in the general butler's ``calendar_events`` table. A focus-block title
-  maps to ``focused``; everything else maps to ``meeting``. Expiry is the
-  event's own end time.
+- **calendar → meeting / focused / away and working_location** (writer
+  ``general``): owner-eligible active declarations in its own projection.
+  Typed OOO has priority; typed focus is structural; ordinary events retain
+  the focus-title fallback. Location is an independent day-bounded qualifier.
 - **home → at_home / in_space** (writer ``home``): fresh presence rows in
   ``ha_entity_snapshot`` belonging to the *owner* (per the
   ``home:presence:owner_entities`` state-store mapping) — a housemate's or
@@ -70,6 +70,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
@@ -89,7 +90,16 @@ from butlers.core.approvals_policy import (
     policy_quiet_hours_deliver_at,
 )
 from butlers.core.state import state_get
-from butlers.core.temporal.calendar_provenance import is_calendar_analysis_candidate
+from butlers.core.temporal.calendar_event_types import (
+    normalize_event_type,
+    normalize_working_location,
+)
+from butlers.core.temporal.calendar_provenance import (
+    counts_toward_owner_load,
+    is_calendar_analysis_candidate,
+    is_explicit_butler_generated,
+    is_owner_attending,
+)
 from butlers.jobs.home import HASourceUnmeasurableError, _extract_area, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
@@ -124,67 +134,182 @@ def classify_calendar_signal(title: str | None) -> ContextSignal:
     return ContextSignal.meeting
 
 
+def _working_location_expiry(row: Any, now: datetime) -> datetime | None:
+    """Accept declared location only for a valid current local-day window."""
+    if normalize_working_location(row.get("working_location")) is None:
+        return None
+    try:
+        zone = ZoneInfo(row["timezone"])
+    except (KeyError, TypeError, ValueError, ZoneInfoNotFoundError):
+        return None
+    start, end = row["starts_at"].astimezone(zone), row["ends_at"].astimezone(zone)
+    if row.get("all_day"):
+        if (
+            start.time().replace(tzinfo=None) != datetime.min.time()
+            or end.time().replace(tzinfo=None) != datetime.min.time()
+            or (end.date() - start.date()).days != 1
+        ):
+            return None
+    local_now = now.astimezone(zone)
+    if not start <= local_now < end:
+        return None
+    tomorrow = datetime.combine(local_now.date() + timedelta(days=1), datetime.min.time(), zone)
+    return min(row["ends_at"], tomorrow.astimezone(UTC), now + timedelta(hours=24))
+
+
+async def _clear_calendar_assertion(conn: Any, signal: str, now: datetime) -> None:
+    """Retract only this producer's assertion, retaining unrelated General state."""
+    await conn.execute(
+        """
+        UPDATE public.user_context SET superseded_at = $2
+        WHERE signal_type = $1 AND set_by_butler = 'general'
+          AND superseded_at IS NULL AND metadata->>'source' = 'calendar'
+        """,
+        signal,
+        now,
+    )
+
+
 async def run_calendar_context_producer(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Publish ``meeting`` / ``focused`` from the general butler's live calendar.
+    """Publish owner-eligible calendar declarations in one atomic General transition.
 
-    Reads the latest eligible active confirmed human event from
-    ``calendar_events`` (resolved via the general schema search_path) and sets
-    the matching signal with the event's end time as expiry. Explicitly
-    butler-generated and legacy all-day-shaped rows remain projected but cannot
-    assert context. When no eligible event is active, both ``meeting`` and
-    ``focused`` are cleared. Idempotent: safe to run on any cadence.
+    A failed projection read is not observed absence. The scoped lock precedes
+    the query; the query and every assertion use the same transaction and clock.
     """
     del job_args
-    rows = await pool.fetch(
-        """
-        SELECT title, starts_at, ends_at, timezone, all_day, metadata
-        FROM calendar_events
-        WHERE status = 'confirmed'
-          AND all_day = false
-          AND starts_at <= now()
-          AND ends_at > now()
-        ORDER BY starts_at DESC
-        """
-    )
-    row = next(
-        (
-            candidate
-            for candidate in rows
-            if is_calendar_analysis_candidate(
-                metadata=candidate["metadata"],
-                all_day=candidate["all_day"],
-                starts_at=candidate["starts_at"],
-                ends_at=candidate["ends_at"],
-                timezone=candidate["timezone"],
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended('calendar-context:general', 0))"
             )
-        ),
-        None,
-    )
+            snapshot = await conn.fetchrow(
+                "SELECT now() AS observed_at, current_schema() AS projection_schema, "
+                "current_user AS producer_role"
+            )
+            now = snapshot["observed_at"]
+            schema = snapshot["projection_schema"]
+            # A General runtime must never fall through to a public projection.
+            # Public-only normal-migration fixtures remain a separate diagnostic.
+            if schema not in {"general", "public"} or (
+                snapshot["producer_role"] == "butler_general_rw" and schema != "general"
+            ):
+                raise RuntimeError("calendar producer projection namespace unavailable")
+            rows = await conn.fetch(
+                f"""
+                SELECT id, source_id, title, starts_at, ends_at, timezone, all_day,
+                       metadata, event_type, working_location
+                FROM "{schema}".calendar_events
+                WHERE status = 'confirmed' AND starts_at <= $1 AND ends_at > $1
+                ORDER BY starts_at DESC, id ASC
+                """,
+                now,
+            )
+            ordinary, away, locations = [], [], []
+            for row in rows:
+                if is_explicit_butler_generated(row.get("metadata")):
+                    continue
+                kind = normalize_event_type(row.get("event_type"))
+                if kind == "workingLocation":
+                    expiry = _working_location_expiry(row, now)
+                    if expiry is not None and is_owner_attending(row.get("metadata")):
+                        locations.append((row, expiry))
+                    continue
+                if not counts_toward_owner_load(row.get("metadata")):
+                    continue
+                if row.get("all_day") or row["ends_at"] <= row["starts_at"]:
+                    continue
+                if kind == "outOfOffice":
+                    away.append(row)
+                elif kind == "focusTime":
+                    ordinary.append(row)
+                elif is_calendar_analysis_candidate(
+                    metadata=row.get("metadata"),
+                    all_day=row.get("all_day") is True,
+                    starts_at=row["starts_at"],
+                    ends_at=row["ends_at"],
+                    timezone=row.get("timezone"),
+                ):
+                    ordinary.append(row)
 
-    if row is None:
-        # No live event — retract any stale meeting/focused assertion.
-        await clear_context(pool, "general", ContextSignal.meeting.value)
-        await clear_context(pool, "general", ContextSignal.focused.value)
-        return {"signal": None, "cleared": ["meeting", "focused"]}
+            def order(row: Any) -> tuple[float, str]:
+                return (-row["starts_at"].timestamp(), str(row.get("id", "")))
 
-    signal = classify_calendar_signal(row["title"])
-    other = ContextSignal.focused if signal is ContextSignal.meeting else ContextSignal.meeting
+            selected = min(away or ordinary, key=order) if away or ordinary else None
+            signal = None
+            result: dict[str, Any] = {"signal": None, "cleared": ["meeting", "focused"]}
+            if selected is not None:
+                kind = normalize_event_type(selected.get("event_type"))
+                signal = (
+                    "away"
+                    if kind == "outOfOffice"
+                    else "focused"
+                    if kind == "focusTime"
+                    else classify_calendar_signal(selected["title"])
+                )
+                value = "out of office" if signal == "away" else selected["title"]
+                caps = {
+                    "away": timedelta(days=30),
+                    "focused": timedelta(hours=8),
+                    "meeting": timedelta(hours=4),
+                }
+                await set_context(
+                    conn,
+                    butler_name="general",
+                    signal_type=signal,
+                    value=value,
+                    expires_at=min(selected["ends_at"], now + caps[signal]),
+                    confidence=1.0,
+                    metadata={
+                        "source": "calendar",
+                        **({"title": selected["title"]} if signal != "away" else {}),
+                        "event_id": str(selected.get("id", "")),
+                        "source_id": str(selected.get("source_id", "")),
+                        "event_type": kind,
+                    },
+                    _observed_at=now,
+                )
+                cleared = [s for s in ("meeting", "focused") if s != signal]
+                result = {"signal": signal, "value": value, "cleared": cleared}
+            for other in ("meeting", "focused"):
+                if other != signal:
+                    await clear_context(conn, butler_name="general", signal_type=other)
+            if signal != "away":
+                await _clear_calendar_assertion(conn, "away", now)
 
-    await set_context(
-        pool,
-        butler_name="general",
-        signal_type=signal.value,
-        value=row["title"],
-        expires_at=row["ends_at"],
-        confidence=1.0,
-        metadata={"source": "calendar", "title": row["title"]},
-    )
-    # Clear the sibling signal so a meeting→focus transition is immediate.
-    await clear_context(pool, "general", other.value)
-    return {"signal": signal.value, "value": row["title"], "cleared": [other.value]}
+            if locations:
+                row, expiry = min(
+                    locations,
+                    key=lambda item: (
+                        bool(item[0].get("all_day")),
+                        -item[0]["starts_at"].timestamp(),
+                        (item[0]["ends_at"] - item[0]["starts_at"]).total_seconds(),
+                        str(item[0].get("id", "")),
+                    ),
+                )
+                location = normalize_working_location(row["working_location"])
+                value = "home office" if location["type"] == "homeOffice" else location["label"]
+                await set_context(
+                    conn,
+                    butler_name="general",
+                    signal_type="working_location",
+                    value=value,
+                    expires_at=expiry,
+                    confidence=1.0,
+                    metadata={
+                        "source": "calendar",
+                        "event_id": str(row.get("id", "")),
+                        "source_id": str(row.get("source_id", "")),
+                        "event_type": "workingLocation",
+                    },
+                    _observed_at=now,
+                )
+                result["working_location"] = value
+            else:
+                await _clear_calendar_assertion(conn, "working_location", now)
+            return result
 
 
 # ---------------------------------------------------------------------------

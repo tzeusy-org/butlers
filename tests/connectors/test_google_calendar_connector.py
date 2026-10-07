@@ -182,6 +182,7 @@ def test_parse_event_start_prefers_datetime_and_missing() -> None:
 # ---------------------------------------------------------------------------
 
 
+# REQ-connector-google-calendar-001, REQ-connector-google-calendar-002: existing behavioral controls below; SQL credit is separate.
 async def test_check_starting_soon_emits_spec_envelope(
     account_config: CalendarAccountConfig,
 ) -> None:
@@ -242,6 +243,34 @@ async def test_check_starting_soon_emits_spec_envelope(
         await runtime2._check_starting_soon()
         await runtime2._check_starting_soon()
     assert len(again) == 1
+
+    for kind in ("outOfOffice", "workingLocation"):
+        status_event = {**event, "id": "status-" + kind, "eventType": kind}
+        runtime._upcoming_events = {status_event["id"]: (status_event, start_dt)}
+        runtime._seen_set = StartingSoonSeenSet()
+        submitted.clear()
+        with patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture):
+            await runtime._check_starting_soon()
+        assert submitted == []
+        assert runtime._seen_set.has_seen(status_event["id"], 15) is False
+        from butlers.connectors.google_calendar import (
+            scan_starting_soon,
+            scan_starting_soon_on_restart,
+        )
+
+        for scan in (scan_starting_soon, scan_starting_soon_on_restart):
+            seen = StartingSoonSeenSet()
+            kwargs = dict(
+                now=start_dt - timedelta(minutes=14),
+                lead_minutes=15,
+                seen_set=seen,
+                endpoint_identity=_ENDPOINT,
+            )
+            assert scan([status_event], **kwargs) == []
+            assert seen.has_seen(status_event["id"], 15) is False
+            positive = scan([{**event, "eventType": "focusTime"}], **kwargs)
+            assert len(positive) == 1
+            assert positive[0]["event"]["external_event_id"] == "starting_soon:evt-soon"
 
 
 async def test_blocked_event_buffered_not_ingested(

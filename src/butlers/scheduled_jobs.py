@@ -1462,7 +1462,7 @@ async def _run_context_producer_calendar_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Publish meeting/focused context from the general butler's live calendar."""
+    """Publish owner-eligible meeting/focus, declared away and working location."""
     from butlers.jobs.context_producers import run_calendar_context_producer
 
     return await run_calendar_context_producer(pool, job_args)

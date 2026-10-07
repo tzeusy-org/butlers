@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -325,6 +326,29 @@ def test_resolve_commuting_eta_computes_eta_when_closing():
     assert result.eta_at == now + timedelta(seconds=expected_eta_seconds)
 
 
+def _calendar_pool(now: datetime) -> MagicMock:
+    """One connection and clock, with real async context-manager boundaries."""
+    pool = MagicMock()
+    pool.fetch = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=now)
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "observed_at": now,
+            "projection_schema": "public",
+            "producer_role": "test-migration",
+        }
+    )
+    pool.execute = AsyncMock()
+
+    @asynccontextmanager
+    async def scope():
+        yield pool
+
+    pool.acquire.side_effect = scope
+    pool.transaction.side_effect = scope
+    return pool
+
+
 def _active_calendar_row(
     *,
     title: str,
@@ -344,9 +368,10 @@ def _active_calendar_row(
     }
 
 
+# REQ-context-bus-004, REQ-context-bus-005, REQ-context-bus-006: existing behavioral controls below; SQL credit is separate.
 async def test_calendar_context_producer_skips_explicit_butler_generated_event_but_keeps_human_event():
     now = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
-    pool = MagicMock()
+    pool = _calendar_pool(datetime(2026, 7, 1, 9, 0, tzinfo=UTC))
     pool.fetch = AsyncMock(
         return_value=[
             _active_calendar_row(
@@ -377,11 +402,212 @@ async def test_calendar_context_producer_skips_explicit_butler_generated_event_b
     assert set_context_mock.await_args.kwargs["expires_at"] == now + timedelta(minutes=20)
     pool.fetch.assert_awaited_once()
 
+    # REQ-context-bus-006: a visible but declined/free event is not a meeting.
+    for metadata in (
+        {"attendees": [{"self": True, "response_status": "declined"}]},
+        {"attendees": [{"self": True, "responseStatus": "declined"}]},
+        {"transparency": "transparent"},
+    ):
+        pool.fetch.return_value = [
+            _active_calendar_row(
+                title="Not attending",
+                starts_at=now - timedelta(minutes=5),
+                ends_at=now + timedelta(minutes=30),
+                metadata=metadata,
+            )
+        ]
+        set_context_mock.reset_mock()
+        with (
+            patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+            patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+        ):
+            absent = await run_calendar_context_producer(pool)
+        assert absent["signal"] is None
+        set_context_mock.assert_not_awaited()
+
+    # Full typed/attendance matrix stays within the existing registered proof species.
+    async def observe(rows):
+        pool.fetch.return_value = rows
+        set_context_mock.reset_mock()
+        clear_context_mock.reset_mock()
+        with (
+            patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+            patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+        ):
+            result = await run_calendar_context_producer(pool)
+        return result, [c.kwargs for c in set_context_mock.await_args_list]
+
+    def event(kind="default", **changes):
+        return {
+            **_active_calendar_row(
+                title="Plain title",
+                starts_at=now - timedelta(minutes=5),
+                ends_at=now + timedelta(minutes=30),
+            ),
+            "id": "b",
+            "source_id": "source",
+            "event_type": kind,
+            "working_location": None,
+            **changes,
+        }
+
+    for metadata in (
+        {"attendees": [{"self": True, "response_status": "accepted"}], "transparency": "opaque"},
+        {"attendees": [{"self": True, "responseStatus": "tentative"}]},
+        {"attendees": [{"self": True, "responseStatus": "needsAction"}]},
+        {"attendees": [{"response_status": "declined"}]},
+        None,
+        "bad-json",
+    ):
+        actual, writes = await observe([event(metadata=metadata)])
+        assert actual["signal"] == "meeting" and len(writes) == 1
+    # Ineligible newer rows do not hide a real earlier meeting.
+    actual, _ = await observe(
+        [
+            event(metadata={"transparency": "transparent"}),
+            event(title="Attended", starts_at=now - timedelta(minutes=10), id="a"),
+        ]
+    )
+    assert actual["value"] == "Attended"
+    actual, writes = await observe(
+        [
+            event(
+                "outOfOffice", starts_at=now - timedelta(days=2), ends_at=now + timedelta(days=40)
+            ),
+            event(title="Later meeting"),
+        ]
+    )
+    assert actual["signal"] == "away" and actual["value"] == "out of office"
+    assert actual["cleared"] == ["meeting", "focused"]
+    assert writes[0]["expires_at"] == now + timedelta(days=30)
+    assert writes[0]["_observed_at"] == now
+    actual, _ = await observe([event("focusTime")])
+    assert actual["signal"] == "focused"
+    actual, _ = await observe([event("futureProviderType", title="Deep Work")])
+    assert actual["signal"] == "focused"
+    for kind in ("outOfOffice", "focusTime"):
+        actual, writes = await observe([event(kind, all_day=True)])
+        assert actual["signal"] is None and writes == []
+    for kind in ("outOfOffice", "focusTime", "workingLocation"):
+        actual, writes = await observe(
+            [
+                event(
+                    kind,
+                    metadata={"butler_generated": True},
+                    working_location={"type": "homeOffice"},
+                )
+            ]
+        )
+        assert actual["signal"] is None and writes == []
+    # Location is independent, transparent-compatible, minimized and day-bounded.
+    for location, expected in (
+        ({"type": "homeOffice"}, "home office"),
+        ({"type": "officeLocation", "label": "HQ"}, "HQ"),
+        ({"type": "customLocation", "label": "Remote"}, "Remote"),
+    ):
+        actual, writes = await observe(
+            [
+                event(
+                    "workingLocation",
+                    timezone="UTC",
+                    working_location=location,
+                    metadata={"transparency": "transparent"},
+                ),
+                event("focusTime", id="a"),
+            ]
+        )
+        assert actual["signal"] == "focused" and actual["working_location"] == expected
+        assert {w["signal_type"] for w in writes} == {"focused", "working_location"}
+    for changes in (
+        {"timezone": "invalid"},
+        {"working_location": {"type": "officeLocation"}},
+        {"metadata": {"attendees": [{"self": True, "response_status": "declined"}]}},
+    ):
+        actual, writes = await observe(
+            [event("workingLocation", **{"working_location": {"type": "homeOffice"}, **changes})]
+        )
+        assert actual["signal"] is None and writes == []
+    # Exact local midnight plus DST follows the local day, not a fixed UTC day.
+    from butlers.jobs.context_producers import _working_location_expiry
+
+    for start, end in (
+        (
+            datetime(2026, 3, 8, tzinfo=ZoneInfo("America/New_York")),
+            datetime(2026, 3, 9, tzinfo=ZoneInfo("America/New_York")),
+        ),
+        (
+            datetime(2026, 11, 1, tzinfo=ZoneInfo("America/New_York")),
+            datetime(2026, 11, 2, tzinfo=ZoneInfo("America/New_York")),
+        ),
+    ):
+        row = event(
+            "workingLocation",
+            all_day=True,
+            timezone="America/New_York",
+            starts_at=start,
+            ends_at=end,
+            working_location={"type": "homeOffice"},
+        )
+        observed = start + timedelta(hours=1)
+        assert _working_location_expiry(row, observed) == min(end, observed + timedelta(hours=24))
+        assert (
+            _working_location_expiry({**row, "ends_at": end + timedelta(days=1)}, observed) is None
+        )
+        assert _working_location_expiry(row, end) is None
+    # Stable tie-breaking is independent of fetched row ordering.
+    a, b = event(title="a", id="a"), event(title="b", id="b")
+    assert (await observe([b, a]))[0]["value"] == "a"
+    assert (await observe([a, b]))[0]["value"] == "a"
+    # Runtime-owned General reads are qualified; unavailable General cannot
+    # silently resolve a public projection through search_path.
+    pool.fetchrow.return_value = {
+        "observed_at": now,
+        "projection_schema": "general",
+        "producer_role": "butler_general_rw",
+    }
+    assert (await observe([a]))[0]["signal"] == "meeting"
+    assert 'FROM "general".calendar_events' in pool.fetch.await_args.args[0]
+    for schema, role in (("public", "butler_general_rw"), ("relationship", "test-migration")):
+        pool.fetchrow.return_value = {
+            "observed_at": now,
+            "projection_schema": schema,
+            "producer_role": role,
+        }
+        pool.fetch.reset_mock()
+        set_context_mock.reset_mock()
+        clear_context_mock.reset_mock()
+        with (
+            patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+            patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+            pytest.raises(RuntimeError, match="projection namespace unavailable"),
+        ):
+            await run_calendar_context_producer(pool)
+        pool.fetch.assert_not_awaited()
+        set_context_mock.assert_not_awaited()
+        clear_context_mock.assert_not_awaited()
+    pool.fetchrow.return_value = {
+        "observed_at": now,
+        "projection_schema": "public",
+        "producer_role": "test-migration",
+    }
+    # Failure is propagated rather than converted into an absence transition.
+    pool.fetch.side_effect = RuntimeError("synthetic unavailable projection")
+    set_context_mock.reset_mock()
+    clear_context_mock.reset_mock()
+    with (
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+        pytest.raises(RuntimeError, match="synthetic unavailable projection"),
+    ):
+        await run_calendar_context_producer(pool)
+    set_context_mock.assert_not_awaited()
+    clear_context_mock.assert_not_awaited()
+
 
 async def test_calendar_context_producer_treats_legacy_midnight_block_as_non_meeting():
     singapore = ZoneInfo("Asia/Singapore")
     starts_at = datetime(2026, 7, 1, 0, 0, tzinfo=singapore)
-    pool = MagicMock()
+    pool = _calendar_pool(datetime(2026, 7, 1, 9, 0, tzinfo=UTC))
     pool.fetch = AsyncMock(
         return_value=[
             _active_calendar_row(
@@ -410,7 +636,7 @@ async def test_calendar_context_producer_treats_legacy_midnight_block_as_non_mee
 
 async def test_calendar_context_producer_malformed_provenance_retains_timed_human_event():
     now = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
-    pool = MagicMock()
+    pool = _calendar_pool(datetime(2026, 7, 1, 9, 0, tzinfo=UTC))
     pool.fetch = AsyncMock(
         return_value=[
             _active_calendar_row(
@@ -692,6 +918,61 @@ def core_db_url(postgres_container) -> str:
 
 
 @pytest.fixture(scope="module")
+def general_db_url(postgres_container) -> str:
+    """Canonical General-owning projection, with the real managed bootstrap."""
+    return create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core"], schemas={"core": "general"}
+    )
+
+
+async def _calendar_role_pool(url: str, butler: str) -> asyncpg.Pool:
+    assert butler in {"general", "switchboard", "relationship", "messenger", "travel"}
+
+    async def setup(conn):
+        await conn.execute(f'SET ROLE "butler_{butler}_rw"')
+        await conn.execute(f'SET search_path TO "{butler}", public')
+
+    return await asyncpg.create_pool(
+        url, min_size=1, max_size=3, init=register_jsonb_codec, setup=setup
+    )
+
+
+async def _project_synthetic_calendar(pool, source_id, payload):
+    """Actual Google normalizer and mounted writer; payload provenance is synthetic."""
+    from types import SimpleNamespace
+
+    from butlers.modules.calendar import CalendarModule, _google_event_to_calendar_event
+
+    module = CalendarModule()
+    module._butler_name = "general"
+    module._db = SimpleNamespace(pool=pool)
+    event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+    assert event is not None
+    await module._project_provider_changes(
+        source_id=source_id,
+        provider_name="google",
+        calendar_id="primary",
+        updated_events=[event],
+        cancelled_ids=[],
+    )
+    # An independent acquisition witnesses real column and row persistence.
+    row = await pool.fetchrow(
+        "SELECT * FROM calendar_events WHERE source_id=$1 AND origin_ref=$2",
+        source_id,
+        payload["id"],
+    )
+    assert row["event_type"] == event.event_type
+    assert row["working_location"] == event.working_location
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM calendar_event_instances WHERE event_id=$1", row["id"]
+        )
+        == 1
+    )
+    return row
+
+
+@pytest.fixture(scope="module")
 def travel_db_url(postgres_container) -> str:
     return create_migrated_test_db(
         postgres_container, migration_db_name(), chains=["core", "travel"]
@@ -724,7 +1005,7 @@ async def _clear_non_dnd_context(pool: asyncpg.Pool) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 class TestContextProducersIntegration:
-    async def test_calendar_producer_sets_meeting_then_clears(self, core_db_url):
+    async def test_calendar_producer_sets_meeting_then_clears(self, core_db_url, general_db_url):
         pool = await _pool(core_db_url)
         try:
             await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
@@ -765,7 +1046,180 @@ class TestContextProducersIntegration:
         finally:
             await pool.close()
 
-    async def test_calendar_producer_classifies_focus_block(self, core_db_url):
+        # REQ-context-bus-006 / REQ-module-calendar-002: owning General, not public-only diagnostic.
+        from butlers.context_bus import format_context_preamble, get_active_context, set_context
+        from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+        from butlers.tools.switchboard.insight.broker import get_suppressing_context_signal
+
+        handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["general"]["context_producer_calendar"]
+        owned = await _calendar_role_pool(general_db_url, "general")
+        reader = await _calendar_role_pool(general_db_url, "switchboard")
+        try:
+            assert await owned.fetchval("SELECT current_user") == "butler_general_rw"
+            assert await owned.fetchval("SELECT current_schema()") == "general"
+            assert (
+                await owned.fetchval(
+                    "SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user"
+                )
+                is False
+            )
+            await _clear_non_dnd_context(owned)
+            sid = await owned.fetchval(
+                "INSERT INTO calendar_sources(source_key,source_kind,provider,calendar_id) VALUES('typed-source','provider','google','primary') RETURNING id"
+            )
+            now = await owned.fetchval("SELECT now()")
+            base = {
+                "id": "typed-current",
+                "summary": "Standup",
+                "status": "confirmed",
+                "start": {"dateTime": (now - timedelta(minutes=5)).isoformat()},
+                "end": {"dateTime": (now + timedelta(minutes=25)).isoformat()},
+                "attendees": [
+                    {"self": True, "email": "synthetic@example.test", "responseStatus": "accepted"}
+                ],
+                "transparency": "opaque",
+            }
+            await _project_synthetic_calendar(owned, sid, base)
+            assert (await handler(owned, None))["signal"] == "meeting"
+            assert await get_suppressing_context_signal(reader) == "meeting"
+            assert "Standup" in format_context_preamble(await get_active_context(reader))
+            for changes in (
+                {"attendees": [{"self": True, "responseStatus": "declined"}]},
+                {"transparency": "transparent"},
+            ):
+                await _project_synthetic_calendar(owned, sid, {**base, **changes})
+                assert (await handler(owned, None))["signal"] is None
+                assert await get_suppressing_context_signal(reader) is None
+            # An eligible earlier overlap wins after a newer ineligible row is rejected.
+            positive = {
+                **base,
+                "id": "older-attended",
+                "summary": "Earlier meeting",
+                "start": {"dateTime": (now - timedelta(minutes=10)).isoformat()},
+            }
+            await _project_synthetic_calendar(owned, sid, positive)
+            assert (await handler(owned, None))["value"] == "Earlier meeting"
+            ooo = {
+                **base,
+                "id": "ooo",
+                "summary": "Private title",
+                "eventType": "outOfOffice",
+                "start": {"dateTime": (now - timedelta(days=2)).isoformat()},
+                "end": {"dateTime": (now + timedelta(days=40)).isoformat()},
+            }
+            await _project_synthetic_calendar(owned, sid, ooo)
+            assert (await handler(owned, None))["signal"] == "away"
+            first = await reader.fetchrow(
+                "SELECT * FROM public.user_context WHERE signal_type='away' AND set_by_butler='general'"
+            )
+            assert first["value"] == "out of office"
+            assert first["expires_at"] - first["set_at"] == timedelta(days=30)
+            assert first["metadata"]["event_type"] == "outOfOffice"
+            assert await get_suppressing_context_signal(reader) is None
+            await handler(owned, None)
+            second = await reader.fetchrow(
+                "SELECT * FROM public.user_context WHERE signal_type='away' AND set_by_butler='general'"
+            )
+            assert second["set_at"] >= first["set_at"]
+            # A real later failing transition rolls back earlier set_context effects.
+            await owned.execute(
+                "UPDATE calendar_events SET ends_at=now()-interval '1 second' WHERE origin_ref='ooo'"
+            )
+            before = await reader.fetch(
+                "SELECT * FROM public.user_context ORDER BY signal_type,set_by_butler"
+            )
+            with patch(
+                "butlers.jobs.context_producers.clear_context",
+                side_effect=RuntimeError("synthetic transition failure"),
+            ):
+                with pytest.raises(RuntimeError, match="synthetic transition failure"):
+                    await handler(owned, None)
+            assert (
+                await reader.fetch(
+                    "SELECT * FROM public.user_context ORDER BY signal_type,set_by_butler"
+                )
+                == before
+            )
+            assert (await handler(owned, None))["signal"] == "meeting"
+            assert (
+                await reader.fetchval(
+                    "SELECT superseded_at IS NOT NULL FROM public.user_context WHERE signal_type='away' AND set_by_butler='general'"
+                )
+                is True
+            )
+            # Successful observed absence preserves an unrelated assertion in General's slot.
+            await set_context(
+                owned, "general", "away", value="manually declared", metadata={"source": "manual"}
+            )
+            await owned.execute("UPDATE calendar_events SET ends_at=now()-interval '1 second'")
+            assert (await handler(owned, None))["signal"] is None
+            assert (
+                await reader.fetchval(
+                    "SELECT value FROM public.user_context WHERE signal_type='away' AND superseded_at IS NULL"
+                )
+                == "manually declared"
+            )
+            await set_context(
+                owned, "general", "dnd", value="synthetic explicit DND", mutation_id=uuid.uuid4()
+            )
+            dnd_before = await reader.fetchrow(
+                "SELECT * FROM public.user_context WHERE signal_type='dnd' AND set_by_butler='general'"
+            )
+            await handler(owned, None)
+            assert (
+                await reader.fetchrow(
+                    "SELECT * FROM public.user_context WHERE signal_type='dnd' AND set_by_butler='general'"
+                )
+                == dnd_before
+            )
+            assert await get_suppressing_context_signal(reader) == "dnd"
+            travel_writer = await _calendar_role_pool(general_db_url, "travel")
+            try:
+                await set_context(travel_writer, "travel", "traveling", value="synthetic trip")
+                travel_before = await reader.fetchrow(
+                    "SELECT * FROM public.user_context WHERE signal_type='traveling' AND set_by_butler='travel'"
+                )
+                await handler(owned, None)
+                assert (
+                    await reader.fetchrow(
+                        "SELECT * FROM public.user_context WHERE signal_type='traveling' AND set_by_butler='travel'"
+                    )
+                    == travel_before
+                )
+            finally:
+                await travel_writer.close()
+            # Projection unavailable is not empty: reversible test-owned DDL fault,
+            # actual registered handler refusal and independent unchanged signal readback.
+            before = await reader.fetch(
+                "SELECT * FROM public.user_context ORDER BY signal_type,set_by_butler"
+            )
+            # The existing normal migration login owns the disposable projection;
+            # the runtime role does not get DDL or any enlarged grant.
+            admin = await asyncpg.connect(general_db_url)
+            try:
+                await admin.execute(
+                    "ALTER TABLE general.calendar_events RENAME TO unavailable_calendar_events"
+                )
+                with pytest.raises(asyncpg.UndefinedTableError):
+                    await handler(owned, None)
+            finally:
+                await admin.execute(
+                    "ALTER TABLE general.unavailable_calendar_events RENAME TO calendar_events"
+                )
+                await admin.close()
+            assert (
+                await reader.fetch(
+                    "SELECT * FROM public.user_context ORDER BY signal_type,set_by_butler"
+                )
+                == before
+            )
+        finally:
+            await owned.close()
+            await reader.close()
+
+    async def test_calendar_producer_classifies_focus_block(
+        self, core_db_url, general_db_url, postgres_container
+    ):
         pool = await _pool(core_db_url)
         try:
             await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
@@ -787,6 +1241,285 @@ class TestContextProducersIntegration:
             assert result["signal"] == "focused"
         finally:
             await pool.close()
+
+        from butlers.context_bus import format_context_preamble, get_active_context, set_context
+
+        owned = await _calendar_role_pool(general_db_url, "general")
+        reader = await _calendar_role_pool(general_db_url, "switchboard")
+        try:
+            await owned.execute("UPDATE calendar_events SET ends_at=now()-interval '1 second'")
+            await _clear_non_dnd_context(owned)
+            sid = await owned.fetchval(
+                "INSERT INTO calendar_sources(source_key,source_kind) VALUES('focus-location-source','provider') RETURNING id"
+            )
+            now = await owned.fetchval("SELECT now()")
+            base = {
+                "id": "structural-focus",
+                "summary": "Plain title",
+                "status": "confirmed",
+                "eventType": "focusTime",
+                "start": {"dateTime": (now - timedelta(minutes=5)).isoformat()},
+                "end": {"dateTime": (now + timedelta(minutes=25)).isoformat()},
+            }
+            await _project_synthetic_calendar(owned, sid, base)
+            assert (await run_calendar_context_producer(owned))["signal"] == "focused"
+            for kind, properties, value in (
+                ("homeOffice", {"homeOffice": True}, "home office"),
+                (
+                    "officeLocation",
+                    {"officeLocation": {"label": "HQ", "buildingId": "discard"}},
+                    "HQ",
+                ),
+                ("customLocation", {"customLocation": {"label": "Remote"}}, "Remote"),
+            ):
+                payload = {
+                    **base,
+                    "id": "working-place",
+                    "eventType": "workingLocation",
+                    "transparency": "transparent",
+                    "workingLocationProperties": {"type": kind, **properties},
+                }
+                await _project_synthetic_calendar(owned, sid, payload)
+                actual = await run_calendar_context_producer(owned)
+                assert actual["signal"] == "focused" and actual["working_location"] == value
+                signals = await get_active_context(reader)
+                assert {s.signal_type for s in signals} >= {"focused", "working_location"}
+                assert value in format_context_preamble(signals)
+            await _project_synthetic_calendar(
+                owned, sid, {**payload, "workingLocationProperties": None}
+            )
+            assert "working_location" not in await run_calendar_context_producer(owned)
+            assert (
+                await reader.fetchval(
+                    "SELECT superseded_at IS NOT NULL FROM public.user_context WHERE signal_type='working_location' AND set_by_butler='general'"
+                )
+                is True
+            )
+            before_location = await reader.fetchrow(
+                "SELECT * FROM public.user_context WHERE signal_type='working_location' AND set_by_butler='general'"
+            )
+            with pytest.raises(PermissionError):
+                await set_context(reader, "switchboard", "working_location", value="forbidden")
+            assert (
+                await reader.fetchrow(
+                    "SELECT * FROM public.user_context WHERE signal_type='working_location' AND set_by_butler='general'"
+                )
+                == before_location
+            )
+            # Current local-day date-only declaration, independent persisted expiry readback.
+            from zoneinfo import ZoneInfo
+
+            zone = ZoneInfo("America/New_York")
+            local = now.astimezone(zone)
+            tomorrow = local.date() + timedelta(days=1)
+            date_only = {
+                **payload,
+                "start": {"date": local.date().isoformat(), "timeZone": "America/New_York"},
+                "end": {"date": tomorrow.isoformat(), "timeZone": "America/New_York"},
+                "workingLocationProperties": {"type": "homeOffice"},
+            }
+            await _project_synthetic_calendar(owned, sid, date_only)
+            assert (await run_calendar_context_producer(owned))["working_location"] == "home office"
+            expiry = await reader.fetchval(
+                "SELECT expires_at FROM public.user_context WHERE signal_type='working_location' AND set_by_butler='general'"
+            )
+            assert expiry == datetime.combine(tomorrow, datetime.min.time(), zone)
+            await set_context(
+                owned,
+                "general",
+                "working_location",
+                value="manual place",
+                metadata={"source": "manual"},
+            )
+            await owned.execute("UPDATE calendar_events SET ends_at=now()-interval '1 second'")
+            await run_calendar_context_producer(owned)
+            assert (
+                await reader.fetchval(
+                    "SELECT value FROM public.user_context WHERE signal_type='working_location' AND superseded_at IS NULL"
+                )
+                == "manual place"
+            )
+            # Real owning-role projection -> unchanged workspace fan-out ->
+            # radar mapping: status hours vanish while opaque overlaps stay visible.
+            from butlers.api.db import DatabaseManager
+            from butlers.api.read_models.calendar_workspace_v1 import (
+                query_calendar_conflicts,
+                query_calendar_workspace,
+            )
+
+            db = DatabaseManager()
+            db._pools["general"] = owned
+            db._butler_schemas["general"] = "general"
+            db._butler_modules["general"] = frozenset({"calendar"})
+            day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            typed_rows = []
+            for kind, title in (
+                ("outOfOffice", "Synthetic opaque OOO"),
+                ("workingLocation", "Synthetic opaque location"),
+            ):
+                typed_rows.append(
+                    await _project_synthetic_calendar(
+                        owned,
+                        sid,
+                        {
+                            **base,
+                            "id": "radar-" + kind,
+                            "summary": title,
+                            "eventType": kind,
+                            "transparency": "opaque",
+                            "start": {"dateTime": (day + timedelta(hours=1)).isoformat()},
+                            "end": {"dateTime": (day + timedelta(hours=9)).isoformat()},
+                            "workingLocationProperties": {"type": "homeOffice"},
+                        },
+                    )
+                )
+            workspace, failed = await query_calendar_workspace(
+                db, view="user", start=day, end=day + timedelta(days=1)
+            )
+            assert failed == []
+            selected = {
+                r.event_id: r for r in workspace if r.event_id in {t["id"] for t in typed_rows}
+            }
+            assert {r.event_type for r in selected.values()} == {"outOfOffice", "workingLocation"}
+            opaque_ids = {str(r.instance_id) for r in selected.values()}
+            scan = await query_calendar_conflicts(
+                db, start=day, end=day + timedelta(days=1), display_tz=ZoneInfo("UTC")
+            )
+            assert scan.available is True
+            assert not any(i.kind == "overloaded_day" for i in scan.issues)
+            assert any(
+                i.kind == "overlap" and opaque_ids <= {e.entry_id for e in i.events}
+                for i in scan.issues
+            )
+            await _project_synthetic_calendar(
+                owned,
+                sid,
+                {
+                    **base,
+                    "id": "radar-future-ordinary",
+                    "summary": "Synthetic unknown ordinary positive",
+                    "eventType": "futureProviderType",
+                    "start": {"dateTime": (day + timedelta(hours=1)).isoformat()},
+                    "end": {"dateTime": (day + timedelta(hours=9)).isoformat()},
+                },
+            )
+            positive = await query_calendar_conflicts(
+                db, start=day, end=day + timedelta(days=1), display_tz=ZoneInfo("UTC")
+            )
+            assert positive.available is True
+            assert any(i.kind == "overloaded_day" for i in positive.issues)
+        finally:
+            await owned.close()
+            await reader.close()
+
+        # Existing permitted cached prep topology: actual owning-schema selectors,
+        # planted ordinary notes/commitment/thread positives, and stale status-key pruning.
+        from butlers.core.state import state_get
+        from butlers.jobs.calendar_prep import (
+            prep_key,
+            run_messenger_calendar_prep_contribution,
+            run_relationship_calendar_prep_contribution,
+            run_travel_calendar_prep_contribution,
+        )
+        from butlers.migrations import run_migrations
+
+        for schema in ("relationship", "messenger", "travel", "switchboard"):
+            await run_migrations(general_db_url, chain="core", schema=schema)
+        await run_migrations(general_db_url, chain="memory", schema="relationship")
+        await run_migrations(general_db_url, chain="switchboard", schema="switchboard")
+        # Only disposable canonical fixture data; no new grants or source DDL.
+        seed = await asyncpg.create_pool(
+            general_db_url, min_size=1, max_size=1, init=register_jsonb_codec
+        )
+        entity = uuid.uuid4()
+        try:
+            await seed.execute(
+                "INSERT INTO public.entities(id,canonical_name) VALUES($1,'Synthetic attendee')",
+                entity,
+            )
+            await seed.execute(
+                "INSERT INTO relationship.facts(subject,predicate,content,scope,entity_id) VALUES('Synthetic attendee','contact_note','Synthetic note','relationship',$1)",
+                entity,
+            )
+            await seed.execute(
+                "INSERT INTO public.owner_conditions(source,fingerprint,episode,summary,metadata) VALUES('relationship:commitment',$1,1,'Synthetic promise',$2)",
+                str(uuid.uuid4()),
+                {
+                    "class": "commitment",
+                    "kind": "promise",
+                    "direction": "outbound",
+                    "counterparty_entity_id": str(entity),
+                },
+            )
+            await seed.execute(
+                "SELECT switchboard.switchboard_message_inbox_ensure_partition(now())"
+            )
+            await seed.execute(
+                "INSERT INTO switchboard.message_inbox(normalized_text,request_context) VALUES('Synthetic recent thread',$1)",
+                {
+                    "source_channel": "email",
+                    "source_sender_entity_id": str(entity),
+                    "source_thread_identity": "synthetic-thread",
+                    "subject": "Synthetic subject",
+                },
+            )
+            for butler, handler in (
+                ("relationship", run_relationship_calendar_prep_contribution),
+                ("messenger", run_messenger_calendar_prep_contribution),
+                ("travel", run_travel_calendar_prep_contribution),
+            ):
+                role_pool = await _calendar_role_pool(general_db_url, butler)
+                try:
+                    assert await role_pool.fetchval("SELECT current_user") == f"butler_{butler}_rw"
+                    sid = await role_pool.fetchval(
+                        "INSERT INTO calendar_sources(source_key,source_kind) VALUES('prep-source','provider') RETURNING id"
+                    )
+                    ordinary = await role_pool.fetchval(
+                        "INSERT INTO calendar_events(source_id,source_butler,origin_ref,title,timezone,starts_at,ends_at) VALUES($1,$2,'ordinary','Synthetic meeting','UTC',now()+interval '1 hour',now()+interval '2 hours') RETURNING id",
+                        sid,
+                        butler,
+                    )
+                    await role_pool.execute(
+                        "INSERT INTO calendar_event_entities(event_id,entity_id) VALUES($1,$2)",
+                        ordinary,
+                        entity,
+                    )
+                    for kind in ("outOfOffice", "workingLocation"):
+                        status = await role_pool.fetchval(
+                            "INSERT INTO calendar_events(source_id,source_butler,origin_ref,title,timezone,starts_at,ends_at,event_type) VALUES($1,$2,$3,'Synthetic status','UTC',now()+interval '1 hour',now()+interval '2 hours',$3) RETURNING id",
+                            sid,
+                            butler,
+                            kind,
+                        )
+                        await role_pool.execute(
+                            "INSERT INTO calendar_event_entities(event_id,entity_id) VALUES($1,$2)",
+                            status,
+                            entity,
+                        )
+                        await state_set(role_pool, prep_key(str(status)), {"old": True})
+                        outcome = await handler(role_pool, None)
+                        assert outcome["events_written"] == 1
+                        assert await state_get(role_pool, prep_key(str(status))) is None
+                        envelope = await state_get(role_pool, prep_key(str(ordinary)))
+                        assert envelope["butler"] == butler and envelope["has_context"] is True
+                        assert envelope["attendees"][0]["entity_id"] == str(entity)
+                        if butler == "relationship":
+                            assert envelope["attendees"][0]["notes"] == [
+                                {"kind": "contact_note", "text": "Synthetic note"}
+                            ]
+                            assert (
+                                envelope["attendees"][0]["commitments"][0]["summary"]
+                                == "Synthetic promise"
+                            )
+                        else:
+                            assert (
+                                envelope["attendees"][0]["message_context"][0]["thread_id"]
+                                == "synthetic-thread"
+                            )
+                finally:
+                    await role_pool.close()
+        finally:
+            await seed.close()
 
     async def test_travel_producer_sets_traveling_then_clears(self, travel_db_url):
         pool = await _pool(travel_db_url)

@@ -60,7 +60,7 @@ The `UNIQUE (signal_type, set_by_butler)` constraint ensures each butler maintai
 
 ### Signal Vocabulary
 
-A fixed vocabulary of context types. New types require a migration to extend the check constraint.
+A fixed vocabulary of context types. Vocabulary validation is application-level; adding a type does not require a `user_context` CHECK migration. Calendar projection fields remain separately migration-tracked.
 
 | Signal Type | Description | Typical TTL | Example Writers |
 |-------------|-------------|-------------|-----------------|
@@ -75,6 +75,7 @@ A fixed vocabulary of context types. New types require a migration to extend the
 | `at_home` | User is at their home location | 1-24 hours | travel, home, general |
 | `in_space` | Owner-scoped room/area the user is currently in at home | 1-24 hours | home, general |
 | `away` | User is away / unreachable | 1 hour - 30 days | general |
+| `working_location` | Calendar-declared place of work today; not physical presence | Until local day end, max 24 hours | general (calendar) |
 | `dnd` | Do not disturb (explicit user request) | 1-12 hours | general, switchboard |
 
 The vocabulary is enforced at the application level, not by a database CHECK constraint, to allow easy extension without migrations. The canonical list lives in a Python enum:
@@ -92,6 +93,7 @@ class ContextSignal(str, Enum):
     AT_HOME = "at_home"
     IN_SPACE = "in_space"
     AWAY = "away"
+    WORKING_LOCATION = "working_location"
     DND = "dnd"
 ```
 
@@ -114,6 +116,7 @@ class ContextSignal(str, Enum):
 | `at_home` | travel, home, general | Travel butler detects Home geofence entry; home butler detects home network/device presence; general relays user statements |
 | `in_space` | home, general | Home butler resolves the owner's current room/area from HA presence data |
 | `away` | general | General butler handles availability |
+| `working_location` | general | Calendar-declared work-location qualifier, independent of attendance or presence |
 | `dnd` | general, switchboard | User-initiated; switchboard enforces |
 
 Write permissions for every **non-DND** signal remain enforced at the application
@@ -156,6 +159,7 @@ When a butler sets a context signal, it MUST provide an `expires_at` timestamp. 
 | `at_home` | 12 hours | 24 hours |
 | `in_space` | 12 hours | 24 hours |
 | `away` | 12 hours | 30 days |
+| `working_location` | 12 hours | 24 hours |
 | `dnd` | 2 hours | 24 hours |
 
 If a butler omits a TTL, the default is applied. If a butler requests a TTL exceeding the max, it is clamped to the max.

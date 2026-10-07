@@ -171,6 +171,18 @@ async def test_populated_writes_attendee_context():
     assert bob_att["message_context"] == []
     assert bob_att["commitments"] == []
 
+    ordinary = dict(pool._events[0])
+    for kind in ("outOfOffice", "workingLocation"):
+        status_id = uuid4()
+        status = {**ordinary, "event_id": status_id, "event_type": kind}
+        pool._events = [status, ordinary]
+        cap.store[prep_key(str(status_id))] = {"old": True}
+        with _patch_state(cap):
+            result = await run_relationship_calendar_prep_contribution(pool, None)
+        assert result["events_written"] == 1
+        assert prep_key(str(status_id)) not in cap.store
+        assert prep_key(str(event_id)) in cap.store
+
 
 async def test_commitments_are_escalation_sorted_and_capped_per_attendee():
     """REQ-calendar-overlay-aggregation-005: select a capped L3-to-L0 commitment set."""

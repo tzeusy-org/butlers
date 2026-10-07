@@ -54,6 +54,7 @@ def _entry(
     )
 
 
+# REQ-context-bus-001, REQ-context-bus-002, REQ-context-bus-003: existing behavioral controls below; SQL credit is separate.
 def test_context_signal_and_write_permission_and_ttl():
     """ContextSignal enum; write permission enforcement; TTL clamping per signal type."""
     # ContextSignal enum: all 12 types present; StrEnum semantics; invalid raises
@@ -69,6 +70,7 @@ def test_context_signal_and_write_permission_and_ttl():
         "at_home",
         "in_space",
         "away",
+        "working_location",
         "dnd",
     }
     assert {s.value for s in ContextSignal} == expected
@@ -81,6 +83,7 @@ def test_context_signal_and_write_permission_and_ttl():
     for butler, signal in [
         ("health", "exercising"),
         ("general", "meeting"),
+        ("general", "working_location"),
         ("travel", "traveling"),
         ("switchboard", "dnd"),
     ]:
@@ -89,6 +92,7 @@ def test_context_signal_and_write_permission_and_ttl():
     # Write permission: denied pairs
     for butler, signal in [
         ("finance", "exercising"),
+        ("finance", "working_location"),
         ("general", "exercising"),
         ("travel", "exercising"),
     ]:
@@ -98,12 +102,21 @@ def test_context_signal_and_write_permission_and_ttl():
     # TTL clamping: result ≤ signal max
     for signal, max_td in [
         ("meeting", timedelta(hours=4)),
+        ("working_location", timedelta(hours=24)),
         ("traveling", timedelta(days=30)),
         ("sleeping", timedelta(hours=12)),
         ("commuting", timedelta(hours=3)),
     ]:
         result = _clamp_ttl(signal, _NOW, _NOW + max_td * 2)
         assert abs((result - (_NOW + max_td)).total_seconds()) < 2
+
+    from butlers.context_bus import _TTL_CONFIG
+
+    assert _TTL_CONFIG["working_location"] == (timedelta(hours=12), timedelta(hours=24))
+    assert (
+        format_context_preamble([_entry("working_location", 'HQ "north"')])
+        == r'[User Context: working_location ("HQ \"north\"", explicit)]'
+    )
 
 
 def test_format_context_preamble_and_validation():

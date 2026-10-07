@@ -35,6 +35,11 @@ from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
+from butlers.core.temporal.calendar_event_types import (
+    google_working_location,
+    normalize_event_type,
+    normalize_working_location,
+)
 from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
@@ -957,6 +962,12 @@ def _google_event_to_calendar_event(
         organizer=organizer,
         visibility=visibility,
         transparency=transparency,
+        event_type=payload.get("eventType"),
+        working_location=(
+            google_working_location(payload.get("workingLocationProperties"))
+            if payload.get("eventType") == "workingLocation"
+            else None
+        ),
         etag=etag,
         created_at=created_at,
         updated_at=updated_at,
@@ -1652,6 +1663,19 @@ class CalendarEvent(BaseModel):
     end_at: datetime
     timezone: str
     all_day: bool = False
+    event_type: str = "default"
+    working_location: dict[str, str] | None = None
+
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def normalize_declared_type(cls, value: Any) -> str:
+        return normalize_event_type(value)
+
+    @field_validator("working_location", mode="before")
+    @classmethod
+    def minimize_declared_location(cls, value: Any) -> dict[str, str] | None:
+        return normalize_working_location(value)
+
     description: str | None = None
     body: str | None = None
     location: str | None = None
@@ -6891,7 +6915,17 @@ class CalendarModule(Module):
                         WHERE table_schema = current_schema()
                           AND table_name = 'calendar_events'
                           AND column_name = 'source_session_id'
-                    ) AS has_events_source_session_id
+                    ) AS has_events_source_session_id,
+                    EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema() AND table_name = 'calendar_events'
+                          AND column_name = 'event_type'
+                    ) AS has_events_event_type,
+                    EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema() AND table_name = 'calendar_events'
+                          AND column_name = 'working_location'
+                    ) AS has_events_working_location
                 """
             )
         except Exception as exc:
@@ -6913,6 +6947,8 @@ class CalendarModule(Module):
                 "calendar_events.body": row["has_events_body"],
                 "calendar_events.source_butler": row["has_events_source_butler"],
                 "calendar_events.source_session_id": row["has_events_source_session_id"],
+                "calendar_events.event_type": row["has_events_event_type"],
+                "calendar_events.working_location": row["has_events_working_location"],
             }
         except KeyError:
             self._projection_tables_available_cache = False
@@ -7746,6 +7782,8 @@ class CalendarModule(Module):
         ends_at: datetime,
         status: str,
         all_day: bool = False,
+        event_type: str = "default",
+        working_location: dict[str, str] | None = None,
         visibility: str = "default",
         recurrence_rule: str | None = None,
         description: str | None = None,
@@ -7769,12 +7807,13 @@ class CalendarModule(Module):
             INSERT INTO calendar_events (
                 source_id, origin_ref, title, description, body, location, timezone,
                 starts_at, ends_at, all_day, status, visibility, recurrence_rule,
-                etag, origin_updated_at, metadata, source_butler, source_session_id
+                etag, origin_updated_at, metadata, event_type, working_location,
+                source_butler, source_session_id
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18
+                $14, $15, $16, $17, $18, $19, $20
             )
             ON CONFLICT (source_id, origin_ref) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -7793,6 +7832,8 @@ class CalendarModule(Module):
                 metadata = EXCLUDED.metadata,
                 source_butler = EXCLUDED.source_butler,
                 source_session_id = EXCLUDED.source_session_id,
+                event_type = EXCLUDED.event_type,
+                working_location = EXCLUDED.working_location,
                 updated_at = now()
             RETURNING id
             """,
@@ -7812,6 +7853,10 @@ class CalendarModule(Module):
             etag,
             origin_updated_at,
             metadata_json,
+            normalize_event_type(event_type),
+            self._encode_jsonb(normalize_working_location(working_location))
+            if working_location is not None
+            else None,
             effective_source_butler,
             normalized_source_session_id,
         )
@@ -8172,6 +8217,8 @@ class CalendarModule(Module):
                 starts_at=event.start_at,
                 ends_at=event.end_at,
                 all_day=event.all_day,
+                event_type=event.event_type,
+                working_location=event.working_location,
                 status=status_value,
                 visibility=visibility_value,
                 recurrence_rule=event.recurrence_rule,
@@ -11461,6 +11508,8 @@ class CalendarModule(Module):
             "end_at": event.end_at.isoformat(),
             "timezone": event.timezone,
             "all_day": event.all_day,
+            "event_type": event.event_type,
+            "working_location": event.working_location,
             "description": event.description,
             "body": event.body,
             "location": event.location,

@@ -370,6 +370,7 @@ WORKSPACE_COLUMNS: str = (
     " e.location,"
     " e.timezone AS event_timezone,"
     " e.all_day,"
+    " e.event_type,"
     " e.status AS event_status,"
     " e.visibility,"
     " e.recurrence_rule,"
@@ -512,6 +513,7 @@ class CalendarWorkspaceRow:
     last_error: str | None
     full_sync_required: bool
     #: The butler schema this row was fetched from (set by the query function).
+    event_type: str = "default"
     db_butler: str = ""
 
 
@@ -685,6 +687,7 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         instance_metadata=row["instance_metadata"],
         instance_updated_at=row.get("instance_updated_at"),
         event_id=row["event_id"],
+        event_type=row.get("event_type") or "default",
         origin_ref=row["origin_ref"],
         title=row["title"],
         description=row["description"],
@@ -1296,6 +1299,7 @@ async def query_calendar_conflicts(
             timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
             status=str(row.get("instance_status") or row.get("event_status") or "confirmed"),
             all_day=bool(row.get("all_day")),
+            counts_toward_day_load=row.get("event_type") not in {"outOfOffice", "workingLocation"},
         )
         for row in deduped
         if is_calendar_analysis_candidate(
