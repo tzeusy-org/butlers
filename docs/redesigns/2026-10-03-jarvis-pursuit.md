@@ -4,7 +4,7 @@
 
 Fifteen moves survive deduplication against fourteen prior dossiers and 330 non-closed beads: six trust repairs lead, nine new capabilities follow. All four rotating lenses were new to the pursuit and all four produced ranked work.
 
-[Structured evidence](2026-10-03-jarvis-pursuit-data.json)
+Full per-agent structured output lived in `2026-10-03-jarvis-pursuit-data.json`, pruned from the tree under the two-newest-runs retention rule; read it with `git show 9cc43f3e5443dd812354ff6ee7112d9575205288:docs/redesigns/2026-10-03-jarvis-pursuit-data.json` (pipe into jq in place of the path in the access patterns below).
 
 ## Decision in view
 
