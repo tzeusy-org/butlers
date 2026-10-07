@@ -29,7 +29,7 @@ from butlers.core.custody_installed import verify_installed_functions
 from butlers.core.custody_lifecycle import daemon_profile
 from butlers.core.custody_source import CustodyError, digest, utc_timestamp
 from butlers.db import Database, register_jsonb_codec
-from butlers.migrations import _build_alembic_config
+from butlers.migrations import _build_alembic_config, get_chain_revision_ids
 from butlers.testing.migration import (
     _bootstrap_migration_prerequisites,
     create_migration_db,
@@ -224,6 +224,15 @@ async def test_installed_schema_real_roles_and_same_acquired_writer(
             await admin.fetchval("SELECT custody_admission.prove_interface()")
         )
 
+        # Capture genuine installed foreign version rows before touching core.
+        # The separate committed readback below must retain those exact rows.
+        core_ids = get_chain_revision_ids("core")
+        foreign_versions = {}
+        for schema in ("relationship", "switchboard"):
+            rows = await admin.fetch(f"SELECT version_num FROM {schema}.alembic_version")
+            foreign_versions[schema] = {row["version_num"] for row in rows} - core_ids
+            assert foreign_versions[schema]  # A core-only fixture would be vacuous.
+
         # The existing actual deep lifecycle, not a hand-copied fleet schema,
         # drops the public fleet table and its incoming private FK through217.
         for schema in ("relationship", "switchboard"):
@@ -231,6 +240,9 @@ async def test_installed_schema_real_roles_and_same_acquired_writer(
                 _build_alembic_config(ordinary_url, chains=["core"], target_schema=schema),
                 "core_215",
             )
+        for schema, original_versions in foreign_versions.items():
+            rows = await admin.fetch(f"SELECT version_num FROM {schema}.alembic_version")
+            assert {row["version_num"] for row in rows} - core_ids == original_versions
         assert (
             await admin.fetchval(
                 "SELECT admission_state FROM custody_admission.control WHERE singleton"
@@ -250,6 +262,9 @@ async def test_installed_schema_real_roles_and_same_acquired_writer(
         readback = await asyncpg.connect(bootstrap_url)
         try:
             await register_jsonb_codec(readback)
+            for schema, original_versions in foreign_versions.items():
+                rows = await readback.fetch(f"SELECT version_num FROM {schema}.alembic_version")
+                assert {row["version_num"] for row in rows} - core_ids == original_versions
             assert await readback.fetchval("SELECT custody_admission.schema_identity()") == identity
             assert (
                 await readback.fetchval(

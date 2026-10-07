@@ -84,6 +84,7 @@ tests/cli/test_cli_port_conflicts.py
 tests/cli/test_cli_port_retry.py
 tests/config/test_init_db_admin_function_guard_lists.py
 tests/config/test_migration_chain_head.py
+tests/config/test_migration_preflight.py
 tests/config/test_roster_contacts_rollout.py
 tests/config/test_spotify_credentials.py
 tests/connectors/test_bridge_manager.py

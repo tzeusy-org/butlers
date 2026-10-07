@@ -555,6 +555,26 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
 
     restored_url = target.url(db_name)
 
+    # The actual source must contain the complete fixed wrapper set; absence
+    # after restore alone is vacuous without this planted installed positive.
+    declared = re.search(
+        r'^BACKUP_CUSTODY_SIGNATURES="([^"]+)"$', _BACKUP_SCRIPT.read_text(), re.M
+    )[1].split()
+    custody_catalog_sql = """
+      SELECT 'public.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ')'
+        FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+       WHERE n.nspname='public' AND left(p.proname,8)='custody_'
+       ORDER BY 1
+    """
+    actual_source = _query(source_db_url, custody_catalog_sql)
+    assert len(actual_source) == 15 and set(actual_source) == set(declared)
+    artifact_sql = gzip.decompress(backup_artifact.read_bytes()).decode()
+    assert not re.search(r"FUNCTION public\.custody_[a-z_]+\(", artifact_sql)
+    assert "FUNCTION public.cost_claim_restore_row(" in artifact_sql
+    assert _query(restored_url, custody_catalog_sql) == []
+    # No new ownership/catalog exception: the universal definer check and
+    # actual unrelated fenced survivors/mutation control below stay intact.
+
     for relation in (
         "connectors.home_assistant_persons",
         "public.ha_person_mapping_receipts",

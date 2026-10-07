@@ -734,9 +734,22 @@ stored schema identity stays unchanged and must match again. Other column,
 constraint, policy or owner drift refuses; no general schema refresh is allowed.
 
 The ordinary backup excludes the exact fenced `custody_admission` schema and
-`public.custody_holds`, preserving its existing role/ACL boundary. It does not
+`public.custody_holds`, preserving its existing role/ACL boundary. Its custom
+archive TOC selection also excludes exactly the fifteen public custody wrappers
+and their associated function metadata, with a same-snapshot source catalog and
+bidirectional exact-signature checks. Unknown/missing/changed/duplicate entries
+refuse publication. Ordinary functions and the universal restored-definer owner
+assertion are retained. This excludes unrecovered authority interfaces rather
+than recreating them under the restoring login. It does not
 recover custody command/source/hold history. Restored-history admission and
 reconciliation remain undelivered. Ordinary backup availability is not custody
 recovery proof; all original recovery/containment acceptance remains mandatory
 and unmet. The same canonical writer, source, owner-auth, acquired-connection
 and final COMMIT controls remain required.
+
+The protected core downgrade preflight selects the unique known core head from
+all current Alembic heads. Known Memory, Relationship and Switchboard version
+rows remain intact; unknown/duplicate/ambiguous current heads and invalid targets
+refuse. Crossing core_198 still invokes its exact installed rollback proof before
+any newer migration work. Software graph/TOC controls are bounded evidence; the
+real multichain lifecycle and actual backup/restore species require hosted SQL.

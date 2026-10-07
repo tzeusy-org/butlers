@@ -562,8 +562,16 @@ into the live application database or manually erase recovery evidence.
 
 The ordinary backup excludes exactly `custody_admission` and
 `public.custody_holds` because its existing dump identity cannot cross their
-fenced authority. This preserves ordinary application data and audit projections
-without granting access to private admission state. A successful backup does not
+fenced authority. It also omits the exact fifteen published custody function
+signatures, including their function ACL, comment and security-label entries.
+The producer captures their catalog in the dump's exported snapshot, writes a
+custom archive, and selects its TOC before rendering ordinary SQL. Missing,
+extra, duplicate, changed or malformed custody catalog/TOC entries fail the run
+without publication. Ordinary functions, owners, ACLs, data and the cost-claim
+carrier remain on their existing paths. This is fixed archive selection, not
+SQL-body scrubbing or a restoring-login ownership exemption. Ordinary application
+data and audit projections remain available without granting access to private
+admission state. A successful backup does not
 recover custody sources, commands, hold history, or their authority. Bootstrap
 can reconstruct the fixed objects; it cannot reconstruct lost receipts or holds.
 Restored-history admission and reconciliation remain undelivered. Complete

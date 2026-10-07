@@ -223,6 +223,85 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
     assert json.loads((backup_dir / "last_run.json").read_text())["result"] == "failed"
 
 
+@pytest.mark.unit
+def test_custody_toc_filter_is_exact_bidirectional_and_keeps_ordinary_entries(tmp_path):
+    """Actual production AWK over TOC metadata; not a real dump/SQL proof."""
+    source = _SCRIPT.read_text()
+    expected = re.search(r'^BACKUP_CUSTODY_SIGNATURES="([^"]+)"$', source, re.M)[1]
+    identities = expected.split()
+    assert len(identities) == len(set(identities)) == 15
+    headers = re.findall(
+        r"CREATE OR REPLACE FUNCTION public\.(custody_[a-z_]+)\(([^()]*)\)",
+        (_REPO_ROOT / "scripts/init-db.sql").read_text(),
+    )
+    installed = {
+        "public."
+        + name
+        + "("
+        + ",".join(arg.strip().split()[-1] for arg in arguments.split(",") if arg.strip())
+        + ")"
+        for name, arguments in headers
+    }
+    assert set(identities) == installed and len(headers) == 15
+    body = source.split("# BEGIN fixed custody TOC selector", 1)[1].split(
+        "# END fixed custody TOC selector", 1
+    )[0]
+    program = body.split("'\n", 1)[1].rsplit("\n  '", 1)[0]
+    ordinary = [
+        "200; 1255 3200 FUNCTION public ordinary_domain(text) bootstrap",
+        "201; 0 0 ACL public FUNCTION ordinary_domain(value text) bootstrap",
+        "202; 1255 3201 FUNCTION another custody_unrelated(text) bootstrap",
+        "203; 1259 3202 TABLE public entities bootstrap",
+        "204; 0 3202 TABLE DATA public entities bootstrap",
+        "205; 1255 3203 FUNCTION public cost_claim_restore_row(text, jsonb) bootstrap",
+    ]
+    definitions = [
+        f"{i + 1}; 1255 {i + 1000} FUNCTION public {key.removeprefix('public.')} bootstrap"
+        for i, key in enumerate(identities)
+    ]
+    metadata = [
+        "40; 0 0 ACL public FUNCTION custody_admit_write(source_ref uuid, operation_digest text, operation jsonb) bootstrap",
+        "41; 0 0 COMMENT public FUNCTION custody_anchor_begin() bootstrap",
+        "42; 0 0 SECURITY LABEL public FUNCTION custody_bind_connection(writer_nonce text) bootstrap",
+    ]
+
+    def selected(catalog_rows, toc_rows):
+        catalog = tmp_path / "catalog"
+        catalog.write_text("\n".join(catalog_rows) + "\n")
+        result = subprocess.run(
+            ["awk", "-v", f"expected={expected}", "-v", f"catalog={catalog}", program],
+            input="\n".join(toc_rows) + "\n",
+            text=True,
+            capture_output=True,
+        )
+        return result
+
+    catalog = ["installed:1", *identities]
+    full = ["; Archive metadata", *ordinary, *definitions, *metadata]
+    result = selected(catalog, full)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["; Archive metadata", *ordinary]
+    # Optional uninstalled legacy source is honest zero, not fifteen missing.
+    result = selected(["installed:0"], ordinary)
+    assert result.returncode == 0 and result.stdout.splitlines() == ordinary
+    for bad_catalog, bad_toc in (
+        (["installed:1", *identities[:-1]], full),
+        (["installed:1", *identities, identities[0]], full),
+        (["installed:1", *identities, "public.custody_extra(uuid)"], full),
+        (catalog, [*ordinary, *definitions[:-1]]),
+        (catalog, [*full, definitions[0]]),
+        (catalog, [*full, "50; 1255 4000 FUNCTION public custody_begin_changed(uuid) bootstrap"]),
+        (catalog, [*full, "50; 0 0 ACL public FUNCTION custody_admit_write(uuid, text) bootstrap"]),
+        (catalog, [*full, '50; 1255 4000 FUNCTION public "custody_extra"(uuid) bootstrap']),
+        (catalog, [*full, "malformed archive entry"]),
+        (["installed:0"], full),
+    ):
+        refused = selected(bad_catalog, bad_toc)
+        assert refused.returncode != 0
+        assert "archive/catalog boundary changed" in refused.stderr
+        assert "uuid" not in refused.stderr  # Closed error, never dump/role/raw fragments.
+
+
 # ---------------------------------------------------------------------------
 # Database-backed contract
 # ---------------------------------------------------------------------------

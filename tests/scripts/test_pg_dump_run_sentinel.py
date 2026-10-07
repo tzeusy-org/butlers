@@ -62,7 +62,12 @@ fi
 if [ "${FAKE_PG_DUMP_MODE:-ok}" = "empty" ]; then
   exit 0
 fi
-dd if=/dev/urandom bs=1024 count=8 2>/dev/null | od -A n -t x1
+archive=""
+for arg in "$@"; do
+  case "${arg}" in --file=*) archive=${arg#--file=} ;; esac
+done
+[ -n "${archive}" ] || exit 2
+dd if=/dev/urandom bs=1024 count=8 2>/dev/null | od -A n -t x1 > "${archive}"
 """
 
 #: gzip stand-in that compresses to something that is not gzip, and fails the
@@ -112,6 +117,10 @@ done
 
 if [ -n "${command}" ]; then
   case "${command}" in
+    *"custody_admission"*)
+      printf '%s\\n' 'custody-catalog' >> "${log}"
+      printf 'installed:0\\n'
+      ;;
     *"SET TRANSACTION SNAPSHOT"*)
       printf '%s\\n' 'scoped-export' >> "${log}"
       ;;
@@ -149,6 +158,22 @@ while IFS= read -r line; do
   esac
 done
 """
+
+
+# Archive metadata/render transport double only. The actual production selector
+# still executes and validates the captured catalog/TOC; no SQL is modeled here.
+_FAKE_PG_RESTORE = """#!/bin/sh
+set -eu
+if [ "$1" = "--list" ]; then
+  [ "${FAKE_PG_RESTORE_MODE:-ok}" != "listfail" ] || exit 7
+  printf '%s\\n' '1; 1259 100 TABLE public entities bootstrap'
+else
+  [ "${FAKE_PG_RESTORE_MODE:-ok}" != "renderfail" ] || exit 8
+  shift
+  cat "$1"
+fi
+"""
+
 
 #: mv stand-in that fails only when publishing the artifact -- a full disk at
 #: the last step. The script never enumerated this one, which is the point:
@@ -202,6 +227,7 @@ def bin_dir(tmp_path: Path) -> Path:
     d.mkdir()
     _install_stub(d, "pg_dump", _FAKE_PG_DUMP)
     _install_stub(d, "psql", _FAKE_PSQL)
+    _install_stub(d, "pg_restore", _FAKE_PG_RESTORE)
     return d
 
 
@@ -233,6 +259,7 @@ def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Pat
     assert (backup_dir / ".fake-psql-events").read_text(encoding="utf-8").splitlines() == [
         "snapshot-exported",
         "snapshot-policy-verified",
+        "custody-catalog",
         "scoped-export",
         "restore-authorization",
     ]
@@ -242,6 +269,8 @@ def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Pat
     ("stubs", "env", "expected_reason"),
     [
         ({}, {"FAKE_PG_DUMP_MODE": "fail"}, "pg_dump_failed"),
+        ({}, {"FAKE_PG_RESTORE_MODE": "listfail"}, "pg_dump_failed"),
+        ({}, {"FAKE_PG_RESTORE_MODE": "renderfail"}, "pg_dump_failed"),
         ({"gzip": _FAKE_GZIP_UNDERSIZE}, {}, "artifact_undersize"),
         ({"gzip": _FAKE_GZIP}, {}, "artifact_corrupt"),
         ({"mv": _FAKE_MV}, {}, "unexpected_error"),

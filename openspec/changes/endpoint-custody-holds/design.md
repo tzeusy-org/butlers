@@ -249,3 +249,22 @@ union remain prerequisites. In particular, an internal held receipt is not
 proof that legacy egress is contained while B egress wiring is uninstalled.
 All five original criteria, fifteen slices, eleven requirements and V1–V11
 remain mandatory and UNMET; tasks remain unchecked and the change unarchived.
+
+
+C6 correction preserves the full Source-A contract. Protected downgrade preflight
+uses all current version rows to select the unique known core branch without
+stamping or deleting foreign heads; crossing core_198 retains its exact catalog
+rollback authority. Unknown/duplicate/ambiguous heads or invalid targets refuse.
+The existing real installed-role species also retains actual foreign version
+rows across deep rollback and separate committed re-upgrade readback.
+
+Ordinary backup omits the exact fifteen public custody wrapper signatures and
+their function metadata alongside the already excluded private schema/holds.
+A same-snapshot catalog and archive TOC must match the fixed interface in both
+directions before ordinary SQL renders; malformed/changed/missing/extra/duplicate
+entries refuse publication. Ordinary functions/data/owners/ACLs, cost-claim
+carrier and universal restoring-login definer check remain unchanged. This does
+not recover command/source/hold history or admit restored custody. No roles,
+grants, authority interfaces, scenario bodies or acceptance requirements change.
+Software graph and actual selector controls are not migrated SQL/restore proof;
+all original whole outcomes and recovery obligations remain mandatory UNMET.
