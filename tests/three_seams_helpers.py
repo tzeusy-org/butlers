@@ -3,6 +3,8 @@
 Bodies are exact public source at 461e03b32ac3b88e2a92d487432f77a73aa2b829.
 They execute against the same disposable migrated PostgreSQL fixture as the fix;
 no shallow-checkout git fetch, applied migration edit or live connection is used.
+Virtual filenames live under tests/fixtures/historical/<revision>/<original path>
+so the coverage tracer cannot attribute old bodies to current production source.
 """
 
 from __future__ import annotations
@@ -21,7 +23,8 @@ def baseline_function(name: str, globals_: dict[str, Any]):
     item = json.loads(raw)[name]
     assert hashlib.sha256(item["body"].encode()).hexdigest() == item["body_sha256"]
     namespace = dict(globals_)
-    exec(compile(item["body"], item["path"] + "@" + item["git_sha"], "exec"), namespace)
+    filename = Path(__file__).parent / "fixtures" / "historical" / item["git_sha"] / item["path"]
+    exec(compile(item["body"], str(filename), "exec"), namespace)
     return namespace[name]
 
 
