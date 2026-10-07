@@ -12,9 +12,25 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
+import userEvent from "@testing-library/user-event"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
-import { ActivityStripe } from "./ActivityStripe"
+import { ActivityStripe as SourceActivityStripe } from "./ActivityStripe"
+import { AppTimezoneProvider } from "@/components/ui/timezone-context"
+import { denseCountBuckets, orderedBuckets } from "@/lib/bucket-series"
+import type { CountBucket } from "@/lib/bucket-series"
+
+function ActivityStripe({ counts, windowEnd = new Date("2026-05-10T23:00:00Z"), ...props }: {
+  counts: number[]; windowEnd?: Date; className?: string; onBarClick?: (index: number) => void
+}) {
+  // Explicit test source window; production never reconstructs it from position.
+  const end = Math.floor(windowEnd.getTime() / 3_600_000) * 3_600_000 + 3_600_000
+  const buckets: CountBucket[] = counts.map((count, index) => ({
+    bucket_start: new Date(end - (24-index) * 3_600_000).toISOString(),
+    bucket_end: new Date(end - (23-index) * 3_600_000).toISOString(), count, listening: "unknown",
+  }))
+  return <AppTimezoneProvider timezone="UTC"><SourceActivityStripe buckets={buckets} {...props} /></AppTimezoneProvider>
+}
 
 afterEach(() => cleanup())
 
@@ -61,7 +77,8 @@ describe("ActivityStripe: all-zero row", () => {
 
   it("does not render any inline style on empty cells", () => {
     const html = renderToStaticMarkup(<ActivityStripe counts={zeros()} />)
-    expect(html).not.toContain("style=")
+    expect(html).not.toContain("background-color")
+    expect(html).toContain("liveness unknown")
   })
 })
 
@@ -127,7 +144,7 @@ describe("ActivityStripe: aria-label", () => {
   it("all-zero row has total 0 and peak 0", () => {
     const html = renderToStaticMarkup(<ActivityStripe counts={zeros()} />)
     expect(html).toContain("total 0 sessions")
-    expect(html).toContain("peak 0 at")
+    expect(html).toContain("liveness unknown")
   })
 })
 
@@ -156,7 +173,7 @@ describe("ActivityStripe: windowEnd prop", () => {
     const html = renderToStaticMarkup(
       <ActivityStripe counts={data} windowEnd={windowEnd} />,
     )
-    expect(html).toContain("00:00")
+    expect(html).toContain("12:00 AM UTC")
   })
 
   it("windowEnd at UTC 23:00, peak at slot 0 → hour 00:00", () => {
@@ -167,7 +184,7 @@ describe("ActivityStripe: windowEnd prop", () => {
     const html = renderToStaticMarkup(
       <ActivityStripe counts={data} windowEnd={windowEnd} />,
     )
-    expect(html).toContain("00:00")
+    expect(html).toContain("12:00 AM UTC")
   })
 
   it("falls back gracefully when windowEnd is omitted (aria-label still present)", () => {
@@ -190,6 +207,41 @@ describe("ActivityStripe: className forwarding", () => {
       <ActivityStripe counts={zeros()} className="my-custom-class" />,
     )
     expect(html).toContain("my-custom-class")
+    // Original hours 2/20 and missing 5-7 are deterministic wire conformance,
+    // not an elapsed PostgreSQL receiver recording claim.
+    const end = Date.parse("2026-11-01T12:00:00Z")
+    const buckets: CountBucket[] = Array.from({ length: 24 }, (_, index) => ({
+      bucket_start: new Date(end - (24-index) * 3_600_000).toISOString(),
+      bucket_end: new Date(end - (23-index) * 3_600_000).toISOString(),
+      count: index === 2 ? 2 : index === 20 ? 20 : 0,
+      listening: [5,6,7].includes(index) ? "deaf" : "live",
+    }))
+    const actual = renderToStaticMarkup(<AppTimezoneProvider timezone="America/New_York">
+      <SourceActivityStripe buckets={[...buckets].reverse()} /></AppTimezoneProvider>)
+    expect(actual).toContain("not listening 3h")
+    expect(actual).toContain("total 22 sessions")
+    expect(actual).toContain("EDT")
+    expect(actual).toContain("EST")
+    const india = renderToStaticMarkup(<AppTimezoneProvider timezone="Asia/Kolkata">
+      <SourceActivityStripe buckets={[{ bucket_start:"2026-11-01T00:00:00Z", bucket_end:"2026-11-01T01:00:00Z", count:2, listening:"unknown" }]} />
+      </AppTimezoneProvider>)
+    expect(india).toContain("5:30 AM")
+    expect(india).toContain("liveness unknown")
+    expect(orderedBuckets([buckets[2], buckets[2]])).toEqual([])
+    const window = { window_start:buckets[0].bucket_start, window_end:buckets[23].bucket_end,
+      bucket_width_s:3600, counts_available:true }
+    const sparse = denseCountBuckets([buckets[20], buckets[2]], window)
+    expect(sparse[2].count).toBe(2)
+    expect(sparse[20].count).toBe(20)
+    expect(sparse[5].count).toBe(0)
+    expect(sparse[5].listening).toBe("unknown")
+    const unavailable = denseCountBuckets([], { ...window, counts_available:false })
+    expect(unavailable.every(bucket => bucket.count === null && bucket.listening === "unknown")).toBe(true)
+    const unknownCounts = renderToStaticMarkup(<SourceActivityStripe buckets={unavailable} />)
+    expect(unknownCounts).toContain("count unavailable")
+    expect(unknownCounts).not.toContain("total 0")
+    expect(renderToStaticMarkup(<SourceActivityStripe counts={counts({2:2,20:20})} />)).toContain("Count window unavailable")
+
   })
 })
 
@@ -198,25 +250,31 @@ describe("ActivityStripe: className forwarding", () => {
 // ---------------------------------------------------------------------------
 
 describe("ActivityStripe: optional bar interaction", () => {
-  it("renders focusable bars and reports the clicked slot when onBarClick is supplied", () => {
+  it("renders focusable bars and reports the clicked slot when onBarClick is supplied", async () => {
     const onBarClick = vi.fn()
     render(<ActivityStripe counts={counts({ 5: 3 })} onBarClick={onBarClick} />)
 
-    expect(screen.getByRole("group", { name: /24-hour activity/i })).toBeDefined()
+    expect(screen.getByRole("group", { name: /Count activity/i })).toBeDefined()
     const bars = screen.getAllByRole("button")
     expect(bars).toHaveLength(24)
 
     fireEvent.click(bars[5])
     expect(onBarClick).toHaveBeenCalledWith(5)
+    bars[5].focus()
+    const user = userEvent.setup()
+    await user.keyboard("{Enter}")
+    await user.keyboard(" ")
+    expect(onBarClick).toHaveBeenCalledTimes(3)
+    expect(onBarClick).toHaveBeenLastCalledWith(5)
   })
 
   it("keeps interactive bars at the minimum target size inside a horizontally scrollable group", () => {
     render(<ActivityStripe counts={zeros()} onBarClick={() => {}} />)
 
-    const stripe = screen.getByRole("group", { name: /24-hour activity/i })
+    const stripe = screen.getByRole("group", { name: /Count activity/i })
     expect(stripe.className).toContain("overflow-x-auto")
-    expect(screen.getAllByRole("button")[0].className).toContain("min-w-6")
-    expect(screen.getAllByRole("button")[0].className).toContain("min-h-6")
+    expect(screen.getAllByRole("button")[0].className).toContain("min-w-11")
+    expect(screen.getAllByRole("button")[0].className).toContain("min-h-11")
   })
 
   it("renders a two-pixel focus indicator for each interactive slot", () => {
@@ -238,6 +296,8 @@ describe("ActivityStripe: optional bar interaction", () => {
       />,
     )
 
-    expect(screen.getAllByRole("button")[20].getAttribute("aria-label")).toBe("5 sessions, 11:00 UTC")
+    expect(screen.getAllByRole("button")[20].getAttribute("aria-label")).toContain("11:00")
+    expect(screen.getAllByRole("button")[20].getAttribute("aria-label")).toContain("UTC")
+    expect(screen.getAllByRole("button")[20].getAttribute("aria-label")).toContain("5 sessions")
   })
 })

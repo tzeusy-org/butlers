@@ -4455,14 +4455,14 @@ interface _BackendStatsRow {
   hour?: string;
   /** ISO date string for daily rollup (period=7d|30d). */
   day?: string;
-  messages_ingested: number;
-  messages_failed: number;
+  messages_ingested: number | null;
+  messages_failed: number | null;
+  bucket_start?: string;
+  bucket_end?: string;
+  listening?: "live" | "deaf" | "unknown";
+  counts_partial?: boolean;
   /** Skip-routed volume for this bucket (bu-c48im), from connectors.filtered_events. */
   messages_filtered: number;
-  heartbeat_count: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
   uptime_pct?: number | null;
 }
 
@@ -4554,13 +4554,14 @@ function _toConnectorStats(
     messages_failed: r.messages_failed,
     // ?? 0 guards older cached backend rows that predate the filtered series.
     messages_filtered: r.messages_filtered ?? 0,
-    healthy_count: r.healthy_count,
-    degraded_count: r.degraded_count,
-    error_count: r.error_count,
+    bucket_start: r.bucket_start,
+    bucket_end: r.bucket_end,
+    listening: r.listening ?? "unknown",
+    counts_partial: r.counts_partial,
   }));
 
-  const totalIngested = timeseries.reduce((s, r) => s + r.messages_ingested, 0);
-  const totalFailed = timeseries.reduce((s, r) => s + r.messages_failed, 0);
+  const totalIngested = timeseries.reduce((s, r) => s + (r.messages_ingested ?? 0), 0);
+  const totalFailed = timeseries.reduce((s, r) => s + (r.messages_failed ?? 0), 0);
   const totalProcessed = totalIngested + totalFailed;
   const errorRatePct = totalProcessed > 0 ? (totalFailed / totalProcessed) * 100 : 0;
   // Approximate avg per hour: for 24h use hourly rows directly; for 7d/30d divide total by hours

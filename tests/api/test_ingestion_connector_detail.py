@@ -68,7 +68,17 @@ def _wire_stats_connection(pool: AsyncMock) -> AsyncMock:
     """Make the stats route exercise one row lock and one query connection."""
     connection = AsyncMock()
     connection.fetchrow = pool.fetchrow
-    connection.fetch = pool.fetch
+
+    async def fetch(sql, *args):
+        if " AS observed" in sql:
+            return []
+        rows = await pool.fetch(sql, *args)
+        return [{"connector_type": "gmail", "endpoint_identity": "owner", **row} for row in rows]
+
+    connection.fetch = AsyncMock(side_effect=fetch)
+    connection.fetchval.side_effect = lambda sql, *args: (
+        datetime(2026, 9, 10, 11, tzinfo=UTC) if "clock_timestamp" in sql else []
+    )
 
     transaction = MagicMock()
     transaction.__aenter__ = AsyncMock(return_value=None)
@@ -213,13 +223,18 @@ async def test_canonical_stats_preserve_distinct_filtered_series(app) -> None:
         response = await client.get("/api/ingestion/connectors/gmail/owner/stats?period=24h")
 
     assert response.status_code == 200
-    bucket = response.json()["data"][0]
+    bucket = next(
+        row for row in response.json()["data"] if row["hour"].startswith("2026-09-10T10:")
+    )
     assert bucket["messages_ingested"] == 2
     assert bucket["messages_filtered"] == 3
-    assert bucket["heartbeat_count"] == 0
-    assert bucket["healthy_count"] == 0
+    # Uncomputed health defaults must not impersonate measured heartbeat truth.
+    for field in ("heartbeat_count", "healthy_count", "degraded_count", "error_count"):
+        assert field not in bucket
     assert response.json()["meta"]["hourly_events_available"] is True
-    assert "connectors.filtered_events" in connection.fetch.await_args.args[0]
+    assert any(
+        "connectors.filtered_events" in call.args[0] for call in connection.fetch.await_args_list
+    )
     assert "FOR UPDATE" in connection.fetchrow.await_args.args[0]
 
 

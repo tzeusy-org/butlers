@@ -60,6 +60,7 @@ function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
     lastHeartbeatISO: null,
     heartbeatAgeSeconds: null,
     hourlyStripe: Array(24).fill(0),
+    hourlyBuckets: Array.from({length:24}, (_,i) => ({bucket_start: new Date(Date.parse("2026-05-10T00:00:00Z")+i*3600000).toISOString(), bucket_end: new Date(Date.parse("2026-05-10T00:00:00Z")+(i+1)*3600000).toISOString(), count: 0, listening: "unknown" as const})),
     hourlyTotal: 7,
     hourlyStripeLoading: false,
     hourlyStripeError: false,

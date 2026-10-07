@@ -171,7 +171,7 @@ def _assert_search_path_is_minimal(config: list[str]) -> None:
     assert is_pinned(config), f"search_path is not pinned: {config}"
 
 
-def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_container):
+def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_container, tmp_path):
     """Runtime role can create heartbeat partitions without parent ownership."""
     db_url = _run_schema_scoped_core_and_switchboard(postgres_container, "switchboard")
 
@@ -210,6 +210,10 @@ def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_containe
         scalar=True,
     )
 
+    from tests.heartbeat_coverage_helpers import exercise_recording_boundary
+
+    asyncio.run(exercise_recording_boundary(db_url, tmp_path))
+
 
 def test_concurrent_heartbeat_partition_ensures_are_idempotent(postgres_container):
     """Concurrent first heartbeats cannot race while creating a monthly partition."""
@@ -245,6 +249,40 @@ def test_downgrade_drops_all_objects(postgres_container):
     db_url = _run_core_and_switchboard(postgres_container)
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO connector_heartbeat_log "
+                    "(connector_type,endpoint_identity,state,received_at) "
+                    "VALUES ('telegram_bot','downgrade-preserved','healthy',clock_timestamp())"
+                )
+            )
+        command.downgrade(config, "switchboard@sw_040")
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT count(*) FROM connector_heartbeat_log "
+                        "WHERE endpoint_identity='downgrade-preserved'"
+                    )
+                ).scalar_one()
+                == 1
+            )
+        command.upgrade(config, "switchboard@head")
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT count(*) FROM connector_heartbeat_log "
+                        "WHERE endpoint_identity='downgrade-preserved' AND recording_xid IS NULL"
+                    )
+                ).scalar_one()
+                == 1
+            )
+    finally:
+        engine.dispose()
     command.downgrade(config, "switchboard@sw_001")
 
     assert not table_exists(db_url, "connector_registry")

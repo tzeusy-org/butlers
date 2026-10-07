@@ -1472,7 +1472,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Could not load activity metrics.
 - Activity
-- = 0 && idx
 - Could not load hourly activity.
 - Could not load daily activity.
 - Could not load session kind breakdown.
@@ -1778,6 +1777,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Could not load both versions to diff.
 - No tool grants configured for this butler.
 - open audit log →
+- oldest source hour
+- latest source hour
 - kill switch · 30s grace →
 - sends shutdown signal; butler processes current session before exiting
 - confirm kill
@@ -1794,7 +1795,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Embed model
 - Drops · 7d
 - Activity · last 24 hours
-- {}:00 · {} session{}
 - Kill switch
 - Confirm kill switch · {}
 - System prompt updated
@@ -2644,6 +2644,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Total
 - No sessions in the selected window.
+- liveness unknown
 - Session activity
 
 ## `frontend/src/components/decisions/decisions-verdict-opener.tsx`
@@ -3164,13 +3165,12 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - routing metrics
 - {} messages from {} to {}
 
-## `frontend/src/components/ingestion/connectors/ConnectorHistogram.tsx`
-
-- no throughput recorded
-
 ## `frontend/src/components/ingestion/connectors/ConnectorRosterRow.tsx`
 
 - last · never
+- −24h
+- −12h
+- as of read
 - Open {} connector detail
 - Re-authorize {}
 - Open {} pairing
@@ -4698,6 +4698,11 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Offline / Quarantined
 - Connectors
 
+## `frontend/src/components/ui/BucketStrip.tsx`
+
+- Count window unavailable
+- Count window unavailable, liveness unknown
+
 ## `frontend/src/components/ui/Display.tsx`
 
 - Secrets
@@ -4830,4 +4835,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3844*
+*Total strings: 3849*

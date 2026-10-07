@@ -187,7 +187,6 @@ export function StatusBoardCell({
     costToday,
     loadPct,
     lastRunISO,
-    hourlyStripe,
     hourlyTotal,
     hourlyStripeLoading,
     hourlyStripeError,
@@ -384,7 +383,7 @@ export function StatusBoardCell({
             </span>
           </div>
         ) : (
-          <ActivityStripe counts={hourlyStripe} />
+          <ActivityStripe buckets={row.hourlyBuckets ?? []} />
         )}
       </button>
     </>

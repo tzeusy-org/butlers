@@ -165,6 +165,7 @@ describe("SessionStripeChart — query error state", () => {
     const refetch = vi.fn()
     mockUseQuery.mockReturnValue({
       data: {
+        window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"},
         data: [{ id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" }],
         meta: { total: 1, offset: 0, limit: 2000, has_more: false },
       },
@@ -190,7 +191,7 @@ describe("SessionStripeChart — query error state", () => {
   it("keeps a cached zero degraded and retryable after a background error", () => {
     const refetch = vi.fn()
     mockUseQuery.mockReturnValue({
-      data: { data: [], meta: { total: 0, offset: 0, limit: 2000, has_more: false } },
+      data: { window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"}, data: [], meta: { total: 0, offset: 0, limit: 2000, has_more: false } },
       isLoading: false,
       isError: true,
       refetch,
@@ -213,6 +214,7 @@ describe("SessionStripeChart — query error state", () => {
     const refetch = vi.fn()
     mockUseQuery.mockReturnValue({
       data: {
+        window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"},
         data: [{ id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" }],
         meta: {
           total: 1,
@@ -244,7 +246,7 @@ describe("SessionStripeChart — query error state", () => {
 describe("SessionStripeChart — empty data state", () => {
   it("keeps the calm empty window for a healthy complete zero response", () => {
     mockUseQuery.mockReturnValue({
-      data: { data: [], meta: { total: 0, offset: 0, limit: 2000, has_more: false } },
+      data: { window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"}, data: [], meta: { total: 0, offset: 0, limit: 2000, has_more: false } },
       isLoading: false,
       isError: false,
     } as ReturnType<typeof useQuery>)
@@ -258,7 +260,7 @@ describe("SessionStripeChart — empty data state", () => {
 
   it("does NOT render the chart when sessions is empty", () => {
     mockUseQuery.mockReturnValue({
-      data: { data: [], meta: { total: 0, offset: 0, limit: 2000, has_more: false } },
+      data: { window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"}, data: [], meta: { total: 0, offset: 0, limit: 2000, has_more: false } },
       isLoading: false,
       isError: false,
     } as ReturnType<typeof useQuery>)
@@ -276,6 +278,7 @@ describe("SessionStripeChart — renders with data", () => {
   it("renders the bar chart container when sessions are non-empty", () => {
     mockUseQuery.mockReturnValue({
       data: {
+        window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"},
         data: [{ id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" }],
         meta: { total: 1, offset: 0, limit: 2000, has_more: false },
       },
@@ -291,6 +294,7 @@ describe("SessionStripeChart — renders with data", () => {
   it("renders a Bar element per present butler", () => {
     mockUseQuery.mockReturnValue({
       data: {
+        window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"},
         data: [
           { id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" },
           { id: "s2", butler: "email", started_at: "2024-06-15T11:00:00.000Z" },
@@ -311,6 +315,7 @@ describe("SessionStripeChart — renders with data", () => {
   it("uses chart-series tokens in deterministic bar order", () => {
     mockUseQuery.mockReturnValue({
       data: {
+        window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"},
         data: [
           { id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" },
           { id: "s2", butler: "email", started_at: "2024-06-15T11:00:00.000Z" },
@@ -367,12 +372,11 @@ describe("pivotSessionsIntoRows — single-butler", () => {
     const sessions: Array<{ butler: string; started_at: string }> = []
 
     const rows = pivotSessionsIntoRows(sessions, from, to, "hour")
-    // Expect buckets: 08, 09, 10 = 3 rows
-    expect(rows).toHaveLength(3)
+    // Source [08,10) has two cells; 10 is an exclusive boundary.
+    expect(rows).toHaveLength(2)
     expect(rows.map((r) => r.bucket)).toEqual([
       "2024-06-15T08",
       "2024-06-15T09",
-      "2024-06-15T10",
     ])
   })
 })
@@ -410,14 +414,14 @@ describe("pivotSessionsIntoRows — time-bucket boundary", () => {
     expect(row!["home"]).toBe(1)
   })
 
-  it("includes a session exactly on the to boundary", () => {
+  it("excludes the exclusive to boundary while preserving the included start", () => {
     const from = new Date("2024-06-15T08:00:00.000Z")
     const to = new Date("2024-06-15T10:00:00.000Z")
-    const sessions = [{ butler: "home", started_at: "2024-06-15T10:00:00.000Z" }]
+    const sessions = [{ butler: "home", started_at: "2024-06-15T10:00:00.000Z" }, { butler: "home", started_at: "2024-06-15T08:00:00.000Z" }]
 
     const rows = pivotSessionsIntoRows(sessions, from, to, "hour")
-    const row = rows.find((r) => r.bucket === "2024-06-15T10")
-    expect(row!["home"]).toBe(1)
+    expect(rows.find((r) => r.bucket === "2024-06-15T10")).toBeUndefined()
+    expect(rows.find((r) => r.bucket === "2024-06-15T08")!["home"]).toBe(1)
   })
 
   it("excludes a session before the from boundary", () => {
@@ -490,6 +494,7 @@ describe("SessionStripeChart — degraded source", () => {
   it("names the dropped pool above the bars when data is partial", () => {
     mockUseQuery.mockReturnValue({
       data: {
+        window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"},
         data: [{ id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" }],
         meta: {
           total: 1,
@@ -512,6 +517,7 @@ describe("SessionStripeChart — degraded source", () => {
   it("gates the calm empty window: a degraded zero names the pool, not the empty copy", () => {
     mockUseQuery.mockReturnValue({
       data: {
+        window: {from: "2024-06-14T12:00:00Z", to: "2024-06-15T12:00:00Z"},
         data: [],
         meta: {
           total: 0,

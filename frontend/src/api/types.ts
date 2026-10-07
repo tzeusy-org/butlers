@@ -125,6 +125,7 @@ export interface BoardRow {
   heartbeat_unavailable: boolean;
   schema_unreachable: boolean;
   hourly_stripe: number[];
+  hourly_buckets?: { hour_start: string; sessions_count: number }[];
   hourly_total: number;
   /** True when this row's hourly-activity query failed -- hourly_stripe/hourly_total are a fabricated zero-fill in that case. */
   stripe_source_error?: boolean;
@@ -3980,10 +3981,11 @@ export interface ConnectorSummary {
   today: ConnectorDaySummary | null;
   /**
    * 24-bucket hourly event counts for the last 24 hours (oldest hour first,
-   * newest last). Sourced from ingestion_events — always present, never null.
-   * Zero-filled for hours with no events.
+   * newest last). Compatibility counts are present only after a successful
+   * source read; count strips consume actual keys in hourly_buckets.
    */
-  hourly_events: number[];
+  hourly_events: number[] | null;
+  hourly_buckets?: ConnectorStatsBucket[];
   /**
    * 24-bucket hourly FILTERED/skip-routed event counts (bu-scyro), sourced
    * from connectors.filtered_events — a DISTINCT series, never folded into
@@ -3993,7 +3995,7 @@ export interface ConnectorSummary {
    * appears on this chart at all. Optional/additive: absent on older cached
    * responses — treat as all-zero when missing.
    */
-  hourly_filtered_events?: number[];
+  hourly_filtered_events?: number[] | null;
   /**
    * Per-device liveness rows, most-recent-device first. Null for single-device
    * connector_types (the roster row's own liveness already covers them); present
@@ -4114,8 +4116,12 @@ export interface ConnectorCounters {
 /** One time bucket in a stats timeseries. */
 export interface ConnectorStatsBucket {
   bucket: string;
-  messages_ingested: number;
-  messages_failed: number;
+  messages_ingested: number | null;
+  messages_failed: number | null;
+  bucket_start?: string;
+  bucket_end?: string;
+  listening?: "live" | "deaf" | "unknown";
+  counts_partial?: boolean;
   /**
    * Skip-routed volume for this bucket (bu-c48im), sourced from
    * connectors.filtered_events. A DISTINCT series — never summed into
@@ -4123,9 +4129,7 @@ export interface ConnectorStatsBucket {
    * on the detail histogram. 0 when the connector self-persists no skips.
    */
   messages_filtered: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
+
 }
 
 export interface ConnectorStatsSummary {

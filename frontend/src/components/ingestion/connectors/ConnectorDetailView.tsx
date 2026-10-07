@@ -176,13 +176,18 @@ export function ConnectorDetailView({
   const statsLoading = statsReader?.isLoading === true && !stats
 
   // Derive spark data from timeseries (24h hourly buckets)
-  const spark24h = deriveSparkline(stats)
+  const spark24h = (stats?.timeseries ?? []).filter(bucket => bucket.bucket_start && bucket.bucket_end).map(bucket => ({
+    bucket_start: bucket.bucket_start!, bucket_end: bucket.bucket_end!,
+    count: stats?.hourly_events_available === false ? null : bucket.messages_ingested,
+    filtered: stats?.hourly_events_available === false ? null : bucket.messages_filtered,
+    listening: bucket.listening ?? "unknown", counts_partial: bucket.counts_partial,
+  }))
   // DISTINCT skip/filtered-volume overlay (bu-c48im), rendered as a quiet tick
   // over the ingested bars — never summed into spark24h.
-  const spark24hFiltered = deriveFilteredSparkline(stats)
+
   // hourly_events_available is false only on a genuine backend DB-query failure;
-  // in that case both series fall back to all-zero and the histogram would read
-  // as an honest quiet window — surface the degraded source inline instead.
+  // unreadable counts remain unavailable independently of listening evidence;
+  // surface the degraded source inline as well as in the keyed histogram.
   const hourlyEventsAvailable = !statsUnavailable && stats?.hourly_events_available !== false
 
   return (
@@ -335,7 +340,7 @@ export function ConnectorDetailView({
               </p>
             ) : (
               <>
-                <ConnectorHistogram data={spark24h} secondaryData={spark24hFiltered} height={96} />
+                <ConnectorHistogram buckets={spark24h} height={96} />
                 {/* Never let a failed hourly query hide behind a quiet histogram (bu-c48im). */}
                 {!hourlyEventsAvailable && (
                   <SourceDegradedNote
@@ -747,34 +752,4 @@ function connectorStateDotState(state: string): DispatchState {
 function describeConnector(connector: ConnectorDetail): string {
   const t = connector.connector_type.replace(/_/g, ' ')
   return `${t.charAt(0).toUpperCase() + t.slice(1)} connector: ${connector.endpoint_identity}.`
-}
-
-function deriveSparkline(stats: ConnectorStats | undefined): number[] {
-  if (!stats?.timeseries?.length) return Array(24).fill(0)
-
-  // Take up to the last 24 timeseries buckets (hourly)
-  const buckets = stats.timeseries.slice(-24)
-  const padded = Array(24).fill(0)
-  buckets.forEach((b, i) => {
-    const idx = 24 - buckets.length + i
-    padded[idx] = b.messages_ingested
-  })
-  return padded
-}
-
-/**
- * DISTINCT skip/filtered-volume sparkline (bu-c48im), aligned bucket-for-bucket
- * with {@link deriveSparkline}. Sourced from `messages_filtered` — never summed
- * into the ingested series. `?? 0` guards older cached rows missing the field.
- */
-function deriveFilteredSparkline(stats: ConnectorStats | undefined): number[] {
-  if (!stats?.timeseries?.length) return Array(24).fill(0)
-
-  const buckets = stats.timeseries.slice(-24)
-  const padded = Array(24).fill(0)
-  buckets.forEach((b, i) => {
-    const idx = 24 - buckets.length + i
-    padded[idx] = b.messages_filtered ?? 0
-  })
-  return padded
 }

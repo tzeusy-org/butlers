@@ -9,19 +9,32 @@
 
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ConnectorHistogram } from './ConnectorHistogram'
+import { ConnectorHistogram as SourceConnectorHistogram } from './ConnectorHistogram'
+import type { CountBucket } from '@/lib/bucket-series'
+import { AppTimezoneProvider } from '@/components/ui/timezone-context'
 
 const ZEROS = Array(24).fill(0)
 const WITH_DATA = Array(24)
   .fill(0)
   .map((_, i) => (i === 12 ? 50 : i === 13 ? 30 : 0))
 
+function ConnectorHistogram({ data, secondaryData, ...props }: { data: number[]; secondaryData?: number[]; height?: number; maxValue?: number }) {
+  const origin = Date.parse('2026-05-10T00:00:00Z')
+  const buckets: CountBucket[] = data.map((count, index) => ({
+    bucket_start: new Date(origin + index * 3_600_000).toISOString(),
+    bucket_end: new Date(origin + (index + 1) * 3_600_000).toISOString(),
+    count, filtered: secondaryData?.[index] ?? 0, listening: 'unknown',
+  }))
+  return <AppTimezoneProvider timezone="UTC"><SourceConnectorHistogram buckets={buckets} {...props} /></AppTimezoneProvider>
+}
+
 describe('ConnectorHistogram', () => {
   it('renders empty state when all buckets are zero', () => {
     const html = renderToStaticMarkup(<ConnectorHistogram data={ZEROS} />)
     expect(html).toContain('data-testid="histogram-empty"')
     expect(html).not.toContain('data-testid="histogram-bars"')
-    expect(html).toContain('no throughput recorded')
+    expect(html).toContain('total 0 events')
+    expect(html).toContain('liveness unknown')
   })
 
   it('renders bars when at least one bucket is non-zero', () => {
@@ -34,18 +47,19 @@ describe('ConnectorHistogram', () => {
   it('still shows hour labels in both empty and non-empty states', () => {
     const emptyHtml = renderToStaticMarkup(<ConnectorHistogram data={ZEROS} />)
     const barsHtml = renderToStaticMarkup(<ConnectorHistogram data={WITH_DATA} />)
-    // HOUR_LABELS = ['00', '03', '06', '09', '12', '15', '18', '21', '23']
-    for (const label of ['00', '03', '12', '23']) {
+    // Actual source hours in the explicit owner timezone, via canonical time formatting.
+    for (const label of ['12:00 AM UTC', '3:00 AM UTC', '12:00 PM UTC', '11:00 PM UTC']) {
       expect(emptyHtml).toContain(label)
       expect(barsHtml).toContain(label)
     }
   })
 
-  it('pads short data arrays to 24 buckets', () => {
-    // 10-element input — should not throw and should render 24 bars
+  it('retains short keyed windows without fabricating extra buckets', () => {
+    // Only these ten source cells exist; rendering preserves all ten.
     const short = Array(10).fill(5)
     const html = renderToStaticMarkup(<ConnectorHistogram data={short} />)
     expect(html).toContain('data-testid="histogram-bars"')
+    expect(html.match(/class="relative flex-1/g)).toHaveLength(10)
   })
 
   it('handles a single non-zero bucket (no all-zero false positive)', () => {
@@ -67,7 +81,7 @@ describe('ConnectorHistogram', () => {
     )
     // The quiet overlay uses the muted-foreground/25 fill, distinct from the
     // ingested bars' foreground fills.
-    expect(html).toContain('fill-muted-foreground/25')
+    expect(html).toContain('bg-muted-foreground/25')
     expect(html).toContain('data-has-filtered="true"')
   })
 
@@ -75,7 +89,7 @@ describe('ConnectorHistogram', () => {
     const html = renderToStaticMarkup(
       <ConnectorHistogram data={WITH_DATA} secondaryData={ZEROS} />,
     )
-    expect(html).not.toContain('fill-muted-foreground/25')
+    expect(html).not.toContain('bg-muted-foreground/25')
     expect(html).not.toContain('data-has-filtered')
   })
 
@@ -92,6 +106,6 @@ describe('ConnectorHistogram', () => {
     expect(html).not.toContain('histogram-empty')
     expect(html).not.toContain('no throughput recorded')
     expect(html).toContain('data-testid="histogram-bars"')
-    expect(html).toContain('fill-muted-foreground/25')
+    expect(html).toContain('bg-muted-foreground/25')
   })
 })

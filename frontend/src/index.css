@@ -973,3 +973,11 @@ body {
     display: none !important;
   }
 }
+
+/* Count strips encode missing receiver evidence through shape, not health color. */
+.bucket-deaf {
+  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--muted-foreground) 3px 4px);
+}
+.bucket-unknown {
+  background: repeating-linear-gradient(90deg, var(--muted) 0 2px, transparent 2px 5px);
+}

@@ -363,36 +363,25 @@ def _build_process_facts(
 # polls.
 
 _BOARD_HOURLY_ACTIVITY_SQL = """
-WITH hours AS (
+WITH snapshot AS MATERIALIZED (SELECT clock_timestamp() AS as_of), hours AS (
   SELECT generate_series(
-    DATE_TRUNC('hour', NOW()) - (($1 - 1) * INTERVAL '1 hour'),
-    DATE_TRUNC('hour', NOW()),
-    '1 hour'
+    as_of - ($1::integer * INTERVAL '1 hour'),
+    as_of - INTERVAL '1 hour', INTERVAL '1 hour'
   ) AS hour_start
+  FROM snapshot
 )
-SELECT
-  h.hour_start,
-  COUNT(s.id) AS sessions_count
+SELECT h.hour_start, COUNT(s.id) AS sessions_count
 FROM hours h
 LEFT JOIN sessions s ON s.started_at >= h.hour_start
                     AND s.started_at < h.hour_start + INTERVAL '1 hour'
-GROUP BY 1
-ORDER BY 1 DESC
+GROUP BY 1 ORDER BY 1 DESC
 """
 
-# Owner-tz audit (bu-uqkfm, follow-up from bu-8ogli/PR #3072): this is the same
-# UTC-bucketed ``hour_start`` shape as sessions.py::_HOURLY_ACTIVITY_SQL, whose
-# per-butler §5 histogram needed owner-tz bucketing (frontend/src/lib/
-# hourly-buckets.ts::bucketHourInZone) because it slots each bucket onto a
-# fixed 0-23 hour-of-day axis. This board query does NOT need the same fix:
-# _fetch_board_hourly_stripe() below discards every ``hour_start`` and returns
-# only a relative-position ``stripe: list[int]`` (slot = "N hours ago", not a
-# clock hour). Its sole renderer, ActivityStripe.tsx, treats the stripe as a
-# rolling window, not an hour-of-day histogram; the peak-hour figure in its
-# aria-label is derived from the viewer's live clock via ``getUTCHours()``
-# (deliberately host-tz-invariant, guarded by ActivityStripe.test.tsx), never
-# from a backend ``hour_start`` value. No consumer here needs bucketHourInZone
-# / useTimezone conversion.
+# One database snapshot defines 24 closed rolling count intervals. Retain
+# actual keys all the way to the viewer; current receiver health cannot
+# provide historical listening. This board source explicitly uses the same
+# rolling origin as its relative -24h/-12h/now axis, rather than relabeling
+# calendar-hour bins as that rolling window.
 
 # A butler is "overdue" only once its silence exceeds its own cadence by this
 # factor -- avoids flagging a butler that simply hasn't hit its next
@@ -462,6 +451,7 @@ class BoardRow(BaseModel):
     schema_unreachable: bool
 
     hourly_stripe: list[int]
+    hourly_buckets: list[dict]
     hourly_total: int
     # True when the hourly-activity query failed -- hourly_stripe/hourly_total
     # above are a fabricated [0]*24/0 in that case, never a truthful empty.
@@ -587,15 +577,11 @@ async def _fetch_enabled_crons(pool: object) -> list[str]:
     return [r["cron"] for r in rows if r["cron"]]
 
 
-async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int, bool]:
-    """Return a 24-slot oldest-first session-count stripe, its total, and an error flag.
+async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[dict], int, bool]:
+    """Return actual oldest-first rolling buckets, their total and availability.
 
-    Mirrors GET /api/butlers/{name}/analytics/hourly-activity so the board's
-    stripe and SESS·24H figure always match that endpoint's numbers.
-
-    A query failure returns ``([0] * 24, 0, True)`` -- the third element must
-    be surfaced as ``stripe_source_error`` so that all-zero stripe is never
-    read as a truthful "no activity" (degraded-mode doctrine, CLAUDE.md).
+    The explicit database origin matches the relative axis. A failed query
+    returns no keyed count cells, never 24 fabricated measured zeroes.
     """
     try:
         rows = await asyncio.wait_for(
@@ -603,16 +589,19 @@ async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int, bool
             timeout=_STATUS_TIMEOUT_S,
         )
     except Exception:
-        return [0] * 24, 0, True
+        return [], 0, True
 
-    # SQL orders newest-first (index 0 = current hour); convert to
-    # oldest-first (slot 0 = oldest) for the stripe.
-    stripe = [0] * 24
-    for idx, row in enumerate(rows):
-        slot = 23 - idx
-        if 0 <= slot < 24:
-            stripe[slot] = int(row["sessions_count"])
-    return stripe, sum(stripe), False
+    buckets = sorted(
+        (
+            {
+                "hour_start": row["hour_start"].isoformat(),
+                "sessions_count": int(row["sessions_count"]),
+            }
+            for row in rows
+        ),
+        key=lambda bucket: bucket["hour_start"],
+    )
+    return buckets, sum(bucket["sessions_count"] for bucket in buckets), False
 
 
 async def _fetch_board_max_concurrent(pool: object) -> int | None:
@@ -754,8 +743,8 @@ async def _fetch_board_row(
 
     heartbeat_unavailable = registry_source_error or schema_unreachable
 
-    hourly_stripe, hourly_total, stripe_source_error = (
-        await _fetch_board_hourly_stripe(pool) if pool is not None else ([0] * 24, 0, True)
+    hourly_buckets, hourly_total, stripe_source_error = (
+        await _fetch_board_hourly_stripe(pool) if pool is not None else ([], 0, True)
     )
     max_concurrent = await _fetch_board_max_concurrent(pool) if pool is not None else None
     cost_today = await _fetch_board_cost_today(pool, pricing) if pool is not None else None
@@ -821,7 +810,8 @@ async def _fetch_board_row(
         heartbeat_age_seconds=heartbeat_age,
         heartbeat_unavailable=heartbeat_unavailable,
         schema_unreachable=schema_unreachable,
-        hourly_stripe=hourly_stripe,
+        hourly_stripe=[bucket["sessions_count"] for bucket in hourly_buckets],
+        hourly_buckets=hourly_buckets,
         hourly_total=hourly_total,
         stripe_source_error=stripe_source_error,
         cadence_seconds=cadence_seconds,

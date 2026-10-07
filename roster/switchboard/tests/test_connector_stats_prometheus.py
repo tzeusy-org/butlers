@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import importlib
 import sys
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -47,6 +49,39 @@ def _load_router():
 # ---------------------------------------------------------------------------
 
 
+class _StatsConnection:
+    """Software adapter, preserving SQL-shape capture without SQL proof."""
+
+    def __init__(self, pool):
+        self.pool = pool
+
+    @asynccontextmanager
+    async def transaction(self, **kwargs):
+        yield
+
+    async def execute(self, *args):
+        return None
+
+    async def fetchval(self, sql, *args):
+        return datetime(2024, 1, 15, 12, tzinfo=UTC) if "clock_timestamp" in sql else []
+
+    async def fetch(self, sql, *args):
+        if "FOR UPDATE" in sql or " AS observed" in sql:
+            return []
+        rows = await self.pool.fetch(sql, *args)
+        pair = args[0][0]
+        start, width = args[1], args[3]
+        return [
+            {
+                **pair,
+                **row,
+                "bucket": start
+                + timedelta(seconds=((row["bucket"] - start).total_seconds() // width) * width),
+            }
+            for row in rows
+        ]
+
+
 class _FakePool:
     """Minimal pool stub — returns empty list for fetch, raises for fetchrow/fetchval.
 
@@ -54,6 +89,10 @@ class _FakePool:
     + filtered_events UNION. Returning [] simulates a connector with no events
     (empty timeseries).
     """
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield _StatsConnection(self)
 
     async def fetchrow(self, *args, **kwargs):
         raise RuntimeError("Should not query DB via fetchrow in these endpoints")
@@ -65,7 +104,7 @@ class _FakePool:
         raise RuntimeError("Should not query DB via fetchval in these endpoints")
 
 
-class _FakePoolWithRows:
+class _FakePoolWithRows(_FakePool):
     """Pool stub returning synthetic UNION rows (ingested/failed/filtered) for
     connector-stats DB-path tests."""
 
@@ -129,7 +168,8 @@ async def test_get_connector_stats_empty_db_returns_empty():
     )
     # Empty pool → empty series; a no-rows result is not a failure, so the
     # degraded flag stays True (only a genuine query error flips it false).
-    assert result.data == []
+    assert len(result.data) == 24
+    assert all(row.messages_ingested == 0 and row.listening == "unknown" for row in result.data)
     assert result.meta.hourly_events_available is True
 
 
@@ -175,8 +215,8 @@ async def test_get_connector_stats_websocket_connector_db_sourced():
         db=_FakeDBWithRows(fake_rows),
     )
 
-    assert len(result.data) == 2
-    row0 = result.data[0]
+    assert len(result.data) == 24
+    row0 = next(row for row in result.data if row.messages_ingested == 120)
     assert row0.connector_type == "home_assistant"
     assert row0.endpoint_identity == "ws://homeassistant.local:8123"
     assert row0.messages_ingested == 120
@@ -185,7 +225,7 @@ async def test_get_connector_stats_websocket_connector_db_sourced():
     assert hasattr(row0, "hour")
     # Skip series is DISTINCT — never folded into messages_ingested.
     assert row0.messages_ingested == 120
-    row1 = result.data[1]
+    row1 = next(row for row in result.data if row.messages_ingested == 87)
     assert row1.messages_ingested == 87
     assert row1.messages_failed == 0
     assert row1.messages_filtered == 0
@@ -226,8 +266,8 @@ async def test_get_connector_stats_7d_returns_daily_rows():
         db=_FakeDBWithRows(fake_rows),
     )
 
-    assert len(result.data) == 1
-    row = result.data[0]
+    assert len(result.data) == 8
+    row = next(row for row in result.data if row.messages_ingested == 100)
     # ConnectorStatsDaily has .day attribute
     assert hasattr(row, "day")
     assert row.connector_type == "email"
@@ -262,7 +302,7 @@ async def test_get_connector_stats_omits_unrendered_legacy_counters():
             ),
         )
 
-        payload = result.data[0].model_dump()
+        payload = next(row for row in result.data if row.messages_ingested == 8).model_dump()
         assert payload["messages_ingested"] == 8
         assert payload["messages_failed"] == 1
         assert payload["messages_filtered"] == 3
@@ -275,9 +315,9 @@ async def test_get_connector_stats_db_failure_degrades_honestly():
     meta.hourly_events_available flag flipped false — never a fabricated
     clean-zero chart (bu-c48im)."""
 
-    class _RaisingPool:
+    class _RaisingPool(_FakePool):
         async def fetch(self, *args, **kwargs):
-            raise RuntimeError("connection reset")
+            raise OSError("connection reset")
 
         async def fetchrow(self, *args, **kwargs):
             raise RuntimeError("not expected")
@@ -305,7 +345,8 @@ async def test_get_connector_stats_db_failure_degrades_honestly():
         db=_RaisingDB(),
     )
 
-    assert result.data == []
+    assert len(result.data) == 24
+    assert all(row.messages_ingested is None and row.listening == "unknown" for row in result.data)
     assert result.meta.hourly_events_available is False
 
 
@@ -519,7 +560,7 @@ async def test_connector_stats_db_query_uses_coalesce_and_tz_aware_bucket():
     """
     captured_sql: list[str] = []
 
-    class _CapturingPool:
+    class _CapturingPool(_FakePool):
         async def fetch(self, sql: str, *args, **kwargs):
             captured_sql.append(sql)
             return []
@@ -554,17 +595,14 @@ async def test_connector_stats_db_query_uses_coalesce_and_tz_aware_bucket():
     sql = captured_sql[0]
 
     # Both bugs fixed: COALESCE filter and tz-aware bucket
-    assert "COALESCE(source_provider, source_channel)" in sql, (
+    assert "COALESCE(e.source_provider, e.source_channel)" in sql, (
         "Query must use COALESCE(source_provider, source_channel) to match websocket connectors "
         "where connector type is stored in source_provider, not source_channel"
     )
-    # AT TIME ZONE 'UTC' appears (inside + after date_trunc) on each UNION branch,
-    # so at least two occurrences overall.
-    tz_count = sql.count("AT TIME ZONE 'UTC'")
-    assert tz_count >= 2, (
-        f"Query must apply AT TIME ZONE 'UTC' twice (inside and after date_trunc) to produce "
-        f"a tz-aware bucket; found {tz_count} occurrence(s) in: {sql!r}"
-    )
+    # Explicit timestamptz origin and interval arithmetic preserve timezone
+    # while pinning the rolling window. Calendar-hour truncation is superseded.
+    assert "$2::timestamptz" in sql and "received_at - $2::timestamptz" in sql
+    assert "interval '1 second'" in sql and "date_trunc" not in sql
     # Skip-aware (bu-c48im): the series UNIONs connectors.filtered_events so a
     # self-persisting connector's skip volume is not invisible on the histogram.
     assert "connectors.filtered_events" in sql, (

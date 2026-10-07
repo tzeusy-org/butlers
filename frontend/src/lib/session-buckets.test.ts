@@ -9,7 +9,12 @@
 
 import { describe, expect, it } from "vitest"
 
-import { bucketSessionsByHour } from "@/lib/session-buckets"
+import { bucketSessions } from "@/lib/bucket-series"
+
+function bucketSessionsByHour(sessions: { butler?: string; started_at: string }[], butler: string, endAt = new Date()) {
+  const end = new Date(Math.floor(endAt.getTime() / 3_600_000) * 3_600_000 + 3_600_000)
+  return bucketSessions(sessions, butler, new Date(end.getTime() - 86_400_000), end).map(bucket => bucket.count)
+}
 
 describe("bucketSessionsByHour", () => {
   it("returns an array of 24 zeroes when no sessions match", () => {
@@ -26,7 +31,7 @@ describe("bucketSessionsByHour", () => {
       { butler: "other-butler", started_at: oneHourAgo.toISOString() },
     ]
     const stripe = bucketSessionsByHour(sessions, "my-butler")
-    expect(stripe.reduce((s, v) => s + v, 0)).toBe(1)
+    expect(stripe.reduce((s, v) => (s ?? 0) + (v ?? 0), 0)).toBe(1)
   })
 
   it("places sessions in the correct hour slot (oldest=slot 0)", () => {
@@ -58,7 +63,7 @@ describe("bucketSessionsByHour", () => {
     const old = new Date(now.getTime() - 25 * 60 * 60 * 1000)
     const sessions = [{ butler: "b", started_at: old.toISOString() }]
     const stripe = bucketSessionsByHour(sessions, "b", now)
-    expect(stripe.reduce((s, v) => s + v, 0)).toBe(0)
+    expect(stripe.reduce((s, v) => (s ?? 0) + (v ?? 0), 0)).toBe(0)
   })
 
   it("ignores sessions with unparseable started_at", () => {

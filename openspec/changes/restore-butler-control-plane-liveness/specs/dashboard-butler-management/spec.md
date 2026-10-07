@@ -54,6 +54,8 @@ Implementation source constraints:
 - Non-negotiable 6: "No em-dashes in prose." Cell copy, chip labels, KPI
   labels, and empty-state text MUST NOT contain em-dashes.
 
+The existing status-board BoardRow aggregate SHALL be an allowed projection of the five existing source categories for the activity strip; preserving fetched hour_start keys is not a new ButlerSummary field or new endpoint. The count strip SHALL follow Count-bucket truth and retain separate UNKNOWN listening absent compatible historical receiver evidence. All other source restrictions and current activity-verb, eligibility and navigation authority SHALL remain unchanged.
+
 #### Scenario: Header strip
 
 - **WHEN** the butler list page is not showing an initial request failure with
@@ -253,3 +255,10 @@ band composition addendum and visually in each cell's `ButlerMark` component.
   - Cost summary (`useSpendSummary`): every 60 seconds
   - Header strip clock: updates every minute via `<Time mode="clock-24h-mono">`,
     which aligns to the next minute boundary then fires a 60-second interval
+
+#### Scenario: Board count buckets preserve identity and time
+
+- **WHEN** the board projects session counts for a named butler
+- **THEN** its stripe SHALL retain actual UTC bucket keys rather than enumerate sparse result rows
+- **AND** the nested door and root tile SHALL keep independent keyboard navigation
+- **AND** a count-source failure SHALL show unavailable count cells without removing the navigation door

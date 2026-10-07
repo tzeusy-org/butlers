@@ -1,3 +1,4 @@
+import { countBucketTruthRule } from "./scripts/count-bucket-truth-eslint.mjs"
 import js from '@eslint/js'
 import globals from 'globals'
 import jsxA11y from 'eslint-plugin-jsx-a11y'
@@ -2607,6 +2608,12 @@ const RING_RING_SELECTORS = [
 ]
 
 export default defineConfig([
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/**/*.test.{ts,tsx}', 'src/lib/bucket-series.ts'],
+    plugins: { 'count-truth': { rules: { 'source-keys': countBucketTruthRule } } },
+    rules: { 'count-truth/source-keys': 'error' },
+  },
   globalIgnores(['dist']),
   {
     // The identity component is the one canonical owner of this private

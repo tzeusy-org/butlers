@@ -60,7 +60,7 @@ The `connector.heartbeat` tool (`roster/switchboard/tools/connector/heartbeat.py
 envelope, self-registers an unknown `(connector_type, endpoint_identity)` pair (recording
 `first_seen_at` and `registered_via`), upserts `switchboard.connector_registry` with the latest
 state, counters and checkpoint, appends to the partitioned `switchboard.connector_heartbeat_log`
-(7-day retention), computes counter deltas for rollups, and returns
+(MONTHLY partitions, nominal seven-day whole-partition pruning), computes counter deltas for rollups, and returns
 `{status: "accepted", server_time}`.
 
 ## Connector-Side Implementation
@@ -94,7 +94,7 @@ psql -h localhost -U butlers -d butlers -c \
   "SELECT connector_type, endpoint_identity, received_at
    FROM switchboard.connector_heartbeat_log
    ORDER BY received_at DESC LIMIT 10;"
-# Expected: entries spaced ~120 seconds apart per connector; 7-day retention enforced
+# Expected: entries spaced ~120 seconds apart per connector; MONTHLY partitions use nominal seven-day pruning, so older rows may survive
 
 # 4. Heartbeat acknowledgment includes server_time for clock-drift detection
 # (Observable via connector logs)
@@ -121,10 +121,20 @@ The optional `classification_ack` contains admitted, instance_id, generation, re
 
 For opted-in Gmail, one publisher slot covers latest request assembly, send and exact ACK adoption. The two-second bound includes queue wait. Cancellation/timeout retires the attempt before releasing the slot; late replies cannot adopt or clear newer admission. Transport tails receive cancellation and bounded cleanup. A late no-epoch startup can still make the SERVER conservatively unknown; client retirement does not undo that observation. Subsequent refusal/handshake/loaded publication restores current admission without changing local query history. Generic periodic/default-disabled heartbeat behavior and provider health remain unchanged.
 
-The Gmail primary writer takes an endpoint transaction advisory lock, then the registry row, and commits before existing best-effort partition/log work. The seven-day heartbeat log is not classification authority. New classification metadata is removed from capability diagnostics before logging, and malformed fields are normalized before generic validation errors. New diagnostics contain closed outcomes, no contact/error/token/epoch payloads.
+The Gmail primary writer keeps endpoint advisory → registry row → admission validation ordering. Under the released sw_041 strengthened recording contract, an admitted request appends history and persists registry admission in the same transaction and commits before an adoptable ACK; refused requests mutate neither. This explicitly replaces the previous registry-commit-before-best-effort-log ordering. Required append failure now rolls back the admitted transaction and yields non-blocking publication failure; it never demotes a successful local contact-query snapshot. The seven-day heartbeat log is not classification authority. New classification metadata is removed from capability diagnostics before logging, and malformed fields are normalized before generic validation errors. New diagnostics contain closed outcomes, no contact/error/token/epoch payloads.
 
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md) -- What connectors are and how they work
 - [Metrics](metrics.md) -- Statistics aggregation and dashboard API
 - [Connector Interface Contract](overview.md) -- Full connector contract
+
+## Proposed historical count-bucket recording contract
+
+Accepted ordinary handler heartbeats append the existing log row and upsert the existing registry row atomically, with database received_at and xid8 stamping and a server-owned protected coverage boundary. This uses the existing two DML writes and no new roles/grants or retention rule. Coverage is forward-only after actual paired activation. Supported registry-only SQL refreshes remain compatible and invalidate recording completeness rather than mint it. Normal runtime history mutation/marker forgery and partition replacement cannot produce a complete gap. The API is read-only and independently preserves event counts when an optional heartbeat query fails under a savepoint.
+
+`not listening` means no durably accepted exact-endpoint heartbeat in a closed interval covered by complete receiver recording, not proof of a provider outage or physical receiver availability. Positive received heartbeats establish only their own bucket; stored healthy/degraded/error state remains separate. Unreadable, best-effort, preactivation, pre-first-seen, old-retention, replaced-partition or missing compatible receiver evidence is `liveness unknown`. Empty successful reads cannot establish completeness. Server-owned internal coverage/xid/catalog metadata never appears in chart DTOs or diagnostics. No deployed adoption is asserted by this source documentation.
+
+### Proposed lock/time and trigger integrity precision
+
+Canonical writers and history row guards take the exact endpoint lock before assigning `clock_timestamp()`/current xid. A direct child/COPY statement started before a reader wait receives its accepted time after that wait, not its earlier `statement_timestamp()`. The reader takes compatible catalog-stability relation locks and endpoint/registry locks before capturing its database `as_of`. Ordinary TRIGGER grants remain unchanged; actual parent/child/registry trigger closure, function owners/context and extra-trigger interference are checked rather than assumed safe. Unpaired direct registry producers stay supported but invalidate coverage; a reversed paired transaction may refuse/roll back and cannot certify. The existing two DML operations and Gmail refusal/normal retry behavior are retained. This describes sw_041 source; actual role, PostgreSQL and elapsed-history evidence remain separate.

@@ -15,6 +15,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { ConnectorRosterRow } from './ConnectorRosterRow'
 import { MemoryRouter } from 'react-router'
 
 ;(
@@ -751,6 +753,32 @@ describe('[bu-5ywn2] Routing rules section', () => {
     expect(
       container.querySelector('[data-testid="histogram-degraded-note"]'),
     ).toBeNull()
+    // Actual roster-row and detail-view adapters consume the same complete
+    // receiver-keyed wire cells; shuffled input cannot move the 2/20 marks.
+    const origin = Date.parse('2026-05-10T00:00:00Z')
+    const buckets = Array.from({ length: 24 }, (_, index) => ({
+      bucket: new Date(origin + index * 3_600_000).toISOString(),
+      bucket_start: new Date(origin + index * 3_600_000).toISOString(),
+      bucket_end: new Date(origin + (index + 1) * 3_600_000).toISOString(),
+      messages_ingested: index === 2 ? 2 : index === 20 ? 20 : 0,
+      messages_filtered: 0, messages_failed: 0,
+      listening: ([5, 6, 7].includes(index) ? 'deaf' : 'live') as 'deaf' | 'live',
+    })).reverse()
+    renderDetail(root, BASE_CONNECTOR, { stats: makeStats({ timeseries: buckets }) })
+    const detailCells = [...container.querySelectorAll('[data-testid="histogram-bars"] > div')]
+    const roster = document.createElement('div')
+    roster.innerHTML = renderToStaticMarkup(<MemoryRouter>
+      <ConnectorRosterRow connector={{ ...BASE_CONNECTOR, hourly_buckets: buckets }} />
+    </MemoryRouter>)
+    const rosterCells = [...roster.querySelectorAll('[data-testid="histogram-bars"] > div')]
+    expect(detailCells).toHaveLength(24)
+    expect(rosterCells.map(cell => cell.getAttribute('aria-label')))
+      .toEqual(detailCells.map(cell => cell.getAttribute('aria-label')))
+    expect(detailCells[2].getAttribute('aria-label')).toContain('2 events')
+    expect(detailCells[20].getAttribute('aria-label')).toContain('20 events')
+    expect(detailCells.filter(cell => cell.classList.contains('bucket-deaf'))).toHaveLength(3)
+    expect(roster.innerHTML).toContain('not listening 3h')
+    expect(container.innerHTML).toContain('not listening 3h')
   })
 
   it('does not show the degraded note while stats are still loading', () => {

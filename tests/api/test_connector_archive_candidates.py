@@ -30,6 +30,7 @@ from butlers.api.routers.ingestion_connectors import (
     _is_archive_candidate,
     _online_identities_by_type,
 )
+from tests.api.connector_bucket_fixtures import attach_bucket_reader
 
 pytestmark = pytest.mark.unit
 
@@ -189,6 +190,7 @@ def _wire(app: FastAPI, registry_rows: list) -> None:
     # registry fetch, hourly fetch (empty), device fetch (empty)
     pool.fetch = AsyncMock(side_effect=[registry_rows, [], []])
     pool.fetchrow = AsyncMock(return_value=None)
+    attach_bucket_reader(pool)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     app.dependency_overrides[_get_db_manager] = lambda: mock_db

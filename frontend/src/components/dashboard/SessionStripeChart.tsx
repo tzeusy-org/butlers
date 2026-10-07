@@ -1,3 +1,4 @@
+import { useTimezone } from "@/components/ui/timezone-context"
 // ---------------------------------------------------------------------------
 // SessionStripeChart — stacked bar chart of session counts over time (bu-2okpr.2)
 //
@@ -24,7 +25,6 @@ import { chartSeriesColor } from "@/lib/chart-colors"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import {
   bucketUnit,
-  currentWindow,
   formatBucketKey,
   pivotSessionsIntoRows,
   useSessionStripeData,
@@ -49,6 +49,7 @@ interface CustomTooltipProps {
 }
 
 function StripeTooltip({ active, label, payload, unit }: CustomTooltipProps) {
+  const timezone = useTimezone()
   if (!active || !payload || payload.length === 0 || !label) return null
 
   const entries = payload.filter((p) => p.value > 0).sort((a, b) => b.value - a.value)
@@ -59,7 +60,7 @@ function StripeTooltip({ active, label, payload, unit }: CustomTooltipProps) {
 
   return (
     <div className="rounded-md border bg-popover p-3 text-sm shadow-md">
-      <p className="mb-2 font-medium">{formatBucketKey(label, unit)}</p>
+      <p className="mb-2 font-medium">{formatBucketKey(label, unit, timezone)}</p>
       {entries.map((p) => (
         <div key={p.dataKey} className="flex items-center gap-2">
           <span
@@ -111,6 +112,7 @@ export function SessionStripeChart({
   // own useBusAwarePollInterval default (a reconciliation sweep, not the
   // primary update path). The manual auto-refresh toggle that used to gate
   // this (bu-u4s65) retired with AutoRefreshToggle (bu-01r64.3).
+  const timezone = useTimezone()
   const { data, isLoading, isError, refetch } = useSessionStripeData(
     windowHours,
     undefined,
@@ -146,10 +148,11 @@ export function SessionStripeChart({
     ) : null
 
   // Memoize the pivot and name-ordering so they don't rerun on every render.
-  // currentWindow() recomputes on every render so the pivot always aligns with
-  // the window the hook uses on its next refetch.
+  // A fetch receipt pins source bounds across renders and cached refresh errors.
   const { unit, rows, orderedNames } = useMemo(() => {
-    const w = currentWindow(windowHours, filterParams)
+    const w = data?.window
+      ? { from: new Date(data.window.from), to: new Date(data.window.to) } : null
+    if (!w) return { unit: "hour" as const, rows: [], orderedNames: [] }
     const u = bucketUnit(w.from, w.to)
     const r = pivotSessionsIntoRows(sessions ?? [], w.from, w.to, u)
 
@@ -163,7 +166,7 @@ export function SessionStripeChart({
       ...Array.from(present).filter((n) => !knownSet.has(n)).sort(),
     ]
     return { unit: u, rows: r, orderedNames: ordered }
-  }, [sessions, windowHours, butlers, filterParams])
+  }, [data, sessions, butlers])
 
   if (isLoading && !hasCachedResponse) {
     return <ChartSkeleton height="h-[200px]" testId="session-stripe-skeleton" />
@@ -182,6 +185,8 @@ export function SessionStripeChart({
       </div>
     )
   }
+
+  if (!data?.window) return <SourceDegradedNote label="Session activity" detail="time window unavailable, liveness unknown" />
 
   if (!hasSessions) {
     // A degraded zero must not read as a real quiet window: name the dropped
@@ -202,6 +207,7 @@ export function SessionStripeChart({
   return (
     <div data-testid="session-stripe-chart">
       {degradedNote}
+      <p className="text-xs text-muted-foreground">liveness unknown</p>
       {data?.truncated && (
         <p
           className="mb-1 text-xs text-muted-foreground"
@@ -215,7 +221,7 @@ export function SessionStripeChart({
         <BarChart data={rows} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
           <XAxis
             dataKey="bucket"
-            tickFormatter={(v: string) => formatBucketKey(v, unit)}
+            tickFormatter={(v: string) => formatBucketKey(v, unit, timezone)}
             tick={{ fontSize: 10 }}
             tickLine={false}
             axisLine={false}
