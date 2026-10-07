@@ -11,8 +11,7 @@ domain-events panels. While the butler record is loading, the tab renders a
 matching panel-grid skeleton so the layout does not shift; each panel resolves
 its own loading and error state independently. Butler identity lives in the page
 header, not in this tab.
-
-Activity count placement SHALL follow Count-bucket truth. Compatible receiver-derived historical evidence SHALL be required for any listening verdict beyond UNKNOWN; session counts and current process status SHALL not substitute.
+- Activity count placement SHALL follow Count-bucket truth. Compatible receiver-derived historical evidence SHALL be required for any listening verdict beyond UNKNOWN; session counts and current process status SHALL not substitute.
 
 ID: REQ-dashboard-butler-management-003
 Source: bu-s11n0s.5 complete-protocol D1-D6; preserved governing requirement at a6f342bd54c207b9e672d7d4e51be6af6d4f2876
@@ -105,13 +104,11 @@ The Activity tab's Analytics sub-section SHALL be the per-butler session
 analytics surface: a KPI quartet, a range-switchable activity chart, and a
 session-kind breakdown. A range toggle (`24h`, `7d`, `30d`, default `24h`) sets
 the window for every panel.
-
-Data comes from the butler-scoped session analytics endpoints
+- Data comes from the butler-scoped session analytics endpoints
 `GET /api/butlers/{name}/analytics/hourly-activity`, `.../daily-activity`,
 `.../latency-stats`, and `.../session-kinds`, plus the session aggregate for the
 failed-session count.
-
-Hourly and daily activity SHALL retain actual returned time keys and independent count/listening availability under Count-bucket truth. Until compatible historical receiver evidence exists, listening SHALL be UNKNOWN for both successful and degraded session-count reads.
+- Hourly and daily activity SHALL retain actual returned time keys and independent count/listening availability under Count-bucket truth. Until compatible historical receiver evidence exists, listening SHALL be UNKNOWN for both successful and degraded session-count reads.
 
 ID: REQ-dashboard-butler-management-004
 Source: bu-s11n0s.5 complete-protocol D1-D6; preserved governing requirement at a6f342bd54c207b9e672d7d4e51be6af6d4f2876

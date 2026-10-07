@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-design-language-007: mounted keyed count marks, listening shape/text and accessible bounds.
 // ---------------------------------------------------------------------------
 // ActivityStripe tests — bu-hb7dh.6
 //

@@ -3,8 +3,7 @@
 ### Requirement: Heartbeat Protocol
 
 All connectors SHALL send periodic heartbeats to the Switchboard for liveness tracking, operational statistics collection, and capability advertisement. Heartbeats SHALL be the sole mechanism for connector self-registration — no manual pre-configuration is needed.
-
-For the strengthened history contract, accepted handler heartbeats SHALL commit their existing history append and registry persistence atomically before an adoptable ACK, under Durable heartbeat recording coverage. This changes the current best-effort log commit boundary explicitly; it SHALL NOT add per-heartbeat DML statements, block connector ingestion on submission failure, change wire schema/intervals/counters/provider health, or certify preactivation history.
+- For the strengthened history contract, accepted handler heartbeats SHALL commit their existing history append and registry persistence atomically before an adoptable ACK, under Durable heartbeat recording coverage. This changes the current best-effort log commit boundary explicitly; it SHALL NOT add per-heartbeat DML statements, block connector ingestion on submission failure, change wire schema/intervals/counters/provider health, or certify preactivation history.
 
 ID: REQ-connector-base-spec-003
 Source: bu-s11n0s.5 complete-protocol D1-D6; preserved governing requirement at a6f342bd54c207b9e672d7d4e51be6af6d4f2876
@@ -49,10 +48,12 @@ Scope: v1-mandatory
 - **THEN** it auto-creates a `connector_registry` row (no manual pre-configuration needed)
 
 #### Scenario: Instance restart detection and counter deltas
-- **WHEN** a heartbeat arrives with a different `instance_id` than the previous one from the same connector
-- **THEN** the Switchboard detects a restart; counter deltas are computed against zero (not the previous snapshot)
-- **WHEN** the `instance_id` matches
-- **THEN** deltas = current - previous
+- **WHEN** a heartbeat arrives and its `instance_id` is compared with the previous one from the same connector
+- **THEN** the applicable instance branch SHALL determine the counter deltas
+- **AND** the restart branch applies when a heartbeat arrives with a different `instance_id` than the previous one from the same connector
+- **AND** in that restart branch, the Switchboard detects a restart; counter deltas are computed against zero (not the previous snapshot)
+- **AND** the matching-instance branch applies when the `instance_id` matches
+- **AND** in that matching-instance branch, deltas = current - previous
 
 #### Scenario: Atomic accepted heartbeat survives independent readback
 
@@ -81,8 +82,7 @@ Scope: v1-mandatory
 The role SHALL be written from the provenance of the write — which producer
 created or claimed the row — and SHALL NOT be derived from the content or shape
 of the opaque `endpoint_identity` string.
-
-Direct SQL heartbeat role promotion SHALL remain compatible. An unpaired direct heartbeat refresh SHALL invalidate complete recording coverage within its existing registry write, rather than claim complete history or reject an otherwise supported producer. Settings and cursor writes SHALL not mint coverage or demote runtime ownership.
+- Direct SQL heartbeat role promotion SHALL remain compatible. An unpaired direct heartbeat refresh SHALL invalidate complete recording coverage within its existing registry write, rather than claim complete history or reject an otherwise supported producer. Settings and cursor writes SHALL not mint coverage or demote runtime ownership.
 
 ID: REQ-connector-base-spec-004
 Source: bu-s11n0s.5 complete-protocol D1-D6; preserved governing requirement at a6f342bd54c207b9e672d7d4e51be6af6d4f2876
@@ -101,17 +101,14 @@ Scope: v1-mandatory
 declaration has no default, so a connector cannot create a row without saying
 which kind it is.
 
-- **WHEN** `save_cursor` inserts a row that did not exist, and the caller names
-  a `parent_endpoint_identity`
-- **THEN** that row's `operational_role` SHALL be `checkpoint`
+- **WHEN** `save_cursor` inserts a row that did not exist and its caller declares the cursor's ownership
+- **THEN** the applicable declared-ownership branch SHALL determine the row's operational role
+- **AND** the named-parent branch applies when `save_cursor` inserts a row that did not exist, and the caller names a `parent_endpoint_identity`
+- **AND** in that named-parent branch, that row's `operational_role` SHALL be `checkpoint`
 - **AND** its `parent_endpoint_identity` SHALL be that identity
-
-- **WHEN** `save_cursor` inserts a row that did not exist, and the caller
-  declares that the cursor key IS the connector's own runtime identity
-- **THEN** that row's `operational_role` SHALL be `unknown` — unclaimed until a
-  heartbeat proves a process owns it
-- **AND** it SHALL NOT be `checkpoint`, because it is not storage state
-  belonging to a parent
+- **AND** the own-runtime-identity branch applies when `save_cursor` inserts a row that did not exist, and the caller declares that the cursor key IS the connector's own runtime identity
+- **AND** in that own-runtime-identity branch, that row's `operational_role` SHALL be `unknown` — unclaimed until a heartbeat proves a process owns it
+- **AND** in that own-runtime-identity branch, it SHALL NOT be `checkpoint`, because it is not storage state belonging to a parent
 
 - **AND** `save_cursor` SHALL NOT write `runtime_instance` in either case:
   persisting a cursor is not evidence that a process is running
@@ -168,8 +165,7 @@ identities in whatever state something else happened to create them in.
 ### Requirement: Durable heartbeat recording coverage
 
 Complete heartbeat recording SHALL be established only by post-serialization database-clock-stamped paired existing writes under a catalog-verified closed trusted migration-owned trigger chain, and SHALL not be a caller-writable timestamp, capability key or stale matching row. Normal permitted runtime DML SHALL not backdate or forge coverage, mutate accepted history, or bypass guard validation. Legacy unpaired writes SHALL remain supported but invalidate coverage. No extra per-heartbeat DML statements, new roles/grants or retention policy SHALL be introduced. Trusted migration/admin DDL and backup authority remain outside this ordinary-runtime guarantee.
-
-An unpaired heartbeat tuple mutation SHALL leave a negative-only transaction-scoped endpoint witness. A later same-endpoint history append in that transaction SHALL refuse before waiting for the endpoint serialization lock. This witness SHALL never mint coverage or require a persistent write. Session unlocks and successful savepoints SHALL not erase it; rolling back its savepoint SHALL roll back both the witness and the mutation. Failure to establish the witness SHALL refuse the mutation rather than allow a reverse pair. Correctly ordered pairs, unchanged settings/cursor edits, other endpoints and standalone legacy registry-only transactions SHALL remain supported.
+- An unpaired heartbeat tuple mutation SHALL leave a negative-only transaction-scoped endpoint witness. A later same-endpoint history append in that transaction SHALL refuse before waiting for the endpoint serialization lock. This witness SHALL never mint coverage or require a persistent write. Session unlocks and successful savepoints SHALL not erase it; rolling back its savepoint SHALL roll back both the witness and the mutation. Failure to establish the witness SHALL refuse the mutation rather than allow a reverse pair. Correctly ordered pairs, unchanged settings/cursor edits, other endpoints and standalone legacy registry-only transactions SHALL remain supported.
 
 ID: REQ-connector-base-spec-005
 Source: bu-s11n0s.5 complete-protocol D1-D6; heart-and-soul/vision.md failure and staleness honesty; owner-timezone-context and dashboard-design-language temporal contracts

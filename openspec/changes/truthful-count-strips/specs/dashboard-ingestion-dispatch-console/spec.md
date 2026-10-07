@@ -4,24 +4,20 @@
 
 The `/ingestion/connectors` route SHALL render every listening channel as a
 dense roster, not as a card grid.
-
-It SHALL include:
-
+- It SHALL include:
 - attention strip when any connector has auth issues, health issues, or an
   additive operational warning;
 - rows with health dot, channel glyph/name/kind, function gloss, last-event
   meta, 24h sparkline, auth pill, event/session/cost totals, and disclosure;
 - dormant or available connector section with connect actions;
 - footer KPI band and add-connector action.
-
-The whole row SHALL be the navigation target to connector detail (click or
+- The whole row SHALL be the navigation target to connector detail (click or
 keyboard Enter/Space while the row has focus), with the disclosure chevron
 kept as a visual cue rather than a separate click target. When a row's auth
 pill reads `reauth`, the pill itself SHALL use the typed connector recovery
 resolver (see "Ingestion-Originated OAuth page_of_origin Contract"), and it
 remains independently clickable above the row's navigation target.
-
-The roster SHALL render structured timestamp-keyed count buckets and independent listening evidence under Per-bucket listening state. Summary-only database polling and existing operational-role, checkpoint, archive, auth and warning authority SHALL remain unchanged; no sibling endpoint or successful count query SHALL establish listening.
+- The roster SHALL render structured timestamp-keyed count buckets and independent listening evidence under Per-bucket listening state. Summary-only database polling and existing operational-role, checkpoint, archive, auth and warning authority SHALL remain unchanged; no sibling endpoint or successful count query SHALL establish listening.
 
 ID: REQ-dashboard-ingestion-dispatch-console-005
 Source: bu-s11n0s.5 complete-protocol D1-D6; preserved governing requirement at a6f342bd54c207b9e672d7d4e51be6af6d4f2876
@@ -75,17 +71,14 @@ Scope: v1-mandatory
 
 The connector detail route SHALL render a two-zone operational detail page for
 one connector endpoint.
-
-It SHALL include:
-
+- It SHALL include:
 - header band with large channel glyph, display headline, mono meta line, and
   purpose paragraph;
 - reauth callout when the connector requires reauthorization;
 - KPI strip, 24h histogram, recent events, and incident list;
 - OAuth scope list when the connector supports OAuth scope introspection;
 - schedule, routing rules, config fields, and safe action controls.
-
-The detail SHALL use actual bucket_start keys and relative range labels under Count-bucket truth. Count and listening availability SHALL remain independent. No unreadable history or legacy cached DTO SHALL be converted into measured zero or LIVE.
+- The detail SHALL use actual bucket_start keys and relative range labels under Count-bucket truth. Count and listening availability SHALL remain independent. No unreadable history or legacy cached DTO SHALL be converted into measured zero or LIVE.
 
 ID: REQ-dashboard-ingestion-dispatch-console-006
 Source: bu-s11n0s.5 complete-protocol D1-D6; preserved governing requirement at a6f342bd54c207b9e672d7d4e51be6af6d4f2876
@@ -125,8 +118,7 @@ Every ingestion redesigned surface SHALL have explicit loading, empty,
 partial-error, and unavailable states. Skeletons may only be transient loading
 states. A surface SHALL NOT be considered complete if it remains a skeleton or
 fake fixture when live data is unavailable.
-
-A heartbeat/coverage read failure SHALL degrade listening only and preserve independently authoritative event counts, with the existing degraded-source note. An event-count read failure SHALL not draw fabricated zero even if heartbeat evidence is readable.
+- A heartbeat/coverage read failure SHALL degrade listening only and preserve independently authoritative event counts, with the existing degraded-source note. An event-count read failure SHALL not draw fabricated zero even if heartbeat evidence is readable.
 
 ID: REQ-dashboard-ingestion-dispatch-console-007
 Source: bu-s11n0s.5 complete-protocol D1-D6; preserved governing requirement at a6f342bd54c207b9e672d7d4e51be6af6d4f2876

@@ -171,6 +171,8 @@ def _assert_search_path_is_minimal(config: list[str]) -> None:
     assert is_pinned(config), f"search_path is not pinned: {config}"
 
 
+# REQ-connector-base-spec-005: actual role/catalog/current xid/rollback/peer controls.
+# This disposable-PG node does not certify genuine three-hour elapsed recording.
 def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_container, tmp_path):
     """Runtime role can create heartbeat partitions without parent ownership."""
     db_url = _run_schema_scoped_core_and_switchboard(postgres_container, "switchboard")

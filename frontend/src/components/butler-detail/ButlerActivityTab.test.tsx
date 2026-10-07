@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-butler-management-004: actual mounted Activity ranges, counts and independent data states.
 /**
  * ButlerActivityTab — RTL tests.
  *

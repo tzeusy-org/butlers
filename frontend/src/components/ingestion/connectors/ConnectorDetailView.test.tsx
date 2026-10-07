@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-ingestion-dispatch-console-006: mounted detail histogram and source availability.
 /**
  * ConnectorDetailView — unit tests covering spec acceptance criteria:
  *

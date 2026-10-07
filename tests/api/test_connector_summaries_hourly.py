@@ -150,6 +150,7 @@ async def test_hourly_events_all_zeros_when_no_events(app: FastAPI) -> None:
     assert all(v == 0 for v in hourly)
 
 
+# REQ-dashboard-ingestion-dispatch-console-005: roster source bucket positions.
 async def test_hourly_events_correct_bucket_placement(app: FastAPI) -> None:
     """Events land in the correct bucket index (oldest=0, newest=23)."""
     now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)

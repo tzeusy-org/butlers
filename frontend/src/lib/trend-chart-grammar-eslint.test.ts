@@ -38,6 +38,7 @@ describe("trend chart grammar lint", { timeout: 60_000 }, () => {
     );
     expect(messages.filter((m) => m.message.includes("TimeSeriesChart"))).toEqual([]);
   });
+  // REQ-dashboard-design-language-007: genuine configured zero-fill dataflow rejection.
   it("rejects only zero-fill flows feeding count strips under actual configuration", async () => {
     const negative = [
       'const zero = Array(24).fill(0); export const A = () => <BucketStrip buckets={zero} />;',

@@ -44,15 +44,64 @@ def _payload(endpoint: str, *, instance: str | None = None) -> dict:
     }
 
 
-async def _init_runtime(connection):
-    await register_jsonb_codec(connection)
+async def _setup_runtime(connection):
+    # Pool.release() resets session settings. Codec initialization belongs to
+    # the physical connection; identity and namespace belong to each checkout.
     await connection.execute('SET ROLE "butler_switchboard_rw"')
     await connection.execute("SET search_path TO switchboard, public")
+    await _assert_checkout_session(connection, runtime=True)
 
 
-async def _init_admin(connection):
-    await register_jsonb_codec(connection)
+async def _setup_admin(connection):
+    await connection.execute("RESET ROLE")
     await connection.execute("SET search_path TO switchboard, public")
+    await _assert_checkout_session(connection, runtime=False)
+
+
+async def _assert_checkout_session(connection, *, runtime: bool) -> None:
+    principal = (
+        "current_user = 'butler_switchboard_rw' AND NOT "
+        "(SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user)"
+        if runtime
+        else "current_user = session_user"
+    )
+    # Boolean witnesses keep fixture login identity out of diagnostic output.
+    assert await connection.fetchval(
+        f"SELECT ({principal}) AND "
+        "current_schemas(false) = ARRAY['switchboard','public']::name[] AND "
+        "to_regclass('connector_registry') = to_regclass('switchboard.connector_registry') AND "
+        "to_regclass('connector_heartbeat_log') = "
+        "to_regclass('switchboard.connector_heartbeat_log')"
+    )
+    assert await connection.fetchval("SELECT $1::jsonb", {"checkout_codec": True}) == {
+        "checkout_codec": True
+    }
+
+
+async def _exercise_checkout_reuse(pool, *, runtime: bool) -> None:
+    """Prove reuse, peer creation and savepoint rollback before business writes."""
+    async with pool.acquire() as first:
+        first_pid = await first.fetchval("SELECT pg_backend_pid()")
+        await first.execute("SET search_path TO pg_catalog")
+        await first.execute("RESET ROLE" if runtime else 'SET ROLE "butler_switchboard_rw"')
+    async with pool.acquire() as reused:
+        assert await reused.fetchval("SELECT pg_backend_pid()") == first_pid
+        await _assert_checkout_session(reused, runtime=runtime)
+        async with reused.transaction():
+            try:
+                async with reused.transaction():
+                    await reused.execute("SET LOCAL search_path TO pg_catalog")
+                    raise RuntimeError("checkout savepoint control")
+            except RuntimeError as exc:
+                assert str(exc) == "checkout savepoint control"
+            await _assert_checkout_session(reused, runtime=runtime)
+        # A held checkout forces another physical connection. Its codec and
+        # role/path must be initialized without borrowing the first session.
+        async with pool.acquire() as peer:
+            assert await peer.fetchval("SELECT pg_backend_pid()") != first_pid
+            await _assert_checkout_session(peer, runtime=runtime)
+            await peer.execute("SET search_path TO pg_catalog")
+            await peer.execute("RESET ROLE" if runtime else 'SET ROLE "butler_switchboard_rw"')
 
 
 def assert_positive_catalog(catalog: list[dict]) -> None:
@@ -67,8 +116,12 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
 
     # DSN moves between processes/libraries without entering receipts or output.
     dsn = make_url(db_url).set(drivername="postgresql").render_as_string(hide_password=False)
-    runtime = await asyncpg.create_pool(dsn, min_size=1, max_size=3, init=_init_runtime)
-    admin = await asyncpg.create_pool(dsn, min_size=1, max_size=3, init=_init_admin)
+    runtime = await asyncpg.create_pool(
+        dsn, min_size=1, max_size=3, init=register_jsonb_codec, setup=_setup_runtime
+    )
+    admin = await asyncpg.create_pool(
+        dsn, min_size=1, max_size=3, init=register_jsonb_codec, setup=_setup_admin
+    )
     try:
         assert await runtime.fetchval("SELECT current_user") == "butler_switchboard_rw"
         assert await runtime.fetchval(
@@ -80,6 +133,8 @@ async def exercise_recording_boundary(db_url: str, tmp_path: Path) -> None:
         )
         catalog = await runtime.fetchval("SELECT switchboard.heartbeat_recording_catalog()")
         assert_positive_catalog(catalog)
+        await _exercise_checkout_reuse(runtime, runtime=True)
+        await _exercise_checkout_reuse(admin, runtime=False)
 
         payload = _payload("paired-positive")
         ack = await heartbeat(runtime, payload)

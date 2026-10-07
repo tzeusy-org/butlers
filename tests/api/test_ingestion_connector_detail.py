@@ -200,6 +200,9 @@ async def test_canonical_detail_and_stats_hide_soft_deleted_rows(app) -> None:
         assert "deleted_at IS NULL" in call.args[0]
 
 
+# REQ-dashboard-ingestion-dispatch-console-006: detail keyed histogram/count contract.
+# REQ-dashboard-ingestion-dispatch-console-007: independent source availability.
+# The real-PG stats node exercises transaction/savepoint read failures separately.
 async def test_canonical_stats_preserve_distinct_filtered_series(app) -> None:
     """Stats retain the filtered-event volume rather than folding it into ingested."""
     pool = AsyncMock()

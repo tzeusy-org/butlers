@@ -279,6 +279,8 @@ async def test_heartbeat_counter_deltas_computed_correctly(valid_heartbeat_paylo
 
 @pytest.mark.asyncio
 async def test_heartbeat_appends_to_log_table(valid_heartbeat_payload):
+    # REQ-connector-base-spec-003: append/registry/COMMIT ACK boundary software.
+    # Real role, catalog and durable readback companions run in the migration node.
     """Test that heartbeat appends to connector_heartbeat_log."""
     pool = _pool()
     pool.fetchrow.return_value = None

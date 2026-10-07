@@ -298,6 +298,10 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
     assert total_filtered == 4
 
 
+# REQ-dashboard-ingestion-dispatch-console-004: keyed exact-endpoint LIVE/DEAF/UNKNOWN controls.
+# REQ-dashboard-ingestion-dispatch-console-007: real counts survive failed listening reads.
+# REQ-dashboard-design-language-007: real source-key/grid and count/listening independence;
+# mounted accessibility/lint companions and genuine elapsed recording are distinct.
 async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     pool: asyncpg.Pool,
 ) -> None:

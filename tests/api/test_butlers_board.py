@@ -499,6 +499,8 @@ async def test_board_cost_failure_is_partial_sum_with_error_flag():
     assert payload["aggregates"]["total_spend_today"] == rows_by_name["finance"]["cost_today"]
 
 
+# REQ-dashboard-butler-management-003: unavailable Overview count-source boundary.
+# Mounted Overview panels have their own frontend software companions.
 async def test_board_hourly_stripe_failure_flags_error_never_fabricates_zero_stripe():
     """A raising hourly-activity query must flag stripe_source_error, not a bare [0]*24."""
     configs = [

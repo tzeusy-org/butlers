@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-butler-management-003: actual mounted Overview panels and rolling stripe.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useRef, useState } from "react"
 import { renderToStaticMarkup } from "react-dom/server"

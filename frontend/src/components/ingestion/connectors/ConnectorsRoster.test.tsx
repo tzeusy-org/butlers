@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-ingestion-dispatch-console-005: mounted roster row and source window propagation.
 /**
  * ConnectorsRoster — unit tests covering spec acceptance criteria:
  *
