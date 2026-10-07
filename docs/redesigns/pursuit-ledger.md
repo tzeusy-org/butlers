@@ -27,6 +27,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 14 | 2026-09-22 | 4 | bu-p5umi2 | [2026-09-22-jarvis-pursuit.md](2026-09-22-jarvis-pursuit.md) |
 | 15 | 2026-10-03 | 15 | bu-q7vx1q | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
 | 16 | 2026-10-06 | 15 | bu-s11n0s | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
+| 17 (SDLC velocity) | 2026-10-06 | 15 | bu-ly3lv5 | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) |
 
 ## Tier history
 
@@ -293,3 +294,21 @@ Titles only; packets live in the epic's child beads and in the run's data file (
 13. Who covers what: a duty-of-care ledger that names a carer for every occurrence and flags the ones nobody covers
 14. Auto-reply and bounce perception: an out-of-office reply becomes 'away until', a hard bounce becomes a dead address, with no LLM involved
 15. Insight outcome ledger: premise-tracked nudges with natural holdouts, per-class efficacy verdicts, and shaping that follows whether the world changed
+
+### 17 (SDLC velocity) (2026-10-06) · epic bu-ly3lv5
+
+1. Fail-closed `check`: read every needed job's verdict, take coverage off the required path, and put a timeout on every job
+2. Make the nightly lane honest and owned: triage the red backlog, fix the time-bombs, and escalate a second red night to a bead
+3. Stop stale-branch push storms: prune merged and stale remote branches, delete branches on merge, and clear branch-scoped caches
+4. Pay the embedding stack only when it is used: lazy sentence_transformers, retire the memory module's file-path sibling loader, and an import-time budget test
+5. Per-shard fixed-overhead budget: drop the orphan postgres service, lock CPU-only torch, cache the venv, and A/B workers and the coverage core
+6. One computed shard partition and one inventory: replace the ten hand-kept manifests, collapse the copy-pasted shard jobs into a matrix, fold the planner into routing, and fund a sixth integration shard
+7. An honest planner: changed docs, skills, manifests and frontend paths select their reader tests instead of escalating, with a cost ceiling and named triggers
+8. Provision integration databases by cloning a migrated template per worker instead of re-running migrations per test
+9. Frontend lane under four minutes: static gates as a parallel job with an ESLint cache, cut Vitest per-file cost, then shard Vitest under one required name
+10. Fail before CI, react at the first red shard: an enforced pre-push hook for tree-deterministic guards, the session-link fix at the source, and a red-run reaction kit
+11. Executable condensation proof and the first three clusters: coverage-context subsumption, a survivor ledger, and route-table contract tests on one module-scoped app
+12. Behaviour over text: replace the ci.yml string pins, doc-phrase pins and migration SQL-substring tests with truth tables, one data-driven checker and a catalog snapshot
+13. A retired-surfaces registry with a guard, and the first verified retirement wave
+14. One home per backend mechanism: a connector ingest, pool and health kit, one router DB dependency, and an AST duplicate ratchet
+15. A guidance diet with a staleness guard: bd prime under 10 KB, AGENTS.md under the 32 KiB cap, and dead references failing at PR time
