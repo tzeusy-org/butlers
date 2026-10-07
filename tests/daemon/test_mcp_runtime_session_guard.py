@@ -111,3 +111,61 @@ async def test_runtime_session_guard_maps_request_mcp_session_header() -> None:
     )
 
     assert observed == ["runtime-session", "runtime-session"]
+
+    # Synthetic conformance input exercises the real registration/guard seam;
+    # this is not accepted-source, HTTP authentication or SQL proof.
+    from butlers.core import fact_authority
+
+    seen_reports = []
+
+    async def report_app(scope, receive, send):
+        seen_reports.append(fact_authority.current_fact_write_context().authority)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    guarded_report = _McpRuntimeSessionGuard(report_app, butler_name="relationship")
+    synthetic = fact_authority._current_report.set(fact_authority.FactWriteContext("owner"))
+    try:
+        token = await fact_authority.register_invocation(
+            "relationship",
+            "actual-runtime",
+            source_endpoint=None,
+            routed=True,
+        )
+    finally:
+        fact_authority._current_report.reset(synthetic)
+    try:
+        await guarded_report(
+            _http_scope(query_string=b"runtime_session_id=actual-runtime"),
+            _empty_receive,
+            _discard_send,
+        )
+        await guarded_report(
+            _http_scope(
+                headers=[
+                    (fact_authority.INVOCATION_HEADER.lower().encode(), token.encode()),
+                    (b"mcp-session-id", b"admitted-session"),
+                ]
+            ),
+            _empty_receive,
+            _discard_send,
+        )
+        await _McpRuntimeSessionGuard(report_app, butler_name="health")(
+            _http_scope(headers=[(fact_authority.INVOCATION_HEADER.encode(), token.encode())]),
+            _empty_receive,
+            _discard_send,
+        )
+        fact_authority.settle_invocation(token)
+        await guarded_report(
+            _http_scope(
+                headers=[
+                    (fact_authority.INVOCATION_HEADER.encode(), token.encode()),
+                ]
+            ),
+            _empty_receive,
+            _discard_send,
+        )
+        assert seen_reports == ["third_party", "owner", "third_party", "third_party"]
+        assert fact_authority._current_report.get() is None
+    finally:
+        fact_authority.settle_invocation(token)

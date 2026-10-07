@@ -821,6 +821,10 @@ def build_config_file(
             "enabled": True,
         }
 
+        headers = server_cfg.get("headers")
+        if isinstance(headers, dict) and headers:
+            mcp_section[server_name]["headers"] = dict(headers)
+
     config: dict[str, Any] = {
         "mcp": mcp_section,
         "permission": {},

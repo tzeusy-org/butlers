@@ -188,6 +188,37 @@ class _McpRuntimeSessionGuard:
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         runtime_session_id, trigger_source = self._resolve_session_params(scope)
+        from butlers.core import fact_authority
+
+        binding = fact_authority.resolve_invocation(
+            self._header_value(scope.get("headers"), fact_authority.INVOCATION_HEADER.encode()),
+            self._butler_name,
+        )
+        # Session/query locators remain diagnostic only. A transport token may
+        # not be rebound to a different admitted invocation.
+        mcp_session = self._header_value(scope.get("headers"), self._MCP_SESSION_ID_HEADER)
+        if not hasattr(self, "_admitted_sessions"):
+            self._admitted_sessions = {}
+        if mcp_session and binding is not None:
+            prior = self._admitted_sessions.get(mcp_session)
+            if prior is not None and prior != binding.runtime_session:
+                binding = None
+            else:
+                self._admitted_sessions[mcp_session] = binding.runtime_session
+        report_token = fact_authority._current_report.set(
+            binding.report
+            if binding is not None
+            else fact_authority.FactWriteContext("third_party")
+        )
+        source_token = fact_authority._incoming_source.set(
+            self._header_value(scope.get("headers"), fact_authority.SOURCE_HEADER.encode())
+        )
+        receipt_token = fact_authority._incoming_receipt.set(None)
+        pipeline_token = fact_authority._pipeline_source.set(
+            binding.source_request if binding is not None else None
+        )
+        if binding is not None:
+            runtime_session_id = binding.runtime_session
         session_token = set_current_runtime_session_id(runtime_session_id)
         trigger_token = set_current_runtime_trigger_source(trigger_source)
         butler_token = set_current_runtime_butler_name(self._butler_name)
@@ -198,6 +229,12 @@ class _McpRuntimeSessionGuard:
                 response_mcp_session_id = self._header_value(
                     message.get("headers"), self._MCP_SESSION_ID_HEADER
                 )
+                if binding is not None and response_mcp_session_id:
+                    prior = self._admitted_sessions.get(response_mcp_session_id)
+                    if prior is None or prior == binding.runtime_session:
+                        self._admitted_sessions[response_mcp_session_id] = binding.runtime_session
+                        if len(self._admitted_sessions) > self._MAX_SESSION_MAP_SIZE:
+                            self._admitted_sessions.pop(next(iter(self._admitted_sessions)), None)
                 self._remember_mcp_session(
                     response_mcp_session_id,
                     runtime_session_id,
@@ -208,6 +245,10 @@ class _McpRuntimeSessionGuard:
         try:
             await self._app(scope, receive, _send_with_session_capture)
         finally:
+            fact_authority._incoming_receipt.reset(receipt_token)
+            fact_authority._pipeline_source.reset(pipeline_token)
+            fact_authority._incoming_source.reset(source_token)
+            fact_authority._current_report.reset(report_token)
             reset_current_approval_push_runtime(push_token)
             reset_current_runtime_butler_name(butler_token)
             reset_current_runtime_trigger_source(trigger_token)

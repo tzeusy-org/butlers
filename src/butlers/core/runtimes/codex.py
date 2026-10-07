@@ -2595,6 +2595,14 @@ class CodexAdapter(RuntimeAdapter):
             escaped_url = rewritten_url.replace("\\", "\\\\").replace('"', '\\"')
             toml_lines.append(f"[mcp_servers.{server_name}]")
             toml_lines.append(f'url = "{escaped_url}"')
+            headers = server_cfg.get("headers")
+            if isinstance(headers, dict) and headers:
+                entries = ", ".join(
+                    f"{json.dumps(key)} = {json.dumps(value)}"
+                    for key, value in headers.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                )
+                toml_lines.append("http_headers = { " + entries + " }")
 
             normalized_transport, inferred_transport = _resolve_transport_details(
                 server_cfg, rewritten_url

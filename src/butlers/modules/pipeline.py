@@ -24,6 +24,7 @@ from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
 from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
+from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.utils import coerce_request_id as _coerce_request_id
@@ -1381,6 +1382,13 @@ class MessagePipeline:
         duplicate entity. Failures are swallowed by the writer-side helper so a
         fact-write hiccup never breaks routing.
         """
+        from butlers.core.fact_authority import source_registry
+
+        registry = source_registry()
+        if registry is not None:
+            await registry.assert_sender_channel(entity_id, channel_type, channel_value)
+            return
+
         from butlers.tools.relationship.relationship_assert_fact import (
             assert_sender_channel_fact,
         )
@@ -1448,9 +1456,11 @@ class MessagePipeline:
         messages: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, IdentityResolutionResult]]:
         """Resolve batch speakers and attach authoritative identity fields."""
+        from butlers.core.fact_authority import source_registry
         from butlers.identity import canonical_identity_channel_type
         from butlers.tools.switchboard.identity.inject import resolve_sender_identities
 
+        issuer = source_registry()
         identity_channel = canonical_identity_channel_type(source_channel)
         channel_values = [
             value
@@ -1462,6 +1472,11 @@ class MessagePipeline:
             source_channel,
             channel_values,
             notify_owner_fn=self._notify_owner_fn,
+            **(
+                {"resolver": issuer.resolve_identity, "bulk_resolver": issuer.resolve_identities}
+                if issuer is not None
+                else {}
+            ),
         )
 
         for result in resolutions.values():
@@ -2330,6 +2345,7 @@ class MessagePipeline:
                 message_inbox_id,
             )
 
+    @accepted_source_scope
     async def process(
         self,
         message_text: str,
@@ -2423,7 +2439,11 @@ class MessagePipeline:
         received_at = datetime.now(UTC)
         request_context = args.get("request_context")
         if isinstance(request_context, dict):
-            request_context = dict(request_context)
+            request_context = {
+                key: value
+                for key, value in request_context.items()
+                if not key.startswith("_fact_source_")
+            }
         else:
             request_context = None
         route_source_metadata = self._route_wire_source_metadata(source_metadata)
@@ -2601,6 +2621,25 @@ class MessagePipeline:
                             "Failed to mark message_inbox as processing; scanner may re-enqueue",
                             exc_info=True,
                         )
+
+                # Freeze before both direct policy routing and classification.
+                # Recovery uses the accepted original; public route context is
+                # never a producer. An unavailable identity service leaves an
+                # honestly unresolved third-party report, never owner authority.
+                from butlers.core.fact_authority import _pipeline_source, source_registry
+
+                issuer = source_registry()
+                if issuer is not None and message_inbox_id is not None:
+                    source_record_id = UUID(str(message_inbox_id))
+                    await issuer.capture_accepted_report(
+                        source_record_id,
+                        None,
+                        mixed=bool(
+                            request_context
+                            and request_context.get("payload_type") == "conversation_history"
+                        ),
+                    )
+                    _pipeline_source.set(source_record_id)
 
                 # --- Pre-resolved triage bypass ---
                 # If the ingest tool already resolved a triage decision via
@@ -3086,6 +3125,11 @@ class MessagePipeline:
                                             channel_value=sender_value,
                                             display_name=args.get("sender_name"),
                                             notify_owner_fn=self._notify_owner_fn,
+                                            **(
+                                                {"resolver": issuer.resolve_identity}
+                                                if issuer is not None
+                                                else {}
+                                            ),
                                         )
 
                                 if identity_result is not None:

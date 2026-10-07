@@ -494,6 +494,12 @@ TOOL_PRESENTATION_INVENTORY = (
         "relationship_fact_evidence relationship_lookup relationship_predicate_coverage "
         "relationship_record_coverage",
     ),
+    *_declare(
+        "relationship",
+        "contacts",
+        "identity_resolve_channels identity_assert_sender_channel",
+        presentable=False,
+    ),
     *_declare("switchboard", "routing", "correct_route list_butlers route"),
     *_declare("switchboard", "delivery", "deliver", presentable=False),
     *_declare("switchboard", "lifecycle", "connector_disconnect", presentable=False),

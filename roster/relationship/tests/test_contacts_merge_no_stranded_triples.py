@@ -533,7 +533,14 @@ class TestEffectiveTimeMutatorFences:
             if operation == "delete":
                 return await router.delete_entity_contact(subject, "has-email", value_hash, db=db)
             if operation == "verify":
-                return await router.verify_entity_contact(subject, "has-email", value_hash, db=db)
+                from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
+
+                # Direct handler conformance has no HTTP admission; supply an
+                # explicitly synthetic owner, never runtime/authentication proof.
+                async with synthetic_owner(pool):
+                    return await router.verify_entity_contact(
+                        subject, "has-email", value_hash, db=db
+                    )
             new_value = value if operation == "edit-same-value" else "new@example.test"
             return await router.update_entity_contact(
                 subject,
@@ -1212,13 +1219,13 @@ class TestFactEntityLockOrder:
 
         # The package re-exports the function under the submodule's name.
         writer = importlib.import_module("butlers.tools.relationship.relationship_assert_fact")
-        real_lock = writer._lock_fact_entities
+        real_lock = writer._lock_fact_entities_batch
 
         async def lock_then_latch(conn, *args, **kwargs):
             await real_lock(conn, *args, **kwargs)
             await _latch_on(conn)
 
-        monkeypatch.setattr(writer, "_lock_fact_entities", lock_then_latch)
+        monkeypatch.setattr(writer, "_lock_fact_entities_batch", lock_then_latch)
 
         async with pool.acquire() as latch:
             await latch.execute("SELECT pg_advisory_lock($1)", _LATCH_KEY)

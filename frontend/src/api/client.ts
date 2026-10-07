@@ -6,6 +6,7 @@ import { ownerFetch } from "./owner-session";
  */
 
 import type {
+  CandidateIdentityFact,
   ApprovalAction,
   ApprovalActionsResponse,
   ApprovalActionParams,
@@ -7243,4 +7244,21 @@ export function deleteTimelineSavedView(id: string): Promise<void> {
   return apiFetch<void>(`/timeline/saved-views/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+}
+
+
+export function getIdentityCandidates(entityId: string): Promise<{ facts: CandidateIdentityFact[] }> {
+  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-candidates`);
+}
+
+export function decideIdentityCandidate(entityId: string, factId: string, decision: "adopt" | "reject"):
+  Promise<{ fact_id: string; decision: string; decided_at: string; replayed: boolean }> {
+  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/${decision}`,
+    { method: "POST" });
+}
+
+export function getIdentityDecision(entityId: string, factId: string): Promise<{
+  fact_id: string; decision: "adopt" | "reject"; decided_at: string; replayed: boolean;
+}> {
+  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/decision`);
 }

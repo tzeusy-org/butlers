@@ -714,6 +714,7 @@ class TestEntityContacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     def _make_get_app(
@@ -777,6 +778,7 @@ class TestEntityContacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     _WRITER_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
@@ -884,6 +886,7 @@ class TestEntityContactsTelegramAndOwnerSelf:
             "primary": True,
         }
         fact_row.__getitem__ = MagicMock(side_effect=lambda k: _data[k])
+        fact_row.get = MagicMock(side_effect=_data.get)
 
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, fact_row])
@@ -1507,6 +1510,7 @@ class TestEntityActivity:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_mcp_result(self, episodes: list[dict]) -> MagicMock:
@@ -1900,6 +1904,7 @@ class TestEntityFacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     def _make_app(
@@ -2103,6 +2108,7 @@ class TestEntityActivityBinning:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_mcp_result(self, episodes: list[dict]) -> MagicMock:
@@ -2352,6 +2358,7 @@ class TestEntityDeltaFacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_app(
@@ -2462,6 +2469,7 @@ class TestEntityCoreDates:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
         return row
 
     def _make_app(
@@ -2500,6 +2508,9 @@ class TestEntityCoreDates:
         assert row["conf"] == 1.0
         assert row["verified"] is True
         assert row["staleness_band"] == "fresh"
+        assert row["confirmation_status"] == "legacy_verified"
+        assert row["confirmed_at"] is None
+        assert row["reported_by"] is None
 
     async def test_partial_date_without_year_supported(self):
         """A --MM-DD partial date (year unknown) still yields a next occurrence."""
@@ -2632,6 +2643,7 @@ def _make_identity_compare_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -2662,6 +2674,7 @@ def _make_narrative_compare_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 

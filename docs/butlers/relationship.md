@@ -188,3 +188,16 @@ retains its own policy; this birthday push introduces no memorial opt-in or chan
 
 - [Switchboard Butler](switchboard.md) -- routes people-related messages here
 - [General Butler](general.md) -- handles freeform data that is not contact-specific
+
+### Fact authority and reported channels
+
+The central writer derives verified content from its private admitted report or a separately
+recorded owner confirmation, never from caller confidence. Third-party kinship at confidence
+0.95 parks for approval. Gap closure reads the persisted fact's report and confirmation, not
+the current session. Candidates cannot answer an established identity gap.
+
+Identity fact APIs carry original reporter availability and owner confirmation separately.
+The contact card shows reported channels awaiting adoption, protected exact Adopt/Reject
+controls and receipt-based recovery after an uncertain response. Narrative facts retain their
+existing behavior. Entity merge locks candidate identity slots and all active facts before the
+first write; moving a candidate does not activate it or rewrite its reporter.

@@ -3904,6 +3904,27 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Something worth remembering
 - Log interaction
 
+## `frontend/src/components/relationship/FactReporterLine.tsx`
+
+- Owner verified
+- Confirmed by you
+- Legacy verification: author unknown
+- Owner confirmed
+
+## `frontend/src/components/relationship/IdentityCandidateReview.tsx`
+
+- Checking reported channels…
+- Could not load reported channels.
+- Try again
+- Reported channels
+- Unavailable for messages until adopted.
+- Adopt
+- Reject
+- Refresh
+- Reported channels awaiting adoption
+- Adopt {}
+- Reject report for {}
+
 ## `frontend/src/components/relationship/LatestInteractionsBlock.tsx`
 
 - Latest interactions
@@ -4830,4 +4851,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3844*
+*Total strings: 3859*
