@@ -269,7 +269,7 @@ def _ordinary_bootstrap_owned_core_replay(db_url: str, admin_url: str, scope: st
     assert versions() == versions_before  # failed revision was not durably stamped
     assert _amendment_rows(admin_url) == rows_before
     assert _attention_ledger_snapshot(admin_url) == ledger_before
-    return {
+    receipt = {
         "scope": scope,
         "entrypoint": "run_migrations(chain='core', schema='health')",
         "positioning": "independent health version stamp core_254; shared predecessors already applied",
@@ -283,6 +283,26 @@ def _ordinary_bootstrap_owned_core_replay(db_url: str, admin_url: str, scope: st
         "retained_rows": len(rows_before),
         "result": "existing ownership failure; recorded, not repaired",
     }
+    # Preserve the actual reached SQL even if a later independent control fails.
+    _publish_disposable_receipt(
+        {
+            "ordinary_core_traversal": {
+                k: receipt[k]
+                for k in (
+                    "scope",
+                    "entrypoint",
+                    "reached",
+                    "sqlstate",
+                    "statement",
+                    "versions_before",
+                    "versions_after",
+                    "retained_rows",
+                    "result",
+                )
+            }
+        }
+    )
+    return receipt
 
 
 def _publish_disposable_receipt(receipt: dict) -> None:
@@ -405,6 +425,20 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
             engine = create_engine(db_url)
             try:
                 with engine.begin() as conn:
+                    if ordinary_core_entrypoint is not None:
+                        # Remove only the test-owned positioning marker after
+                        # its independent rollback witness, so the original
+                        # complete fresh/round-trip inventory stays comparable.
+                        assert conn.execute(
+                            text(
+                                "SELECT pg_get_userbyid(relowner)=current_user FROM pg_class "
+                                "WHERE oid='health.alembic_version'::regclass"
+                            )
+                        ).scalar_one()
+                        conn.execute(text("DROP TABLE health.alembic_version"))
+                        ordinary_core_entrypoint["diagnostic_marker_cleanup"] = (
+                            "only test-owned health.alembic_version; after failure/version readback"
+                        )
                     _expect_permission_denied(
                         conn, "ALTER TABLE public.insight_amendments ENABLE ROW LEVEL SECURITY"
                     )
