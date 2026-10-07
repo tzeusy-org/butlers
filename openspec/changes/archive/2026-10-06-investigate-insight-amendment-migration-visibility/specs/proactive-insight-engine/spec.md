@@ -24,3 +24,5 @@ The premise-amendment migration lifecycle SHALL distinguish the ordinary migrati
 - **THEN** the investigation compares a positive qualified administrative object witness with the ordinary login's metadata inventory and records login, object owner, database/schema ownership, effective inherited privileges and per-creator defaults before attributing the failure to teardown
 - **AND** grant-only and retention-only controls are tested separately when the historical correction changed both
 - **AND** missing function execution or ownership convergence is recorded independently of table inventory equality
+- **AND** the actual ordinary core migration entrypoint is exercised while a bootstrap-created amendment table still has its bootstrap owner, before any ordinary DROP/recreate, with the reached revision, phase, SQLSTATE and separate before/after catalog and version witnesses recorded
+- **AND** hypothetical destructive diagnostics and the exact current bootstrap-created replay are classified separately, and an existing replay failure is returned with a concrete scoped forward proposal rather than claimed repaired by metadata equality

@@ -214,6 +214,77 @@ def _expect_permission_denied(conn, statement: str, params: dict | None = None) 
     return error.value.orig.pgcode
 
 
+def _ordinary_bootstrap_owned_core_replay(db_url: str, admin_url: str, scope: str) -> dict:
+    """Reach canonical core_255 before any DROP changes the amendment owner.
+
+    Shared predecessors have already run through core_255. Only health's
+    independent version table is positioned at core_254; the production
+    entrypoint must actually traverse core_255 to head under the normal login.
+    Its failed Alembic transaction is closed before separate catalog readback.
+    """
+    config = _build_alembic_config(db_url, ["core"], target_schema="health")
+    command.stamp(config, "core_254")
+
+    def versions() -> dict:
+        engine = create_engine(db_url)
+        try:
+            with engine.connect() as conn:
+                return {
+                    schema: conn.execute(
+                        text(
+                            f"SELECT version_num FROM {schema}.alembic_version ORDER BY version_num"
+                        )
+                    )
+                    .scalars()
+                    .all()
+                    for schema in ("public", "health")
+                }
+        finally:
+            engine.dispose()
+
+    before = {"ordinary": _amendment_catalog(db_url), "admin": _amendment_catalog(admin_url)}
+    rows_before = _amendment_rows(admin_url)
+    ledger_before = _attention_ledger_snapshot(admin_url)
+    versions_before = versions()
+    assert versions_before == {"public": ["core_255"], "health": ["core_254"]}
+    assert before["ordinary"]["qualified_object"] and before["admin"]["ordinary_columns"]
+    assert before["admin"]["table"]["owner"] == before["admin"]["identity"]["session_user"]
+    assert before["ordinary"]["identity"]["current_user"] != before["admin"]["table"]["owner"]
+    assert before["ordinary"]["ownership"]["rolsuper"] is False
+    with pytest.raises(DBAPIError) as error:
+        asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    assert error.value.orig.pgcode == "42501"
+    reached = []
+    traceback = error.value.__traceback__
+    while traceback is not None:
+        code = traceback.tb_frame.f_code
+        if Path(code.co_filename).name == _CORE_255.name and code.co_name == "upgrade":
+            reached.append(
+                {"revision": "core_255", "phase": code.co_name, "line": traceback.tb_lineno}
+            )
+        traceback = traceback.tb_next
+    assert len(reached) == 1  # actual executing frame, not a source prediction
+    after = {"ordinary": _amendment_catalog(db_url), "admin": _amendment_catalog(admin_url)}
+    assert after == before
+    assert versions() == versions_before  # failed revision was not durably stamped
+    assert _amendment_rows(admin_url) == rows_before
+    assert _attention_ledger_snapshot(admin_url) == ledger_before
+    return {
+        "scope": scope,
+        "entrypoint": "run_migrations(chain='core', schema='health')",
+        "positioning": "independent health version stamp core_254; shared predecessors already applied",
+        "reached": reached[0],
+        "sqlstate": error.value.orig.pgcode,
+        "statement": error.value.statement.strip(),
+        "before": before,
+        "after": after,
+        "versions_before": versions_before,
+        "versions_after": versions(),
+        "retained_rows": len(rows_before),
+        "result": "existing ownership failure; recorded, not repaired",
+    }
+
+
 def _publish_disposable_receipt(receipt: dict) -> None:
     # Successful captured stdout and JUnit properties are intentionally stripped
     # by CI's privacy-minimal duration artifacts. One synthetic-only warning
@@ -320,6 +391,11 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
             with pytest.raises(AssertionError, match="privilege-filtered inventory"):
                 assert inventory == fresh_inventory, "privilege-filtered inventory differs"
             assert ordinary["ordinary_columns"] == []
+        ordinary_core_entrypoint = None
+        if variant.startswith("current-hypothetical-drop-"):
+            ordinary_core_entrypoint = _ordinary_bootstrap_owned_core_replay(
+                db_url, admin_url, scope="hypothetical empty-DROP diagnostic: " + variant
+            )
         if recreated:
             # A database owner implicitly owns public through pg_database_owner
             # on fresh PG17. Schema ownership permits DROP, but not relation
@@ -353,6 +429,7 @@ def _historical_visibility_controls(postgres_container, tmp_path: Path) -> list[
                 "ordinary": ordinary,
                 "only_fresh": sorted(only_fresh),
                 "inventory_equality": "PASS" if visible else "RED with positive object",
+                "ordinary_core_entrypoint": ordinary_core_entrypoint,
                 "ordinary_ownership": "ALTER 42501; schema-owner DROP and ordinary recreate succeed"
                 if recreated
                 else "retained normal table owner",
@@ -723,6 +800,9 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
                 )
         finally:
             engine.dispose()
+    supported_current_replay = _ordinary_bootstrap_owned_core_replay(
+        db_url, admin_url, scope="exact current bootstrap install after two init-db replays"
+    )
     _publish_disposable_receipt(
         {
             "historical_controls": [r["variant"] for r in historical],
@@ -731,6 +811,7 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
             "current_bootstrap_replays": bootstrap_observations,
             "current_role_matrix": receipts,
             "retained_rows": len(rows),
+            "supported_current_ordinary_replay": supported_current_replay,
             "optional_calendar": "present" if "butler_calendar_rw" in roles else "absent",
         }
     )

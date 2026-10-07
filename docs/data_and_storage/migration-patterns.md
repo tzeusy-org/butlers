@@ -264,6 +264,37 @@ The core_258 grant convergence and a dynamic-head round-trip remain separate smo
 checks; a passing current head comparison cannot identify which historical change
 fixed a core_255 comparison.
 
+Ordinary migration traversal must be tested while the table is still bootstrap
+owned, before any ordinary DROP/recreate changes the owner. The current empty
+DROP diagnostics with and without the targeted grant both exercise the canonical
+`run_migrations(..., chain="core", schema="health")` entrypoint. The exact current
+bootstrap-created install also exercises that entrypoint after its complete role
+matrix and two `init-db.sql` replays, with all 43 planted rows still present. Only
+the independent health version table is positioned at core_254; the already-run
+shared predecessors remain intact and core_255 is actually traversed. The tests
+record the reached upgrade frame, rejected SQL statement and `42501`, then read
+the catalog, rows and version tables through separate connections to prove that
+ownership and evidence survived and health did not advance past core_254.
+Metadata PASS therefore does not mean ordinary replay succeeds in this current
+bootstrap-owned state. The hypothetical empty-DROP controls are diagnostics; the
+exact current bootstrap-created replay is an existing failure, not a repaired
+supported path. A later ordinary replay over an ordinarily owned retained table
+is a separate positive control and does not discharge this failure.
+
+The concrete forward proposal is scoped bootstrap convergence before ordinary
+core replay: within the existing privileged bootstrap boundary, resolve the
+configured migration identity from `butlers.connecting_user`, guard the qualified
+amendment table's existence and converge only its ownership to that trusted
+migration identity. Preserve every row, runtime ACL entry, policy and ENABLE/FORCE setting;
+retain the existing runtime role matrix and test rollback/durable version state.
+This follows the bootstrap's existing contract that Alembic objects belong to the
+normal migration user for future ALTER. It requires a separately reviewed
+bootstrap change and disposable-PG validation of first install, retained-table
+replay, repeated convergence and the same positive/negative role controls.
+It is a proposal, not an adopted owner change or a verified repair. No applied
+core_255 rewrite, new core allocation, broad grant, DROP or runtime owner privilege
+is authorized here. Function-owner convergence remains with `bu-q7vx1q.33`.
+
 A bounded core_255-to-core_254 rollback intentionally retains complete amendment
 rows in all four states, while their referenced candidates remain. It removes
 candidate `premise` and `delivery_ref`, folds candidate `withdrawn` to `filtered`, and
