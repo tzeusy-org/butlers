@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from butlers.conversation_identity import event_conversation_identity
 from butlers.core.permissions import CROSS_BUTLER_PERMISSION, check_permission
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
@@ -314,10 +315,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
 
         channel = source.get("channel", "unknown")
         endpoint_identity = source.get("endpoint_identity", "unknown")
-        external_conversation_id = event.get("external_conversation_id") or event.get(
-            "external_thread_id"
-        )
-        reply_target_ref = event.get("reply_target_ref") or event.get("external_thread_id")
+        external_conversation_id, reply_target_ref = event_conversation_identity(event)
         addressed = bool(source.get("addressed", False))
         request_context: dict[str, Any] = {
             "request_id": request_id,

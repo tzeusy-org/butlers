@@ -22,6 +22,7 @@ from fastmcp import Client as MCPClient
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 
+from butlers.conversation_identity import event_conversation_identity
 from butlers.core.dashboard_turns import reconcile_route_recovery
 from butlers.core.route_inbox import (
     RouteInboxLeaseLost,
@@ -63,10 +64,7 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
     """Build request context and pipeline tool args for a buffered inbox ref."""
     channel = ref.source.get("channel", "unknown")
     endpoint_identity = ref.source.get("endpoint_identity", "unknown")
-    external_conversation_id = ref.event.get("external_conversation_id") or ref.event.get(
-        "external_thread_id"
-    )
-    reply_target_ref = ref.event.get("reply_target_ref") or ref.event.get("external_thread_id")
+    external_conversation_id, reply_target_ref = event_conversation_identity(ref.event)
     addressed = bool(ref.source.get("addressed", False))
     sender_identity = ref.sender.get("identity", "unknown")
 
@@ -267,7 +265,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         observability_request_id = (
             opaque_route_ref(ref.request_id) if content_blind_observability else ref.request_id
         )
-        reply_target_ref = ref.event.get("reply_target_ref") or ref.event.get("external_thread_id")
+        _, reply_target_ref = event_conversation_identity(ref.event)
         _, _buf_tool_args = build_buffer_pipeline_inputs(ref)
 
         # Fire reaction before pipeline processing (telegram_bot only).

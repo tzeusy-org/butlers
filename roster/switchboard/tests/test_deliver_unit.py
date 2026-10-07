@@ -1532,6 +1532,7 @@ class TestWriteOutboundMessageInbox:
         req_ctx = call_args[0][2]
         assert isinstance(req_ctx, dict)
         assert req_ctx["source_thread_identity"] == "206570151"
+        assert req_ctx["external_conversation_id"] == "telegram:206570151"
         assert req_ctx["source_sender_identity"] == "relationship"
         assert req_ctx["source_channel"] == "telegram_bot"
 
@@ -1605,9 +1606,39 @@ class TestWriteOutboundMessageInbox:
         assert isinstance(req_ctx, dict)
         # Thread identity derived from delivery.recipient
         assert req_ctx["source_thread_identity"] == "206570151"
+        assert req_ctx["external_conversation_id"] == "telegram:206570151"
         # source_channel from request_context (not derived)
         assert req_ctx["source_channel"] == "telegram_bot"
         assert req_ctx["source_sender_identity"] == "health"
+
+    async def test_reply_without_conversation_key_joins_the_delivered_chat(self) -> None:
+        """A reply context that dropped external_conversation_id still lands in chat history."""
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+
+        pool = AsyncMock()
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "health",
+                "delivery": {"intent": "reply", "channel": "telegram", "message": "Done."},
+                "request_context": {
+                    "request_id": _make_uuid7(),
+                    "source_channel": "telegram_bot",
+                    "source_endpoint_identity": "telegram:bot",
+                    "source_sender_identity": "user456",
+                    "source_thread_identity": "-100555:42",
+                },
+            }
+        )
+
+        await _write_outbound_message_inbox(
+            pool, notify_request=notify_request, delivered_at=datetime.now(UTC)
+        )
+
+        req_ctx = pool.execute.call_args[0][2]
+        assert req_ctx["source_thread_identity"] == "-100555:42"
+        assert req_ctx["external_conversation_id"] == "telegram:-100555"
 
     async def test_writes_outbound_row_when_thread_identity_present(self) -> None:
         """Writes outbound row to message_inbox when source_thread_identity is available."""

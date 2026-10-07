@@ -57,7 +57,9 @@ Full-payload shape
 
     {
         "source": {"channel": ..., "provider": ..., "endpoint_identity": ...},
-        "event":  {"external_event_id": ..., "external_thread_id": ..., "observed_at": ...},
+        "event":  {"external_event_id": ..., "external_thread_id": ...,
+                   "external_conversation_id": ..., "reply_target_ref": ...,  # optional
+                   "observed_at": ...},
         "sender": {"identity": ...},
         "payload": {"raw": ..., "normalized_text": ...},
         "control": {"policy_tier": ...},
@@ -76,6 +78,11 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from butlers.conversation_identity import (
+    telegram_bot_update_identity,
+    telegram_conversation_id,
+    whatsapp_conversation_id,
+)
 from butlers.ingestion_bearer_scrub import scrub_filtered_preview
 
 if TYPE_CHECKING:
@@ -167,16 +174,45 @@ def _sanitize_replay_payload(payload_dict: dict[str, Any]) -> None:
 
     source_section = payload_dict.get("source")
     event_section = payload_dict.get("event")
-    if (
-        isinstance(source_section, dict)
-        and source_section.get("channel") == "telegram_bot"
-        and isinstance(event_section, dict)
-    ):
-        legacy_target = event_section.get("external_thread_id")
-        if legacy_target:
-            chat_id = str(legacy_target).partition(":")[0]
-            event_section.setdefault("external_conversation_id", f"telegram:{chat_id}")
-            event_section.setdefault("reply_target_ref", str(legacy_target))
+    if isinstance(source_section, dict) and isinstance(event_section, dict):
+        _split_legacy_conversation_identity(
+            source_section.get("channel"), event_section, payload_section
+        )
+
+
+def _split_legacy_conversation_identity(
+    channel: Any, event_section: dict[str, Any], payload_section: Any
+) -> None:
+    """Give a pre-split stored envelope the keys live ingress emits today.
+
+    Rows recorded before bu-7exe4.2 carry only ``external_thread_id``. Telegram
+    bot rows rebuild both keys from the retained update when one exists, so a
+    forum-topic message keeps its topic; otherwise the chat prefix of the legacy
+    target is the conversation. Telegram user-client and WhatsApp rows stored
+    the bare chat id or JID. Bounded by filtered-event retention: once every
+    pre-split row has aged out, this adapter can be deleted.
+    """
+    if event_section.get("external_conversation_id"):
+        return
+    legacy_target = event_section.get("external_thread_id")
+    conversation_id: str | None = None
+    reply_target_ref: str | None = None
+    if channel == "telegram_bot":
+        raw = payload_section.get("raw") if isinstance(payload_section, dict) else None
+        if isinstance(raw, dict):
+            conversation_id, reply_target_ref = telegram_bot_update_identity(raw)
+        if conversation_id is None and legacy_target:
+            conversation_id = telegram_conversation_id(str(legacy_target).partition(":")[0])
+            reply_target_ref = str(legacy_target)
+    elif channel == "telegram_user_client" and legacy_target:
+        conversation_id = telegram_conversation_id(str(legacy_target))
+    elif channel == "whatsapp_user_client" and legacy_target:
+        conversation_id = whatsapp_conversation_id(str(legacy_target))
+    if conversation_id is None:
+        return
+    event_section["external_conversation_id"] = conversation_id
+    if reply_target_ref is not None:
+        event_section.setdefault("reply_target_ref", reply_target_ref)
 
 
 async def drain_replay_pending(
@@ -562,6 +598,8 @@ class FilteredEventBuffer:
         observed_at: str,
         sender_identity: str,
         raw: Any,
+        external_conversation_id: str | None = None,
+        reply_target_ref: str | None = None,
         normalized_text: str | None = None,
         policy_tier: str | None = None,
         important_dropped_basis: str | None = None,
@@ -577,10 +615,14 @@ class FilteredEventBuffer:
             provider: Provider name (e.g. ``"gmail"``).
             endpoint_identity: Endpoint identity of the connector.
             external_event_id: Provider-assigned event/message ID.
-            external_thread_id: Provider-assigned thread ID (optional).
+            external_thread_id: Provider-assigned thread ID (optional), for
+                producers that have not split conversation identity from
+                reply targeting.
             observed_at: ISO-8601 timestamp when the event was observed.
             sender_identity: Normalised sender identity string.
             raw: Raw provider payload (any JSON-serialisable value).
+            external_conversation_id: Stable conversation key (optional).
+            reply_target_ref: Per-message reply target (optional).
             normalized_text: Normalised text body (optional).
             policy_tier: Policy tier assigned to the message (optional).
             important_dropped_basis: Set (e.g. ``"known_contact"``) when the
@@ -598,17 +640,23 @@ class FilteredEventBuffer:
         if policy_tier is not None:
             control_section["policy_tier"] = policy_tier
 
+        event_section: dict[str, Any] = {
+            "external_event_id": external_event_id,
+            "external_thread_id": external_thread_id,
+            "observed_at": observed_at,
+        }
+        if external_conversation_id is not None:
+            event_section["external_conversation_id"] = external_conversation_id
+        if reply_target_ref is not None:
+            event_section["reply_target_ref"] = reply_target_ref
+
         stored: dict[str, Any] = {
             "source": {
                 "channel": channel,
                 "provider": provider,
                 "endpoint_identity": endpoint_identity,
             },
-            "event": {
-                "external_event_id": external_event_id,
-                "external_thread_id": external_thread_id,
-                "observed_at": observed_at,
-            },
+            "event": event_section,
             "sender": {
                 "identity": sender_identity,
             },

@@ -1349,6 +1349,9 @@ class TestEntityMessageThreads:
         sw_candidates = sw_call[0][1]
         assert "alice@example.com" in sw_candidates
         assert "12345" in sw_candidates
+        # A chat groups by its conversation key, not the per-message reply
+        # target; pre-split rows fall back to source_thread_identity.
+        assert "request_context ->> 'external_conversation_id'" in sw_call[0][0]
 
     async def test_limit_clamped_to_100(self):
         app, _, _ = _build_app_with_dual_pools(entity_exists=True)

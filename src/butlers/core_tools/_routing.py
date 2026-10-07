@@ -1237,7 +1237,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                         # A dashboard turn's source_thread_identity IS
                                         # the dashboard_conversations.id the owner is
                                         # already looking at (see
-                                        # build_dashboard_envelope's reply_target_ref),
+                                        # build_dashboard_envelope's external_thread_id),
                                         # not a channel key to upsert against.
                                         # get_or_create_by_thread would otherwise treat
                                         # it as a novel (butler_name, source_channel,

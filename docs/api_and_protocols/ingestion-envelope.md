@@ -32,12 +32,14 @@ Rules the models encode and connectors must respect:
   dedupe. `event.observed_at` must be an RFC 3339 string with a timezone.
 - **Conversation identity is split from reply targeting.** `event.external_conversation_id` is
   the stable, channel-namespaced conversation key (for example `telegram:<chat_id>`, with a
-  `:topic:<topic_id>` suffix for forum topics, `whatsapp:<chat_jid>`, or the Gmail `threadId`).
-  Continuity consumers (conversation anchors, provider-session resume, realtime history) key on it.
-  `event.reply_target_ref` is the provider-native per-message target used only for replies and
-  reactions (for example `<chat_id>:<message_id>`). Interactive Telegram bot ingress without both
-  fields is rejected. `event.external_thread_id` remains accepted only from producers that have not
-  adopted the split and is never a continuity key.
+  `:topic:<topic_id>` suffix when Telegram marks the message `is_topic_message`,
+  `whatsapp:<chat_jid>`, or the Gmail `threadId`). Continuity consumers (conversation anchors,
+  provider-session resume, realtime history) key on it. `event.reply_target_ref` is the
+  provider-native per-message target used only for replies and reactions (for example
+  `<chat_id>:<message_id>`). Telegram bot ingress without both fields is rejected. A producer that
+  has not adopted the split still sends `event.external_thread_id`, which then serves as both its
+  conversation key and its reply target; a split field always wins over it
+  (`butlers.conversation_identity.event_conversation_identity`).
 - **`sender.identity` is provider-native** (user id, email address). The Switchboard resolves it
   to an entity (see [Identity Model](../concepts/identity-model.md)); connectors never resolve
   identity themselves.

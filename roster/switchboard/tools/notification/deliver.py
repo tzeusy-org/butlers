@@ -13,6 +13,7 @@ import asyncpg
 from opentelemetry import trace
 from pydantic import ValidationError
 
+from butlers.conversation_identity import telegram_conversation_id, whatsapp_conversation_id
 from butlers.core.approval_delivery_transport import (
     RecoveryAuthorityError,
     TrustedRecoveryContext,
@@ -166,6 +167,26 @@ def _transport_fragment(transport: TransportResult | None) -> dict[str, Any]:
     return {"transport": transport.as_dict()} if transport is not None else {}
 
 
+def _outbound_conversation_id(
+    notify_request: NotifyRequestV1, thread_identity: str, source_channel: str
+) -> str:
+    """Return the history key an outbound row shares with its conversation's inbound rows.
+
+    A caller that carried the inbound ``external_conversation_id`` forward is
+    authoritative. Otherwise the key is derived from where the message went: a
+    Telegram delivery lands in the chat named by the recipient or by the reply
+    target's ``<chat_id>`` prefix.
+    """
+    ctx = notify_request.request_context
+    if ctx is not None and ctx.external_conversation_id is not None:
+        return ctx.external_conversation_id
+    if notify_request.delivery.channel == "telegram":
+        return telegram_conversation_id(thread_identity.partition(":")[0])
+    if source_channel == "whatsapp_user_client":
+        return whatsapp_conversation_id(thread_identity)
+    return thread_identity
+
+
 async def _write_outbound_message_inbox(
     pool: asyncpg.Pool,
     *,
@@ -214,9 +235,10 @@ async def _write_outbound_message_inbox(
         "source_endpoint_identity": f"butler:{origin_butler}",
         "source_sender_identity": origin_butler,
         "source_thread_identity": thread_identity,
+        "external_conversation_id": _outbound_conversation_id(
+            notify_request, thread_identity, source_channel
+        ),
     }
-    if ctx is not None and ctx.external_conversation_id is not None:
-        request_context_payload["external_conversation_id"] = ctx.external_conversation_id
     raw_payload = {
         "content": message_text,
         "metadata": {"origin_butler": origin_butler},

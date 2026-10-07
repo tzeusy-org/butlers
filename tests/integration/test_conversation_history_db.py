@@ -60,8 +60,8 @@ async def _insert_message(
         "source_thread_identity": thread_identity,
         "source_endpoint_identity": f"{channel}:bot",
     }
-    if external_conversation_id is not None:
-        request_context["external_conversation_id"] = external_conversation_id
+    # Unsplit producers' thread id is their conversation key (ingest and sw_041).
+    request_context["external_conversation_id"] = external_conversation_id or thread_identity
     raw_payload = {
         "content": text,
         "metadata": {},
@@ -331,8 +331,8 @@ async def _insert_outbound_message(
         "source_thread_identity": thread_identity,
         "source_endpoint_identity": f"butler:{origin_butler}",
     }
-    if external_conversation_id is not None:
-        request_context["external_conversation_id"] = external_conversation_id
+    # Unsplit producers' thread id is their conversation key (ingest and sw_041).
+    request_context["external_conversation_id"] = external_conversation_id or thread_identity
     raw_payload = {
         "content": text,
         "metadata": {"origin_butler": origin_butler},

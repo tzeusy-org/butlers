@@ -95,7 +95,7 @@ The evaluator is instantiated with `scope = 'connector:<connector_type>:<endpoin
 - **WHEN** a connector instantiates its evaluator
 - **THEN** it passes `scope = 'connector:<connector_type>:<endpoint_identity>'` and a shared DB pool; the evaluator loads only connector-scoped rules for that scope
 
-### Requirement: ingest.v1 Envelope Schema
+### Requirement: ingest.v1 Envelope Contract
 The `ingest.v1` envelope SHALL be the canonical format for all messages entering the butler ecosystem. It SHALL conform to the IngestEnvelopeV1 schema with five required sub-sections validated at the point of entry.
 
 #### Scenario: Top-level envelope structure
@@ -113,8 +113,9 @@ The `ingest.v1` envelope SHALL be the canonical format for all messages entering
 
 #### Scenario: Event metadata (IngestEventV1)
 - **WHEN** `event` is populated
-- **THEN** `external_event_id` is a non-empty string (the provider's stable event ID, required for deduplication), `external_thread_id` is an optional non-empty string (email thread ID, Telegram chat ID), and `observed_at` is a timezone-aware datetime (RFC3339, when the connector observed the event)
-- **THEN** `external_event_id` is a non-empty string (the provider's stable event ID, required for deduplication), `external_conversation_id` is the optional stable conversation key, `reply_target_ref` is the optional provider reply/reaction target, `external_thread_id` is accepted only from legacy producers, and `observed_at` is a timezone-aware datetime (RFC3339, when the connector observed the event)
+- **THEN** `external_event_id` is a non-empty string (the provider's stable event ID, required for deduplication), `external_conversation_id` is an optional non-empty, channel-namespaced conversation key (for example `telegram:<chat_id>`, `whatsapp:<chat_jid>`, or a Gmail `threadId`), `reply_target_ref` is an optional non-empty per-message reply or reaction target (for example `<chat_id>:<message_id>`), `external_thread_id` is an optional non-empty string for producers that have not split conversation identity from reply targeting, and `observed_at` is a timezone-aware datetime (RFC3339, when the connector observed the event)
+- **AND** for a producer that sends only `external_thread_id`, that value SHALL serve as both its conversation key and its reply target; a split field SHALL always take precedence over it
+- **AND** a `telegram_bot` envelope SHALL carry both `external_conversation_id` and `reply_target_ref`, or fail validation
 
 #### Scenario: Sender identity (IngestSenderV1)
 - **WHEN** `sender` is populated
@@ -187,13 +188,12 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 - **WHEN** the Switchboard accepts an ingest submission
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
 
-### Requirement: Request Context Assignment
+### Requirement: Request Context Construction
 The Switchboard SHALL build an immutable request context from each accepted ingest envelope. This context SHALL travel with the message through classification, routing, and butler processing. The `request_id` SHALL be a UUID7 identifier.
 
 #### Scenario: Request context fields
 - **WHEN** a message is accepted for processing
-- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `external_thread_id`), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
-- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `reply_target_ref`, falling back to legacy `external_thread_id`), `external_conversation_id`, `reply_target_ref`, `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
+- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `external_conversation_id` (the resolved conversation key), `reply_target_ref` (the resolved reply target), `source_thread_identity` (the notify-facing name for the same reply target, never the conversation key), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
 - **AND** if triage was evaluated: `triage_decision`, `triage_target`, `triage_rule_id`, `triage_rule_type`
 - **AND** if the envelope carries group-chat metadata: `participant_count`, `chat_type`, and `interaction_eligible` (only when `false`)
 - **AND** if the envelope is a batch covering several senders: `source_sender_identities` (a JSON array built from `sender.participants`) and, when the connector reports one, `owner_sender_identity` (from `sender.owner_sender_id`)

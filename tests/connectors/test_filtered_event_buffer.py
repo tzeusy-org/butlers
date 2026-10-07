@@ -353,3 +353,86 @@ def test_important_dropped_marker_is_stripped_before_replay() -> None:
 
     assert "drop_context" not in stored
     parse_ingest_envelope({"schema_version": "ingest.v1", **stored})
+
+
+def _stored(channel: str, provider: str, thread: str | None, raw: dict, **split: str) -> dict:
+    return FilteredEventBuffer.full_payload(
+        channel=channel,
+        provider=provider,
+        endpoint_identity=f"{provider}:endpoint",
+        external_event_id="evt-1",
+        external_thread_id=thread,
+        observed_at="2026-10-01T10:00:00Z",
+        sender_identity="4242",
+        raw=raw,
+        normalized_text="hello",
+        **split,
+    )
+
+
+@pytest.mark.parametrize(
+    ("stored", "conversation_id", "reply_target_ref"),
+    [
+        pytest.param(
+            _stored(
+                "telegram_bot",
+                "telegram",
+                "-100777",
+                {
+                    "update_id": 1,
+                    "message": {
+                        "message_id": 5,
+                        "message_thread_id": 9,
+                        "is_topic_message": True,
+                        "chat": {"id": -100777},
+                    },
+                },
+            ),
+            "telegram:-100777:topic:9",
+            "-100777:5",
+            id="legacy-bot-row-keeps-forum-topic-from-retained-update",
+        ),
+        pytest.param(
+            _stored("telegram_bot", "telegram", "-100777", {}),
+            "telegram:-100777",
+            "-100777",
+            id="legacy-bot-row-without-update-uses-chat",
+        ),
+        pytest.param(
+            _stored("telegram_user_client", "telegram", "998877", {}),
+            "telegram:998877",
+            None,
+            id="legacy-user-client-row",
+        ),
+        pytest.param(
+            _stored("whatsapp_user_client", "whatsapp", "6591234567@s.whatsapp.net", {}),
+            "whatsapp:6591234567@s.whatsapp.net",
+            None,
+            id="legacy-whatsapp-row",
+        ),
+        pytest.param(
+            _stored(
+                "telegram_bot",
+                "telegram",
+                None,
+                {},
+                external_conversation_id="telegram:-100777:topic:9",
+                reply_target_ref="-100777:5",
+            ),
+            "telegram:-100777:topic:9",
+            "-100777:5",
+            id="split-row-is-replayed-as-stored",
+        ),
+    ],
+)
+def test_replay_splits_pre_split_conversation_identity(
+    stored: dict, conversation_id: str, reply_target_ref: str | None
+) -> None:
+    """Replay gives stored envelopes the conversation key live ingress emits (bu-7exe4.2)."""
+    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+    _sanitize_replay_payload(stored)
+
+    assert stored["event"]["external_conversation_id"] == conversation_id
+    assert stored["event"].get("reply_target_ref") == reply_target_ref
+    parse_ingest_envelope({"schema_version": "ingest.v1", **stored})

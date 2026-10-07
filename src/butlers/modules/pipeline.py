@@ -2011,10 +2011,11 @@ class MessagePipeline:
 
     @classmethod
     def _external_conversation_id(cls, args: dict[str, Any]) -> str | None:
+        # ``external_thread_id`` in pipeline args is the reply target, never a
+        # continuity key; ingest has already resolved unsplit producers.
         candidates = (
             args.get("external_conversation_id"),
             (args.get("request_context") or {}).get("external_conversation_id"),
-            args.get("external_thread_id"),
         )
         for candidate in candidates:
             normalized = cls._string_or_none(candidate)

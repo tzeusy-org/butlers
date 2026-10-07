@@ -81,6 +81,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
+from butlers.conversation_identity import whatsapp_conversation_id
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
@@ -1643,7 +1644,9 @@ class WhatsAppUserClientConnector:
                 provider=self._config.provider,
                 endpoint_identity=self._config.endpoint_identity,
                 external_event_id=batch_event_id,
-                external_thread_id=chat_jid,
+                external_thread_id=None,
+                external_conversation_id=whatsapp_conversation_id(chat_jid) if chat_jid else None,
+                reply_target_ref=chat_jid or None,
                 observed_at=datetime.now(UTC).isoformat(),
                 sender_identity=sender_identity,
                 raw={},
@@ -1882,7 +1885,7 @@ class WhatsAppUserClientConnector:
                 },
                 "event": {
                     "external_event_id": batch_event_id,
-                    "external_conversation_id": f"whatsapp:{chat_jid}",
+                    "external_conversation_id": whatsapp_conversation_id(chat_jid),
                     "reply_target_ref": chat_jid,
                     "observed_at": flush_ts,
                 },
@@ -1981,7 +1984,7 @@ class WhatsAppUserClientConnector:
             },
             "event": {
                 "external_event_id": batch_event_id,
-                "external_conversation_id": f"whatsapp:{chat_jid}",
+                "external_conversation_id": whatsapp_conversation_id(chat_jid),
                 "reply_target_ref": chat_jid,
                 "observed_at": flush_ts,
             },
@@ -2017,7 +2020,7 @@ class WhatsAppUserClientConnector:
         - source.endpoint_identity = "whatsapp:<e164_phone>"
         - event.external_event_id = message ID
         - event.external_conversation_id = stable chat JID identity
-        - event.reply_target_ref = provider message ID
+        - event.reply_target_ref = chat JID
         - event.observed_at = message timestamp (RFC3339)
         - sender.identity = sender's WhatsApp JID
         - payload.raw = full bridge event JSON
@@ -2072,7 +2075,9 @@ class WhatsAppUserClientConnector:
             },
             "event": {
                 "external_event_id": msg_id,
-                "external_conversation_id": f"whatsapp:{chat_jid}" if chat_jid else None,
+                "external_conversation_id": (
+                    whatsapp_conversation_id(chat_jid) if chat_jid else None
+                ),
                 "reply_target_ref": chat_jid if chat_jid else None,
                 "observed_at": observed_at,
             },

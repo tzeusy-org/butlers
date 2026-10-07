@@ -260,8 +260,7 @@ def _make_email_envelope(
         },
         "event": {
             "external_event_id": message_id,
-            "external_conversation_id": message_id,
-            "reply_target_ref": message_id,
+            "external_thread_id": None,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {
@@ -298,8 +297,7 @@ def _make_dashboard_envelope(
         },
         "event": {
             "external_event_id": message_id,
-            "external_conversation_id": f"dashboard:{conversation_id}",
-            "reply_target_ref": conversation_id,
+            "external_thread_id": conversation_id,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {

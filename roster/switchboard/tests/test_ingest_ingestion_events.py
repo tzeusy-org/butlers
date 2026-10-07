@@ -324,6 +324,19 @@ class TestIngestionEventsWriteOnAccept:
         # $8 = source_thread_identity
         assert args[7] == "thread-xyz"
 
+    async def test_ingestion_events_source_thread_identity_is_reply_target(self) -> None:
+        # correct_route replays this column as notify's source_thread_identity,
+        # so a split producer stores its reply target, not its conversation key.
+        pool = _FakePool()
+        envelope = _telegram_envelope(update_id="113", thread_id="12345:7")
+
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+        args = pool.conn.ingestion_events_args()
+        assert args is not None
+        # $8 = source_thread_identity
+        assert args[7] == "12345:7"
+
     async def test_ingestion_events_source_thread_identity_null_when_absent(self) -> None:
         pool = _FakePool()
         envelope = _email_envelope(message_id="<no-thread@example.com>", thread_id=None)

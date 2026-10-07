@@ -27,7 +27,9 @@ The relationship butler SHALL run a scheduled job (`interaction_sync`) that scan
 
 #### Scenario: Group-aware pre-grouping by chat identity
 - **WHEN** `interaction_sync` runs
-- **THEN** it SHALL query `switchboard.message_inbox` grouped by `(source_thread_identity, source_channel, DATE(received_at))` instead of `(source_sender_identity, source_channel, DATE(received_at))`
+- **THEN** it SHALL query `switchboard.message_inbox` grouped by `(chat identity, source_channel, DATE(received_at))` instead of `(source_sender_identity, source_channel, DATE(received_at))`
+- **AND** the chat identity SHALL be `request_context->>'external_conversation_id'`, falling back to `request_context->>'source_thread_identity'` for rows without it and then to `source_sender_identity`
+- **AND** consecutive messages in one Telegram user-client chat SHALL form one chat group even though each carries a distinct per-message `source_thread_identity` reply target
 - **AND** it SHALL collect the DISTINCT sender identities per chat per day from `request_context->'source_sender_identities'` when present, falling back to the scalar `source_sender_identity` otherwise
 - **AND** it SHALL skip messages where `request_context->>'interaction_eligible'` is `'false'`
 
