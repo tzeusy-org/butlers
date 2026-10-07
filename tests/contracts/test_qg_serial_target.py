@@ -275,11 +275,3 @@ def test_e2e_target_list_is_complete() -> None:
         "A new pytest-backed e2e target must be added to E2E_TARGETS (or, if it is not "
         "pytest-backed, excluded here the way test-e2e-frontend is)."
     )
-
-
-# Temporary authorized normal-PR observation. Remove only after its official named red.
-# This item deliberately inherits pyproject's300s default: no timeout/skip override.
-def test_m3_hosted_inherited_300_second_sleep_canary():
-    import time
-
-    time.sleep(310)
