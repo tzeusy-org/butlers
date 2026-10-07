@@ -1000,6 +1000,7 @@ describe("ExpandedContactInfoRow — amber unverified-dot (bu-e90i6)", () => {
     const entry: ContactInfoEntry = {
       ...CI_ENTITY_FACTS_TELEGRAM,
       verified: true,
+      confirmation_status: "owner_asserted",
     };
     const html = renderExpandedRow(entry);
     expect(html).not.toContain('data-testid="unverified-dot"');
@@ -1027,6 +1028,7 @@ describe("ExpandedContactInfoRow — amber unverified-dot (bu-e90i6)", () => {
     const entry: ContactInfoEntry = {
       ...CI_ENTITY_FACTS_TELEGRAM,
       verified: true,
+      confirmation_status: "owner_asserted",
     };
     const html = renderExpandedRow(entry);
     expect(html).not.toContain('data-testid="mark-verified-btn"');
@@ -1116,15 +1118,42 @@ describe("reported identity review", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
     receipt.mockRestore();
     cleanup();
-    const available = renderToStaticMarkup(<MemoryRouter><FactReporterLine fact={{ reported_by: { entity_id: "reporter", name: "Reporter", availability: "available" }, confirmed_at: "2026-01-01T00:00:00Z" }} /></MemoryRouter>);
+    const available = renderToStaticMarkup(<MemoryRouter><FactReporterLine fact={{ reported_by: { entity_id: "reporter", name: "Reporter", availability: "available" }, confirmation_status: "owner_confirmed", confirmed_at: "2026-01-01T00:00:00Z" }} /></MemoryRouter>);
     expect(available).toContain("Reported by Reporter");
     expect(available).toContain('href="/entities/reporter"');
     expect(available).toContain("Confirmed by you");
-    const unavailable = renderToStaticMarkup(<FactReporterLine fact={{ reported_by: { entity_id: null, name: null, availability: "unavailable" }, confirmed_at: "2026-01-01T00:00:00Z" }} />);
+    const unavailable = renderToStaticMarkup(<FactReporterLine fact={{ reported_by: { entity_id: null, name: null, availability: "unavailable" }, confirmation_status: "owner_confirmed", confirmed_at: "2026-01-01T00:00:00Z" }} />);
     expect(unavailable).toContain("Reported by an unknown sender (reporter unavailable)");
     expect(unavailable).not.toContain("href=");
     expect(unavailable).not.toContain("Reported by Reporter");
     expect(unavailable).toContain("Confirmed by you");
+    for (const availability of ["deleted", "forgotten", "merged"] as const) {
+      const hidden = renderToStaticMarkup(<FactReporterLine fact={{ reported_by: { entity_id: null, name: null, availability } }} />);
+      expect(hidden).toContain(`author ${availability}`);
+      expect(hidden).not.toContain("href=");
+    }
+    const legacy = renderToStaticMarkup(<FactReporterLine fact={{ verified: true, confirmation_status: "legacy_verified", reported_by: { entity_id: null, name: null, availability: "legacy_unknown" } }} />);
+    expect(legacy).toContain("Legacy verification: author unknown");
+    expect(legacy).not.toContain("Owner verified");
+    expect(legacy).not.toContain("Confirmed by you");
+    const admitted = renderToStaticMarkup(<FactReporterLine fact={{ confirmation_status: "owner_asserted" }} />);
+    expect(admitted).toContain("Owner verified");
+
+    let settle!: () => void;
+    const pending = new Promise<void>(resolve => { settle = resolve; });
+    vi.mocked(useDecideIdentityCandidate).mockReturnValue({ mutateAsync: vi.fn(() => pending), isPending: true } as unknown as ReturnType<typeof useDecideIdentityCandidate>);
+    vi.mocked(useIdentityCandidates).mockReturnValue({ data: { facts: [
+      { id: "one", object: "one@example.test", validity: "candidate" },
+      { id: "two", object: "two@example.test", validity: "candidate" },
+    ] }, isPending: false, isError: false, refetch } as unknown as ReturnType<typeof useIdentityCandidates>);
+    render(<MemoryRouter><IdentityCandidateReview entityId="entity-001" /></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", { name: "Adopt one@example.test" }));
+    expect((screen.getByRole("button", { name: "Adopt one@example.test" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Reject report for one@example.test" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Adopt two@example.test" }) as HTMLButtonElement).disabled).toBe(false);
+    settle();
+    await waitFor(() => expect((screen.getByRole("button", { name: "Adopt one@example.test" }) as HTMLButtonElement).disabled).toBe(false));
+    cleanup();
     vi.mocked(useIdentityCandidates).mockReturnValue({ data: { facts: [] }, isPending: false, isError: false, refetch: vi.fn() } as unknown as ReturnType<typeof useIdentityCandidates>);
   });
 });

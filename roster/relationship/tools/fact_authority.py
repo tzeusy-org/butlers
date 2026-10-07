@@ -115,6 +115,14 @@ async def locked_report(
         report.confirmation_entity_id,
     ):
         report = replace(report, confirmation_entity_id=None)
+    if report.owner_class and not report.preserve and report.confirmed_at is None:
+        report = replace(
+            report,
+            confirmation_entity_id=report.live_entity_id,
+            confirmation_original_entity_id=report.original_entity_id,
+            confirmed_at=datetime.now(UTC),
+            confirmation_source="owner_assertion",
+        )
     return report
 
 
@@ -203,8 +211,8 @@ async def record_admitted_approval(conn: Any, action_id: uuid.UUID) -> None:
     from butlers.modules.approvals.execution_context import approval_tool_args_digest
 
     event_id = await conn.fetchval(
-        "SELECT id FROM approval_events WHERE action_id=$1 AND event_type='action_approved' "
-        "ORDER BY id DESC LIMIT 1",
+        "SELECT event_id FROM approval_events WHERE action_id=$1 AND event_type='action_approved' "
+        "ORDER BY occurred_at DESC,event_id DESC LIMIT 1",
         action_id,
     )
     if event_id is None:
@@ -265,8 +273,8 @@ async def record_admitted_rule(pool: Any, rule_id: uuid.UUID) -> None:
             conn, report, subject=owner, object="", object_kind="literal", src="approval-rule"
         )
         event_id = await conn.fetchval(
-            "SELECT id FROM approval_events WHERE rule_id=$1 AND event_type='rule_created' "
-            "ORDER BY id DESC LIMIT 1",
+            "SELECT event_id FROM approval_events WHERE rule_id=$1 AND event_type='rule_created' "
+            "ORDER BY occurred_at DESC,event_id DESC LIMIT 1",
             rule_id,
         )
         if event_id is None:
@@ -290,7 +298,7 @@ async def admitted_rule_report(pool: Any, rule_id: uuid.UUID) -> FactWriteContex
         "SELECT r.created_at,r.arg_constraints,r.active,r.expires_at,r.max_uses,r.use_count, "
         "c.rule_created_at,c.rule_args_digest,c.owner_report "
         "FROM approval_rules r JOIN relationship.fact_approval_rule_context c ON c.rule_id=r.id "
-        "JOIN approval_events e ON e.id::text=c.creation_event_id "
+        "JOIN approval_events e ON e.event_id::text=c.creation_event_id "
         "AND e.rule_id=r.id AND e.event_type='rule_created' "
         "WHERE r.id=$1 AND r.tool_name='relationship_assert_fact'",
         rule_id,
@@ -329,7 +337,7 @@ async def approved_rule_confirmation(
         "c.rule_created_at,c.rule_args_digest,c.owner_report "
         "FROM pending_actions a JOIN approval_rules r ON r.id=a.approval_rule_id "
         "JOIN relationship.fact_approval_rule_context c ON c.rule_id=r.id "
-        "JOIN approval_events creation ON creation.id::text=c.creation_event_id "
+        "JOIN approval_events creation ON creation.event_id::text=c.creation_event_id "
         "AND creation.rule_id=r.id AND creation.event_type='rule_created' "
         "WHERE a.id=$1 AND r.id=$2 AND a.tool_name='relationship_assert_fact' "
         "AND r.tool_name='relationship_assert_fact' "

@@ -46,10 +46,22 @@ class FactReporter(BaseModel):
 
     entity_id: UUID | None = None
     name: str | None = None
-    availability: Literal["available", "unavailable", "unresolved", "legacy_unknown", "system"]
+    availability: Literal[
+        "available",
+        "unavailable",
+        "deleted",
+        "forgotten",
+        "merged",
+        "unresolved",
+        "legacy_unknown",
+        "system",
+    ]
 
 
 class FactAttribution(BaseModel):
+    confirmation_status: Literal[
+        "owner_asserted", "owner_confirmed", "legacy_verified", "unconfirmed"
+    ] = "unconfirmed"
     content_authority: Literal["owner", "owner_device", "third_party", "system", "mixed"] | None = (
         None
     )
@@ -1435,7 +1447,7 @@ class DismissQueueResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ActivityEntry(BaseModel):
+class ActivityEntry(FactAttribution):
     """A single entry in the entity activity stream.
 
     The ``src`` field discriminates the origin:
@@ -1616,7 +1628,7 @@ class ViewMarkResponse(BaseModel):
     marked_at: datetime
 
 
-class DeltaFactEntry(BaseModel):
+class DeltaFactEntry(FactAttribution):
     """One fact that changed since the entity's view mark.
 
     Carries the same provenance shape as the facts-drill rows so the detail page
@@ -1658,7 +1670,7 @@ class DeltaFactsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class CoreDateEntry(BaseModel):
+class CoreDateEntry(FactAttribution):
     """A date-kind fact with its owner-relevant next occurrence.
 
     Server-extracted from the facts API (not client-side string matching).

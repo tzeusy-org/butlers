@@ -93,6 +93,48 @@ def accepted_source_digest(row: Any) -> str:
     ).hexdigest()
 
 
+def dashboard_origin_digest(envelope: dict[str, Any]) -> str | None:
+    """Bind one admitted turn's canonical origin, body and destination.
+
+    The transport observation time can change on a retry. All stable accepted
+    event/source/thread/target and content fields remain bound. This digest is
+    a comparison, never a credential or a public caller authority selector.
+    """
+    try:
+        source, event, sender = envelope["source"], envelope["event"], envelope["sender"]
+        payload, control = envelope["payload"], envelope["control"]
+        raw = payload["raw"]
+        conversation = str(uuid.UUID(raw["conversation_id"]))
+        message = str(uuid.UUID(raw["message_id"]))
+        if (
+            source["channel"] != "dashboard"
+            or source["provider"] != "internal"
+            or source["endpoint_identity"] != f"dashboard:web:{conversation}"
+            or event["external_event_id"] != message
+            or event["external_thread_id"] != conversation
+            or raw["source"] != "dashboard"
+            or sender["identity"] != "dashboard:operator"
+            or not isinstance(raw["message"], str)
+            or not isinstance(payload["normalized_text"], str)
+        ):
+            return None
+        binding = {
+            "source": source,
+            "event": {key: event.get(key) for key in ("external_event_id", "external_thread_id")},
+            "sender": sender,
+            "payload": payload,
+            "control": {
+                key: control.get(key)
+                for key in ("policy_tier", "ingestion_tier", "pinned_target", "payload_type")
+            },
+        }
+        return hashlib.sha256(
+            json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 @dataclass(slots=True)
 class _SourceClaim:
     report: FactWriteContext
@@ -291,6 +333,17 @@ class FactSourceContextRegistry:
                             and dashboard["fact_owner_admission"] is not None
                             and dashboard["fact_owner_admission"].get("accepted_text_digest")
                             == hashlib.sha256(row["normalized_text"].encode()).hexdigest()
+                            and (origin := dashboard_origin_digest(payload)) is not None
+                            and dashboard["fact_owner_admission"].get("accepted_origin_digest")
+                            == origin
+                            and (payload.get("payload") or {}).get("normalized_text")
+                            == row["normalized_text"]
+                            and (payload.get("source") or {}).get("channel") == channel
+                            and (payload.get("sender") or {}).get("identity") == sender
+                            and (payload.get("source") or {}).get("endpoint_identity")
+                            == context.get("source_endpoint_identity")
+                            and (payload.get("event") or {}).get("external_thread_id")
+                            == context.get("source_thread_identity")
                         ):
                             report = FactWriteContext.from_record(dashboard["fact_owner_admission"])
                 await conn.execute(

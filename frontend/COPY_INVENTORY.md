@@ -3906,7 +3906,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/relationship/FactReporterLine.tsx`
 
+- Owner verified
 - Confirmed by you
+- Legacy verification: author unknown
 - Owner confirmed
 
 ## `frontend/src/components/relationship/IdentityCandidateReview.tsx`
@@ -4849,4 +4851,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3857*
+*Total strings: 3859*

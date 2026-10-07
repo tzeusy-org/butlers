@@ -9199,7 +9199,7 @@ export interface ActivityBin {
 }
 
 /** One canonical row in the merged entity activity stream. */
-export interface EntityActivityItem {
+export interface EntityActivityItem extends FactAttribution {
   id: string;
   ts: string | null;
   kind: string;
@@ -9255,7 +9255,7 @@ export type DeltaFactStore = "identity" | "narrative";
  * narrative origin; ``changed_at`` is the per-store change timestamp that beat
  * the view mark.
  */
-export interface DeltaFactEntry {
+export interface DeltaFactEntry extends FactAttribution {
   id: string;
   subject: string;
   predicate: string;
@@ -9291,7 +9291,7 @@ export interface DeltaFactsResponse {
  * ``next_occurrence`` is the next calendar occurrence of (month, day) on or
  * after the request date; ``days_until`` is the integer day count to it.
  */
-export interface CoreDateEntry {
+export interface CoreDateEntry extends FactAttribution {
   id: string;
   predicate: string;
   value: string;
@@ -10505,11 +10505,13 @@ export interface TasteVerdictsParams {
 }
 
 export interface FactAttribution {
+  verified?: boolean;
+  confirmation_status?: "owner_asserted" | "owner_confirmed" | "legacy_verified" | "unconfirmed";
   content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
   reported_by?: {
     entity_id: string | null;
     name: string | null;
-    availability: "available" | "unavailable" | "unresolved" | "legacy_unknown" | "system";
+    availability: "available" | "unavailable" | "deleted" | "forgotten" | "merged" | "unresolved" | "legacy_unknown" | "system";
   } | null;
   confirmed_at?: string | null;
   confirmed_by_entity_id?: string | null;

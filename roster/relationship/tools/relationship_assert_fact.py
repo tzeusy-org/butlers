@@ -723,7 +723,7 @@ async def _resolve_approved_action(
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("fact confirmation has no recorded approval event") from exc
             if not await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM approval_events WHERE id=$1 "
+                "SELECT EXISTS(SELECT 1 FROM approval_events WHERE event_id=$1 "
                 "AND action_id=$2 AND event_type='action_approved')",
                 event_id,
                 action_id,
@@ -1129,7 +1129,29 @@ async def _upsert_fact(
     if temporal.mode is RequestMode.correction:
         return await _correct_fact(conn, request=temporal, write=write)
     if await should_hold_candidate(conn, subject, predicate, fact_context):
-        return await _upsert_candidate(conn, write, temporal.packet)
+        existing = await _active_occurrence(
+            conn,
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            period_id=temporal.packet.period_id,
+        )
+        if frozen is not None and temporal.mode is RequestMode.ordinary:
+            _verify_frozen_ordinary(existing, frozen)
+        resolved = temporal.packet
+        if existing is not None:
+            stored = TemporalPacket.from_row(existing)
+            if temporal.mode is RequestMode.explicit and stored != temporal.packet:
+                raise TemporalError(CORRECTION_REQUIRED, "active occurrence has a different packet")
+            if temporal.mode is RequestMode.ordinary:
+                resolved = stored
+        return await _upsert_candidate(
+            conn,
+            write,
+            resolved,
+            request_mode=temporal.mode,
+            active_packet=existing is not None,
+        )
 
     period_id = temporal.packet.period_id
     for _ in range(_MAX_UPSERT_ATTEMPTS):
@@ -2530,6 +2552,13 @@ async def retract_prefers_channel(
 
 def _same_report(row: Any, report: FactWriteContext) -> bool:
     stored = stored_report(row)
+    # Re-observing an unchanged owner assertion keeps its first confirmation
+    # time. Approved/adopted confirmation has distinct frozen lineage and must
+    # still match exactly; a new reporter or provenance creates a new version.
+    owner_reobservation = (
+        stored.confirmation_source == report.confirmation_source == "owner_assertion"
+        and not report.preserve
+    )
     # A live FK disappearing is availability only, not a new assertion.
     return (
         stored.authority,
@@ -2543,13 +2572,18 @@ def _same_report(row: Any, report: FactWriteContext) -> bool:
         report.original_entity_id,
         report.entity_created_at,
         report.confirmation_original_entity_id,
-        report.confirmed_at,
+        stored.confirmed_at if owner_reobservation else report.confirmed_at,
         report.confirmation_source,
     )
 
 
 async def _upsert_candidate(
-    conn: Any, write: dict[str, Any], temporal: TemporalPacket
+    conn: Any,
+    write: dict[str, Any],
+    temporal: TemporalPacket,
+    *,
+    request_mode: RequestMode | None = None,
+    active_packet: bool = False,
 ) -> AssertResult:
     for _ in range(_MAX_UPSERT_ATTEMPTS):
         row = await conn.fetchrow(
@@ -2562,6 +2596,15 @@ async def _upsert_candidate(
             temporal.period_id,
         )
         if row is not None:
+            stored = TemporalPacket.from_row(row)
+            if request_mode is RequestMode.explicit and stored != temporal:
+                raise TemporalError(
+                    CORRECTION_REQUIRED, "candidate occurrence has a different packet"
+                )
+            if request_mode is RequestMode.ordinary:
+                if active_packet and stored != temporal:
+                    raise TemporalError(CORRECTION_REQUIRED, "candidate and active packets differ")
+                temporal = stored
             if _same_assertion_fields(
                 row,
                 src=write["src"],

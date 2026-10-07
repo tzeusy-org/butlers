@@ -317,23 +317,30 @@ async def _submit_to_switchboard(
         if in_http_request.get() and verified_http_principal.get() == "owner":
             import hashlib
 
+            from butlers.core.fact_authority import dashboard_origin_digest
+
             has_stamp = await owner_source_pool.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
                 "table_schema='public' AND table_name='dashboard_messages' "
                 "AND column_name='fact_owner_admission')"
             )
-            if has_stamp is True:
+            origin = dashboard_origin_digest(envelope)
+            if has_stamp is True and origin is not None:
                 await owner_source_pool.execute(
                     "UPDATE public.dashboard_messages SET fact_owner_admission="
                     "fact_owner_admission || $2::jsonb WHERE id=$1 AND role='user' "
                     "AND fact_owner_admission IS NOT NULL "
-                    "AND fact_owner_admission->>'accepted_text_digest' IS NULL",
+                    "AND fact_owner_admission->>'accepted_origin_digest' IS NULL "
+                    "AND content=$3 AND conversation_id=$4",
                     UUID(envelope["event"]["external_event_id"]),
                     {
                         "accepted_text_digest": hashlib.sha256(
                             envelope["payload"]["normalized_text"].encode()
-                        ).hexdigest()
+                        ).hexdigest(),
+                        "accepted_origin_digest": origin,
                     },
+                    envelope["payload"]["raw"]["message"],
+                    UUID(envelope["payload"]["raw"]["conversation_id"]),
                 )
     try:
         client = await asyncio.wait_for(

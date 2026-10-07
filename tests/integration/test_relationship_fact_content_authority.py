@@ -154,7 +154,7 @@ async def _person(env, *, name="Synthetic person", metadata=None):
     return await env.admin.fetchval(
         "INSERT INTO public.entities(canonical_name,entity_type,metadata) "
         "VALUES($1,'person',$2) RETURNING id",
-        name,
+        f"{name} {uuid.uuid4()}",
         metadata or {},
     )
 
@@ -256,9 +256,23 @@ async def _registered(env):
         await module.on_shutdown()
 
 
-async def _accepted(env, sender, *, channel="email", metadata=None, text="Synthetic report"):
+async def _accepted(
+    env, sender, *, channel="email", metadata=None, text="Synthetic report", canonical=None
+):
     row_id = uuid.uuid4()
     now = datetime.now(UTC)
+    context = {"source_channel": channel, "source_sender_identity": sender}
+    raw = {"metadata": metadata or {}}
+    if canonical is not None:
+        from butlers.tools.switchboard.ingestion.ingest import (
+            IngestEnvelopeV1,
+            _build_request_context,
+        )
+
+        parsed = IngestEnvelopeV1.model_validate(canonical)
+        context = _build_request_context(parsed, request_id=row_id, received_at=now)
+        raw = {key: canonical[key] for key in ("source", "event", "sender", "payload", "control")}
+        text = parsed.payload.normalized_text
     # Production partition installer is outside the insert transaction.
     await env.sw.execute("SELECT switchboard_message_inbox_ensure_partition($1)", now)
     await env.sw.execute(
@@ -267,8 +281,8 @@ async def _accepted(env, sender, *, channel="email", metadata=None, text="Synthe
         "VALUES($1,$2,$3,$4,$5)",
         row_id,
         now,
-        {"source_channel": channel, "source_sender_identity": sender},
-        {"metadata": metadata or {}},
+        context,
+        raw,
         text,
     )
     return row_id
@@ -736,15 +750,42 @@ async def test_report_versions_birth_witness_and_author_deletion(env):
         two.fact_id,
     )
     assert row["authority_entity_id"] is None and row["authority_original_entity_id"] == second
-    assert (
-        row["reported_by"]["availability"] == "unavailable" and row["reported_by"]["name"] is None
-    )
+    assert row["reported_by"]["availability"] == "deleted" and row["reported_by"]["name"] is None
     with pytest.raises(asyncpg.RaiseError):
         await env.rel.execute(
             "UPDATE relationship.entity_facts SET authority_original_entity_id=$2 WHERE id=$1",
             two.fact_id,
             first,
         )
+    # The read model reports distinct ordinary soft-forget and merge lifecycle
+    # states without exposing a stale name/link. No foreign lifecycle service
+    # completion is inferred from these deliberately planted canonical rows.
+    for marker, availability in (("deleted_at", "forgotten"), ("merged_into", "merged")):
+        soft_reporter = await _person(env)
+        soft_report = await _report(env, soft_reporter)
+        soft_fact = await _assert(
+            env, subject, "knows", str(env.owner), soft_report, object_kind="entity"
+        )
+        await env.admin.execute(
+            "UPDATE public.entities SET metadata=metadata || $2::jsonb WHERE id=$1",
+            soft_reporter,
+            {
+                marker: str(uuid.uuid4())
+                if marker == "merged_into"
+                else datetime.now(UTC).isoformat()
+            },
+        )
+        lifecycle = await env.admin.fetchrow(
+            f"SELECT f.*, {attribution_select_sql()} FROM relationship.entity_facts f WHERE id=$1",
+            soft_fact.fact_id,
+        )
+        assert lifecycle["reported_by"]["availability"] == availability
+        assert (
+            lifecycle["reported_by"]["entity_id"] is None
+            and lifecycle["reported_by"]["name"] is None
+        )
+        assert lifecycle["confirmation_status"] == "unconfirmed"
+
     # Both lock orders use real connections. No sleeps establish the ordering:
     # the actual entity lock is acquired before the competing task starts.
     delete_first = await _person(env)
@@ -1169,6 +1210,120 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
         "SELECT validity FROM relationship.entity_facts WHERE object=$1", handle
     )
     assert sorted(row["validity"] for row in rows) == ["active", "candidate"]
+    # A compatible active occurrence survives adoption. Its original report
+    # stays intact; the candidate and both append-only ledgers remain history.
+    compatible_subject = await _person(env)
+    compatible_value = f"compatible-{compatible_subject}@example.test"
+    survivor = await _assert(
+        env,
+        compatible_subject,
+        "has-email",
+        compatible_value,
+        owner,
+        evidence=[{"type": "text", "ref": "Synthetic owner evidence"}],
+    )
+    candidate = await _assert(
+        env,
+        compatible_subject,
+        "has-email",
+        compatible_value,
+        report,
+        evidence=[{"type": "text", "ref": "Synthetic reporter evidence"}],
+    )
+    before_candidate = dict(
+        await env.admin.fetchrow(
+            "SELECT * FROM relationship.entity_facts WHERE id=$1", candidate.fact_id
+        )
+    )
+    before_survivor = dict(
+        await env.admin.fetchrow(
+            "SELECT * FROM relationship.entity_facts WHERE id=$1", survivor.fact_id
+        )
+    )
+    converged = await choose(compatible_subject, candidate.fact_id)
+    assert converged["fact_id"] == survivor.fact_id and not converged["replayed"]
+    assert (await choose(compatible_subject, candidate.fact_id))["replayed"]
+    async with env.admin.acquire() as separate:
+        historical = dict(
+            await separate.fetchrow(
+                "SELECT * FROM relationship.entity_facts WHERE id=$1", candidate.fact_id
+            )
+        )
+        assert historical["validity"] == "superseded"
+        assert {k: v for k, v in historical.items() if k not in {"validity", "updated_at"}} == {
+            k: v for k, v in before_candidate.items() if k not in {"validity", "updated_at"}
+        }
+        active = await separate.fetchrow(
+            "SELECT * FROM relationship.entity_facts WHERE id=$1", survivor.fact_id
+        )
+        assert active["validity"] == "active" and active["verified"]
+        assert (
+            active["authority_original_entity_id"]
+            == before_survivor["authority_original_entity_id"]
+        )
+        assert active["confirmed_by_original_entity_id"] == env.owner
+        assert (
+            await separate.fetchval(
+                "SELECT fact_result_id FROM relationship.fact_identity_decisions WHERE fact_id=$1",
+                candidate.fact_id,
+            )
+            == survivor.fact_id
+        )
+        assert (
+            await separate.fetchval(
+                "SELECT count(*) FROM relationship.fact_evidence WHERE fact_id=$1", survivor.fact_id
+            )
+            == 2
+        )
+        assert (
+            await separate.fetchval(
+                "SELECT count(*) FROM relationship.fact_evidence WHERE fact_id=$1",
+                candidate.fact_id,
+            )
+            == 1
+        )
+
+    # A stored known default packet is synthetic fixture input, not temporal
+    # cutover admission. The ordinary current writer must preserve it, and an
+    # incompatible active packet cannot be silently selected as its survivor.
+    packet_subject = await _person(env)
+    packet_value = f"packet-{packet_subject}@example.test"
+    known = await _assert(env, packet_subject, "has-email", packet_value, report)
+    bound = datetime(2026, 1, 1, tzinfo=UTC)
+    await env.admin.execute(
+        "UPDATE relationship.entity_facts SET effective_from=$2,effective_from_precision='instant' "
+        "WHERE id=$1",
+        known.fact_id,
+        bound,
+    )
+    replacement = await _assert(env, packet_subject, "has-email", packet_value, report, conf=0.8)
+    assert replacement.fact_id != known.fact_id
+    replacement_row = await env.admin.fetchrow(
+        "SELECT * FROM relationship.entity_facts WHERE id=$1", replacement.fact_id
+    )
+    assert replacement_row["effective_from"] == bound
+    assert replacement_row["effective_from_precision"] == "instant"
+    active_packet = await _assert(env, packet_subject, "has-email", packet_value, owner)
+    assert active_packet.outcome == AssertOutcome.inserted
+    before_packet_rows = [
+        dict(r)
+        for r in await env.admin.fetch(
+            "SELECT * FROM relationship.entity_facts WHERE subject=$1 ORDER BY id", packet_subject
+        )
+    ]
+    with pytest.raises(IdentityDecisionConflict, match="incompatible"):
+        await choose(packet_subject, replacement.fact_id)
+    assert [
+        dict(r)
+        for r in await env.admin.fetch(
+            "SELECT * FROM relationship.entity_facts WHERE subject=$1 ORDER BY id", packet_subject
+        )
+    ] == before_packet_rows
+    assert not await env.admin.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM relationship.fact_identity_decisions WHERE fact_id=$1)",
+        replacement.fact_id,
+    )
+
     # The adopted core233 phone fallback treats these spellings as one
     # identity. Hold only the native slot in one real transaction so the
     # shared owner-lifetime row cannot mask the exact advisory-lock control.
@@ -1662,21 +1817,32 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
     )
     captured_envelopes = []
 
+    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+
+    ingress_mcp = FastMCP("synthetic-local-switchboard")
+
+    @ingress_mcp.tool(name="ingest")
+    async def actual_ingest(
+        schema_version: str, source: dict, event: dict, sender: dict, payload: dict, control: dict
+    ):
+        envelope = dict(
+            schema_version=schema_version,
+            source=source,
+            event=event,
+            sender=sender,
+            payload=payload,
+            control=control,
+        )
+        captured_envelopes.append(envelope)
+        response = await ingest_v1(env.sw, envelope, enable_thread_affinity=False)
+        return response.model_dump(mode="json")
+
+    # Actual fixed ingest handler/SQL and registered transport, synthetic local
+    # network input. This does not authenticate an external dashboard channel.
     class AcceptedLocalIngress:
         async def call_tool(self, name, envelope):
-            assert name == "ingest"
-            captured_envelopes.append(envelope)
-            accepted = await _accepted(
-                env,
-                envelope["sender"]["identity"],
-                channel="dashboard",
-                metadata=envelope["payload"]["raw"],
-                text=envelope["payload"]["normalized_text"],
-            )
-            return SimpleNamespace(
-                is_error=False,
-                content=[SimpleNamespace(text='{"request_id":"' + str(accepted) + '"}')],
-            )
+            async with Client(ingress_mcp) as registered_client:
+                return await registered_client.call_tool(name, envelope)
 
     async def local_client(name):
         assert name == "switchboard"
@@ -1724,6 +1890,29 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         text=envelope["payload"]["normalized_text"],
     )
     assert (await issuer.capture_accepted_report(wrong_text, None)).authority == "third_party"
+    import copy
+
+    for part, key, value in (
+        ("event", "external_event_id", str(uuid.uuid4())),
+        ("source", "endpoint_identity", "dashboard:web:" + str(uuid.uuid4())),
+        ("event", "external_thread_id", str(uuid.uuid4())),
+        ("control", "pinned_target", "relationship"),
+    ):
+        copied = copy.deepcopy(envelope)
+        copied[part][key] = value
+        # Deliberately planted accepted-row conformance input keeps the exact
+        # valid stamped locator/text while changing ONE canonical binding. It
+        # is not external ingress authentication or a dedupe bypass claim.
+        copied_id = await _accepted(
+            env, "dashboard:operator", channel="dashboard", canonical=copied
+        )
+        captured = await issuer.capture_accepted_report(copied_id, None)
+        assert captured.authority == "third_party" and captured.original_entity_id is None
+    # The planted genuinely bound original still succeeds independently of the
+    # copied-stamp negatives, and recovery freezes that first admitted report.
+    assert (
+        await _source_issuer(env).capture_accepted_report(accepted_id, None)
+    ).authority == "owner_device"
     unstamped = uuid.uuid4()
     await env.admin.execute(
         "INSERT INTO public.dashboard_messages(id,conversation_id,role,content) "
@@ -1745,11 +1934,16 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
     )
     async with env.admin.acquire() as readback:
         actual = await readback.fetchrow(
-            "SELECT * FROM relationship.entity_facts WHERE id=$1", written.fact_id
+            f"SELECT f.*, {attribution_select_sql()} FROM relationship.entity_facts f WHERE id=$1",
+            written.fact_id,
         )
         assert actual["content_authority"] == "owner_device" and actual["verified"]
         assert actual["authority_original_entity_id"] == env.owner
         assert actual["validity"] == "active"
+        assert actual["confirmed_at"] is not None
+        assert actual["confirmed_by_original_entity_id"] == env.owner
+        assert actual["confirmation_source"] == "owner_assertion"
+        assert actual["confirmation_status"] == "owner_asserted"
     recovered = await _source_issuer(env).capture_accepted_report(accepted_id, None)
     assert recovered.to_record() == device.to_record()
     # Classified data makes downgrade refusal causal, not an empty-store test.

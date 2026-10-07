@@ -131,10 +131,9 @@ export interface ProvenanceMarksProps extends React.HTMLAttributes<HTMLSpanEleme
  * The verified mark renders green when verified, dim when not. The `src` tag
  * is mono/muted. Either field may be omitted.
  *
- * Note: at present, `verified=true` is only reachable for the
- * `prefers-channel` predicate (set by assert_prefers_channel). For ordinary
- * entity facts, `verified` is always false. Contact-channel verification is
- * tracked separately (bu-e90i6).
+ * Identity callers derive this mark from the server's explicit owner-asserted
+ * or owner-confirmed status. Raw legacy verification is displayed separately
+ * as author-unknown history. Narrative callers retain their existing policy.
  *
  * @example
  *   <ProvenanceMarks src="relationship" verified />

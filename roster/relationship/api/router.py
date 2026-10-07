@@ -5498,6 +5498,7 @@ async def list_entity_facts(
                 created_at=r["created_at"],
                 store="narrative",
                 staleness_band=r["staleness_band"],
+                **attribution_response(r),
             )
             for r in narrative_rows
         )
@@ -6511,14 +6512,15 @@ async def _fetch_identity_activity(
     INVARIANT: No SQL references to chronicler.* schemas.
     """
     rows = await pool.fetch(
-        """
+        f"""
         SELECT
             f.id,
             f.predicate,
             f.object,
             f.observed_at,
             f.last_seen,
-            f.created_at
+            f.created_at, f.verified,
+            {attribution_select_sql()}
         FROM relationship.entity_facts f
         WHERE f.validity = 'active'
           AND (
@@ -6544,6 +6546,7 @@ async def _fetch_identity_activity(
                 store="identity",
                 predicate=predicate,
                 summary=r["object"],
+                **attribution_response(r),
             )
         )
     return entries
@@ -6955,7 +6958,7 @@ async def get_entity_delta_facts(
 
     identity_rows, narrative_rows = await asyncio.gather(
         pool.fetch(
-            """
+            f"""
             SELECT
                 f.id,
                 f.subject,
@@ -6966,6 +6969,7 @@ async def get_entity_delta_facts(
                 f.conf,
                 f.validity,
                 f.created_at,
+                f.verified, {attribution_select_sql()},
                 GREATEST(f.created_at, f.updated_at) AS changed_at
             FROM relationship.entity_facts f
             WHERE f.subject = $1
@@ -6991,6 +6995,7 @@ async def get_entity_delta_facts(
             validity=r["validity"],
             created_at=r["created_at"],
             changed_at=r["changed_at"],
+            **attribution_response(r),
         )
         for r in identity_rows
     ]
@@ -7164,6 +7169,7 @@ async def get_entity_core_dates(
                 conf=float(r["conf"]) if r["conf"] is not None else 1.0,
                 verified=r["verified"],
                 staleness_band=r["staleness_band"],
+                **attribution_response(r),
             )
         )
 

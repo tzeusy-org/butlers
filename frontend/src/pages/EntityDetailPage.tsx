@@ -729,6 +729,9 @@ function TimelineRow({ item }: { item: EntityActivityItem }) {
         {item.summary && (
           <p className="text-sm leading-snug">{item.summary}</p>
         )}
+        {item.store === "identity" && (
+          <FactReporterLine fact={item} />
+        )}
         <p className="text-muted-foreground mt-0.5 text-xs capitalize">
           {item.src === "chronicler" ? subtitle : `Relationship · ${subtitle}`}
         </p>
@@ -1238,7 +1241,7 @@ function FactRow({
           className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0 text-xs"
         >
           <StalenessBand band={provenance.staleness_band} />
-          <ProvenanceMarks src={provenance.src} verified={provenance.verified} />
+          <ProvenanceMarks src={provenance.src} verified={provenance.store === "identity" ? (provenance.confirmation_status === "owner_asserted" || provenance.confirmation_status === "owner_confirmed") : provenance.verified} />
           {provenance.store === "identity" && <FactReporterLine fact={provenance} />}
         </div>
       )}
@@ -1587,6 +1590,7 @@ function ProvenanceRow({ fact }: { fact: EntityFact }) {
       </TableCell>
       <TableCell className="text-xs text-muted-foreground">
         {fact.src}
+        {fact.store === "identity" && <FactReporterLine fact={fact} />}
       </TableCell>
       <TableCell className="text-xs text-muted-foreground tabular-nums">
         <Time value={lastObserved} mode="absolute" precision="day" />
@@ -2117,7 +2121,7 @@ function WorkbenchInspectorRow({ fact }: { fact: EntityFact }) {
         <div className="truncate text-[11px] font-medium">
           {formatPredicateLabel(fact.predicate)}
         </div>
-        <ProvenanceMarks src={fact.src} verified={fact.verified} className="mt-0.5" />
+        <ProvenanceMarks src={fact.src} verified={fact.store === "identity" ? (fact.confirmation_status === "owner_asserted" || fact.confirmation_status === "owner_confirmed") : fact.verified} className="mt-0.5" />
         {fact.store === "identity" && <FactReporterLine fact={fact} />}
       </div>
     </Row>

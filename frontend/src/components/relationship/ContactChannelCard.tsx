@@ -276,7 +276,8 @@ export function ExpandedContactInfoRow({
   const isEntityFacts = entry.source === "entity_facts";
   const canEdit = isEntityFacts && entry.predicate != null && entry.value_hash != null && !entry.secured;
   const canDelete = isEntityFacts && entry.predicate != null && entry.value_hash != null;
-  const canVerify = isEntityFacts && entry.predicate != null && entry.value_hash != null && !entry.verified;
+  const ownerVerified = entry.confirmation_status === "owner_asserted" || entry.confirmation_status === "owner_confirmed";
+  const canVerify = isEntityFacts && entry.predicate != null && entry.value_hash != null && !ownerVerified;
 
   function handleMarkVerified() {
     if (!canVerify || markVerified.isPending) return;
@@ -416,7 +417,7 @@ export function ExpandedContactInfoRow({
           <span className="ml-1 text-[var(--dim)]">(primary)</span>
         )}
         {/* Amber dot: unverified entity_facts channel */}
-        {isEntityFacts && !entry.verified && (
+        {isEntityFacts && !ownerVerified && (
           <span
             data-testid="unverified-dot"
             title="Unverified: owner has not confirmed this channel"

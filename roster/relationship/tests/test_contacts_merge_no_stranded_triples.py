@@ -533,7 +533,14 @@ class TestEffectiveTimeMutatorFences:
             if operation == "delete":
                 return await router.delete_entity_contact(subject, "has-email", value_hash, db=db)
             if operation == "verify":
-                return await router.verify_entity_contact(subject, "has-email", value_hash, db=db)
+                from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
+
+                # Direct handler conformance has no HTTP admission; supply an
+                # explicitly synthetic owner, never runtime/authentication proof.
+                async with synthetic_owner(pool):
+                    return await router.verify_entity_contact(
+                        subject, "has-email", value_hash, db=db
+                    )
             new_value = value if operation == "edit-same-value" else "new@example.test"
             return await router.update_entity_contact(
                 subject,

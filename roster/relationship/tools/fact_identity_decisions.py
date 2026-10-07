@@ -15,7 +15,8 @@ from butlers.core import entity_graph_edges
 from butlers.core.fact_authority import current_fact_write_context
 from butlers.tools.relationship.fact_authority import REPORT_COLUMNS, locked_report
 from butlers.tools.relationship.fact_coverage import record_coverage
-from butlers.tools.relationship.fact_temporal import PACKET_COLUMNS
+from butlers.tools.relationship.fact_evidence import carry_evidence_forward
+from butlers.tools.relationship.fact_temporal import PACKET_COLUMNS, TemporalPacket
 from butlers.tools.relationship.identity_slots import identity_slot_key, lock_identity_slot
 
 
@@ -126,6 +127,8 @@ async def decide_identity_fact(
     if row["validity"] != expected:
         raise IdentityDecisionConflict("selected assertion is no longer eligible")
     now = datetime.now(UTC)
+    result_id = fact_id
+    effect_row = row
     if decision == "reject":
         await conn.execute(
             "UPDATE relationship.entity_facts SET validity='retracted',updated_at=$2 WHERE id=$1",
@@ -134,6 +137,32 @@ async def decide_identity_fact(
         )
     else:
         if decision == "adopt":
+            if await _has_other_live_identity(conn, row):
+                raise IdentityDecisionConflict("handle already belongs to another live entity")
+            occupied = await conn.fetch(
+                "SELECT * FROM relationship.entity_facts WHERE subject=$1 "
+                "AND predicate=$2 AND object=$3 AND validity='active' ORDER BY id FOR UPDATE",
+                entity_id,
+                row["predicate"],
+                row["object"],
+            )
+            if occupied:
+                # A candidate is a report, not permission to erase an existing
+                # occurrence. Its stored period selects a survivor without
+                # conflating other repeated occurrences of the same triple.
+                matching = [
+                    active
+                    for active in occupied
+                    if active["effective_period_id"] == row["effective_period_id"]
+                ]
+                if len(matching) != 1 or any(
+                    active["object_kind"] != row["object_kind"]
+                    or TemporalPacket.from_row(active) != TemporalPacket.from_row(row)
+                    for active in matching
+                ):
+                    raise IdentityDecisionConflict("active identity occurrence is incompatible")
+                result_id = matching[0]["id"]
+                effect_row = matching[0]
             if row["predicate"] == "prefers-channel":
                 from butlers.tools.relationship.relationship_assert_fact import (
                     _entity_has_reachability_fact,
@@ -144,23 +173,21 @@ async def decide_identity_fact(
                 await _fence_prefers_channel(conn, entity_id)
                 if not await _entity_has_reachability_fact(conn, entity_id, row["object"]):
                     raise IdentityDecisionConflict("preferred channel is not actively reachable")
-                await _supersede_active_prefers_channel(conn, entity_id, validity="superseded")
-            if await _has_other_live_identity(conn, row):
-                raise IdentityDecisionConflict("handle already belongs to another live entity")
-            occupied = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM relationship.entity_facts WHERE subject=$1 "
-                "AND predicate=$2 AND object=$3 AND validity='active')",
-                entity_id,
-                row["predicate"],
-                row["object"],
-            )
-            if occupied:
-                raise IdentityDecisionConflict("active identity slot already occupied")
+                if result_id == fact_id:
+                    await _supersede_active_prefers_channel(conn, entity_id, validity="superseded")
+            if result_id != fact_id:
+                await carry_evidence_forward(conn, from_fact_id=fact_id, to_fact_id=result_id)
+                await conn.execute(
+                    "UPDATE relationship.entity_facts SET validity='superseded',updated_at=$2 "
+                    "WHERE id=$1",
+                    fact_id,
+                    now,
+                )
         await conn.execute(
             "UPDATE relationship.entity_facts SET validity='active',verified=true, "
             "confirmed_by_entity_id=$2,confirmed_by_original_entity_id=$3,confirmed_at=$4, "
             "confirmation_source=$5,updated_at=$4 WHERE id=$1",
-            fact_id,
+            result_id,
             context.live_entity_id,
             context.original_entity_id,
             now,
@@ -171,7 +198,7 @@ async def decide_identity_fact(
                 conn,
                 source_schema="relationship",
                 source_table="entity_facts",
-                source_id=fact_id,
+                source_id=result_id,
                 subject_entity_id=entity_id,
                 predicate=row["predicate"],
                 object_entity_id=uuid.UUID(row["object"]),
@@ -180,9 +207,9 @@ async def decide_identity_fact(
             conn,
             subject=entity_id,
             predicate=row["predicate"],
-            src=row["src"],
+            src=effect_row["src"],
             outcome="present",
-            observed_at=row["observed_at"] or now,
+            observed_at=effect_row["observed_at"] or now,
         )
         from butlers.tools.relationship.relationship_assert_fact import (
             AssertOutcome,
@@ -198,19 +225,20 @@ async def decide_identity_fact(
                 object=row["object"],
                 object_kind=row["object_kind"],
             ),
-            AssertResult(AssertOutcome.inserted, fact_id),
+            AssertResult(AssertOutcome.inserted, result_id),
         )
     await conn.execute(
         "INSERT INTO relationship.fact_identity_decisions "
         "(fact_id,decision,decided_at,owner_entity_id,owner_original_entity_id,fact_result_id) "
-        "VALUES($1,$2,$3,$4,$5,$1)",
+        "VALUES($1,$2,$3,$4,$5,$6)",
         fact_id,
         decision,
         now,
         context.live_entity_id,
         context.original_entity_id,
+        result_id,
     )
-    return {"fact_id": fact_id, "decision": decision, "decided_at": now, "replayed": False}
+    return {"fact_id": result_id, "decision": decision, "decided_at": now, "replayed": False}
 
 
 def attribution_select_sql(alias: str = "f") -> str:
@@ -218,6 +246,15 @@ def attribution_select_sql(alias: str = "f") -> str:
     return f"""
       {alias}.content_authority, {alias}.confirmed_at, {alias}.confirmed_by_entity_id,
       {alias}.confirmation_source,
+      CASE
+        WHEN {alias}.verified AND {alias}.confirmed_at IS NOT NULL
+          AND {alias}.confirmed_by_original_entity_id IS NOT NULL
+          AND {alias}.confirmation_source='owner_assertion' THEN 'owner_asserted'
+        WHEN {alias}.verified AND {alias}.confirmed_at IS NOT NULL
+          AND {alias}.confirmed_by_original_entity_id IS NOT NULL
+          AND {alias}.confirmation_source IS NOT NULL THEN 'owner_confirmed'
+        WHEN {alias}.verified THEN 'legacy_verified'
+        ELSE 'unconfirmed' END AS confirmation_status,
       jsonb_build_object(
         'entity_id', (SELECT e.id FROM public.entities e WHERE e.id={alias}.authority_entity_id
           AND e.metadata->>'merged_into' IS NULL AND e.metadata->>'deleted_at' IS NULL),
@@ -227,17 +264,23 @@ def attribution_select_sql(alias: str = "f") -> str:
         'availability', CASE
           WHEN {alias}.content_authority IS NULL THEN 'legacy_unknown'
           WHEN EXISTS(SELECT 1 FROM public.entities e WHERE e.id={alias}.authority_entity_id
+            AND e.metadata->>'merged_into' IS NOT NULL) THEN 'merged'
+          WHEN EXISTS(SELECT 1 FROM public.entities e WHERE e.id={alias}.authority_entity_id
+            AND e.metadata->>'deleted_at' IS NOT NULL) THEN 'forgotten'
+          WHEN EXISTS(SELECT 1 FROM public.entities e WHERE e.id={alias}.authority_entity_id
             AND e.metadata->>'merged_into' IS NULL AND e.metadata->>'deleted_at' IS NULL)
             THEN 'available'
           WHEN {alias}.content_authority='system' AND {alias}.authority_original_entity_id IS NULL
             THEN 'system'
           WHEN {alias}.authority_original_entity_id IS NULL THEN 'unresolved'
+          WHEN {alias}.authority_entity_id IS NULL
+            AND {alias}.authority_entity_created_at IS NOT NULL THEN 'deleted'
           ELSE 'unavailable' END) AS reported_by
     """
 
 
 def attribution_response(row: Any) -> dict[str, Any]:
-    return {
+    response = {
         key: row.get(key)
         for key in (
             "content_authority",
@@ -247,3 +290,11 @@ def attribution_response(row: Any) -> dict[str, Any]:
             "confirmation_source",
         )
     }
+    status = row.get("confirmation_status")
+    if status is None:
+        # An old read-model row without the new computed status has no
+        # complete confirmation witness. Preserve raw legacy verification,
+        # without inventing a server-confirmed badge from partial fields.
+        status = "legacy_verified" if row.get("verified") is True else "unconfirmed"
+    response["confirmation_status"] = status
+    return response
