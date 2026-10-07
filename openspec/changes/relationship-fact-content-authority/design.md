@@ -80,3 +80,20 @@ Private availability transport/API contract: authority_entity_created_at is serv
 ## Actual source allocation
 
 The additive source revision is rel037 after immutable rel036. The source-owned verifier is `/internal/fact-source/verify`; the private transport headers are `X-Butlers-Fact-Source` and `X-Butlers-Fact-Invocation`. Capability values never appear in public arguments, prompts, URLs or receipts. Actual verification/known limitations are recorded alongside test evidence before source completion.
+
+
+### Governed object-side destructive cleanup
+
+The existing schema has a subject FK but no object-side FK. The owned, unpublished
+`rel_037` supplies a generated nullable `object_entity_id` from entity-valued
+`object::uuid` and an `ON DELETE CASCADE` FK to `public.entities`. Literal objects
+remain NULL even when UUID-shaped; malformed entity UUIDs fail installation rather
+than being silently reclassified. `NOT VALID` preserves existing well-typed orphan
+history, while future reference changes are checked and deleting an actual referenced
+entity removes all its object versions. No runtime cross-schema DML grant, definer
+function or provider cleanup transaction split is introduced. Reporter and confirmation
+live pointers keep their independent `SET NULL` behavior; original tokens, surviving
+report packets and evidence remain intact. Disposable controls neutralize exactly this
+FK inside a rolled-back transaction, show surviving object-version sentinels, then
+restore the real constraint and exercise owning/writer deletion waits and separate
+committed readback. This is not an index cutover or an edit to rel_035/036.

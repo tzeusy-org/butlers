@@ -5,7 +5,9 @@ Revises: rel_036
 
 Existing rows remain NULL/unclassified and resolvable. Reporter deletion clears
 only the live pointer; the original UUID is inert provenance, never a lookup.
-Subject/object deletion and the rel_035 transition indexes remain unchanged.
+Subject deletion retains its existing FK cascade. A generated object UUID adds
+that same all-version cascade for entity-valued objects without granting runtime
+access to Relationship tables. The rel_035 transition indexes remain unchanged.
 """
 
 from __future__ import annotations
@@ -33,6 +35,20 @@ def upgrade_statements() -> tuple[str, ...]:
     statements: list[str] = []
     execute = statements.append
     execute(f"ALTER TABLE relationship.entity_facts {AUTHORITY_COLUMNS}")
+    # Literal values never become entity references. PostgreSQL validates typed
+    # UUID objects; malformed legacy entity objects refuse installation instead
+    # of being silently reclassified or erased. NOT VALID retains pre-existing
+    # well-typed orphan history, while enforcing future reference changes and
+    # cascading every actual referenced object's version on authorized deletion.
+    execute("""
+        ALTER TABLE relationship.entity_facts
+          ADD COLUMN object_entity_id UUID GENERATED ALWAYS AS
+            (CASE WHEN object_kind='entity' THEN object::uuid ELSE NULL END) STORED;
+        ALTER TABLE relationship.entity_facts
+          ADD CONSTRAINT fk_ef_object_entity FOREIGN KEY (object_entity_id)
+            REFERENCES public.entities(id) ON DELETE CASCADE NOT VALID;
+        CREATE INDEX idx_ef_object_entity ON relationship.entity_facts(object_entity_id);
+    """)
     execute("""
         ALTER TABLE relationship.entity_facts
         ADD CONSTRAINT ck_ef_content_authority CHECK (
@@ -145,5 +161,6 @@ def downgrade() -> None:
             DROP COLUMN content_authority, DROP COLUMN authority_entity_id,
             DROP COLUMN authority_original_entity_id, DROP COLUMN authority_entity_created_at,
             DROP COLUMN confirmed_by_entity_id, DROP COLUMN confirmed_by_original_entity_id,
-            DROP COLUMN confirmed_at, DROP COLUMN confirmation_source;
+            DROP COLUMN confirmed_at, DROP COLUMN confirmation_source,
+            DROP CONSTRAINT fk_ef_object_entity, DROP COLUMN object_entity_id;
     """)

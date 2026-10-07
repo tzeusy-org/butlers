@@ -40,6 +40,7 @@ pytestmark = pytest.mark.unit
 
 _NOW = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
 _ENTITY_ID = uuid4()
+_OWNER_ID = uuid4()
 
 POST_PATH = "/api/relationship/entities"
 BASE_URL = "http://test"
@@ -57,9 +58,10 @@ def _make_owner_row(entity_id: UUID | None = None) -> MagicMock:
     The endpoint uses ``_get_owner_roles`` which reads ``row["roles"]`` to
     decide whether to grant access.
     """
-    data = {"id": entity_id or uuid4(), "roles": ["owner"]}
+    data = {"id": entity_id or _OWNER_ID, "roles": ["owner"], "created_at": _NOW}
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -85,6 +87,7 @@ def _make_entity_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -102,6 +105,7 @@ def _make_stats_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -171,7 +175,19 @@ def _make_conn_mock(
         # Stats query is now inside the transaction (conn.fetchrow, not pool.fetchrow)
         fetchrow_responses.append(stats_row if stats_row is not None else _make_stats_row())
 
-    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_responses if fetchrow_responses else [None])
+    responses = iter(fetchrow_responses if fetchrow_responses else [None])
+
+    async def fetchrow(query, *args):
+        # Faithful private owner-attribution reads supplement the original
+        # domain query sequence; this is a mocked route fixture, not auth proof.
+        if "SELECT id,created_at FROM public.entities WHERE 'owner'=ANY(roles)" in query:
+            return _make_owner_row()
+        if "SELECT created_at,metadata FROM public.entities WHERE id=$1" in query:
+            assert args == (_OWNER_ID,)
+            return {"created_at": _NOW, "metadata": {}}
+        return next(responses)
+
+    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow)
 
     # --- fetchval side effects (predicate validation + fact insert) ---
     if has_initial_facts and not entity_row_is_missing:

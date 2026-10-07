@@ -32,7 +32,7 @@ from starlette.applications import Starlette
 
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
-from butlers.api.owner_auth.service import OwnerAuthService
+from butlers.api.owner_auth.service import AuthError, OwnerAuthService
 from butlers.core import fact_authority as admission
 from butlers.core.fact_authority import FactSourceContextRegistry, FactWriteContext
 from butlers.daemon import ButlerDaemon
@@ -118,13 +118,13 @@ async def env(postgres_container):
         parsed.username,
     )
 
-    async def pool(schema, role=None):
+    async def pool(schema, role=None, *, database_url=url):
         async def setup(conn):
             if role:
                 await conn.execute(f"SET ROLE {role}")
 
         return await asyncpg.create_pool(
-            url,
+            database_url,
             min_size=1,
             max_size=6,
             init=register_jsonb_codec,
@@ -133,16 +133,23 @@ async def env(postgres_container):
         )
 
     admin = await pool("public")
+    # Bootstrap already owns the disposable control login; no membership is
+    # added to the normal migration login. The real service SET LOCAL ROLE
+    # exercises only the existing dashboard_auth_api capability on every call.
+    auth = await pool(
+        "public",
+        database_url=migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/")),
+    )
     rel = await pool("relationship", "butler_relationship_rw")
     switchboard = await pool("switchboard", "butler_switchboard_rw")
     owner = await admin.fetchval(
         "INSERT INTO public.entities(canonical_name,entity_type,roles) "
         "VALUES('Synthetic owner','person',ARRAY['owner']) RETURNING id"
     )
-    approvals = ApprovalsModule()
-    await approvals.on_startup({}, SimpleNamespace(pool=rel))
     try:
-        state = SimpleNamespace(url=url, admin=admin, rel=rel, sw=switchboard, owner=owner)
+        state = SimpleNamespace(
+            url=url, admin=admin, auth=auth, rel=rel, sw=switchboard, owner=owner
+        )
         # A migrated daemon owns one registered MCP lifecycle until shutdown.
         # Reconstructing the entire tool server for every report can time out
         # during Client initialization before the owning resolver ever runs.
@@ -151,9 +158,25 @@ async def env(postgres_container):
         async with _registered(state):
             yield state
     finally:
-        await approvals.on_shutdown()
-        await asyncio.gather(rel.close(), switchboard.close(), admin.close())
+        await asyncio.gather(rel.close(), switchboard.close(), admin.close(), auth.close())
         _ISSUERS.clear()
+
+
+@pytest.fixture(autouse=True)
+async def approval_runtime(env, _restore_approval_hook_runtimes):
+    # The root function-scoped isolation fixture clears exact-pool registration.
+    # Run the real module lifecycle AFTER it, for each case, rather than keeping
+    # a module-scoped registration that becomes unavailable in later cases.
+    from butlers.core.approvals_hooks import is_approval_parking_available
+
+    module = ApprovalsModule()
+    await module.on_startup({}, SimpleNamespace(pool=env.rel))
+    try:
+        assert is_approval_parking_available(env.rel)
+        assert not is_approval_parking_available(env.sw)
+        yield
+    finally:
+        await module.on_shutdown()
 
 
 async def _person(env, *, name="Synthetic person", metadata=None):
@@ -345,13 +368,31 @@ async def _owner_app(env, *, browser=False):
         "butlers.example.test",
         api_key=None if browser else "synthetic-current-test-key",
     )
-    service = OwnerAuthService(env.admin, config)
+    service = OwnerAuthService(env.auth, config)
     outcome = await env.admin.fetchval(
         "SELECT dashboard_auth.host($1,$2::jsonb)",
         "reconcile_mode",
         service._config() | {"confirm_revoke": True},
     )
     assert "error" not in outcome
+    # Position the original missing-membership refusal separately from the
+    # configured capability positive. No mock authority or new grant repairs it.
+    async with env.admin.acquire() as normal:
+        assert not await normal.fetchval(
+            "SELECT pg_has_role(current_user,'dashboard_auth_api','MEMBER')"
+        )
+        assert not await normal.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")
+    with pytest.raises(AuthError) as denied:
+        await OwnerAuthService(env.admin, config)._call("status")
+    assert denied.value.code == "AUTH_UNAVAILABLE"
+    async with env.auth.acquire() as capability, capability.transaction():
+        await capability.execute("SET LOCAL ROLE dashboard_auth_api")
+        assert await capability.fetchval("SELECT current_user") == "dashboard_auth_api"
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with capability.transaction():
+                await capability.fetchval("SELECT count(*) FROM relationship.entity_facts")
+    if not browser:
+        assert (await service.authorize(api_key=config.api_key)).method == "header"
     app = FastAPI()
     app.state.owner_auth_service = service
     app.add_middleware(OwnerAuthMiddleware, config=config)
@@ -1236,7 +1277,7 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
         "has-email",
         compatible_value,
         owner,
-        evidence=[{"type": "text", "ref": "Synthetic owner evidence"}],
+        evidence=[{"type": "text", "ref": "Synthetic owner evidence", "note": "Owner report"}],
     )
     candidate = await _assert(
         env,
@@ -1244,7 +1285,7 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
         "has-email",
         compatible_value,
         report,
-        evidence=[{"type": "text", "ref": "Synthetic reporter evidence"}],
+        evidence=[{"type": "text", "ref": "Synthetic reporter evidence", "note": "Reported claim"}],
     )
     before_candidate = dict(
         await env.admin.fetchrow(
@@ -1548,6 +1589,29 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
     from butlers.steam_account_registry import disconnect_account as steam_delete
 
     subject = await _person(env)
+    # New entity references are validated on the owning runtime role. The
+    # generated UUID does not mask malformed typed objects or orphan writes.
+    with pytest.raises(asyncpg.InvalidTextRepresentationError):
+        await env.rel.execute(
+            "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
+            "VALUES($1,'knows','not-a-uuid','entity','relationship')",
+            subject,
+        )
+    absent_object = uuid.uuid4()
+    with pytest.raises(asyncpg.ForeignKeyViolationError):
+        await _assert(
+            env,
+            subject,
+            "knows",
+            str(absent_object),
+            FactWriteContext("system"),
+            object_kind="entity",
+        )
+    assert not await env.rel.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM relationship.entity_facts WHERE subject=$1 AND object=$2)",
+        subject,
+        str(absent_object),
+    )
     accounts = [
         (await create_google_account(env.admin, email=f"{subject}@example.test"), google_delete),
         (
@@ -1600,6 +1664,65 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
             )
         )
         victims = [attached.fact_id, subject_old.fact_id, object_old.fact_id, object_new.fact_id]
+        # The private generated reference is exact for entity objects, and a
+        # UUID-shaped literal remains a literal when the companion is deleted.
+        literal = await _assert(
+            env, subject, "has-website", str(account.entity_id), FactWriteContext("system")
+        )
+        assert (
+            await env.rel.fetchval(
+                "SELECT object_entity_id FROM relationship.entity_facts WHERE id=$1",
+                object_new.fact_id,
+            )
+            == account.entity_id
+        )
+        assert (
+            await env.rel.fetchval(
+                "SELECT object_entity_id FROM relationship.entity_facts WHERE id=$1",
+                literal.fact_id,
+            )
+            is None
+        )
+        assert await env.admin.fetchval(
+            "SELECT confdeltype='c' AND NOT convalidated FROM pg_constraint "
+            "WHERE conrelid='relationship.entity_facts'::regclass AND conname='fk_ef_object_entity'"
+        )
+        # Causal negative: remove ONLY the new object FK inside a transaction
+        # that rolls back the real production cleanup and the DDL. Subject
+        # cascades still run, leaving exactly the two planted object versions.
+        async with env.admin.acquire() as control:
+
+            @asynccontextmanager
+            async def control_connection():
+                yield control
+
+            with pytest.raises(RuntimeError, match="rollback object-FK neutralization"):
+                async with control.transaction():
+                    await control.execute(
+                        "ALTER TABLE relationship.entity_facts DROP CONSTRAINT fk_ef_object_entity"
+                    )
+                    await delete(
+                        SimpleNamespace(acquire=control_connection), account.id, hard_delete=True
+                    )
+                    assert (
+                        await control.fetchval(
+                            "SELECT count(*) FROM relationship.entity_facts WHERE id=ANY($1::uuid[])",
+                            [attached.fact_id, subject_old.fact_id],
+                        )
+                        == 0
+                    )
+                    assert (
+                        await control.fetchval(
+                            "SELECT count(*) FROM relationship.entity_facts WHERE id=ANY($1::uuid[])",
+                            [object_old.fact_id, object_new.fact_id],
+                        )
+                        == 2
+                    )
+                    raise RuntimeError("rollback object-FK neutralization")
+        assert await env.admin.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE "
+            "conrelid='relationship.entity_facts'::regclass AND conname='fk_ef_object_entity')"
+        )
         before_evidence = [
             dict(row)
             for row in await env.admin.fetch(
@@ -1656,7 +1779,17 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
             assert await rollback_readback.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM public.entities WHERE id=$1)", account.entity_id
             )
-        await delete(env.admin, account.id, hard_delete=True)
+        # Real foreign runtime role has no direct Relationship access; native
+        # public entity deletion still invokes the installed internal FK action.
+        async with env.sw.acquire() as foreign:
+            assert await foreign.fetchval("SELECT current_user") == "butler_switchboard_rw"
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                async with foreign.transaction():
+                    await foreign.fetchval("SELECT count(*) FROM relationship.entity_facts")
+        await delete(env.sw, account.id, hard_delete=True)
+        assert await env.rel.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM relationship.entity_facts WHERE id=$1)", literal.fact_id
+        )
         assert (
             await env.admin.fetchval(
                 "SELECT count(*) FROM relationship.entity_facts WHERE id=ANY($1::uuid[])",
@@ -1719,6 +1852,79 @@ async def test_google_and_steam_delete_preserve_surviving_report_provenance(env)
             "SELECT EXISTS(SELECT 1 FROM public.entities WHERE id=$1)", spare.entity_id
         )
 
+    # Writer-first and delete-first exercise actual owning/foreign pool waits;
+    # FK enforcement and COMMIT, not an absence-only mock, decide each outcome.
+    racing_object, racing_subject = await _person(env), await _person(env)
+    async with env.rel.acquire() as writer, env.sw.acquire() as deleting:
+        transaction = writer.transaction()
+        await transaction.start()
+        pending_delete = None
+        try:
+            written = await _assert(
+                env,
+                racing_subject,
+                "knows",
+                str(racing_object),
+                FactWriteContext("system"),
+                object_kind="entity",
+                conn=writer,
+            )
+            pid = await deleting.fetchval("SELECT pg_backend_pid()")
+            pending_delete = asyncio.create_task(
+                deleting.execute("DELETE FROM public.entities WHERE id=$1", racing_object)
+            )
+            await _wait_for_lock(env.admin, pid)
+            await transaction.commit()
+            await asyncio.wait_for(pending_delete, 5)
+        except BaseException:
+            if writer.is_in_transaction():
+                await transaction.rollback()
+            raise
+        finally:
+            if pending_delete is not None and not pending_delete.done():
+                pending_delete.cancel()
+                await asyncio.gather(pending_delete, return_exceptions=True)
+    async with env.admin.acquire() as separate:
+        assert not await separate.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM relationship.entity_facts WHERE id=$1)", written.fact_id
+        )
+    deleted_first = await _person(env)
+    async with env.sw.acquire() as deleting, env.rel.acquire() as writer:
+        transaction = deleting.transaction()
+        await transaction.start()
+        await deleting.execute("DELETE FROM public.entities WHERE id=$1", deleted_first)
+        pid = await writer.fetchval("SELECT pg_backend_pid()")
+
+        async def write_after_delete():
+            async with writer.transaction():
+                return await _assert(
+                    env,
+                    racing_subject,
+                    "knows",
+                    str(deleted_first),
+                    FactWriteContext("system"),
+                    object_kind="entity",
+                    conn=writer,
+                )
+
+        pending_write = asyncio.create_task(write_after_delete())
+        try:
+            await _wait_for_lock(env.admin, pid)
+            await transaction.commit()
+            with pytest.raises(asyncpg.ForeignKeyViolationError):
+                await asyncio.wait_for(pending_write, 5)
+        finally:
+            if deleting.is_in_transaction():
+                await transaction.rollback()
+            if not pending_write.done():
+                pending_write.cancel()
+                await asyncio.gather(pending_write, return_exceptions=True)
+    async with env.admin.acquire() as separate:
+        assert not await separate.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM relationship.entity_facts WHERE object_kind='entity' AND object=$1)",
+            str(deleted_first),
+        )
+
 
 async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_container):
     from butlers.api.routers.conversations import _persist_dashboard_user_message
@@ -1742,7 +1948,11 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
     config = OwnerAuthConfig(
         "https://butlers.example.test", "butlers.example.test", api_key="synthetic-current-test-key"
     )
-    service = OwnerAuthService(core, config)
+    core_auth = await asyncpg.create_pool(
+        migration_bootstrap_db_url(postgres_container, urlparse(core_url).path.lstrip("/")),
+        init=register_jsonb_codec,
+    )
+    service = OwnerAuthService(core_auth, config)
     await core.fetchval(
         "SELECT dashboard_auth.host($1,$2::jsonb)",
         "reconcile_mode",
@@ -1818,7 +2028,7 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         )
         == original
     )
-    await core.close()
+    await asyncio.gather(core.close(), core_auth.close())
 
     from butlers.api.conversation_envelope import build_dashboard_envelope
     from butlers.api.routers.conversations import _submit_to_switchboard

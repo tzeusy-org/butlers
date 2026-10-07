@@ -187,7 +187,11 @@ Relationship stores the original report independently of confidence: content aut
 nullable live reporter, the inert original UUID and its source-captured `created_at` witness.
 New report versions use the new admitted reporter. Corrections, confirmation, adoption and
 approval replay retain the selected original report. Authorized Google/Steam entity deletion
-retains its governed subject/object cascade; reporter-only deletion clears the live link while
+uses the existing subject FK and Relationship's generated `object_entity_id` UUID FK to cascade
+all subject/object versions. Literal objects produce NULL, including UUID-shaped literals;
+malformed entity UUIDs refuse migration rather than being reclassified. The object FK is
+installed `NOT VALID` to preserve existing well-typed orphan history; new reference changes
+must resolve. Reporter-only deletion clears the live link while
 the surviving report explicitly records deleted reporter availability. The original UUID never joins a recreated
 entity. Legacy NULL authority stays resolvable and unknown; no backfill guesses an owner.
 
