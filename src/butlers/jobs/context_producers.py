@@ -186,7 +186,7 @@ async def run_calendar_context_producer(
                 "SELECT pg_advisory_xact_lock(hashtextextended('calendar-context:general', 0))"
             )
             snapshot = await conn.fetchrow(
-                "SELECT now() AS observed_at, current_schema() AS projection_schema, "
+                "SELECT clock_timestamp() AS observed_at, current_schema() AS projection_schema, "
                 "current_user AS producer_role"
             )
             now = snapshot["observed_at"]
@@ -249,7 +249,13 @@ async def run_calendar_context_producer(
                     if kind == "focusTime"
                     else classify_calendar_signal(selected["title"])
                 )
-                value = "out of office" if signal == "away" else selected["title"]
+                value = (
+                    "out of office"
+                    if kind == "outOfOffice"
+                    else "focus time"
+                    if kind == "focusTime"
+                    else selected["title"]
+                )
                 caps = {
                     "away": timedelta(days=30),
                     "focused": timedelta(hours=8),
@@ -264,7 +270,11 @@ async def run_calendar_context_producer(
                     confidence=1.0,
                     metadata={
                         "source": "calendar",
-                        **({"title": selected["title"]} if signal != "away" else {}),
+                        **(
+                            {"title": selected["title"]}
+                            if kind not in {"outOfOffice", "focusTime"}
+                            else {}
+                        ),
                         "event_id": str(selected.get("id", "")),
                         "source_id": str(selected.get("source_id", "")),
                         "event_type": kind,
@@ -275,7 +285,9 @@ async def run_calendar_context_producer(
                 result = {"signal": signal, "value": value, "cleared": cleared}
             for other in ("meeting", "focused"):
                 if other != signal:
-                    await clear_context(conn, butler_name="general", signal_type=other)
+                    await clear_context(
+                        conn, butler_name="general", signal_type=other, _observed_at=now
+                    )
             if signal != "away":
                 await _clear_calendar_assertion(conn, "away", now)
 

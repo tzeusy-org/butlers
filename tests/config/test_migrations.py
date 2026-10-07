@@ -883,13 +883,13 @@ def test_core_calendar_tables_and_constraints(postgres_container):
                 text("UPDATE calendar_events SET event_type='workingLocation' WHERE id=:id"),
                 {"id": event_id},
             )
-        command.downgrade(config, "core@core_258")
+        command.downgrade(config, "core@core_261")
         with engine.connect() as conn:
             assert (
                 conn.execute(
                     text("SELECT version_num FROM alembic_version WHERE version_num LIKE 'core_%'")
                 ).scalar_one()
-                == "core_258"
+                == "core_261"  # pinned-revision: core262 retains data while moving only to its adopted predecessor
             )
             assert (
                 conn.execute(

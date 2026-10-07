@@ -486,6 +486,7 @@ async def clear_context(
     signal_type: str,
     *,
     mutation_id: UUID | None = None,
+    _observed_at: datetime | None = None,
 ) -> DndMutationReceipt | None:
     """Explicitly clear a signal before its TTL expires.
 
@@ -505,6 +506,9 @@ async def clear_context(
     mutation_id:
         Stable UUID created once for the routed DND clear action. Required only
         for DND.
+    _observed_at:
+        Internal database observation captured after a producer serialization lock.
+        Reused for ordinary clears; DND continues through its unchanged gateway.
     """
     if signal_type == ContextSignal.dnd:
         _check_write_permission(butler_name, signal_type)
@@ -514,6 +518,18 @@ async def clear_context(
             operation="clear",
             mutation_id=mutation_id,
         )
+
+    if _observed_at is not None:
+        await pool.execute(
+            """
+            UPDATE public.user_context SET superseded_at = $3
+            WHERE signal_type = $1 AND set_by_butler = $2 AND superseded_at IS NULL
+            """,
+            signal_type,
+            butler_name,
+            _observed_at,
+        )
+        return None
 
     await pool.execute(
         """

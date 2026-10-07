@@ -1,7 +1,7 @@
 """Preserve read-side calendar event type and declared working location.
 
 Revision ID: core_262
-Revises: core_258
+Revises: core_261
 Create Date: 2026-10-07 00:00:00.000000
 
 Core replay uses each target schema's calendar projection. Defaults retain
@@ -17,7 +17,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_262"
-down_revision = "core_258"
+down_revision = "core_261"
 branch_labels = None
 depends_on = None
 

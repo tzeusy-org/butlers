@@ -12,12 +12,17 @@ Two layers:
 
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import json
 import shutil
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import asyncpg
@@ -38,7 +43,11 @@ from butlers.jobs.context_producers import (
     run_sleep_window_context_producer,
     run_travel_context_producer,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 docker_available = shutil.which("docker") is not None
 
@@ -481,10 +490,15 @@ async def test_calendar_context_producer_skips_explicit_butler_generated_event_b
     assert actual["cleared"] == ["meeting", "focused"]
     assert writes[0]["expires_at"] == now + timedelta(days=30)
     assert writes[0]["_observed_at"] == now
-    actual, _ = await observe([event("focusTime")])
+    actual, writes = await observe([event("focusTime")])
     assert actual["signal"] == "focused"
-    actual, _ = await observe([event("futureProviderType", title="Deep Work")])
-    assert actual["signal"] == "focused"
+    assert actual["value"] == "focus time"
+    assert "title" not in writes[0]["metadata"]
+    for kind in ("default", "futureProviderType"):
+        actual, writes = await observe([event(kind, title="Deep Work")])
+        assert actual["signal"] == "focused"
+        assert actual["value"] == "Deep Work"
+        assert writes[0]["metadata"]["title"] == "Deep Work"
     for kind in ("outOfOffice", "focusTime"):
         actual, writes = await observe([event(kind, all_day=True)])
         assert actual["signal"] is None and writes == []
@@ -925,6 +939,38 @@ def general_db_url(postgres_container) -> str:
     )
 
 
+def _replay_calendar_prep_bootstrap_acl(postgres_container, db_url):
+    """Replay only the existing adopted ACL installers with trusted bootstrap.
+
+    The normal fixture login does not own bootstrap-created schemas. Their
+    best-effort GRANT clauses may therefore be skipped during ordinary replay.
+    This fixture species provisions the already-adopted scheduled-read contract;
+    it does not give the runtime handler a bootstrap connection or a new grant.
+    """
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine
+
+    db_name = urlparse(db_url).path.removeprefix("/")
+    engine = create_engine(migration_bootstrap_db_url(postgres_container, db_name))
+    try:
+        with engine.begin() as conn:
+            operations = Operations(MigrationContext.configure(conn))
+            for filename in (
+                "core_077_relationship_switchboard_read_grants.py",
+                "core_143_email_butlers_switchboard_read_grants.py",
+            ):
+                path = Path(__file__).resolve().parents[2] / "alembic/versions/core" / filename
+                spec = importlib.util.spec_from_file_location("calendar_prep_existing_acl", path)
+                assert spec is not None and spec.loader is not None
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                with patch.object(module, "op", operations):
+                    module.upgrade()
+    finally:
+        engine.dispose()
+
+
 async def _calendar_role_pool(url: str, butler: str) -> asyncpg.Pool:
     assert butler in {"general", "switchboard", "relationship", "messenger", "travel"}
 
@@ -935,6 +981,110 @@ async def _calendar_role_pool(url: str, butler: str) -> asyncpg.Pool:
     return await asyncpg.create_pool(
         url, min_size=1, max_size=3, init=register_jsonb_codec, setup=setup
     )
+
+
+async def _calendar_lock_boundary_control(owned, reader, handler, source_id):
+    """Reach a real lock wait, cross an event boundary, then read durable state."""
+    task = None
+    await owned.execute("UPDATE calendar_events SET status='cancelled'")
+    await _clear_non_dnd_context(owned)
+    # Plant the sibling so its clear has a positive, durable timestamp witness.
+    from butlers.context_bus import set_context
+
+    await set_context(owned, "general", "focused", value="Synthetic previous focus")
+    try:
+        async with owned.acquire() as holder:
+            async with holder.transaction():
+                await holder.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended('calendar-context:general',0))"
+                )
+                task = asyncio.create_task(handler(owned, None))
+                async with asyncio.timeout(15):
+                    while not await holder.fetchval(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM pg_locks
+                            WHERE locktype='advisory' AND NOT granted
+                              AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+                              AND classid::bigint=((hashtextextended('calendar-context:general',0)>>32)&4294967295)
+                              AND objid::bigint=(hashtextextended('calendar-context:general',0)&4294967295)
+                              AND objsubid=1
+                        )
+                        """
+                    ):
+                        if task.done():
+                            await task
+                            raise AssertionError(
+                                "producer completed without the required lock wait"
+                            )
+                        await asyncio.sleep(0.01)
+                boundary = await holder.fetchval("SELECT clock_timestamp()")
+                await holder.executemany(
+                    """
+                    INSERT INTO calendar_events
+                        (source_id,source_butler,origin_ref,title,timezone,starts_at,ends_at)
+                    VALUES($1,'general',$2,$3,'UTC',$4,$5)
+                    """,
+                    [
+                        (
+                            source_id,
+                            str(uuid.uuid4()),
+                            "Expired while waiting",
+                            boundary - timedelta(minutes=1),
+                            boundary,
+                        ),
+                        (
+                            source_id,
+                            str(uuid.uuid4()),
+                            "Current after waiting",
+                            boundary,
+                            boundary + timedelta(hours=1),
+                        ),
+                    ],
+                )
+            # Commit releases A's lock; B now observes both rows at READ COMMITTED.
+        result = await asyncio.wait_for(task, timeout=15)
+        current = await reader.fetchrow(
+            "SELECT * FROM public.user_context WHERE signal_type='meeting' AND set_by_butler='general' AND superseded_at IS NULL"
+        )
+        sibling = await reader.fetchrow(
+            "SELECT superseded_at FROM public.user_context WHERE signal_type='focused' AND set_by_butler='general'"
+        )
+        assert current is not None and sibling is not None
+        assert current["value"] == result["value"]
+        assert sibling["superseded_at"] == current["set_at"]
+        return boundary, current
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+def _neutralized_calendar_transaction_clock(tmp_path):
+    """Complete current source with only the old transaction-clock query restored.
+
+    Generated experiment identity is outside production src so historical code
+    cannot contaminate the current measured-source population.
+    """
+    import butlers.jobs.context_producers as producer_module
+
+    source = Path(producer_module.__file__).read_text()
+    current = "SELECT clock_timestamp() AS observed_at"
+    assert source.count(current) == 1
+    path = tmp_path / "historical_transaction_clock_control.py"
+    path.write_text(source.replace(current, "SELECT now() AS observed_at"))
+    spec = importlib.util.spec_from_file_location("calendar_old_transaction_clock_control", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # The complete module contains dataclasses, whose annotation resolution
+    # requires their defining module to be registered during execution.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module.run_calendar_context_producer
 
 
 async def _project_synthetic_calendar(pool, source_id, payload):
@@ -1005,7 +1155,9 @@ async def _clear_non_dnd_context(pool: asyncpg.Pool) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 class TestContextProducersIntegration:
-    async def test_calendar_producer_sets_meeting_then_clears(self, core_db_url, general_db_url):
+    async def test_calendar_producer_sets_meeting_then_clears(
+        self, core_db_url, general_db_url, tmp_path
+    ):
         pool = await _pool(core_db_url)
         try:
             await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
@@ -1081,15 +1233,23 @@ class TestContextProducersIntegration:
             }
             await _project_synthetic_calendar(owned, sid, base)
             assert (await handler(owned, None))["signal"] == "meeting"
-            assert await get_suppressing_context_signal(reader) == "meeting"
+            assert await get_suppressing_context_signal(reader, now=now) == "meeting"
             assert "Standup" in format_context_preamble(await get_active_context(reader))
             for changes in (
-                {"attendees": [{"self": True, "responseStatus": "declined"}]},
+                {
+                    "attendees": [
+                        {
+                            "self": True,
+                            "email": "synthetic@example.test",
+                            "responseStatus": "declined",
+                        }
+                    ]
+                },
                 {"transparency": "transparent"},
             ):
                 await _project_synthetic_calendar(owned, sid, {**base, **changes})
                 assert (await handler(owned, None))["signal"] is None
-                assert await get_suppressing_context_signal(reader) is None
+                assert await get_suppressing_context_signal(reader, now=now) is None
             # An eligible earlier overlap wins after a newer ineligible row is rejected.
             positive = {
                 **base,
@@ -1115,7 +1275,7 @@ class TestContextProducersIntegration:
             assert first["value"] == "out of office"
             assert first["expires_at"] - first["set_at"] == timedelta(days=30)
             assert first["metadata"]["event_type"] == "outOfOffice"
-            assert await get_suppressing_context_signal(reader) is None
+            assert await get_suppressing_context_signal(reader, now=now) is None
             await handler(owned, None)
             second = await reader.fetchrow(
                 "SELECT * FROM public.user_context WHERE signal_type='away' AND set_by_butler='general'"
@@ -1172,7 +1332,7 @@ class TestContextProducersIntegration:
                 )
                 == dnd_before
             )
-            assert await get_suppressing_context_signal(reader) == "dnd"
+            assert await get_suppressing_context_signal(reader, now=now) == "dnd"
             travel_writer = await _calendar_role_pool(general_db_url, "travel")
             try:
                 await set_context(travel_writer, "travel", "traveling", value="synthetic trip")
@@ -1213,12 +1373,45 @@ class TestContextProducersIntegration:
                 )
                 == before
             )
+            # Two actual acquisitions: B starts before A's event boundary and
+            # must use the one post-lock wall clock for selection, set and clear.
+            boundary, current = await _calendar_lock_boundary_control(owned, reader, handler, sid)
+            assert current["value"] == "Current after waiting"
+            assert current["set_at"] >= boundary
+            assert current["expires_at"] == boundary + timedelta(hours=1)
+            # Neutralizing only clock_timestamp -> now reaches the expired row:
+            # a real PostgreSQL counterexample, independently read after commit.
+            old_clock = _neutralized_calendar_transaction_clock(tmp_path)
+            old_boundary, old = await _calendar_lock_boundary_control(owned, reader, old_clock, sid)
+            assert old["value"] == "Expired while waiting"
+            assert old["set_at"] < old_boundary
+            with pytest.raises(AssertionError):
+                assert old["value"] == "Current after waiting"
+            boundary, restored = await _calendar_lock_boundary_control(owned, reader, handler, sid)
+            assert restored["value"] == "Current after waiting"
+            assert restored["set_at"] >= boundary
+            # Genuine successful absence clears the planted meeting with the
+            # same post-serialization observation, without touching DND.
+            await owned.execute("UPDATE calendar_events SET status='cancelled'")
+            assert (await handler(owned, None))["signal"] is None
+            assert (
+                await reader.fetchval(
+                    "SELECT superseded_at IS NOT NULL FROM public.user_context WHERE signal_type='meeting' AND set_by_butler='general'"
+                )
+                is True
+            )
+            assert (
+                await reader.fetchrow(
+                    "SELECT * FROM public.user_context WHERE signal_type='dnd' AND set_by_butler='general'"
+                )
+                == dnd_before
+            )
         finally:
             await owned.close()
             await reader.close()
 
     async def test_calendar_producer_classifies_focus_block(
-        self, core_db_url, general_db_url, postgres_container
+        self, core_db_url, general_db_url, postgres_container, record_property
     ):
         pool = await _pool(core_db_url)
         try:
@@ -1247,7 +1440,7 @@ class TestContextProducersIntegration:
         owned = await _calendar_role_pool(general_db_url, "general")
         reader = await _calendar_role_pool(general_db_url, "switchboard")
         try:
-            await owned.execute("UPDATE calendar_events SET ends_at=now()-interval '1 second'")
+            await owned.execute("UPDATE calendar_events SET status='cancelled'")
             await _clear_non_dnd_context(owned)
             sid = await owned.fetchval(
                 "INSERT INTO calendar_sources(source_key,source_kind) VALUES('focus-location-source','provider') RETURNING id"
@@ -1263,6 +1456,26 @@ class TestContextProducersIntegration:
             }
             await _project_synthetic_calendar(owned, sid, base)
             assert (await run_calendar_context_producer(owned))["signal"] == "focused"
+            focused = await reader.fetchrow(
+                "SELECT value,metadata FROM public.user_context WHERE signal_type='focused' AND set_by_butler='general' AND superseded_at IS NULL"
+            )
+            assert focused["value"] == "focus time"
+            assert "title" not in focused["metadata"]
+            assert "focus time" in format_context_preamble(await get_active_context(reader))
+            assert "Plain title" not in format_context_preamble(await get_active_context(reader))
+            for kind in ("default", "futureProviderType"):
+                await _project_synthetic_calendar(
+                    owned, sid, {**base, "eventType": kind, "summary": "Deep Work"}
+                )
+                assert (await run_calendar_context_producer(owned))["signal"] == "focused"
+                ordinary_focus = await reader.fetchrow(
+                    "SELECT value,metadata FROM public.user_context WHERE signal_type='focused' AND set_by_butler='general' AND superseded_at IS NULL"
+                )
+                assert ordinary_focus["value"] == "Deep Work"
+                assert ordinary_focus["metadata"]["title"] == "Deep Work"
+                assert "Deep Work" in format_context_preamble(await get_active_context(reader))
+            await _project_synthetic_calendar(owned, sid, base)
+            assert (await run_calendar_context_producer(owned))["value"] == "focus time"
             for kind, properties, value in (
                 ("homeOffice", {"homeOffice": True}, "home office"),
                 (
@@ -1463,6 +1676,40 @@ class TestContextProducersIntegration:
                     "subject": "Synthetic subject",
                 },
             )
+            # Observe the ordinary migration replay's actual ACL state first.
+            # A denied read must be a real schema/table privilege error; the
+            # same planted thread is the positive witness after bootstrap replay.
+            before_acl = {}
+            for butler in ("relationship", "messenger", "travel"):
+                probe = await _calendar_role_pool(general_db_url, butler)
+                try:
+                    readable = await probe.fetchval(
+                        "SELECT has_schema_privilege(current_user,'switchboard','USAGE')"
+                    )
+                    before_acl[butler] = readable
+                    if readable:
+                        assert (
+                            await probe.fetchval(
+                                "SELECT normalized_text FROM switchboard.message_inbox WHERE normalized_text='Synthetic recent thread'"
+                            )
+                            == "Synthetic recent thread"
+                        )
+                    else:
+                        with pytest.raises(asyncpg.InsufficientPrivilegeError) as denied:
+                            await probe.fetchval(
+                                "SELECT normalized_text FROM switchboard.message_inbox WHERE normalized_text='Synthetic recent thread'"
+                            )
+                        assert denied.value.sqlstate == "42501"
+                finally:
+                    await probe.close()
+            record_property(
+                "calendar_prep_pre_bootstrap_schema_usage", json.dumps(before_acl, sort_keys=True)
+            )
+            # Existing adopted bootstrap ACL authority is separate from the
+            # normal migration login and every runtime SET ROLE below.
+            await asyncio.to_thread(
+                _replay_calendar_prep_bootstrap_acl, postgres_container, general_db_url
+            )
             for butler, handler in (
                 ("relationship", run_relationship_calendar_prep_contribution),
                 ("messenger", run_messenger_calendar_prep_contribution),
@@ -1471,6 +1718,24 @@ class TestContextProducersIntegration:
                 role_pool = await _calendar_role_pool(general_db_url, butler)
                 try:
                     assert await role_pool.fetchval("SELECT current_user") == f"butler_{butler}_rw"
+                    assert (
+                        await role_pool.fetchval(
+                            "SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user"
+                        )
+                        is False
+                    )
+                    assert (
+                        await role_pool.fetchval(
+                            "SELECT has_schema_privilege(current_user,'switchboard','USAGE')"
+                        )
+                        is True
+                    )
+                    assert (
+                        await role_pool.fetchval(
+                            "SELECT has_table_privilege(current_user,'switchboard.message_inbox','SELECT')"
+                        )
+                        is True
+                    )
                     sid = await role_pool.fetchval(
                         "INSERT INTO calendar_sources(source_key,source_kind) VALUES('prep-source','provider') RETURNING id"
                     )

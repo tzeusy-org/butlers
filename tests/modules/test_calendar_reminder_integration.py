@@ -15,14 +15,17 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.modules.calendar import (
     CalendarEvent,
     CalendarEventCreate,
     CalendarEventUpdate,
     CalendarProvider,
 )
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [
     pytest.mark.integration,
@@ -31,157 +34,39 @@ pytestmark = [
 ]
 
 # ---------------------------------------------------------------------------
-# SQL helpers — minimal native calendar schema for reminder lifecycle tests
+# Canonical migrated fixture, including projection columns and entity FK
 # ---------------------------------------------------------------------------
 
-_CREATE_CALENDAR_SOURCES_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_sources (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_key TEXT NOT NULL UNIQUE,
-    source_kind TEXT NOT NULL,
-    lane TEXT NOT NULL DEFAULT 'user',
-    provider TEXT,
-    calendar_id TEXT,
-    butler_name TEXT,
-    display_name TEXT,
-    writable BOOLEAN NOT NULL DEFAULT false,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT calendar_sources_lane_check CHECK (lane IN ('user', 'butler')),
-    CONSTRAINT calendar_sources_source_key_nonempty
-        CHECK (length(btrim(source_key)) > 0),
-    CONSTRAINT calendar_sources_source_kind_nonempty
-        CHECK (length(btrim(source_kind)) > 0)
-)
-"""
 
-_CREATE_CALENDAR_EVENTS_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_id UUID NOT NULL REFERENCES calendar_sources(id) ON DELETE CASCADE,
-    origin_ref TEXT NOT NULL,
-    title TEXT NOT NULL,
-    description TEXT,
-    body TEXT,
-    location TEXT,
-    timezone TEXT NOT NULL,
-    starts_at TIMESTAMPTZ NOT NULL,
-    ends_at TIMESTAMPTZ NOT NULL,
-    all_day BOOLEAN NOT NULL DEFAULT false,
-    status TEXT NOT NULL DEFAULT 'confirmed',
-    visibility TEXT NOT NULL DEFAULT 'default',
-    recurrence_rule TEXT,
-    source_butler TEXT NOT NULL DEFAULT 'unknown',
-    source_session_id TEXT,
-    etag TEXT,
-    origin_updated_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT calendar_events_source_origin_unique UNIQUE (source_id, origin_ref),
-    CONSTRAINT calendar_events_source_origin_nonempty
-        CHECK (length(btrim(origin_ref)) > 0),
-    CONSTRAINT calendar_events_window_check CHECK (ends_at > starts_at),
-    CONSTRAINT calendar_events_status_check
-        CHECK (status IN ('confirmed', 'tentative', 'cancelled'))
-)
-"""
-
-_CREATE_CALENDAR_EVENT_INSTANCES_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_event_instances (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
-    source_id UUID NOT NULL REFERENCES calendar_sources(id) ON DELETE CASCADE,
-    origin_instance_ref TEXT NOT NULL,
-    timezone TEXT NOT NULL,
-    starts_at TIMESTAMPTZ NOT NULL,
-    ends_at TIMESTAMPTZ NOT NULL,
-    status TEXT NOT NULL DEFAULT 'confirmed',
-    is_exception BOOLEAN NOT NULL DEFAULT false,
-    origin_updated_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT calendar_event_instances_event_origin_unique
-        UNIQUE (event_id, origin_instance_ref),
-    CONSTRAINT calendar_event_instances_origin_ref_nonempty
-        CHECK (length(btrim(origin_instance_ref)) > 0),
-    CONSTRAINT calendar_event_instances_window_check CHECK (ends_at > starts_at),
-    CONSTRAINT calendar_event_instances_status_check
-        CHECK (status IN ('confirmed', 'tentative', 'cancelled'))
-)
-"""
-
-_CREATE_CALENDAR_EVENT_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_event_entities (
-    event_id UUID NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
-    entity_id UUID NOT NULL,
-    PRIMARY KEY (event_id, entity_id)
-)
-"""
-
-_CREATE_CALENDAR_SYNC_CURSORS_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_sync_cursors (
-    source_id UUID NOT NULL REFERENCES calendar_sources(id) ON DELETE CASCADE,
-    cursor_name TEXT NOT NULL DEFAULT 'default',
-    sync_token TEXT,
-    checkpoint JSONB NOT NULL DEFAULT '{}'::jsonb,
-    full_sync_required BOOLEAN NOT NULL DEFAULT false,
-    last_synced_at TIMESTAMPTZ,
-    last_success_at TIMESTAMPTZ,
-    last_error_at TIMESTAMPTZ,
-    last_error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_id, cursor_name),
-    CONSTRAINT calendar_sync_cursors_cursor_name_nonempty
-        CHECK (length(btrim(cursor_name)) > 0)
-)
-"""
-
-_CREATE_CALENDAR_ACTION_LOG_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_action_log (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    idempotency_key TEXT NOT NULL UNIQUE,
-    request_id TEXT,
-    action_type TEXT NOT NULL,
-    action_status TEXT NOT NULL DEFAULT 'pending',
-    source_id UUID REFERENCES calendar_sources(id) ON DELETE SET NULL,
-    event_id UUID REFERENCES calendar_events(id) ON DELETE SET NULL,
-    instance_id UUID REFERENCES calendar_event_instances(id) ON DELETE SET NULL,
-    origin_ref TEXT,
-    action_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    action_result JSONB,
-    error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    applied_at TIMESTAMPTZ,
-    CONSTRAINT calendar_action_log_idempotency_key_nonempty
-        CHECK (length(btrim(idempotency_key)) > 0),
-    CONSTRAINT calendar_action_log_action_type_nonempty
-        CHECK (length(btrim(action_type)) > 0),
-    CONSTRAINT calendar_action_log_status_check
-        CHECK (action_status IN ('pending', 'applied', 'failed', 'noop'))
-)
-"""
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def reminder_db_url(postgres_container):
+    return create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core"], schemas={"core": "finance"}
+    )
 
 
 @pytest.fixture
-async def reminder_pool(provisioned_postgres_pool):
-    """Fresh DB with the native calendar projection tables."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_CREATE_CALENDAR_SOURCES_SQL)
-        await pool.execute(_CREATE_CALENDAR_EVENTS_SQL)
-        await pool.execute(_CREATE_CALENDAR_EVENT_INSTANCES_SQL)
-        await pool.execute(_CREATE_CALENDAR_EVENT_ENTITIES_SQL)
-        await pool.execute(_CREATE_CALENDAR_SYNC_CURSORS_SQL)
-        await pool.execute(_CREATE_CALENDAR_ACTION_LOG_SQL)
+async def reminder_pool(reminder_db_url):
+    """Actual Finance runtime, with the complete canonical projection schema."""
+
+    async def setup(conn):
+        await conn.execute('SET ROLE "butler_finance_rw"')
+        await conn.execute('SET search_path TO "finance", public')
+
+    pool = await asyncpg.create_pool(
+        reminder_db_url, min_size=1, max_size=1, init=register_jsonb_codec, setup=setup
+    )
+    try:
+        assert await pool.fetchval("SELECT current_user") == "butler_finance_rw"
+        assert await pool.fetchval("SELECT current_schema()") == "finance"
+        assert (
+            await pool.fetchval("SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user")
+            is False
+        )
+        await pool.execute("DELETE FROM calendar_sources")
         yield pool
+    finally:
+        await pool.close()
 
 
 class _StubMCP:
@@ -410,7 +295,7 @@ async def test_native_reminder_provider_mirror_is_durable_idempotent_and_orphan_
     assert provider.delete_calls == [provider_event_id]
 
 
-async def test_public_native_reminder_update_replaces_entity_links(reminder_pool):
+async def test_public_native_reminder_update_replaces_entity_links(reminder_pool, reminder_db_url):
     """The public update tool writes entity links against the native event ID."""
     pool = reminder_pool
     mod = _make_module(pool, butler_name="finance")
@@ -427,6 +312,19 @@ async def test_public_native_reminder_update_replaces_entity_links(reminder_pool
 
     old_entity_id = uuid.uuid4()
     new_entity_id = uuid.uuid4()
+    # Seed through the normal disposable migration login. The runtime writer
+    # still obeys the real calendar_event_entities -> public.entities FK.
+    seed = await asyncpg.connect(reminder_db_url)
+    try:
+        await seed.executemany(
+            "INSERT INTO public.entities(id,canonical_name) VALUES($1,$2)",
+            [
+                (old_entity_id, "Synthetic old reminder entity"),
+                (new_entity_id, "Synthetic replacement reminder entity"),
+            ],
+        )
+    finally:
+        await seed.close()
     start_at = datetime.now(UTC) + timedelta(days=1)
     event_id, _ = await mod._insert_reminder_to_calendar_events(
         title="Review renewal",

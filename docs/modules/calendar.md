@@ -185,12 +185,12 @@ provider write contract.
 
 The registered General `context_producer_calendar` job still runs every ten
 minutes. One scoped transaction lock precedes its projection read, and one
-captured database time governs the transition. It excludes generated events,
+database wall clock captured after that lock governs every set and clear in the transition. It excludes generated events,
 self-declines and transparent meeting/focus/OOO entries; guest declines,
 tentative/needsAction and missing or malformed RSVP retain prior compatibility.
 Eligible timed `outOfOffice` asserts fixed `away="out of office"` before any
 meeting/focus, with the existing 30-day cap and periodic reassertion. Timed
-`focusTime` asserts focused without a title heuristic. Other types retain the
+`focusTime` asserts fixed `focused="focus time"` without a title heuristic; its context metadata omits the source title. Other types retain the
 ordinary title fallback and all-day/provenance filters.
 
 `workingLocation` is a separate General-owned qualifier, including a valid
@@ -214,7 +214,7 @@ retain their existing eligibility contracts.
 Core 262 adds `calendar_events.event_type` and `working_location`. Legacy rows
 receive default/NULL, and provider updates replace or remove declarations. Its
 downgrade retains the columns, shape constraint and source evidence while
-returning the Alembic marker to core 258; it does not recreate the predecessor's
+returning the Alembic marker to its adopted predecessor core 261; it does not recreate the predecessor's
 physical schema or make an older runtime understand typed OOO. Replay and
 re-upgrade preserve data. No bootstrap grants or runtime roles change.
 

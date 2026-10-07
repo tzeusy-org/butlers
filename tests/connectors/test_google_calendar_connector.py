@@ -194,83 +194,86 @@ async def test_check_starting_soon_emits_spec_envelope(
     - event.external_event_id == ``starting_soon:<event_id>``
     - normalized_text in the spec format, including location
     """
-    runtime = CalendarConnectorRuntime(account_config)
-    start_dt = datetime.now(UTC) + timedelta(minutes=14)
-    event = {
-        "id": "evt-soon",
-        "summary": "Launch sync",
-        "status": "confirmed",
-        "start": {"dateTime": start_dt.isoformat()},
-        "end": {"dateTime": (start_dt + timedelta(minutes=30)).isoformat()},
-        "location": "Room 5B",
-        "organizer": {"email": "org@example.com"},
-        "attendees": [{"email": "a@example.com"}, {"email": "b@example.com"}],
-    }
-    runtime._upcoming_events["evt-soon"] = (event, start_dt)
+    now = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+    with patch("butlers.connectors.google_calendar.datetime", wraps=datetime) as clock:
+        clock.now.return_value = now
+        runtime = CalendarConnectorRuntime(account_config)
+        start_dt = now + timedelta(minutes=14)
+        event = {
+            "id": "evt-soon",
+            "summary": "Launch sync",
+            "status": "confirmed",
+            "start": {"dateTime": start_dt.isoformat()},
+            "end": {"dateTime": (start_dt + timedelta(minutes=30)).isoformat()},
+            "location": "Room 5B",
+            "organizer": {"email": "org@example.com"},
+            "attendees": [{"email": "a@example.com"}, {"email": "b@example.com"}],
+        }
+        runtime._upcoming_events["evt-soon"] = (event, start_dt)
 
-    submitted: list[dict] = []
+        submitted: list[dict] = []
 
-    async def _capture(env: dict) -> None:
-        submitted.append(env)
+        async def _capture(env: dict) -> None:
+            submitted.append(env)
 
-    with patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture):
-        await runtime._check_starting_soon()
-        # Re-check with a fresh seen-set proves the idempotency_key is deterministic
-        # (derived from event id + lead, not from wall-clock observation time).
-        runtime._seen_set = StartingSoonSeenSet()
-        await runtime._check_starting_soon()
-
-    assert len(submitted) == 2
-    env = submitted[0]
-    assert env["event"]["external_event_id"] == "starting_soon:evt-soon"
-    assert env["control"]["idempotency_key"] == f"gcal:{_ENDPOINT}:starting_soon:evt-soon:15"
-    assert env["control"]["policy_tier"] == "interactive"
-    assert env["payload"]["normalized_text"].startswith("[Calendar: starting_soon] Launch sync")
-    assert "Room 5B" in env["payload"]["normalized_text"]
-    assert "2 attendees" in env["payload"]["normalized_text"]
-    # idempotency_key is stable across independent re-checks of the same event
-    assert submitted[1]["control"]["idempotency_key"] == env["control"]["idempotency_key"]
-
-    # Within a single run the seen-set suppresses duplicate notifications.
-    runtime2 = CalendarConnectorRuntime(account_config)
-    runtime2._upcoming_events["evt-soon"] = (event, start_dt)
-    again: list[dict] = []
-
-    async def _capture2(env: dict) -> None:
-        again.append(env)
-
-    with patch.object(runtime2, "_submit_to_ingest_api", side_effect=_capture2):
-        await runtime2._check_starting_soon()
-        await runtime2._check_starting_soon()
-    assert len(again) == 1
-
-    for kind in ("outOfOffice", "workingLocation"):
-        status_event = {**event, "id": "status-" + kind, "eventType": kind}
-        runtime._upcoming_events = {status_event["id"]: (status_event, start_dt)}
-        runtime._seen_set = StartingSoonSeenSet()
-        submitted.clear()
         with patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture):
             await runtime._check_starting_soon()
-        assert submitted == []
-        assert runtime._seen_set.has_seen(status_event["id"], 15) is False
-        from butlers.connectors.google_calendar import (
-            scan_starting_soon,
-            scan_starting_soon_on_restart,
-        )
+            # Re-check with a fresh seen-set proves the idempotency_key is deterministic
+            # (derived from event id + lead, not from wall-clock observation time).
+            runtime._seen_set = StartingSoonSeenSet()
+            await runtime._check_starting_soon()
 
-        for scan in (scan_starting_soon, scan_starting_soon_on_restart):
-            seen = StartingSoonSeenSet()
-            kwargs = dict(
-                now=start_dt - timedelta(minutes=14),
-                lead_minutes=15,
-                seen_set=seen,
-                endpoint_identity=_ENDPOINT,
+        assert len(submitted) == 2
+        env = submitted[0]
+        assert env["event"]["external_event_id"] == "starting_soon:evt-soon"
+        assert env["control"]["idempotency_key"] == f"gcal:{_ENDPOINT}:starting_soon:evt-soon:15"
+        assert env["control"]["policy_tier"] == "interactive"
+        assert env["payload"]["normalized_text"].startswith("[Calendar: starting_soon] Launch sync")
+        assert "Room 5B" in env["payload"]["normalized_text"]
+        assert "2 attendees" in env["payload"]["normalized_text"]
+        # idempotency_key is stable across independent re-checks of the same event
+        assert submitted[1]["control"]["idempotency_key"] == env["control"]["idempotency_key"]
+
+        # Within a single run the seen-set suppresses duplicate notifications.
+        runtime2 = CalendarConnectorRuntime(account_config)
+        runtime2._upcoming_events["evt-soon"] = (event, start_dt)
+        again: list[dict] = []
+
+        async def _capture2(env: dict) -> None:
+            again.append(env)
+
+        with patch.object(runtime2, "_submit_to_ingest_api", side_effect=_capture2):
+            await runtime2._check_starting_soon()
+            await runtime2._check_starting_soon()
+        assert len(again) == 1
+
+        for kind in ("outOfOffice", "workingLocation"):
+            status_event = {**event, "id": "status-" + kind, "eventType": kind}
+            runtime._upcoming_events = {status_event["id"]: (status_event, start_dt)}
+            runtime._seen_set = StartingSoonSeenSet()
+            submitted.clear()
+            with patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture):
+                await runtime._check_starting_soon()
+            assert submitted == []
+            assert runtime._seen_set.has_seen(status_event["id"], 15) is False
+            from butlers.connectors.google_calendar import (
+                scan_starting_soon,
+                scan_starting_soon_on_restart,
             )
-            assert scan([status_event], **kwargs) == []
-            assert seen.has_seen(status_event["id"], 15) is False
-            positive = scan([{**event, "eventType": "focusTime"}], **kwargs)
-            assert len(positive) == 1
-            assert positive[0]["event"]["external_event_id"] == "starting_soon:evt-soon"
+
+            for scan in (scan_starting_soon, scan_starting_soon_on_restart):
+                seen = StartingSoonSeenSet()
+                kwargs = dict(
+                    now=start_dt - timedelta(minutes=14),
+                    lead_minutes=15,
+                    seen_set=seen,
+                    endpoint_identity=_ENDPOINT,
+                )
+                assert scan([status_event], **kwargs) == []
+                assert seen.has_seen(status_event["id"], 15) is False
+                positive = scan([{**event, "eventType": "focusTime"}], **kwargs)
+                assert len(positive) == 1
+                assert positive[0]["event"]["external_event_id"] == "starting_soon:evt-soon"
 
 
 async def test_blocked_event_buffered_not_ingested(
