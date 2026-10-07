@@ -257,7 +257,7 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "self_healing",
         "control",
-        "get_healing_status report_error retry_healing",
+        "get_healing_status report_error",
         presentable=False,
     ),
     *_declare(

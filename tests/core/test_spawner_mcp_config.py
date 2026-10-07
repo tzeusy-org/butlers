@@ -147,7 +147,7 @@ class TestQaMcpGating:
         )
 
     async def test_healing_trigger_receives_empty_mcp_servers(self, tmp_path: Path):
-        """Healing-triggered sessions pass empty mcp_servers (existing behaviour, guarded)."""
+        """REQ-core-spawner-006: legacy healing trigger keeps empty MCP servers."""
         adapter = MockAdapter()
         await Spawner(config=_make_config(), config_dir=tmp_path, runtime=adapter).trigger(
             prompt="heal the branch",

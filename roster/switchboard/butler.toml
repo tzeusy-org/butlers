@@ -177,3 +177,6 @@ name = "fleet-case-lapse-sweep"
 cron = "10 4 * * *"
 dispatch_mode = "job"
 job_name = "fleet_case_lapse_sweep"
+
+# RFC 0015: report errors to QA; this module never dispatches locally.
+[modules.self_healing]

@@ -283,58 +283,14 @@ class ButlerDaemon:
             or self._module_statuses[m.name].status == "active"
         ]
 
-    @staticmethod
-    def _required_schema_fields(schema: type[Any]) -> list[str]:
-        """Return sorted required field names for a Pydantic schema."""
-        model_fields = getattr(schema, "model_fields", {})
-        required: list[str] = []
-        for field_name, field_info in model_fields.items():
-            is_required = getattr(field_info, "is_required", None)
-            if callable(is_required) and is_required():
-                required.append(field_name)
-        return sorted(required)
-
     def _select_startup_modules(self, modules: list[Module]) -> list[Module]:
-        """Filter loaded modules to those eligible for startup in this config.
-
-        Modules that define required config fields are only started when an
-        explicit ``[modules.<name>]`` section exists in ``butler.toml``.
-        This keeps intentionally omitted modules out of the startup path and
-        avoids noisy "missing required field" validation warnings.
-        """
+        """Admit explicit declarations and reject unknown names before DB work."""
         if self.config is None:
             return modules
-
-        selected: list[Module] = []
-        for mod in modules:
-            if mod.name in self.config.modules:
-                selected.append(mod)
-                continue
-
-            schema = mod.config_schema
-            if schema is None:
-                selected.append(mod)
-                continue
-
-            required_fields = self._required_schema_fields(schema)
-            if required_fields:
-                logger.info(
-                    "Skipping module '%s': no [modules.%s] config provided and schema requires: %s",
-                    mod.name,
-                    mod.name,
-                    ", ".join(required_fields),
-                )
-                continue
-
-            # Module not in config → always skip (explicit config required)
-            logger.info(
-                "Skipping module '%s': no [modules.%s] config provided",
-                mod.name,
-                mod.name,
-            )
-            continue
-
-        return selected
+        unknown = sorted(set(self.config.modules) - {mod.name for mod in modules})
+        if unknown:
+            raise ValueError(f"Unknown modules configured: {', '.join(unknown)}")
+        return [mod for mod in modules if mod.name in self.config.modules]
 
     def _cascade_module_failures(self) -> None:
         """Mark modules whose dependencies failed as ``cascade_failed``.
@@ -2038,11 +1994,17 @@ class ButlerDaemon:
             if wire_fn is None or not callable(wire_fn):
                 continue
             try:
-                wire_fn(
-                    self.spawner,
-                    repo_root,
-                    switchboard_client=self.switchboard_client,
-                )
+                client = self.switchboard_client
+                if (
+                    mod.name == "self_healing"
+                    and self.config is not None
+                    and self.config.name == "switchboard"
+                    and client is None
+                ):
+                    from butlers.modules.self_healing import LocalSwitchboardClient
+
+                    client = LocalSwitchboardClient(self.mcp)
+                wire_fn(self.spawner, repo_root, switchboard_client=client)
                 logger.debug(
                     "Wired runtime into module '%s' (switchboard_client=%s)",
                     mod.name,

@@ -377,9 +377,9 @@ async def _redispatch_via_daemon(
 
     The tool is hosted by the butler that owns the failing session.  If that
     butler is unreachable (e.g. not running), we fall back to trying every
-    registered butler that exposes the tool — any butler with the self_healing
-    module shares the same ``public.healing_attempts`` table and can re-dispatch
-    the row.
+    registered butler that exposes the legacy tool. Current relay-only self_healing
+    modules do not expose it, so that search truthfully returns False. An injected
+    compatible dispatcher remains an explicit legacy extension, not QA admission.
 
     Returns
     -------

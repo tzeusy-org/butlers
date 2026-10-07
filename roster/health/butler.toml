@@ -111,3 +111,6 @@ groups = ["core", "entity", "preferences"]
 [modules.google_drive]
 
 [modules.google_health]
+
+# RFC 0015: report errors to QA; this module never dispatches locally.
+[modules.self_healing]

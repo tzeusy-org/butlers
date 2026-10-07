@@ -52,8 +52,10 @@ package, plus butler-specific modules in `roster/<butler>/modules/__init__.py`. 
 idempotent.
 
 The daemon loads modules with `load_all()`: **every** registered module is instantiated, whether or
-not `butler.toml` mentions it (absent modules get an empty config). Which modules are active is
-runtime enable/disable state, not static config. `load_from_config()` loads only the listed
+not `butler.toml` mentions it (absent modules get an empty config). Discovery is distinct
+from startup: only explicit `[modules.<name>]` declarations are admitted, even for
+schema-less modules. Unknown declared names raise `ValueError` before database work.
+Health and sticky user-enabled state remain separate from declaration eligibility. `load_from_config()` loads only the listed
 modules and is stricter: an unknown name or a dependency outside the enabled set raises
 `ValueError`.
 
@@ -77,7 +79,8 @@ the butler's own schema unless the module config declares a private schema (for 
 The authoritative step list is the module docstring of `src/butlers/daemon.py` and the numbered
 comments in `src/butlers/lifecycle.py`. For modules, the order that matters is:
 
-1. **Load and order** -- `load_all()` instantiates every module in dependency order.
+1. **Load, order and select** -- `load_all()` discovers every module in dependency order;
+   the daemon rejects unknown names and selects only declared modules before any module effects.
 2. **Validate config** -- each module's config is validated against `config_schema`.
 3. **Migrate** -- core, butler-specific, then module migration chains.
 4. **Start** -- `on_startup(config, db, credential_store, blob_store)` in dependency order.
@@ -101,9 +104,10 @@ existing module (for example `src/butlers/modules/metrics/`) rather than a templ
 ## Implementation Notes
 
 - `ButlerDaemon` filters `load_all()` through `ButlerDaemon._select_startup_modules`
-  (`src/butlers/daemon.py`): a module with required
-  `config_schema` fields and no `[modules.<name>]` section is skipped (info log), keeping
-  intentionally omitted modules out of migrations, startup and tool registration.
+  (`src/butlers/daemon.py`): every omitted name is excluded regardless of schema shape,
+  keeping it out of migrations, startup and tool registration. `enabled` cannot admit
+  an undeclared module. All current rosters declare the RFC 0015 `self_healing` relay;
+  it exposes error reception and read-only history, with no local investigation cleanup.
 - Module configs pass through `ButlerDaemon._validate_module_configs`, which rejects extra and
   missing fields.
 - Egress audit: every outbound call emits one `dashboard_audit_log` operation at its call site

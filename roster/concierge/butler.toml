@@ -18,3 +18,6 @@ name = "butlers"
 schema = "concierge"
 
 [modules.dashboard_read]
+
+# RFC 0015: report errors to QA; this module never dispatches locally.
+[modules.self_healing]

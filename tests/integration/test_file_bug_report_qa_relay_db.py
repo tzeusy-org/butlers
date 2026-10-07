@@ -229,6 +229,121 @@ async def test_file_bug_report_lands_qa_finding_with_correct_fingerprint(
         assert ack is not None
         assert case_reference in ack["content"]
 
+        # Same real migrated fixture, now the registered report_error origin.
+        # Registry/route forwarding is synthetic; MCP closures, QA buffer and
+        # finding/attempt CRUD + separate committed readback are genuine.
+        import asyncpg
+        from fastmcp import Client, FastMCP
+
+        from butlers.core.healing import create_or_join_attempt
+        from butlers.modules.self_healing import SelfHealingModule
+
+        error = {
+            "error_type": "ValueError",
+            "error_message": "synthetic relay history sentinel",
+            "call_site": "test.py:relay",
+        }
+        canonical = compute_fingerprint_from_report(
+            error_type=error["error_type"],
+            error_message=error["error_message"],
+            call_site=error["call_site"],
+            traceback_str=None,
+        ).fingerprint
+        attempt_id, new = await create_or_join_attempt(
+            pool,
+            canonical,
+            "general",
+            2,
+            error["error_type"],
+            error["call_site"],
+            uuid.uuid4(),
+            qa_patrol_id=patrol_id,
+        )
+        assert new
+        async with pool.acquire() as conn:
+            before_attempt = dict(
+                await conn.fetchrow("SELECT * FROM public.healing_attempts WHERE id=$1", attempt_id)
+            )
+            before_count = await conn.fetchval("SELECT count(*) FROM public.healing_attempts")
+        qa_server = FastMCP("qa")
+        await qa_module.register_tools(qa_server, None, SimpleNamespace(pool=pool), "qa")
+        routes = []
+
+        class QaMcpRelay:
+            async def call_tool(self, name, arguments):
+                if name == "list_butlers":
+                    return [{"name": "qa"}]
+                assert name == "route" and arguments["allow_stale"] is True
+                assert arguments["target_butler"] == "qa"
+                routes.append(arguments)
+                async with Client(qa_server) as target:
+                    return {
+                        "result": await target.call_tool(arguments["tool_name"], arguments["args"])
+                    }
+
+        relay = SelfHealingModule()
+        await relay.on_startup({}, SimpleNamespace(pool=pool))
+        source = FastMCP("general")
+        await relay.register_tools(source, None, SimpleNamespace(pool=pool), "general")
+        relay.wire_runtime(None, "/synthetic", QaMcpRelay())
+        async with Client(source) as reporting:
+            accepted = (await reporting.call_tool("report_error", error)).data
+            assert accepted["accepted"] is True  # planted active row must not suppress QA
+            assert len(routes) == 1 and routes[0]["args"]["source_butler"] == "general"
+            assert routes[0]["args"]["fingerprint"] == canonical
+            buffered = await qa_module._butler_reports_source.discover(lookback_minutes=15)
+            assert len(buffered) == 1 and buffered[0].fingerprint == canonical
+            accepted_id = await insert_finding(
+                pool, patrol_id, buffered[0], "active_investigation", attempt_id
+            )
+            # A definite PRE-reception rejection has a different planted fingerprint.
+            buffer = qa_module._butler_reports_source
+            qa_module._butler_reports_source = None
+            rejected_error = {**error, "error_message": "distinct rejected relay sentinel"}
+            refused = (await reporting.call_tool("report_error", rejected_error)).data
+            assert refused["accepted"] is False and refused["reason"] == "relay_failed"
+            qa_module._butler_reports_source = buffer
+            assert await buffer.discover(lookback_minutes=15) == []
+            status = (
+                await reporting.call_tool("get_healing_status", {"fingerprint": canonical})
+            ).data
+            assert status["attempts"][0]["id"] == str(attempt_id)
+        await relay.on_shutdown()
+        rejected_fp = compute_fingerprint_from_report(
+            error_type=error["error_type"],
+            error_message=rejected_error["error_message"],
+            call_site=error["call_site"],
+            traceback_str=None,
+        ).fingerprint
+        # Separate acquisition observes committed positive/FK links and no reporter writes.
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM public.qa_findings WHERE id=$1", accepted_id)
+            assert row["fingerprint"] == canonical and row["source_butler"] == "general"
+            assert row["patrol_id"] == patrol_id and row["healing_attempt_id"] == attempt_id
+            assert await conn.fetchval("SELECT id FROM public.qa_patrols WHERE id=$1", patrol_id)
+            assert (
+                await conn.fetchval(
+                    "SELECT count(*) FROM public.qa_findings WHERE fingerprint=$1", rejected_fp
+                )
+                == 0
+            )
+            assert (
+                dict(
+                    await conn.fetchrow(
+                        "SELECT * FROM public.healing_attempts WHERE id=$1", attempt_id
+                    )
+                )
+                == before_attempt
+            )
+            assert (
+                await conn.fetchval("SELECT count(*) FROM public.healing_attempts") == before_count
+            )
+            # Prove actual FK enforcement with a positioned invalid-patrol control.
+            with pytest.raises(asyncpg.ForeignKeyViolationError):
+                async with conn.transaction():
+                    await insert_finding(conn, uuid.uuid4(), buffered[0], None, attempt_id)
+            assert await conn.fetchval("SELECT id FROM public.qa_findings WHERE id=$1", accepted_id)
+
 
 async def test_file_bug_report_relay_failure_does_not_create_qa_finding(
     monkeypatch, migrated_core_postgres_pool
