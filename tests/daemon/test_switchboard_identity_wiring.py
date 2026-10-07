@@ -14,16 +14,6 @@ from butlers.switchboard_wiring import wire_pipelines
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture(autouse=True)
-def _restore_fact_source_registry(monkeypatch):
-    """Keep each wired mock daemon's registry within its test lifetime.
-
-    Registration still uses production code. Monkeypatch teardown restores
-    the previous registry without clearing any real daemon's live receipts.
-    """
-    monkeypatch.setattr(fact_authority, "_source_registry", fact_authority.source_registry())
-
-
 def _switchboard_daemon() -> SimpleNamespace:
     return SimpleNamespace(
         config=SimpleNamespace(name="switchboard", buffer=SimpleNamespace()),
