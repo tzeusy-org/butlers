@@ -1170,8 +1170,8 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
     )
     assert sorted(row["validity"] for row in rows) == ["active", "candidate"]
     # The adopted core233 phone fallback treats these spellings as one
-    # identity. Two real transactions on different subjects must serialize
-    # that bounded suffix universe rather than adopting an ambiguous pair.
+    # identity. Hold only the native slot in one real transaction so the
+    # shared owner-lifetime row cannot mask the exact advisory-lock control.
     phone_left, phone_right = await _person(env), await _person(env)
     phone_a = await _assert(env, phone_left, "has-phone", "+12025550123", report)
     phone_b = await _assert(env, phone_right, "has-phone", "+2025550123", report)
@@ -1180,11 +1180,10 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
         await held.start()
         blocked_phone = None
         try:
-            async with _context(owner):
-                phone_adopted = await decide_identity_fact(
-                    holding, entity_id=phone_left, fact_id=phone_a.fact_id, decision="adopt"
-                )
-            assert phone_adopted["decision"] == "adopt"
+            from butlers.tools.relationship.identity_slots import lock_identity_slot
+
+            await lock_identity_slot(holding, "has-phone", "+12025550123", phone_left)
+            holding_pid = await holding.fetchval("SELECT pg_backend_pid()")
             competing_pid = await competing.fetchval("SELECT pg_backend_pid()")
 
             async def competing_phone_adoption():
@@ -1197,13 +1196,16 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
                     )
 
             blocked_phone = asyncio.create_task(competing_phone_adoption())
-            # Equal-spelling keys would let the suffix-alias adopter commit
-            # against a snapshot without the uncommitted first phone. The
-            # actual backend must wait before it can inspect that slot.
+            # An equality-only key would let this alias commit immediately.
+            # The holder owns no entity/fact/auth row; the actual adopter must
+            # wait specifically on this production phone-slot connection.
             await _wait_for_lock(env.admin, competing_pid)
+            assert holding_pid in await env.admin.fetchval(
+                "SELECT pg_catalog.pg_blocking_pids($1)", competing_pid
+            )
             await held.commit()
-            with pytest.raises(IdentityDecisionConflict):
-                await asyncio.wait_for(blocked_phone, 5)
+            phone_adopted = await asyncio.wait_for(blocked_phone, 5)
+            assert phone_adopted["decision"] == "adopt"
         finally:
             if holding.is_in_transaction():
                 await held.rollback()
@@ -1211,6 +1213,8 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
                 if not blocked_phone.done():
                     blocked_phone.cancel()
                 await asyncio.gather(blocked_phone, return_exceptions=True)
+    with pytest.raises(IdentityDecisionConflict):
+        await choose(phone_left, phone_a.fact_id)
     async with env.admin.acquire() as separate_phone_readback:
         assert sorted(
             row["validity"]
@@ -1223,7 +1227,7 @@ async def test_candidate_lifecycle_merge_collisions_and_concurrent_adoption(env)
         env.rel, "whatsapp_jid", "12025550123@s.whatsapp.net"
     )
     assert resolved_phone is not None
-    assert resolved_phone.entity_id == phone_left
+    assert resolved_phone.entity_id == phone_right
     # Preference is single-valued per subject, not a shared recipient slot.
     # Both reachable people may independently adopt their email preference.
     preferences = []
