@@ -8,6 +8,7 @@ on:
 
 jobs:
   nightly:
+    timeout-minutes: 25
     runs-on: ubuntu-latest
 
     services:
@@ -257,6 +258,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   exact-image-sandbox:
+    timeout-minutes: 30
     # bu-zfmq2: task 3.6b's real-kernel exact-image proof
     # (test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled)
     # only runs when BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 names an explicitly

@@ -5,12 +5,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -398,7 +400,121 @@ def test_ci_cleanup_refuses_malformed_free_space_before_reclamation(
     assert not sentinel.exists()
 
 
-def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> None:
+def _exercise_browser_installer(root: Path) -> None:
+    """Actual shell/group lifecycle with synthetic install/OS/browser boundaries.
+
+    Only wall-clock literals are scaled in this routine control. Healthy
+    boundaries include a deliberate 200 ms startup delay within a two-second
+    allowance; stall pairs witness handler readiness before TERM/KILL checks.
+    The ignored one-shot receipt exercises unchanged 110/120/380 deadlines;
+    actual apt/Chromium execution belongs to the hosted frontend-e2e job.
+    """
+    source = (REPO_ROOT / "frontend/scripts/install-playwright-browsers.mjs").read_text()
+    assert "TERM_MS = 110_000" in source
+    assert "KILL_MS = 120_000" in source
+    assert "BACKOFF_MS = 10_000" in source
+    assert "TOTAL_MS = 380_000" in source
+    scaled = (
+        source.replace("110_000", "2_000")
+        .replace("120_000", "2_500")
+        .replace("10_000", "10")
+        .replace("380_000", "8_000")
+    )
+    for mode, expected_calls, expected_probes, expected_exit in [
+        ("cold", 1, 1, 0),
+        ("warm", 1, 1, 0),
+        ("fail-once", 2, 1, 0),
+        ("invalid-cache", 2, 2, 0),
+        ("exhaust", 3, 0, 1),
+        ("stall", 3, 0, 1),
+    ]:
+        directory = root / mode
+        scripts = directory / "scripts"
+        cli = directory / "node_modules/.bin/playwright"
+        scripts.mkdir(parents=True)
+        cli.parent.mkdir(parents=True)
+        (scripts / "install-playwright-browsers.mjs").write_text(scaled)
+        (scripts / "playwright-cache-version.mjs").write_text("// synthetic browser boundary\n")
+        ledger = directory / "ledger.json"
+        ledger.write_text(json.dumps({"calls": [], "probes": 0, "pids": [], "ready": []}))
+        program = r"""import json, os, signal, subprocess, sys, time
+from pathlib import Path
+time.sleep(0.2)  # Ordinary slow fixture launch must not fail a healthy boundary.
+p = Path(os.environ["M3_INSTALL_LEDGER"])
+data = json.loads(p.read_text())
+mode = os.environ["M3_INSTALL_MODE"]
+if Path(sys.argv[0]).name == "node":
+    data["probes"] += 1
+    data["ready"].append({"boundary": "probe", "pid": os.getpid()})
+    p.write_text(json.dumps(data))
+    sys.exit(1 if mode == "invalid-cache" and data["probes"] == 1 else 0)
+data["calls"].append(sys.argv[1:])
+if mode == "stall":
+    signal.signal(signal.SIGTERM, lambda *_: (p.parent / f"term-{os.getpid()}").touch())
+    child_program = "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,lambda *_: Path('term-'+str(os.getpid())).touch());print('ready',flush=True);time.sleep(60)"
+    child = subprocess.Popen([sys.executable, "-c", child_program], cwd=p.parent, stdout=subprocess.PIPE, text=True)
+    data["pids"].extend([os.getpid(), child.pid])
+    p.write_text(json.dumps(data))
+    assert child.stdout.readline() == "ready\n", "stall child never installed its TERM handler"
+    child.stdout.close()
+    data["ready"].append({"boundary": "stall-pair", "pids": [os.getpid(), child.pid]})
+    p.write_text(json.dumps(data))
+    time.sleep(60)
+data["ready"].append({"boundary": "install", "pid": os.getpid()})
+p.write_text(json.dumps(data))
+if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
+    sys.exit(1)
+"""
+        cli.write_text(f"#!{sys.executable}\n" + program)
+        cli.chmod(0o755)
+        node = directory / "node"
+        node.write_text(f"#!{sys.executable}\n" + program)
+        node.chmod(0o755)
+        env = dict(
+            os.environ,
+            M3_INSTALL_LEDGER=str(ledger),
+            M3_INSTALL_MODE=mode,
+        )
+        env["PATH"] = str(directory) + os.pathsep + os.environ["PATH"]
+        try:
+            result = subprocess.run(
+                [shutil.which("node"), str(scripts / "install-playwright-browsers.mjs")],
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=15,
+            )
+            data = json.loads(ledger.read_text())
+            assert result.returncode == expected_exit, (mode, data, result.stderr)
+            assert len(data["calls"]) == expected_calls, (mode, data)
+            assert data["probes"] == expected_probes, (mode, data)
+            assert len(data["ready"]) == expected_calls + expected_probes, (mode, data)
+            for index, args in enumerate(data["calls"]):
+                assert args == ["install", "--with-deps", "chromium"] + (
+                    ["--force"] if index else []
+                )
+            if expected_exit == 0:
+                assert data["probes"] >= 1
+            if mode == "stall":
+                ready_pids = [pid for pair in data["ready"] for pid in pair["pids"]]
+                assert ready_pids == data["pids"] and len(ready_pids) == 6, data
+                for pid in ready_pids:
+                    assert (directory / f"term-{pid}").exists(), (
+                        f"ready stall member {pid} never witnessed TERM before KILL"
+                    )
+            for pid in data["pids"]:
+                stat = Path(f"/proc/{pid}/stat")
+                assert not stat.exists() or stat.read_text().split()[2] == "Z", (
+                    f"ordinary installer descendant{pid} survived watchdog"
+                )
+        finally:
+            for pid in json.loads(ledger.read_text())["pids"]:
+                stat = Path(f"/proc/{pid}/stat")
+                if stat.exists() and stat.read_text().split()[2] != "Z":
+                    os.kill(pid, 9)
+
+
+def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_path: Path) -> None:
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
     preflight = jobs["check-preflight"]
@@ -743,6 +859,81 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
 
     badge = _workflow_step(job=coverage_job, name="Update coverage badge")
     assert badge["if"] == "${{ success() }}"
+
+    # Every job, including rare/scheduled/reporting jobs, has a positive outer
+    # watchdog. Provenance is before-only/provisional, never after calibration.
+    register = json.loads((REPO_ROOT / "scripts/ci-job-timeouts.json").read_text())
+    declared = {}
+    for path in (REPO_ROOT / ".github/workflows").glob("*.yml"):
+        source = yaml.safe_load(path.read_text())
+        for name, job in source["jobs"].items():
+            value = job.get("timeout-minutes")
+            assert isinstance(value, int) and not isinstance(value, bool) and value > 0
+            declared[(str(path.relative_to(REPO_ROOT)), name)] = value
+    assert set(declared) == {(r["workflow"], r["job"]) for r in register["jobs"]}
+    for row in register["jobs"]:
+        assert declared[(row["workflow"], row["job"])] == row["installed_timeout_minutes"]
+        assert row["state"] and row["sample_source"]
+        if row["p95_s"] is not None:
+            reserve = (
+                row["review_uv_nominal_envelope_s"] + row["review_browser_hard_retry_interval_s"]
+            )
+            reserve += row["additional_provisional_cold_dependency_allowance_s"]
+            assert row["installed_timeout_minutes"] >= max(
+                2, math.ceil((2 * row["p95_s"] + reserve) / 60)
+            )
+        else:
+            assert "provisional" in row["state"] or row["job"] == "faketime-matrix"
+        observations = row.get("healthy_job_observations", [])
+        if observations:
+            # A single whole-job observation is a compatibility floor, not p95.
+            # Keep setup/evidence time and the full extra recovery allowance.
+            durations = []
+            for observation in observations:
+                assert observation["conclusion"] == "success"
+                elapsed = (
+                    datetime.fromisoformat(observation["completed_at"])
+                    - datetime.fromisoformat(observation["started_at"])
+                ).total_seconds()
+                assert elapsed >= observation["test_step_elapsed_s"] > 0
+                durations.append(elapsed)
+            envelope = max(durations)
+            assert row["provisional_healthy_envelope_s"] == envelope
+            reserve = (
+                row["review_uv_nominal_envelope_s"]
+                + row["review_browser_hard_retry_interval_s"]
+                + row["additional_provisional_cold_dependency_allowance_s"]
+            )
+            assert row["installed_timeout_minutes"] * 60 >= 2 * envelope + reserve, (
+                f"{row['job']} watchdog excludes its recorded healthy whole-job envelope "
+                "and full setup/recovery headroom"
+            )
+    nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
+        "faketime-matrix"
+    ]
+    assert nightly["timeout-minutes"] == 75
+    nightly_shell = "\n".join(step.get("run", "") for step in nightly["steps"])
+    assert "WATCHDOG_SECONDS=3600" in nightly_shell
+    assert "--signal=SIGABRT --kill-after=30s" in nightly_shell
+    assert "--timeout=300 --timeout-method=thread" in nightly_shell
+
+    schedules = yaml.safe_load((REPO_ROOT / ".github/workflows/e2e-main-schedule.yml").read_text())
+    browser_jobs = [jobs["frontend-e2e"], schedules["jobs"]["frontend-e2e"]]
+    for browser_job in browser_jobs:
+        version_step = _workflow_step(job=browser_job, name="Resolve locked Playwright version")
+        assert "npm run --silent test:e2e:cache-version" in version_step["run"]
+        cache = _workflow_step(job=browser_job, name="Cache locked Playwright browsers")
+        assert cache["continue-on-error"] is True  # advisory cache only
+        assert cache["with"]["path"] == "~/.cache/ms-playwright"
+        assert "restore-keys" not in cache["with"]
+        assert cache["with"]["key"] == (
+            "playwright-${{ runner.os }}-${{ runner.arch }}-"
+            "${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}"
+        )
+        installer = _workflow_step(job=browser_job, name="Install Playwright browsers")
+        assert installer["run"] == "npm run test:e2e:install"
+        assert "if" not in installer and not installer.get("continue-on-error")
+    _exercise_browser_installer(tmp_path / "browser-install")
 
 
 def _historical_controls_coverage_receipt(tmp_path: Path) -> dict:

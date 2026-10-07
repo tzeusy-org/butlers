@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   changes:
+    timeout-minutes: 2
     # Path classification for pull_request gating (bu-r5mnn). Docs/spec-only
     # PRs skip the backend shards and the frontend jobs; everything else runs
     # them. Fail-closed rule: `backend` is true unless EVERY changed file
@@ -89,6 +90,7 @@ jobs:
           PY
 
   plan:
+    timeout-minutes: 21
     # Affected-test lane planner (bu-v28ho, follow-up to bu-r5mnn). Computes
     # whether this PR's diff can be safely scoped to only the tests
     # `butlers.testing.scoped_runner` maps to the changed files, via
@@ -152,6 +154,7 @@ jobs:
         run: uv run python scripts/ci_test_plan.py --base "$BASE_SHA"
 
   guards:
+    timeout-minutes: 17
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
     # their exact scopes; preflight still owns inventory, budget and smoke.
@@ -467,6 +470,7 @@ jobs:
   # one-time preflight and ten duration-balanced file shards all begin
   # independently; no broad lane serializes the backend critical path.
   check-preflight:
+    timeout-minutes: 27
     runs-on: ubuntu-latest
     needs: [changes]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -628,6 +632,7 @@ jobs:
           overwrite: true
 
   check-unit-1:
+    timeout-minutes: 27
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -735,6 +740,7 @@ jobs:
           overwrite: true
 
   check-unit-2:
+    timeout-minutes: 27
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -842,6 +848,7 @@ jobs:
           overwrite: true
 
   check-unit-3:
+    timeout-minutes: 28
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -949,6 +956,7 @@ jobs:
           overwrite: true
 
   check-unit-4:
+    timeout-minutes: 27
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -1056,6 +1064,7 @@ jobs:
           overwrite: true
 
   check-unit-5:
+    timeout-minutes: 27
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -1163,6 +1172,7 @@ jobs:
           overwrite: true
 
   check-integration-1:
+    timeout-minutes: 27
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -1303,6 +1313,7 @@ jobs:
           overwrite: true
 
   check-integration-2:
+    timeout-minutes: 27
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -1443,6 +1454,7 @@ jobs:
           overwrite: true
 
   check-integration-3:
+    timeout-minutes: 32
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -1583,6 +1595,7 @@ jobs:
           overwrite: true
 
   check-integration-4:
+    timeout-minutes: 28
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -1722,6 +1735,7 @@ jobs:
           overwrite: true
 
   check-integration-5:
+    timeout-minutes: 36
     runs-on: ubuntu-latest
     needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
@@ -1861,6 +1875,7 @@ jobs:
           overwrite: true
 
   check-affected:
+    timeout-minutes: 82
     # Affected-test lane (bu-v28ho): the `plan` job's evidence when it
     # selected a scoped plan. Runs the planner-selected test paths directly
     # instead of the full ten-shard matrix. Not part of the coverage-combine
@@ -1959,6 +1974,7 @@ jobs:
           overwrite: true
 
   check:
+    timeout-minutes: 3
     # Read every declared needed-job verdict under always(), including guards,
     # changes, plan and independent preflight. The exact event/ref/plan skip
     # policy preserves docs/main-push skips and affected-only scoped PRs.
@@ -2085,6 +2101,7 @@ jobs:
           PY
 
   coverage:
+    timeout-minutes: 16
     # Visible reporting only; required check/guards/frontend never await it.
     # always() avoids skip propagation from the shards' intentionally skipped plan.
     needs: [check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5]
@@ -2252,6 +2269,7 @@ jobs:
           color: ${{ steps.coverage.outputs.color }}
 
   frontend:
+    timeout-minutes: 18
     runs-on: ubuntu-latest
     needs: [changes]
     # merge_group and push:main: always (cheap, no coverage dependency).
@@ -2294,6 +2312,7 @@ jobs:
         run: npm run test
 
   frontend-e2e:
+    timeout-minutes: 14
     runs-on: ubuntu-latest
     needs: [changes]
     # merge_group and push:main: always (cheap, no coverage dependency).
@@ -2316,6 +2335,21 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Resolve locked Playwright version
+        id: playwright-version
+        run: |
+          version="$(npm run --silent test:e2e:cache-version)"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      # Cache is advisory. A failed restore still reaches the mandatory bounded
+      # installer, OS dependencies and locked-browser launch verification.
+      - name: Cache locked Playwright browsers
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright browsers
         run: npm run test:e2e:install

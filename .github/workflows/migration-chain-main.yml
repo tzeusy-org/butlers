@@ -18,6 +18,7 @@ permissions:
 
 jobs:
   migration-chain-head:
+    timeout-minutes: 14
     name: Migration chain head
     runs-on: ubuntu-latest
 

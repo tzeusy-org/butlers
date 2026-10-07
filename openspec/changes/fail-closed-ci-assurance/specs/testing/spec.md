@@ -1,6 +1,6 @@
 # CI assurance contract
 
-The complete bu-ly3lv5.1 outcome is retained. M1 is delivered and M2 is released for source implementation; every unfinished coverage observation, timeout and observer task remains mandatory and unchecked.
+The complete bu-ly3lv5.1 outcome is retained. M1/M2 are protected-landed and M3 is source-released. One actual M2 merge-group report/check observation is retained; every unfinished second coverage observation, hosted timeout control and M4 observer task remains mandatory and unchecked.
 
 ## MODIFIED Requirements
 

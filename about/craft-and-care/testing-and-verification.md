@@ -89,6 +89,21 @@ merge-group shards and direct standalone shard calls retain coverage. A reportin
 visible independently of required test verdicts. Source/fixture controls do not establish hosted
 upload success or timing improvements; those need their named actual merge-group observations.
 
+All workflow jobs have finite positive watchdogs. Pytest defaults to 300 seconds per item;
+existing finite overrides and frontend test defaults remain. An item timer does not bound
+collection, worker startup or session finalization. The owning job watchdog bounds those phases,
+and missing terminal evidence stays UNKNOWN. `scripts/ci-job-timeouts.json` records the named
+before samples, full retry/setup reserves and explicitly provisional values. Ten current clean
+merge-group samples and the complete two-week long-tail audit remain required calibration;
+initial caps and synthetic controls cannot substitute for those observations.
+
+For an uncalibrated lane, a named healthy whole-job observation supplies a provisional
+compatibility floor, not p95. The affected lane's run 37597511584, job 112713967258 completed
+successfully in 2,124 seconds, including 2,077 seconds of tests. Its provisional 82-minute cap
+uses twice that complete envelope plus the full 640-second UV recovery reserve; observed setup
+and evidence time are retained. This finite bound does not promise zero jobs over 60 minutes or
+replace the required current ten-run calibration and complete two-week audit.
+
 **Measured planner precision.** The scoped lane shipped after the planner escalated to `mode=full`
 for all 7 of 7 PRs with a real shard failure in a 50-PR sample; the merge queue still runs the full
 matrix on every landing tree, so the lane can only speed PRs up, never let a failure through.
