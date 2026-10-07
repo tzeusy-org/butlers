@@ -224,7 +224,9 @@ and aggressive numeric-code detection for the actual Telegram service sender `77
 service participant. Provider and sender-domain hints are untrusted display metadata: the preview
 seam accepts bounded provider slugs or DNS names, rejects URLs, paths, code-bearing numeric labels
 and labels containing a detected link secret, and uses a fixed connector label (or `unknown`) as
-fallback. It validates every resulting placeholder label, including old unsafe placeholders, so
+fallback. Comparisons collapse DNS/slug separators, so dotted numbers or dotted/underscored token
+fragments cannot disguise the same bearer value. It validates every resulting placeholder label,
+including old unsafe placeholders, so
 the replacement cannot reintroduce a code or token through its label. Genuine safe domains and
 safe existing placeholders remain intact; numeric-domain behavior in other detector callers is
 unchanged. On detector/extraction failure it withholds the preview as null without logging its

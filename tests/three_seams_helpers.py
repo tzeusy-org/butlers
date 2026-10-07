@@ -54,6 +54,43 @@ def preview_label_controls(fallback: str) -> list[tuple[str, str, str, str, dict
     controls.extend(
         [
             (
+                "sender-dns-dot-code",
+                "person@482.913.example.test",
+                code,
+                "Your verification code is [auth-code withheld: " + fallback + "]",
+                {"source": {"provider": "gmail"}},
+            ),
+            (
+                "sender-dns-prefixed-code",
+                "person@482.913.example.test",
+                "Your verification code is G-482913",
+                "Your verification code is [auth-code withheld: " + fallback + "]",
+                {"source": {"provider": "gmail"}},
+            ),
+            (
+                "sender-dns-dot-token",
+                "person@synthetic.reset.token.example.test",
+                code + " " + url,
+                "Your verification code is [auth-code withheld: "
+                + fallback
+                + "] [reset-link withheld: example.test]",
+                {"source": {"provider": "gmail"}},
+            ),
+            (
+                "provider-token-slug",
+                "777000",
+                "482913 " + url,
+                "[auth-code withheld: " + fallback + "] [reset-link withheld: example.test]",
+                {"source": {"provider": "synthetic_reset_token"}},
+            ),
+            (
+                "existing-dot-code-label",
+                "777000",
+                "[auth-code withheld: 482.913.example.test]",
+                "[auth-code withheld: " + fallback + "]",
+                {},
+            ),
+            (
                 "sender-dns-split-code",
                 "person@482-913.example.test",
                 "Your verification code is 482 913",

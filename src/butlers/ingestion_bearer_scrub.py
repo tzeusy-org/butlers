@@ -328,7 +328,9 @@ def scrub_filtered_preview(
         # used only to prevent a label from reintroducing detected bearer text.
         forbidden = set()
         for pattern in (_OTP_FORWARD, _OTP_REVERSE):
-            forbidden.update(match.group(1).lower() for match in pattern.finditer(preview))
+            for match in pattern.finditer(preview):
+                code = match.group(1).lower()
+                forbidden.update((code, re.sub(r"\D", "", code)))
         for match in _URL.finditer(preview):
             url = match.group(0).rstrip(_URL_TRAILING)
             if _classify_url(url) is not None:
@@ -343,11 +345,16 @@ def scrub_filtered_preview(
                     for part in parts.path.split("/")
                     if _OPAQUE_SEGMENT.fullmatch(part)
                 )
+        compact_forbidden = {re.sub(r"[^a-z0-9]", "", secret) for secret in forbidden}
+        compact_forbidden.discard("")
 
         def safe_label(value: object) -> str:
             if not isinstance(value, str):
                 return fallback
             label = value.lower()
+            # DNS dots and slug underscores must not disguise the same code or
+            # token that hyphens/spaces separated in the original bearer text.
+            compact_label = re.sub(r"[^a-z0-9]", "", label)
             # A provider slug or DNS name only; no path, URL, query, credentials,
             # controls or code-bearing DNS labels. This stricter policy applies
             # only to visibility previews, not global numeric-domain semantics.
@@ -357,13 +364,10 @@ def scrub_filtered_preview(
             )
             if (
                 not valid
-                or re.search(r"\d{4}", label)
+                or re.search(r"\d{4}", compact_label)
                 or any(_OPAQUE_SEGMENT.fullmatch(part) for part in label.split("."))
                 or any(secret in label for secret in forbidden)
-                or any(
-                    secret.replace(" ", "").replace("-", "") in label.replace("-", "")
-                    for secret in forbidden
-                )
+                or any(secret in compact_label for secret in compact_forbidden)
             ):
                 return fallback
             return label
