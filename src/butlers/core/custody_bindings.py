@@ -25,6 +25,9 @@ from butlers.core.custody_native import (
 from butlers.core.custody_native import (
     native_channel_mutation as native_channel_mutation,
 )
+from butlers.core.custody_native import (
+    owning_binding_publisher as _native_binding_publisher,
+)
 from butlers.core.custody_source import CustodyError, digest, utc_timestamp
 from butlers.identity import (
     _TELEGRAM_PREFIX_CHANNEL_TYPES,
@@ -75,7 +78,7 @@ def remove_binding_publisher(pool: asyncpg.Pool, publisher: CustodyChannelBindin
 
 def owning_binding_publisher(pool: asyncpg.Pool) -> CustodyChannelBindings | None:
     """Native code's fixed actual-pool lookup; never a model-facing operation."""
-    return _installed_publishers.get(pool)
+    return _native_binding_publisher(pool)
 
 
 async def native_entity_write(

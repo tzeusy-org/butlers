@@ -5818,7 +5818,8 @@ $custody_host$;
 
 CREATE OR REPLACE FUNCTION custody_admission.install_interface() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_install$
-DECLARE owner_name name; statement text; prior_identity jsonb;
+DECLARE owner_name name; statement text; prior_identity jsonb; rollback_identity jsonb;
+    control_state text;
 BEGIN
     SELECT r.rolname INTO owner_name
     FROM custody_admission.bootstrap_configuration b
@@ -5842,7 +5843,45 @@ BEGIN
             RAISE EXCEPTION 'custody unrecorded schema refused' USING ERRCODE='42501';
         END IF;
     ELSIF prior_identity IS DISTINCT FROM custody_admission.schema_identity() THEN
-        RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';
+        -- core_217's legitimate deep downgrade drops fleet_cases CASCADE.
+        -- Empty core_260 rollback has already fenced admission. It may repair
+        -- ONLY the resulting missing fixed FK after that public table returns,
+        -- never refresh the recorded identity or adopt other schema drift.
+        SELECT admission_state INTO control_state FROM custody_admission.control
+          WHERE singleton FOR UPDATE;
+        IF control_state IS DISTINCT FROM 'unavailable'
+           OR EXISTS(SELECT FROM custody_admission.processes)
+           OR EXISTS(SELECT FROM custody_admission.sources)
+           OR EXISTS(SELECT FROM custody_admission.commands)
+           OR EXISTS(SELECT FROM public.custody_holds)
+           OR EXISTS(SELECT FROM custody_admission.case_scopes)
+           OR EXISTS(SELECT FROM custody_admission.anchor_proposals)
+           OR EXISTS(SELECT FROM custody_admission.connections)
+           OR EXISTS(SELECT FROM custody_admission.provider_inventory)
+           OR pg_catalog.to_regclass('public.fleet_cases') IS NULL
+           OR NOT EXISTS(SELECT FROM pg_catalog.jsonb_array_elements(prior_identity) relation,
+                LATERAL pg_catalog.jsonb_array_elements(relation->'constraints') constraint_info
+                WHERE relation->>'schema'='custody_admission' AND relation->>'table'='case_scopes'
+                  AND constraint_info->>'name'='case_scopes_case_id_fkey'
+                  AND constraint_info->>'definition'='FOREIGN KEY (case_id) REFERENCES public.fleet_cases(id)') THEN
+            RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';
+        END IF;
+        SELECT pg_catalog.jsonb_agg(CASE
+          WHEN relation->>'schema'='custody_admission' AND relation->>'table'='case_scopes' THEN
+            pg_catalog.jsonb_set(relation,'{constraints}',COALESCE((
+                SELECT pg_catalog.jsonb_agg(constraint_info ORDER BY constraint_info->>'name')
+                FROM pg_catalog.jsonb_array_elements(relation->'constraints') constraint_info
+                WHERE constraint_info->>'name'<>'case_scopes_case_id_fkey'),'[]'::jsonb))
+          ELSE relation END ORDER BY ordinal) INTO rollback_identity
+          FROM pg_catalog.jsonb_array_elements(prior_identity) WITH ORDINALITY entry(relation,ordinal);
+        IF rollback_identity IS DISTINCT FROM custody_admission.schema_identity() THEN
+            RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';
+        END IF;
+        ALTER TABLE custody_admission.case_scopes ADD CONSTRAINT case_scopes_case_id_fkey
+          FOREIGN KEY(case_id) REFERENCES public.fleet_cases(id);
+        IF prior_identity IS DISTINCT FROM custody_admission.schema_identity() THEN
+            RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';
+        END IF;
     END IF;
     EXECUTE $custody_tables$
         CREATE TABLE IF NOT EXISTS custody_admission.control (
@@ -6063,6 +6102,25 @@ BEGIN
           SET schema_identity=custody_admission.schema_identity() WHERE singleton;
     ELSIF prior_identity IS DISTINCT FROM custody_admission.schema_identity() THEN
         RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';
+    END IF;
+    -- Only the recorded EMPTY downgrade state can be re-enabled by this
+    -- fixed trusted installer. Revoked/populated/enrolled states never reopen.
+    SELECT admission_state INTO control_state FROM custody_admission.control WHERE singleton FOR UPDATE;
+    IF control_state NOT IN ('ready','unavailable') OR control_state IS NULL THEN
+        RAISE EXCEPTION 'custody unavailable' USING ERRCODE='42501';
+    END IF;
+    IF control_state='unavailable' THEN
+        IF EXISTS(SELECT FROM custody_admission.processes)
+           OR EXISTS(SELECT FROM custody_admission.sources)
+           OR EXISTS(SELECT FROM custody_admission.commands)
+           OR EXISTS(SELECT FROM public.custody_holds)
+           OR EXISTS(SELECT FROM custody_admission.case_scopes)
+           OR EXISTS(SELECT FROM custody_admission.anchor_proposals)
+           OR EXISTS(SELECT FROM custody_admission.connections)
+           OR EXISTS(SELECT FROM custody_admission.provider_inventory) THEN
+            RAISE EXCEPTION 'custody populated rollback refused' USING ERRCODE='42501';
+        END IF;
+        UPDATE custody_admission.control SET admission_state='ready' WHERE singleton;
     END IF;
     PERFORM custody_admission.install_dashboard_interface();
     PERFORM custody_admission.install_accepted_birth();
@@ -8343,15 +8401,30 @@ $custody_prove$;
 
 CREATE OR REPLACE FUNCTION custody_admission.rollback_interface() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_rollback$
+DECLARE state text;
 BEGIN
     PERFORM custody_admission.host_only();
-    PERFORM custody_admission.current_control();
+    IF pg_catalog.to_regclass('dashboard_auth.instance') IS NOT NULL THEN
+        PERFORM FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+    END IF;
+    SELECT admission_state INTO state FROM custody_admission.control WHERE singleton FOR UPDATE;
+    IF NOT FOUND OR state NOT IN ('ready','unavailable') OR NOT EXISTS(
+        SELECT FROM custody_admission.control WHERE singleton AND database_oid=(
+            SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())) THEN
+        RAISE EXCEPTION 'custody unavailable' USING ERRCODE='42501';
+    END IF;
     IF EXISTS(SELECT FROM public.custody_holds) OR EXISTS(SELECT FROM custody_admission.sources)
-       OR EXISTS(SELECT FROM custody_admission.commands) OR EXISTS(SELECT FROM custody_admission.processes) THEN
+       OR EXISTS(SELECT FROM custody_admission.commands) OR EXISTS(SELECT FROM custody_admission.processes)
+       OR EXISTS(SELECT FROM custody_admission.case_scopes)
+           OR EXISTS(SELECT FROM custody_admission.anchor_proposals)
+           OR EXISTS(SELECT FROM custody_admission.connections)
+           OR EXISTS(SELECT FROM custody_admission.provider_inventory) THEN
         RAISE EXCEPTION 'custody populated rollback refused' USING ERRCODE='42501';
     END IF;
-    -- Retain installation/evidence rather than silently drop trust enforcement.
-    UPDATE custody_admission.control SET admission_state='unavailable',control_epoch=control_epoch+1 WHERE singleton;
+    -- Shared-schema replay is idempotent. Preserve installation/evidence;
+    -- only the first empty rollback fences admission and advances its epoch.
+    UPDATE custody_admission.control SET admission_state='unavailable',control_epoch=control_epoch+1
+      WHERE singleton AND admission_state='ready';
 END;
 $custody_rollback$;
 

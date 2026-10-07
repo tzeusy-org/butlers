@@ -721,3 +721,22 @@ by constructor-validated enrollment. It neither imports daemon infrastructure
 merely for --help nor supplies a new source/caller trust selector. Legacy
 unallocated writer behavior remains explicit without custody-currentness credit;
 complete native writer coverage and genuine migrated controls remain required.
+
+### Empty migration replay and ordinary backup compatibility
+
+The fixed installer may reopen only the recorded empty `unavailable` rollback
+state. Repeated empty shared-schema rollback is idempotent. Enrolled, populated
+or revoked boundaries refuse rollback/re-enablement. A legitimate deep
+core_217 rollback drops `public.fleet_cases` and its incoming fixed
+`case_scopes_case_id_fkey`; only that missing constraint, in the empty recorded
+rollback state after the actual fleet table returns, may be restored. The full
+stored schema identity stays unchanged and must match again. Other column,
+constraint, policy or owner drift refuses; no general schema refresh is allowed.
+
+The ordinary backup excludes the exact fenced `custody_admission` schema and
+`public.custody_holds`, preserving its existing role/ACL boundary. It does not
+recover custody command/source/hold history. Restored-history admission and
+reconciliation remain undelivered. Ordinary backup availability is not custody
+recovery proof; all original recovery/containment acceptance remains mandatory
+and unmet. The same canonical writer, source, owner-auth, acquired-connection
+and final COMMIT controls remain required.

@@ -61,7 +61,7 @@ def custody_database_urls(postgres_container):
     # This is the genuine post-migration broad bootstrap replay. The private
     # feature ACL/RLS finalizer must remain effective after its public regrants.
     _bootstrap_migration_prerequisites(bootstrap, urlparse(ordinary).username)
-    return ordinary, bootstrap
+    return ordinary, urlparse(bootstrap)._replace(scheme="postgresql").geturl()
 
 
 def _database(url: str, actor: str) -> Database:
@@ -147,12 +147,171 @@ async def test_installed_schema_real_roles_and_same_acquired_writer(
                 await admin.fetchval("SELECT custody_admission.prove_interface()")
             )
 
+        # Empty shared-schema rollback is idempotent and disables admission.
+        # Neither arbitrary drift nor a revoked/recorded state can be adopted.
+        identity = await admin.fetchval(
+            "SELECT schema_identity FROM custody_admission.bootstrap_configuration WHERE singleton"
+        )
+        for mutation in (
+            "ALTER TABLE custody_admission.targets ADD COLUMN unexpected integer",
+            "ALTER TABLE custody_admission.targets DROP CONSTRAINT targets_generation_check",
+            "ALTER POLICY custody_bootstrap_engine ON public.custody_holds USING (true)",
+            "ALTER TABLE custody_admission.targets OWNER TO butler_relationship_rw",
+            "INSERT INTO custody_admission.provider_inventory(owner_entity_id,provider,version,declared_contributors) "
+            "VALUES (gen_random_uuid(),'fixture',1,'[]'::jsonb)",
+        ):
+            transaction = admin.transaction()
+            await transaction.start()
+            try:
+                await admin.execute("SELECT custody_admission.rollback_interface()")
+                await admin.execute(
+                    "ALTER TABLE custody_admission.case_scopes DROP CONSTRAINT case_scopes_case_id_fkey"
+                )
+                await admin.execute(mutation)
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    async with admin.transaction():
+                        await admin.execute("SELECT custody_admission.install_interface()")
+            finally:
+                await transaction.rollback()
+            assert await admin.fetchval("SELECT custody_admission.schema_identity()") == identity
+
+        # A missing FK while admission is ready is not an authorized rollback.
+        transaction = admin.transaction()
+        await transaction.start()
+        try:
+            await admin.execute(
+                "ALTER TABLE custody_admission.case_scopes DROP CONSTRAINT case_scopes_case_id_fkey"
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                async with admin.transaction():
+                    await admin.execute("SELECT custody_admission.install_interface()")
+        finally:
+            await transaction.rollback()
+
+        # Neutralize only the fixed missing-FK repair in its real SQL body.
+        # Reaching this installer refusal positions the control at the repair,
+        # rather than failing on a missing helper or before migration setup.
+        source_sql = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
+        start = source_sql.index("CREATE OR REPLACE FUNCTION custody_admission.install_interface()")
+        end = source_sql.index("$custody_install$;", start) + len("$custody_install$;")
+        installer_sql = source_sql[start:end]
+        repair_start = installer_sql.index(
+            "    ELSIF prior_identity IS DISTINCT FROM custody_admission.schema_identity() THEN"
+        )
+        repair_end = installer_sql.index("    EXECUTE $custody_tables$", repair_start)
+        neutralized = (
+            installer_sql[:repair_start]
+            + "    ELSIF prior_identity IS DISTINCT FROM custody_admission.schema_identity() THEN\n"
+            + "        RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';\n"
+            + "    END IF;\n"
+            + installer_sql[repair_end:]
+        )
+        assert neutralized != installer_sql
+        transaction = admin.transaction()
+        await transaction.start()
+        try:
+            await admin.execute("SELECT custody_admission.rollback_interface()")
+            await admin.execute(
+                "ALTER TABLE custody_admission.case_scopes DROP CONSTRAINT case_scopes_case_id_fkey"
+            )
+            await admin.execute(neutralized)
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="installed schema drift"):
+                async with admin.transaction():
+                    await admin.execute("SELECT custody_admission.install_interface()")
+        finally:
+            await transaction.rollback()
+        verify_installed_functions(
+            await admin.fetchval("SELECT custody_admission.prove_interface()")
+        )
+
+        # The existing actual deep lifecycle, not a hand-copied fleet schema,
+        # drops the public fleet table and its incoming private FK through217.
+        for schema in ("relationship", "switchboard"):
+            command.downgrade(
+                _build_alembic_config(ordinary_url, chains=["core"], target_schema=schema),
+                "core_215",
+            )
+        assert (
+            await admin.fetchval(
+                "SELECT admission_state FROM custody_admission.control WHERE singleton"
+            )
+            == "unavailable"
+        )
+        assert not await admin.fetchval(
+            "SELECT EXISTS(SELECT FROM pg_constraint WHERE conrelid="
+            "'custody_admission.case_scopes'::regclass AND conname='case_scopes_case_id_fkey')"
+        )
+        for schema in ("relationship", "switchboard"):
+            command.upgrade(
+                _build_alembic_config(ordinary_url, chains=["core"], target_schema=schema),
+                "core@head",
+            )
+        # A separate acquisition reads committed installer/control/schema state.
+        readback = await asyncpg.connect(bootstrap_url)
+        try:
+            await register_jsonb_codec(readback)
+            assert await readback.fetchval("SELECT custody_admission.schema_identity()") == identity
+            assert (
+                await readback.fetchval(
+                    "SELECT schema_identity FROM custody_admission.bootstrap_configuration WHERE singleton"
+                )
+                == identity
+            )
+            assert (
+                await readback.fetchval(
+                    "SELECT admission_state FROM custody_admission.control WHERE singleton"
+                )
+                == "ready"
+            )
+            verify_installed_functions(
+                await readback.fetchval("SELECT custody_admission.prove_interface()")
+            )
+        finally:
+            await readback.close()
+
+        # Explicit revoked state never reopens through installer or rollback.
+        transaction = admin.transaction()
+        await transaction.start()
+        try:
+            await admin.execute(
+                "UPDATE custody_admission.control SET admission_state='revoked' WHERE singleton"
+            )
+            for operation in ("install_interface", "rollback_interface"):
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    async with admin.transaction():
+                        await admin.execute(f"SELECT custody_admission.{operation}()")
+            assert (
+                await admin.fetchval(
+                    "SELECT admission_state FROM custody_admission.control WHERE singleton"
+                )
+                == "revoked"
+            )
+        finally:
+            await transaction.rollback()
+
         database = _database(ordinary_url, "relationship")
         await database.connect()
         stack.push_async_callback(database.close)
         runtime = CustodyRuntime(database, _profile("relationship"))
         admission = await runtime.start()
         stack.push_async_callback(runtime.stop)
+        # An actually enrolled allocation is evidence: rollback cannot erase or
+        # reopen it. The failed savepoint leaves the committed enrollment intact.
+        enrolled_before = await admin.fetchval("SELECT count(*) FROM custody_admission.processes")
+        assert enrolled_before > 0
+        with pytest.raises(asyncpg.InsufficientPrivilegeError, match="populated rollback"):
+            async with admin.transaction():
+                await admin.execute("SELECT custody_admission.rollback_interface()")
+        assert (
+            await admin.fetchval("SELECT count(*) FROM custody_admission.processes")
+            == enrolled_before
+        )
+        assert (
+            await admin.fetchval(
+                "SELECT admission_state FROM custody_admission.control WHERE singleton"
+            )
+            == "ready"
+        )
         assert runtime.channel_bindings is not None
         assert owning_binding_publisher(database.pool) is runtime.channel_bindings
         assert runtime.accepted_ingress is None

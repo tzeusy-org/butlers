@@ -175,6 +175,11 @@ def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
     assert not [line for line in code if "--enable-row-security" in line]
     _excluded_schemas, _excluded_tables, scoped_data_tables = _read_backup_sets()
     assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES
+    # Exact feature-fenced additions cannot widen into application exclusions.
+    assert "custody_admission" in _excluded_schemas
+    assert "public.custody_holds" in _excluded_tables
+    assert "public" not in _excluded_schemas
+    assert {"public.entities", "public.audit_log", "public.sessions"}.isdisjoint(_excluded_tables)
     assert any('--snapshot="${BACKUP_SNAPSHOT}"' in line for line in code)
     for table in scoped_data_tables:
         assert any('"--exclude-table-data=${table}"' in line for line in code)
@@ -306,6 +311,10 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
     """
     excluded_schemas, excluded_tables, scoped_data_tables = _read_backup_sets()
     fenced = _fetch(bootstrapped_db_url, _FENCED_RELATIONS_SQL)
+    assert "public.custody_holds" in fenced
+    assert "custody_admission.control" in fenced
+    assert "custody_admission.commands" in fenced
+    assert "custody_admission.sources" in fenced
     everything = _fetch(bootstrapped_db_url, _ALL_RELATIONS_SQL)
 
     def _is_excluded(qualified: str) -> bool:

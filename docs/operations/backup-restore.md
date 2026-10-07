@@ -557,3 +557,15 @@ into the live application database or manually erase recovery evidence.
 - Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
   `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).
+
+### Endpoint-custody recovery limitation
+
+The ordinary backup excludes exactly `custody_admission` and
+`public.custody_holds` because its existing dump identity cannot cross their
+fenced authority. This preserves ordinary application data and audit projections
+without granting access to private admission state. A successful backup does not
+recover custody sources, commands, hold history, or their authority. Bootstrap
+can reconstruct the fixed objects; it cannot reconstruct lost receipts or holds.
+Restored-history admission and reconciliation remain undelivered. Complete
+custody recovery/containment acceptance remains mandatory and unmet; do not use
+an ordinary backup success as evidence that a restored endpoint is eligible.

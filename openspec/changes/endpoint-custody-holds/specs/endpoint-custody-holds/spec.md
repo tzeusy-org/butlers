@@ -58,6 +58,17 @@ The registered custody apply tool SHALL receive its exact inner `custody-wire.v1
 
 The HTTP server resource boundary SHALL check streamed request length before retaining overflow, use a constructor-fixed finite generic request cap (default16MiB) and total read deadline (default10seconds), and refuse recognized custody overflow beyond its51200-byte escaped-envelope bound before full allocation/parsing. Late/ambiguous classification SHALL still be bounded by the larger generic server cap and strictly validated before instrumentation; it SHALL NOT bypass the inner8192-byte custody wire/duplicate/UTF8 checks or apply that small wire limit to ordinary generic tools. Disconnect/cancellation SHALL never delegate an incomplete request. Existing LOGIN/INHERIT runtime roles SHALL remain compatible with the adopted trusted-bootstrap/SET ROLE premise; LOGIN alone SHALL never enroll a custody principal or authorize a bound source. Every ancestry/private-access/RLS/registered-writer/current-source denial remains mandatory.
 
+The installer SHALL preserve the recorded full installed schema identity.
+Only actual empty recorded-unavailable rollback MAY repair the precisely fixed
+incoming fleet-case FK after its legitimate deep migration lifecycle recreates
+the public fleet table. Repeated empty rollback SHALL be idempotent; arbitrary
+schema drift, populated/enrolled or revoked states SHALL NOT be adopted or
+re-enabled. The existing ordinary backup SHALL retain its fenced-role boundary
+and declare its exact custody exclusions. Its success SHALL NOT count as
+recovery of custody command/source/hold history or restored-history admission.
+All five original groups, fifteen slices and V1–V11 recovery/containment
+requirements remain mandatory and unmet until genuine owning proof.
+
 #### Scenario: Peer DML does not forge custody
 
 - **WHEN** a General/Finance runtime role attempts hold/release/delete after bootstrap replay

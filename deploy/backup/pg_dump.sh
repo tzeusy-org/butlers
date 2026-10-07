@@ -98,6 +98,13 @@
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
+#   - custody_admission.* and public.custody_holds
+#         endpoint-custody source/command/hold history and private admission
+#         control. This ordinary backup does NOT recover that history. The
+#         bootstrap reconstructs fenced objects, not lost receipts or holds;
+#         restored-history admission/reconciliation is still undelivered.
+#         A successful ordinary backup is not custody recovery proof.
+#
 # No ordinary application data is excluded. The three cost-claim tables are the
 # narrow exception to pg_dump's data path: their schema, ownership, FORCE RLS,
 # policies, triggers, and definer function remain in the ordinary dump, while
@@ -130,11 +137,11 @@ BACKUP_RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-14}"
 
 # Trusted-bootstrap exclusion set. Whitespace-separated; parsed by
 # tests/scripts/test_pg_dump_backup.py, so keep the assignments on one line each.
-BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_generation_admin runtime_attention_admin"
+BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_generation_admin runtime_attention_admin custody_admission"
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity public.custody_holds"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"

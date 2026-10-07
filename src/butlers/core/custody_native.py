@@ -23,7 +23,12 @@ _installed_publishers: dict[asyncpg.Pool, CustodyChannelBindings] = {}
 
 
 def owning_binding_publisher(pool: asyncpg.Pool) -> CustodyChannelBindings | None:
-    return _installed_publishers.get(pool)
+    # Legacy connection-scope wrappers (including SimpleNamespace) need not
+    # be hashable. They cannot name an enrolled actual pool allocation.
+    try:
+        return _installed_publishers.get(pool)
+    except TypeError:
+        return None
 
 
 @asynccontextmanager

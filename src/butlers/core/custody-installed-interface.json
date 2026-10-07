@@ -458,7 +458,7 @@
     },
     {
       "signature": "custody_admission.install_interface()",
-      "body_sha256": "b4494b94f6f6135e9a226347ad63c1c261383a8cc8cfa227437136a564f136e4",
+      "body_sha256": "5eaa4eb035a5650ef9638ff5cf328068c0a13edafb22d553c6706b18f7b606b3",
       "argument_names": [],
       "return_type": "void",
       "language": "plpgsql",
@@ -642,7 +642,7 @@
     },
     {
       "signature": "custody_admission.rollback_interface()",
-      "body_sha256": "2e9ae1b4bf501e0c757a9a32db5d756870fe152000dee209381602ab2000eb25",
+      "body_sha256": "cbb59a4043684970c4423bc77136c600a35d3baf78d89f664bcdec8c6731779f",
       "argument_names": [],
       "return_type": "void",
       "language": "plpgsql",

@@ -27,6 +27,19 @@ from butlers.core.custody_source import (
 
 def test_canonical_wire_retains_exact_types_bytes_and_closed_shape():
     from dataclasses import replace
+    from types import SimpleNamespace
+
+    from butlers.core import custody_native
+    from butlers.core.custody_bindings import owning_binding_publisher
+
+    # A legacy connection wrapper cannot identify an enrolled pool. The actual
+    # constructor allocation continues to return its exact guarded publisher.
+    assert owning_binding_publisher(SimpleNamespace(acquire=lambda: None)) is None
+    actual_pool, publisher = object(), object()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(custody_native._installed_publishers, actual_pool, publisher)
+        assert owning_binding_publisher(actual_pool) is publisher
+        assert owning_binding_publisher(object()) is None
 
     from butlers.core.custody_bindings import channel_origin_digest, origins_affected_by_facts
     from butlers.core.custody_control import host_profile
