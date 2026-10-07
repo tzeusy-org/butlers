@@ -150,6 +150,19 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 ## Implementation Notes
 
+- CI's required `check` consumes the actual `needs` JSON under `always()`. That scheduling
+  condition alone does not enforce a failed dependency. Changes/guards and applicable planner
+  verdicts must succeed; preflight is required independently of heavy-shard classification.
+  Scoped PRs require successful preflight and affected tests while every heavy shard skips.
+  Docs-only PRs and pushes to main admit only their complete backend skip pairing; full backend
+  PRs and merge-group trees require every heavy shard. Added needed jobs default to no skip
+  permission, and malformed verdict/classifier/planner evidence fails closed.
+- Lock, lint, format and SQL-safety checks execute in guards after the existing UV install
+  recovery policy and frozen dev synchronization. Their command scopes match the former
+  preflight commands and local `make check-guards`. Exact-once manifests, collected budgets,
+  smoke/release cmd/SHA/duration/status/skips and sanitized artifacts stay in preflight.
+  Coverage still combines in check; extraction and finite-timeout changes in the active
+  `fail-closed-ci-assurance` plan remain unfinished. M1 makes no wall-clock gain claim.
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
   caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
 - Startup timeouts (before a container starts) are host contention: reduce load and rely on the

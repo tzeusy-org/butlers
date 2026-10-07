@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -89,6 +92,211 @@ def _artifact_step(*, job: dict, artifact_name: str) -> dict:
         if step.get("uses") == "actions/upload-artifact@v4"
         and step["with"]["name"] == artifact_name
     )
+
+
+def _run_fan_in(
+    *, gate: dict, needs: object, event: str, ref: str, tmp_path: Path, raw_needs: str | None = None
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Execute the actual YAML step, including the old per-result transport."""
+    output = tmp_path / "gate-output"
+    output.write_text("")
+    env = {**os.environ, "EVENT_NAME": event, "REF": ref, "GITHUB_OUTPUT": str(output)}
+    env["NEEDS_JSON"] = json.dumps(needs) if raw_needs is None else raw_needs
+    # The baseline uses separate env fields. Resolve those actual expressions
+    # too, so the old-code control reaches ignored verdicts rather than setup.
+    for name, expression in gate["env"].items():
+        match = re.fullmatch(r"\$\{\{ needs\.([\w-]+)\.(result|outputs\.\w+) \}\}", expression)
+        if match and isinstance(needs, dict):
+            job, field = match.groups()
+            value = needs.get(job, {})
+            for part in field.split("."):
+                value = value.get(part, "") if isinstance(value, dict) else ""
+            env[name] = value if isinstance(value, str) else ""
+    result = subprocess.run(
+        ["bash", "-e", "-c", gate["run"]],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+    return result, output.read_text()
+
+
+def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shard(
+    tmp_path: Path,
+) -> None:
+    """REQ-testing-035: actual verdict consumer, not a reimplementation of it."""
+    jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    gate = next(step for step in jobs["check"]["steps"] if step.get("id") == "gate")
+    heavy = {name for name in jobs if name.startswith(("check-unit-", "check-integration-"))}
+    full = {
+        name: {"result": "success", "outputs": {}} for name in {*jobs["check"]["needs"], "guards"}
+    }
+    full["changes"]["outputs"] = {"backend": "true", "frontend": "false"}
+    full["plan"]["outputs"] = {"mode": "full", "test_paths": "[]"}
+    full["check-affected"]["result"] = "skipped"
+    contexts = [("full", "pull_request", "refs/pull/1/merge", full, True)]
+    scoped = copy.deepcopy(full)
+    for name in heavy:
+        scoped[name]["result"] = "skipped"
+    scoped["plan"]["outputs"] = {
+        "mode": "scoped",
+        "test_paths": '["tests/contracts/test_ci_test_targets.py"]',
+    }
+    scoped["check-affected"]["result"] = "success"
+    contexts.append(("scoped", "pull_request", "refs/pull/1/merge", scoped, False))
+    docs = copy.deepcopy(scoped)
+    docs["changes"]["outputs"] = {"backend": "false", "frontend": "false"}
+    for name in ("plan", "check-preflight", "check-affected"):
+        docs[name] = {"result": "skipped", "outputs": {}}
+    contexts.append(("docs", "pull_request", "refs/pull/1/merge", docs, False))
+    push = copy.deepcopy(docs)
+    push["changes"]["outputs"] = {"backend": "true", "frontend": "true"}
+    contexts.append(("push", "push", "refs/heads/main", push, False))
+    merge_group = copy.deepcopy(full)
+    merge_group["plan"] = {"result": "skipped", "outputs": {}}
+    merge_group["changes"]["outputs"]["frontend"] = "true"
+    contexts.append(
+        ("merge_group", "merge_group", "refs/heads/gh-readonly-queue/main/x", merge_group, True)
+    )
+
+    failures = []
+
+    def check(label: str, needs: object, event: str, ref: str, expected: bool) -> None:
+        result, output = _run_fan_in(
+            gate=gate, needs=needs, event=event, ref=ref, tmp_path=tmp_path
+        )
+        if (result.returncode == 0) != expected:
+            failures.append(f"{label}: exit={result.returncode}, expected_success={expected}")
+        if expected:
+            ran = event == "merge_group" or (
+                event == "pull_request" and needs["plan"]["outputs"].get("mode") == "full"
+            )
+            assert f"shards_ran={str(ran).lower()}\n" == output, label
+
+    for mode, event, ref, needs, _ in contexts:
+        check(mode, needs, event, ref, True)
+        for name in ("check-preflight", *sorted(set(needs) - {"check-preflight"})):
+            for verdict in ("failure", "cancelled", "", "unknown", False, None):
+                changed = copy.deepcopy(needs)
+                changed[name]["result"] = verdict
+                check(f"{mode}/{name}/{verdict!r}", changed, event, ref, False)
+            changed = copy.deepcopy(needs)
+            del changed[name]
+            check(f"{mode}/{name}/missing", changed, event, ref, False)
+            changed = copy.deepcopy(needs)
+            del changed[name]["result"]
+            check(f"{mode}/{name}/missing-result", changed, event, ref, False)
+            changed = copy.deepcopy(needs)
+            changed[name]["outputs"] = []
+            check(f"{mode}/{name}/invalid-outputs", changed, event, ref, False)
+        for result in ("success", "skipped", "failure", "cancelled", "unknown"):
+            changed = copy.deepcopy(needs)
+            changed["new-needed-job"] = {"result": result, "outputs": {}}
+            check(f"{mode}/added/{result}", changed, event, ref, result == "success")
+    for mode, event, ref, needs, _ in contexts:
+        for name in ("changes", "guards", "plan", "check-preflight", "check-affected", *heavy):
+            changed = copy.deepcopy(needs)
+            changed[name]["result"] = "skipped" if needs[name]["result"] == "success" else "success"
+            check(f"{mode}/{name}/wrong-pairing", changed, event, ref, False)
+    for output in (
+        {},
+        {"backend": "true"},
+        {"backend": True, "frontend": "false"},
+        {"backend": "invalid", "frontend": "false"},
+        {"backend": "false", "frontend": False},
+    ):
+        changed = copy.deepcopy(full)
+        changed["changes"]["outputs"] = output
+        check(
+            f"invalid-classification/{output}", changed, "pull_request", "refs/pull/1/merge", False
+        )
+    for output in (
+        {},
+        {"mode": "invalid", "test_paths": "[]"},
+        {"mode": "scoped", "test_paths": "[]"},
+        {"mode": "full", "test_paths": '["tests/test_x.py"]'},
+        {"mode": "scoped", "test_paths": "invalid"},
+        {"mode": "scoped", "test_paths": '["../outside.py"]'},
+    ):
+        changed = copy.deepcopy(full)
+        changed["plan"]["outputs"] = output
+        check(f"invalid-plan/{output}", changed, "pull_request", "refs/pull/1/merge", False)
+    check("non-main-push", push, "push", "refs/heads/other", False)
+    check("unknown-event", full, "workflow_dispatch", "refs/heads/main", False)
+    for malformed in ([], None, {}, "not-an-object"):
+        check(f"invalid-needs/{malformed!r}", malformed, "merge_group", "refs/heads/main", False)
+    for raw in ("{", json.dumps(full)[:-1] + ', "changes": {}}'):
+        result, output = _run_fan_in(
+            gate=gate,
+            needs=full,
+            raw_needs=raw,
+            event="pull_request",
+            ref="refs/pull/1/merge",
+            tmp_path=tmp_path,
+        )
+        assert result.returncode != 0
+        assert "shards_ran=true" not in output
+    assert not failures, "\n".join(failures)
+
+    # Reached fault controls prove that each independent policy check matters.
+    # They edit only the extracted actual step, never another implementation.
+    mutations = [
+        (
+            "preflight",
+            gate["run"].replace(
+                "invalid = []", 'needs["check-preflight"]["result"] = "success"\ninvalid = []'
+            ),
+            "check-preflight",
+            "failure",
+        ),
+        (
+            "guards",
+            gate["run"].replace(
+                "invalid = []", 'needs["guards"]["result"] = "success"\ninvalid = []'
+            ),
+            "guards",
+            "failure",
+        ),
+        (
+            "default-skip",
+            gate["run"].replace(
+                'expected.get(name, "success")', 'expected.get(name, job["result"])'
+            ),
+            "new-needed-job",
+            "skipped",
+        ),
+        (
+            "partial-heavy",
+            gate["run"].replace(
+                'if job["result"] != expected.get(name, "success")',
+                'if name not in heavy and job["result"] != expected.get(name, "success")',
+            ),
+            sorted(heavy)[0],
+            "skipped",
+        ),
+    ]
+    for label, mutated, job_name, verdict in mutations:
+        assert mutated != gate["run"], label
+        changed = copy.deepcopy(full)
+        changed[job_name] = {"result": verdict, "outputs": {}}
+        ordinary, _ = _run_fan_in(
+            gate=gate,
+            needs=changed,
+            event="pull_request",
+            ref="refs/pull/1/merge",
+            tmp_path=tmp_path,
+        )
+        neutralized, _ = _run_fan_in(
+            gate={**gate, "run": mutated},
+            needs=changed,
+            event="pull_request",
+            ref="refs/pull/1/merge",
+            tmp_path=tmp_path,
+        )
+        assert ordinary.returncode != 0, label
+        assert neutralized.returncode == 0, (label, neutralized.stderr)
 
 
 def test_smoke_ci_spec_matches_the_preflight_topology() -> None:
@@ -200,7 +408,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     assert set(workflow[True]) == {"push", "pull_request", "merge_group"}
 
     # `changes` classifies the PR diff fail-closed; `guards` runs every
-    # dependency-free guard script in one job with nothing upstream of it.
+    # static guard script in one job with nothing upstream of it.
     changes = jobs["changes"]
     assert "needs" not in changes and "if" not in changes
     assert set(changes["outputs"]) == {"backend", "frontend"}
@@ -216,6 +424,10 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
         "GUARD_OUTCOMES"
     ]
     for guard_id in (
+        "lock",
+        "lint",
+        "format",
+        "sql_safety",
         "session_links",
         "em_dashes",
         "spec_overwrites",
@@ -230,6 +442,67 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
         guard_step = next(step for step in guards["steps"] if step.get("id") == guard_id)
         assert "!cancelled()" in guard_step["if"]  # One failing guard never hides another.
         assert f"{guard_id}=${{{{ steps.{guard_id}.outcome }}}}" in guard_outcomes
+
+    # Execute the actual finalizer: skipped mandatory checks cannot turn green,
+    # while the intentional non-PR session-link skip has a positive companion.
+    finalizer = _workflow_step(job=guards, name="Fail if any guard failed")
+    outcomes = {line.split("=", 1)[0]: "success" for line in guard_outcomes.splitlines()}
+    for name, verdict, event, expected in [
+        ("session_links", "skipped", "merge_group", 0),
+        ("session_links", "skipped", "pull_request", 1),
+        *[
+            (name, result, "pull_request", 1)
+            for name in outcomes
+            for result in ("failure", "skipped", "cancelled")
+        ],
+    ]:
+        actual = {**outcomes, name: verdict}
+        result = subprocess.run(
+            ["bash", "-e", "-c", finalizer["run"]],
+            env={
+                **os.environ,
+                "EVENT_NAME": event,
+                "GUARD_OUTCOMES": "\n".join(f"{key}={value}" for key, value in actual.items()),
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == expected, (name, verdict, result.stdout)
+
+    static_commands = {
+        "Check lock file is up to date": "uv lock --check",
+        "Lint": "make lint",
+        "Format check": "uv run ruff format --check src/ tests/ roster/ conftest.py -q",
+        "SQL safety check (FOR UPDATE + outer join)": "make check-for-update-joins",
+    }
+    for name, command in static_commands.items():
+        assert _workflow_step(job=guards, name=name)["run"] == command
+        assert not any(step.get("name") == name for step in preflight["steps"])
+    assert (
+        _workflow_step(job=guards, name="Install uv")["run"]
+        == _workflow_step(job=preflight, name="Install uv")["run"]
+    )
+    assert (
+        _workflow_step(job=guards, name="Install dependencies")["run"] == "uv sync --frozen --dev"
+    )
+    ordered = [step.get("name") for step in guards["steps"]]
+    assert (
+        ordered.index("Install uv")
+        < ordered.index("Check lock file is up to date")
+        < ordered.index("Install dependencies")
+        < ordered.index("Lint")
+    )
+    dry_run = subprocess.run(
+        ["make", "-n", "check-guards"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    for command in (
+        "uv lock --check",
+        "uv run ruff check src/ tests/",
+        static_commands["Format check"],
+        "scripts/check_for_update_joins.py",
+    ):
+        assert command in dry_run
 
     # Preflight and the shards depend only on the path classification: they
     # still overlap with each other to protect the budget, and they run on
@@ -303,6 +576,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
 
     assert check_job["needs"] == [
         "changes",
+        "guards",
         "plan",
         "check-preflight",
         "check-unit-1",
@@ -321,11 +595,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     assert "cancelled" not in check_job["if"]
 
     for step_name in (
-        "Check lock file is up to date",
         "Install dependencies",
-        "Lint",
-        "Format check",
-        "SQL safety check (FOR UPDATE + outer join)",
         "Verify CI test shard manifests",
         "Smoke tests (fast gate + release evidence)",
     ):
@@ -427,47 +697,11 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
         name="Require preflight and every test shard to pass (or be skipped by the path filter)",
     )
     assert gate["id"] == "gate"
-    for result_name in (
-        "EVENT_NAME",
-        "CHANGES_RESULT",
-        "CHANGES_BACKEND",
-        "PLAN_MODE",
-        *[f"CHECK_UNIT_{index}_RESULT" for index in range(1, 6)],
-        *[f"CHECK_INTEGRATION_{index}_RESULT" for index in range(1, 6)],
-        "CHECK_AFFECTED_RESULT",
-    ):
-        assert result_name in gate["run"]
-    # Regression guard (bu-tt97y): check-preflight must NOT appear in the
-    # gate's shard-classification env/loop. It is not one of the ten heavy
-    # shards gated by the scoped/full plan decision -- it always runs and
-    # always succeeds when reached -- so counting it there falsely fails
-    # every scoped-mode PR. Its own success/failure is already enforced via
-    # the hard `needs:` dependency asserted above (check_job["needs"]).
-    assert "CHECK_PREFLIGHT_RESULT" not in gate["run"]
-    assert "CHECK_PREFLIGHT_RESULT" not in gate["env"]
-    assert "needs.check-preflight" not in str(gate["env"])
-    # Fail closed: a skipped shard passes only for a docs-only PR that the
-    # `changes` job classified successfully, on push to main (the queue
-    # already validated that tree), or a pull_request where the affected-test
-    # planner (bu-v28ho) selected a scoped mode -- in which case
-    # `check-affected` must be the shards' evidence instead. Anything else,
-    # and any ran/skipped mix, fails.
-    assert (
-        '[ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_RESULT" = "success" ] '
-        '&& [ "$CHANGES_BACKEND" = "false" ]'
-    ) in gate["run"]
-    assert '[ "$EVENT_NAME" = "push" ]' in gate["run"]
-    assert (
-        '[ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_BACKEND" = "true" ] '
-        '&& [ "$PLAN_MODE" = "scoped" ]'
-    ) in gate["run"]
-    assert "skipped, but this event requires the shards to run" in gate["run"]
-    assert "inconsistent shard state" in gate["run"]
-    assert (
-        "check-affected=success but this event/plan did not select the scoped lane" in gate["run"]
-    )
-    assert "check-affected=skipped but the plan selected a scoped mode" in gate["run"]
-    assert 'echo "shards_ran=true" >> "$GITHUB_OUTPUT"' in gate["run"]
+    assert gate["env"] == {
+        "EVENT_NAME": "${{ github.event_name }}",
+        "REF": "${{ github.ref }}",
+        "NEEDS_JSON": "${{ toJSON(needs) }}",
+    }
     for step in check_job["steps"][1:]:
         assert "steps.gate.outputs.shards_ran == 'true'" in step["if"]
 
