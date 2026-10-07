@@ -34,6 +34,12 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.served_identity import (
+    TerminalResultError,
+    append_stream,
+    observe_invocation,
+    token,
+)
 
 if TYPE_CHECKING:
     from butlers.credential_store import CredentialStore
@@ -139,15 +145,15 @@ def _parse_claude_output(
                 text_parts.append(str(result_content))
             raw_usage = obj.get("usage")
             if isinstance(raw_usage, dict):
-                input_tokens = raw_usage.get("input_tokens")
-                output_tokens = raw_usage.get("output_tokens")
-                if isinstance(input_tokens, int) or isinstance(output_tokens, int):
+                input_tokens = token(raw_usage.get("input_tokens"))
+                output_tokens = token(raw_usage.get("output_tokens"))
+                if input_tokens is not None and output_tokens is not None:
                     usage = {
                         "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
                         "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
                     }
-                    cache_read = raw_usage.get("cache_read_input_tokens")
-                    cache_creation = raw_usage.get("cache_creation_input_tokens")
+                    cache_read = token(raw_usage.get("cache_read_input_tokens"))
+                    cache_creation = token(raw_usage.get("cache_creation_input_tokens"))
                     if isinstance(cache_read, int):
                         usage["cache_read_input_tokens"] = cache_read
                     if isinstance(cache_creation, int):
@@ -313,6 +319,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             return self._claude_binary
         return _find_claude_binary()
 
+    @observe_invocation("claude")
     async def invoke(
         self,
         prompt: str,
@@ -513,6 +520,13 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                         pass
 
             returncode = proc.returncode or 0
+            served = append_stream(
+                self,
+                "claude",
+                stdout,
+                configured=model,
+                completion="error" if returncode else "success",
+            )
 
             # Capture process info for session diagnostics
             self._last_process_info = {
@@ -535,6 +549,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
 
             result_text, tool_calls, usage = _parse_claude_output(stdout, stderr, returncode)
             self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
+            if any(item["error"]["is_error"] is True for item in served["executions"]):
+                self._last_process_info["is_pre_tool_call"] = not bool(tool_calls)
+                raise TerminalResultError(served, usage, tool_calls)
             return result_text, tool_calls, usage
 
         except TimeoutError:

@@ -62,6 +62,7 @@ import logging
 import os
 import time
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 
@@ -70,7 +71,12 @@ from prometheus_client import Counter
 
 from butlers.cli_auth.registry import providers_for_runtime
 from butlers.core.dispatch_intent import discretion_dispatch_intent
-from butlers.core.dispatch_outcomes import project_resolution_receipt, record_dispatch_attempt
+from butlers.core.dispatch_outcomes import (
+    DispatchUsageEvidence,
+    project_resolution_receipt,
+    record_dispatch_attempt,
+    usage_is_measured,
+)
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
@@ -79,7 +85,6 @@ from butlers.core.model_routing import (
     apply_spend_routing_rules,
     check_token_quota,
     next_same_tier_candidate,
-    record_token_usage,
     resolve_model_with_effective_tier,
 )
 from butlers.core.purpose_lane import (
@@ -91,6 +96,7 @@ from butlers.core.runtimes.base import (
     create_adapter,
     validated_session_timeout_overhead_s,
 )
+from butlers.core.runtimes.served_identity import TerminalResultError, snapshot, unknown
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -502,6 +508,8 @@ class DiscretionDispatcher:
                     failure_reason=quota_msg,
                     purpose_lane=self._purpose_lane,
                     resolution_receipt=current_resolution_receipt,
+                    served_identity=unknown(runtime_type, state="not_invoked"),
+                    attempt_key=uuid.uuid4(),
                 )
                 # Discretion calls do not own a Spawner session/logical-session
                 # record. Keep skip provenance bounded and operational: catalog
@@ -590,7 +598,9 @@ class DiscretionDispatcher:
             # Resolve provider config for models using external providers
             # (e.g. ollama/ prefix needs the base URL from public.provider_config)
             provider_config = await self._resolve_provider_config(model_id)
-            adapter = self._get_or_create_adapter(runtime_type, provider_config)
+            factory = self._get_or_create_adapter(runtime_type, provider_config)
+            adapter = factory.create_worker()
+            attempt_key = uuid.uuid4()
 
             # Thinking models (qwen3 family) default to chain-of-thought mode
             # which produces <think> tokens that get stripped, leaving empty
@@ -614,6 +624,7 @@ class DiscretionDispatcher:
                 )
                 return result_text or ""
 
+            cancelled = False
             attempt_exc: Exception | None = None
             result: str = ""
             attempt_started_at = time.monotonic()
@@ -624,48 +635,48 @@ class DiscretionDispatcher:
                         adapter
                     )
                     result = await asyncio.wait_for(_invoke(), timeout=outer_timeout_s)
+                except asyncio.CancelledError:
+                    cancelled = True
+                    raise
                 except Exception as exc:  # noqa: BLE001 — classified below
                     attempt_exc = exc
                 finally:
-                    # Record token usage best-effort (success and failure).
-                    # Tokens are consumed by the provider on invocation regardless of outcome.
-                    if _usage_dict:
-                        input_tokens = _usage_dict.get("input_tokens")
-                        output_tokens = _usage_dict.get("output_tokens")
-                        if input_tokens is not None:
-                            await record_token_usage(
-                                self._pool,
-                                catalog_entry_id=catalog_entry_id,
-                                butler_name=(
-                                    self._butler_name
-                                    if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                                    else identity or self._butler_name
-                                ),
-                                session_id=None,
-                                input_tokens=input_tokens,
-                                output_tokens=output_tokens or 0,
-                                purpose=(
-                                    PURPOSE_LANE_PRIVATE_CONTENT
-                                    if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                                    else "discretion"
-                                ),
-                                purpose_lane=self._purpose_lane,
-                            )
-                            logger.debug(
-                                "Discretion token usage recorded: in=%d out=%d model=%s",
-                                input_tokens,
-                                output_tokens or 0,
-                                model_id,
-                            )
-                        else:
-                            logger.debug(
-                                "Discretion adapter returned usage without input_tokens: %s",
-                                _usage_dict,
-                            )
-                    else:
-                        logger.debug(
-                            "Discretion adapter returned no usage data for model=%s",
-                            model_id,
+                    # Copy this worker's evidence before a persistence await or handoff.
+                    served_identity = snapshot(adapter)
+                    process_info = deepcopy(adapter.last_process_info)
+                    if isinstance(attempt_exc, TerminalResultError):
+                        _usage_dict = attempt_exc.usage
+                    measured = usage_is_measured(_usage_dict)
+                    usage_evidence = DispatchUsageEvidence(
+                        butler_name=self._butler_name
+                        if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else identity or self._butler_name,
+                        input_tokens=_usage_dict.get("input_tokens") if measured else None,
+                        output_tokens=(_usage_dict.get("output_tokens") or 0) if measured else None,
+                        cached_input_tokens=(_usage_dict.get("cache_read_input_tokens") or 0)
+                        if measured
+                        else None,
+                        cache_creation_tokens=(_usage_dict.get("cache_creation_input_tokens") or 0)
+                        if measured
+                        else None,
+                        purpose=PURPOSE_LANE_PRIVATE_CONTENT
+                        if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else "discretion",
+                        usage_source="measured" if measured else "unmeasurable",
+                    )
+
+                    if cancelled:
+                        await record_dispatch_attempt(
+                            self._pool,
+                            catalog_entry_id=catalog_entry_id,
+                            butler=self._butler_name,
+                            outcome="owner_cancelled",
+                            attempt_index=attempt_count - 1,
+                            purpose_lane=self._purpose_lane,
+                            resolution_receipt=current_resolution_receipt,
+                            usage_evidence=usage_evidence,
+                            served_identity=served_identity,
+                            attempt_key=attempt_key,
                         )
 
             if attempt_exc is None:
@@ -678,6 +689,9 @@ class DiscretionDispatcher:
                     duration_ms=int((time.monotonic() - attempt_started_at) * 1000),
                     purpose_lane=self._purpose_lane,
                     resolution_receipt=current_resolution_receipt,
+                    usage_evidence=usage_evidence,
+                    served_identity=served_identity,
+                    attempt_key=attempt_key,
                 )
                 self._last_success_at = time.time()
                 return result
@@ -688,7 +702,7 @@ class DiscretionDispatcher:
             # process_info is still passed through: some gates (e.g. OpenCode's
             # pre-tool-call APIError envelope) key off it, not just tool_calls.
             decision = classify_failover_eligibility(
-                FailoverContext(exception=attempt_exc, process_info=adapter.last_process_info)
+                FailoverContext(exception=attempt_exc, process_info=process_info)
             )
             private_failure = self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
             await record_dispatch_attempt(
@@ -705,6 +719,9 @@ class DiscretionDispatcher:
                 duration_ms=int((time.monotonic() - attempt_started_at) * 1000),
                 purpose_lane=self._purpose_lane,
                 resolution_receipt=current_resolution_receipt,
+                usage_evidence=usage_evidence,
+                served_identity=served_identity,
+                attempt_key=attempt_key,
             )
 
             # bu-ur7go: a genuine provider/auth-classified failure (e.g. a

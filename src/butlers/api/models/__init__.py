@@ -529,6 +529,9 @@ class SpendSummary(BaseModel):
     # zero-tuple internally, so totals above are a partial sum, never a
     # confident fleet-wide total when this list is non-empty.
     unavailable_butlers: list[str] = Field(default_factory=list)
+    served_breakdown: list[dict] = Field(default_factory=list)
+    reported_cost_comparisons: list[dict] = Field(default_factory=list)
+    served_source_error: bool = False
 
 
 class DailySpend(BaseModel):

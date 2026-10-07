@@ -440,3 +440,10 @@ psql -h localhost -U butlers -d butlers -c \
 - [LLM CLI Spawner](spawner.md) --- where model resolution integrates into the spawn pipeline, including same-tier failover flow
 - [Session Lifecycle](session-lifecycle.md) --- how resolution metadata is recorded on sessions
 - [Scheduler Execution](scheduler-execution.md) --- how scheduled tasks specify complexity tiers
+
+
+## Served identity evidence (proposed bu-s11n0s.6)
+
+Serving evidence belongs beside the immutable requested-route resolution receipt. A catalog join proves which route was invoked, not which internal provider model served. Breaker/routing scores remain route reliability. Separate normalized serving metadata and provider_breakdown rows disclose actual response, CLI-reported, request-fallback and unknown provenance; no serving mismatch reroutes. Exit-zero typed terminal errors cease being success, but no-side-effect/default-closed retry gates stay. Existing aggregate ledger quota/ceiling totals remain computed requested-route estimates; serving/CLI cost comparisons are separate, scope-qualified and never additive. Claude cumulative estimated costs cannot be charged as attempt costs without a validated same-lineage predecessor. Pinned Codex lacks model/version/cost; Gemini reported model keys have fallback-ambiguous provenance. Actual /opt/cli-versions.txt expected image versions are distinct from emitted versions. Missing values, missing prices and unavailable sources are unknown, not requested-as-served or zero.
+
+Normalized input_tokens means uncached input. Cache-read and cache-creation counts are independent and may exceed uncached input. Only a pinned provider-inclusive prompt counter is compared with its explicitly included cache component before checked subtraction. Unproved cache overlap stays unknown; report and price proven buckets once.

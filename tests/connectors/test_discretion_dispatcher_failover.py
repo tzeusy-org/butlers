@@ -66,6 +66,8 @@ def _denied_quota() -> QuotaStatus:
 
 def _make_adapter(side_effect: list[object]) -> MagicMock:
     adapter = MagicMock()
+    adapter.create_worker.return_value = adapter
+    adapter.last_process_info = None
     adapter.invoke = AsyncMock(side_effect=side_effect)
     return adapter
 
@@ -115,7 +117,6 @@ async def test_call_passes_adapter_process_info_to_classifier() -> None:
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(f"{_MODULE}.classify_failover_eligibility", side_effect=_fake_classify),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="boom"):
             await dispatcher.call("hi")
@@ -160,7 +161,7 @@ async def test_call_retries_next_same_tier_candidate_on_eligible_failure() -> No
             f"{_MODULE}.next_same_tier_candidate",
             AsyncMock(return_value=second_candidate),
         ) as mock_next,
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi", identity="tg:1")
 
@@ -175,9 +176,14 @@ async def test_call_retries_next_same_tier_candidate_on_eligible_failure() -> No
 
     # The failed first attempt raised before usage was captured — only the
     # successful second attempt records token usage.
-    mock_record.assert_awaited_once()
-    _, kwargs = mock_record.call_args
-    assert kwargs["catalog_entry_id"] == second_id
+    measured = [
+        call
+        for call in mock_record.await_args_list
+        if call.kwargs.get("usage_evidence") is not None
+        and call.kwargs["usage_evidence"].usage_source == "measured"
+    ]
+    assert len(measured) == 1
+    assert measured[0].kwargs["catalog_entry_id"] == second_id
 
 
 # ---------------------------------------------------------------------------
@@ -201,13 +207,17 @@ async def test_call_does_not_retry_ineligible_failure() -> None:
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock()) as mock_next,
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         with pytest.raises(ValueError, match="malformed prompt"):
             await dispatcher.call("hi")
 
     mock_next.assert_not_called()
-    mock_record.assert_not_called()
+    assert all(
+        call.kwargs.get("usage_evidence") is None
+        or call.kwargs["usage_evidence"].usage_source == "unmeasurable"
+        for call in mock_record.await_args_list
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +242,16 @@ async def test_call_raises_same_tier_failover_exhausted_when_no_candidates_remai
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
             await dispatcher.call("hi")
 
-    mock_record.assert_not_called()
+    assert all(
+        call.kwargs.get("usage_evidence") is None
+        or call.kwargs["usage_evidence"].usage_source == "unmeasurable"
+        for call in mock_record.await_args_list
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +298,6 @@ async def test_call_skips_quota_denied_selected_candidate_before_invocation(
             f"{_MODULE}.next_same_tier_candidate",
             AsyncMock(return_value=fallback),
         ) as mock_next,
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
     ):
         with caplog.at_level(logging.INFO):
             result = await dispatcher.call(
@@ -352,7 +365,6 @@ async def test_call_exhausts_same_tier_when_all_discretion_candidates_are_quota_
             f"{_MODULE}.next_same_tier_candidate",
             side_effect=_next_same_tier,
         ),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
             await dispatcher.call("hi")
@@ -424,7 +436,6 @@ async def test_call_keeps_runtime_failure_and_quota_skip_in_one_same_tier_chain(
             f"{_MODULE}.next_same_tier_candidate",
             side_effect=_next_same_tier,
         ),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
         patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("hi")
@@ -479,7 +490,6 @@ async def test_quota_skips_consume_the_existing_same_tier_attempt_cap(
             f"{_MODULE}.next_same_tier_candidate",
             side_effect=_next_same_tier,
         ),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(
             RuntimeError, match=r"same_tier_failover_exhausted.*2 attempt\(s\).*safety cap"

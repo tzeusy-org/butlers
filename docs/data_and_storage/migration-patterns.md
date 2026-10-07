@@ -382,3 +382,8 @@ SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
 - [State Store](state-store.md) -- The `state` table created by core migrations
+
+
+## Served identity evidence (proposed bu-s11n0s.6)
+
+Serving evidence is additive core-owned data. Do not edit historical revisions, reserve the next core number during PRIMARY, chain private drafts or backfill serving from requested labels. Multiple schema replays must preserve the public table checks and exact data. Keep existing one aggregate partitioned ledger record; per-model usage belongs in a separate evidence table so every quota/ceiling read does not double count. A populated downgrade refuses instead of deleting serving receipts; prove refusal with planted sentinels and separate readback. Replaying bootstrap/runtime roles is required for SQL evidence; a mock and a role string are not grant/RLS proof.

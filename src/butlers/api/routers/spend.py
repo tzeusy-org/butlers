@@ -802,6 +802,103 @@ class FleetHaltAttentionObservation(BaseModel):
 _FLEET_ATTENTION_REASON_COPY = ATTENTION_REASON_COPY
 
 
+async def _served_cost_evidence(db, pricing, from_date, to_date, *, butler=None):
+    """Separate comparison evidence; never add it to operational ledger totals."""
+    from butlers.api.models.served_identity import ServedCostComparison
+
+    try:
+        pool = db.credential_shared_pool()
+        start_at, end_at = _utc_day_bounds(from_date, to_date)
+        rows = await pool.fetch(
+            """SELECT usage.* FROM public.model_served_usage usage
+               JOIN public.model_dispatch_attempts attempt ON attempt.id=usage.attempt_id
+               WHERE usage.recorded_at >= $1::timestamptz
+                 AND usage.recorded_at < $2::timestamptz
+                 AND ($3::text IS NULL OR attempt.butler=$3)
+               ORDER BY usage.recorded_at,usage.attempt_id,execution_index,model_ordinal""",
+            start_at,
+            end_at,
+            butler,
+        )
+        comparisons = []
+        breakdown = []
+        for row in rows:
+            tokens = {
+                key: row[key]
+                for key in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                )
+            }
+            complete = (
+                row["cost_scope"] == "invocation"
+                and row["evidence_state"] == "observed"
+                and all(value is not None for value in tokens.values())
+            )
+            computed = (
+                pricing.estimate_cost(
+                    row["model_id"],
+                    tokens["input_tokens"],
+                    tokens["output_tokens"],
+                    cached_input_tokens=tokens["cache_read_input_tokens"],
+                    cache_creation_tokens=tokens["cache_creation_input_tokens"],
+                )
+                if complete
+                else None
+            )
+            reported = (
+                float(row["reported_cost_usd"]) if row["reported_cost_usd"] is not None else None
+            )
+            comparable = complete and computed is not None and reported is not None
+            difference = round(reported - computed, 6) if comparable else None
+            item = ServedCostComparison(
+                attempt_id=row["attempt_id"],
+                execution_index=row["execution_index"],
+                model_id=row["model_id"],
+                identity_authority=row["identity_authority"],
+                provenance=row["provenance"],
+                reported_cost_usd=reported,
+                computed_served_cost_usd=computed,
+                difference_usd=difference,
+                difference_ratio=difference / computed if comparable and computed else None,
+                comparison_state="comparable"
+                if comparable
+                else "unpriced"
+                if complete and computed is None
+                else "unknown",
+                finding="provider_vs_computed_cost" if difference else None,
+                reason=None
+                if comparable
+                else "cumulative_scope"
+                if row["cost_scope"] != "invocation"
+                else "partial_coverage"
+                if not complete
+                else "unpriced_model"
+                if computed is None
+                else "missing_reported_cost",
+                token_buckets=tokens,
+            ).model_dump()
+            comparisons.append(item)
+            breakdown.append(
+                {
+                    "attempt_id": row["attempt_id"],
+                    "execution_index": row["execution_index"],
+                    "model_id": row["model_id"],
+                    "identity_authority": row["identity_authority"],
+                    "provenance": row["provenance"],
+                    "evidence_state": row["evidence_state"],
+                    "cost_scope": row["cost_scope"],
+                    "token_buckets": tokens,
+                }
+            )
+        return breakdown, comparisons, False
+    except Exception:
+        logger.debug("Spend serving evidence unavailable")
+        return [], [], True
+
+
 @router.get(
     "/runtime-attention",
     response_model=ApiResponse[FleetHaltAttentionObservation],
@@ -907,6 +1004,13 @@ async def get_cost_summary(
     divergences, divergence_source_error = await _ledger_session_divergences(
         db, configs, range_from, range_to, rows
     )
+    served_breakdown, reported_cost_comparisons, served_source_error = await _served_cost_evidence(
+        db,
+        pricing,
+        range_from,
+        range_to,
+        butler=butler,
+    )
     return ApiResponse[SpendSummary](
         data=SpendSummary(
             period=period_label,
@@ -927,6 +1031,9 @@ async def get_cost_summary(
             divergences=divergences,
             divergence_source_error=divergence_source_error,
             historical_attribution_note=attribution_note,
+            served_breakdown=served_breakdown,
+            reported_cost_comparisons=reported_cost_comparisons,
+            served_source_error=served_source_error,
         )
     )
 

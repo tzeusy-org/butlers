@@ -83,7 +83,7 @@ def test_build_config_file_and_tool_call_formats(tmp_path: Path):
 
 
 async def test_invoke():
-    """invoke() calls subprocess with required flags; parses text and functionCall output."""
+    """REQ-core-spawner-009: required flags, text/tools and failed terminal outcome."""
     adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
     mock_proc = AsyncMock()
     mock_proc.returncode = 0
@@ -122,6 +122,42 @@ async def test_invoke():
     assert (
         result_text2 == "Complete" and len(tool_calls) == 1 and tool_calls[0]["name"] == "state_get"
     )
+    # Pinned stream metadata, synthetic conformance only. Prompt is inclusive;
+    # the model label can be request fallback and is never promoted to Served.
+    from butlers.core.runtimes.served_identity import TerminalResultError
+
+    payload = {
+        "type": "result",
+        "status": "success",
+        "stats": {
+            "models": {
+                "gemini-2.5-pro": {
+                    "input_tokens": 105,
+                    "cached": 100,
+                    "input": 5,
+                    "output_tokens": 3,
+                }
+            },
+            "input_tokens": 105,
+            "cached": 100,
+            "input": 5,
+            "output_tokens": 3,
+        },
+    }
+    mock_proc.communicate = AsyncMock(return_value=(json.dumps(payload).encode(), b""))
+    with patch(_EXEC, return_value=mock_proc):
+        _, _, usage = await adapter.invoke(
+            prompt="synthetic", system_prompt="", mcp_servers={}, env={}
+        )
+    assert usage["input_tokens"] == 5 and usage["cache_read_input_tokens"] == 100
+    evidence = adapter.last_process_info["served"]["executions"][0]
+    assert evidence["served_models"] == []
+    assert evidence["reported_models"][0]["provenance"] == "provider_or_request_fallback"
+    assert evidence["cli_version_reported"] is None
+    payload["status"] = "error"
+    mock_proc.communicate = AsyncMock(return_value=(json.dumps(payload).encode(), b""))
+    with patch(_EXEC, return_value=mock_proc), pytest.raises(TerminalResultError):
+        await adapter.invoke(prompt="synthetic", system_prompt="", mcp_servers={}, env={})
 
 
 @pytest.mark.parametrize(

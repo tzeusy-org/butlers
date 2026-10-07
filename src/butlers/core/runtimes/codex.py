@@ -40,6 +40,12 @@ from urllib.parse import urlparse
 from butlers.core.child_env import without_owner_auth
 from butlers.core.mcp_urls import prefer_ipv4_loopback_url
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.served_identity import (
+    TerminalResultError,
+    append_stream,
+    observe_invocation,
+    token,
+)
 
 if TYPE_CHECKING:
     from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
@@ -1286,19 +1292,30 @@ def _parse_codex_output_payload(
                         ):
                             cached_tokens = details["cached_tokens"]
                             break
-                # Token reporting contract: return ints when available, or None
-                # for usage entirely when token counts cannot be determined.
-                if isinstance(input_tokens, int) or isinstance(output_tokens, int):
+                # Validate the source-inclusive counter before subtraction.
+                # Cache-write overlap is unproved by the pinned event schema;
+                # a positive write count cannot fabricate a complete uncached total.
+                input_count = token(input_tokens)
+                # Keep the established absent-output tuple default. Serving
+                # evidence separately marks that absent bucket unknown.
+                output_count = token(output_tokens if output_tokens is not None else 0)
+                cached_count = token(cached_tokens) if cached_tokens is not None else 0
+                writes = token(raw_usage.get("cache_write_input_tokens", 0))
+                if (
+                    input_count is not None
+                    and output_count is not None
+                    and cached_count is not None
+                    and cached_count <= input_count
+                    and writes == 0
+                ):
                     usage = {
-                        "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
-                        "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
+                        "input_tokens": input_count - cached_count,
+                        "output_tokens": output_count,
                     }
-                    if isinstance(cached_tokens, int) and cached_tokens > 0:
-                        # OpenAI semantics: input/prompt_tokens INCLUDES cached
-                        # tokens. Per the runtime usage contract (base.py),
-                        # input_tokens must be the uncached bucket only.
-                        usage["cache_read_input_tokens"] = cached_tokens
-                        usage["input_tokens"] = max(usage["input_tokens"] - cached_tokens, 0)
+                    if cached_tokens is not None:
+                        usage["cache_read_input_tokens"] = cached_count
+                else:
+                    usage = None
 
         else:
             # Unknown type — check for text or content fields
@@ -1900,6 +1917,7 @@ class CodexAdapter(RuntimeAdapter):
             "</user_prompt>"
         )
 
+    @observe_invocation("codex")
     async def invoke(
         self,
         prompt: str,
@@ -2105,6 +2123,7 @@ class CodexAdapter(RuntimeAdapter):
                 prompt_input,
                 token_path=auth_token_path,
                 auth_invocation=auth_invocation,
+                configured_model=model,
             )
 
         # Slow-path serialisation: when the token is near expiry (or unknown),
@@ -2374,6 +2393,7 @@ class CodexAdapter(RuntimeAdapter):
         *,
         token_path: Path | None = None,
         auth_invocation: _CodexAuthInvocation | None = None,
+        configured_model: str | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Run the Codex CLI subprocess and parse its output.
 
@@ -2429,6 +2449,13 @@ class CodexAdapter(RuntimeAdapter):
                 logger.debug("Codex stderr: %s", stderr[:500])
 
             returncode = proc.returncode or 0
+            served = append_stream(
+                self,
+                "codex",
+                stdout,
+                configured=configured_model,
+                completion="error" if returncode else "success",
+            )
 
             self._last_process_info = {
                 "pid": proc.pid,
@@ -2479,7 +2506,10 @@ class CodexAdapter(RuntimeAdapter):
             # finalization confirms this same credential is still authority.
             if auth_invocation is not None:
                 auth_invocation.health_result = (True, None)
-            return _parse_codex_output(stdout, stderr, returncode)
+            parsed = _parse_codex_output(stdout, stderr, returncode)
+            if any(item["error"]["is_error"] is True for item in served["executions"]):
+                raise TerminalResultError(served, parsed[2], parsed[1])
+            return parsed
 
         except TimeoutError:
             logger.error("Codex CLI timed out after %ds", timeout)

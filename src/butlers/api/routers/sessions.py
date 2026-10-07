@@ -332,6 +332,36 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
     same enrichment is shared by the butler-scoped and cross-butler by-id
     detail endpoints so both return an identical ``SessionDetail`` shape.
     """
+    from butlers.api.models.served_identity import ServedAttempt
+    from butlers.core.runtimes.served_identity import bounded
+
+    try:
+        rows = await pool.fetch(
+            """SELECT id,attempt_index,outcome,served_identity,
+                      resolution_receipt->'winner'->>'model_id' AS requested_model_id
+               FROM public.model_dispatch_attempts WHERE session_id=$1
+               ORDER BY attempt_index,ts,id""",
+            session_id,
+        )
+        detail.served_attempts = [
+            ServedAttempt(
+                attempt_id=row["id"],
+                attempt_index=row["attempt_index"],
+                outcome=row["outcome"],
+                requested_model_id=row["requested_model_id"],
+                served_identity=bounded(row["served_identity"])
+                if isinstance(row["served_identity"], dict)
+                else None,
+            ).model_dump()
+            for row in rows
+        ]
+        detail.served_source_state = (
+            "observed" if any(row["served_identity"] is not None for row in rows) else "historical"
+        )
+    except Exception:
+        detail.served_source_state = "unavailable"
+        logger.debug("Session serving evidence unavailable")
+
     # Attach process log if available (best-effort — table may not exist yet)
     try:
         receipt = await pool.fetchval(
