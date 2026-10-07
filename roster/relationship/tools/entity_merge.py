@@ -186,7 +186,7 @@ async def _lock_candidate_reports(conn: asyncpg.Connection, source: UUID, target
     The caller owns both entity rows. Duplicate default/occurrence reports keep
     the target row and preserve the losing original as superseded history.
     """
-    from butlers.tools.relationship.fact_identity_decisions import (
+    from butlers.tools.relationship.identity_slots import (
         identity_slot_key,
         lock_identity_slot,
     )

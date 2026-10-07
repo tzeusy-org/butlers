@@ -45,6 +45,7 @@ from roster.relationship.tests.evidence_schema import (
     MAX_TEXT_CHARS,
     apply_evidence_schema,
 )
+from roster.relationship.tests.fact_authority_fixtures import approve_fixture, replay_fixture
 
 _PRED_HAS_EMAIL = "has-email"
 _PRED_HAS_PHONE = "has-phone"
@@ -457,9 +458,7 @@ class TestApprovedWriteEvidence:
             pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship"
         )
         assert result.outcome == AssertOutcome.pending_approval
-        await pool.execute(
-            "UPDATE pending_actions SET status = 'approved' WHERE id = $1", result.action_id
-        )
+        await approve_fixture(pool, result.action_id)
         return result.action_id
 
     async def test_parked_args_carry_the_action_id_dispatch_needs(self, pool, owner_entity):
@@ -507,11 +506,10 @@ class TestApprovedWriteEvidence:
             observed_at=observed,
         )
         assert result.outcome == AssertOutcome.pending_approval
-        await pool.execute(
-            "UPDATE pending_actions SET status = 'approved' WHERE id = $1", result.action_id
-        )
-        replayed = await relationship_assert_fact(
+        await approve_fixture(pool, result.action_id)
+        replayed = await replay_fixture(
             pool,
+            relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
             "owner@example.test",
@@ -526,8 +524,9 @@ class TestApprovedWriteEvidence:
 
     async def test_approved_replay_writes_the_fact_instead_of_reparking(self, pool, owner_entity):
         action_id = await self._park(pool, owner_entity)
-        result = await relationship_assert_fact(
+        result = await replay_fixture(
             pool,
+            relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
             "owner@example.test",
@@ -543,8 +542,9 @@ class TestApprovedWriteEvidence:
         self, pool, owner_entity
     ):
         action_id = await self._park(pool, owner_entity)
-        result = await relationship_assert_fact(
+        result = await replay_fixture(
             pool,
+            relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
             "owner@example.test",

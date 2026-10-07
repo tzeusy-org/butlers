@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from butlers.core.fact_authority import FactWriteContext, current_fact_write_context
-from butlers.modules.memory.content_authority import ContentAuthority
 
 REPORT_COLUMNS = (
     "content_authority, authority_entity_id, authority_original_entity_id, "
@@ -134,7 +133,9 @@ async def should_hold_candidate(
     )
 
 
-async def stored_gap_authority(conn: Any, fact_id: uuid.UUID) -> ContentAuthority:
+async def stored_gap_authority(conn: Any, fact_id: uuid.UUID) -> Any:
+    from butlers.modules.memory.content_authority import ContentAuthority
+
     row = await conn.fetchrow(
         "SELECT content_authority, authority_entity_id, confirmed_at,confirmed_by_entity_id "
         "FROM relationship.entity_facts WHERE id=$1 AND validity='active'",
@@ -155,6 +156,16 @@ async def record_admitted_approval(conn: Any, action_id: uuid.UUID) -> None:
         "SELECT tool_name,tool_args FROM pending_actions WHERE id=$1", action_id
     )
     if row is None or row["tool_name"] != "relationship_assert_fact":
+        return
+    # Approvals is also installed in core-only/non-Relationship topologies.
+    # The optional owning hook must not query a missing or inaccessible schema.
+    reachable = await conn.fetchval(
+        "SELECT COALESCE((SELECT has_schema_privilege(oid,'USAGE') "
+        "FROM pg_namespace WHERE nspname='relationship'),false)"
+    )
+    if not reachable or not await conn.fetchval(
+        "SELECT to_regclass('relationship.fact_approval_context') IS NOT NULL"
+    ):
         return
     if not report.owner_class:
         fresh = await conn.fetchval(

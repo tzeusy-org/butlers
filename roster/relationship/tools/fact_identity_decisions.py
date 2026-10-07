@@ -16,28 +16,11 @@ from butlers.core.fact_authority import current_fact_write_context
 from butlers.tools.relationship.fact_authority import REPORT_COLUMNS, locked_report
 from butlers.tools.relationship.fact_coverage import record_coverage
 from butlers.tools.relationship.fact_temporal import PACKET_COLUMNS
+from butlers.tools.relationship.identity_slots import identity_slot_key, lock_identity_slot
 
 
 class IdentityDecisionConflict(ValueError):
     """The exact selected fact is stale or its active identity slot conflicts."""
-
-
-def identity_slot_key(predicate: str, value: str) -> str:
-    if predicate == "has-phone":
-        normalized = "".join(ch for ch in value if ch.isdigit())
-        # All phone candidates serialize together: suffix equivalence is not a
-        # transitive hashable identity key. This rare owner action favors safety.
-        return "relationship:identity:phone"
-    normalized = value.strip().casefold()
-    if predicate == "has-handle" and normalized.startswith("telegram:"):
-        normalized = "telegram:" + normalized[len("telegram:") :].lstrip("@")
-    return f"relationship:identity:{predicate}:{normalized}"
-
-
-async def lock_identity_slot(conn: Any, predicate: str, value: str) -> None:
-    await conn.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", identity_slot_key(predicate, value)
-    )
 
 
 async def _has_other_live_identity(conn: Any, row: Any) -> bool:

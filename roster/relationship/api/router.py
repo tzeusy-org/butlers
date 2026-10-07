@@ -5028,9 +5028,10 @@ async def update_entity_contact(
                 action_id=result.action_id,
             )
         fact_row = await pool.fetchrow(
-            """
+            f"""
             SELECT f.id, f.predicate, f.object, f.src, f.conf,
-                   f.last_seen, f.weight, f.verified, f."primary"
+                   f.last_seen, f.weight, f.verified, f."primary",
+                   {attribution_select_sql()}
             FROM relationship.entity_facts f WHERE f.id = $1
             """,
             result.fact_id,
@@ -5129,9 +5130,10 @@ async def update_entity_contact(
 
     # Fetch the new active fact row.
     fact_row = await pool.fetchrow(
-        """
+        f"""
         SELECT f.id, f.predicate, f.object, f.src, f.conf,
-               f.last_seen, f.weight, f.verified, f."primary"
+               f.last_seen, f.weight, f.verified, f."primary",
+               {attribution_select_sql()}
         FROM relationship.entity_facts f WHERE f.id = $1
         """,
         result.fact_id,

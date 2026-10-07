@@ -73,6 +73,7 @@ def _make_entity_fact_row(**kwargs) -> MagicMock:
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 

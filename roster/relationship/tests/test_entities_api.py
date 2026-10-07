@@ -714,6 +714,7 @@ class TestEntityContacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     def _make_get_app(
@@ -777,6 +778,7 @@ class TestEntityContacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     _WRITER_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
@@ -884,6 +886,7 @@ class TestEntityContactsTelegramAndOwnerSelf:
             "primary": True,
         }
         fact_row.__getitem__ = MagicMock(side_effect=lambda k: _data[k])
+        fact_row.get = MagicMock(side_effect=_data.get)
 
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, fact_row])
@@ -1900,6 +1903,7 @@ class TestEntityFacts:
         }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = MagicMock(side_effect=data.get)
         return row
 
     def _make_app(
@@ -2632,6 +2636,7 @@ def _make_identity_compare_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -2662,6 +2667,7 @@ def _make_narrative_compare_row(
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 

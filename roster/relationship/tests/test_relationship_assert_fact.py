@@ -53,6 +53,11 @@ from roster.relationship.tests.evidence_schema import (
     apply_evidence_schema,
     simulate_temporal_cutover,
 )
+from roster.relationship.tests.fact_authority_fixtures import (
+    approve_fixture,
+    replay_fixture,
+    synthetic_owner,
+)
 
 # ---------------------------------------------------------------------------
 # Test markers
@@ -230,18 +235,19 @@ class TestInsertNewFact:
 
     async def test_insert_stores_provenance_fields(self, pool, entity):
         ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
-        result = await relationship_assert_fact(
-            pool,
-            entity,
-            _PRED_HAS_EMAIL,
-            "alice@example.com",
-            src="ingestion",
-            conf=0.85,
-            last_seen=ts,
-            weight=3,
-            verified=True,
-            primary=True,
-        )
+        async with synthetic_owner(pool):
+            result = await relationship_assert_fact(
+                pool,
+                entity,
+                _PRED_HAS_EMAIL,
+                "alice@example.com",
+                src="ingestion",
+                conf=0.85,
+                last_seen=ts,
+                weight=3,
+                verified=True,
+                primary=True,
+            )
         assert result.outcome == AssertOutcome.inserted
         row = await pool.fetchrow(
             "SELECT * FROM relationship.entity_facts WHERE id = $1",
@@ -512,9 +518,10 @@ class TestSupersession:
         await relationship_assert_fact(
             pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=False
         )
-        r2 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=True
-        )
+        async with synthetic_owner(pool):
+            r2 = await relationship_assert_fact(
+                pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=True
+            )
         assert r2.outcome == AssertOutcome.superseded
 
     async def test_changed_last_seen_triggers_supersession(self, pool, entity):
@@ -1452,14 +1459,13 @@ class TestEffectiveTimeAfterCutover:
                 pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship", **kwargs
             )
             assert result.outcome == AssertOutcome.pending_approval
-            await pool.execute(
-                "UPDATE pending_actions SET status = 'approved' WHERE id = $1", result.action_id
-            )
+            await approve_fixture(pool, result.action_id)
             return result.action_id
 
         async def replay(action_id, wire, **overrides):
-            return await relationship_assert_fact(
+            return await replay_fixture(
                 pool,
+                relationship_assert_fact,
                 owner_entity,
                 _PRED_HAS_EMAIL,
                 value,

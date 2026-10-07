@@ -678,6 +678,18 @@ async def _resolve_approved_action(
         )
 
     stored_args = _as_json_object(row["tool_args"])
+    claimed = (str(subject), predicate, object, object_kind)
+    approved = (
+        stored_args.get("subject"),
+        stored_args.get("predicate"),
+        stored_args.get("object"),
+        stored_args.get("object_kind"),
+    )
+    if claimed != approved:
+        raise ValueError(
+            f"approval_action_id {action_id} was approved for a different triple; "
+            "the write does not match what the owner approved."
+        )
     execution = get_approval_execution_context(
         tool_name="relationship_assert_fact", tool_args=stored_args
     )
@@ -701,6 +713,17 @@ async def _resolve_approved_action(
             "tool_args_digest"
         ) != approval_tool_args_digest(stored_args):
             raise ValueError("fact confirmation does not match the actual stored approval")
+        try:
+            event_id = uuid.UUID(decision_data["approval_event_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("fact confirmation has no recorded approval event") from exc
+        if not await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM approval_events WHERE id=$1 "
+            "AND action_id=$2 AND event_type='action_approved')",
+            event_id,
+            action_id,
+        ):
+            raise ValueError("fact confirmation does not match the recorded approval event")
         decision = FactWriteContext.from_record(decision_data)
         report = replace(
             report,
@@ -710,19 +733,6 @@ async def _resolve_approved_action(
             confirmation_source=decision.confirmation_source,
             preserve=True,
         )
-    claimed = (str(subject), predicate, object, object_kind)
-    approved = (
-        stored_args.get("subject"),
-        stored_args.get("predicate"),
-        stored_args.get("object"),
-        stored_args.get("object_kind"),
-    )
-    if claimed != approved:
-        raise ValueError(
-            f"approval_action_id {action_id} was approved for a different triple; "
-            "the write does not match what the owner approved."
-        )
-
     stored_src = row["ctx_src"]
     if not isinstance(stored_src, str) or not stored_src:
         raise ValueError(
@@ -846,7 +856,7 @@ async def _insert_active_fact(
     primary: bool | None,
     packet: EvidencePacket,
     temporal: TemporalPacket = UNKNOWN,
-    fact_context: FactWriteContext,
+    fact_context: FactWriteContext | None = None,
     validity: str = "active",
 ) -> uuid.UUID | None:
     """Insert a new ACTIVE row, returning its id, or ``None`` on conflict.
@@ -870,6 +880,11 @@ async def _insert_active_fact(
     never exist with its provenance missing. *temporal* is the row's effective
     packet, likewise immutable once written.
     """
+    if fact_context is None:
+        # Compatibility for private internal callers; a caller boolean never
+        # supplies content authority, even at this lower-level insertion seam.
+        fact_context = current_fact_write_context()
+        verified = fact_context.verified
     return await conn.fetchval(
         f"""
         INSERT INTO relationship.entity_facts (
@@ -1086,7 +1101,7 @@ async def _upsert_fact(
         src=src,
     )
     if predicate in IDENTITY_PREDICATES:
-        from butlers.tools.relationship.fact_identity_decisions import lock_identity_slot
+        from butlers.tools.relationship.identity_slots import lock_identity_slot
 
         await lock_identity_slot(conn, predicate, object)
     verified = fact_context.verified
@@ -1130,6 +1145,23 @@ async def _upsert_fact(
                     "pass corrects_fact_id to replace it, or a new effective_period_id for "
                     "a repeated period.",
                 )
+
+            if (
+                existing["content_authority"] is None
+                and fact_context.authority == "system"
+                and not fact_context.preserve
+                and _same_assertion_fields(
+                    existing,
+                    src=src,
+                    conf=conf,
+                    verified=existing["verified"],
+                    last_seen=last_seen,
+                )
+            ):
+                # Exact internal reobservation preserves the legacy unknown
+                # report. It neither backfills authority nor invents a version.
+                await persist_evidence(conn, fact_id=old_id, packet=packet)
+                return AssertResult(outcome=AssertOutcome.unchanged, fact_id=old_id)
 
             if fact_context.preserve:
                 from dataclasses import replace
@@ -2396,7 +2428,7 @@ async def assert_prefers_channel(
     async def _do(c: asyncpg.Connection) -> AssertResult:
         await _validate_predicate(c, PREFERS_CHANNEL_PREDICATE)
         if not await _entity_has_reachability_fact(c, subject, channel):
-            raise ValueError(f"Cannot prefer channel {channel!r}: no active reachability fact")
+            raise ValueError(f"Cannot prefer channel {channel!r}: no active contact fact")
         context = await locked_report(
             c,
             current_fact_write_context(),
