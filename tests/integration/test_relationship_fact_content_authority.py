@@ -138,7 +138,11 @@ async def env(postgres_container):
     # exercises only the existing dashboard_auth_api capability on every call.
     auth = await pool(
         "public",
-        database_url=migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/")),
+        database_url=urlparse(
+            migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/"))
+        )
+        ._replace(scheme="postgresql")
+        .geturl(),
     )
     rel = await pool("relationship", "butler_relationship_rw")
     switchboard = await pool("switchboard", "butler_switchboard_rw")
@@ -1949,7 +1953,11 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
         "https://butlers.example.test", "butlers.example.test", api_key="synthetic-current-test-key"
     )
     core_auth = await asyncpg.create_pool(
-        migration_bootstrap_db_url(postgres_container, urlparse(core_url).path.lstrip("/")),
+        urlparse(
+            migration_bootstrap_db_url(postgres_container, urlparse(core_url).path.lstrip("/"))
+        )
+        ._replace(scheme="postgresql")
+        .geturl(),
         init=register_jsonb_codec,
     )
     service = OwnerAuthService(core_auth, config)
