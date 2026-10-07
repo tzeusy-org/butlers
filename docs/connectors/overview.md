@@ -216,6 +216,45 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   `ON CONFLICT` branch. Never derive the role from the identity string, surface `unknown` as
   `unclassified`, and make every new writer declare a role and every new consumer filter by it.
 
+## Filtered preview bearer redaction
+
+`FilteredEventBuffer.record()` scrubs `subject_or_preview` before it enters the in-memory queue.
+It uses the existing bearer detector and typed placeholders, provider-domain hints from the envelope,
+and aggressive numeric-code detection for the actual Telegram service sender `777000` or an envelope
+service participant. Provider and sender-domain hints are untrusted display metadata: the preview
+seam accepts bounded provider slugs or DNS names, rejects URLs, paths, code-bearing numeric labels
+and labels containing a detected link secret, and uses a fixed connector label (or `unknown`) as
+fallback. Comparisons collapse DNS/slug separators, so dotted numbers or dotted/underscored token
+fragments cannot disguise the same bearer value. It validates every resulting placeholder label,
+including old unsafe placeholders, so
+the replacement cannot reintroduce a code or token through its label. Genuine safe domains and
+safe existing placeholders remain intact; numeric-domain behavior in other detector callers is
+unchanged. On detector/extraction failure it withholds the preview as null without logging its
+contents. None, ordinary numbers and date/time guards retain existing detector semantics.
+Payloads, replay/drop decisions, status and other columns are unchanged;
+this is not a claim that every payload or producer log is free of secrets, and it does not produce
+an authentication artifact.
+
+`scripts/scrub_filtered_event_previews.py` is a one-shot historical preview repair, never a startup
+job or migration. The CLI defaults to dry run and requires an explicit existing database target and
+operator identity through the normal database environment helpers. It never provisions credentials
+or grants, and never prints a DSN, sender, subject, code or row payload. Source implementation and
+disposable tests do not authorize live `--apply` or writer quiescence. Separately authorize those
+operations and establish that writers are fixed or quiescent before claiming a historical cutoff
+complete. No deployed inventory has been inspected for this change.
+
+An example command shape is `uv run --no-sync python scripts/scrub_filtered_event_previews.py
+--cutoff <timestamp-with-offset> --batch-size 500` under the existing operator's protected environment.
+Dry run reports potential changes; `--apply` irreversibly replaces previews. There is no recovery of
+redacted bearer text and code rollback does not restore it. Each bounded apply batch locks rows in
+`(received_at,id)` order, without SKIP LOCKED, changes only the preview, commits, then reads back through
+a separate acquisition. Receipt fields are content-free counts, phase, cutoff, last verified cursor,
+detector SHA256, error class and SQLSTATE. A rollback is INCOMPLETE; a lost commit/readback acknowledgement
+is UNKNOWN and retains the previous cursor. Restart using both `--resume-time` and `--resume-id`, or
+repeat the cutoff from the beginning: placeholders are idempotent. Retention deletions are not reversed
+or extended. Backdated rows inserted behind a cursor by an old writer require a new complete pass.
+A dry run is not a stable-snapshot or applied-repair claim.
+
 ## Related Pages
 
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema
