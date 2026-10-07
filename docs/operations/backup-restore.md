@@ -554,6 +554,12 @@ into the live application database or manually erase recovery evidence.
 
 ## Implementation Notes
 
+- The reviewed bootstrap prerequisite applies to all supported online migrations,
+  including ordinary dev. [The operator procedure](../data_and_storage/reviewed-bootstrap.md)
+  separates configured privileged bootstrap from normal migrations and genuine
+  core195 repair. It neither enables this executor nor supplies its secret;
+  existing protected downgrade and data-preservation constraints still apply.
+
 - Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
   `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).
