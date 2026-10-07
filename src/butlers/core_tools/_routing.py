@@ -1116,6 +1116,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             # --- Process phase (asynchronous): build context and call spawner ---
             source_channel = parsed_route.request_context.source_channel
             source_thread_identity = parsed_route.request_context.source_thread_identity
+            external_conversation_id = parsed_route.request_context.external_conversation_id
             _addressed = parsed_route.request_context.addressed
             context_text = _build_route_runtime_context(
                 route_context=route_context,
@@ -1218,11 +1219,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         ) as lease_lost:
                             # Channel-agnostic conversation anchor (bu-ep4ks.8
                             # follow-up, bu-bkthr): give every inbound thread that
-                            # already normalizes a source_thread_identity at ingest
+                            # carries a stable external_conversation_id at ingest
                             # (Telegram, email, ...) a durable dashboard_conversations
                             # row on the TARGET butler, so the spawner below can
                             # attach a provider resume handle to it. Idempotent
-                            # upsert (core_185's partial unique index) -- safe to
+                            # upsert (core_263's partial unique index) -- safe to
                             # call on every accepted route.execute for this thread.
                             # Best-effort: a lookup/create failure must never block
                             # routing, it just means this turn has no resume lineage.
@@ -1230,13 +1231,13 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             # slow anchor must not make a healthy worker appear dead
                             # to recovery before it reaches the Spawner boundary.
                             _conversation_id: uuid.UUID | None = None
-                            if source_thread_identity:
+                            if source_thread_identity or external_conversation_id:
                                 try:
                                     if source_channel == "dashboard":
                                         # A dashboard turn's source_thread_identity IS
                                         # the dashboard_conversations.id the owner is
                                         # already looking at (see
-                                        # build_dashboard_envelope's external_thread_id),
+                                        # build_dashboard_envelope's reply_target_ref),
                                         # not a channel key to upsert against.
                                         # get_or_create_by_thread would otherwise treat
                                         # it as a novel (butler_name, source_channel,
@@ -1257,7 +1258,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                         )
                                         if _existing_conversation is not None:
                                             _conversation_id = _existing_conversation["id"]
-                                    else:
+                                    elif external_conversation_id:
                                         from butlers.api.conversations import (
                                             conversation_get_or_create_by_thread,
                                         )
@@ -1269,7 +1270,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                             _pool,
                                             butler_name=butler_name,
                                             source_channel=source_channel,
-                                            source_thread_identity=source_thread_identity,
+                                            external_conversation_id=external_conversation_id,
                                             # The raw, un-fenced prompt -- _prompt is
                                             # the <routed_message>-wrapped text
                                             # (_wrap_routed_message), which would

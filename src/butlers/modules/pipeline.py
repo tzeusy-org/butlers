@@ -72,8 +72,6 @@ _ROUTE_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])route_to_butler$", re.IGNORECA
 _FILE_BUG_REPORT_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])file_bug_report$", re.IGNORECASE)
 _ANSWER_QUESTION_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])answer_question$", re.IGNORECASE)
 _CANNOT_ANSWER_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])cannot_answer$", re.IGNORECASE)
-_TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
-_TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)$")
 _ROUTE_RESULT_ERROR_CLASSES = frozenset(
     {
         "delivery_error",
@@ -129,7 +127,7 @@ HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
 
 async def _load_realtime_history(
     pool: Any,
-    source_thread_identity: str,
+    external_conversation_id: str,
     received_at: datetime,
     *,
     source_channel: str | None = None,
@@ -148,14 +146,6 @@ async def _load_realtime_history(
     time_cutoff = received_at - timedelta(minutes=max_time_window_minutes)
     history_exclusion = message_inbox_recovery_exclusion_sql()
 
-    telegram_chat_id: str | None = None
-    if source_channel in ("telegram_bot", "telegram_user_client"):
-        match = _TELEGRAM_CHAT_MESSAGE_RE.fullmatch(source_thread_identity)
-        if match is not None:
-            telegram_chat_id = match.group("chat_id")
-        elif _TELEGRAM_CHAT_ID_RE.fullmatch(source_thread_identity):
-            telegram_chat_id = source_thread_identity
-
     async with pool.acquire() as conn:
         # Load time-based window
         time_window_messages = await conn.fetch(
@@ -168,29 +158,19 @@ async def _load_realtime_history(
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
             WHERE {history_exclusion}
+                AND request_context ->> 'external_conversation_id' = $1
                 AND (
-                    request_context ->> 'source_thread_identity' = $1
-                    OR (
-                        $4::text IS NOT NULL
-                        AND (
-                            request_context ->> 'source_thread_identity' = $4
-                            OR request_context ->> 'source_thread_identity' LIKE ($4 || ':%')
-                        )
-                    )
-                )
-                AND (
-                    $5::text IS NULL
-                    OR request_context ->> 'source_channel' = $5
+                    $4::text IS NULL
+                    OR request_context ->> 'source_channel' = $4
                     OR direction = 'outbound'
                 )
                 AND received_at >= $2
                 AND received_at < $3
             ORDER BY received_at ASC
             """,
-            source_thread_identity,
+            external_conversation_id,
             time_cutoff,
             received_at,
-            telegram_chat_id,
             source_channel,
         )
 
@@ -205,28 +185,18 @@ async def _load_realtime_history(
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
             WHERE {history_exclusion}
+                AND request_context ->> 'external_conversation_id' = $1
                 AND (
-                    request_context ->> 'source_thread_identity' = $1
-                    OR (
-                        $3::text IS NOT NULL
-                        AND (
-                            request_context ->> 'source_thread_identity' = $3
-                            OR request_context ->> 'source_thread_identity' LIKE ($3 || ':%')
-                        )
-                    )
-                )
-                AND (
-                    $4::text IS NULL
-                    OR request_context ->> 'source_channel' = $4
+                    $3::text IS NULL
+                    OR request_context ->> 'source_channel' = $3
                     OR direction = 'outbound'
                 )
                 AND received_at < $2
             ORDER BY received_at DESC
-            LIMIT $5
+            LIMIT $4
             """,
-            source_thread_identity,
+            external_conversation_id,
             received_at,
-            telegram_chat_id,
             source_channel,
             max_message_count,
         )
@@ -1560,6 +1530,12 @@ class MessagePipeline:
             source_thread_identity = request_context.get("source_thread_identity")
             if source_thread_identity not in (None, ""):
                 route_request_context["source_thread_identity"] = str(source_thread_identity)
+            external_conversation_id = request_context.get("external_conversation_id")
+            if external_conversation_id not in (None, ""):
+                route_request_context["external_conversation_id"] = str(external_conversation_id)
+            reply_target_ref = request_context.get("reply_target_ref")
+            if reply_target_ref not in (None, ""):
+                route_request_context["reply_target_ref"] = str(reply_target_ref)
             route_request_context["addressed"] = bool(request_context.get("addressed", False))
 
         route_source_metadata = {
@@ -2034,6 +2010,19 @@ class MessagePipeline:
         return None
 
     @classmethod
+    def _external_conversation_id(cls, args: dict[str, Any]) -> str | None:
+        candidates = (
+            args.get("external_conversation_id"),
+            (args.get("request_context") or {}).get("external_conversation_id"),
+            args.get("external_thread_id"),
+        )
+        for candidate in candidates:
+            normalized = cls._string_or_none(candidate)
+            if normalized is not None:
+                return normalized
+        return None
+
+    @classmethod
     def _external_event_id(
         cls,
         args: dict[str, Any],
@@ -2157,6 +2146,7 @@ class MessagePipeline:
 
         source_sender_identity = self._source_sender_identity(args, source_metadata)
         source_thread_identity = self._source_thread_identity(args)
+        external_conversation_id = self._external_conversation_id(args)
         source_endpoint_identity = self._source_endpoint_identity(args, source_metadata)
 
         request_context = {
@@ -2164,6 +2154,7 @@ class MessagePipeline:
             "source_endpoint_identity": source_endpoint_identity,
             "source_sender_identity": source_sender_identity,
             "source_thread_identity": source_thread_identity,
+            "external_conversation_id": external_conversation_id,
             "idempotency_key": idempotency_key,
             "dedupe_key": dedupe_key,
             "dedupe_strategy": dedupe_strategy,
@@ -2774,6 +2765,16 @@ class MessagePipeline:
                                     if request_context
                                     else None
                                 ),
+                                "external_conversation_id": (
+                                    request_context.get("external_conversation_id")
+                                    if request_context
+                                    else None
+                                ),
+                                "reply_target_ref": (
+                                    request_context.get("reply_target_ref")
+                                    if request_context
+                                    else None
+                                ),
                                 "trace_context": {},
                             },
                             "input": _bypass_input,
@@ -3055,9 +3056,9 @@ class MessagePipeline:
                     # ordinary messages. Structured decomposition messages are
                     # formatted only after per-speaker identity enrichment.
                     conversation_history = ""
-                    source_thread_identity = self._source_thread_identity(args)
+                    external_conversation_id = self._external_conversation_id(args)
 
-                    if _decomp_messages is None and source_thread_identity:
+                    if _decomp_messages is None and external_conversation_id:
                         with tracer.start_as_current_span(
                             "butlers.switchboard.routing.load_history"
                         ):
@@ -3065,7 +3066,7 @@ class MessagePipeline:
                             conversation_history = await _load_conversation_history(
                                 self._pool,
                                 source,
-                                source_thread_identity,
+                                external_conversation_id,
                                 received_at,
                             )
                             history_latency_ms = (time.perf_counter() - history_start) * 1000
@@ -4022,6 +4023,16 @@ class MessagePipeline:
                                 "source_sender_identity": route_sender_identity,
                                 "source_thread_identity": (
                                     request_context.get("source_thread_identity")
+                                    if request_context
+                                    else None
+                                ),
+                                "external_conversation_id": (
+                                    request_context.get("external_conversation_id")
+                                    if request_context
+                                    else None
+                                ),
+                                "reply_target_ref": (
+                                    request_context.get("reply_target_ref")
                                     if request_context
                                     else None
                                 ),

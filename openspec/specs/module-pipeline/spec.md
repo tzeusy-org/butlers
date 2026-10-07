@@ -86,6 +86,7 @@ The pipeline SHALL load channel-appropriate conversation history to improve LLM 
 #### Scenario: Realtime messaging history
 - **WHEN** the source channel is `telegram`, `whatsapp`, `slack`, or `discord`
 - **THEN** recent conversation history is loaded (max 15-minute window, max 30 messages) for routing context
+- **AND** interactive-channel history is keyed by `event.external_conversation_id`, never by a per-message reply target
 
 #### Scenario: Email thread history
 - **WHEN** the source channel is `email`

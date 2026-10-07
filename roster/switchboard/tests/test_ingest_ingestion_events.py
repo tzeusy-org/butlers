@@ -146,6 +146,8 @@ def _telegram_envelope(
     ingestion_tier: str = "full",
     policy_tier: str = "default",
 ) -> dict:
+    reply_target_ref = thread_id or "12345:1"
+    chat_id = reply_target_ref.partition(":")[0]
     return {
         "schema_version": "ingest.v1",
         "source": {
@@ -155,7 +157,8 @@ def _telegram_envelope(
         },
         "event": {
             "external_event_id": update_id,
-            "external_thread_id": thread_id,
+            "external_conversation_id": f"telegram:{chat_id}",
+            "reply_target_ref": reply_target_ref,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {"identity": sender_id},
@@ -323,7 +326,7 @@ class TestIngestionEventsWriteOnAccept:
 
     async def test_ingestion_events_source_thread_identity_null_when_absent(self) -> None:
         pool = _FakePool()
-        envelope = _telegram_envelope(update_id="333", thread_id=None)
+        envelope = _email_envelope(message_id="<no-thread@example.com>", thread_id=None)
 
         await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 

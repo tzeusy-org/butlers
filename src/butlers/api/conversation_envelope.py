@@ -140,7 +140,8 @@ def build_dashboard_envelope(
         },
         "event": {
             "external_event_id": msg_id_str,
-            "external_thread_id": conv_id_str,
+            "external_conversation_id": f"dashboard:{conv_id_str}",
+            "reply_target_ref": conv_id_str,
             "observed_at": observed_at,
         },
         "sender": {

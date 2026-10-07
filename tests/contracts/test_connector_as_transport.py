@@ -173,6 +173,8 @@ class TestConnectorAsTransport:
             },
             "event": {
                 "external_event_id": str(uuid.uuid4()),
+                "external_conversation_id": "telegram:12345",
+                "reply_target_ref": "12345:99",
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {"identity": "user123"},
@@ -237,6 +239,8 @@ class TestConnectorAsTransport:
             },
             "event": {
                 "external_event_id": str(uuid.uuid4()),
+                "external_conversation_id": "telegram:12345",
+                "reply_target_ref": "12345:1",
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {"identity": "user123"},

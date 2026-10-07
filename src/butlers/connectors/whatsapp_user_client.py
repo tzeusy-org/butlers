@@ -1882,7 +1882,8 @@ class WhatsAppUserClientConnector:
                 },
                 "event": {
                     "external_event_id": batch_event_id,
-                    "external_thread_id": chat_jid,
+                    "external_conversation_id": f"whatsapp:{chat_jid}",
+                    "reply_target_ref": chat_jid,
                     "observed_at": flush_ts,
                 },
                 "sender": {
@@ -1971,7 +1972,6 @@ class WhatsAppUserClientConnector:
         }
 
         participants, owner_sender_id = self._extract_participants(buffered_events)
-
         return {
             "schema_version": "ingest.v1",
             "source": {
@@ -1981,7 +1981,8 @@ class WhatsAppUserClientConnector:
             },
             "event": {
                 "external_event_id": batch_event_id,
-                "external_thread_id": chat_jid,
+                "external_conversation_id": f"whatsapp:{chat_jid}",
+                "reply_target_ref": chat_jid,
                 "observed_at": flush_ts,
             },
             "sender": {
@@ -2015,7 +2016,8 @@ class WhatsAppUserClientConnector:
         - source.provider = "whatsapp"
         - source.endpoint_identity = "whatsapp:<e164_phone>"
         - event.external_event_id = message ID
-        - event.external_thread_id = chat JID
+        - event.external_conversation_id = stable chat JID identity
+        - event.reply_target_ref = provider message ID
         - event.observed_at = message timestamp (RFC3339)
         - sender.identity = sender's WhatsApp JID
         - payload.raw = full bridge event JSON
@@ -2070,7 +2072,8 @@ class WhatsAppUserClientConnector:
             },
             "event": {
                 "external_event_id": msg_id,
-                "external_thread_id": chat_jid if chat_jid else None,
+                "external_conversation_id": f"whatsapp:{chat_jid}" if chat_jid else None,
+                "reply_target_ref": chat_jid if chat_jid else None,
                 "observed_at": observed_at,
             },
             "sender": {
