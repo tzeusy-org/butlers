@@ -183,16 +183,16 @@ back the mutation rather than acknowledge a partial currentness update.
 `bound_mutation(writer, entity_ids)` reuses that exact writer when an outer
 guard already owns the transaction; it does not open a second checkout or
 rebind after domain locks. Publication failure propagates through the outer
-transaction. The native caller hooks and real rollback/rebind controls remain
-unimplemented.
+transaction. The baseline native caller hooks are installed as detailed below. Real
+rollback/rebind controls are authored and remain unexecuted PostgreSQL proof.
 
 `observe_channels(channel_type, channel_values)` supplies the owning resolver
 callback for the existing registered `identity_resolve_channels` tool. It
 validates every requested typed selector, opens its actual owning writer,
 publishes canonical current projections and resolves on that same connection,
 then acknowledges COMMIT before returning only the existing minimized DTO. It
-exposes no birth/version/grant field. This callback is not yet installed at the
-actual tool. Switchboard must call it through MCP outside its own locked
+exposes no birth/version/grant field. This callback is installed at the baseline owning registered tool; its
+real-role, registered-network and serialized peer integration remain unproved. Switchboard must call it through MCP outside its own locked
 business transaction, then reread and register its canonical accepted row;
 network I/O while holding control locks cannot establish this protocol.
 
@@ -300,8 +300,9 @@ and lost-ack/refusal controls; they are not SQL authorization evidence.
 
 Trusted daemon startup retains the actual Relationship channel producer or
 Switchboard accepted-row reader after enrollment. They have no model-facing
-allocation endpoint. Native writer and inbox callbacks still need wiring and
-real same-transaction/current-source proof. Failed later daemon startup stops
+allocation endpoint. Baseline native writer and inbox callbacks are wired as detailed below;
+real same-transaction/current-source and complete writer-universe proof remain
+required. Failed later daemon startup stops
 its retained custody runtime; shutdown clears producers before closing anchors.
 
 
@@ -330,9 +331,9 @@ are explicit source transport changes.
 
 The constructor-fixed `CustodyControlTransport` performs actual MCP challenge,
 source response and guarded apply after source registration COMMIT, outside
-business transactions. It has no caller-selected verifier URL. Host/browser
-startup/CLI wiring, independent-process network controls and live current-owner
-revocation tests remain required; presence of this helper is not that evidence.
+business transactions. It has no caller-selected verifier URL. Host/browser startup and CLI wiring are implemented on this baseline.
+Independent-process network controls and live current-owner revocation tests
+remain required; presence of this helper is not that evidence.
 The owning migrated SQL group now includes real registered service/role
 command/receipt/expiry/ambiguous-incarnation controls, authored but not locally
 executed under the known Docker restriction.
@@ -545,8 +546,9 @@ released outer custody callback before that batch, preserve request attribution
 and deferred notification behavior, and use the same business transaction.
 The baseline now includes configured API entity lifecycle/role mutations,
 Relationship promotion/contact-edit/forget outer transactions and legacy
-contact merge. Remaining identity-adoption and destructive Google/Steam
-all-version cleanup paths, every other canonical channel mutation, and the
+contact merge. The baseline destructive Google/Steam companion paths are now wrapped as
+detailed below. Remaining identity-adoption paths, generic Memory/non-Relationship
+public metadata writes, every other canonical channel mutation, and the
 serialized current REQUEST-attribution writer must be included and proved
 before complete COMMIT-currentness can be claimed. No peer source is
 adopted here, no resolver DTO authenticates a report, and no missing constructor
