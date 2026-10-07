@@ -152,8 +152,10 @@ jobs:
         run: uv run python scripts/ci_test_plan.py --base "$BASE_SHA"
 
   guards:
-    # Every fast, dependency-free gate in one job (bu-r5mnn): one checkout, one
-    # Python, one Node. The nine former jobs each paid their own runner spin-up
+    # Every mandatory static gate in one job: one checkout, one Python, one
+    # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
+    # their exact scopes; preflight still owns inventory, budget and smoke.
+    # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
     # the comment block that explains why it exists; those comments are
     # load-bearing repo knowledge. Steps run under `!cancelled()` so one failing
@@ -177,6 +179,24 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        run: |
+          set -euo pipefail
+          max_attempts=5
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              echo "uv installed on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              echo "::error::uv install failed after ${max_attempts} attempts" >&2
+              exit 1
+            fi
+            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
       - name: Set up Node 24
         uses: actions/setup-node@v6
         with:
@@ -184,6 +204,29 @@ jobs:
 
       - name: Install OpenSpec 1.9.0
         run: npm install --global @fission-ai/openspec@1.9.0
+
+      - name: Check lock file is up to date
+        id: lock
+        if: ${{ !cancelled() }}
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Lint
+        id: lint
+        if: ${{ !cancelled() }}
+        run: make lint
+
+      - name: Format check
+        id: format
+        if: ${{ !cancelled() }}
+        run: uv run ruff format --check src/ tests/ roster/ conftest.py -q
+
+      - name: SQL safety check (FOR UPDATE + outer join)
+        id: sql_safety
+        if: ${{ !cancelled() }}
+        run: make check-for-update-joins
 
       # Session-link guard (bu-mr5t5): fails the PR when a tool-session
       # link/footer (see scripts/session_link_guard.py) leaks into the PR title,
@@ -384,7 +427,12 @@ jobs:
       - name: Fail if any guard failed
         if: ${{ !cancelled() }}
         env:
+          EVENT_NAME: ${{ github.event_name }}
           GUARD_OUTCOMES: |
+            lock=${{ steps.lock.outcome }}
+            lint=${{ steps.lint.outcome }}
+            format=${{ steps.format.outcome }}
+            sql_safety=${{ steps.sql_safety.outcome }}
             session_links=${{ steps.session_links.outcome }}
             em_dashes=${{ steps.em_dashes.outcome }}
             spec_overwrites=${{ steps.spec_overwrites.outcome }}
@@ -401,7 +449,12 @@ jobs:
             [ -n "$line" ] || continue
             case "$line" in
               *=success) ;;
-              *=skipped) echo "skipped: $line" ;;
+              session_links=skipped)
+                if [ "$EVENT_NAME" = "pull_request" ]; then
+                  echo "::error::PR session-link guard skipped"
+                  failed=1
+                fi
+                ;;
               *)
                 echo "::error::guard failed: $line"
                 failed=1
@@ -463,20 +516,8 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
-      - name: Check lock file is up to date
-        run: uv lock --check
-
       - name: Install dependencies
         run: uv sync --frozen --dev
-
-      - name: Lint
-        run: make lint
-
-      - name: Format check
-        run: uv run ruff format --check src/ tests/ roster/ conftest.py -q
-
-      - name: SQL safety check (FOR UPDATE + outer join)
-        run: make check-for-update-joins
 
       - name: Verify CI test shard manifests
         # This replaces the old integration-only path guard. It derives both
@@ -1888,19 +1929,12 @@ jobs:
           overwrite: true
 
   check:
-    # Do not allow a green historic check status when a preflight or any shard
-    # failed, was skipped for an unexpected reason, or was cancelled. `always()`
-    # is deliberate: a skipped historical check can read as green to branch
-    # protection after a cancelled prerequisite. Three skips are accepted, and
-    # only these three: (a) a pull_request whose `changes` job succeeded and
-    # classified the diff as docs-only (`backend == 'false'`); (b) a push to
-    # main, where the merge queue's merge_group run already validated this
-    # exact tree; and (c) a pull_request where the affected-test planner
-    # (bu-v28ho) selected a scoped plan, in which case `check-affected` is
-    # required to be the shards' evidence instead. Everything else that is
-    # not `success` fails the fan-in. Coverage aggregation and the badge only
-    # run when the ten-shard matrix actually ran.
-    needs: [changes, plan, check-preflight, check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5, check-affected]
+    # Read every declared needed-job verdict under always(), including guards,
+    # changes, plan and independent preflight. The exact event/ref/plan skip
+    # policy preserves docs/main-push skips and affected-only scoped PRs.
+    # Preflight never contributes to heavy-shard consistency (bu-tt97y).
+    # Coverage remains here until the separately released M2 extraction.
+    needs: [changes, guards, plan, check-preflight, check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5, check-affected]
     if: ${{ always() }}
     runs-on: ubuntu-latest
 
@@ -1909,118 +1943,116 @@ jobs:
         id: gate
         env:
           EVENT_NAME: ${{ github.event_name }}
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          CHANGES_BACKEND: ${{ needs.changes.outputs.backend }}
-          PLAN_MODE: ${{ needs.plan.outputs.mode }}
-          CHECK_UNIT_1_RESULT: ${{ needs.check-unit-1.result }}
-          CHECK_UNIT_2_RESULT: ${{ needs.check-unit-2.result }}
-          CHECK_UNIT_3_RESULT: ${{ needs.check-unit-3.result }}
-          CHECK_UNIT_4_RESULT: ${{ needs.check-unit-4.result }}
-          CHECK_UNIT_5_RESULT: ${{ needs.check-unit-5.result }}
-          CHECK_INTEGRATION_1_RESULT: ${{ needs.check-integration-1.result }}
-          CHECK_INTEGRATION_2_RESULT: ${{ needs.check-integration-2.result }}
-          CHECK_INTEGRATION_3_RESULT: ${{ needs.check-integration-3.result }}
-          CHECK_INTEGRATION_4_RESULT: ${{ needs.check-integration-4.result }}
-          CHECK_INTEGRATION_5_RESULT: ${{ needs.check-integration-5.result }}
-          CHECK_AFFECTED_RESULT: ${{ needs.check-affected.result }}
+          REF: ${{ github.ref }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          skip_allowed=0
-          skip_reason=""
-          require_check_affected=0
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_RESULT" = "success" ] && [ "$CHANGES_BACKEND" = "false" ]; then
-            skip_allowed=1
-            skip_reason="docs-only pull request: backend shards skipped by the path filter"
-          elif [ "$EVENT_NAME" = "push" ]; then
-            skip_allowed=1
-            skip_reason="push to main: backend shards skipped by design, the merge queue validated this tree"
-          elif [ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_BACKEND" = "true" ] && [ "$PLAN_MODE" = "scoped" ]; then
-            skip_allowed=1
-            require_check_affected=1
-            skip_reason="affected-test lane selected a scoped plan: heavy shards skipped, check-affected is the evidence"
-          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import re
 
-          failed=0
-          ran=0
-          skipped=0
-          # check-preflight is deliberately excluded from this loop: it always
-          # runs and always succeeds when reached, so it is not one of the ten
-          # heavy shards gated by the scoped/full plan decision. Counting its
-          # success here as `ran=1` made every scoped-mode PR (the normal path
-          # for most backend PRs) fail with a false "heavy shards ran but the
-          # plan selected a scoped mode" error, even when every real shard
-          # correctly reported skipped. check-preflight's own success/failure
-          # is already a hard `needs:` dependency of this job, so a failed
-          # preflight fails `check` through normal GitHub Actions dependency
-          # semantics without needing to appear in this shard-consistency loop.
-          for named_result in \
-            "check-unit-1=$CHECK_UNIT_1_RESULT" \
-            "check-unit-2=$CHECK_UNIT_2_RESULT" \
-            "check-unit-3=$CHECK_UNIT_3_RESULT" \
-            "check-unit-4=$CHECK_UNIT_4_RESULT" \
-            "check-unit-5=$CHECK_UNIT_5_RESULT" \
-            "check-integration-1=$CHECK_INTEGRATION_1_RESULT" \
-            "check-integration-2=$CHECK_INTEGRATION_2_RESULT" \
-            "check-integration-3=$CHECK_INTEGRATION_3_RESULT" \
-            "check-integration-4=$CHECK_INTEGRATION_4_RESULT" \
-            "check-integration-5=$CHECK_INTEGRATION_5_RESULT"; do
-            case "$named_result" in
-              *=success) ran=1 ;;
-              *=skipped)
-                if [ "$skip_allowed" -eq 1 ]; then
-                  skipped=1
-                else
-                  echo "::error::$named_result (skipped, but this event requires the shards to run)"
-                  failed=1
-                fi
-                ;;
-              *)
-                echo "::error::$named_result"
-                failed=1
-                ;;
-            esac
-          done
 
-          if [ "$ran" -eq 1 ] && [ "$skipped" -eq 1 ]; then
-            echo "::error::inconsistent shard state: some shards ran and some were skipped"
-            failed=1
-          fi
-          if [ "$ran" -eq 1 ] && [ "$require_check_affected" -eq 1 ]; then
-            echo "::error::heavy shards ran but the plan selected a scoped mode; inconsistent state"
-            failed=1
-          fi
+          def fail(message):
+              print(f"::error::{message}")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("shards_ran=false\n")
+              raise SystemExit(1)
 
-          # check-affected has the inverse requirement: required exactly when
-          # the plan selected scoped mode, skipped every other time (docs-only,
-          # push:main, merge_group, or a full/escalated plan).
-          case "$CHECK_AFFECTED_RESULT" in
-            success)
-              if [ "$require_check_affected" -ne 1 ]; then
-                echo "::error::check-affected=success but this event/plan did not select the scoped lane"
-                failed=1
-              fi
-              ;;
-            skipped)
-              if [ "$require_check_affected" -eq 1 ]; then
-                echo "::error::check-affected=skipped but the plan selected a scoped mode"
-                failed=1
-              fi
-              ;;
-            *)
-              echo "::error::check-affected=$CHECK_AFFECTED_RESULT"
-              failed=1
-              ;;
-          esac
 
-          if [ "$skipped" -eq 1 ] && [ "$failed" -eq 0 ]; then
-            echo "::notice::$skip_reason"
-          fi
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate JSON key")
+                  result[key] = value
+              return result
 
-          if [ "$ran" -eq 1 ] && [ "$failed" -eq 0 ]; then
-            echo "shards_ran=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "shards_ran=false" >> "$GITHUB_OUTPUT"
-          fi
-          exit "$failed"
+
+          try:
+              needs = json.loads(os.environ["NEEDS_JSON"], object_pairs_hook=unique_object)
+          except (KeyError, ValueError):
+              fail("missing or malformed needed-job JSON")
+          if not isinstance(needs, dict):
+              fail("needed-job JSON must be an object")
+
+          heavy = {f"check-{lane}-{index}" for lane in ("unit", "integration") for index in range(1, 6)}
+          required = {"changes", "guards", "plan", "check-preflight", "check-affected"} | heavy
+          if required - needs.keys():
+              fail("missing required jobs: " + ", ".join(sorted(required - needs.keys())))
+
+          # Inspect all supplied jobs, including additions not yet in the skip policy.
+          invalid = []
+          for name, job in needs.items():
+              if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name):
+                  invalid.append("invalid job identifier")
+                  continue
+              if not isinstance(job, dict) or job.get("result") not in ("success", "skipped"):
+                  invalid.append(f"{name}: unsuccessful or invalid result")
+              if not isinstance(job, dict) or not isinstance(job.get("outputs"), dict):
+                  invalid.append(f"{name}: missing or invalid outputs")
+              elif any(not isinstance(value, str) for value in job["outputs"].values()):
+                  invalid.append(f"{name}: output values must be strings")
+          if invalid:
+              fail("; ".join(invalid))
+
+          classification = needs["changes"]["outputs"]
+          backend = classification.get("backend")
+          frontend = classification.get("frontend")
+          if backend not in ("true", "false") or frontend not in ("true", "false"):
+              fail("missing or malformed classifier outputs")
+          event = os.environ.get("EVENT_NAME")
+          ref = os.environ.get("REF")
+          if not ref:
+              fail("missing event ref")
+          plan = needs["plan"]
+          if event == "pull_request":
+              mode = "docs" if backend == "false" else plan["outputs"].get("mode")
+              if mode not in ("docs", "full", "scoped"):
+                  fail("missing or invalid backend PR planner mode")
+          elif event == "merge_group" or (event == "push" and ref == "refs/heads/main"):
+              if backend != "true" or frontend != "true":
+                  fail("push/merge-group classification must select both populations")
+              mode = "merge_group" if event == "merge_group" else "push"
+          else:
+              fail("event/ref has no admitted skip policy")
+
+          if mode in ("full", "scoped"):
+              if plan["result"] != "success":
+                  fail("backend PR planner must succeed")
+              try:
+                  paths = json.loads(plan["outputs"]["test_paths"])
+              except (KeyError, ValueError):
+                  fail("missing or malformed planner paths")
+              if not isinstance(paths, list) or any(
+                  not isinstance(path, str)
+                  or not path.startswith(("tests/", "roster/"))
+                  or any(part in (".", "..") for part in path.split("/"))
+                  or any(ord(character) < 32 for character in path)
+                  for path in paths
+              ):
+                  fail("planner paths must be repository-relative test paths")
+              if (mode == "scoped") != bool(paths):
+                  fail("planner paths do not match full/scoped mode")
+          elif any(plan["outputs"].values()):
+              fail("skipped planner cannot carry active outputs")
+
+          # Preflight is intentionally NOT a heavy shard (closed bu-tt97y).
+          # Its verdict remains independently mandatory whenever backend assurance runs.
+          shards_ran = mode in ("full", "merge_group")
+          expected = {
+              "changes": "success",
+              "guards": "success",
+              "plan": "success" if mode in ("full", "scoped") else "skipped",
+              "check-preflight": "skipped" if mode in ("docs", "push") else "success",
+              "check-affected": "success" if mode == "scoped" else "skipped",
+              **{name: "success" if shards_ran else "skipped" for name in heavy},
+          }
+          wrong = [name for name, job in needs.items() if job["result"] != expected.get(name, "success")]
+          if wrong:
+              fail("unexpected needed-job result for mode " + mode + ": " + ", ".join(sorted(wrong)))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"shards_ran={str(shards_ran).lower()}\n")
+          PY
 
       - uses: actions/checkout@v6
         if: ${{ steps.gate.outputs.shards_ran == 'true' }}

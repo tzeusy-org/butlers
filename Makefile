@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-ci-test-shards check-test-budget check-em-dashes check-spec-overwrites check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: check-lock check-format lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-ci-test-shards check-test-budget check-em-dashes check-spec-overwrites check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -8,6 +8,13 @@ BASE ?= origin/main
 
 lint:
 	uv run ruff check src/ tests/
+
+# Identical nonmutating static survivors in the hosted guards job.
+check-lock:
+	uv lock --check
+
+check-format:
+	uv run ruff format --check src/ tests/ roster/ conftest.py -q
 
 format:
 	uv run ruff format src/ tests/
@@ -220,7 +227,7 @@ check-duplicate-names:
 # PATH; everything else is a plain python3 script. The frontend-copy inventory
 # check regenerates the committed file and fails on any diff, exactly as CI
 # does, so run it on a clean worktree or expect the diff to be yours.
-check-guards: check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links
+check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py

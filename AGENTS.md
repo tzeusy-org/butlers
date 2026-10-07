@@ -336,7 +336,17 @@ it before changing the subsystem.
   - The job set varies by design (the `changes` filter skips shards or frontend jobs as neutral).
     Judge completeness by the required contexts (`check`, `guards`, `frontend`), not a job count.
 - CI fan-out: `check-preflight`, five `check-unit-N` and five `check-integration-N` shard jobs, then
-  the `check` fan-in, which uses `always()` and fails explicitly on any non-success prerequisite.
+  the `check` fan-in, which uses `always()` and reads every declared job through `NEEDS_JSON`.
+  `always()` alone does not enforce prerequisites: changes, guards and backend-PR plan verdicts
+  must succeed, and preflight is checked independently of the heavy-shard consistency state.
+  Preflight never counts as a heavy shard; a scoped PR requires preflight and check-affected
+  success with every heavy shard skipped. Docs-only PR and main-push skips require the exact
+  classifier/event/ref policy; full PR and merge_group require all heavy shards. New needed jobs
+  accept success and deny skips until an explicit policy is added. Malformed or missing results,
+  classifier outputs or planner paths fail closed.
+  Lock, lint, format and SQL safety run in guards with their original scopes; exact-once,
+  budget and smoke/release evidence remain in preflight. `make check-guards` includes the same
+  nonmutating static checks (`check-lock`, `lint`, `check-format`, `check-for-update-joins`).
   Never add `!cancelled()` to it (a skipped check can read green to branch protection). Never use
   `--cov-append` across jobs, and give artifact uploads `overwrite: true`.
 - About eight concurrent CI runs saturate the runners. Sequence PRs that append to the same file
