@@ -45,6 +45,7 @@ tests/integration/test_conversation_history_db.py
 tests/integration/test_conversation_reply_db.py
 tests/integration/test_daily_rollup_flags_integration.py
 tests/integration/test_data_ops_memory_export_schema_faithful.py
+tests/integration/test_endpoint_custody_admission_db.py
 tests/integration/test_health_medication_travel_mcp.py
 tests/integration/test_home_maintenance_schema_faithful.py
 tests/integration/test_idempotent_ingestion.py

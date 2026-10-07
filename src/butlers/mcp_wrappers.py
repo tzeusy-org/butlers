@@ -319,6 +319,16 @@ class _SpanWrappingMCP:
         return getattr(self._mcp, name)
 
 
+def _capture_registered_tool_call(**record: Any) -> None:
+    """Custody outcome is published by its outer guard after commit/cleanup."""
+    # Import only at execution: the ordinary capture module has no custody
+    # authority, and the private guard frame is created before instrumentation.
+    from butlers.core.custody_mcp import stage_custody_capture
+
+    if not stage_custody_capture(record):
+        capture_tool_call(**record)
+
+
 class _ToolCallLoggingMCP:
     """Proxy around FastMCP that logs every registered tool invocation."""
 
@@ -358,12 +368,25 @@ class _ToolCallLoggingMCP:
                 self._log_tool_call(resolved_tool_name)
                 capture_input = _visible_capture_input(kwargs)
                 input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
+                if resolved_tool_name in {"custody.challenge", "custody.apply"}:
+                    from butlers.core.custody_mcp import stage_custody_capture
+
+                    # Stage an execution witness before awaiting the handler,
+                    # including cancellation. Its outer guard owns the final
+                    # acknowledged outcome and strips all private payloads.
+                    stage_custody_capture(
+                        {
+                            "tool_name": resolved_tool_name,
+                            "module_name": self._module_name,
+                            "input_fingerprint": input_fingerprint,
+                        }
+                    )
                 policy_result = _manual_day_close_tool_policy(
                     butler_name=self._butler_name,
                     tool_name=resolved_tool_name,
                 )
                 if policy_result is not None:
-                    capture_tool_call(
+                    _capture_registered_tool_call(
                         tool_name=resolved_tool_name,
                         module_name=self._module_name,
                         input_payload=capture_input,
@@ -375,7 +398,7 @@ class _ToolCallLoggingMCP:
                 try:
                     result = await fn(*args, **kwargs)
                 except Exception as exc:
-                    capture_tool_call(
+                    _capture_registered_tool_call(
                         tool_name=resolved_tool_name,
                         module_name=self._module_name,
                         input_payload=capture_input,
@@ -390,7 +413,7 @@ class _ToolCallLoggingMCP:
                         exc=exc,
                     )
                     raise
-                capture_tool_call(
+                _capture_registered_tool_call(
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,
                     input_payload=capture_input,

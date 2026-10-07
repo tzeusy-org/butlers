@@ -5695,3 +5695,2706 @@ BEGIN
     END IF;
 END;
 $$;
+
+-- Endpoint custody: fixed existing-bootstrap-owner installation, core_260.
+-- No role, LOGIN, membership, credential or privileged host service is added.
+DO $custody_bootstrap$
+DECLARE
+    migration_role name := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+    existing_owner name;
+BEGIN
+    IF current_user::name = migration_role OR NOT EXISTS (
+        SELECT FROM pg_catalog.pg_roles WHERE rolname=current_user AND rolsuper
+    ) THEN
+        RAISE EXCEPTION 'custody bootstrap requires existing privileged bootstrap authority';
+    END IF;
+    SELECT r.rolname INTO existing_owner
+    FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles r ON r.oid=n.nspowner
+    WHERE n.nspname='custody_admission';
+    IF existing_owner IS NULL THEN
+        EXECUTE pg_catalog.format('CREATE SCHEMA custody_admission AUTHORIZATION %I', current_user);
+        COMMENT ON SCHEMA custody_admission IS 'butlers:endpoint-custody:core_260';
+    ELSIF NOT EXISTS (
+        SELECT FROM pg_catalog.pg_roles WHERE rolname=existing_owner AND rolsuper
+    ) OR existing_owner=migration_role THEN
+        RAISE EXCEPTION 'custody schema owner is not the existing trusted bootstrap owner';
+    ELSE
+        EXECUTE pg_catalog.format('SET ROLE %I', existing_owner);
+    END IF;
+END;
+$custody_bootstrap$;
+
+REVOKE ALL ON SCHEMA custody_admission FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA custody_admission REVOKE ALL ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA custody_admission REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
+CREATE TABLE IF NOT EXISTS custody_admission.bootstrap_configuration (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
+    bootstrap_owner_oid oid NOT NULL,
+    schema_identity jsonb,
+    connecting_role name NOT NULL,
+    version integer NOT NULL CHECK(version=1),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+INSERT INTO custody_admission.bootstrap_configuration(
+    singleton, bootstrap_owner_oid, connecting_role, version
+) VALUES (
+    true, (SELECT oid FROM pg_catalog.pg_roles WHERE rolname=current_user),
+    COALESCE(NULLIF(current_setting('butlers.connecting_user',true),''),'butlers')::name, 1
+) ON CONFLICT(singleton) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION custody_admission.canonical_json_at_depth(value jsonb,depth integer)
+RETURNS text
+LANGUAGE plpgsql IMMUTABLE STRICT SET search_path=pg_catalog,pg_temp AS $custody_json$
+DECLARE result text;
+BEGIN
+    IF depth<0 OR depth>64 THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    CASE pg_catalog.jsonb_typeof(value)
+    WHEN 'object' THEN
+        IF EXISTS(SELECT FROM pg_catalog.jsonb_object_keys(value) k WHERE k !~ '^[a-z][a-z0-9_]*$') THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        SELECT '{'||COALESCE(pg_catalog.string_agg(
+            pg_catalog.to_jsonb(k)::text||':'||custody_admission.canonical_json_at_depth(v,depth+1),
+            ',' ORDER BY k COLLATE "C"),'')||'}' INTO result
+        FROM pg_catalog.jsonb_each(value) entry(k,v);
+    WHEN 'array' THEN
+        SELECT '['||COALESCE(pg_catalog.string_agg(
+            custody_admission.canonical_json_at_depth(v,depth+1),',' ORDER BY n),'')||']' INTO result
+        FROM pg_catalog.jsonb_array_elements(value) WITH ORDINALITY entry(v,n);
+    WHEN 'number' THEN
+        IF value::text !~ '^-?(0|[1-9][0-9]*)$' THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        result:=value::text;
+    ELSE result:=value::text;
+    END CASE;
+    IF pg_catalog.octet_length(result)>8192 THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    RETURN result;
+END;
+$custody_json$;
+
+CREATE OR REPLACE FUNCTION custody_admission.canonical_json(value jsonb) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT SET search_path=pg_catalog,pg_temp AS $custody_json_entry$
+    SELECT custody_admission.canonical_json_at_depth(value,0)
+$custody_json_entry$;
+
+CREATE OR REPLACE FUNCTION custody_admission.binding_digest(value jsonb) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT SET search_path=pg_catalog,pg_temp AS $custody_digest$
+    SELECT pg_catalog.encode(public.digest(
+        pg_catalog.convert_to(custody_admission.canonical_json(value),'UTF8'),'sha256'
+    ),'hex')
+$custody_digest$;
+
+CREATE OR REPLACE FUNCTION custody_admission.caller_role() RETURNS oid
+LANGUAGE sql STABLE SET search_path=pg_catalog,pg_temp AS $custody_role$
+    SELECT oid FROM pg_catalog.pg_roles
+    WHERE rolname=CASE
+        WHEN pg_catalog.current_setting('role',true) IN ('none','')
+             OR pg_catalog.current_setting('role',true) IS NULL THEN session_user
+        ELSE pg_catalog.current_setting('role',true)
+    END
+$custody_role$;
+
+CREATE OR REPLACE FUNCTION custody_admission.host_only() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_host$
+BEGIN
+    IF COALESCE(pg_catalog.current_setting('role',true),'none') NOT IN ('none','')
+       OR NOT EXISTS (
+           SELECT FROM custody_admission.bootstrap_configuration b
+           JOIN pg_catalog.pg_roles r ON r.oid=b.bootstrap_owner_oid
+           WHERE b.singleton AND session_user IN (r.rolname,b.connecting_role)
+       ) THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+END;
+$custody_host$;
+
+CREATE OR REPLACE FUNCTION custody_admission.install_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_install$
+DECLARE owner_name name; statement text; prior_identity jsonb;
+BEGIN
+    SELECT r.rolname INTO owner_name
+    FROM custody_admission.bootstrap_configuration b
+    JOIN pg_catalog.pg_roles r ON r.oid=b.bootstrap_owner_oid WHERE b.singleton;
+    IF owner_name IS NULL OR current_user<>owner_name THEN
+        RAISE EXCEPTION 'custody untrusted installer' USING ERRCODE='42501';
+    END IF;
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended('butlers:core_260:endpoint_custody',0)
+    );
+    SELECT schema_identity INTO prior_identity
+      FROM custody_admission.bootstrap_configuration WHERE singleton FOR UPDATE;
+    IF prior_identity IS NULL THEN
+        -- First provisioning may capture only tables this fixed installer
+        -- creates itself. Existing unrecorded relations are not adopted.
+        IF EXISTS(SELECT FROM pg_catalog.pg_class r
+            JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace
+            WHERE n.nspname='custody_admission' AND r.relkind IN ('r','p','v','m','f')
+              AND r.relname<>'bootstrap_configuration')
+           OR pg_catalog.to_regclass('public.custody_holds') IS NOT NULL THEN
+            RAISE EXCEPTION 'custody unrecorded schema refused' USING ERRCODE='42501';
+        END IF;
+    ELSIF prior_identity IS DISTINCT FROM custody_admission.schema_identity() THEN
+        RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';
+    END IF;
+    EXECUTE $custody_tables$
+        CREATE TABLE IF NOT EXISTS custody_admission.control (
+            singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
+            control_epoch bigint NOT NULL DEFAULT 1 CHECK(control_epoch>0),
+            restore_epoch uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+            database_oid oid NOT NULL,
+            admission_state text NOT NULL CHECK(admission_state IN ('ready','unavailable','revoked')),
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        );
+        INSERT INTO custody_admission.control(singleton,database_oid,admission_state)
+        SELECT true,oid,'ready' FROM pg_catalog.pg_database WHERE datname=current_database()
+        ON CONFLICT(singleton) DO NOTHING;
+        CREATE TABLE IF NOT EXISTS custody_admission.anchor_proposals (
+            nonce uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+            database_oid oid NOT NULL, login_oid oid NOT NULL, role_oid oid NOT NULL,
+            backend_pid integer NOT NULL, backend_start timestamptz NOT NULL,
+            expires_at timestamptz NOT NULL, consumed_at timestamptz,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            UNIQUE(database_oid,backend_pid,backend_start)
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.processes (
+            process_id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+            logical_actor text NOT NULL, database_oid oid NOT NULL,
+            login_oid oid NOT NULL, role_oid oid NOT NULL,
+            anchor_pid integer NOT NULL, anchor_backend_start timestamptz NOT NULL,
+            adapter_incarnation uuid NOT NULL, manifest_digest text NOT NULL,
+            source_kinds jsonb NOT NULL, operations jsonb NOT NULL, audiences jsonb NOT NULL,
+            control_epoch bigint NOT NULL, restore_epoch uuid NOT NULL,
+            lease_expires_at timestamptz NOT NULL, revoked_at timestamptz,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            UNIQUE(database_oid,anchor_pid,anchor_backend_start)
+        );
+        -- Actual INSERT evidence only: no row locator or recent timestamp can
+        -- manufacture a birth. No payload, sender or business message is stored.
+        CREATE TABLE IF NOT EXISTS custody_admission.accepted_births (
+            record_id uuid PRIMARY KEY,
+            received_at timestamptz NOT NULL,
+            content_digest text NOT NULL CHECK(content_digest~'^[0-9a-f]{64}$'),
+            first_process uuid NOT NULL REFERENCES custody_admission.processes(process_id),
+            retired_at timestamptz,
+            control_epoch bigint NOT NULL CHECK(control_epoch>0),
+            restore_epoch uuid NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.sources (
+            source_ref uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+            logical_actor text NOT NULL, source_family text NOT NULL,
+            source_locator text NOT NULL, source_revision bigint NOT NULL CHECK(source_revision>0),
+            projection jsonb NOT NULL, source_digest text NOT NULL,
+            first_process uuid NOT NULL REFERENCES custody_admission.processes(process_id),
+            expires_at timestamptz NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            UNIQUE(logical_actor,source_family,source_locator,source_revision)
+        );
+        -- Minimized current admission metadata; no raw channel or message bus.
+        CREATE TABLE IF NOT EXISTS custody_admission.origin_bindings (
+            origin_digest text PRIMARY KEY CHECK(origin_digest~'^[0-9a-f]{64}$'),
+            source_ref uuid NOT NULL REFERENCES custody_admission.sources(source_ref),
+            source_revision bigint NOT NULL CHECK(source_revision>0),
+            source_digest text NOT NULL,
+            binding_generation bigint NOT NULL DEFAULT 1 CHECK(binding_generation>0),
+            owner_entity_id uuid,
+            owner_birth timestamptz,
+            expires_at timestamptz NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.source_origin_bindings (
+            source_ref uuid PRIMARY KEY REFERENCES custody_admission.sources(source_ref),
+            origin_digest text NOT NULL REFERENCES custody_admission.origin_bindings(origin_digest),
+            origin_source_ref uuid NOT NULL REFERENCES custody_admission.sources(source_ref),
+            origin_revision bigint NOT NULL CHECK(origin_revision>0),
+            binding_generation bigint NOT NULL CHECK(binding_generation>0),
+            owner_entity_id uuid NOT NULL,
+            owner_birth timestamptz NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.source_associations (
+            source_ref uuid NOT NULL REFERENCES custody_admission.sources(source_ref),
+            process_id uuid NOT NULL REFERENCES custody_admission.processes(process_id),
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            PRIMARY KEY(source_ref,process_id)
+        );
+        -- Private source reconciliation only; no business payload, callback
+        -- token, route or cross-butler delivery message is carried here.
+        CREATE TABLE IF NOT EXISTS custody_admission.accepted_work (
+            record_id uuid PRIMARY KEY REFERENCES custody_admission.accepted_births(record_id),
+            state text NOT NULL DEFAULT 'pending' CHECK(state IN (
+                'pending','claimed','prepared','attempted','committed','unknown',
+                'ignored','awaiting_selection','unavailable')),
+            claim_ref uuid,
+            claim_process uuid REFERENCES custody_admission.processes(process_id),
+            lease_until timestamptz,
+            source_ref uuid REFERENCES custody_admission.sources(source_ref),
+            attempted_at timestamptz,
+            finished_at timestamptz,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS custody_accepted_work_pending
+            ON custody_admission.accepted_work(created_at,record_id)
+            WHERE state IN ('pending','claimed','prepared','attempted');
+        CREATE TABLE IF NOT EXISTS custody_admission.calls (
+            call_id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+            issuer_process uuid NOT NULL REFERENCES custody_admission.processes(process_id),
+            destination_process uuid NOT NULL REFERENCES custody_admission.processes(process_id),
+            source_ref uuid NOT NULL REFERENCES custody_admission.sources(source_ref),
+            mint_request_id uuid NOT NULL, operation jsonb NOT NULL,
+            operation_digest text NOT NULL, control_epoch bigint NOT NULL, restore_epoch uuid NOT NULL,
+            expires_at timestamptz NOT NULL, challenge_ref uuid, challenge_expires_at timestamptz,
+            state text NOT NULL CHECK(state IN ('minted','challenged','armed','committed','refused','unknown')),
+            command_id uuid, result jsonb,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            UNIQUE(issuer_process,source_ref,destination_process,mint_request_id)
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.connections (
+            database_oid oid NOT NULL, backend_pid integer NOT NULL,
+            backend_start timestamptz NOT NULL, login_oid oid NOT NULL, role_oid oid NOT NULL,
+            acquisition_generation bigint NOT NULL DEFAULT 1,
+            nonce uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+            process_id uuid REFERENCES custody_admission.processes(process_id),
+            state text NOT NULL CHECK(state IN ('proposed','bound','released','revoked')),
+            bound_until timestamptz NOT NULL, finished_at timestamptz,
+            verified_call_id uuid REFERENCES custody_admission.calls(call_id),
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            PRIMARY KEY(database_oid,backend_pid,backend_start), UNIQUE(nonce)
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.targets (
+            target_id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+            owner_entity_id uuid NOT NULL, target_kind text NOT NULL CHECK(target_kind IN ('endpoint','account')),
+            binding_digest text NOT NULL CHECK(binding_digest~'^[0-9a-f]{64}$'),
+            binding_version bigint NOT NULL CHECK(binding_version>0),
+            generation bigint NOT NULL DEFAULT 0 CHECK(generation>=0),
+            source_ref uuid NOT NULL REFERENCES custody_admission.sources(source_ref),
+            ordering_key text NOT NULL UNIQUE,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.commands (
+            command_id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+            kind text NOT NULL CHECK(kind IN ('browser','host','security_answer','endpoint_lock')),
+            operation text NOT NULL CHECK(operation IN ('hold','release','replaced','yes','no','revoke_sessions','eligibility')),
+            selection jsonb NOT NULL, selection_digest text NOT NULL,
+            proof jsonb NOT NULL, source_ref uuid REFERENCES custody_admission.sources(source_ref),
+            control_epoch bigint NOT NULL, restore_epoch uuid NOT NULL,
+            expires_at timestamptz NOT NULL,
+            state text NOT NULL DEFAULT 'prepared' CHECK(state IN ('prepared','committed','refused','unknown')),
+            result jsonb, created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.questions (
+            question_id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+            source_ref uuid NOT NULL UNIQUE REFERENCES custody_admission.sources(source_ref),
+            event_ref uuid NOT NULL, recipient_digest text NOT NULL,
+            target_set jsonb NOT NULL, target_set_version bigint NOT NULL,
+            yes_digest text NOT NULL, no_digest text NOT NULL,
+            expires_at timestamptz NOT NULL,
+            decision text NOT NULL DEFAULT 'pending' CHECK(decision IN ('pending','yes','no','expired')),
+            decision_command_id uuid REFERENCES custody_admission.commands(command_id),
+            presentation_ref text, created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS public.custody_holds (
+            episode_id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+            target_id uuid NOT NULL REFERENCES custody_admission.targets(target_id),
+            generation bigint NOT NULL CHECK(generation>0),
+            reason text NOT NULL CHECK(reason IN ('lost','stolen','replaced','disowned_access')),
+            source_command_id uuid NOT NULL REFERENCES custody_admission.commands(command_id),
+            held_from timestamptz NOT NULL DEFAULT clock_timestamp(),
+            observed_incident_at timestamptz, case_id uuid,
+            released_at timestamptz, disposition text CHECK(disposition IN ('released','replaced')),
+            release_command_id uuid REFERENCES custody_admission.commands(command_id),
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            UNIQUE(target_id,generation),
+            CHECK((released_at IS NULL)=(disposition IS NULL))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS custody_one_active_target
+            ON public.custody_holds(target_id) WHERE released_at IS NULL;
+        CREATE TABLE IF NOT EXISTS custody_admission.receipts (
+            command_id uuid PRIMARY KEY REFERENCES custody_admission.commands(command_id),
+            result jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.case_scopes (
+            case_id uuid PRIMARY KEY REFERENCES public.fleet_cases(id),
+            kind text NOT NULL CHECK(kind IN ('lost_device','account_security')),
+            owner_entity_id uuid NOT NULL,
+            membership_version bigint NOT NULL DEFAULT 1 CHECK(membership_version>0)
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.case_members (
+            case_id uuid NOT NULL REFERENCES custody_admission.case_scopes(case_id),
+            target_id uuid NOT NULL,
+            generation bigint NOT NULL CHECK(generation>0),
+            membership_version bigint NOT NULL CHECK(membership_version>0),
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            PRIMARY KEY(case_id,target_id,generation),
+            FOREIGN KEY(target_id,generation) REFERENCES public.custody_holds(target_id,generation)
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.effects (
+            actor text NOT NULL, namespace text NOT NULL, effect_id uuid NOT NULL,
+            source_ref uuid NOT NULL REFERENCES custody_admission.sources(source_ref),
+            binding_digest text NOT NULL, started_at timestamptz NOT NULL,
+            result jsonb, created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            PRIMARY KEY(actor,namespace,effect_id)
+        );
+        CREATE TABLE IF NOT EXISTS custody_admission.provider_inventory (
+            owner_entity_id uuid NOT NULL, provider text NOT NULL,
+            version bigint NOT NULL CHECK(version>0),
+            declared_contributors jsonb NOT NULL, current_sources jsonb NOT NULL DEFAULT '{}',
+            complete boolean NOT NULL DEFAULT false,
+            members jsonb NOT NULL DEFAULT '[]',
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            PRIMARY KEY(owner_entity_id,provider)
+        );
+    $custody_tables$;
+    EXECUTE 'ALTER TABLE public.custody_holds ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE public.custody_holds FORCE ROW LEVEL SECURITY';
+    EXECUTE 'DROP POLICY IF EXISTS custody_bootstrap_engine ON public.custody_holds';
+    EXECUTE pg_catalog.format(
+        'CREATE POLICY custody_bootstrap_engine ON public.custody_holds '
+        'USING(current_user=%L) WITH CHECK(current_user=%L)', owner_name, owner_name
+    );
+    IF prior_identity IS NULL THEN
+        UPDATE custody_admission.bootstrap_configuration
+          SET schema_identity=custody_admission.schema_identity() WHERE singleton;
+    ELSIF prior_identity IS DISTINCT FROM custody_admission.schema_identity() THEN
+        RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';
+    END IF;
+    PERFORM custody_admission.install_dashboard_interface();
+    PERFORM custody_admission.install_accepted_birth();
+    PERFORM custody_admission.finalize_interface();
+END;
+$custody_install$;
+
+-- Private helpers never receive ordinary EXEC. The active SET ROLE identity is
+-- captured explicitly; current_user inside a definer is the bootstrap owner.
+CREATE OR REPLACE FUNCTION custody_admission.closed(
+    value jsonb, required text[], optional text[] DEFAULT ARRAY[]::text[]
+) RETURNS void LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pg_temp AS $custody_closed$
+BEGIN
+    IF pg_catalog.jsonb_typeof(value) IS DISTINCT FROM 'object'
+       OR (value ?& required) IS DISTINCT FROM true
+       OR EXISTS(SELECT FROM pg_catalog.jsonb_object_keys(value) k
+                 WHERE NOT k=ANY(required||optional)) THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    PERFORM custody_admission.canonical_json(value);
+END;
+$custody_closed$;
+
+CREATE OR REPLACE FUNCTION custody_admission.current_control() RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_control$
+DECLARE c record;
+BEGIN
+    -- This is also called by outer verification and writer binding. Establish
+    -- auth-before-control here, not only in the later business helper; otherwise
+    -- an outer guard can deadlock a revoker that already owns the singleton.
+    IF pg_catalog.to_regclass('dashboard_auth.instance') IS NOT NULL THEN
+        PERFORM FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+    END IF;
+    SELECT * INTO c FROM custody_admission.control WHERE singleton FOR UPDATE;
+    IF NOT FOUND OR c.admission_state<>'ready' OR c.database_oid<>(
+        SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database()
+    ) THEN RAISE EXCEPTION 'custody unavailable' USING ERRCODE='42501'; END IF;
+    RETURN pg_catalog.jsonb_build_object('control_epoch',c.control_epoch,'restore_epoch',c.restore_epoch);
+END;
+$custody_control$;
+
+CREATE OR REPLACE FUNCTION custody_admission.process_current(process uuid) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_live$
+BEGIN
+    -- The bootstrap stages functions before ordinary core replay creates this
+    -- feature's tables. PL/pgSQL resolves these fixed qualified relations on
+    -- execution; a SQL-language body would fail during fresh bootstrap.
+    RETURN EXISTS(
+        SELECT FROM custody_admission.processes p
+        JOIN custody_admission.control c ON c.singleton
+        JOIN pg_catalog.pg_stat_activity a ON a.pid=p.anchor_pid
+          AND a.backend_start=p.anchor_backend_start AND a.datid=p.database_oid
+          AND a.usesysid=p.login_oid
+        WHERE p.process_id=process AND p.revoked_at IS NULL
+          AND p.lease_expires_at>pg_catalog.clock_timestamp()
+          AND c.admission_state='ready' AND p.control_epoch=c.control_epoch
+          AND p.restore_epoch=c.restore_epoch
+          AND c.database_oid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())
+    );
+END;
+$custody_live$;
+
+CREATE OR REPLACE FUNCTION custody_admission.anchor() RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_anchor$
+DECLARE result uuid;
+BEGIN
+    PERFORM custody_admission.current_control();
+    SELECT p.process_id INTO result FROM custody_admission.processes p
+    JOIN pg_catalog.pg_stat_activity a ON a.pid=pg_catalog.pg_backend_pid()
+      AND a.backend_start=p.anchor_backend_start AND a.datid=p.database_oid
+      AND a.usesysid=p.login_oid
+    WHERE p.anchor_pid=a.pid AND p.role_oid=custody_admission.caller_role()
+      AND custody_admission.process_current(p.process_id);
+    IF result IS NULL THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    RETURN result;
+END;
+$custody_anchor$;
+
+CREATE OR REPLACE FUNCTION custody_admission.writer() RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_writer$
+DECLARE result uuid;
+BEGIN
+    PERFORM custody_admission.current_control();
+    SELECT c.process_id INTO result FROM custody_admission.connections c
+    JOIN pg_catalog.pg_stat_activity a ON a.pid=pg_catalog.pg_backend_pid()
+      AND a.backend_start=c.backend_start AND a.datid=c.database_oid AND a.usesysid=c.login_oid
+    WHERE c.backend_pid=a.pid AND c.role_oid=custody_admission.caller_role()
+      AND c.state='bound' AND c.finished_at IS NOT NULL
+      AND c.bound_until>pg_catalog.clock_timestamp()
+      AND custody_admission.process_current(c.process_id) FOR UPDATE OF c;
+    IF result IS NULL THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    RETURN result;
+END;
+$custody_writer$;
+
+CREATE OR REPLACE FUNCTION custody_admission.require_verified_call(call_ref uuid) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_verified_writer$
+DECLARE process_id uuid;
+BEGIN
+    process_id:=custody_admission.writer();
+    IF NOT EXISTS(SELECT FROM custody_admission.connections connection
+        JOIN pg_catalog.pg_stat_activity backend ON backend.pid=connection.backend_pid
+          AND backend.backend_start=connection.backend_start
+          AND backend.datid=connection.database_oid AND backend.usesysid=connection.login_oid
+        WHERE backend.pid=pg_catalog.pg_backend_pid() AND connection.process_id=process_id
+          AND connection.role_oid=custody_admission.caller_role()
+          AND connection.state='bound' AND connection.finished_at IS NOT NULL
+          AND connection.bound_until>pg_catalog.clock_timestamp()
+          AND connection.verified_call_id=require_verified_call.call_ref) THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+END;
+$custody_verified_writer$;
+
+CREATE OR REPLACE FUNCTION custody_admission.host_enroll(manifest jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_enroll$
+DECLARE proposal record; c jsonb; result uuid; role_name text; family text;
+BEGIN
+    PERFORM custody_admission.host_only();
+    PERFORM custody_admission.closed(manifest,ARRAY[
+        'nonce','logical_actor','role','adapter_incarnation','config_digest',
+        'source_kinds','operations','audiences'
+    ]);
+    IF pg_catalog.jsonb_typeof(manifest->'logical_actor') IS DISTINCT FROM 'string'
+       OR pg_catalog.jsonb_typeof(manifest->'role') IS DISTINCT FROM 'string'
+       OR pg_catalog.jsonb_typeof(manifest->'config_digest') IS DISTINCT FROM 'string'
+       OR pg_catalog.jsonb_typeof(manifest->'nonce') IS DISTINCT FROM 'string'
+       OR pg_catalog.jsonb_typeof(manifest->'adapter_incarnation') IS DISTINCT FROM 'string'
+       OR manifest->>'nonce' IS DISTINCT FROM ((manifest->>'nonce')::uuid)::text
+       OR manifest->>'adapter_incarnation' IS DISTINCT FROM ((manifest->>'adapter_incarnation')::uuid)::text
+       OR pg_catalog.jsonb_typeof(manifest->'source_kinds') IS DISTINCT FROM 'array'
+       OR pg_catalog.jsonb_typeof(manifest->'operations') IS DISTINCT FROM 'array'
+       OR pg_catalog.jsonb_typeof(manifest->'audiences') IS DISTINCT FROM 'array'
+       OR manifest->>'logical_actor' !~ '^[a-z][a-z0-9_-]{0,63}$'
+       OR manifest->>'config_digest' !~ '^[0-9a-f]{64}$'
+       OR pg_catalog.jsonb_array_length(manifest->'source_kinds')>16
+       OR pg_catalog.jsonb_array_length(manifest->'operations')>16
+       OR pg_catalog.jsonb_array_length(manifest->'audiences')>32 THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    IF EXISTS(SELECT FROM pg_catalog.jsonb_array_elements(manifest->'source_kinds') value
+           WHERE pg_catalog.jsonb_typeof(value) IS DISTINCT FROM 'string')
+       OR EXISTS(SELECT FROM pg_catalog.jsonb_array_elements(manifest->'operations') value
+           WHERE pg_catalog.jsonb_typeof(value) IS DISTINCT FROM 'string')
+       OR EXISTS(SELECT FROM pg_catalog.jsonb_array_elements(manifest->'audiences') value
+           WHERE pg_catalog.jsonb_typeof(value) IS DISTINCT FROM 'string') THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    FOR family IN SELECT pg_catalog.jsonb_array_elements_text(manifest->'source_kinds') LOOP
+        IF family<>ALL(ARRAY['accepted_ingress','provider_callback','owner_command',
+           'host_command','scheduled_task','deferred_notice','domain_evidence','provider_inventory']) THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+    END LOOP;
+    IF EXISTS(SELECT FROM pg_catalog.jsonb_array_elements_text(manifest->'operations') op
+       WHERE op<>ALL(ARRAY['hold','release','replaced','yes','no','revoke_sessions',
+                           'write','provider_start','eligibility','question']))
+       OR EXISTS(SELECT FROM pg_catalog.jsonb_array_elements_text(manifest->'audiences') actor
+          WHERE actor !~ '^[a-z][a-z0-9_-]{0,63}$') THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    role_name:=manifest->>'role';
+    IF NOT (manifest->>'logical_actor' NOT IN ('dashboard','host-switchboard')
+            AND manifest->>'logical_actor' NOT LIKE 'connector-%'
+            AND role_name ~ '^butler_[A-Za-z_][A-Za-z0-9_]*_rw$'
+        OR role_name ~ '^butler_[A-Za-z_][A-Za-z0-9_]*_rw$'
+            AND manifest->>'logical_actor'='host-switchboard'
+        OR role_name='dashboard_auth_api' AND manifest->>'logical_actor'='dashboard'
+        OR role_name='connector_writer' AND manifest->>'logical_actor' LIKE 'connector-%') THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    -- Empty operation scope is a fixed canonical-writer allocation, not a
+    -- receiving incarnation. It cannot mint ingress or command evidence.
+    IF manifest->'operations'='[]'::jsonb AND (
+        manifest->>'logical_actor'<>'relationship' OR role_name<>'butler_relationship_rw'
+        OR manifest->'source_kinds'<>'["domain_evidence"]'::jsonb
+        OR manifest->'audiences'<>'[]'::jsonb
+    ) THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    IF manifest->>'logical_actor'='host-switchboard' AND (
+        manifest->'source_kinds'<>'["host_command"]'::jsonb
+        OR manifest->'audiences'<>'["switchboard"]'::jsonb
+        OR NOT manifest->'operations' <@ '["hold","release","replaced","revoke_sessions","eligibility"]'::jsonb
+    ) THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    IF manifest->>'logical_actor'='switchboard' THEN
+        PERFORM custody_admission.install_accepted_birth();
+    END IF;
+    c:=custody_admission.current_control();
+    SELECT * INTO proposal FROM custody_admission.anchor_proposals
+      WHERE nonce=(manifest->>'nonce')::uuid FOR UPDATE;
+    IF NOT FOUND OR proposal.consumed_at IS NOT NULL
+       OR proposal.expires_at<=pg_catalog.clock_timestamp()
+       OR proposal.role_oid IS DISTINCT FROM (SELECT oid FROM pg_catalog.pg_roles WHERE rolname=role_name)
+       OR NOT EXISTS(SELECT FROM pg_catalog.pg_stat_activity a
+          WHERE a.pid=proposal.backend_pid AND a.backend_start=proposal.backend_start
+            AND a.datid=proposal.database_oid AND a.usesysid=proposal.login_oid) THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    IF manifest->>'logical_actor'='dashboard' THEN
+      IF pg_catalog.to_regnamespace('dashboard_auth') IS NULL THEN
+          RAISE EXCEPTION 'custody unavailable' USING ERRCODE='42501';
+      END IF;
+      IF EXISTS(
+        WITH RECURSIVE reachable(role_oid) AS (
+            SELECT proposal.login_oid
+            UNION SELECT membership.roleid FROM pg_catalog.pg_auth_members membership
+              JOIN reachable ON membership.member=reachable.role_oid
+        )
+        SELECT FROM reachable JOIN pg_catalog.pg_roles login ON login.oid=reachable.role_oid
+        WHERE login.rolsuper OR login.rolcreaterole OR login.rolcreatedb
+           OR login.rolreplication OR login.rolbypassrls
+           OR login.oid=(SELECT datdba FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database())
+           OR login.rolname NOT IN ('dashboard_auth_api',
+               (SELECT rolname FROM pg_catalog.pg_roles WHERE oid=proposal.login_oid))
+           OR pg_catalog.has_function_privilege(login.oid,
+               'dashboard_auth.host(text,jsonb)'::pg_catalog.regprocedure,'EXECUTE')
+           OR pg_catalog.has_function_privilege(login.oid,
+               'custody_admission.host_enroll(jsonb)'::pg_catalog.regprocedure,'EXECUTE')
+           OR EXISTS(SELECT FROM pg_catalog.pg_namespace namespace
+               WHERE namespace.nspname IN ('dashboard_auth','custody_admission')
+                 AND (namespace.nspowner=login.oid
+                      OR pg_catalog.has_schema_privilege(login.oid,namespace.oid,'CREATE')))
+           OR EXISTS(SELECT FROM pg_catalog.pg_class relation
+               JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace
+               WHERE namespace.nspname IN ('dashboard_auth','custody_admission')
+                 AND relation.relkind IN ('r','p','v','m','f')
+                 AND (relation.relowner=login.oid
+                      OR pg_catalog.has_table_privilege(login.oid,relation.oid,
+                         'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                      OR pg_catalog.has_any_column_privilege(login.oid,relation.oid,
+                         'SELECT,INSERT,UPDATE,REFERENCES')))
+      ) THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    END IF;
+    INSERT INTO custody_admission.processes(logical_actor,database_oid,login_oid,role_oid,
+        anchor_pid,anchor_backend_start,adapter_incarnation,manifest_digest,source_kinds,
+        operations,audiences,control_epoch,restore_epoch,lease_expires_at)
+    VALUES(manifest->>'logical_actor',proposal.database_oid,proposal.login_oid,proposal.role_oid,
+        proposal.backend_pid,proposal.backend_start,(manifest->>'adapter_incarnation')::uuid,
+        custody_admission.binding_digest(manifest),manifest->'source_kinds',manifest->'operations',
+        manifest->'audiences',(c->>'control_epoch')::bigint,(c->>'restore_epoch')::uuid,
+        pg_catalog.clock_timestamp()+interval '30 seconds') RETURNING process_id INTO result;
+    UPDATE custody_admission.anchor_proposals SET consumed_at=pg_catalog.clock_timestamp()
+      WHERE nonce=proposal.nonce;
+    RETURN pg_catalog.jsonb_build_object('process_id',result,'control_epoch',c->'control_epoch',
+        'restore_epoch',c->'restore_epoch','lease_seconds',30,
+        'login_oid',proposal.login_oid,'database_oid',proposal.database_oid,
+        'anchor_pid',proposal.backend_pid,
+        'anchor_backend_start',pg_catalog.to_char(proposal.backend_start AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'));
+END;
+$custody_enroll$;
+
+CREATE OR REPLACE FUNCTION custody_admission.host_revoke(
+    process_id uuid, expected_control_epoch bigint
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_revoke$
+DECLARE c jsonb;
+BEGIN
+    PERFORM custody_admission.host_only();
+    c:=custody_admission.current_control();
+    IF (c->>'control_epoch')::bigint<>expected_control_epoch THEN
+        RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+    END IF;
+    UPDATE custody_admission.processes p SET revoked_at=COALESCE(p.revoked_at,pg_catalog.clock_timestamp())
+      WHERE p.process_id=host_revoke.process_id;
+    UPDATE custody_admission.connections w SET state='revoked' WHERE w.process_id=host_revoke.process_id;
+    RETURN pg_catalog.jsonb_build_object('revoked',true);
+END;
+$custody_revoke$;
+
+CREATE OR REPLACE FUNCTION custody_admission.host_revoke_control(expected_control_epoch bigint)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_revoke_all$
+DECLARE c jsonb;
+BEGIN
+    PERFORM custody_admission.host_only();
+    -- The auth singleton always precedes global custody control, including this
+    -- host fence, so a once-prepared browser command cannot win on an old pool verdict.
+    IF pg_catalog.to_regclass('dashboard_auth.instance') IS NOT NULL THEN
+        PERFORM FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+    END IF;
+    c:=custody_admission.current_control();
+    IF (c->>'control_epoch')::bigint<>expected_control_epoch THEN
+        RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+    END IF;
+    UPDATE custody_admission.control SET control_epoch=control_epoch+1 WHERE singleton;
+    UPDATE custody_admission.processes SET revoked_at=COALESCE(revoked_at,pg_catalog.clock_timestamp());
+    UPDATE custody_admission.connections SET state='revoked';
+    RETURN pg_catalog.jsonb_build_object('control_epoch',expected_control_epoch+1);
+END;
+$custody_revoke_all$;
+
+CREATE OR REPLACE FUNCTION custody_admission.require_origin_current(expected_source_ref uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_origin_current$
+DECLARE source record; captured record; current_binding record; live_owner record;
+    original_observation record; current_observation record;
+BEGIN
+    SELECT * INTO source FROM custody_admission.sources WHERE source_ref=expected_source_ref;
+    IF NOT FOUND THEN RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000'; END IF;
+    IF source.source_family='accepted_ingress' THEN
+        -- Receiving writers read only this protected metadata, never peer SQL.
+        -- Retirement and final admission serialize on the SAME frozen birth.
+        PERFORM FROM custody_admission.accepted_births birth
+          JOIN custody_admission.control control ON control.singleton
+          WHERE birth.record_id=pg_catalog.substring(source.source_locator,7)::uuid
+            AND birth.retired_at IS NULL AND birth.content_digest=source.projection->>'content_digest'
+            AND birth.control_epoch=control.control_epoch AND birth.restore_epoch=control.restore_epoch
+          FOR UPDATE OF birth;
+        IF NOT FOUND THEN RAISE EXCEPTION 'custody stale accepted source' USING ERRCODE='42501'; END IF;
+    END IF;
+    IF source.projection->>'owner_entity_id' IS NULL
+       OR NOT (source.source_family='accepted_ingress' OR source.projection ? 'answer') THEN RETURN; END IF;
+    SELECT * INTO captured FROM custody_admission.source_origin_bindings
+      WHERE source_ref=expected_source_ref;
+    IF NOT FOUND THEN RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000'; END IF;
+    SELECT * INTO current_binding FROM custody_admission.origin_bindings
+      WHERE origin_digest=captured.origin_digest FOR UPDATE;
+    IF NOT FOUND OR current_binding.expires_at<=pg_catalog.clock_timestamp()
+       OR current_binding.source_revision<captured.origin_revision
+       OR current_binding.binding_generation<>captured.binding_generation
+       OR current_binding.owner_entity_id IS DISTINCT FROM captured.owner_entity_id
+       OR current_binding.owner_birth IS DISTINCT FROM captured.owner_birth
+       OR source.projection->>'owner_entity_id' IS DISTINCT FROM captured.owner_entity_id::text THEN
+        RAISE EXCEPTION 'custody stale origin' USING ERRCODE='42501';
+    END IF;
+    -- A fresh canonical observation can renew the finite liveness witness
+    -- without changing the underlying binding. The accepted report retains
+    -- its original capture and original expiry; it is never filled/relinked
+    -- from today's pointer. Compare actual immutable canonical content, not
+    -- the renewable observation's source identity or lease timestamps.
+    SELECT * INTO original_observation FROM custody_admission.sources
+      WHERE source_ref=captured.origin_source_ref;
+    IF NOT FOUND OR original_observation.logical_actor<>'relationship'
+       OR original_observation.source_family<>'domain_evidence'
+       OR original_observation.projection->>'intent' IS DISTINCT FROM 'identity_binding'
+       OR original_observation.source_revision<>captured.origin_revision THEN
+        RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+    END IF;
+    SELECT * INTO current_observation FROM custody_admission.sources
+      WHERE source_ref=current_binding.source_ref;
+    IF NOT FOUND OR current_observation.logical_actor<>'relationship'
+       OR current_observation.source_family<>'domain_evidence'
+       OR current_observation.projection->>'intent' IS DISTINCT FROM 'identity_binding'
+       OR current_observation.expires_at IS DISTINCT FROM current_binding.expires_at
+       OR current_observation.source_digest IS DISTINCT FROM current_binding.source_digest
+       OR current_observation.projection->>'origin_digest' IS DISTINCT FROM captured.origin_digest
+       OR current_observation.projection->>'content_digest'
+          IS DISTINCT FROM original_observation.projection->>'content_digest' THEN
+        RAISE EXCEPTION 'custody stale origin' USING ERRCODE='42501';
+    END IF;
+    SELECT created_at,roles,metadata INTO live_owner FROM public.entities
+      WHERE id=captured.owner_entity_id FOR UPDATE;
+    IF NOT FOUND OR live_owner.created_at IS DISTINCT FROM captured.owner_birth
+       OR NOT 'owner'=ANY(COALESCE(live_owner.roles,ARRAY[]::text[]))
+       OR live_owner.metadata->>'merged_into' IS NOT NULL
+       OR live_owner.metadata->>'deleted_at' IS NOT NULL
+       OR COALESCE((live_owner.metadata->>'unidentified')='true',false) THEN
+        RAISE EXCEPTION 'custody stale owner' USING ERRCODE='42501';
+    END IF;
+END;
+$custody_origin_current$;
+
+-- Installed only by the existing trusted installer/startup. Ordinary runtime
+-- roles have no EXECUTE on either private helper and cannot own this trigger.
+CREATE OR REPLACE FUNCTION custody_admission.accepted_birth() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_accepted_birth$
+#variable_conflict use_variable
+DECLARE process_id uuid; process record; c jsonb; content jsonb;
+BEGIN
+    -- Preserve only an unchanged original content/lifetime. Lifecycle/status
+    -- updates are ordinary processing, but deletion or canonical-body mutation
+    -- retires this birth one-way, including unbound legacy/admin writers.
+    -- This metadata lock orders before either transaction COMMIT. No global
+    -- auth/control lock is acquired after an unbound writer's domain row lock.
+    IF TG_OP='DELETE' THEN
+        UPDATE custody_admission.accepted_births
+          SET retired_at=COALESCE(retired_at,pg_catalog.clock_timestamp())
+          WHERE record_id=OLD.id AND received_at=OLD.received_at;
+        RETURN OLD;
+    ELSIF TG_OP='UPDATE' THEN
+        IF NEW.id IS DISTINCT FROM OLD.id OR NEW.received_at IS DISTINCT FROM OLD.received_at
+           OR NEW.request_context IS DISTINCT FROM OLD.request_context
+           OR NEW.raw_payload IS DISTINCT FROM OLD.raw_payload
+           OR NEW.normalized_text IS DISTINCT FROM OLD.normalized_text
+           OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
+           OR NEW.direction IS DISTINCT FROM OLD.direction THEN
+            UPDATE custody_admission.accepted_births
+              SET retired_at=COALESCE(retired_at,pg_catalog.clock_timestamp())
+              WHERE record_id=OLD.id AND received_at=OLD.received_at;
+        END IF;
+        RETURN NEW;
+    END IF;
+    -- Legacy unbound ingestion is still accepted, but it has NO custody birth.
+    -- A stale/released binding cannot turn a legacy row into a fresh source.
+    IF NOT EXISTS(SELECT FROM custody_admission.connections connection
+        JOIN pg_catalog.pg_stat_activity backend ON backend.pid=connection.backend_pid
+          AND backend.backend_start=connection.backend_start
+          AND backend.datid=connection.database_oid AND backend.usesysid=connection.login_oid
+        WHERE backend.pid=pg_catalog.pg_backend_pid() AND connection.state='bound'
+          AND connection.role_oid=custody_admission.caller_role()) THEN
+        RETURN NEW;
+    END IF;
+    process_id:=custody_admission.writer();
+    SELECT * INTO process FROM custody_admission.processes
+      WHERE processes.process_id=accepted_birth.process_id;
+    IF process.logical_actor<>'switchboard' OR NOT process.source_kinds ? 'accepted_ingress'
+       OR TG_OP<>'INSERT' OR TG_LEVEL<>'ROW' OR TG_WHEN<>'AFTER' THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    IF NEW.schema_version IS DISTINCT FROM 'message_inbox.v2'
+       OR NEW.direction IS DISTINCT FROM 'inbound'
+       OR pg_catalog.jsonb_typeof(NEW.request_context) IS DISTINCT FROM 'object'
+       OR pg_catalog.jsonb_typeof(NEW.raw_payload) IS DISTINCT FROM 'object'
+       OR NEW.request_context->>'request_id' IS DISTINCT FROM NEW.id::text
+       OR NEW.request_context->>'payload_type'='conversation_history'
+       OR COALESCE(NEW.request_context->'source_sender_identities','[]'::jsonb)<>'[]'::jsonb
+       OR NEW.normalized_text IS NULL THEN
+        RETURN NEW; -- Unsupported/history input never acquires a custody source.
+    END IF;
+    c:=custody_admission.current_control(); -- Already locked BEFORE native locks.
+    content:=pg_catalog.jsonb_build_object(
+        'record_id',NEW.id,'received_at',pg_catalog.to_char(NEW.received_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'text_sha256',pg_catalog.encode(public.digest(pg_catalog.convert_to(NEW.normalized_text,'UTF8'),'sha256'),'hex'),
+        'context_sha256',pg_catalog.encode(public.digest(pg_catalog.convert_to(NEW.request_context::text,'UTF8'),'sha256'),'hex'),
+        'payload_sha256',pg_catalog.encode(public.digest(pg_catalog.convert_to(NEW.raw_payload::text,'UTF8'),'sha256'),'hex'));
+    INSERT INTO custody_admission.accepted_births(
+        record_id,received_at,content_digest,first_process,control_epoch,restore_epoch)
+    VALUES(NEW.id,NEW.received_at,custody_admission.binding_digest(content),process_id,
+        (c->>'control_epoch')::bigint,(c->>'restore_epoch')::uuid);
+    INSERT INTO custody_admission.accepted_work(record_id) VALUES(NEW.id);
+    -- No ON CONFLICT update: delete/recreate or another physical row cannot
+    -- refill a frozen birth. Transaction rollback removes BOTH rows together.
+    RETURN NEW;
+END;
+$custody_accepted_birth$;
+
+CREATE OR REPLACE FUNCTION custody_admission.accepted_work(action text,payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_work$
+#variable_conflict use_variable
+DECLARE c jsonb; process record; work record; birth record; source record;
+    reply text; process_id uuid;
+BEGIN
+    PERFORM custody_admission.host_only();
+    IF action='claim' THEN
+        PERFORM custody_admission.closed(payload,ARRAY['process_id']);
+    ELSIF action='prepared' THEN
+        PERFORM custody_admission.closed(payload,ARRAY['process_id','record_id','claim_ref','source_ref']);
+    ELSIF action IN ('attempt','finish','ignore','selection','unavailable') THEN
+        PERFORM custody_admission.closed(payload,ARRAY['process_id','record_id','claim_ref']);
+    ELSE RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023'; END IF;
+    process_id:=(payload->>'process_id')::uuid;
+    c:=custody_admission.current_control();
+    SELECT * INTO process FROM custody_admission.processes
+      WHERE processes.process_id=accepted_work.process_id;
+    IF NOT FOUND OR process.logical_actor<>'switchboard'
+       OR NOT process.source_kinds ? 'accepted_ingress' OR NOT process.operations ? 'hold'
+       OR NOT custody_admission.process_current(process_id) THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    IF action='claim' THEN
+        SELECT * INTO work FROM custody_admission.accepted_work candidate
+          WHERE candidate.state='pending'
+            OR candidate.state IN ('claimed','prepared','attempted') AND (
+                candidate.lease_until<=pg_catalog.clock_timestamp()
+                OR NOT custody_admission.process_current(candidate.claim_process))
+          ORDER BY candidate.created_at,candidate.record_id LIMIT 1 FOR UPDATE;
+        IF NOT FOUND THEN RETURN pg_catalog.jsonb_build_object('status','idle'); END IF;
+        IF work.state='attempted' THEN
+            -- A prior dispatcher may have crossed the network boundary. A
+            -- committed owning receipt is proof; absence is UNKNOWN, never a
+            -- resend permit. No source/generation is reminted on restart.
+            UPDATE custody_admission.accepted_work SET
+                state=CASE WHEN EXISTS(SELECT FROM custody_admission.receipts receipt
+                    WHERE receipt.command_id=work.source_ref) THEN 'committed' ELSE 'unknown' END,
+                finished_at=pg_catalog.clock_timestamp()
+              WHERE record_id=work.record_id;
+            RETURN pg_catalog.jsonb_build_object('status','reconciled');
+        END IF;
+        SELECT * INTO birth FROM custody_admission.accepted_births WHERE record_id=work.record_id;
+        IF NOT FOUND OR birth.retired_at IS NOT NULL
+           OR birth.control_epoch<>(c->>'control_epoch')::bigint
+           OR birth.restore_epoch<>(c->>'restore_epoch')::uuid
+           OR birth.received_at+interval '5 minutes'<=pg_catalog.clock_timestamp() THEN
+            UPDATE custody_admission.accepted_work SET state='unavailable',
+                finished_at=pg_catalog.clock_timestamp() WHERE record_id=work.record_id;
+            RETURN pg_catalog.jsonb_build_object('status','reconciled');
+        END IF;
+        UPDATE custody_admission.accepted_work SET state='claimed',
+            claim_ref=pg_catalog.gen_random_uuid(),claim_process=process_id,
+            lease_until=pg_catalog.clock_timestamp()+interval '30 seconds'
+          WHERE record_id=work.record_id RETURNING * INTO work;
+        RETURN pg_catalog.jsonb_build_object('status','claimed','record_id',work.record_id,
+            'claim_ref',work.claim_ref,'source_ref',work.source_ref);
+    END IF;
+    SELECT * INTO work FROM custody_admission.accepted_work
+      WHERE record_id=(payload->>'record_id')::uuid FOR UPDATE;
+    IF NOT FOUND OR work.claim_ref IS DISTINCT FROM (payload->>'claim_ref')::uuid
+       OR work.claim_process IS DISTINCT FROM process_id
+       OR work.lease_until<=pg_catalog.clock_timestamp()
+       OR work.state NOT IN ('claimed','prepared','attempted') THEN
+        RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+    END IF;
+    IF action='prepared' THEN
+        IF work.state<>'claimed' THEN RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001'; END IF;
+        SELECT * INTO source FROM custody_admission.sources
+          WHERE source_ref=(payload->>'source_ref')::uuid;
+        IF NOT FOUND OR source.logical_actor<>'switchboard' OR source.source_family<>'accepted_ingress'
+           OR source.source_locator<>'inbox:'||work.record_id::text
+           OR source.projection->>'intent'<>'LOCK'
+           OR source.expires_at<=pg_catalog.clock_timestamp()
+           OR NOT EXISTS(SELECT FROM custody_admission.source_associations association
+               WHERE association.source_ref=source.source_ref AND association.process_id=process_id)
+           OR work.source_ref IS NOT NULL AND work.source_ref<>source.source_ref THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        UPDATE custody_admission.accepted_work SET state='prepared',source_ref=source.source_ref
+          WHERE record_id=work.record_id;
+        RETURN pg_catalog.jsonb_build_object('status','prepared','command_id',source.source_ref);
+    ELSIF action='attempt' THEN
+        IF work.state<>'prepared' OR work.source_ref IS NULL THEN
+            RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001'; END IF;
+        -- This marker commits BEFORE any registered MCP challenge/apply I/O.
+        -- It is dispatch-attempt evidence, not a provider-start witness.
+        UPDATE custody_admission.accepted_work SET state='attempted',
+            attempted_at=pg_catalog.clock_timestamp(),lease_until=pg_catalog.clock_timestamp()+interval '30 seconds'
+          WHERE record_id=work.record_id;
+        RETURN pg_catalog.jsonb_build_object('status','attempted','command_id',work.source_ref);
+    ELSIF action='finish' THEN
+        IF work.state<>'attempted' THEN RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001'; END IF;
+        UPDATE custody_admission.accepted_work SET
+            state=CASE WHEN EXISTS(SELECT FROM custody_admission.receipts receipt
+                WHERE receipt.command_id=work.source_ref) THEN 'committed' ELSE 'unknown' END,
+            finished_at=pg_catalog.clock_timestamp()
+          WHERE record_id=work.record_id RETURNING state INTO reply;
+        RETURN pg_catalog.jsonb_build_object('status',reply);
+    ELSE
+        IF work.state<>'claimed' THEN RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001'; END IF;
+        UPDATE custody_admission.accepted_work SET
+            state=CASE action WHEN 'ignore' THEN 'ignored' WHEN 'selection' THEN 'awaiting_selection'
+                  ELSE 'unavailable' END,finished_at=pg_catalog.clock_timestamp()
+          WHERE record_id=work.record_id;
+        RETURN pg_catalog.jsonb_build_object('status','settled');
+    END IF;
+END;
+$custody_work$;
+
+CREATE OR REPLACE FUNCTION custody_admission.install_accepted_birth() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_birth_install$
+DECLARE root oid; owner_oid oid;
+BEGIN
+    -- Core-only databases have no Switchboard relation. Startup invokes this
+    -- fixed installer again AFTER the owning migrations, before serving MCP.
+    root:=pg_catalog.to_regclass('switchboard.message_inbox');
+    IF root IS NULL THEN RETURN; END IF;
+    SELECT bootstrap_owner_oid INTO owner_oid
+      FROM custody_admission.bootstrap_configuration WHERE singleton;
+    IF NOT EXISTS(SELECT FROM pg_catalog.pg_trigger
+        WHERE tgrelid=root AND tgname='custody_accepted_birth') THEN
+        EXECUTE 'CREATE TRIGGER custody_accepted_birth AFTER INSERT ON switchboard.message_inbox '
+            'FOR EACH ROW EXECUTE FUNCTION custody_admission.accepted_birth()';
+    END IF;
+    IF NOT EXISTS(SELECT FROM pg_catalog.pg_trigger
+        WHERE tgrelid=root AND tgname='custody_accepted_retire') THEN
+        EXECUTE 'CREATE TRIGGER custody_accepted_retire AFTER UPDATE OR DELETE ON switchboard.message_inbox '
+            'FOR EACH ROW EXECUTE FUNCTION custody_admission.accepted_birth()';
+    END IF;
+    -- Partition-local disable/replacement is a real bypass too. Check every
+    -- present child, including the root; future partitions inherit the trigger.
+    IF EXISTS(SELECT FROM pg_catalog.pg_partition_tree(root::pg_catalog.regclass) part_node
+        CROSS JOIN (VALUES('custody_accepted_birth',5),('custody_accepted_retire',25)) expected(name,kind)
+        LEFT JOIN pg_catalog.pg_trigger installed_trigger ON installed_trigger.tgrelid=part_node.relid
+          AND installed_trigger.tgname=expected.name
+        WHERE installed_trigger.oid IS NULL OR installed_trigger.tgtype<>expected.kind OR installed_trigger.tgenabled<>'O'
+          OR installed_trigger.tgfoid<>'custody_admission.accepted_birth()'::pg_catalog.regprocedure
+          OR installed_trigger.tgnargs<>0 OR installed_trigger.tgqual IS NOT NULL OR installed_trigger.tgisinternal)
+       OR NOT EXISTS(SELECT FROM pg_catalog.pg_proc
+           WHERE oid='custody_admission.accepted_birth()'::pg_catalog.regprocedure
+             AND proowner=owner_oid AND prosecdef)
+       OR NOT EXISTS(SELECT FROM pg_catalog.pg_class WHERE oid=root AND relkind='p') THEN
+        RAISE EXCEPTION 'custody invalid accepted birth trigger' USING ERRCODE='42501';
+    END IF;
+END;
+$custody_birth_install$;
+
+CREATE OR REPLACE FUNCTION custody_admission.accepted_projection(projection jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_accepted_projection$
+#variable_conflict use_variable
+DECLARE process_id uuid; process record; accepted record; physical_count integer:=0;
+    record_id uuid; content jsonb; row_digest text; requested jsonb; original_requested jsonb;
+    binding record; observation record; prior record; issuer record; target record;
+    owner_id uuid; issuer_id uuid; issuer_binding jsonb; selected jsonb:='[]'; ordering text;
+    origin_channel text; origin_value text;
+BEGIN
+    process_id:=custody_admission.writer();
+    SELECT * INTO process FROM custody_admission.processes WHERE processes.process_id=accepted_projection.process_id;
+    IF NOT FOUND OR process.logical_actor<>'switchboard'
+       OR projection->>'intent' IS DISTINCT FROM 'LOCK'
+       OR projection->>'locator' !~ '^inbox:[0-9a-f-]{36}$'
+       OR projection->'owner_entity_id'<>'null'::jsonb
+       OR projection->'issuer_target'<>'null'::jsonb
+       OR projection->'target_set'<>'[]'::jsonb
+       OR projection->'revision' IS DISTINCT FROM '1'::jsonb
+       OR projection->'target_set_version' IS DISTINCT FROM '1'::jsonb
+       OR NOT pg_catalog.has_schema_privilege(process.role_oid,'switchboard','USAGE')
+       OR NOT pg_catalog.has_table_privilege(process.role_oid,'switchboard.message_inbox','SELECT') THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    record_id:=pg_catalog.substring(projection->>'locator',7)::uuid;
+    IF projection->>'locator'<>'inbox:'||record_id::text THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    -- This is the SOURCE-OWNING Switchboard connection. Receiving business
+    -- writers never query peer inbox/fact tables; they consume registry metadata.
+    FOR accepted IN SELECT id,received_at,request_context,raw_payload,normalized_text,schema_version,direction
+        FROM switchboard.message_inbox WHERE id=record_id ORDER BY received_at FOR UPDATE LOOP
+        physical_count:=physical_count+1;
+    END LOOP;
+    IF physical_count<>1 THEN
+        RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+    END IF;
+    IF accepted.schema_version IS DISTINCT FROM 'message_inbox.v2'
+       OR accepted.direction IS DISTINCT FROM 'inbound'
+       OR pg_catalog.jsonb_typeof(accepted.request_context) IS DISTINCT FROM 'object'
+       OR pg_catalog.jsonb_typeof(accepted.raw_payload) IS DISTINCT FROM 'object'
+       OR accepted.request_context->>'request_id' IS DISTINCT FROM record_id::text
+       OR accepted.request_context->>'payload_type'='conversation_history'
+       OR COALESCE(accepted.request_context->'source_sender_identities','[]'::jsonb)<>'[]'::jsonb
+       OR accepted.normalized_text IS NULL
+       OR pg_catalog.btrim(accepted.normalized_text) !~* '^LOCK +[0-9a-f -]+$' THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    -- Independently derive the selector from this actual source row, rather
+    -- than accepting the producer's origin hash for a different owner channel.
+    -- Only the adopted transport-shaped identifiers are eligible here; email
+    -- headers fail the existing shared owner-channel validator too.
+    origin_channel:=accepted.request_context->>'source_channel';
+    origin_value:=pg_catalog.btrim(accepted.request_context->>'source_sender_identity');
+    IF origin_channel='email' AND origin_value ~ '^[A-Za-z0-9_.+-]+@[A-Za-z0-9_.-]+\.[A-Za-z0-9_]+$' THEN
+        origin_value:=pg_catalog.lower(origin_value);
+    ELSIF origin_channel=ANY(ARRAY['telegram','telegram_user_id','telegram_user_client',
+            'telegram_username','telegram_bot','telegram_chat_id']) THEN
+        origin_channel:='telegram';
+        origin_value:=pg_catalog.regexp_replace(origin_value,'^telegram:','');
+        origin_value:=pg_catalog.regexp_replace(origin_value,'^@','');
+        IF origin_value !~ '^(-?[0-9]+|[A-Za-z][A-Za-z0-9_]{4,31})$' THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        origin_value:=pg_catalog.lower(origin_value);
+    ELSIF origin_channel=ANY(ARRAY['whatsapp','whatsapp_user_client','whatsapp_jid'])
+          AND origin_value ~ '^[0-9]+(:[0-9]+)?@(s\.whatsapp\.net|lid)$' THEN
+        origin_channel:='whatsapp_jid';
+        origin_value:=pg_catalog.regexp_replace(origin_value,':[0-9]+@','@');
+    ELSE
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    IF projection->>'origin_digest' IS DISTINCT FROM custody_admission.binding_digest(
+        pg_catalog.jsonb_build_object('kind','owner-channel.v1','channel',origin_channel,'value',origin_value)) THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    content:=pg_catalog.jsonb_build_object(
+        'record_id',record_id,'received_at',pg_catalog.to_char(accepted.received_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'text_sha256',pg_catalog.encode(public.digest(pg_catalog.convert_to(accepted.normalized_text,'UTF8'),'sha256'),'hex'),
+        'context_sha256',pg_catalog.encode(public.digest(pg_catalog.convert_to(accepted.request_context::text,'UTF8'),'sha256'),'hex'),
+        'payload_sha256',pg_catalog.encode(public.digest(pg_catalog.convert_to(accepted.raw_payload::text,'UTF8'),'sha256'),'hex'));
+    row_digest:=custody_admission.binding_digest(content);
+    -- A current locator/read is not provenance. Require the immutable stamp
+    -- produced by an actual INSERT on a live bound native owning writer.
+    -- Restart may rehydrate this SAME report; it cannot change its birth or
+    -- move evidence across a control/restore epoch. This does not implement
+    -- the separately owned restored-history admission fence.
+    IF NOT EXISTS(SELECT FROM custody_admission.accepted_births birth
+        JOIN custody_admission.processes original ON original.process_id=birth.first_process
+        JOIN custody_admission.control control ON control.singleton
+        WHERE birth.record_id=record_id AND birth.retired_at IS NULL
+          AND birth.received_at=accepted.received_at
+          AND birth.content_digest=row_digest AND original.logical_actor='switchboard'
+          AND birth.control_epoch=control.control_epoch AND birth.restore_epoch=control.restore_epoch) THEN
+        RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+    END IF;
+    IF projection->>'content_digest' IS DISTINCT FROM row_digest THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    requested:=projection->'selected_target_ids';
+    IF pg_catalog.jsonb_typeof(requested) IS DISTINCT FROM 'array'
+       OR pg_catalog.jsonb_array_length(requested) NOT BETWEEN 1 AND 64
+       OR EXISTS(SELECT FROM pg_catalog.jsonb_array_elements(requested) id
+            WHERE pg_catalog.jsonb_typeof(id) IS DISTINCT FROM 'string'
+              OR id #>> '{}' IS DISTINCT FROM ((id #>> '{}')::uuid)::text) THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    SELECT pg_catalog.jsonb_agg(id::uuid::text ORDER BY id::uuid)
+      INTO original_requested FROM pg_catalog.regexp_split_to_table(
+        pg_catalog.regexp_replace(pg_catalog.btrim(accepted.normalized_text),'^LOCK[[:space:]]+','','i'),
+        '[[:space:]]+') id;
+    IF requested IS DISTINCT FROM original_requested
+       OR (SELECT pg_catalog.count(DISTINCT id) FROM pg_catalog.jsonb_array_elements_text(requested) id)
+             <>pg_catalog.jsonb_array_length(requested) THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    SELECT * INTO prior FROM custody_admission.sources
+      WHERE logical_actor='switchboard' AND source_family='accepted_ingress'
+        AND source_locator=projection->>'locator' AND source_revision=(projection->>'revision')::bigint;
+    IF FOUND THEN
+        -- Replaying the original report carries its original association and
+        -- expiry. Current resolver output cannot refill or promote that report.
+        IF prior.projection->>'content_digest' IS DISTINCT FROM row_digest
+           OR prior.projection->'selected_target_ids' IS DISTINCT FROM requested
+           OR prior.projection->>'origin_digest' IS DISTINCT FROM projection->>'origin_digest'
+           OR prior.expires_at<=pg_catalog.clock_timestamp() THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        PERFORM custody_admission.require_origin_current(prior.source_ref);
+        RETURN prior.projection;
+    END IF;
+    IF (projection->>'expires_at')::timestamptz>accepted.received_at+interval '5 minutes'
+       OR accepted.received_at>pg_catalog.clock_timestamp() THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    SELECT * INTO binding FROM custody_admission.origin_bindings
+      WHERE origin_digest=projection->>'origin_digest' FOR UPDATE;
+    IF NOT FOUND OR binding.owner_entity_id IS NULL OR binding.expires_at<=pg_catalog.clock_timestamp() THEN
+        RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+    END IF;
+    SELECT * INTO observation FROM custody_admission.sources WHERE source_ref=binding.source_ref;
+    IF NOT FOUND OR observation.logical_actor<>'relationship'
+       OR observation.source_family<>'domain_evidence'
+       OR observation.projection->>'intent'<>'identity_binding'
+       OR NOT EXISTS(SELECT FROM custody_admission.source_associations association
+           WHERE association.source_ref=observation.source_ref
+             AND custody_admission.process_current(association.process_id)) THEN
+        RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+    END IF;
+    owner_id:=binding.owner_entity_id;
+    ordering:=owner_id::text||':endpoint:'||(projection->>'origin_digest')||':'||binding.binding_generation;
+    SELECT * INTO issuer FROM custody_admission.targets WHERE ordering_key=ordering;
+    issuer_id:=CASE WHEN FOUND THEN issuer.target_id ELSE pg_catalog.gen_random_uuid() END;
+    issuer_binding:=pg_catalog.jsonb_build_object(
+        'target_id',issuer_id,'target_kind','endpoint','binding_digest',projection->>'origin_digest',
+        'binding_version',binding.binding_generation,'generation',COALESCE(issuer.generation,0));
+    IF EXISTS(SELECT FROM public.custody_holds WHERE target_id=issuer_id AND released_at IS NULL) THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    FOR target IN SELECT t.* FROM custody_admission.targets t
+        WHERE t.target_id IN (SELECT id::uuid FROM pg_catalog.jsonb_array_elements_text(requested) id)
+        ORDER BY t.ordering_key COLLATE "C" LOOP
+        IF target.owner_entity_id<>owner_id THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+        selected:=selected||pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+            'target_id',target.target_id,'target_kind',target.target_kind,'binding_digest',target.binding_digest,
+            'binding_version',target.binding_version,'generation',target.generation));
+    END LOOP;
+    IF pg_catalog.jsonb_array_length(selected)<>pg_catalog.jsonb_array_length(requested) THEN
+        RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+    END IF;
+    RETURN projection||pg_catalog.jsonb_build_object(
+        'owner_entity_id',owner_id,'issuer_target',issuer_id,'issuer_binding',issuer_binding,
+        'target_set',selected,'target_set_version',binding.binding_generation);
+END;
+$custody_accepted_projection$;
+
+CREATE OR REPLACE FUNCTION custody_admission.protocol(action text,p jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_protocol$
+#variable_conflict use_variable
+DECLARE
+    a record; w record; process record; source record; call_row record; destination record;
+    c jsonb; process_id uuid; source_id uuid; new_id uuid; operation_hash text; deadline timestamptz;
+    generation bigint; result jsonb; target jsonb; owner_id uuid; binding jsonb;
+    fresh_source boolean; origin_binding record; owner_birth timestamptz;
+BEGIN
+    -- Only fixed wrappers call this dispatcher; no ordinary role can EXEC it.
+    PERFORM custody_admission.canonical_json(p);
+    IF action='anchor_begin' THEN
+        SELECT * INTO a FROM pg_catalog.pg_stat_activity WHERE pid=pg_catalog.pg_backend_pid();
+        INSERT INTO custody_admission.anchor_proposals(database_oid,login_oid,role_oid,
+            backend_pid,backend_start,expires_at)
+        VALUES(a.datid,a.usesysid,custody_admission.caller_role(),a.pid,a.backend_start,
+            pg_catalog.clock_timestamp()+interval '10 seconds')
+        ON CONFLICT(database_oid,backend_pid,backend_start) DO UPDATE
+          SET nonce=pg_catalog.gen_random_uuid(),expires_at=EXCLUDED.expires_at
+          WHERE custody_admission.anchor_proposals.consumed_at IS NULL
+        RETURNING nonce INTO new_id;
+        IF new_id IS NULL THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+        RETURN pg_catalog.jsonb_build_object('nonce',new_id);
+    ELSIF action='connection_begin' THEN
+        c:=custody_admission.current_control();
+        SELECT * INTO a FROM pg_catalog.pg_stat_activity WHERE pid=pg_catalog.pg_backend_pid();
+        INSERT INTO custody_admission.connections(database_oid,backend_pid,backend_start,
+            login_oid,role_oid,state,bound_until)
+        VALUES(a.datid,a.pid,a.backend_start,a.usesysid,custody_admission.caller_role(),
+            'proposed',pg_catalog.clock_timestamp()+interval '10 seconds')
+        ON CONFLICT(database_oid,backend_pid,backend_start) DO UPDATE
+          SET acquisition_generation=custody_admission.connections.acquisition_generation+1,
+              nonce=pg_catalog.gen_random_uuid(),process_id=NULL,state='proposed',
+              login_oid=EXCLUDED.login_oid,role_oid=EXCLUDED.role_oid,finished_at=NULL,
+              verified_call_id=NULL,
+              bound_until=EXCLUDED.bound_until
+          WHERE custody_admission.connections.state IN ('released','revoked')
+        RETURNING nonce,acquisition_generation INTO new_id,generation;
+        IF new_id IS NULL THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+        RETURN pg_catalog.jsonb_build_object('writer_nonce',new_id,'acquisition_generation',generation);
+    ELSIF action='connection_unbind' THEN
+        -- Cleanup is allowed after lease/epoch revocation, but exclusively on
+        -- this actual physical checkout and its exact server-issued generation.
+        SELECT * INTO a FROM pg_catalog.pg_stat_activity WHERE pid=pg_catalog.pg_backend_pid();
+        UPDATE custody_admission.connections SET state='released',process_id=NULL,verified_call_id=NULL,
+            bound_until=pg_catalog.clock_timestamp()
+        WHERE database_oid=a.datid AND backend_pid=a.pid AND backend_start=a.backend_start
+          AND login_oid=a.usesysid AND role_oid=custody_admission.caller_role()
+          AND acquisition_generation=(p->>'acquisition_generation')::bigint
+        RETURNING acquisition_generation INTO generation;
+        IF generation IS NULL THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+        RETURN pg_catalog.jsonb_build_object('unbound',true,'acquisition_generation',generation);
+    ELSIF action IN ('anchor_renew','bind_connection','challenge','respond','mint') THEN
+        process_id:=custody_admission.anchor();
+    ELSIF action='connection_finish' THEN
+        c:=custody_admission.current_control();
+        SELECT * INTO a FROM pg_catalog.pg_stat_activity WHERE pid=pg_catalog.pg_backend_pid();
+        SELECT * INTO w FROM custody_admission.connections
+        WHERE nonce=(p->>'writer_nonce')::uuid AND database_oid=a.datid
+          AND backend_pid=a.pid AND backend_start=a.backend_start AND login_oid=a.usesysid
+          AND role_oid=custody_admission.caller_role() AND state='bound'
+          AND finished_at IS NULL AND bound_until>pg_catalog.clock_timestamp() FOR UPDATE;
+        IF NOT FOUND OR NOT custody_admission.process_current(w.process_id) THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        UPDATE custody_admission.connections SET finished_at=pg_catalog.clock_timestamp()
+          WHERE nonce=w.nonce;
+        RETURN pg_catalog.jsonb_build_object('process_id',w.process_id,
+            'acquisition_generation',w.acquisition_generation);
+    ELSE process_id:=custody_admission.writer();
+    END IF;
+    SELECT * INTO process FROM custody_admission.processes WHERE processes.process_id=protocol.process_id;
+    c:=custody_admission.current_control();
+    IF action='anchor_renew' THEN
+        UPDATE custody_admission.processes SET lease_expires_at=pg_catalog.clock_timestamp()+interval '30 seconds'
+          WHERE processes.process_id=protocol.process_id;
+        RETURN pg_catalog.jsonb_build_object('lease_seconds',30);
+    ELSIF action='bind_connection' THEN
+        SELECT * INTO w FROM custody_admission.connections
+          WHERE nonce=(p->>'writer_nonce')::uuid FOR UPDATE;
+        IF NOT FOUND OR w.state<>'proposed' OR w.bound_until<=pg_catalog.clock_timestamp()
+           OR w.login_oid<>process.login_oid OR w.role_oid<>process.role_oid
+           OR w.database_oid<>process.database_oid
+           OR NOT EXISTS(SELECT FROM pg_catalog.pg_stat_activity
+               WHERE pid=w.backend_pid AND backend_start=w.backend_start AND datid=w.database_oid
+                 AND usesysid=w.login_oid) THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        UPDATE custody_admission.connections SET process_id=protocol.process_id,state='bound',
+            bound_until=LEAST(process.lease_expires_at,pg_catalog.clock_timestamp()+interval '30 seconds')
+          WHERE nonce=w.nonce;
+        RETURN pg_catalog.jsonb_build_object('acquisition_generation',w.acquisition_generation);
+    ELSIF action='source_register' THEN
+        IF process.operations='[]'::jsonb AND (
+            p->>'source_family' IS DISTINCT FROM 'domain_evidence'
+            OR p->'projection'->>'intent' IS DISTINCT FROM 'identity_binding'
+        ) THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+        IF p->>'source_family'='accepted_ingress' THEN
+            PERFORM custody_admission.closed(p->'projection',ARRAY[
+                'locator','revision','content_digest','origin_digest','owner_entity_id',
+                'issuer_target','target_set','target_set_version','expires_at','intent','selected_target_ids']);
+            p:=pg_catalog.jsonb_set(p,'{projection}',
+                custody_admission.accepted_projection(p->'projection'));
+        END IF;
+        -- Owner commands originate in the private current-auth controller. A
+        -- matching role or projection cannot invent an unprepared command.
+        IF p->>'source_family' IN ('owner_command','host_command') THEN
+            IF p->'projection'->>'locator' !~ '^command:[0-9a-f-]{36}$' THEN
+                RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+            END IF;
+            SELECT * INTO call_row FROM custody_admission.commands command
+              WHERE command.command_id=pg_catalog.substring(p->'projection'->>'locator',9)::uuid;
+            IF NOT FOUND
+               OR (p->>'source_family'='owner_command' AND (
+                   process.logical_actor<>'dashboard' OR call_row.kind<>'browser'))
+               OR (p->>'source_family'='host_command' AND (
+                   process.logical_actor<>'host-switchboard' OR call_row.kind<>'host'))
+               OR call_row.selection->'target_set' IS DISTINCT FROM p->'projection'->'target_set'
+               OR call_row.selection->'target_set_version' IS DISTINCT FROM p->'projection'->'target_set_version'
+               OR call_row.selection_digest IS DISTINCT FROM p->'projection'->>'content_digest'
+               OR call_row.expires_at IS DISTINCT FROM (p->'projection'->>'expires_at')::timestamptz THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+            PERFORM custody_admission.command_current(call_row.command_id);
+            -- The restricted dashboard role has no public entity reader. The
+            -- installed engine selects the current canonical owner; a caller
+            -- projection may not nominate that authority.
+            IF p->'projection'->'owner_entity_id' IS DISTINCT FROM 'null'::jsonb
+               OR p->'projection'->>'issuer_target' IS NOT NULL
+               OR (SELECT pg_catalog.count(*) FROM public.entities entity
+                   WHERE 'owner'=ANY(COALESCE(entity.roles,ARRAY[]::text[]))
+                     AND entity.metadata->>'merged_into' IS NULL
+                     AND entity.metadata->>'deleted_at' IS NULL
+                     AND NOT COALESCE((entity.metadata->>'unidentified')='true',false))<>1 THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+            SELECT entity.id INTO owner_id FROM public.entities entity
+              WHERE 'owner'=ANY(COALESCE(entity.roles,ARRAY[]::text[]))
+                AND entity.metadata->>'merged_into' IS NULL
+                AND entity.metadata->>'deleted_at' IS NULL
+                AND NOT COALESCE((entity.metadata->>'unidentified')='true',false);
+            p:=pg_catalog.jsonb_set(p,'{projection,owner_entity_id}',pg_catalog.to_jsonb(owner_id));
+        END IF;
+        PERFORM custody_admission.closed(p->'projection',ARRAY[
+            'locator','revision','content_digest','origin_digest','owner_entity_id',
+            'issuer_target','target_set','target_set_version','expires_at'
+        ],ARRAY['intent','event_ref','question_ref','token_digest','answer','provider','inventory','issuer_binding','assurance','selected_target_ids']);
+        IF NOT process.source_kinds ? (p->>'source_family')
+           OR pg_catalog.jsonb_typeof(p->'projection'->'revision') IS DISTINCT FROM 'number'
+           OR (p->'projection'->>'revision')::bigint<1
+           OR pg_catalog.jsonb_typeof(p->'projection'->'locator') IS DISTINCT FROM 'string'
+           OR p->'projection'->>'locator' !~ '^[a-zA-Z0-9:_-]{1,128}$'
+           OR pg_catalog.jsonb_typeof(p->'projection'->'content_digest') IS DISTINCT FROM 'string'
+           OR p->'projection'->>'content_digest' !~ '^[0-9a-f]{64}$'
+           OR pg_catalog.jsonb_typeof(p->'projection'->'origin_digest') IS DISTINCT FROM 'string'
+           OR p->'projection'->>'origin_digest' !~ '^[0-9a-f]{64}$'
+           OR pg_catalog.jsonb_typeof(p->'projection'->'target_set') IS DISTINCT FROM 'array'
+           OR pg_catalog.jsonb_array_length(p->'projection'->'target_set')>64
+           OR pg_catalog.jsonb_typeof(p->'projection'->'expires_at') IS DISTINCT FROM 'string'
+           OR p->'projection'->>'expires_at'
+                !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+           OR pg_catalog.jsonb_typeof(p->'projection'->'owner_entity_id')
+                NOT IN ('null','string')
+           OR pg_catalog.jsonb_typeof(p->'projection'->'issuer_target')
+                NOT IN ('null','string') THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        deadline:=(p->'projection'->>'expires_at')::timestamptz;
+        IF pg_catalog.to_char(deadline AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+           IS DISTINCT FROM p->'projection'->>'expires_at' THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        IF deadline<=pg_catalog.clock_timestamp() THEN
+            RAISE EXCEPTION 'custody expired' USING ERRCODE='42501';
+        END IF;
+        operation_hash:=custody_admission.binding_digest(p->'projection');
+        PERFORM custody_admission.selection_valid(pg_catalog.jsonb_build_object(
+            'target_set',p->'projection'->'target_set','target_set_version',p->'projection'->'target_set_version'));
+        IF p->'projection' ? 'issuer_binding' THEN
+            PERFORM custody_admission.selection_valid(pg_catalog.jsonb_build_object(
+                'target_set',pg_catalog.jsonb_build_array(p->'projection'->'issuer_binding'),
+                'target_set_version',1));
+            IF p->'projection'->>'issuer_target'
+               IS DISTINCT FROM p->'projection'->'issuer_binding'->>'target_id' THEN
+                RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+            END IF;
+        ELSIF p->'projection'->>'issuer_target' IS NOT NULL THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        owner_id:=(p->'projection'->>'owner_entity_id')::uuid;
+        IF owner_id IS NOT NULL THEN
+            IF p->'projection'->>'owner_entity_id'<>owner_id::text THEN
+                RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+            END IF;
+            -- Canonical owner role changes/delete cannot race this source capture.
+            PERFORM FROM public.entities e WHERE e.id=owner_id FOR UPDATE;
+            IF NOT FOUND OR NOT EXISTS(SELECT FROM public.entities e WHERE e.id=owner_id
+                AND 'owner'=ANY(COALESCE(e.roles,ARRAY[]::text[]))
+                AND e.metadata->>'merged_into' IS NULL
+                AND e.metadata->>'deleted_at' IS NULL
+                AND NOT COALESCE((e.metadata->>'unidentified')='true',false)) THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+            SELECT created_at INTO owner_birth FROM public.entities WHERE id=owner_id;
+        END IF;
+        SELECT * INTO source FROM custody_admission.sources
+          WHERE logical_actor=process.logical_actor AND source_family=p->>'source_family'
+            AND source_locator=p->'projection'->>'locator'
+            AND source_revision=(p->'projection'->>'revision')::bigint;
+        IF FOUND THEN
+            IF source.source_digest<>operation_hash OR source.projection<>p->'projection' THEN
+                RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+            END IF;
+            source_id:=source.source_ref;
+        ELSE source_id:=NULL;
+        END IF;
+        IF p->'projection'->>'intent'='identity_binding' THEN
+            PERFORM FROM custody_admission.origin_bindings
+              WHERE origin_digest=p->'projection'->>'origin_digest' FOR UPDATE;
+        ELSIF owner_id IS NOT NULL AND (p->>'source_family'='accepted_ingress'
+                                       OR p->'projection' ? 'answer') THEN
+            SELECT * INTO origin_binding FROM custody_admission.origin_bindings
+              WHERE origin_digest=p->'projection'->>'origin_digest' FOR UPDATE;
+            IF source_id IS NOT NULL THEN
+                PERFORM custody_admission.require_origin_current(source_id);
+            ELSIF NOT FOUND OR origin_binding.expires_at<=pg_catalog.clock_timestamp()
+                  OR origin_binding.owner_entity_id IS DISTINCT FROM owner_id
+                  OR origin_binding.owner_birth IS DISTINCT FROM owner_birth THEN
+                RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+            END IF;
+        END IF;
+        -- The complete existing target union is locked BEFORE inserting an
+        -- immutable source decision. Brand-new targets are born afterward in
+        -- this same control-serialized transaction; no existing target may be
+        -- acquired late after source/decision locks.
+        PERFORM FROM custody_admission.targets existing_target
+        WHERE existing_target.target_id IN (
+            SELECT (v->>'target_id')::uuid FROM pg_catalog.jsonb_array_elements(
+                (p->'projection'->'target_set')||CASE
+                WHEN p->'projection' ? 'issuer_binding'
+                THEN pg_catalog.jsonb_build_array(p->'projection'->'issuer_binding')
+                ELSE '[]'::jsonb END) v)
+        ORDER BY existing_target.ordering_key COLLATE "C" FOR UPDATE;
+        INSERT INTO custody_admission.sources(logical_actor,source_family,source_locator,
+            source_revision,projection,source_digest,first_process,expires_at)
+        VALUES(process.logical_actor,p->>'source_family',p->'projection'->>'locator',
+            (p->'projection'->>'revision')::bigint,p->'projection',operation_hash,process_id,deadline)
+        ON CONFLICT(logical_actor,source_family,source_locator,source_revision) DO NOTHING
+        RETURNING source_ref INTO source_id;
+        fresh_source:=source_id IS NOT NULL;
+        IF source_id IS NULL THEN
+            SELECT * INTO source FROM custody_admission.sources
+            WHERE logical_actor=process.logical_actor AND source_family=p->>'source_family'
+              AND source_locator=p->'projection'->>'locator'
+              AND source_revision=(p->'projection'->>'revision')::bigint;
+            IF source.source_digest<>operation_hash OR source.projection<>p->'projection' THEN
+                RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+            END IF;
+            source_id:=source.source_ref;
+        END IF;
+        IF p->'projection'->>'intent'='identity_binding' THEN
+            -- Fixed Relationship producers read canonical rows in this SAME
+            -- transaction. This is a current pointer, not caller attribution.
+            IF process.logical_actor<>'relationship' OR p->>'source_family'<>'domain_evidence'
+               OR p->'projection'->>'locator'<>'identity:'||(p->'projection'->>'origin_digest')
+               OR p->'projection'->'target_set'<>'[]'::jsonb
+               OR p->'projection'->>'issuer_target' IS NOT NULL
+               OR deadline>pg_catalog.clock_timestamp()+interval '5 minutes'
+               OR p->'projection'->'target_set_version' IS DISTINCT FROM p->'projection'->'revision' THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+            INSERT INTO custody_admission.origin_bindings(origin_digest,source_ref,
+                source_revision,source_digest,owner_entity_id,owner_birth,expires_at)
+            VALUES(p->'projection'->>'origin_digest',source_id,
+                (p->'projection'->>'revision')::bigint,operation_hash,owner_id,owner_birth,deadline)
+            ON CONFLICT(origin_digest) DO UPDATE SET source_ref=EXCLUDED.source_ref,
+                source_revision=EXCLUDED.source_revision,source_digest=EXCLUDED.source_digest,
+                binding_generation=origin_bindings.binding_generation+CASE
+                  WHEN (SELECT previous_observation.projection->>'content_digest'
+                        FROM custody_admission.sources previous_observation
+                        WHERE previous_observation.source_ref=origin_bindings.source_ref)
+                       IS DISTINCT FROM p->'projection'->>'content_digest' THEN 1 ELSE 0 END,
+                owner_entity_id=EXCLUDED.owner_entity_id,owner_birth=EXCLUDED.owner_birth,
+                expires_at=EXCLUDED.expires_at
+              WHERE origin_bindings.source_revision<EXCLUDED.source_revision;
+            IF NOT EXISTS(SELECT FROM custody_admission.origin_bindings current_binding
+                WHERE current_binding.origin_digest=p->'projection'->>'origin_digest'
+                  AND current_binding.source_ref=source_id
+                  AND current_binding.source_revision=(p->'projection'->>'revision')::bigint
+                  AND current_binding.source_digest=operation_hash
+                  AND current_binding.owner_entity_id IS NOT DISTINCT FROM owner_id
+                  AND current_binding.owner_birth IS NOT DISTINCT FROM owner_birth
+                  AND current_binding.expires_at=deadline) THEN
+                RAISE EXCEPTION 'custody stale origin' USING ERRCODE='40001';
+            END IF;
+        ELSIF owner_id IS NOT NULL AND (p->>'source_family'='accepted_ingress'
+                                       OR p->'projection' ? 'answer') THEN
+            IF fresh_source THEN
+                SELECT * INTO origin_binding FROM custody_admission.origin_bindings
+                  WHERE origin_digest=p->'projection'->>'origin_digest' FOR UPDATE;
+                IF NOT FOUND OR origin_binding.expires_at<=pg_catalog.clock_timestamp()
+                   OR origin_binding.owner_entity_id IS DISTINCT FROM owner_id THEN
+                    RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+                END IF;
+                INSERT INTO custody_admission.source_origin_bindings(source_ref,origin_digest,
+                    origin_source_ref,origin_revision,binding_generation,owner_entity_id,owner_birth)
+                VALUES(source_id,origin_binding.origin_digest,origin_binding.source_ref,
+                    origin_binding.source_revision,origin_binding.binding_generation,
+                    owner_id,origin_binding.owner_birth);
+            END IF;
+            -- Replay/restart MUST retain the original version; missing old
+            -- capture is unavailable, never retroactively filled from today.
+            PERFORM custody_admission.require_origin_current(source_id);
+        END IF;
+        FOR target IN SELECT value FROM pg_catalog.jsonb_array_elements(
+            (p->'projection'->'target_set')||CASE WHEN p->'projection' ? 'issuer_binding'
+            THEN pg_catalog.jsonb_build_array(p->'projection'->'issuer_binding') ELSE '[]'::jsonb END
+        ) ORDER BY (value->>'target_kind')||':'||(value->>'binding_digest')||':'||
+                   (value->>'binding_version') COLLATE "C" LOOP
+            PERFORM custody_admission.selection_valid(pg_catalog.jsonb_build_object(
+                'target_set',pg_catalog.jsonb_build_array(target),'target_set_version',1));
+            IF owner_id IS NULL THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+            INSERT INTO custody_admission.targets(target_id,owner_entity_id,target_kind,
+                binding_digest,binding_version,source_ref,ordering_key)
+            VALUES((target->>'target_id')::uuid,owner_id,target->>'target_kind',target->>'binding_digest',
+                (target->>'binding_version')::bigint,source_id,
+                owner_id::text||':'||(target->>'target_kind')||':'||(target->>'binding_digest')||':'||(target->>'binding_version'))
+            ON CONFLICT(target_id) DO NOTHING;
+            IF NOT EXISTS(SELECT FROM custody_admission.targets t WHERE t.target_id=(target->>'target_id')::uuid
+                AND t.owner_entity_id=owner_id AND t.target_kind=target->>'target_kind'
+                AND t.binding_digest=target->>'binding_digest' AND t.binding_version=(target->>'binding_version')::bigint
+                AND (NOT fresh_source OR t.generation=(target->>'generation')::bigint)) THEN
+                RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+            END IF;
+        END LOOP;
+        INSERT INTO custody_admission.source_associations(source_ref,process_id)
+          VALUES(source_id,process_id) ON CONFLICT DO NOTHING;
+        RETURN pg_catalog.jsonb_build_object('source_ref',source_id,'source_digest',operation_hash,
+            'projection',p->'projection');
+    ELSIF action='mint' THEN
+        PERFORM custody_admission.closed(p->'operation',ARRAY[
+            'mint_request_id','operation','method','arguments','target_set','target_set_version'
+        ],ARRAY['command_id','effect_namespace','effect_id','content_digest']);
+        SELECT * INTO source FROM custody_admission.sources
+          WHERE source_ref=(p->>'source_ref')::uuid;
+        IF NOT FOUND OR source.logical_actor<>process.logical_actor
+           OR NOT EXISTS(SELECT FROM custody_admission.source_associations
+               WHERE source_ref=source.source_ref AND source_associations.process_id=protocol.process_id)
+           OR source.expires_at<=pg_catalog.clock_timestamp()
+           OR NOT process.operations ? (p->'operation'->>'operation')
+           OR NOT process.audiences ? (p->>'destination_actor')
+           OR p->'operation'->'target_set' IS DISTINCT FROM source.projection->'target_set'
+           OR p->'operation'->'target_set_version' IS DISTINCT FROM source.projection->'target_set_version' THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        PERFORM custody_admission.require_origin_current(source.source_ref);
+        PERFORM custody_admission.command_source_current(source.source_ref,p->'operation');
+        -- A logical audience is not an incarnation selector. An overlapping
+        -- live daemon must be reconciled, never silently chosen by birth time.
+        SELECT pg_catalog.count(*) INTO generation FROM custody_admission.processes
+          WHERE logical_actor=p->>'destination_actor'
+            AND operations<>'[]'::jsonb
+            AND custody_admission.process_current(processes.process_id);
+        IF generation<>1 THEN RAISE EXCEPTION 'custody unavailable' USING ERRCODE='42501'; END IF;
+        SELECT * INTO destination FROM custody_admission.processes
+          WHERE logical_actor=p->>'destination_actor'
+            AND operations<>'[]'::jsonb
+            AND custody_admission.process_current(processes.process_id);
+        IF NOT FOUND THEN RAISE EXCEPTION 'custody unavailable' USING ERRCODE='42501'; END IF;
+        SELECT * INTO call_row FROM custody_admission.calls
+        WHERE issuer_process=process_id AND source_ref=source.source_ref
+          AND destination_process=destination.process_id
+          AND mint_request_id=(p->'operation'->>'mint_request_id')::uuid;
+        IF FOUND THEN
+            IF call_row.operation<>p->'operation' OR call_row.expires_at<=pg_catalog.clock_timestamp() THEN
+                RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+            END IF;
+            binding:=pg_catalog.jsonb_build_object(
+                'call_ref',call_row.call_id,'source_ref',source.source_ref,'source_digest',source.source_digest,
+                'issuer_process',process_id,'destination_process',destination.process_id,
+                'destination_actor',destination.logical_actor,'operation',call_row.operation,
+                'control_epoch',call_row.control_epoch,'restore_epoch',call_row.restore_epoch,
+                'expires_at',pg_catalog.to_char(call_row.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'));
+            IF custody_admission.binding_digest(binding)<>call_row.operation_digest THEN
+                RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+            END IF;
+            RETURN pg_catalog.jsonb_build_object('call_ref',call_row.call_id,
+                'operation_digest',call_row.operation_digest,'expires_at',call_row.expires_at,
+                'binding',binding);
+        END IF;
+        new_id:=pg_catalog.gen_random_uuid();
+        deadline:=LEAST(source.expires_at,pg_catalog.clock_timestamp()+interval '30 seconds');
+        binding:=pg_catalog.jsonb_build_object(
+            'call_ref',new_id,'source_ref',source.source_ref,'source_digest',source.source_digest,
+            'issuer_process',process_id,'destination_process',destination.process_id,
+            'destination_actor',destination.logical_actor,
+            'operation',p->'operation','control_epoch',c->'control_epoch','restore_epoch',c->'restore_epoch',
+            'expires_at',pg_catalog.to_char(deadline AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'));
+        operation_hash:=custody_admission.binding_digest(binding);
+        INSERT INTO custody_admission.calls(call_id,issuer_process,destination_process,source_ref,
+            mint_request_id,operation,operation_digest,control_epoch,restore_epoch,expires_at,state,command_id)
+        VALUES(new_id,process_id,destination.process_id,source.source_ref,
+            (p->'operation'->>'mint_request_id')::uuid,p->'operation',operation_hash,
+            (c->>'control_epoch')::bigint,(c->>'restore_epoch')::uuid,deadline,'minted',
+            (p->'operation'->>'command_id')::uuid);
+        RETURN pg_catalog.jsonb_build_object('call_ref',new_id,'operation_digest',operation_hash,
+            'expires_at',deadline,'binding',binding);
+    END IF;
+    -- Both processes must still be current; a copied locator/digest/challenge
+    -- has no authority without its source anchor and receiving bound writer.
+    IF action IN ('challenge','respond') THEN
+        SELECT * INTO call_row FROM custody_admission.calls
+          WHERE call_id=(p->>'call_ref')::uuid FOR UPDATE;
+    ELSE
+        -- Business verification reads before targets; its actual decision lock
+        -- is taken only by the final writer after the complete sorted target set.
+        SELECT * INTO call_row FROM custody_admission.calls
+          WHERE call_id=(p->>'call_ref')::uuid;
+    END IF;
+    IF NOT FOUND OR NOT custody_admission.process_current(call_row.issuer_process)
+       OR NOT custody_admission.process_current(call_row.destination_process)
+       OR call_row.expires_at<=pg_catalog.clock_timestamp()
+       OR call_row.control_epoch<>(c->>'control_epoch')::bigint
+       OR call_row.restore_epoch<>(c->>'restore_epoch')::uuid
+       OR NOT EXISTS(SELECT FROM custody_admission.sources WHERE source_ref=call_row.source_ref
+                     AND expires_at>pg_catalog.clock_timestamp()) THEN
+        RAISE EXCEPTION 'custody expired' USING ERRCODE='42501';
+    END IF;
+    IF action='challenge' THEN
+        IF process_id<>call_row.destination_process OR call_row.operation_digest<>p->>'operation_digest'
+           OR call_row.state NOT IN ('minted','challenged') THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        new_id:=pg_catalog.gen_random_uuid();
+        UPDATE custody_admission.calls SET challenge_ref=new_id,state='challenged',
+            challenge_expires_at=LEAST(expires_at,pg_catalog.clock_timestamp()+interval '10 seconds')
+          WHERE call_id=call_row.call_id;
+        RETURN pg_catalog.jsonb_build_object('challenge_ref',new_id);
+    ELSIF action='respond' THEN
+        IF process_id<>call_row.issuer_process OR call_row.state<>'challenged'
+           OR call_row.challenge_ref IS DISTINCT FROM (p->>'challenge_ref')::uuid
+           OR call_row.challenge_expires_at<=pg_catalog.clock_timestamp() THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        UPDATE custody_admission.calls SET state='armed' WHERE call_id=call_row.call_id;
+        RETURN pg_catalog.jsonb_build_object('armed',true);
+    ELSIF action='verify' THEN
+        PERFORM custody_admission.command_source_current(call_row.source_ref,call_row.operation);
+        IF process_id<>call_row.destination_process OR call_row.state NOT IN ('armed','committed')
+           OR call_row.operation_digest<>p->>'operation_digest'
+           OR call_row.challenge_ref IS DISTINCT FROM (p->>'challenge_ref')::uuid
+           OR call_row.challenge_expires_at<=pg_catalog.clock_timestamp() THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        -- Private SAME-checkout online-verification binding. A receiver's
+        -- ordinary admit_write call cannot borrow another source association
+        -- or an unrelated verdict from this pool. Rechecking the same call is
+        -- permitted; switching call identity inside one transaction is not.
+        SELECT * INTO a FROM pg_catalog.pg_stat_activity WHERE pid=pg_catalog.pg_backend_pid();
+        UPDATE custody_admission.connections SET verified_call_id=call_row.call_id
+          WHERE database_oid=a.datid AND backend_pid=a.pid AND backend_start=a.backend_start
+            AND login_oid=a.usesysid AND role_oid=custody_admission.caller_role()
+            AND connections.process_id=protocol.process_id AND state='bound'
+            AND finished_at IS NOT NULL AND bound_until>pg_catalog.clock_timestamp()
+            AND (verified_call_id IS NULL OR verified_call_id=call_row.call_id);
+        IF NOT FOUND THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+        RETURN pg_catalog.jsonb_build_object('source_ref',call_row.source_ref,
+            'operation',call_row.operation,'command_id',call_row.command_id);
+    ELSIF action='result_read' THEN
+        PERFORM custody_admission.require_verified_call(call_row.call_id);
+        PERFORM custody_admission.command_source_current(call_row.source_ref,call_row.operation);
+        IF process_id<>call_row.destination_process
+           OR call_row.state NOT IN ('armed','committed')
+           OR call_row.challenge_expires_at<=pg_catalog.clock_timestamp()
+           OR call_row.operation->>'method'<>'custody.result'
+           OR call_row.command_id IS DISTINCT FROM (p->>'command_id')::uuid
+ THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        SELECT r.result INTO result FROM custody_admission.receipts r WHERE command_id=call_row.command_id;
+        RETURN COALESCE(result,pg_catalog.jsonb_build_object('status','unknown'));
+    END IF;
+    RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+END;
+$custody_protocol$;
+
+CREATE OR REPLACE FUNCTION custody_admission.selection_valid(selection jsonb) RETURNS void
+LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pg_temp AS $custody_selection$
+DECLARE target jsonb; previous text; key text;
+BEGIN
+    PERFORM custody_admission.closed(selection,ARRAY['target_set','target_set_version'],
+        ARRAY['case_id','reason','observed_incident_at','provider','provider_version','result_command_id']);
+    IF selection ? 'result_command_id' AND (
+        pg_catalog.jsonb_typeof(selection->'result_command_id') IS DISTINCT FROM 'string'
+        OR selection->>'result_command_id' IS DISTINCT FROM ((selection->>'result_command_id')::uuid)::text
+    ) THEN RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023'; END IF;
+    IF pg_catalog.jsonb_typeof(selection->'target_set') IS DISTINCT FROM 'array'
+       OR pg_catalog.jsonb_array_length(selection->'target_set')>64
+       OR pg_catalog.jsonb_typeof(selection->'target_set_version') IS DISTINCT FROM 'number'
+       OR (selection->>'target_set_version')::bigint<1 THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    FOR target IN SELECT pg_catalog.jsonb_array_elements(selection->'target_set') LOOP
+        PERFORM custody_admission.closed(target,ARRAY[
+            'target_id','target_kind','binding_digest','binding_version','generation'
+        ]);
+        IF pg_catalog.jsonb_typeof(target->'target_id') IS DISTINCT FROM 'string'
+           OR target->>'target_id' IS DISTINCT FROM ((target->>'target_id')::uuid)::text
+           OR pg_catalog.jsonb_typeof(target->'target_kind') IS DISTINCT FROM 'string'
+           OR target->>'target_kind'<>ALL(ARRAY['endpoint','account'])
+           OR pg_catalog.jsonb_typeof(target->'binding_digest') IS DISTINCT FROM 'string'
+           OR target->>'binding_digest' !~ '^[0-9a-f]{64}$'
+           OR pg_catalog.jsonb_typeof(target->'binding_version') IS DISTINCT FROM 'number'
+           OR (target->>'binding_version')::bigint<1
+           OR pg_catalog.jsonb_typeof(target->'generation') IS DISTINCT FROM 'number'
+           OR (target->>'generation')::bigint<0 THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        key:=(target->>'target_kind')||':'||(target->>'binding_digest')||':'||
+            (target->>'binding_version');
+        IF previous IS NOT NULL AND previous COLLATE "C">=key COLLATE "C" THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        previous:=key;
+    END LOOP;
+    IF (SELECT pg_catalog.count(DISTINCT v->>'target_id')
+        FROM pg_catalog.jsonb_array_elements(selection->'target_set') v)
+       <>pg_catalog.jsonb_array_length(selection->'target_set') THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+END;
+$custody_selection$;
+
+CREATE OR REPLACE FUNCTION custody_admission.lock_targets(selection jsonb,issuer uuid DEFAULT NULL)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_lock_targets$
+DECLARE target jsonb; actual record;
+BEGIN
+    PERFORM custody_admission.selection_valid(selection);
+    -- Caller has already locked auth (if applicable) then global control. This
+    -- is the complete target union, including selected case members and issuer.
+    PERFORM FROM custody_admission.targets t
+    WHERE t.target_id=issuer
+       OR t.target_id IN (SELECT (v->>'target_id')::uuid
+                          FROM pg_catalog.jsonb_array_elements(selection->'target_set') v)
+       OR t.target_id IN (SELECT m.target_id FROM custody_admission.case_members m
+                          WHERE m.case_id=(selection->>'case_id')::uuid)
+    ORDER BY t.ordering_key COLLATE "C" FOR UPDATE;
+    FOR target IN SELECT pg_catalog.jsonb_array_elements(selection->'target_set') LOOP
+        SELECT * INTO actual FROM custody_admission.targets WHERE target_id=(target->>'target_id')::uuid;
+        IF NOT FOUND OR actual.target_kind<>target->>'target_kind'
+           OR actual.binding_digest<>target->>'binding_digest'
+           OR actual.binding_version<>(target->>'binding_version')::bigint THEN
+            RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+        END IF;
+    END LOOP;
+    IF issuer IS NOT NULL AND (
+       NOT EXISTS(SELECT FROM custody_admission.targets WHERE target_id=issuer)
+       OR EXISTS(SELECT FROM public.custody_holds WHERE target_id=issuer AND released_at IS NULL)
+    ) THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+END;
+$custody_lock_targets$;
+
+CREATE OR REPLACE FUNCTION custody_admission.browser_check(proof jsonb) RETURNS timestamptz
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_browser$
+DECLARE instance record; session record; deadline timestamptz;
+BEGIN
+    PERFORM custody_admission.closed(proof,ARRAY[
+        'session_digest','csrf_digest','origin','rp_id','key_generation',
+        'credential_epoch','session_epoch'
+    ]);
+    SELECT * INTO instance FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+    IF NOT FOUND OR instance.state<>ALL(ARRAY['configured_key','keyless_enrolled'])
+       OR instance.origin IS NULL OR instance.origin IS DISTINCT FROM proof->>'origin'
+       OR instance.rp_id IS DISTINCT FROM proof->>'rp_id'
+       OR instance.key_generation IS DISTINCT FROM proof->>'key_generation'
+       OR instance.credential_epoch<>(proof->>'credential_epoch')::bigint
+       OR instance.session_epoch<>(proof->>'session_epoch')::bigint THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    SELECT * INTO session FROM dashboard_auth.sessions
+      WHERE digest=proof->>'session_digest' AND NOT revoked
+        AND credential_epoch=instance.credential_epoch AND session_epoch=instance.session_epoch
+        AND expires_at>pg_catalog.clock_timestamp() FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    SELECT LEAST(session.expires_at,expires_at,pg_catalog.clock_timestamp()+interval '30 seconds')
+      INTO deadline FROM dashboard_auth.csrf WHERE session_digest=session.digest
+        AND digest=proof->>'csrf_digest' AND expires_at>pg_catalog.clock_timestamp() FOR UPDATE;
+    IF deadline IS NULL THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    RETURN deadline;
+END;
+$custody_browser$;
+
+CREATE OR REPLACE FUNCTION custody_admission.prepare(
+    kind text, operation text, proof jsonb, selection jsonb, source_ref uuid DEFAULT NULL
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_prepare$
+#variable_conflict use_variable
+DECLARE c jsonb; deadline timestamptz; process_id uuid; process record; source record; result uuid; issuer uuid;
+BEGIN
+    IF kind='browser' THEN
+        -- The restricted role cannot borrow the host proof. Actual session and
+        -- CSRF rows/config are checked while the auth singleton is locked.
+        IF custody_admission.caller_role()<>(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='dashboard_auth_api') THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        deadline:=custody_admission.browser_check(proof);
+        process_id:=custody_admission.writer();
+        IF operation<>ALL(ARRAY['hold','release','replaced','revoke_sessions','eligibility']) THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+    ELSIF kind='host' THEN
+        PERFORM custody_admission.host_only();
+        PERFORM FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+        deadline:=pg_catalog.clock_timestamp()+interval '30 seconds';
+        IF operation<>ALL(ARRAY['hold','release','replaced','revoke_sessions','eligibility']) OR proof<>'{}'::jsonb THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+    ELSE
+        -- Both source branches are private engine calls, not runtime EXEC.
+        PERFORM FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+        process_id:=custody_admission.writer();
+        SELECT * INTO process FROM custody_admission.processes WHERE processes.process_id=prepare.process_id;
+        SELECT * INTO source FROM custody_admission.sources WHERE sources.source_ref=prepare.source_ref;
+        IF NOT FOUND OR process.logical_actor<>'switchboard'
+           OR source.expires_at<=pg_catalog.clock_timestamp()
+           OR NOT EXISTS(SELECT FROM custody_admission.calls call_row
+               WHERE call_row.source_ref=source.source_ref AND destination_process=process_id
+                 AND state='armed' AND challenge_expires_at>pg_catalog.clock_timestamp()
+                 AND expires_at>pg_catalog.clock_timestamp()) THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        deadline:=LEAST(source.expires_at,pg_catalog.clock_timestamp()+interval '30 seconds');
+        issuer:=(source.projection->>'issuer_target')::uuid;
+        IF kind='endpoint_lock' THEN
+            IF operation<>'hold' OR source.source_family<>'accepted_ingress'
+               OR source.projection->>'intent'<>'LOCK'
+               OR source.projection->>'owner_entity_id' IS NULL
+               OR source.projection->>'issuer_target' IS NULL OR proof<>'{}'::jsonb
+               OR selection->'target_set' IS DISTINCT FROM source.projection->'target_set'
+               OR selection->'target_set_version' IS DISTINCT FROM source.projection->'target_set_version' THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+        ELSIF kind<>'security_answer' OR operation<>ALL(ARRAY['yes','no']) THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+    END IF;
+    c:=custody_admission.current_control();
+    IF operation='eligibility' THEN
+        -- This fresh private ticket authorizes only reading the original
+        -- durable result. It cannot remint the original mutation/generations.
+        PERFORM custody_admission.closed(selection,ARRAY[
+            'target_set','target_set_version','result_command_id']);
+        IF kind NOT IN ('browser','host') OR selection->'target_set'<>'[]'::jsonb
+           OR selection->'target_set_version'<>'1'::jsonb
+           OR NOT EXISTS(SELECT FROM custody_admission.commands original
+               WHERE original.command_id=(selection->>'result_command_id')::uuid
+                 AND original.operation<>'eligibility') THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+    ELSIF selection ? 'result_command_id' THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    PERFORM custody_admission.lock_targets(selection,issuer);
+    IF kind IN ('endpoint_lock','security_answer') AND EXISTS(
+        SELECT FROM custody_admission.targets t
+        JOIN pg_catalog.jsonb_array_elements(selection->'target_set') v
+          ON t.target_id=(v->>'target_id')::uuid
+        WHERE t.owner_entity_id IS DISTINCT FROM (source.projection->>'owner_entity_id')::uuid
+    ) THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    result:=CASE WHEN kind IN ('endpoint_lock','security_answer') THEN source_ref ELSE pg_catalog.gen_random_uuid() END;
+    INSERT INTO custody_admission.commands(command_id,kind,operation,selection,selection_digest,
+        proof,source_ref,control_epoch,restore_epoch,expires_at)
+    VALUES(result,kind,operation,selection,custody_admission.binding_digest(selection),proof,source_ref,
+        (c->>'control_epoch')::bigint,(c->>'restore_epoch')::uuid,deadline)
+    ON CONFLICT(command_id) DO NOTHING;
+    IF EXISTS(SELECT FROM custody_admission.commands command
+       WHERE command_id=result AND (command.kind<>kind OR command.operation<>operation
+         OR command.selection<>selection OR command.proof<>proof
+         OR command.source_ref IS DISTINCT FROM prepare.source_ref)) THEN
+        RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+    END IF;
+    RETURN pg_catalog.jsonb_build_object('command_id',result,'expires_at',deadline,
+        'selection_digest',custody_admission.binding_digest(selection));
+END;
+$custody_prepare$;
+
+CREATE OR REPLACE FUNCTION custody_admission.command_current(command_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_command_current$
+DECLARE command record; c jsonb; source record; question record; result jsonb;
+BEGIN
+    SELECT * INTO command FROM custody_admission.commands WHERE commands.command_id=command_current.command_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    IF command.kind='browser' THEN PERFORM custody_admission.browser_check(command.proof);
+    ELSE PERFORM FROM dashboard_auth.instance WHERE singleton FOR UPDATE; END IF;
+    c:=custody_admission.current_control();
+    IF command.expires_at<=pg_catalog.clock_timestamp()
+       OR command.control_epoch<>(c->>'control_epoch')::bigint
+       OR command.restore_epoch<>(c->>'restore_epoch')::uuid THEN
+        RAISE EXCEPTION 'custody expired' USING ERRCODE='42501';
+    END IF;
+    IF command.kind IN ('endpoint_lock','security_answer') THEN
+        SELECT * INTO source FROM custody_admission.sources WHERE source_ref=command.source_ref;
+        IF NOT FOUND OR source.expires_at<=pg_catalog.clock_timestamp() THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        PERFORM custody_admission.require_origin_current(source.source_ref);
+        -- This helper runs before targets and again after waits. Hold the actual
+        -- shared owner anchor, not only a role value read before COMMIT.
+        PERFORM FROM public.entities e
+          WHERE e.id=(source.projection->>'owner_entity_id')::uuid FOR UPDATE;
+        IF NOT FOUND OR NOT EXISTS(SELECT FROM public.entities e
+            WHERE e.id=(source.projection->>'owner_entity_id')::uuid
+              AND 'owner'=ANY(COALESCE(e.roles,ARRAY[]::text[]))) THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        IF command.kind='endpoint_lock' AND (
+            command.operation<>'hold' OR source.source_family<>'accepted_ingress'
+            OR source.projection->>'intent'<>'LOCK' OR command.proof<>'{}'::jsonb
+        ) THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+        IF command.kind='security_answer' THEN
+            PERFORM custody_admission.closed(command.proof,ARRAY[
+                'question_id','callback_source_ref','answer','token_digest'
+            ]);
+            SELECT * INTO question FROM custody_admission.questions
+              WHERE question_id=(command.proof->>'question_id')::uuid;
+            IF NOT FOUND OR question.expires_at<=pg_catalog.clock_timestamp()
+               OR question.decision NOT IN ('pending',command.operation)
+               OR command.proof->>'answer'<>command.operation
+               OR command.proof->>'callback_source_ref'<>command.source_ref::text
+               OR source.projection->>'question_ref'<>question.question_id::text
+               OR source.projection->>'answer'<>command.operation
+               OR source.projection->>'token_digest'<>command.proof->>'token_digest'
+               OR question.recipient_digest IS DISTINCT FROM source.projection->>'origin_digest'
+               OR (CASE command.operation WHEN 'yes' THEN question.yes_digest ELSE question.no_digest END)
+                    IS DISTINCT FROM command.proof->>'token_digest'
+               OR question.target_set IS DISTINCT FROM command.selection->'target_set'
+               OR question.target_set_version<>(command.selection->>'target_set_version')::bigint THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+        END IF;
+    END IF;
+    RETURN pg_catalog.to_jsonb(command);
+END;
+$custody_command_current$;
+
+CREATE OR REPLACE FUNCTION custody_admission.command_source_current(source_ref uuid,operation jsonb)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_command_source$
+DECLARE source record; command jsonb; bound_id uuid;
+BEGIN
+    SELECT * INTO source FROM custody_admission.sources
+      WHERE sources.source_ref=command_source_current.source_ref;
+    IF NOT FOUND THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    IF source.source_family NOT IN ('owner_command','host_command') THEN
+        -- An ingress/callback source can read only its own server-allocated
+        -- command. A copied receipt locator is never an owning read grant.
+        IF operation->>'method'='custody.result' THEN
+            IF operation->>'command_id' IS DISTINCT FROM source.source_ref::text
+               OR operation->'arguments'->>'command_id' IS DISTINCT FROM source.source_ref::text THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+            command:=custody_admission.command_current(source.source_ref);
+            IF command->>'source_ref' IS DISTINCT FROM source.source_ref::text THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+        END IF;
+        RETURN;
+    END IF;
+    IF source.projection->>'locator' !~ '^command:[0-9a-f-]{36}$' THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    command:=custody_admission.command_current(
+        pg_catalog.substring(source.projection->>'locator',9)::uuid);
+    PERFORM custody_admission.closed(operation->'arguments',ARRAY['command_id']);
+    IF command->>'operation'='eligibility' THEN
+        bound_id:=(command->'selection'->>'result_command_id')::uuid;
+        IF operation->>'operation' IS DISTINCT FROM 'eligibility'
+           OR operation->>'method' IS DISTINCT FROM 'custody.result' THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+    ELSE
+        bound_id:=(command->>'command_id')::uuid;
+        IF operation->>'operation' IS DISTINCT FROM command->>'operation'
+           OR operation->>'method' IS NULL
+           OR operation->>'method'<>ALL(ARRAY['custody.commit','custody.result']) THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+    END IF;
+    IF operation->>'command_id' IS DISTINCT FROM bound_id::text
+       OR operation->'arguments'->>'command_id' IS DISTINCT FROM bound_id::text
+       OR operation->'target_set' IS DISTINCT FROM command->'selection'->'target_set'
+       OR operation->'target_set_version' IS DISTINCT FROM command->'selection'->'target_set_version'
+       OR source.projection->>'content_digest' IS DISTINCT FROM command->>'selection_digest' THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+END;
+$custody_command_source$;
+
+CREATE OR REPLACE FUNCTION custody_admission.commit_command(command_id uuid,call_ref uuid)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_commit$
+#variable_conflict use_variable
+DECLARE
+    c jsonb; command record; call_row record; source record; process record;
+    process_id uuid; target jsonb; actual record; episode record; case_id uuid;
+    correlation text; result jsonb; episodes jsonb:='[]'; selected_case uuid; issuer uuid;
+    scope record; case_kind text; case_version bigint; expected_case_version bigint;
+    containment_unknown boolean:=false; complete_empty boolean:=false;
+BEGIN
+    -- Auth FIRST, never an authorize() verdict from another acquisition. Even
+    -- non-browser command branches share this fixed order with global revocation.
+    PERFORM FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+    process_id:=custody_admission.writer();
+    PERFORM custody_admission.require_verified_call(call_ref);
+    SELECT * INTO process FROM custody_admission.processes WHERE processes.process_id=commit_command.process_id;
+    IF process.logical_actor<>'switchboard' THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    c:=custody_admission.current_control();
+    SELECT * INTO call_row FROM custody_admission.calls WHERE call_id=call_ref;
+    IF NOT FOUND OR call_row.destination_process<>process_id
+       OR call_row.command_id IS DISTINCT FROM command_id OR call_row.state NOT IN ('armed','committed')
+       OR call_row.challenge_expires_at<=pg_catalog.clock_timestamp()
+       OR call_row.expires_at<=pg_catalog.clock_timestamp()
+       OR NOT custody_admission.process_current(call_row.issuer_process)
+       OR call_row.control_epoch<>(c->>'control_epoch')::bigint
+       OR call_row.restore_epoch<>(c->>'restore_epoch')::uuid THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    SELECT * INTO source FROM custody_admission.sources WHERE source_ref=call_row.source_ref;
+    IF NOT FOUND OR source.expires_at<=pg_catalog.clock_timestamp() THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    PERFORM custody_admission.command_source_current(source.source_ref,call_row.operation);
+    IF call_row.operation->>'method'<>'custody.commit'
+       OR call_row.operation->>'operation'='eligibility' THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    issuer:=(source.projection->>'issuer_target')::uuid;
+    SELECT * INTO command FROM custody_admission.commands WHERE commands.command_id=commit_command.command_id;
+    IF NOT FOUND AND call_row.operation->>'operation'='hold'
+       AND source.source_family='accepted_ingress' THEN
+        -- Server source_ref is allocated before mint and is the stable private
+        -- cheap-command identity. The armed body already binds this exact ID.
+        PERFORM custody_admission.prepare('endpoint_lock','hold','{}',
+            pg_catalog.jsonb_build_object('target_set',source.projection->'target_set',
+                'target_set_version',source.projection->'target_set_version','reason','lost'),source.source_ref);
+        SELECT * INTO command FROM custody_admission.commands WHERE commands.command_id=commit_command.command_id;
+    END IF;
+    IF NOT FOUND
+       OR command.kind IN ('endpoint_lock','security_answer')
+            AND command.source_ref IS DISTINCT FROM source.source_ref
+       OR command.selection->'target_set' IS DISTINCT FROM call_row.operation->'target_set'
+       OR command.selection->'target_set_version' IS DISTINCT FROM call_row.operation->'target_set_version'
+       OR command.operation IS DISTINCT FROM call_row.operation->>'operation' THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    -- Provider inventory is a control-group lock before targets; caller supplied
+    -- completeness never suffices. Unknown no still records answer/case evidence.
+    IF command.selection ? 'provider' THEN
+        SELECT * INTO actual FROM custody_admission.provider_inventory
+          WHERE owner_entity_id=(source.projection->>'owner_entity_id')::uuid
+            AND provider=command.selection->>'provider' FOR UPDATE;
+        IF NOT FOUND OR NOT actual.complete THEN
+            IF command.operation<>'no' THEN
+                RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+            END IF;
+            -- Commit the actual NO/case/evidence, but never acknowledge a
+            -- partial guessed set as complete containment or mutate that set.
+            containment_unknown:=true;
+        ELSE
+            IF actual.version<>(command.selection->>'provider_version')::bigint
+               OR actual.members IS DISTINCT FROM command.selection->'target_set' THEN
+                -- An old answer is not transplanted to a changed inventory.
+                RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+            END IF;
+            complete_empty:=actual.members='[]'::jsonb;
+        END IF;
+    END IF;
+    -- Acquire/check the command's complete auth species before target locks;
+    -- repeat clock/currentness checks after those locks have finished waiting.
+    PERFORM custody_admission.command_current(command_id);
+    selected_case:=(command.selection->>'case_id')::uuid;
+    IF selected_case IS NOT NULL THEN
+        -- Pre-read membership BEFORE complete target union locking. The same
+        -- immutable version must survive the later case lock; no late target.
+        SELECT membership_version INTO expected_case_version
+          FROM custody_admission.case_scopes WHERE case_id=selected_case;
+        IF expected_case_version IS NULL
+           OR expected_case_version<>(command.selection->>'target_set_version')::bigint THEN
+            RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+        END IF;
+    END IF;
+    PERFORM custody_admission.lock_targets(command.selection,issuer);
+    PERFORM custody_admission.command_current(command_id);
+    -- Clock and both actual processes follow every target/auth wait. A check
+    -- made before a blocking lock is not a committing currentness verdict.
+    IF NOT custody_admission.process_current(call_row.issuer_process)
+       OR NOT custody_admission.process_current(call_row.destination_process)
+       OR call_row.challenge_expires_at<=pg_catalog.clock_timestamp()
+       OR call_row.expires_at<=pg_catalog.clock_timestamp()
+       OR source.expires_at<=pg_catalog.clock_timestamp() THEN
+        RAISE EXCEPTION 'custody expired' USING ERRCODE='42501';
+    END IF;
+    PERFORM custody_admission.writer();
+    SELECT * INTO command FROM custody_admission.commands WHERE commands.command_id=commit_command.command_id FOR UPDATE;
+    SELECT * INTO call_row FROM custody_admission.calls WHERE call_id=call_ref FOR UPDATE;
+    IF command.state='committed' THEN
+        SELECT r.result INTO result FROM custody_admission.receipts r WHERE r.command_id=command_id;
+        IF result IS NULL THEN RAISE EXCEPTION 'custody unknown' USING ERRCODE='42501'; END IF;
+        RETURN result;
+    END IF;
+    IF command.state<>'prepared' THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    IF command.kind='security_answer' THEN
+        PERFORM FROM custody_admission.questions WHERE question_id=(command.proof->>'question_id')::uuid FOR UPDATE;
+        UPDATE custody_admission.questions SET decision=command.operation,decision_command_id=command_id
+          WHERE question_id=(command.proof->>'question_id')::uuid AND decision='pending';
+    END IF;
+    IF command.operation IN ('hold','no') THEN
+        IF pg_catalog.jsonb_array_length(command.selection->'target_set')=0 AND command.operation='hold' THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        FOR target IN SELECT value FROM pg_catalog.jsonb_array_elements(command.selection->'target_set')
+          WHERE NOT containment_unknown LOOP
+            SELECT * INTO actual FROM custody_admission.targets WHERE target_id=(target->>'target_id')::uuid;
+            SELECT * INTO episode FROM public.custody_holds WHERE target_id=actual.target_id AND released_at IS NULL FOR UPDATE;
+            IF FOUND THEN
+                IF actual.generation NOT IN ((target->>'generation')::bigint,(target->>'generation')::bigint+1) THEN
+                    RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+                END IF;
+            ELSE
+                IF actual.generation<>(target->>'generation')::bigint THEN
+                    RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+                END IF;
+                UPDATE custody_admission.targets SET generation=generation+1 WHERE target_id=actual.target_id;
+                INSERT INTO public.custody_holds(target_id,generation,reason,source_command_id,observed_incident_at)
+                VALUES(actual.target_id,actual.generation+1,COALESCE(command.selection->>'reason','disowned_access'),
+                    command_id,(command.selection->>'observed_incident_at')::timestamptz)
+                RETURNING * INTO episode;
+            END IF;
+            episodes:=episodes||pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+                'episode_id',episode.episode_id,'target_id',episode.target_id,'generation',episode.generation));
+        END LOOP;
+        -- Required canonical case/evidence use this SAME connection/transaction.
+        -- No public fleet_cases pool wrapper or optional evidence outage can fake ACK.
+        case_kind:=CASE WHEN command.operation='hold'
+            AND COALESCE(command.selection->>'reason','lost') IN ('lost','stolen','replaced')
+            THEN 'lost_device' ELSE 'account_security' END;
+        IF case_kind='account_security' THEN
+            IF command.operation='no' AND source.projection->>'event_ref' IS NULL THEN
+                RAISE EXCEPTION 'custody unavailable' USING ERRCODE='55000';
+            END IF;
+            correlation:='account_security:'||COALESCE(source.projection->>'event_ref',command_id::text);
+        ELSE
+            -- Actual held generations are stable across repeated fresh LOCK
+            -- requests; caller pre-hold expected generations are not the key.
+            correlation:='custody_lost:'||custody_admission.binding_digest(
+                pg_catalog.jsonb_build_object('episodes',episodes));
+        END IF;
+        SELECT id INTO case_id FROM public.fleet_cases WHERE correlation_key=correlation AND state<>'closed' FOR UPDATE;
+        IF case_id IS NULL THEN
+            INSERT INTO public.fleet_cases(correlation_key,posture) VALUES(correlation,'active') RETURNING id INTO case_id;
+        END IF;
+        INSERT INTO custody_admission.case_scopes(case_id,kind,owner_entity_id)
+          VALUES(case_id,case_kind,(source.projection->>'owner_entity_id')::uuid)
+          ON CONFLICT(case_id) DO NOTHING;
+        SELECT * INTO scope FROM custody_admission.case_scopes
+          WHERE case_scopes.case_id=commit_command.case_id FOR UPDATE;
+        IF scope.kind<>case_kind
+           OR scope.owner_entity_id IS DISTINCT FROM (source.projection->>'owner_entity_id')::uuid
+           OR NOT EXISTS(SELECT FROM public.fleet_cases WHERE id=case_id AND state<>'closed') THEN
+            RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+        END IF;
+        case_version:=scope.membership_version;
+        IF EXISTS(SELECT FROM pg_catalog.jsonb_array_elements(episodes) v
+            WHERE NOT EXISTS(SELECT FROM custody_admission.case_members m
+                WHERE m.case_id=case_id AND m.target_id=(v->>'target_id')::uuid
+                  AND m.generation=(v->>'generation')::bigint)) THEN
+            case_version:=case_version+1;
+            UPDATE custody_admission.case_scopes SET membership_version=case_version
+              WHERE case_scopes.case_id=commit_command.case_id;
+        END IF;
+        FOR target IN SELECT pg_catalog.jsonb_array_elements(episodes) LOOP
+            -- One episode can be evidence/member of separate cases. Its public
+            -- case_id remains the first association; the explicit private
+            -- generation membership is authoritative for selected case closure.
+            UPDATE public.custody_holds SET case_id=COALESCE(custody_holds.case_id,commit_command.case_id)
+              WHERE episode_id=(target->>'episode_id')::uuid;
+            INSERT INTO custody_admission.case_members(case_id,target_id,generation,membership_version)
+              VALUES(case_id,(target->>'target_id')::uuid,(target->>'generation')::bigint,
+                  case_version) ON CONFLICT DO NOTHING;
+        END LOOP;
+        INSERT INTO public.fleet_case_evidence(case_id,contributor,kind,ref,payload)
+        VALUES(case_id,'switchboard','custody_recovery',command_id::text,
+            pg_catalog.jsonb_build_object('command_id',command_id,'containment',
+                CASE WHEN containment_unknown THEN 'unknown'
+                     WHEN pg_catalog.jsonb_array_length(episodes)>0 THEN 'held'
+                     WHEN complete_empty THEN 'no_known_target' ELSE 'unknown' END,
+                'recovery_doors',ARRAY['sim_carrier','account_sign_out']))
+        ON CONFLICT(case_id,contributor,kind,ref) DO NOTHING;
+    ELSIF command.operation IN ('release','replaced') THEN
+        IF pg_catalog.jsonb_array_length(command.selection->'target_set')=0 THEN
+            RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+        END IF;
+        FOR target IN SELECT pg_catalog.jsonb_array_elements(command.selection->'target_set') LOOP
+            UPDATE public.custody_holds SET released_at=pg_catalog.clock_timestamp(),
+                disposition=CASE command.operation WHEN 'release' THEN 'released' ELSE 'replaced' END,
+                release_command_id=command_id
+              WHERE target_id=(target->>'target_id')::uuid AND generation=(target->>'generation')::bigint
+                AND released_at IS NULL RETURNING * INTO episode;
+            IF NOT FOUND THEN RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001'; END IF;
+            episodes:=episodes||pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+                'episode_id',episode.episode_id,'target_id',episode.target_id,'generation',episode.generation));
+        END LOOP;
+        IF selected_case IS NOT NULL THEN
+            -- Never infer disposal from selected single target or ordinary case close.
+            PERFORM FROM public.fleet_cases WHERE id=selected_case FOR UPDATE;
+            SELECT * INTO scope FROM custody_admission.case_scopes WHERE case_scopes.case_id=selected_case FOR UPDATE;
+            IF NOT FOUND OR scope.membership_version<>expected_case_version THEN
+                RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001';
+            END IF;
+            IF scope.kind='lost_device'
+               AND EXISTS(SELECT FROM custody_admission.case_members WHERE case_id=selected_case)
+               AND NOT EXISTS(SELECT FROM custody_admission.case_members m
+                 LEFT JOIN public.custody_holds h ON h.target_id=m.target_id AND h.generation=m.generation
+                 WHERE m.case_id=selected_case AND (h.episode_id IS NULL OR h.released_at IS NULL)) THEN
+                UPDATE public.fleet_cases SET state='closed',outcome='custody_recovered',
+                    closed_at=pg_catalog.clock_timestamp(),updated_at=pg_catalog.clock_timestamp()
+                  WHERE id=selected_case AND state<>'closed';
+            END IF;
+        END IF;
+    ELSIF command.operation='revoke_sessions' THEN
+        UPDATE dashboard_auth.instance SET session_epoch=session_epoch+1 WHERE singleton;
+        UPDATE dashboard_auth.sessions SET revoked=true WHERE NOT revoked;
+    ELSIF command.operation<>'yes' THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    result:=pg_catalog.jsonb_build_object('status','committed','command_id',command_id,
+        'operation',command.operation,'episodes',episodes,'case_id',COALESCE(case_id,selected_case),
+        'case_membership_version',COALESCE(case_version,expected_case_version),
+        'containment',CASE WHEN containment_unknown THEN 'unknown'
+            WHEN pg_catalog.jsonb_array_length(episodes)>0 AND command.operation IN ('hold','no') THEN 'held'
+            WHEN complete_empty THEN 'no_known_target' ELSE NULL END);
+    INSERT INTO custody_admission.receipts(command_id,result) VALUES(command_id,result);
+    UPDATE custody_admission.commands SET state='committed',result=commit_command.result WHERE commands.command_id=commit_command.command_id;
+    UPDATE custody_admission.calls SET state='committed',result=commit_command.result WHERE call_id=call_ref;
+    RETURN result;
+END;
+$custody_commit$;
+
+CREATE OR REPLACE FUNCTION custody_admission.admit_write(source_ref uuid,operation text,target_set jsonb)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_admit$
+DECLARE process_id uuid; source record; process record; target jsonb; selection jsonb;
+    call_row record; actual_backend record; source_owned boolean;
+BEGIN
+    process_id:=custody_admission.writer();
+    SELECT * INTO process FROM custody_admission.processes WHERE processes.process_id=admit_write.process_id;
+    SELECT * INTO source FROM custody_admission.sources WHERE sources.source_ref=admit_write.source_ref;
+    IF NOT FOUND OR source.expires_at<=pg_catalog.clock_timestamp()
+       OR NOT process.operations ? operation
+       OR target_set IS DISTINCT FROM source.projection->'target_set' THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    source_owned:=source.logical_actor=process.logical_actor AND EXISTS(
+        SELECT FROM custody_admission.source_associations
+          WHERE source_associations.source_ref=admit_write.source_ref
+            AND source_associations.process_id=admit_write.process_id);
+    IF NOT source_owned THEN
+        -- Cross-butler source transport is registered MCP only. This metadata
+        -- records the actual online guard on THIS acquired writer; it is not
+        -- a delivery bus or a public actor/UUID source claim.
+        SELECT * INTO actual_backend FROM pg_catalog.pg_stat_activity
+          WHERE pid=pg_catalog.pg_backend_pid();
+        SELECT calls.* INTO call_row FROM custody_admission.connections connection
+          JOIN custody_admission.calls calls ON calls.call_id=connection.verified_call_id
+          WHERE connection.database_oid=actual_backend.datid
+            AND connection.backend_pid=actual_backend.pid
+            AND connection.backend_start=actual_backend.backend_start
+            AND connection.login_oid=actual_backend.usesysid
+            AND connection.role_oid=custody_admission.caller_role()
+            AND connection.process_id=admit_write.process_id;
+        IF NOT FOUND OR call_row.source_ref<>source.source_ref
+           OR call_row.destination_process<>process_id
+           OR call_row.operation->>'operation' IS DISTINCT FROM operation
+           OR call_row.operation->'target_set' IS DISTINCT FROM target_set
+           OR call_row.operation->'target_set_version'
+                IS DISTINCT FROM source.projection->'target_set_version' THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+        PERFORM custody_admission.protocol('verify',pg_catalog.jsonb_build_object(
+            'call_ref',call_row.call_id,'challenge_ref',call_row.challenge_ref,
+            'operation_digest',call_row.operation_digest));
+    END IF;
+    PERFORM custody_admission.require_origin_current(source.source_ref);
+    selection:=pg_catalog.jsonb_build_object('target_set',target_set,
+        'target_set_version',source.projection->'target_set_version');
+    PERFORM custody_admission.lock_targets(selection,(source.projection->>'issuer_target')::uuid);
+    PERFORM custody_admission.writer();
+    IF source.expires_at<=pg_catalog.clock_timestamp() THEN
+        RAISE EXCEPTION 'custody expired' USING ERRCODE='42501';
+    END IF;
+    PERFORM custody_admission.require_origin_current(source.source_ref);
+    FOR target IN SELECT pg_catalog.jsonb_array_elements(target_set) LOOP
+        IF EXISTS(SELECT FROM custody_admission.targets WHERE target_id=(target->>'target_id')::uuid
+              AND generation<>(target->>'generation')::bigint)
+           OR EXISTS(SELECT FROM public.custody_holds WHERE target_id=(target->>'target_id')::uuid AND released_at IS NULL) THEN
+            RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+        END IF;
+    END LOOP;
+    RETURN pg_catalog.jsonb_build_object('admitted',true);
+END;
+$custody_admit$;
+
+CREATE OR REPLACE FUNCTION custody_admission.mark_provider_start(
+    source_ref uuid,call_ref uuid,operation_digest text
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_start$
+#variable_conflict use_variable
+DECLARE process_id uuid; process record; call_row record; effect record; effect_namespace text; effect_id uuid; effect_binding text; control jsonb;
+BEGIN
+    process_id:=custody_admission.writer();
+    PERFORM custody_admission.require_verified_call(call_ref);
+    control:=custody_admission.current_control();
+    SELECT * INTO process FROM custody_admission.processes WHERE processes.process_id=mark_provider_start.process_id;
+    SELECT * INTO call_row FROM custody_admission.calls WHERE call_id=call_ref;
+    IF NOT FOUND OR call_row.destination_process<>process_id
+       OR call_row.source_ref<>source_ref OR call_row.operation_digest<>operation_digest
+       OR call_row.state<>'armed' OR call_row.challenge_expires_at<=pg_catalog.clock_timestamp()
+       OR call_row.expires_at<=pg_catalog.clock_timestamp()
+       OR NOT custody_admission.process_current(call_row.issuer_process)
+       OR NOT process.operations ? 'provider_start'
+       OR call_row.control_epoch<>(control->>'control_epoch')::bigint
+       OR call_row.restore_epoch<>(control->>'restore_epoch')::uuid
+       OR call_row.operation->>'operation'<>'provider_start' THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    PERFORM custody_admission.require_origin_current(call_row.source_ref);
+    -- Receiver association is a call grant, not a fabricated owning source.
+    PERFORM custody_admission.lock_targets(pg_catalog.jsonb_build_object(
+        'target_set',call_row.operation->'target_set',
+        'target_set_version',call_row.operation->'target_set_version'),
+        (SELECT (s.projection->>'issuer_target')::uuid FROM custody_admission.sources s
+         WHERE s.source_ref=call_row.source_ref
+           AND (s.source_family='accepted_ingress' OR s.projection ? 'answer')));
+    IF EXISTS(SELECT FROM pg_catalog.jsonb_array_elements(call_row.operation->'target_set') v
+       JOIN custody_admission.targets t ON t.target_id=(v->>'target_id')::uuid
+       WHERE t.generation<>(v->>'generation')::bigint
+          OR EXISTS(SELECT FROM public.custody_holds h WHERE h.target_id=t.target_id AND h.released_at IS NULL)) THEN
+        RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+    END IF;
+    -- The owning effect marker is a final admission, not the earlier guard
+    -- verdict. Recheck live issuer/receiver and exact source after target waits.
+    PERFORM custody_admission.writer();
+    IF NOT custody_admission.process_current(call_row.issuer_process)
+       OR NOT custody_admission.process_current(call_row.destination_process)
+       OR call_row.expires_at<=pg_catalog.clock_timestamp()
+       OR call_row.challenge_expires_at<=pg_catalog.clock_timestamp()
+       OR NOT EXISTS(SELECT FROM custody_admission.sources s
+           WHERE s.source_ref=mark_provider_start.source_ref
+             AND s.expires_at>pg_catalog.clock_timestamp()) THEN
+        RAISE EXCEPTION 'custody expired' USING ERRCODE='42501';
+    END IF;
+    PERFORM custody_admission.require_origin_current(call_row.source_ref);
+    effect_namespace:=call_row.operation->>'effect_namespace';
+    effect_id:=(call_row.operation->>'effect_id')::uuid;
+    IF effect_namespace !~ '^[a-z][a-z0-9_]{0,63}$' OR effect_id IS NULL
+       OR call_row.operation->>'content_digest' !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'custody invalid' USING ERRCODE='22023';
+    END IF;
+    effect_binding:=custody_admission.binding_digest(pg_catalog.jsonb_build_object(
+        'method',call_row.operation->'method','arguments',call_row.operation->'arguments',
+        'targets',call_row.operation->'target_set','content_digest',call_row.operation->'content_digest'));
+    INSERT INTO custody_admission.effects(actor,namespace,effect_id,source_ref,binding_digest,started_at)
+    VALUES(process.logical_actor,effect_namespace,effect_id,source_ref,effect_binding,pg_catalog.clock_timestamp())
+    ON CONFLICT(actor,namespace,effect_id) DO NOTHING RETURNING * INTO effect;
+    IF NOT FOUND THEN
+        SELECT * INTO effect FROM custody_admission.effects e
+          WHERE e.actor=process.logical_actor AND e.namespace=effect_namespace AND e.effect_id=mark_provider_start.effect_id;
+        IF effect.binding_digest<>effect_binding THEN RAISE EXCEPTION 'custody conflict' USING ERRCODE='40001'; END IF;
+        RETURN pg_catalog.jsonb_build_object('may_start',false,'status','already_possible_start');
+    END IF;
+    RETURN pg_catalog.jsonb_build_object('may_start',true,'effect_id',effect_id,'started_at',effect.started_at);
+END;
+$custody_start$;
+
+-- Exact bounded SQL ABIs. The two MCP operations are registered in the owning
+-- service; these wrappers do not turn arbitrary JSON into a public dispatcher.
+CREATE OR REPLACE FUNCTION public.custody_anchor_begin() RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('anchor_begin','{}'::jsonb)
+$$;
+CREATE OR REPLACE FUNCTION public.custody_anchor_renew() RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('anchor_renew','{}'::jsonb)
+$$;
+CREATE OR REPLACE FUNCTION public.custody_connection_begin() RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('connection_begin','{}'::jsonb)
+$$;
+CREATE OR REPLACE FUNCTION public.custody_bind_connection(writer_nonce text) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('bind_connection',pg_catalog.jsonb_build_object('writer_nonce',writer_nonce))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_connection_finish(writer_nonce text) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('connection_finish',pg_catalog.jsonb_build_object('writer_nonce',writer_nonce))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_connection_unbind(acquisition_generation bigint) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('connection_unbind',pg_catalog.jsonb_build_object('acquisition_generation',acquisition_generation))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_source_register(source_family text,projection jsonb) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('source_register',pg_catalog.jsonb_build_object('source_family',source_family,'projection',projection))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_mint(source_ref uuid,operation jsonb,destination_actor text) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('mint',pg_catalog.jsonb_build_object('source_ref',source_ref,'operation',operation,'destination_actor',destination_actor))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_challenge(call_ref uuid,operation_digest text) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('challenge',pg_catalog.jsonb_build_object('call_ref',call_ref,'operation_digest',operation_digest))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_respond(call_ref uuid,challenge_ref text) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('respond',pg_catalog.jsonb_build_object('call_ref',call_ref,'challenge_ref',challenge_ref))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_verify(call_ref uuid,challenge_ref text,operation_digest text) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('verify',pg_catalog.jsonb_build_object('call_ref',call_ref,'challenge_ref',challenge_ref,'operation_digest',operation_digest))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_commit_command(command_id uuid,call_ref uuid) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.commit_command(command_id,call_ref)
+$$;
+CREATE OR REPLACE FUNCTION public.custody_admit_write(source_ref uuid,operation text,target_set jsonb) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.admit_write(source_ref,operation,target_set)
+$$;
+CREATE OR REPLACE FUNCTION public.custody_result_read(command_id uuid,call_ref uuid) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.protocol('result_read',pg_catalog.jsonb_build_object('command_id',command_id,'call_ref',call_ref))
+$$;
+CREATE OR REPLACE FUNCTION public.custody_mark_provider_start(source_ref uuid,call_ref uuid,operation_digest text) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.mark_provider_start(source_ref,call_ref,operation_digest)
+$$;
+CREATE OR REPLACE FUNCTION custody_admission.endpoint_lock_prepare(source_ref uuid,selection jsonb) RETURNS jsonb
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT custody_admission.prepare('endpoint_lock','hold','{}'::jsonb,selection,source_ref)
+$$;
+CREATE OR REPLACE FUNCTION custody_admission.security_answer_prepare(
+    question_id uuid,callback_source_ref uuid,answer text,token_digest text
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_answer_prepare$
+DECLARE question record; selection jsonb;
+BEGIN
+    -- The engine guard verified the actual source/call. Tokens bind one verb,
+    -- recipient/event/source/target generation and cannot act as approval keys.
+    PERFORM FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+    PERFORM custody_admission.current_control();
+    SELECT * INTO question FROM custody_admission.questions q WHERE q.question_id=security_answer_prepare.question_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'custody refused' USING ERRCODE='42501'; END IF;
+    selection:=pg_catalog.jsonb_build_object('target_set',question.target_set,'target_set_version',question.target_set_version,
+        'reason','disowned_access');
+    RETURN custody_admission.prepare('security_answer',answer,pg_catalog.jsonb_build_object(
+        'question_id',question_id,'callback_source_ref',callback_source_ref,'answer',answer,'token_digest',token_digest
+    ),selection,callback_source_ref);
+END;
+$custody_answer_prepare$;
+
+CREATE OR REPLACE FUNCTION custody_admission.finalize_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_finalize$
+DECLARE role record; function record; migration_role name; signature text;
+BEGIN
+    SELECT connecting_role INTO migration_role FROM custody_admission.bootstrap_configuration WHERE singleton;
+    FOR function IN SELECT p.oid,n.nspname,p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid) args
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='custody_admission' OR n.nspname IN ('public','dashboard_auth') AND p.proname LIKE 'custody_%'
+    LOOP
+        signature:=pg_catalog.format('%I.%I(%s)',function.nspname,function.proname,function.args);
+        EXECUTE 'REVOKE ALL ON FUNCTION '||signature||' FROM PUBLIC';
+        FOR role IN SELECT rolname FROM pg_catalog.pg_roles WHERE oid<>current_user::regrole::oid LOOP
+            EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %s FROM %I',signature,role.rolname);
+        END LOOP;
+        IF function.nspname='public' THEN
+            FOR role IN SELECT rolname FROM pg_catalog.pg_roles
+                WHERE rolname ~ '^butler_[A-Za-z_][A-Za-z0-9_]*_rw$' OR rolname IN ('connector_writer','dashboard_auth_api') LOOP
+                EXECUTE pg_catalog.format('GRANT EXECUTE ON FUNCTION %s TO %I',signature,role.rolname);
+            END LOOP;
+        ELSIF function.nspname='dashboard_auth' AND function.proname='custody_prepare' THEN
+            EXECUTE 'GRANT EXECUTE ON FUNCTION '||signature||' TO dashboard_auth_api';
+        ELSIF function.proname IN ('host_enroll','host_revoke','host_revoke_control',
+                'install_interface','prove_interface','rollback_interface','custody_host_prepare','accepted_work') THEN
+            EXECUTE pg_catalog.format('GRANT EXECUTE ON FUNCTION %s TO %I',signature,migration_role);
+        END IF;
+    END LOOP;
+    REVOKE ALL ON SCHEMA custody_admission FROM PUBLIC;
+    REVOKE ALL ON ALL TABLES IN SCHEMA custody_admission FROM PUBLIC;
+    FOR role IN SELECT rolname FROM pg_catalog.pg_roles WHERE oid<>current_user::regrole::oid LOOP
+        EXECUTE pg_catalog.format('REVOKE ALL ON SCHEMA custody_admission FROM %I',role.rolname);
+        EXECUTE pg_catalog.format('REVOKE ALL ON ALL TABLES IN SCHEMA custody_admission FROM %I',role.rolname);
+    END LOOP;
+    EXECUTE pg_catalog.format('GRANT USAGE ON SCHEMA custody_admission TO %I',migration_role);
+    -- Public bootstrap widens table privileges deliberately. Forced RLS is the
+    -- hold mutation boundary; only content-blind eligibility is an interface.
+    IF pg_catalog.to_regclass('public.custody_holds') IS NOT NULL THEN
+        REVOKE ALL ON public.custody_holds FROM PUBLIC;
+        FOR role IN SELECT rolname FROM pg_catalog.pg_roles WHERE oid<>current_user::regrole::oid LOOP
+            EXECUTE pg_catalog.format('REVOKE ALL ON public.custody_holds FROM %I',role.rolname);
+        END LOOP;
+    END IF;
+END;
+$custody_finalize$;
+
+-- Fixed feature-owned schema identity, captured only by first trusted
+-- provisioning. No caller-selected schema, table, query or replacement proof.
+CREATE OR REPLACE FUNCTION custody_admission.schema_identity() RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_schema$
+    SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+        'schema',n.nspname,'table',r.relname,'kind',r.relkind::text,
+        'persistence',r.relpersistence::text,'owner_oid',r.relowner,
+        'row_security',r.relrowsecurity,'force_row_security',r.relforcerowsecurity,
+        'policies',COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(p) ORDER BY p.policyname)
+            FROM pg_catalog.pg_policies p WHERE p.schemaname=n.nspname AND p.tablename=r.relname),'[]'::jsonb),
+        'columns',COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+            'number',a.attnum,'name',a.attname,'type',pg_catalog.format_type(a.atttypid,a.atttypmod),
+            'not_null',a.attnotnull,'identity',a.attidentity::text,'generated',a.attgenerated::text,
+            'collation_oid',a.attcollation,'dropped',a.attisdropped,
+            'default',pg_catalog.pg_get_expr(d.adbin,d.adrelid)) ORDER BY a.attnum)
+            FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d
+              ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+            WHERE a.attrelid=r.oid AND a.attnum>0),'[]'::jsonb),
+        'constraints',COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+            'name',c.conname,'type',c.contype::text,'definition',pg_catalog.pg_get_constraintdef(c.oid),
+            'deferrable',c.condeferrable,'deferred',c.condeferred,'validated',c.convalidated,
+            'local',c.conislocal,'inheritance',c.coninhcount,'no_inherit',c.connoinherit)
+            ORDER BY c.conname) FROM pg_catalog.pg_constraint c WHERE c.conrelid=r.oid),'[]'::jsonb),
+        'indexes',COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+            'name',i.relname,'owner_oid',i.relowner,'definition',pg_catalog.pg_get_indexdef(i.oid),
+            'unique',x.indisunique,'primary',x.indisprimary,'exclusion',x.indisexclusion,
+            'valid',x.indisvalid,'ready',x.indisready,'live',x.indislive,
+            'immediate',x.indimmediate,'replica_identity',x.indisreplident)
+            ORDER BY i.relname) FROM pg_catalog.pg_index x
+            JOIN pg_catalog.pg_class i ON i.oid=x.indexrelid WHERE x.indrelid=r.oid),'[]'::jsonb),
+        'triggers',COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+            'name',t.tgname,'enabled',t.tgenabled::text,'definition',pg_catalog.pg_get_triggerdef(t.oid))
+            ORDER BY t.tgname) FROM pg_catalog.pg_trigger t
+            WHERE t.tgrelid=r.oid AND NOT t.tgisinternal),'[]'::jsonb),
+        'rules',COALESCE((SELECT pg_catalog.jsonb_agg(pg_catalog.pg_get_ruledef(w.oid) ORDER BY w.rulename)
+            FROM pg_catalog.pg_rewrite w WHERE w.ev_class=r.oid),'[]'::jsonb)
+        ) ORDER BY n.nspname,r.relname),'[]'::jsonb)
+    FROM pg_catalog.pg_class r JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace
+    WHERE n.nspname='custody_admission' AND r.relkind IN ('r','p','v','m','f')
+       OR n.nspname='public' AND r.relname='custody_holds'
+$custody_schema$;
+
+CREATE OR REPLACE FUNCTION custody_admission.prove_interface() RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_prove$
+DECLARE owner_oid oid; owner_name name; migration_role name;
+    function record; count_functions integer; function_manifest jsonb;
+BEGIN
+    PERFORM custody_admission.host_only();
+    SELECT bootstrap_owner_oid,connecting_role INTO owner_oid,migration_role
+      FROM custody_admission.bootstrap_configuration WHERE singleton;
+    SELECT rolname INTO owner_name FROM pg_catalog.pg_roles WHERE oid=owner_oid;
+    IF owner_oid IS NULL OR NOT EXISTS(SELECT FROM pg_catalog.pg_roles WHERE oid=owner_oid AND rolsuper)
+       OR EXISTS(SELECT FROM pg_catalog.pg_namespace WHERE nspname='custody_admission' AND nspowner<>owner_oid)
+       OR EXISTS(SELECT FROM pg_catalog.pg_class r JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace
+          WHERE n.nspname='custody_admission' AND r.relkind IN ('r','p') AND r.relowner<>owner_oid) THEN
+        RAISE EXCEPTION 'custody invalid installed identity' USING ERRCODE='42501';
+    END IF;
+    IF EXISTS(SELECT FROM pg_catalog.pg_namespace n
+        CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(n.nspacl,
+            pg_catalog.acldefault('n',n.nspowner))) a
+        LEFT JOIN pg_catalog.pg_roles recipient ON recipient.oid=a.grantee
+        WHERE n.nspname='custody_admission' AND a.grantee<>owner_oid
+          AND (recipient.rolname IS DISTINCT FROM migration_role
+               OR a.privilege_type<>'USAGE' OR a.is_grantable))
+       OR EXISTS(SELECT FROM pg_catalog.pg_class r
+        JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace
+        CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(r.relacl,
+            pg_catalog.acldefault('r',r.relowner))) a
+        WHERE (n.nspname='custody_admission' AND r.relkind IN ('r','p')
+               OR n.nspname='public' AND r.relname='custody_holds')
+          AND a.grantee<>owner_oid) THEN
+        RAISE EXCEPTION 'custody invalid installed grants' USING ERRCODE='42501';
+    END IF;
+    IF EXISTS(WITH RECURSIVE runtime_parents(runtime_oid,parent_oid) AS (
+        SELECT r.oid,r.oid FROM pg_catalog.pg_roles r
+          WHERE r.rolname ~ '^butler_[A-Za-z_][A-Za-z0-9_]*_rw$'
+             OR r.rolname IN ('connector_writer','dashboard_auth_api')
+        UNION
+        SELECT chain.runtime_oid,m.roleid FROM runtime_parents chain
+          JOIN pg_catalog.pg_auth_members m ON m.member=chain.parent_oid
+        ) SELECT FROM runtime_parents chain JOIN pg_catalog.pg_roles parent
+          ON parent.oid=chain.parent_oid
+          WHERE parent.rolsuper OR parent.rolbypassrls OR parent.rolcreaterole
+             OR parent.rolreplication OR parent.rolcreatedb
+             OR parent.oid=owner_oid OR parent.rolname=migration_role
+             OR parent.oid=(SELECT datdba FROM pg_catalog.pg_database
+                 WHERE datname=pg_catalog.current_database())) THEN
+        RAISE EXCEPTION 'custody invalid runtime role authority' USING ERRCODE='42501';
+    END IF;
+    -- Explicit ACL entries alone miss effective inherited/predefined access
+    -- and column-only grants. Check the actual fixed protected relations for
+    -- every existing runtime role; no arbitrary catalog selector is accepted.
+    IF EXISTS(SELECT FROM pg_catalog.pg_roles runtime
+        WHERE (runtime.rolname ~ '^butler_[A-Za-z_][A-Za-z0-9_]*_rw$'
+               OR runtime.rolname IN ('connector_writer','dashboard_auth_api'))
+          AND (runtime.rolcanlogin
+               OR pg_catalog.has_schema_privilege(runtime.oid,'custody_admission','USAGE,CREATE')
+               OR EXISTS(SELECT FROM pg_catalog.pg_class relation
+                   JOIN pg_catalog.pg_namespace namespace ON namespace.oid=relation.relnamespace
+                   WHERE (namespace.nspname='custody_admission' AND relation.relkind IN ('r','p')
+                          OR namespace.nspname='public' AND relation.relname='custody_holds')
+                     AND (pg_catalog.has_table_privilege(runtime.oid,relation.oid,
+                              'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                          OR EXISTS(SELECT FROM pg_catalog.pg_attribute column_info
+                              WHERE column_info.attrelid=relation.oid AND column_info.attnum>0
+                                AND NOT column_info.attisdropped
+                                AND pg_catalog.has_column_privilege(runtime.oid,relation.oid,
+                                    column_info.attnum,'SELECT,INSERT,UPDATE,REFERENCES')))))) THEN
+        RAISE EXCEPTION 'custody invalid effective runtime access' USING ERRCODE='42501';
+    END IF;
+    IF NOT EXISTS(SELECT FROM custody_admission.bootstrap_configuration b
+        WHERE b.singleton AND b.schema_identity IS NOT NULL
+          AND b.schema_identity=custody_admission.schema_identity()) THEN
+        RAISE EXCEPTION 'custody installed schema drift' USING ERRCODE='42501';
+    END IF;
+    count_functions:=0;
+    FOR function IN SELECT p.* FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='custody_admission' OR n.nspname IN ('public','dashboard_auth') AND p.proname LIKE 'custody_%' LOOP
+        count_functions:=count_functions+1;
+        IF function.proowner<>owner_oid
+           OR NOT ('search_path=pg_catalog, pg_temp'=ANY(COALESCE(function.proconfig,ARRAY[]::text[])))
+           OR EXISTS(SELECT FROM pg_catalog.aclexplode(COALESCE(function.proacl,
+               pg_catalog.acldefault('f',function.proowner))) a
+               LEFT JOIN pg_catalog.pg_roles recipient ON recipient.oid=a.grantee
+               WHERE a.grantee<>owner_oid AND (
+                   a.is_grantable OR a.privilege_type<>'EXECUTE' OR NOT (
+                     function.pronamespace='public'::regnamespace::oid AND (
+                       recipient.rolname ~ '^butler_[A-Za-z_][A-Za-z0-9_]*_rw$'
+                       OR recipient.rolname IN ('connector_writer','dashboard_auth_api'))
+                     OR function.pronamespace='dashboard_auth'::regnamespace::oid
+                        AND function.proname='custody_prepare' AND recipient.rolname='dashboard_auth_api'
+                     OR function.proname IN ('host_enroll','host_revoke','host_revoke_control',
+                           'install_interface','prove_interface','rollback_interface','custody_host_prepare','accepted_work')
+                        AND recipient.rolname=migration_role)
+                   OR recipient.oid IS NULL)) THEN
+            RAISE EXCEPTION 'custody invalid installed function' USING ERRCODE='42501';
+        END IF;
+        IF EXISTS(SELECT FROM pg_catalog.pg_roles recipient
+            WHERE (
+              function.pronamespace='public'::regnamespace::oid AND (
+                recipient.rolname ~ '^butler_[A-Za-z_][A-Za-z0-9_]*_rw$'
+                OR recipient.rolname IN ('connector_writer','dashboard_auth_api'))
+              OR function.pronamespace='dashboard_auth'::regnamespace::oid
+                AND function.proname='custody_prepare' AND recipient.rolname='dashboard_auth_api'
+              OR function.proname IN ('host_enroll','host_revoke','host_revoke_control',
+                    'install_interface','prove_interface','rollback_interface','custody_host_prepare','accepted_work')
+                AND recipient.rolname=migration_role)
+              AND NOT EXISTS(SELECT FROM pg_catalog.aclexplode(COALESCE(function.proacl,
+                    pg_catalog.acldefault('f',function.proowner))) a
+                  WHERE a.grantee=recipient.oid AND a.privilege_type='EXECUTE' AND NOT a.is_grantable)
+        ) THEN
+            RAISE EXCEPTION 'custody missing installed capability' USING ERRCODE='42501';
+        END IF;
+    END LOOP;
+    IF count_functions<30 OR NOT EXISTS(SELECT FROM pg_catalog.pg_class r
+       JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname='public'
+       AND r.relname='custody_holds' AND r.relowner=owner_oid AND r.relrowsecurity AND r.relforcerowsecurity)
+       OR NOT EXISTS(SELECT FROM pg_catalog.pg_index WHERE indrelid='public.custody_holds'::regclass
+                     AND indisunique AND indisvalid AND indpred IS NOT NULL)
+       OR EXISTS(SELECT FROM pg_catalog.pg_policies WHERE schemaname='public' AND tablename='custody_holds'
+          AND policyname<>'custody_bootstrap_engine')
+       OR NOT EXISTS(SELECT FROM pg_catalog.pg_policies
+          WHERE schemaname='public' AND tablename='custody_holds'
+            AND policyname='custody_bootstrap_engine' AND permissive='PERMISSIVE'
+            AND cmd='ALL' AND roles=ARRAY['public']::name[]
+            AND qual=pg_catalog.format('(CURRENT_USER = %L::name)',owner_name)
+            AND with_check=pg_catalog.format('(CURRENT_USER = %L::name)',owner_name)) THEN
+        RAISE EXCEPTION 'custody invalid installed authority' USING ERRCODE='42501';
+    END IF;
+    IF pg_catalog.to_regclass('switchboard.message_inbox') IS NOT NULL THEN
+        IF EXISTS(SELECT FROM pg_catalog.pg_partition_tree(
+            'switchboard.message_inbox'::pg_catalog.regclass) part_node
+            CROSS JOIN (VALUES('custody_accepted_birth',5),('custody_accepted_retire',25)) expected(name,kind)
+            LEFT JOIN pg_catalog.pg_trigger installed_trigger ON installed_trigger.tgrelid=part_node.relid
+              AND installed_trigger.tgname=expected.name
+            WHERE installed_trigger.oid IS NULL OR installed_trigger.tgtype<>expected.kind
+              OR installed_trigger.tgenabled<>'O'
+              OR installed_trigger.tgfoid<>'custody_admission.accepted_birth()'::pg_catalog.regprocedure
+              OR installed_trigger.tgnargs<>0 OR installed_trigger.tgqual IS NOT NULL
+              OR installed_trigger.tgisinternal) THEN
+            RAISE EXCEPTION 'custody invalid accepted birth trigger' USING ERRCODE='42501';
+        END IF;
+    END IF;
+    -- Return only this feature's fixed source manifest to trusted startup.
+    -- Its checked-in counterpart compares exact bodies, argument/return ABI,
+    -- language, volatility, defaults and configuration before enrollment.
+    -- This is not a public catalog discovery or caller-selected shadow query.
+    SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+        'signature',n.nspname||'.'||p.proname||'('||
+          COALESCE((SELECT pg_catalog.string_agg(pg_catalog.format_type(t,NULL),',' ORDER BY ordinal)
+            FROM pg_catalog.unnest(p.proargtypes) WITH ORDINALITY a(t,ordinal)),'')||')',
+        'body_sha256',pg_catalog.encode(public.digest(pg_catalog.convert_to(p.prosrc,'UTF8'),'sha256'),'hex'),
+        'argument_names',COALESCE(pg_catalog.to_jsonb(p.proargnames),'[]'::jsonb),
+        'return_type',pg_catalog.format_type(p.prorettype,NULL),
+        'language',l.lanname,'security_definer',p.prosecdef,'volatility',p.provolatile::text,
+        'strict',p.proisstrict,'leakproof',p.proleakproof,'parallel',p.proparallel::text,
+        'returns_set',p.proretset,'argument_modes',pg_catalog.to_jsonb(p.proargmodes),
+        'defaults',CASE WHEN p.proargdefaults IS NULL THEN NULL
+                        ELSE pg_catalog.pg_get_expr(p.proargdefaults,0) END,
+        'configuration',pg_catalog.to_jsonb(p.proconfig)) ORDER BY n.nspname,p.proname,p.proargtypes)
+      INTO function_manifest
+      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+      WHERE n.nspname='custody_admission'
+         OR n.nspname IN ('public','dashboard_auth') AND p.proname LIKE 'custody_%';
+    RETURN pg_catalog.jsonb_build_object('version',1,'bootstrap_owner_oid',owner_oid,
+        'core_revision','core_260','functions',count_functions,'function_manifest',function_manifest);
+END;
+$custody_prove$;
+
+CREATE OR REPLACE FUNCTION custody_admission.rollback_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_rollback$
+BEGIN
+    PERFORM custody_admission.host_only();
+    PERFORM custody_admission.current_control();
+    IF EXISTS(SELECT FROM public.custody_holds) OR EXISTS(SELECT FROM custody_admission.sources)
+       OR EXISTS(SELECT FROM custody_admission.commands) OR EXISTS(SELECT FROM custody_admission.processes) THEN
+        RAISE EXCEPTION 'custody populated rollback refused' USING ERRCODE='42501';
+    END IF;
+    -- Retain installation/evidence rather than silently drop trust enforcement.
+    UPDATE custody_admission.control SET admission_state='unavailable',control_epoch=control_epoch+1 WHERE singleton;
+END;
+$custody_rollback$;
+
+-- Install before defining dashboard wrappers only when its owning schema exists.
+-- Fresh bootstrap precedes core_240, so core_260 installer creates them later.
+CREATE OR REPLACE FUNCTION custody_admission.install_dashboard_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $custody_dashboard_install$
+BEGIN
+    IF pg_catalog.to_regnamespace('dashboard_auth') IS NULL THEN RETURN; END IF;
+    EXECUTE $dashboard_wrapper$
+        CREATE OR REPLACE FUNCTION dashboard_auth.custody_prepare(operation text,proof jsonb,selection jsonb)
+        RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+        DECLARE instance record; complete_proof jsonb; result jsonb;
+        BEGIN
+            -- Epochs come from the locked server singleton, never HTTP/model
+            -- claims. Raw cookie/CSRF never enter this interface or any result.
+            PERFORM custody_admission.closed(proof,ARRAY[
+                'session_digest','csrf_digest','origin','rp_id','key_generation'
+            ]);
+            SELECT * INTO instance FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+            IF NOT FOUND THEN RAISE EXCEPTION 'custody unavailable' USING ERRCODE='42501'; END IF;
+            complete_proof:=proof||pg_catalog.jsonb_build_object(
+                'credential_epoch',instance.credential_epoch,'session_epoch',instance.session_epoch);
+            result:=custody_admission.prepare('browser',operation,complete_proof,selection);
+            -- Safe source-producer inputs are the immutable selection/version
+            -- and original private command expiry, not an authorization verdict.
+            RETURN result||pg_catalog.jsonb_build_object(
+                'selection_digest',custody_admission.binding_digest(selection));
+        END;
+        $body$;
+        CREATE OR REPLACE FUNCTION dashboard_auth.custody_host_prepare(operation text,exact_selection jsonb)
+        RETURNS jsonb LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+            SELECT custody_admission.prepare('host',operation,'{}'::jsonb,exact_selection)
+        $body$;
+        CREATE OR REPLACE FUNCTION dashboard_auth.custody_check_locked(command_id uuid,expected_operation_digest text)
+        RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+        DECLARE result jsonb;
+        BEGIN
+            result:=custody_admission.command_current(command_id);
+            IF result->>'selection_digest'<>expected_operation_digest THEN
+                RAISE EXCEPTION 'custody refused' USING ERRCODE='42501';
+            END IF;
+            RETURN result;
+        END;
+        $body$;
+    $dashboard_wrapper$;
+END;
+$custody_dashboard_install$;
+SELECT custody_admission.finalize_interface();
+RESET ROLE;

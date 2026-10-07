@@ -26,6 +26,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.custody_bindings import native_channel_mutation
 from butlers.tools.relationship.fact_temporal import (
     MUTATOR_UNSUPPORTED,
     TemporalError,
@@ -1055,7 +1056,7 @@ async def contact_merge(
 
     # (c) One transaction for every relationship-schema write. A TemporalError or
     # any database error rolls the whole merge back.
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, native_channel_mutation(pool, conn, entities or []):
         async with conn.transaction():
             if entities is not None:
                 await _lock_merge_rows(conn, *entities)

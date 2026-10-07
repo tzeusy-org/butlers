@@ -454,6 +454,9 @@ async def test_startup_sequence(butler_dir: Path) -> None:
         patches["connect_switchboard"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
+        patch(
+            "butlers.core.custody_lifecycle.start_daemon_custody", new_callable=AsyncMock
+        ) as mock_custody_start,
     ):
         mock_db = patches["mock_db"]
         mock_telemetry.side_effect = lambda *a, **kw: call_order.append("init_telemetry")
@@ -476,6 +479,7 @@ async def test_startup_sequence(butler_dir: Path) -> None:
             return {}
 
         mock_mod_validate.side_effect = _record_mod_validate
+        mock_custody_start.side_effect = lambda *a, **kw: call_order.append("custody_start")
         mock_sync.side_effect = lambda *a, **kw: call_order.append("sync_schedules")
         mock_fastmcp.side_effect = lambda *a, **kw: (
             call_order.append("FastMCP"),
@@ -510,6 +514,7 @@ async def test_startup_sequence(butler_dir: Path) -> None:
         "provision",
         "connect",
         "run_migrations(core)",
+        "custody_start",
         "validate_module_credentials_async",
         "sync_schedules",
         "Spawner",
@@ -1295,6 +1300,25 @@ async def test_startup_failure_propagation(butler_dir: Path) -> None:
         with pytest.raises(ConnectionRefusedError):
             await daemon2.start()
     mock_migrations.assert_not_awaited()
+
+    # A later startup error must stop the retained custody runtime without
+    # replacing the original failure. This is lifecycle software evidence,
+    # not enrollment/SQL authority from the mocked stop recorder.
+    daemon3 = ButlerDaemon(butler_dir)
+    runtime = MagicMock()
+    runtime.stop = AsyncMock()
+
+    async def fail_after_enrollment(daemon):
+        daemon._custody_runtime = runtime
+        daemon._custody_mcp_service = object()
+        raise RuntimeError("later startup sentinel")
+
+    with patch("butlers.lifecycle.run_startup", side_effect=fail_after_enrollment):
+        with pytest.raises(RuntimeError, match="later startup sentinel"):
+            await daemon3.start()
+    runtime.stop.assert_awaited_once()
+    assert daemon3._custody_runtime is None
+    assert daemon3._custody_mcp_service is None
 
 
 # ---------------------------------------------------------------------------

@@ -515,8 +515,11 @@ async def init_db_manager(
             )
     # The API layer never calls Database.from_env() with a role parameter —
     # schema isolation is enforced at the butler-daemon layer, not here.
-    # SET ROLE is therefore always disabled for API-managed pools; report that
-    # honest state on the health endpoint so operators can see it.
+    # Ordinary API-managed readers retain the connecting-role policy. The
+    # fixed canonical-writer allocation below temporarily enters its existing
+    # owning role on individual native transactions; it does not turn these
+    # general reader pools into globally SET ROLE-enforced pools. Report that
+    # honest reader-pool state on the health endpoint.
     mgr.set_role_enforcement_disabled(True)
 
     try:
@@ -538,6 +541,18 @@ async def init_db_manager(
             exc_info=True,
         )
 
+    # Schema-scoped Relationship is the canonical identity writer. Its source
+    # installation must be proved before any API handler/background task can
+    # mutate identities; startup failure cannot silently leave an unguarded
+    # configured pool. Legacy configurations without this owning schema remain
+    # explicitly unconfigured and receive no custody currentness credit.
+    try:
+        for cfg, resolved_db_name in resolved_butler_db_names:
+            if cfg.name == "relationship" and cfg.db_schema == "relationship":
+                await mgr.start_identity_writer(resolved_db_name)
+    except BaseException:
+        await mgr.close()
+        raise
     _db_manager = mgr
     return mgr
 

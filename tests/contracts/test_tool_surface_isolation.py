@@ -94,7 +94,7 @@ class TestEphemeralMcpConfig:
         # This is derived from decorator calls in the dispatcher, rather than
         # duplicating its production catalog.  Keep the total as a regression
         # guard for accidental registration loss.
-        assert len(inventory) == 87
+        assert len(inventory) == 89
         assert sum(group is not None for group in inventory.values()) == 79
         assert inventory["schedule_toggle"] == "scheduling"
         assert {
@@ -117,6 +117,8 @@ class TestEphemeralMcpConfig:
         } == {group for group in inventory.values() if group is not None}
         assert {
             "cancel_session",
+            "custody.challenge",
+            "custody.apply",
             "route.execute",
             "delivery_preferences_set",
             "delivery_preferences_get",

@@ -135,6 +135,7 @@ tests/core/test_calendar_provenance.py
 tests/core/test_commitments.py
 tests/core/test_connector_liveness.py
 tests/core/test_core_spawner.py
+tests/core/test_custody_source.py
 tests/core/test_deploy.py
 tests/core/test_failover_classifier.py
 tests/core/test_identity.py

@@ -72,6 +72,7 @@ from butlers.api.routers.data_ops import router as data_ops_router
 from butlers.api.routers.decisions import router as decisions_router
 from butlers.api.routers.delegation import router as delegation_router
 from butlers.api.routers.domain_events import router as domain_events_router
+from butlers.api.routers.endpoint_custody import router as endpoint_custody_router
 from butlers.api.routers.events import router as events_router
 from butlers.api.routers.general_settings import router as general_settings_router
 from butlers.api.routers.google_health import router as google_health_router
@@ -228,7 +229,7 @@ def _track_background_task(task: asyncio.Task) -> asyncio.Task:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _application_lifespan(app: FastAPI):
     """Startup/shutdown lifecycle for DB pools and MCP clients.
 
     On startup: initialize resources (will be implemented in future tasks)
@@ -243,6 +244,28 @@ async def lifespan(app: FastAPI):
 
     # Startup
     init_dependencies()
+    app.state.custody_runtime = None
+    app.state.custody_browser_door = None
+    from butlers.core.custody_api import discard_api_parent_channel
+
+    try:
+        if app.state.owner_auth_service is not None:
+            from butlers.api.routers.endpoint_custody import CustodyBrowserDoor
+            from butlers.core.custody_api import start_api_custody
+            from butlers.core.mcp_urls import canonical_runtime_mcp_url
+
+            info = get_mcp_manager().get_connection_info("switchboard")
+            if info is not None:
+                runtime = await start_api_custody(
+                    app.state.owner_auth_service, canonical_runtime_mcp_url(info.sse_url)
+                )
+                app.state.custody_runtime = runtime
+                app.state.custody_browser_door = CustodyBrowserDoor(runtime.producer)
+    except Exception:
+        # No credentials, source wire, URL or driver diagnostics here.
+        logger.warning("Custody browser command service unavailable")
+    finally:
+        discard_api_parent_channel()
 
     # Check infra creds for known-default values (A4 indicator: infra_creds_insecure_default).
     # Dev posture: warns loudly per credential.  Hardened posture: raises RuntimeError.
@@ -611,11 +634,34 @@ async def lifespan(app: FastAPI):
         external_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await external_deadman_task
-    if app.state.owner_auth_service is not None:
-        await close_owner_auth_service(app.state.owner_auth_service)
-        app.state.owner_auth_service = None
     await shutdown_db_manager()
     await shutdown_dependencies()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Close custody/auth allocations even when a later startup step fails."""
+    try:
+        async with _application_lifespan(app):
+            yield
+    finally:
+        from butlers.core.custody_api import discard_api_parent_channel
+
+        discard_api_parent_channel()
+        door = getattr(app.state, "custody_browser_door", None)
+        app.state.custody_browser_door = None
+        runtime = getattr(app.state, "custody_runtime", None)
+        app.state.custody_runtime = None
+        service = getattr(app.state, "owner_auth_service", None)
+        app.state.owner_auth_service = None
+        if door is not None:
+            door.close()
+        try:
+            if runtime is not None:
+                await runtime.stop()
+        finally:
+            if service is not None:
+                await close_owner_auth_service(service)
 
 
 def create_app(
@@ -750,6 +796,7 @@ def create_app(
     app.include_router(ingestion_events_router)
     app.include_router(ingestion_rollup_router)
     app.include_router(identity_router)
+    app.include_router(endpoint_custody_router)
     app.include_router(ingestion_connectors_router)
     app.include_router(ingestion_pipeline_router)
     app.include_router(priority_contacts_router)

@@ -1,0 +1,251 @@
+{
+  "status": "SOURCE engineering result-carrier refinement; runtime/SQL/native integration NOT PROVEN",
+  "governing_input": {
+    "path": "/home/orca/orca/projects/butlers/.tmp/beads-coordinator/custody-p1c-literal-preserving-high-retained/corrected-protocol-interface-and-schema.json",
+    "sha256": "9914e61d35f559b0f1c28852cd491e583ed045ccb0e0f8db515399feab299a91",
+    "retained_manifest_sha256": "be13514f7a52bf817e182e4d0c976c9603e6bcefe28dccbb4ade0d2ae418ad2e"
+  },
+  "source_schema_version": "custody-source.v1",
+  "wire_version": "custody-wire.v1",
+  "full_before_interface_abi": [
+    {
+      "signature": "public.custody_anchor_begin()",
+      "result": "inert short-lived proposal",
+      "proposed_admission": "existing runtime/auth/connector capability EXEC proposed",
+      "checks": "DB reads caller backend/login/effective role; zero scopes/hold effects"
+    },
+    {
+      "signature": "custody_admission.host_enroll(manifest jsonb)",
+      "result": "process_id+bounded enrollment receipt",
+      "proposed_admission": "Existing trusted Tier0 administrative startup authority only, with fixed owning config/entrypoint; no active SET ROLE or runtime/API capability EXEC. Not a new OS actor/privilege.",
+      "checks": "Actual dedicated backend_start/begin challenge, configured actor/role/source/audience scopes from owning startup; live backend verified independently. Source adapter and startup are trusted code, not hostile-process authentication. No caller DTO/self-enrollment; restricted API uses existing host administrative helper."
+    },
+    {
+      "signature": "custody_admission.host_revoke(process_id uuid, expected_control_epoch bigint)",
+      "result": "bounded revocation receipt",
+      "proposed_admission": "ONLY same host authority",
+      "checks": "current auth/control lock first, expected epoch CAS; invalidate process/connections/calls"
+    },
+    {
+      "signature": "public.custody_anchor_renew()",
+      "result": "bounded lease",
+      "proposed_admission": "only actual live enrolled anchor with its fixed operation scope",
+      "checks": "server backend_start, source process/control/restore epoch; no supplied process principal"
+    },
+    {
+      "signature": "public.custody_connection_begin()",
+      "result": "inert writer nonce",
+      "proposed_admission": "proposed exact relevant runtime/auth/connector EXEC",
+      "checks": "same actual writer backend tuple+role; no source scope or hold authority"
+    },
+    {
+      "signature": "public.custody_bind_connection(writer_nonce text)",
+      "result": "bounded bound identity",
+      "proposed_admission": "Dedicated enrolled anchor invoked only by constructor-fixed trusted owning adapter on its actual pool acquisition",
+      "checks": "Actual same owning adapter acquisition object/backend/role and server nonce; no model/public nonce-forwarding entrypoint. Finite lease/current epoch; no kernel-identity claim."
+    },
+    {
+      "signature": "public.custody_connection_finish(writer_nonce text)",
+      "result": "bounded current writer identity plus acquisition_generation",
+      "proposed_admission": "same writer connection that began the nonce",
+      "checks": "server actual backend tuple+role and anchor result; consume nonce"
+    },
+    {
+      "signature": "public.custody_source_register(source_family text, projection jsonb)",
+      "result": "immutable source projection ref/digest",
+      "proposed_admission": "only bound owning-source adapter/backend within host-enrolled source family",
+      "checks": "own canonical source-row read is required; not a generic model-facing MCP registration; no caller body/actor upgrade; provider_inventory branch reads actual owning account/config/binding row and enrollment/owner-association source, serializes control -> (owner,provider) inventory -> sorted affected targets -> source, versions complete contributor/member projections; caller cannot assert owner/provider/completeness or edit immutable history"
+    },
+    {
+      "signature": "public.custody_mint(source_ref uuid, operation jsonb, destination_actor text)",
+      "result": "call_ref+operation_digest+original expiry; exact stable mint_request_id retry returns same immutable record",
+      "proposed_admission": "only bound owning source backend",
+      "checks": "projection digest/version, closed operation/body/target/gen, host scopes and current destination; source_ref is locator not authority; closed operation includes inert mint_request_id, canonical method/body or owned content digest; server assigns call_id then finalizes full call digest, source independently checks returned binding; ID/body mismatch refuses"
+    },
+    {
+      "signature": "public.custody_challenge(call_ref uuid, operation_digest text)",
+      "result": "short-lived challenge ref",
+      "proposed_admission": "actual enrolled target anchor",
+      "checks": "source/dest live current backend/control/restore/audience; bounded no trust from HTTP string"
+    },
+    {
+      "signature": "public.custody_respond(call_ref uuid, challenge_ref text)",
+      "result": "armed response receipt",
+      "proposed_admission": "only original enrolled minting anchor",
+      "checks": "same origin process/backend incarnation, target challenge, digest/expiry"
+    },
+    {
+      "signature": "public.custody_verify(call_ref uuid, challenge_ref text, operation_digest text)",
+      "result": "bounded verified projection/ref, never permanent command auth",
+      "proposed_admission": "actual bound receiving writer/anchor whose current destination owns audience",
+      "checks": "armed exact call, live source/destination, body digest and epochs; repeat inside business transaction"
+    },
+    {
+      "signature": "public.custody_commit_command(command_id uuid, call_ref uuid)",
+      "result": "bounded committed/refused/unknown result",
+      "proposed_admission": "bound admitted Switchboard custody engine only, with exact source-owned command",
+      "checks": "private current auth/control FIRST; provider inventory scope next if applicable; sorted complete targets including issuer; command/call/question/source; case/evidence/required receipt in SAME transaction. Disjoint browser/host/security_answer/endpoint_lock proof, exact digest/version/gen/current clock; endpoint_lock hold-only"
+    },
+    {
+      "signature": "public.custody_admit_write(source_ref uuid, operation text, target_set jsonb)",
+      "result": "bounded current source/hold-generation result plus locks",
+      "proposed_admission": "bound current owning domain writer only",
+      "checks": "current custody control then sorted targets, real writer txn; preserve own-schema RLS/actual write after result, no provider I/O in txn"
+    },
+    {
+      "signature": "public.custody_result_read(command_id uuid, call_ref uuid)",
+      "result": "fixed safe status/result locator",
+      "proposed_admission": "current bound exact audience plus owning auth where sensitive",
+      "checks": "same durable command read only; never reauthorize mutation or disclose private source"
+    },
+    {
+      "signature": "dashboard_auth.custody_prepare(operation text, proof jsonb, selection jsonb)",
+      "result": "immutable private auth-command ID",
+      "proposed_admission": "existing genuinely restricted API login under dashboard_auth_api plus actual current session/CSRF",
+      "checks": "same source-owned controller; configured header/background actor alone excluded; no host/raw hold permission"
+    },
+    {
+      "signature": "dashboard_auth.custody_check_locked(command_id uuid, expected_operation_digest text)",
+      "result": "private locked bounded verdict",
+      "proposed_admission": "only fixed custody engine definer, no runtime/API direct EXEC",
+      "checks": "Browser-only private current singleton/session/CSRF/epoch/origin/expiry verdict held in committing transaction; host branch checks host/control separately; security_answer branch checks its own private question/current source under same global lock order and never fabricates browser/host proof. Revocation writers share first lock.; endpoint_lock uses separate P1 accepted-source/owner-resolution branch under same global lock, no session/CSRF/credential fiction. Existing browser/host restrictions unchanged."
+    },
+    {
+      "signature": "dashboard_auth.custody_host_prepare(operation text, exact_selection jsonb)",
+      "result": "host command ID",
+      "proposed_admission": "existing separately authorized trusted Tier0 host operation only",
+      "checks": "current host/control identity, expected set/gen, no API-role RESET ROLE path"
+    },
+    {
+      "signature": "protected MCP custody.challenge envelope v1",
+      "result": "safe challenge/refusal",
+      "proposed_admission": "registered outer proxy only",
+      "checks": "before generic instrumentation; strict 8KiB closed envelope, DB derived target identity"
+    },
+    {
+      "signature": "protected MCP custody.apply envelope v1",
+      "result": "safe result/reference",
+      "proposed_admission": "real registered custody source-owned business proxy",
+      "checks": "actual online response+body digest; local ContextVar set by guard only; final transaction repeats all current checks"
+    },
+    {
+      "signature": "public.custody_connection_unbind(acquisition_generation bigint)",
+      "result": "bounded released|already_released for same writer incarnation/generation",
+      "proposed_admission": "actual bound writer connection only",
+      "checks": "server backend_start and exact acquisition generation; clears binding before pool return. Failure discards/terminates connection and owning adapter fences its binding; no reusable unchecked checkout"
+    },
+    {
+      "signature": "custody_admission.host_revoke_control(expected_control_epoch bigint)",
+      "result": "bounded current control revocation/next-epoch receipt",
+      "proposed_admission": "Only configured existing Tier0 administrative control path, not active SET ROLE or ordinary runtime/API EXEC; no new host launch privilege",
+      "checks": "auth singleton then custody control first; expected epoch CAS; fence enrollments/connections/calls without clearing hold/history or silently restoring ready"
+    },
+    {
+      "signature": "custody_admission.security_answer_prepare(question_id uuid, callback_source_ref uuid, answer text, token_digest text)",
+      "result": "immutable private security_answer command ID or same admitted command receipt",
+      "proposed_admission": "only fixed custody engine definer after actual registered protected callback guard; no direct runtime/API/connector EXEC",
+      "checks": "reads own genuine callback projection and private question; exact sent current owner recipient, token/verb/event/target version/generation/expiry. Locks auth/control first, sorted targets second, command/call/question third; no release/replaced/session revoke authority. Final business commit repeats current source checks and consumes decision atomically.; unresolved affected account uses the actual closed complete current owner-associated provider inventory/version from proven event provider; unknown/incomplete inventory records truthful NO/case/evidence with containment unknown, never partial all-held or receiver-account guess"
+    },
+    {
+      "signature": "public.custody_mark_provider_start(source_ref uuid, call_ref uuid, operation_digest text)",
+      "result": "bounded admitted|already_started|refused|unknown and owning stable effect receipt",
+      "proposed_admission": "only bound actual egress-owning registered adapter at current writer transaction",
+      "checks": "source canonical effect_id/method/content/account/recipient/target-set/gen/current lease/control under control→sorted targets→call/effect locks; unique stable effect ID across remints. Commit marker before I/O; prior possible start never starts again. Use existing approval/voice marker when available; only missing ordinary custody paths add minimal admission metadata."
+    },
+    {
+      "signature": "custody_admission.endpoint_lock_prepare(source_ref uuid, selection jsonb)",
+      "result": "immutable private endpoint_lock command ID or same exact replay receipt",
+      "proposed_admission": "fixed admitted Switchboard engine definer only after registered accepted-source guard; NO direct runtime/API/connector EXEC",
+      "checks": "P1 genuine canonical accepted row/current unambiguous owner resolution/unheld issuer/explicit LOCK intent; exact set/version/generations/original expiry/current control; assurance owner_resolved_unauthenticated. Hold ONLY, no browser/host/session/CSRF fiction, release/replaced/steering/approval/revoke forbidden. SAME commit rechecks complete current source and sorted target locks."
+    }
+  ],
+  "affected_before_complete": [
+    {
+      "signature": "public.custody_source_register(source_family text, projection jsonb)",
+      "result": "immutable source projection ref/digest",
+      "proposed_admission": "only bound owning-source adapter/backend within host-enrolled source family",
+      "checks": "own canonical source-row read is required; not a generic model-facing MCP registration; no caller body/actor upgrade; provider_inventory branch reads actual owning account/config/binding row and enrollment/owner-association source, serializes control -> (owner,provider) inventory -> sorted affected targets -> source, versions complete contributor/member projections; caller cannot assert owner/provider/completeness or edit immutable history"
+    },
+    {
+      "signature": "public.custody_mint(source_ref uuid, operation jsonb, destination_actor text)",
+      "result": "call_ref+operation_digest+original expiry; exact stable mint_request_id retry returns same immutable record",
+      "proposed_admission": "only bound owning source backend",
+      "checks": "projection digest/version, closed operation/body/target/gen, host scopes and current destination; source_ref is locator not authority; closed operation includes inert mint_request_id, canonical method/body or owned content digest; server assigns call_id then finalizes full call digest, source independently checks returned binding; ID/body mismatch refuses"
+    }
+  ],
+  "affected_after": [
+    {
+      "signature": "public.custody_source_register(source_family text, projection jsonb)",
+      "result_fields": [
+        "source_ref",
+        "source_digest",
+        "projection"
+      ],
+      "result_semantics": "Exact immutable compiled projection and its canonical SHA-256. Source-owned process checks canonical source fields; bounded result is not a resolver DTO or model-facing authority. Existing admission/checks preserved; accepted_ingress requires locked unique actual own inbox row, revision1, immutable original digest and explicit selection, protected current binding metadata and original replay expiry."
+    },
+    {
+      "signature": "public.custody_mint(source_ref uuid, operation jsonb, destination_actor text)",
+      "result_fields": [
+        "call_ref",
+        "operation_digest",
+        "expires_at",
+        "binding"
+      ],
+      "binding_fields": [
+        "call_ref",
+        "source_ref",
+        "source_digest",
+        "issuer_process",
+        "destination_process",
+        "destination_actor",
+        "operation",
+        "control_epoch",
+        "restore_epoch",
+        "expires_at"
+      ],
+      "result_semantics": "Source independently recomputes digest and compares own committed source digest, retained enrollment receipt, fixed destination actor and exact operation. Existing online registered challenge and final same-writer current COMMIT checks remain required. Same stable mint_request_id reconstructs SAME original binding and expiry."
+    }
+  ],
+  "unchanged_names_signatures_count": 25,
+  "no_new_public_selector": true,
+  "proof_limits": [
+    "Value controls are software integrity only.",
+    "Native accepted birth/work and selected owning API/publisher hooks are source implementations with positioned software controls; real migrated role/currentness/rollback, complete writer universe, full native target inventory and supported deployment proof remain UNPROVEN and locally UNRUN.",
+    "No synthetic projection/resolver DTO is current-generation or native source proof.",
+    "Bare LOCK and natural-language selection flow are required; exact-ID capture cannot substitute.",
+    "All five original criteria/fifteen slices remain UNMET."
+  ],
+  "owner_command_source_compilation": {
+    "before": "Private Python producer read public.entities under its owning role and nominated the owner in the command source projection; that reader is unavailable to the restricted dashboard role.",
+    "after": "Existing source_register requires a null nominated owner for owner_command/host_command, rechecks its actual prepared command/current auth, derives exactly one current canonical owner inside the installed engine and returns the closed compiled projection/reference/digest. Producer independently checks all unchanged selection fields. No public SELECT or new grant; no new public ABI/version."
+  },
+  "host_enrollment_receipt_refinement": {
+    "signature": "custody_admission.host_enroll(manifest jsonb)",
+    "before": "process_id + bounded enrollment receipt",
+    "after": "Existing receipt also returns server-observed login_oid/database_oid/anchor_pid/anchor_backend_start; no incoming identity selector is added. Parent freezes configured existing restricted login before spawning child, independently reads its role OID and compares the returned actual nonce-bound login before releasing the receipt. Engine additionally refuses dashboard anchors reachable to administrative/unrelated roles or host EXEC. Identity metadata are locators/lifecycle witnesses, never scopes or authentication by themselves. Same-UID host compromise remains outside the adopted trusted-host premise."
+  },
+  "writer_only_constructor_allocation": {
+    "before": "Runtime constructors enrolled receiving/source profiles. API canonical pool writers had no custody allocation; direct public entity writes could leave a current projection unchanged.",
+    "after": "Fixed schema-scoped Relationship API constructor enrolls its actual existing pool/login against existing butler_relationship_rw. Exact domain_evidence source scope, empty operations and audiences. SQL accepts only identity_binding publication for that empty scope; excludes it from receiving-incarnation counts, while every nonempty overlapping receiver remains a conflict. Native writers enter control-first before actual domain locks, publish old/new selectors in the same transaction, acknowledge COMMIT then UNBIND then explicit RESET ROLE; ambiguous cleanup discards. Allocation remains refusal-only until actual pool close. Fixed startup additionally allocates its actual credential shared pool in the SAME configured database, with identical zero-operation source policy; native Google/Steam hard delete and Google companion role UPSERT publish before SAME COMMIT, while ordinary reads/soft disconnect and post-COMMIT revocation retain existing behavior.",
+    "unchanged": "All reviewed 25 names/signatures and custody-source.v1/custody-wire.v1; no request role/actor/profile selector, new LOGIN, grant, credential, signer, privileged container or same-UID isolation claim.",
+    "proof_limits": "Software-only causal controls passed for named scope; authored real PostgreSQL API/startup/currentness/rollback controls UNRUN. Complete native universe, producer dispatch, foreign interface union, independent supported deployment and all five original groups remain UNMET."
+  },
+  "installed_function_definition_count": 55,
+  "installed_definition_namespaces": {
+    "custody_admission": 37,
+    "public": 15,
+    "dashboard_auth": 3
+  },
+  "accepted_work_private_helper": {
+    "signature": "custody_admission.accepted_work(action text,payload jsonb)",
+    "before": "Native INSERT stamped accepted birth but had no durable post-acceptance dispatch/reconciliation work record.",
+    "after": "Native bound INSERT atomically creates metadata-only accepted work in the SAME inbox/event transaction. Existing trusted host fixed helper claims the original record with a finite lease, preserves immutable prepared source/command and expiry, commits attempt before registered MCP I/O and reconciles actual owning receipt. Expired attempted work with no receipt becomes UNKNOWN, never resend. Resolver unavailable preserves claim until bounded recovery/expiry; selection status is not question/case delivery.",
+    "authority": "Private fixed startup helper only; no runtime EXEC/table grants, public trust selector, new role/login/credential or generic delivery bus.",
+    "proof_limits": "Positioned software attempt-ACK bypass RED/restored PASS; real migrated controls authored and collected only, UNRUN. Mandatory full native source/provider/topology and original outcomes remain UNMET."
+  },
+  "remaining_delivery_deficits": [
+    "Generic Memory public metadata mutations on non-Relationship pools are not covered; restoration must not relink old admitted source.",
+    "Native B provider-start and routing/egress enforcement is uninstalled; held command receipt is not whole containment.",
+    "Remaining B/C/D, original five criteria/fifteen slices, 11REQ55/V1-V11 and foreign genuine auth/restored-history obligations remain mandatory and UNMET."
+  ]
+}

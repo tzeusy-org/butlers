@@ -38,6 +38,14 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "core",
         "direct",
+        "custody.challenge custody.apply",
+        presentable=False,
+        posture="eager",
+        namespace="custody",
+    ),
+    *_declare(
+        "core",
+        "direct",
         "route.execute",
         presentable=False,
         posture="eager",
@@ -439,6 +447,12 @@ TOOL_PRESENTATION_INVENTORY = (
         "lifestyle",
         "taste",
         "taste_add_verdict taste_backfill_ledger taste_get_summary taste_get_work taste_list_works",
+    ),
+    *_declare(
+        "relationship",
+        "contacts",
+        "identity_resolve_channels",
+        presentable=False,
     ),
     *_declare(
         "relationship",

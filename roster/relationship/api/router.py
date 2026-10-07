@@ -31,6 +31,7 @@ from butlers.api.deps import (
     get_mcp_manager,
 )
 from butlers.core import entity_graph_edges
+from butlers.core.custody_bindings import native_channel_mutation, native_entity_write
 from butlers.credential_store import assert_entity_info_secured
 from butlers.identity import channel_value_for_storage
 from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
@@ -1606,7 +1607,7 @@ async def promote_entity(
             except ValueError:
                 pass  # the writer's own validation reports a malformed object id
 
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, native_channel_mutation(pool, conn, batch_entity_ids):
         async with conn.transaction():
             # Lock order (bu-ab0zys, bu-7s41je): entity rows before fact rows, in
             # ascending id order ACROSS the whole request. Each writer call below
@@ -4834,15 +4835,22 @@ async def delete_entity_contact(
     fact_id: UUID = target_row["id"]
 
     # Exact-id lifecycle change: the row's effective packet is left as stored.
-    await pool.execute(
+    outcome = await native_entity_write(
+        pool,
+        [entity_id],
+        "execute",
         """
         UPDATE relationship.entity_facts
         SET validity   = 'retracted',
             updated_at = now()
-        WHERE id = $1
+        WHERE id = $1 AND subject = $2
         """,
         fact_id,
+        entity_id,
+        _fact_id=fact_id,
     )
+    if outcome == "UPDATE 0":
+        raise HTTPException(status_code=409, detail="Contact fact changed; reload the entity")
 
     return DeleteContactResponse(deleted=True, fact_id=fact_id)
 
@@ -4899,15 +4907,22 @@ async def verify_entity_contact(
     fact_id: UUID = target_row["id"]
 
     # Exact-id verification: the row's effective packet is left as stored.
-    await pool.execute(
+    outcome = await native_entity_write(
+        pool,
+        [entity_id],
+        "execute",
         """
         UPDATE relationship.entity_facts
         SET verified   = true,
             updated_at = now()
-        WHERE id = $1
+        WHERE id = $1 AND subject = $2
         """,
         fact_id,
+        entity_id,
+        _fact_id=fact_id,
     )
+    if outcome == "UPDATE 0":
+        raise HTTPException(status_code=409, detail="Contact fact changed; reload the entity")
 
     return MarkContactVerifiedResponse(verified=True, fact_id=fact_id)
 
@@ -5064,7 +5079,7 @@ async def update_entity_contact(
             self.result = inner_result
 
     try:
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, native_channel_mutation(pool, conn, [entity_id]):
             async with conn.transaction():
                 # 0. Entity row before any fact row (bu-ab0zys lock order): the
                 # relock below takes a fact lock and the writer then inserts.
@@ -5652,7 +5667,7 @@ async def forget_entity(
     if row is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, native_channel_mutation(pool, conn, [entity_id]):
         async with conn.transaction():
             # Retract every active occurrence where this entity is subject or
             # object -- deliberately all of them, each keeping its effective

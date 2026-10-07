@@ -48,6 +48,46 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import tasks as _tasks
     from butlers.tools.relationship import vcard as _vcard
 
+    # Fixed owning resolver. DTO fields remain locators; only the private
+    # constructor publisher can record current binding in the SAME transaction.
+    # This additive baseline hook is serialized with .2's REQUEST-only resolver
+    # at delivery; no peer source or FactWriteContext supplies custody privilege.
+    @_tool("contacts")
+    async def identity_resolve_channels(channel_type: str, channel_values: list[str]) -> dict:
+        """Resolve up to 256 channel values through the owning canonical identity query.
+
+        Returns the minimized contact fields or null per value. Ambiguous or
+        unknown mappings remain unavailable; no binding generation, source
+        token, entity birth witness or authentication proof is returned.
+        """
+        from butlers.core.custody_bindings import owning_binding_publisher
+        from butlers.identity import resolve_contacts_by_channel_bulk
+
+        if not channel_type or len(channel_type) > 64 or len(channel_values) > 256:
+            raise ValueError("invalid identity lookup batch")
+        if any(not value or len(value) > 1024 for value in channel_values):
+            raise ValueError("invalid channel identifier")
+        if not channel_values:
+            return {}  # Empty read is not a binding observation or source grant.
+        pool = module._get_pool()
+        publisher = owning_binding_publisher(pool)
+        if publisher is not None:
+            return await publisher.observe_channels(channel_type, channel_values)
+        resolved = await resolve_contacts_by_channel_bulk(
+            pool, [(channel_type, value) for value in channel_values], raise_on_error=True
+        )
+        return {
+            value: None
+            if contact is None
+            else {
+                "name": contact.name,
+                "roles": list(contact.roles),
+                "entity_id": None if contact.entity_id is None else str(contact.entity_id),
+                "is_unidentified": contact.is_unidentified,
+            }
+            for (_, value), contact in resolved.items()
+        }
+
     # =================================================================
     # Address tools (group: contacts_extended)
     # =================================================================

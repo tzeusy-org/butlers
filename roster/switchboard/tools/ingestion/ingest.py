@@ -47,6 +47,7 @@ from opentelemetry import metrics as otel_metrics
 from pydantic import BaseModel, ConfigDict
 
 from butlers.core.account_security_events import classify_ingest_record, publish_security_event
+from butlers.core.custody_producer import native_ingest_writer
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
@@ -977,7 +978,11 @@ async def ingest_v1(
     )
 
     try:
-        async with pool.acquire() as conn:
+        # Constructor-owned custody admission, when installed, takes auth and
+        # control FIRST on this exact acquired writer. The existing transaction
+        # is then a savepoint; inbox birth and the canonical ingestion event
+        # either commit together or both roll back. Partition DDL stays outside.
+        async with pool.acquire() as conn, native_ingest_writer(pool, conn):
             async with conn.transaction():
                 # Serialise concurrent inserts for the same dedupe_key
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedupe_key)

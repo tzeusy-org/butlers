@@ -116,8 +116,12 @@ async def run_startup(daemon: Any) -> None:
     if daemon.db is None:
         daemon.db = Database.from_env(daemon.config.db_name)
         daemon.db.set_schema(daemon.config.db_schema)
-        if daemon.config.db_schema:
-            daemon.db.role = f"butler_{daemon.config.db_schema}_rw"
+        # Legacy no-schema configuration still uses its existing owning role,
+        # never the trusted connecting identity as a model/domain writer.
+        # connect() must prove this role exists; custody creates no role or
+        # membership and never falls back to a connecting-login verdict.
+        daemon.db.role = f"butler_{daemon.config.db_schema or daemon.config.name}_rw"
+        daemon.db.strict_role_enforcement = True
         await daemon.db.provision()
         pool = await daemon.db.connect()
     else:
@@ -185,6 +189,11 @@ async def run_startup(daemon: Any) -> None:
     # Only validate credentials for modules that haven't already failed (e.g. from
     # migration errors), to avoid redundant DB queries and overwriting earlier failure
     # statuses with spurious credential failures.
+    # The actual run/up entrypoints share this lifecycle. Custody enrollment
+    # follows schema installation and precedes source/pipeline/runtime work.
+    from butlers.core.custody_lifecycle import start_daemon_custody
+
+    await start_daemon_custody(daemon)
     credential_store = await daemon._build_credential_store(pool)
     daemon._credential_store = credential_store
     active_module_creds_for_validation = {
@@ -500,6 +509,13 @@ async def run_startup(daemon: Any) -> None:
     # 15. Start FastMCP SSE server on configured port
     await daemon._start_mcp_server()
 
+    # Native accepted-source reconciliation starts only after the real MCP
+    # listener is ready. Its birth/work record already committed with ingress;
+    # registry/MCP I/O happens after protected claim/attempt transactions.
+    custody_runtime = getattr(daemon, "_custody_runtime", None)
+    if custody_runtime is not None:
+        custody_runtime.start_accepted_worker()
+
     # 15b. Warm up MCP endpoints (best-effort, non-blocking for daemon boot).
     # Fires initialize + tools/list against the butler's own endpoint (and any
     # extra endpoints) so the first real Codex spawn hits warm server-side
@@ -741,6 +757,9 @@ async def run_shutdown(daemon: Any) -> None:
         daemon._shared_credentials_db = None
 
     # 9. Close DB pool
+    from butlers.core.custody_lifecycle import stop_daemon_custody
+
+    await stop_daemon_custody(daemon)
     if daemon.db:
         await daemon.db.close()
 

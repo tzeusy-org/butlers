@@ -92,6 +92,8 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
         not by_name[name].llm_presentable
         for name in {
             "route.execute",
+            "custody.challenge",
+            "custody.apply",
             "cancel_session",
             "tick",
             "shutdown",
@@ -165,6 +167,8 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             "switchboard",
             ("switchboard_routing",),
             {
+                "custody.apply",
+                "custody.challenge",
                 "route.execute",
                 "cancel_session",
                 "answer_question",
@@ -179,7 +183,7 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
         (
             "switchboard",
             ("delegation",),
-            {"route.execute", "cancel_session"},
+            {"route.execute", "cancel_session", "custody.apply", "custody.challenge"},
             {"delegate_ask", "delegate_receive", "delegate_answer", "delegate_wake"},
         ),
     ),

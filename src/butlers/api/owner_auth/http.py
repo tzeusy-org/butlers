@@ -16,8 +16,14 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from butlers.api.owner_auth.config import OwnerAuthConfig
-from butlers.api.owner_auth.context import in_http_request, verified_http_principal
-from butlers.api.owner_auth.service import AuthError
+from butlers.api.owner_auth.context import (
+    CUSTODY_COMMAND_PREFIX,
+    OwnerCustodyProof,
+    in_http_request,
+    owner_custody_proof,
+    verified_http_principal,
+)
+from butlers.api.owner_auth.service import AuthError, _digest
 
 PREFIX = "/api/auth/owner"
 CEREMONY_ROUTES = {
@@ -175,6 +181,7 @@ class OwnerAuthMiddleware:
             return
         request_context = in_http_request.set(True)
         principal_context = verified_http_principal.set(None)
+        custody_context = owner_custody_proof.set(None)
         try:
             _single_headers(connection)
             service = getattr(scope["app"].state, "owner_auth_service", None)
@@ -225,7 +232,14 @@ class OwnerAuthMiddleware:
                         return
             if service is None:
                 raise _unavailable()
-            key = connection.headers.get("x-api-key")
+            custody_command = scope["type"] == "http" and (
+                path == CUSTODY_COMMAND_PREFIX or path.startswith(CUSTODY_COMMAND_PREFIX + "/")
+            )
+            # This dedicated browser command door always requires the real
+            # cookie/session + CSRF. Existing header precedence is unchanged on
+            # every other route. Configured-key owners use the existing session
+            # ceremony to obtain a cookie; a header alone is not this proof.
+            key = None if custody_command else connection.headers.get("x-api-key")
             token = _cookie(connection, self.config.owner_cookie)
             if key is None:
                 if token is None:
@@ -235,15 +249,34 @@ class OwnerAuthMiddleware:
                     raise AuthError("UNAUTHORIZED")
                 if not trusted_https(connection, self.config):
                     raise _unavailable()
-                if method not in _SAFE or scope["type"] == "websocket":
+                if custody_command or method not in _SAFE or scope["type"] == "websocket":
                     if connection.headers.get("origin") != self.config.origin:
                         raise _forbidden()
             authority = await service.authorize(
                 session_token=token,
                 api_key=key,
                 csrf_token=connection.headers.get("x-csrf-token"),
-                unsafe=method not in _SAFE,
+                unsafe=custody_command or method not in _SAFE,
             )
+            if custody_command:
+                csrf = connection.headers.get("x-csrf-token")
+                if (
+                    authority.method != "cookie"
+                    or not token
+                    or not csrf
+                    or not self.config.origin
+                    or not self.config.rp_id
+                ):
+                    raise _forbidden()
+                owner_custody_proof.set(
+                    OwnerCustodyProof(
+                        _digest(token),
+                        _digest(csrf),
+                        self.config.origin,
+                        self.config.rp_id,
+                        self.config.key_generation,
+                    )
+                )
             if path.startswith(PREFIX):
                 # Unknown auth methods/paths never fall into generic body audit.
                 raise _bad_request()
@@ -289,6 +322,7 @@ class OwnerAuthMiddleware:
             else:
                 await _error(exc)(scope, receive, send)
         finally:
+            owner_custody_proof.reset(custody_context)
             verified_http_principal.reset(principal_context)
             in_http_request.reset(request_context)
 

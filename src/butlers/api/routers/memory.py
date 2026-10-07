@@ -64,6 +64,7 @@ from butlers.api.models.memory import (
     UpdateRetentionPoliciesRequest,
 )
 from butlers.api.routers import audit as _audit
+from butlers.core.custody_bindings import native_entity_write
 from butlers.core.owner import fetch_owner_entity_id
 from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import is_rule_admitted
@@ -110,6 +111,13 @@ def _any_pool(db: DatabaseManager) -> object:
         except KeyError:
             continue
     raise HTTPException(status_code=503, detail="No database pools available")
+
+
+def _identity_writer_pool(db: DatabaseManager) -> object:
+    """Canonical Relationship pool for configured native identity mutations."""
+    if "relationship" in db.butler_names:
+        return db.pool("relationship")
+    return _any_pool(db)
 
 
 def _memory_schema_absent_at_start(db: DatabaseManager, butler_name: str) -> bool:
@@ -2295,7 +2303,7 @@ async def update_entity(
     """Update entity core fields (canonical_name, aliases, metadata merge)."""
     import uuid as _uuid
 
-    pool = _any_pool(db)
+    pool = _identity_writer_pool(db)
     eid = _uuid.UUID(entity_id)
 
     # Build SET clause dynamically from provided fields
@@ -2353,7 +2361,10 @@ async def update_entity(
 
     sets.append("updated_at = now()")
 
-    row = await pool.fetchrow(
+    row = await native_entity_write(
+        pool,
+        [eid],
+        "fetchrow",
         f"UPDATE public.entities SET {', '.join(sets)}"
         f" WHERE id = $1"
         f" RETURNING id, canonical_name, entity_type, aliases, roles,"
@@ -2410,7 +2421,7 @@ async def delete_entity(
     import uuid as _uuid
     from datetime import datetime
 
-    pool = _any_pool(db)
+    pool = _identity_writer_pool(db)
     eid = _uuid.UUID(entity_id)
 
     row = await pool.fetchrow(
@@ -2494,7 +2505,10 @@ async def delete_entity(
             )
 
     deleted_at = datetime.now(UTC).isoformat()
-    await pool.execute(
+    await native_entity_write(
+        pool,
+        [eid],
+        "execute",
         "UPDATE public.entities"
         " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
         " updated_at = now()"
@@ -2524,7 +2538,7 @@ async def archive_entity(
     import uuid as _uuid
     from datetime import datetime
 
-    pool = _any_pool(db)
+    pool = _identity_writer_pool(db)
     eid = _uuid.UUID(entity_id)
 
     row = await pool.fetchrow(
@@ -2543,7 +2557,10 @@ async def archive_entity(
         return  # Already archived — idempotent
 
     archived_at = datetime.now(UTC).isoformat()
-    await pool.execute(
+    await native_entity_write(
+        pool,
+        [eid],
+        "execute",
         "UPDATE public.entities"
         " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
         " updated_at = now()"
@@ -2566,7 +2583,7 @@ async def unarchive_entity(
     """Restore an archived entity by removing metadata.archived_at."""
     import uuid as _uuid
 
-    pool = _any_pool(db)
+    pool = _identity_writer_pool(db)
     eid = _uuid.UUID(entity_id)
 
     row = await pool.fetchrow(
@@ -2576,7 +2593,10 @@ async def unarchive_entity(
     if row is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
-    await pool.execute(
+    await native_entity_write(
+        pool,
+        [eid],
+        "execute",
         "UPDATE public.entities"
         " SET metadata = metadata - 'archived_at',"
         " updated_at = now()"
@@ -2610,12 +2630,15 @@ async def promote_entity(
     """
     import uuid as _uuid
 
-    pool = _any_pool(db)
+    pool = _identity_writer_pool(db)
     eid = _uuid.UUID(entity_id)
 
     # Atomically promote: only update if the entity is currently unidentified.
     # A single conditional UPDATE avoids the TOCTOU race between SELECT and UPDATE.
-    updated_row = await pool.fetchrow(
+    updated_row = await native_entity_write(
+        pool,
+        [eid],
+        "fetchrow",
         "UPDATE public.entities"
         " SET metadata = metadata - 'unidentified',"
         " updated_at = now()"
