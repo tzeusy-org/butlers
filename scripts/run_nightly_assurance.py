@@ -30,6 +30,126 @@ from butlers.nightly_assurance import (
 
 MARKERS = "not bench and not perf and not nightly and not pg_clock and not faketime_fragile"
 EXACT_NODES = EXACT_IMAGE_FUNCTIONS
+CLOCK_FAILURE_STAGES = frozenset(
+    {
+        "entry",
+        "import-datetime",
+        "import-json",
+        "import-time",
+        "monotonic-start",
+        "wall-reading",
+        "sleep",
+        "wall-format",
+        "monotonic-end",
+        "serialization",
+        "write",
+    }
+)
+CLOCK_FAILURE_KINDS = frozenset(
+    {
+        "import-error",
+        "attribute-error",
+        "name-error",
+        "type-error",
+        "value-error",
+        "overflow-error",
+        "os-error",
+        "memory-error",
+        "runtime-error",
+        "system-exit",
+        "keyboard-interrupt",
+        "other-exception",
+    }
+)
+# The success program retains the original readings, order and three-key wire.
+# Failure formatting cannot depend on json/time/datetime imports succeeding.
+CLOCK_PROGRAM = """
+stage = 'entry'
+try:
+    stage = 'import-datetime'
+    import datetime
+    stage = 'import-json'
+    import json
+    stage = 'import-time'
+    import time
+    stage = 'monotonic-start'
+    s = time.monotonic()
+    stage = 'wall-reading'
+    w = datetime.datetime.now(datetime.UTC)
+    stage = 'sleep'
+    time.sleep(.05)
+    stage = 'wall-format'
+    wall = w.isoformat()
+    stage = 'monotonic-end'
+    elapsed = time.monotonic() - s
+    stage = 'serialization'
+    payload = json.dumps({'wall': wall, 'monotonic_start': s, 'monotonic_delta': elapsed})
+    stage = 'write'
+    print(payload)
+except BaseException as error:
+    kind = 'other-exception'
+    for exception, label in (
+        (ImportError, 'import-error'), (AttributeError, 'attribute-error'),
+        (NameError, 'name-error'), (TypeError, 'type-error'),
+        (ValueError, 'value-error'), (OverflowError, 'overflow-error'),
+        (OSError, 'os-error'), (MemoryError, 'memory-error'),
+        (RuntimeError, 'runtime-error'), (SystemExit, 'system-exit'),
+        (KeyboardInterrupt, 'keyboard-interrupt'),
+    ):
+        if isinstance(error, exception):
+            kind = label
+            break
+    number = getattr(error, 'errno', None)
+    if type(number) is not int or not 0 <= number <= 4095:
+        number = None
+    capsule = ('{"format":"clock-child-failure-v1","stage":"' + stage
+               + '","exception_kind":"' + kind + '","errno":'
+               + (str(number) if number is not None else 'null') + '}')
+    try:
+        print(capsule, flush=True)
+    except BaseException:
+        pass  # A lost diagnostic cannot replace the authoritative failure.
+    raise SystemExit(1) from None
+"""
+
+
+def clock_failure_capsule(output: object) -> dict | None:
+    """Parse only a bounded whole closed capsule; never reflect other child bytes."""
+    if not isinstance(output, bytes) or len(output) > 512:
+        return None
+
+    def unique_pairs(pairs: list[tuple]) -> dict:
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate-clock-capsule-field")
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(output, object_pairs_hook=unique_pairs)
+        if not isinstance(value, dict) or set(value) != {
+            "format",
+            "stage",
+            "exception_kind",
+            "errno",
+        }:
+            return None
+        if (
+            value["format"] != "clock-child-failure-v1"
+            or type(value["stage"]) is not str
+            or value["stage"] not in CLOCK_FAILURE_STAGES
+            or type(value["exception_kind"]) is not str
+            or value["exception_kind"] not in CLOCK_FAILURE_KINDS
+            or (
+                value["errno"] is not None
+                and (type(value["errno"]) is not int or not 0 <= value["errno"] <= 4095)
+            )
+        ):
+            return None
+        return {"available": True, **value}
+    except (ValueError, TypeError, UnicodeError):
+        return None
 
 
 def command(variant: str) -> list[str]:
@@ -111,11 +231,7 @@ def clock_conformance(
         # A hostile value cannot turn a fixed witness into unbounded data.
         witness[name] = round(value, 6) if math.isfinite(value) and abs(value) <= 604800 else None
 
-    script = (
-        "import datetime,json,time; s=time.monotonic(); w=datetime.datetime.now(datetime.UTC);"
-        "time.sleep(.05); print(json.dumps({'wall':w.isoformat(),"
-        "'monotonic_start':s,'monotonic_delta':time.monotonic()-s}))"
-    )
+    script = CLOCK_PROGRAM
     parent_monotonic = time.monotonic()
     parent_wall = datetime.now(UTC)
 
@@ -123,6 +239,9 @@ def clock_conformance(
         # Diagnose the launcher without changing the failed admission verdict.
         # Child bytes exist only in memory; a fixed indicator is an observation,
         # not proof that the named component or phrase is the underlying cause.
+        witness["child_program_failure"] = clock_failure_capsule(error.stdout) or {
+            "available": False
+        }
         streams = (error.stdout, error.stderr)
         bounded = all(value is None or isinstance(value, bytes) for value in streams) and all(
             len(value or b"") <= 16384 for value in streams
@@ -162,6 +281,9 @@ def clock_conformance(
             )
             if child.returncode:
                 direct["result"] = "child-nonzero"
+                direct["child_program_failure"] = clock_failure_capsule(child.stdout) or {
+                    "available": False
+                }
                 return
             observed = observation_from(child, "direct")
             request = environment["FAKETIME"]

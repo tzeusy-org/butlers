@@ -349,6 +349,152 @@ def test_nightly_evidence_replay_privacy_and_host_command_boundary(tmp_path, mon
         assert all(
             word not in json.dumps(diagnostic) for word in ("private-output", "private-error")
         )
+    # Execute the actual fixed program at every controlled exception stage.
+    # Imported primitives are substituted; physical child/library proof is
+    # separate, and the successful three-field wire remains unchanged.
+    import builtins
+    from types import SimpleNamespace
+
+    reached = set()
+    for failed_stage in ("positive", *sorted(runner.CLOCK_FAILURE_STAGES - {"entry"})):
+        captured = []
+        monotonic_calls = 0
+
+        class Wall:
+            def isoformat(self):
+                if failed_stage == "wall-format":
+                    raise ValueError("private-error")
+                return sample["wall"]
+
+        class ChildDatetime:
+            @staticmethod
+            def now(tz):
+                if failed_stage == "wall-reading":
+                    raise OverflowError("private-error")
+                return Wall()
+
+        def child_monotonic():
+            nonlocal monotonic_calls
+            monotonic_calls += 1
+            if failed_stage == ("monotonic-start" if monotonic_calls == 1 else "monotonic-end"):
+                raise OSError(22, "private-error")
+            return 11.0 if monotonic_calls == 1 else 11.05
+
+        def child_sleep(seconds):
+            assert seconds == 0.05
+            if failed_stage == "sleep":
+                raise OSError(22, "private-error")
+
+        def child_dumps(value):
+            if failed_stage == "serialization":
+                raise TypeError("private-error")
+            return json.dumps(value)
+
+        def child_import(name, *args, **kwargs):
+            if failed_stage == "import-" + name:
+                raise ImportError("private-error")
+            return {
+                "datetime": SimpleNamespace(datetime=ChildDatetime, UTC=UTC),
+                "json": SimpleNamespace(dumps=child_dumps),
+                "time": SimpleNamespace(monotonic=child_monotonic, sleep=child_sleep),
+            }[name]
+
+        def child_print(value, *, flush=False):
+            if failed_stage == "write" and not flush:
+                raise OSError(32, "private-error")
+            captured.append(value + "\n")
+
+        namespace = {
+            "__builtins__": {
+                **vars(builtins),
+                "__import__": child_import,
+                "print": child_print,
+            }
+        }
+        if failed_stage == "positive":
+            exec(runner.CLOCK_PROGRAM, namespace)
+            wire = json.loads("".join(captured))
+            assert set(wire) == {"wall", "monotonic_start", "monotonic_delta"}
+            assert wire["wall"] == sample["wall"] and wire["monotonic_start"] == 11.0
+            assert wire["monotonic_delta"] == pytest.approx(0.05)
+            assert runner.clock_failure_capsule("".join(captured).encode()) is None
+        else:
+            with pytest.raises(SystemExit) as program_exit:
+                exec(runner.CLOCK_PROGRAM, namespace)
+            assert program_exit.value.code == 1
+            capsule = runner.clock_failure_capsule("".join(captured).encode())
+            assert capsule["available"] is True and capsule["stage"] == failed_stage
+            assert (
+                capsule["exception_kind"]
+                == {
+                    "import-datetime": "import-error",
+                    "import-json": "import-error",
+                    "import-time": "import-error",
+                    "monotonic-start": "os-error",
+                    "wall-reading": "overflow-error",
+                    "sleep": "os-error",
+                    "wall-format": "value-error",
+                    "monotonic-end": "os-error",
+                    "serialization": "type-error",
+                    "write": "os-error",
+                }[failed_stage]
+            )
+            assert capsule["errno"] == (
+                32
+                if failed_stage == "write"
+                else 22
+                if failed_stage in {"monotonic-start", "monotonic-end", "sleep"}
+                else None
+            )
+            reached.add(capsule["stage"])
+        assert "private-error" not in "".join(captured)
+    assert reached == runner.CLOCK_FAILURE_STAGES - {"entry"}
+    closed_failure = {
+        "format": "clock-child-failure-v1",
+        "stage": "sleep",
+        "exception_kind": "os-error",
+        "errno": 22,
+    }
+    for malformed in (
+        None,
+        "not-bytes",
+        b"[]",
+        b"x" * 513,
+        json.dumps({**closed_failure, "extra": "private-error"}).encode(),
+        json.dumps({**closed_failure, "stage": "private-error"}).encode(),
+        json.dumps({**closed_failure, "stage": []}).encode(),
+        json.dumps({**closed_failure, "exception_kind": "private-error"}).encode(),
+        json.dumps({**closed_failure, "exception_kind": []}).encode(),
+        json.dumps({**closed_failure, "errno": True}).encode(),
+        json.dumps({**closed_failure, "errno": -1}).encode(),
+        json.dumps({**closed_failure, "errno": 4096}).encode(),
+        json.dumps({**closed_failure, "errno": "private-error"}).encode(),
+        json.dumps(closed_failure)[:-1].encode() + b',"stage":"sleep"}',
+    ):
+        assert runner.clock_failure_capsule(malformed) is None
+    # Both uv and direct failures retain only the parsed capsule, with no raw
+    # stderr/error arguments; their original admission remains refused.
+    with monkeypatch.context() as capsule_patch:
+
+        def both_failed(arguments, **kwargs):
+            payload = json.dumps(closed_failure).encode()
+            if arguments[0] == "uv":
+                raise subprocess.CalledProcessError(
+                    1, arguments, output=payload, stderr=b"private-error"
+                )
+            return subprocess.CompletedProcess(arguments, 1, payload, b"private-error")
+
+        capsule_patch.setattr(runner.subprocess, "run", both_failed)
+        witness = {}
+        with pytest.raises(subprocess.CalledProcessError):
+            runner.clock_conformance(library, environment, witness=witness)
+        assert witness["child_program_failure"] == {"available": True, **closed_failure}
+        assert witness["direct_python"]["child_program_failure"] == {
+            "available": True,
+            **closed_failure,
+        }
+        assert witness["stage"] == "first-child-run"
+        assert "private-error" not in json.dumps(witness)
     first = RunIdentity(100, 1, "a" * 40, "schedule", "main", "2026-10-01")
     second = RunIdentity(101, 1, "b" * 40, "schedule", "main", "2026-10-02")
     green = _assessment(second)

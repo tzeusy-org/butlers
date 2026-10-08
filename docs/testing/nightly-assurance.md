@@ -137,6 +137,11 @@ interpreter, under the same preload environment. Raw child bytes and exception
 arguments are discarded. A positive direct-interpreter observation never
 rescues a failed `uv` launch: the original preflight remains non-green with zero
 test cases. Phrase indicators distinguish observations, not underlying causes.
+The fixed child program also emits a failure-only capsule with an allowlisted
+execution stage, exception kind and bounded numeric errno. Parsing requires the
+whole bounded capsule, rejects duplicate/extra fields, and never retains a
+traceback, exception arguments, paths or raw child bytes. No valid capsule means
+that the child failure stage remains unavailable; it does not imply success.
 Worker/service/container recovery causes need real endpoint and phase evidence.
 
 Folded hour/minute jobs run only after the original same-run species genuinely
