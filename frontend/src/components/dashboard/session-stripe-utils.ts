@@ -2,6 +2,7 @@
 // session-stripe-utils.ts — pure helpers and data hook for SessionStripeChart
 // ---------------------------------------------------------------------------
 
+import { denseCountBuckets } from "@/lib/bucket-series"
 import { useQuery } from "@tanstack/react-query"
 import { getSessions } from "@/api/index.ts"
 import type { KeysetMeta, SessionParams } from "@/api/types.ts"
@@ -50,33 +51,21 @@ export function bucketKey(d: Date, unit: "hour" | "day"): string {
 
 /** Generate the complete ordered list of bucket keys for the window. */
 function generateBuckets(from: Date, to: Date, unit: "hour" | "day"): string[] {
-  const keys: string[] = []
-  const step = unit === "hour" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
-  let cursor = bucketFloor(from, unit).getTime()
-  const end = to.getTime()
-
-  while (cursor <= end) {
-    keys.push(bucketKey(new Date(cursor), unit))
-    cursor += step
-  }
-  return keys
+  const step = unit === "hour" ? 3_600_000 : 86_400_000
+  const start = bucketFloor(from, unit).getTime()
+  const end = Math.ceil(to.getTime() / step) * step
+  return denseCountBuckets([], { window_start: new Date(start).toISOString(),
+    window_end: new Date(end).toISOString(), bucket_width_s: step / 1000,
+    counts_available: true }).map(bucket => bucketKey(new Date(bucket.bucket_start), unit))
 }
 
 /** Human-readable X-axis label for a UTC bucket key. */
-export function formatBucketKey(key: string, unit: "hour" | "day"): string {
-  if (unit === "hour") {
-    // key format: YYYY-MM-DDTHH (UTC)
-    const [, time] = key.split("T")
-    if (!time) return key
-    const hour = parseInt(time, 10)
-    const suffix = hour >= 12 ? "pm" : "am"
-    const display = hour % 12 === 0 ? 12 : hour % 12
-    return `${display}${suffix}`
-  }
-  // key format: YYYY-MM-DD (UTC noon to avoid offset edge-cases)
-  const [year, month, day] = key.split("-").map(Number)
-  const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0))
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
+export function formatBucketKey(key: string, unit: "hour" | "day", timezone = "UTC"): string {
+  const instant = new Date(unit === "hour" ? `${key}:00:00Z` : `${key}T00:00:00Z`)
+  if (!Number.isFinite(instant.getTime())) return key
+  return new Intl.DateTimeFormat("en-US", { timeZone: timezone, hourCycle: "h23",
+    ...(unit === "hour" ? { hour: "2-digit", minute: "2-digit", timeZoneName: "short" } as const
+      : { month: "short", day: "numeric" } as const) }).format(instant)
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +88,7 @@ export function pivotSessionsIntoRows(
   for (const session of sessions) {
     if (!session.butler) continue
     const d = new Date(session.started_at)
-    if (isNaN(d.getTime())) continue
+    if (isNaN(d.getTime()) || d < from || d >= to) continue
     const key = bucketKey(bucketFloor(d, unit), unit)
     if (!(key in rowMap)) continue
     const row = rowMap[key]
@@ -123,6 +112,7 @@ export interface SessionStripeResult {
   meta: KeysetMeta
   /** True when more rows exist beyond SESSIONS_HARD_CAP (results are truncated). */
   truncated: boolean
+  window?: { from: string; to: string }
 }
 
 /** Categorical filter fields the stripe chart forwards to the session list. */
@@ -195,6 +185,7 @@ async function fetchAllSessionsForWindow(
 
   return {
     data: page.data,
+    window: { from: w.from.toISOString(), to: w.to.toISOString() },
     meta: page.meta,
     // has_more is true only when more rows exist beyond SESSIONS_HARD_CAP
     truncated: page.meta.has_more,
@@ -218,12 +209,4 @@ export function useSessionStripeData(
     queryFn: () => fetchAllSessionsForWindow(windowHours, filterParams),
     refetchInterval: refetchInterval ?? busAwareInterval,
   })
-}
-
-/** Return the current window boundaries for pivot/display use. */
-export function currentWindow(
-  windowHours = 24,
-  filterParams?: StripeFilterParams,
-): { from: Date; to: Date } {
-  return resolveWindow(windowHours, filterParams)
 }

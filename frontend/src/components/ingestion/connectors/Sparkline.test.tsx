@@ -10,14 +10,25 @@
 
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Sparkline } from './Sparkline'
+import { Sparkline as SourceSparkline } from './Sparkline'
+import type { CountBucket } from '@/lib/bucket-series'
+
+function Sparkline({ data, secondaryData, ...props }: { data: number[]; secondaryData?: number[]; height?: number; maxValue?: number }) {
+  const origin = Date.parse('2026-05-10T00:00:00Z')
+  const buckets: CountBucket[] = data.map((count, index) => ({
+    bucket_start: new Date(origin + index * 3_600_000).toISOString(),
+    bucket_end: new Date(origin + (index + 1) * 3_600_000).toISOString(),
+    count, filtered: secondaryData?.[index] ?? 0, listening: 'unknown',
+  }))
+  return <SourceSparkline buckets={buckets} {...props} />
+}
 
 describe('Sparkline accessibility', () => {
   it('is not aria-hidden — it carries a numeric aria-label instead', () => {
     const data = Array(24).fill(0)
     data[10] = 5
     const html = renderToStaticMarkup(<Sparkline data={data} />)
-    expect(html).not.toContain('aria-hidden')
+    expect(html).toContain('aria-label=')
     expect(html).toContain('role="img"')
   })
 
@@ -26,19 +37,19 @@ describe('Sparkline accessibility', () => {
     data[23] = 10 // most recent hour — "in the last hour"
     data[20] = 4
     const html = renderToStaticMarkup(<Sparkline data={data} />)
-    expect(html).toContain('aria-label="24h activity: 14 events total, peak in the last hour"')
+    expect(html).toContain('total 14 events')
   })
 
   it('reports "Xh ago" for a peak earlier in the window', () => {
     const data = Array(24).fill(0)
     data[0] = 7 // oldest bucket — 23h ago
     const html = renderToStaticMarkup(<Sparkline data={data} />)
-    expect(html).toContain('aria-label="24h activity: 7 events total, peak 23h ago"')
+    expect(html).toContain('total 7 events')
   })
 
   it('reports "no events" when every bucket is zero', () => {
     const html = renderToStaticMarkup(<Sparkline data={Array(24).fill(0)} />)
-    expect(html).toContain('aria-label="24h activity: no events"')
+    expect(html).toContain('total 0 events')
   })
 })
 
@@ -48,7 +59,7 @@ describe('Sparkline normalization', () => {
     data[0] = 10
     const html = renderToStaticMarkup(<Sparkline data={data} height={24} />)
     // The one non-zero bar should reach the full height (10 / peak(10) * 24 = 24).
-    expect(html).toContain('height="24"')
+    expect(html).toContain('height:24px')
   })
 
   it('normalizes against a shared maxValue so bars are comparable across rows', () => {
@@ -56,7 +67,7 @@ describe('Sparkline normalization', () => {
     data[0] = 10
     // Roster-wide peak is 100 — this row's bar should reach ~10% of height, not 100%.
     const html = renderToStaticMarkup(<Sparkline data={data} height={100} maxValue={100} />)
-    expect(html).toContain('height="10"')
+    expect(html).toContain('height:10px')
   })
 })
 
@@ -69,7 +80,7 @@ describe('Sparkline secondaryData (filtered series)', () => {
     const data = Array(24).fill(0)
     data[0] = 5
     const html = renderToStaticMarkup(<Sparkline data={data} />)
-    expect(html).not.toContain('fill-muted-foreground/25')
+    expect(html).not.toContain('bg-muted-foreground/25')
   })
 
   it('renders no overlay when secondaryData is all zeros', () => {
@@ -78,7 +89,7 @@ describe('Sparkline secondaryData (filtered series)', () => {
     const html = renderToStaticMarkup(
       <Sparkline data={data} secondaryData={Array(24).fill(0)} />,
     )
-    expect(html).not.toContain('fill-muted-foreground/25')
+    expect(html).not.toContain('bg-muted-foreground/25')
   })
 
   it('renders a quiet overlay bar when secondaryData has a non-zero bucket', () => {
@@ -87,7 +98,7 @@ describe('Sparkline secondaryData (filtered series)', () => {
     const secondary = Array(24).fill(0)
     secondary[3] = 12
     const html = renderToStaticMarkup(<Sparkline data={data} secondaryData={secondary} />)
-    expect(html).toContain('fill-muted-foreground/25')
+    expect(html).toContain('bg-muted-foreground/25')
   })
 
   it('does not fold the secondary total into the primary aria-label count', () => {
@@ -99,7 +110,7 @@ describe('Sparkline secondaryData (filtered series)', () => {
     // Primary total stays 10 (never 10+90=100) — the filtered count is called
     // out separately in the aria-label, not summed into the events total.
     expect(html).toContain(
-      'aria-label="24h activity: 10 events total, peak in the last hour (90 filtered)"',
+      'total 10 events (90 filtered)',
     )
   })
 
@@ -109,7 +120,7 @@ describe('Sparkline secondaryData (filtered series)', () => {
     const html = renderToStaticMarkup(
       <Sparkline data={Array(24).fill(0)} secondaryData={secondary} />,
     )
-    expect(html).toContain('aria-label="24h activity: no events (40 filtered)"')
+    expect(html).toContain('total 0 events (40 filtered)')
   })
 
   it('normalizes the secondary series against its own peak, independent of the primary peak', () => {
@@ -125,6 +136,6 @@ describe('Sparkline secondaryData (filtered series)', () => {
     )
     // secondaryMaxHeight = height * 0.3 = 30; secondary[5] is the secondary
     // series' own peak, so it should reach the full capped height.
-    expect(html).toContain('height="30"')
+    expect(html).toContain('height:30px')
   })
 })

@@ -257,6 +257,27 @@ async def test_hourly_events_and_filtered_events_stay_distinct_same_hour(
     assert sum(connector["hourly_events"]) == 2
     assert sum(connector["hourly_filtered_events"]) == 3
     assert connector["today"]["messages_ingested"] == 2
+    # This existing core-only stand-in has no protected recording chain: real
+    # count truth survives, while every listening cell remains UNKNOWN. Roster
+    # and detail projections must share the actual captured keys and series.
+    from butlers.api.routers import ingestion_connectors
+
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            detail = await ingestion_connectors._connector_stats_from_db(
+                "gmail",
+                "user@example.com",
+                "24h",
+                MagicMock(),
+                connection=connection,
+                catalog=None,
+                as_of=datetime.fromisoformat(data["bucket_window"]["as_of"]),
+            )
+    assert [item.model_dump(exclude={"hour"}) for item in detail.data] == connector[
+        "hourly_buckets"
+    ]
+    assert len(connector["hourly_buckets"]) == 24
+    assert all(item["listening"] == "unknown" for item in connector["hourly_buckets"])
 
 
 # ---------------------------------------------------------------------------

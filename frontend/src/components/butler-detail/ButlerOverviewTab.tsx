@@ -1,3 +1,4 @@
+import type { CountBucket } from "@/lib/bucket-series"
 // ---------------------------------------------------------------------------
 // ButlerOverviewTab
 //
@@ -78,21 +79,6 @@ function activityLabel(eventType: ActivityEventType): string {
       return "memory"
     default:
       return eventType
-  }
-}
-
-/**
- * Computes the [since, until) ISO window for stripe slot `index` (0 = oldest
- * of the last 24h, 23 = the current hour), matching the bucketing convention
- * in useButlerStatusBoard (hourlyStripe slot 23 - bucket.hour_index).
- */
-function stripeSlotWindow(index: number): { since: string; until: string } {
-  const hoursAgoUntil = 23 - index
-  const hoursAgoSince = hoursAgoUntil + 1
-  const now = Date.now()
-  return {
-    since: new Date(now - hoursAgoSince * 3_600_000).toISOString(),
-    until: new Date(now - hoursAgoUntil * 3_600_000).toISOString(),
   }
 }
 
@@ -348,8 +334,8 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     (id: string) => runDecision(id, "reject", () => denyMut.mutateAsync({ id })),
     [denyMut, runDecision],
   )
-  const handleActivityStripeClick = useCallback((index: number) => {
-    const { since, until } = stripeSlotWindow(index)
+  const handleActivityStripeClick = useCallback((bucket: CountBucket) => {
+    const since = bucket.bucket_start, until = bucket.bucket_end
     navigate(
       `?tab=activity&section=sessions&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`,
     )
@@ -377,7 +363,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const costPerSession = costToday != null && sessions24h > 0 ? costToday / sessions24h : null
   const visiblePendingActions = pendingActions ?? []
   const recentEvents = activityFeedData?.events ?? []
-  const stripe = row?.hourlyStripe ?? Array(24).fill(0)
+  const stripe = row?.hourlyBuckets ?? []
   const status = butler?.status ?? row?.status
   // meta.total (not the page-size-capped result length) is the true count of
   // pending approvals -- the KPI previously read "5" when 20 were pending
@@ -481,7 +467,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       </Panel>
 
       <Panel title="activity" sub="24h" span={2} height="140px" className="sm:col-span-2" testId="panel-activity">
-        <ActivityStripe counts={stripe} className="h-[68px]" onBarClick={handleActivityStripeClick} />
+        <ActivityStripe buckets={stripe} className="h-[68px]" onBucketClick={handleActivityStripeClick} />
         <HourAxis />
       </Panel>
 

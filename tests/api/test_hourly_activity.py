@@ -10,6 +10,8 @@ Verifies:
 - SQL uses a single positional arg (window_hours) with no butler_name filter.
 """
 
+# REQ-dashboard-butler-management-004: Activity hourly source key/count contract.
+# Mounted Activity consumers and other KPI endpoints are separate companions.
 from __future__ import annotations
 
 import datetime

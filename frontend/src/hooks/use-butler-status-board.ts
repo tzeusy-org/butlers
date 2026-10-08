@@ -1,3 +1,4 @@
+import { sessionCountBuckets, type CountBucket } from "@/lib/bucket-series"
 // ---------------------------------------------------------------------------
 // useButlerStatusBoard — composite hook for the /butlers/ status-board page
 // (bu-hb7dh.5, consolidated onto GET /api/butlers/board in bu-86c4c.17)
@@ -62,6 +63,7 @@ export interface StatusBoardRow {
   heartbeatAgeSeconds: number | null
   /** 24 hourly session counts, oldest first (slot 0 = oldest). */
   hourlyStripe: number[]
+  hourlyBuckets?: CountBucket[]
   /** Sum of hourlyStripe buckets — shown as the SESS·24H KPI (agrees with stripe total). */
   hourlyTotal: number
   /** Always false: the board loads in one round trip, no per-row stagger. */
@@ -166,6 +168,7 @@ function mapRow(row: BoardRow): StatusBoardRow {
     lastHeartbeatISO: row.last_heartbeat_at,
     heartbeatAgeSeconds: row.heartbeat_age_seconds,
     hourlyStripe: row.hourly_stripe,
+    hourlyBuckets: sessionCountBuckets(row.hourly_buckets ?? []),
     hourlyTotal: row.hourly_total,
     hourlyStripeLoading: false,
     hourlyStripeError: row.schema_unreachable || (row.stripe_source_error ?? false),

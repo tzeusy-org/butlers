@@ -1,3 +1,5 @@
+import { BucketStrip } from "@/components/ui/BucketStrip";
+import { sessionCountBuckets } from "@/lib/bucket-series";
 /**
  * ButlerManagementTab — Phase 7 fold-in (§9.1–§9.4).
  *
@@ -26,9 +28,7 @@ import {
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
 import { useResolveModel } from "@/hooks/use-model-catalog";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
-import { bucketHourInZone } from "@/lib/hourly-buckets";
 import { cn } from "@/lib/utils";
-import { useTimezone } from "@/components/ui/timezone-context";
 import RuntimeConfigCard from "./RuntimeConfigCard";
 
 interface Props {
@@ -680,20 +680,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
 function ActivityStripeSection({ butlerName }: { butlerName: string }) {
   const { data } = useButlerHourlyActivity(butlerName);
   const buckets = data?.data?.buckets ?? [];
-  const ownerTz = useTimezone();
-
-  // Build a 24-slot array indexed by hour-of-day. Each backend `hour_start` is
-  // a UTC-anchored instant; it must be slotted in the OWNER timezone so the
-  // viewer's host zone never shifts the histogram (bu-8ogli). Slot i is thus
-  // the owner-tz hour i, matching the `${i}:00` tooltip below.
-  const values: number[] = Array(24).fill(0);
-  for (const bucket of buckets) {
-    const hourIndex = bucketHourInZone(bucket.hour_start, ownerTz);
-    if (hourIndex === null) continue;
-    values[hourIndex] = bucket.sessions_count;
-  }
-
-  const max = Math.max(...values, 1);
+  const keyedBuckets = sessionCountBuckets(buckets);
 
   return (
     <Section
@@ -709,26 +696,9 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
         </Link>
       }
     >
-      {/* Stripe chart */}
-      <div className="flex h-6 gap-px">
-        {values.map((v, i) => (
-          <div
-            key={i}
-            className={cn(
-              "flex-1 rounded-[1px]",
-              v === 0 ? "bg-muted" : "bg-foreground/60",
-            )}
-            style={{ opacity: v === 0 ? 0.4 : 0.3 + (v / max) * 0.7 }}
-            title={`${String(i).padStart(2, "0")}:00 · ${v} session${v !== 1 ? "s" : ""}`}
-          />
-        ))}
-      </div>
-      <div className="mt-1.5 flex justify-between font-mono text-[9px] tracking-[0.10em] text-muted-foreground">
-        <span>00</span>
-        <span>06</span>
-        <span>12</span>
-        <span>18</span>
-        <span>23</span>
+      <BucketStrip buckets={keyedBuckets} />
+      <div className="mt-1.5 flex justify-between font-mono text-[9px] text-muted-foreground">
+        <span>oldest source hour</span><span>latest source hour</span>
       </div>
     </Section>
   );

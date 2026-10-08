@@ -169,3 +169,16 @@ Readable positive counts remain lower bounds when classification is unknown. A f
 - [Dashboard API](dashboard-api.md) --- application factory, router discovery, SSE streaming
 - `openspec/specs/dashboard-*` --- required per-domain endpoint behavior
 - `src/butlers/api/app.py` and `roster/{butler}/api/router.py` --- the routers and their response models
+
+## Proposed count-bucket truth extension
+
+Count-strip responses declare one UTC as_of/window and structured bucket_start/bucket_end keys. Event counts and listening have separate availability. Measured count0 requires an authoritative count read; unreadable counts are null/unavailable. Listening is live from an exact accepted heartbeat, deaf only from positively complete closed recording with no heartbeat, and unknown otherwise. Omitted/legacy cached metadata is not inferred as live. Relative labels locate the actual declared window and owner-zone display uses the existing AppTimezone context. No new dashboard write is introduced. Optional heartbeat query failure preserves count positives through a savepoint and reports a closed source-degraded reason, never exception text. This describes the released source contract; PostgreSQL proof, elapsed recording and final native adoption remain independently verified obligations.
+
+### Proposed rolling-window and proof precision
+
+The 24h count projection has 24 complete one-hour rolling intervals ending at a post-lock captured database `as_of`; its final slot is `[as_of-1h,as_of)`. A separate open calendar-hour diagnostic is partial/UNKNOWN, not the final rolling bar. Compatible catalog/endpoint locks preserve the receiver snapshot without dashboard DML or a global endpoint mutex. Seeded past API/FE timeline fixtures prove projection conformance only; genuinely elapsed protected recording and ordinary-role admission require their own production-clock/writer evidence. No caller-provided clock or fixture marker supplies production authority.
+
+
+### Source-declared sparse count windows
+
+Connector detail projects the stats response's exact `window_start`, `window_end`, `bucket_width_s` and `hourly_events_available` into its count-strip window. The roster passes the same fields from the summaries response's `data.bucket_window` to every row. The shared primitive places sparse source keys within those declared bounds; it does not stretch two observations into adjacent cells or infer a 24-hour span from their endpoints. Missing cells carry unknown listening and unavailable counts unless the source explicitly declares a successful complete count read. Invalid bounds, overlapping/duplicate keys or out-of-window rows make the window unavailable. Older keyed responses without a declared window retain their actual supplied cells, including genuinely short windows. Unkeyed numeric compatibility responses still cannot supply a clock axis.

@@ -38,6 +38,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.ingestion_connectors import _get_db_manager
+from tests.api.connector_bucket_fixtures import attach_bucket_reader
 
 pytestmark = pytest.mark.unit
 
@@ -190,6 +191,7 @@ def _wire(app: FastAPI, fetch_calls: list) -> AsyncMock:
     pool.fetch = AsyncMock(side_effect=fetch_calls)
     pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock(return_value=None)
+    attach_bucket_reader(pool)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -456,6 +458,7 @@ async def test_registry_failure_degrades_explicitly(app: FastAPI) -> None:
     """A failed registry read never fabricates a roster or a classification."""
     pool = AsyncMock()
     pool.fetch = AsyncMock(side_effect=RuntimeError("registry unreachable"))
+    attach_bucket_reader(pool)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -470,6 +473,7 @@ async def test_cross_summary_failure_reports_zero_not_healthy(app: FastAPI) -> N
     """A failed rollup query degrades to zeros, including the unclassified count."""
     pool = AsyncMock()
     pool.fetch = AsyncMock(side_effect=RuntimeError("registry unreachable"))
+    attach_bucket_reader(pool)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     app.dependency_overrides[_get_db_manager] = lambda: mock_db

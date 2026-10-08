@@ -511,20 +511,30 @@ async def heartbeat(
     endpoint_identity = connector.endpoint_identity
     instance_id = connector.instance_id
 
-    # Gmail admission owns endpoint advisory -> registry row ordering. The
-    # primary transaction commits before any best-effort log/partition work.
+    # Maintenance DDL survives a later primary rollback. It is not receiver
+    # recording evidence; a failed ensure may still leave a usable partition.
+    try:
+        await pool.execute(
+            "SELECT switchboard_connector_heartbeat_log_ensure_partition($1)", received_at
+        )
+    except Exception:
+        logger.warning("Heartbeat partition maintenance outcome=unavailable")
+
     classification_ack = None
     try:
-        if connector_type == "gmail":
-            async with pool.acquire() as connection:
-                async with connection.transaction():
-                    await connection.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                        f"connector-classification:{connector_type}:{endpoint_identity}",
-                    )
-                    previous = await _get_previous_snapshot(
-                        connection, connector_type, endpoint_identity, for_update=True
-                    )
+        async with pool.acquire() as connection:
+            async with connection.transaction(isolation="read_committed"):
+                # Catalog/relation -> exact endpoint -> existing registry row.
+                # The database triggers repeat this boundary for direct SQL.
+                await connection.fetchval("SELECT switchboard.heartbeat_recording_catalog()")
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    f"connector-classification:{connector_type}:{endpoint_identity}",
+                )
+                previous = await _get_previous_snapshot(
+                    connection, connector_type, endpoint_identity, for_update=True
+                )
+                if connector_type == "gmail":
                     capabilities, classification_ack, admitted = _classification_admission(
                         envelope, previous
                     )
@@ -533,75 +543,38 @@ async def heartbeat(
                             server_time=received_at.isoformat(),
                             classification_ack=classification_ack,
                         )
-                    await _persist_registry(connection, envelope, received_at, capabilities)
-        else:
-            previous = await _get_previous_snapshot(pool, connector_type, endpoint_identity)
-            await _persist_registry(pool, envelope, received_at, capabilities)
-    except Exception as exc:
-        # New classification diagnostics never include input or DB error tails.
-        if connector_type == "gmail":
-            logger.error("Gmail classification persistence outcome=failed")
-            raise RuntimeError("Failed to persist Gmail heartbeat") from None
-        logger.error("Failed to persist connector heartbeat", exc_info=True)
-        raise RuntimeError(f"Failed to persist connector heartbeat: {exc}") from exc
-    deltas = _compute_counter_deltas(counters, previous, instance_id)
-
-    # 5. Ensure partition exists for received_at
-    try:
-        await pool.execute(
-            "SELECT switchboard_connector_heartbeat_log_ensure_partition($1)",
-            received_at,
-        )
-    except Exception as exc:
-        logger.error("Failed to ensure partition for %s: %s", received_at, exc, exc_info=True)
-        # Non-fatal: log insertion might still succeed if partition exists
-
-    # 6. Append to connector_heartbeat_log
-    try:
-        await pool.execute(
-            """
-            INSERT INTO switchboard.connector_heartbeat_log (
-                connector_type,
-                endpoint_identity,
-                instance_id,
-                state,
-                error_message,
-                uptime_s,
-                counter_messages_ingested,
-                counter_messages_failed,
-                counter_source_api_calls,
-                counter_checkpoint_saves,
-                counter_dedupe_accepted,
-                received_at,
-                sent_at
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-            )
-            """,
-            connector_type,
-            endpoint_identity,
-            instance_id,
-            status.state,
-            status.error_message,
-            status.uptime_s,
-            counters.messages_ingested,
-            counters.messages_failed,
-            counters.source_api_calls,
-            counters.checkpoint_saves,
-            counters.dedupe_accepted,
-            received_at,
-            sent_at,
-        )
-    except Exception as exc:
-        logger.error(
-            "Failed to append to connector_heartbeat_log for %s/%s: %s",
-            connector_type,
-            endpoint_identity,
-            exc,
-            exc_info=True,
-        )
-        # Registry update succeeded, so heartbeat is accepted.
-        # Log append failure is non-fatal for basic liveness tracking.
+                # The INSERT returns the actual post-lock server receipt. No
+                # caller timestamp or Python clock can mint recording coverage.
+                received_at = await connection.fetchval(
+                    """
+                    INSERT INTO switchboard.connector_heartbeat_log (
+                        connector_type, endpoint_identity, instance_id, state,
+                        error_message, uptime_s, counter_messages_ingested,
+                        counter_messages_failed, counter_source_api_calls,
+                        counter_checkpoint_saves, counter_dedupe_accepted,
+                        received_at, sent_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock_timestamp(),$12)
+                    RETURNING received_at
+                    """,
+                    connector_type,
+                    endpoint_identity,
+                    instance_id,
+                    status.state,
+                    status.error_message,
+                    status.uptime_s,
+                    counters.messages_ingested,
+                    counters.messages_failed,
+                    counters.source_api_calls,
+                    counters.checkpoint_saves,
+                    counters.dedupe_accepted,
+                    sent_at,
+                )
+                await _persist_registry(connection, envelope, received_at, capabilities)
+                deltas = _compute_counter_deltas(counters, previous, instance_id)
+        # Both existing writes have COMMITTED before an adoptable ACK escapes.
+    except Exception:
+        logger.error("Heartbeat recording transaction outcome=failed")
+        raise RuntimeError("Failed to persist connector heartbeat") from None
 
     logger.info(
         "Accepted heartbeat: connector_type=%s, endpoint_identity=%s, instance_id=%s, "

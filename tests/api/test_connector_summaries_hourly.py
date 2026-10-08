@@ -24,12 +24,14 @@ from __future__ import annotations
 import datetime as dt
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.ingestion_connectors import _get_db_manager
+from tests.api.connector_bucket_fixtures import attach_bucket_reader
 
 pytestmark = pytest.mark.unit
 
@@ -113,6 +115,7 @@ def _make_pool_with_fetch_sequence(fetch_calls: list[list]) -> AsyncMock:
 def _wire_db(app: FastAPI, pool: AsyncMock) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
+    attach_bucket_reader(pool)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
 
@@ -147,6 +150,7 @@ async def test_hourly_events_all_zeros_when_no_events(app: FastAPI) -> None:
     assert all(v == 0 for v in hourly)
 
 
+# REQ-dashboard-ingestion-dispatch-console-005: roster source bucket positions.
 async def test_hourly_events_correct_bucket_placement(app: FastAPI) -> None:
     """Events land in the correct bucket index (oldest=0, newest=23)."""
     now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)
@@ -277,7 +281,7 @@ async def test_hourly_events_fallback_to_zeros_on_query_failure(app: FastAPI) ->
 
     pool = AsyncMock()
     # First call (registry) succeeds; second call (hourly) raises
-    pool.fetch = AsyncMock(side_effect=[registry_rows, Exception("DB error")])
+    pool.fetch = AsyncMock(side_effect=[registry_rows, asyncpg.PostgresError("DB error")])
     pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock(return_value=None)
     _wire_db(app, pool)
@@ -296,8 +300,8 @@ async def test_hourly_events_fallback_to_zeros_on_query_failure(app: FastAPI) ->
     connectors = resp.json()["data"]["connectors"]
     assert len(connectors) == 1
     hourly = connectors[0]["hourly_events"]
-    assert len(hourly) == 24
-    assert all(v == 0 for v in hourly)
+    assert hourly is None
+    assert all(bucket["messages_ingested"] is None for bucket in connectors[0]["hourly_buckets"])
 
 
 async def test_today_messages_ingested_reflects_24h_sum_not_lifetime_counter(
@@ -592,7 +596,7 @@ async def test_hourly_events_available_false_on_query_failure(app: FastAPI) -> N
     registry_rows = [_registry_row(connector_type="gmail", endpoint_identity="user@example.com")]
 
     pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=[registry_rows, Exception("DB error"), []])
+    pool.fetch = AsyncMock(side_effect=[registry_rows, asyncpg.PostgresError("DB error"), []])
     pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock(return_value=None)
     _wire_db(app, pool)
@@ -611,8 +615,9 @@ async def test_hourly_events_available_false_on_query_failure(app: FastAPI) -> N
     data = resp.json()["data"]
     assert data["hourly_events_available"] is False
     connector = data["connectors"][0]
-    assert connector["hourly_events"] == [0] * 24
-    assert connector["hourly_filtered_events"] == [0] * 24
+    assert connector["hourly_events"] is None
+    assert all(bucket["messages_ingested"] is None for bucket in connector["hourly_buckets"])
+    assert connector["hourly_filtered_events"] is None
 
 
 # ---------------------------------------------------------------------------

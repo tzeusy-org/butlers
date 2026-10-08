@@ -1,4 +1,5 @@
 import { ownerFetch } from "./owner-session";
+import { sourceCountWindow } from "@/lib/bucket-series";
 /**
  * Typed fetch wrapper for the Butlers dashboard API.
  *
@@ -4456,14 +4457,14 @@ interface _BackendStatsRow {
   hour?: string;
   /** ISO date string for daily rollup (period=7d|30d). */
   day?: string;
-  messages_ingested: number;
-  messages_failed: number;
+  messages_ingested: number | null;
+  messages_failed: number | null;
+  bucket_start?: string;
+  bucket_end?: string;
+  listening?: "live" | "deaf" | "unknown";
+  counts_partial?: boolean;
   /** Skip-routed volume for this bucket (bu-c48im), from connectors.filtered_events. */
   messages_filtered: number;
-  heartbeat_count: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
   uptime_pct?: number | null;
 }
 
@@ -4548,6 +4549,7 @@ function _toConnectorStats(
   endpointIdentity: string,
   period: IngestionPeriod,
   hourlyEventsAvailable: boolean,
+  bucketWindow: ConnectorStats["bucket_window"],
 ): ConnectorStats {
   const timeseries: ConnectorStatsBucket[] = rows.map((r) => ({
     bucket: (r.hour ?? r.day ?? ""),
@@ -4555,18 +4557,24 @@ function _toConnectorStats(
     messages_failed: r.messages_failed,
     // ?? 0 guards older cached backend rows that predate the filtered series.
     messages_filtered: r.messages_filtered ?? 0,
-    healthy_count: r.healthy_count,
-    degraded_count: r.degraded_count,
-    error_count: r.error_count,
+    bucket_start: r.bucket_start,
+    bucket_end: r.bucket_end,
+    listening: r.listening ?? "unknown",
+    counts_partial: r.counts_partial,
   }));
 
-  const totalIngested = timeseries.reduce((s, r) => s + r.messages_ingested, 0);
-  const totalFailed = timeseries.reduce((s, r) => s + r.messages_failed, 0);
-  const totalProcessed = totalIngested + totalFailed;
-  const errorRatePct = totalProcessed > 0 ? (totalFailed / totalProcessed) * 100 : 0;
+  // An unreadable source or NULL observation cannot authorize a measured zero.
+  // Keep independently readable components, but require both for an error rate.
+  const totalIngested = hourlyEventsAvailable && timeseries.every(r => r.messages_ingested !== null)
+    ? timeseries.reduce((sum, r) => sum + r.messages_ingested!, 0) : null;
+  const totalFailed = hourlyEventsAvailable && timeseries.every(r => r.messages_failed !== null)
+    ? timeseries.reduce((sum, r) => sum + r.messages_failed!, 0) : null;
+  const totalProcessed = totalIngested !== null && totalFailed !== null ? totalIngested + totalFailed : null;
+  const errorRatePct = totalProcessed !== null && totalFailed !== null
+    ? (totalProcessed > 0 ? (totalFailed / totalProcessed) * 100 : 0) : null;
   // Approximate avg per hour: for 24h use hourly rows directly; for 7d/30d divide total by hours
   const periodHours = period === "24h" ? 24 : period === "7d" ? 168 : 720;
-  const avgPerHour = periodHours > 0 ? totalIngested / periodHours : 0;
+  const avgPerHour = totalIngested !== null ? totalIngested / periodHours : null;
 
   const summary: ConnectorStatsSummary = {
     messages_ingested: totalIngested,
@@ -4582,6 +4590,7 @@ function _toConnectorStats(
     period,
     summary,
     timeseries,
+    bucket_window: bucketWindow,
     hourly_events_available: hourlyEventsAvailable,
   };
 }
@@ -4624,6 +4633,8 @@ export async function getConnectorStats(
       endpointIdentity,
       period,
       hourlyEventsAvailable,
+      resp.meta?.window_start === undefined && resp.meta?.window_end === undefined && resp.meta?.bucket_width_s === undefined
+        ? undefined : sourceCountWindow(resp.meta),
     ),
   };
 }

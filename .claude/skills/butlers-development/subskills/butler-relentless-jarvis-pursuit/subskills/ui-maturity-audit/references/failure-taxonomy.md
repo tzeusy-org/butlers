@@ -181,6 +181,12 @@ path moves). Rules for consuming and maintaining it:
     0. *Fix posture:* time-keyed dense buckets from the server, a per-bucket listening state distinct
     in shape from a measured zero, and a lint ban on positional zero-fill.
 
+    **positional buckets wear clock labels** is the count-strip instance of this shape.
+    A successful read of best-effort history does not establish append completeness;
+    no-heartbeat intervals require complete receiver-recording authority before `not listening`.
+    Missing recording authority stays `liveness unknown`, independently of measured counts.
+    Retention is MONTHLY partitioning with a conservative seven-day guarantee, not seven-day partitions.
+
 16. **Sibling reader left behind**: a fix moves a shared predicate (a helper, a posture, a scrub)
     into most readers of a fact, and one sibling reader keeps the old behaviour, so the defect
     survives in the place the QC pass did not walk. *Tell:* after a fix lands, `rg` every reader of

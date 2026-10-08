@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-ingestion-dispatch-console-005: mounted roster row and source window propagation.
 /**
  * ConnectorsRoster — unit tests covering spec acceptance criteria:
  *
@@ -59,7 +60,7 @@ import {
   useConnectorSummaries,
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
-import type { ConnectorSummary, ConnectorProfile } from '@/api/types'
+import type { ConnectorSummary, ConnectorProfile, ConnectorSummariesResponse } from '@/api/types'
 import { ConnectorsRoster } from './ConnectorsRoster'
 
 // ---------------------------------------------------------------------------
@@ -201,6 +202,7 @@ function mockHooks(
     hourly_events_available?: boolean
     device_liveness_available?: boolean
     owntracks_cadence_available?: boolean
+    bucket_window?: ConnectorSummariesResponse['bucket_window']
   } = {},
 ) {
   // The endpoint returns { connectors: [...] } (all fields DB-sourced),
@@ -265,6 +267,25 @@ describe('AC1: dense roster layout', () => {
 
     const rows = container.querySelectorAll('[data-testid^="connector-row-"]')
     expect(rows.length).toBe(2)
+    const origin = Date.parse('2026-05-10T00:00:00Z')
+    const sparse = [20, 2].map(index => ({
+      bucket:new Date(origin + index * 3_600_000).toISOString(),
+      bucket_start:new Date(origin + index * 3_600_000).toISOString(),
+      bucket_end:new Date(origin + (index + 1) * 3_600_000).toISOString(),
+      messages_ingested:index, messages_failed:0, messages_filtered:0,
+      listening:'unknown' as const,
+    }))
+    mockHooks([{ ...HEALTHY_CONNECTOR, hourly_buckets:sparse }], [], {
+      bucket_window:{ window_start:new Date(origin).toISOString(),
+        window_end:new Date(origin + 24 * 3_600_000).toISOString(),
+        bucket_width_s:3600, hourly_events_available:false },
+    })
+    renderRoster(container, root)
+    const cells = container.querySelectorAll('[data-testid="histogram-bars"] > div')
+    expect(cells).toHaveLength(24)
+    expect(cells[2].getAttribute('aria-label')).toContain('2 events')
+    expect(cells[20].getAttribute('aria-label')).toContain('20 events')
+    expect(cells[5].getAttribute('aria-label')).toContain('count unavailable; liveness unknown')
   })
 
   it('renders the auth-needed connector row at the top (sorted first)', () => {

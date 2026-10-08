@@ -759,7 +759,7 @@ describe("Activity stripe axis semantics", () => {
   });
   afterEach(() => cleanup());
 
-  it("uses the static owner-hour endpoint instead of a misleading now label", () => {
+  it("uses keyed source hours and names receiver uncertainty instead of a static owner-day axis", () => {
     renderTab();
 
     const activitySection = screen
@@ -768,8 +768,11 @@ describe("Activity stripe axis semantics", () => {
     if (!activitySection) throw new Error("Expected the activity stripe section");
 
     const axis = within(activitySection);
+    expect(axis.getByText("oldest source hour")).toBeTruthy();
+    expect(axis.getByText("latest source hour")).toBeTruthy();
+    expect(axis.getByRole("img").getAttribute("aria-label")).toContain("liveness unknown");
     for (const label of ["00", "06", "12", "18", "23"]) {
-      expect(axis.getByText(label)).toBeTruthy();
+      expect(axis.queryByText(label)).toBeNull();
     }
     expect(axis.queryByText("now")).toBeNull();
   });

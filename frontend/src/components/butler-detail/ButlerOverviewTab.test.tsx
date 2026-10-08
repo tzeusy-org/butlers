@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-butler-management-003: actual mounted Overview panels and rolling stripe.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useRef, useState } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
@@ -42,7 +43,8 @@ vi.mock("@/hooks/use-domain-events", () => ({
   useDomainEventContracts: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }))
 
-vi.mock("@/components/ui/time", () => ({
+vi.mock("@/components/ui/time", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/ui/time")>(),
   Time: ({ value }: { value: string }) => <span data-testid="time-value">{value}</span>,
 }))
 
@@ -183,6 +185,7 @@ beforeEach(() => {
         lastHeartbeatISO: null,
         heartbeatAgeSeconds: null,
         hourlyStripe: [0, 0, 1, 0, 2, 0, 3, 0, 0, 1, 0, 4, 0, 0, 2, 0, 1, 0, 0, 3, 0, 0, 1, 0],
+        hourlyBuckets: Array.from({length:24}, (_,i) => ({bucket_start: new Date(Date.parse("2026-05-12T12:00:00Z")+i*3600000).toISOString(), bucket_end: new Date(Date.parse("2026-05-12T12:00:00Z")+(i+1)*3600000).toISOString(), count: i===2 ? 2 : 0, listening: "unknown" as const})),
         hourlyTotal: 7,
         hourlyStripeLoading: false,
         hourlyStripeError: false,
@@ -508,12 +511,15 @@ describe("ButlerOverviewTab -- doors", () => {
   it("activity-stripe bars navigate to the Activity tab's Sessions section", () => {
     renderOverviewLive()
 
-    const stripe = screen.getByRole("group", { name: /24-hour activity/i })
+    const stripe = screen.getByRole("group", { name: /Count activity/i })
     fireEvent.click(within(stripe).getAllByRole("button")[0])
 
     expect(screen.getByTestId("location-search").textContent).toContain(
       "tab=activity&section=sessions",
     )
+    const params = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "")
+    expect(params.get("since")).toBe("2026-05-12T12:00:00.000Z")
+    expect(params.get("until")).toBe("2026-05-12T13:00:00.000Z")
   })
 
   it("session_completed recent-event rows render as a button (opens the session drawer)", () => {

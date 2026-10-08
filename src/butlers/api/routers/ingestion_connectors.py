@@ -48,6 +48,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator
 
 from butlers.api.audit_emit import emit_dashboard_audit
+from butlers.api.connector_buckets import locked_buckets, read_buckets, recording_catalog
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.oauth_scope_registry import (
@@ -167,13 +168,14 @@ class ConnectorStatsHourly(BaseModel):
     connector_type: str
     endpoint_identity: str
     hour: str
-    messages_ingested: int = 0
-    messages_failed: int = 0
-    messages_filtered: int = 0
-    heartbeat_count: int = 0
-    healthy_count: int = 0
-    degraded_count: int = 0
-    error_count: int = 0
+    messages_ingested: int | None = None
+    messages_failed: int | None = None
+    messages_filtered: int | None = None
+    bucket_start: str
+    bucket_end: str
+    listening: Literal["live", "deaf", "unknown"]
+    listening_reason: str
+    counts_partial: bool = False
 
 
 class ConnectorStatsDaily(BaseModel):
@@ -182,13 +184,14 @@ class ConnectorStatsDaily(BaseModel):
     connector_type: str
     endpoint_identity: str
     day: str
-    messages_ingested: int = 0
-    messages_failed: int = 0
-    messages_filtered: int = 0
-    heartbeat_count: int = 0
-    healthy_count: int = 0
-    degraded_count: int = 0
-    error_count: int = 0
+    messages_ingested: int | None = None
+    messages_failed: int | None = None
+    messages_filtered: int | None = None
+    bucket_start: str
+    bucket_end: str
+    listening: Literal["live", "deaf", "unknown"]
+    listening_reason: str
+    counts_partial: bool = False
     uptime_pct: float | None = None
 
 
@@ -539,74 +542,27 @@ async def _connector_stats_from_db(
     db: DatabaseManager,
     *,
     connection: Any | None = None,
+    catalog: list[dict[str, Any]] | None = None,
+    as_of: datetime | None = None,
 ) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
-    """Build a skip-aware connector histogram from durable event tables."""
-    executor = connection if connection is not None else _pool(db)
-    trunc = _DB_TRUNC[period]
-    interval = _DB_INTERVAL[period]
-    try:
-        rows = await executor.fetch(
-            f"""
-            SELECT bucket,
-                   SUM(ingested)::bigint  AS messages_ingested,
-                   SUM(failed)::bigint    AS messages_failed,
-                   SUM(filtered)::bigint  AS messages_filtered
-            FROM (
-                SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
-                           AT TIME ZONE 'UTC' AS bucket,
-                       COUNT(*) FILTER (WHERE status = 'ingested') AS ingested,
-                       COUNT(*) FILTER (WHERE status = 'failed')   AS failed,
-                       0 AS filtered
-                FROM public.ingestion_events
-                WHERE COALESCE(source_provider, source_channel) = $1
-                  AND source_endpoint_identity = $2
-                  AND received_at >= NOW() - INTERVAL '{interval}'
-                GROUP BY 1
-                UNION ALL
-                SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
-                           AT TIME ZONE 'UTC' AS bucket,
-                       0 AS ingested, 0 AS failed,
-                       COUNT(*) AS filtered
-                FROM connectors.filtered_events
-                WHERE connector_type = $1
-                  AND endpoint_identity = $2
-                  AND received_at >= NOW() - INTERVAL '{interval}'
-                GROUP BY 1
-            ) combined
-            GROUP BY bucket ORDER BY bucket
-            """,
-            connector_type,
-            endpoint_identity,
+    """Preserve real volume independently of protected recording evidence."""
+    if connection is None:
+        series, metadata = await locked_buckets(
+            _pool(db), [(connector_type, endpoint_identity)], period
         )
-    except Exception:
-        logger.warning("connector stats DB query failed", exc_info=True)
-        return ApiResponse(data=[], meta=ApiMeta(hourly_events_available=False))
-
+    else:
+        assert as_of is not None
+        series, metadata = await read_buckets(
+            connection, [(connector_type, endpoint_identity)], period, catalog=catalog, as_of=as_of
+        )
+    buckets = series[(connector_type, endpoint_identity)]
     if period == "24h":
-        data: list[ConnectorStatsHourly] | list[ConnectorStatsDaily] = [
-            ConnectorStatsHourly(
-                connector_type=connector_type,
-                endpoint_identity=endpoint_identity,
-                hour=row["bucket"].isoformat(),
-                messages_ingested=int(row["messages_ingested"]),
-                messages_failed=int(row["messages_failed"]),
-                messages_filtered=int(row["messages_filtered"]),
-            )
-            for row in rows
-        ]
+        data = [ConnectorStatsHourly(hour=bucket["bucket_start"], **bucket) for bucket in buckets]
     else:
         data = [
-            ConnectorStatsDaily(
-                connector_type=connector_type,
-                endpoint_identity=endpoint_identity,
-                day=row["bucket"].date().isoformat(),
-                messages_ingested=int(row["messages_ingested"]),
-                messages_failed=int(row["messages_failed"]),
-                messages_filtered=int(row["messages_filtered"]),
-            )
-            for row in rows
+            ConnectorStatsDaily(day=bucket["bucket_start"][:10], **bucket) for bucket in buckets
         ]
-    return ApiResponse(data=data, meta=ApiMeta(hourly_events_available=True))
+    return ApiResponse(data=data, meta=ApiMeta(**metadata))
 
 
 def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
@@ -860,91 +816,16 @@ async def list_connector_summaries_with_aggregates(
             registry_row_counts.get(r["connector_type"], 0) + 1
         )
 
-    # Build per-connector hourly timeseries from ingestion_events AND
-    # filtered_events in one combined query (bu-scyro). Returns two 24-element
-    # lists per connector (oldest hour first, newest last) — zero-filled for
-    # missing buckets:
-    #   - hourly_map          — 'ingested' series, sourced from
-    #     public.ingestion_events WHERE status='ingested' (unchanged semantics)
-    #   - hourly_filtered_map — 'filtered' series, sourced from
-    #     connectors.filtered_events (every row regardless of status —
-    #     filtered/error/replay_* — since all of them represent traffic that
-    #     never reached ingestion_events)
-    #
-    # The two series are kept DISTINCT, never summed together: folding filtered
-    # volume into "ingested" would fabricate ingestion volume that never
-    # happened. This closes the bu-416vk/bu-scyro gap where every
-    # self-persisting connector's skip volume (gmail, telegram, HA post-#2986,
-    # calendar post-#2994) was invisible on this chart — pre-#2986 HA was the
-    # anomaly whose skip decisions inflated the 'ingested' series instead.
-    #
-    # Sourced from the DB (not Prometheus) so both series are always populated
-    # (subject only to hourly_events_available on a genuine query failure).
+    # One captured, closed window for the fixed roster pair set. Count and
+    # heartbeat reads are separate savepoints; neither fabricates the other.
     hourly_map: dict[tuple[str, str], list[int]] = {}
     hourly_filtered_map: dict[tuple[str, str], list[int]] = {}
-    hourly_events_available = True
-    if rows:
-        try:
-            now_utc = _dt.datetime.now(_dt.UTC)
-            # Truncate to the start of the current hour so bucket 23 is the most recent
-            # complete-or-in-progress hour.
-            window_start = now_utc.replace(minute=0, second=0, microsecond=0) - _dt.timedelta(
-                hours=23
-            )
-            # Single UNION ALL query, bounded to the same 24h window on both
-            # sides. filtered_events is monthly-partitioned (core_007); a 24h
-            # window touches at most 2 partitions and is covered by
-            # ix_filtered_events_timeline (received_at DESC) — no new index
-            # required.
-            hourly_rows = await pool.fetch(
-                """
-                SELECT connector_type, endpoint_identity, hour_bucket, source, event_count
-                FROM (
-                    SELECT
-                        source_channel           AS connector_type,
-                        source_endpoint_identity AS endpoint_identity,
-                        date_trunc('hour', received_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-                            AS hour_bucket,
-                        'ingested'               AS source,
-                        count(*)                 AS event_count
-                    FROM public.ingestion_events
-                    WHERE received_at >= $1
-                      AND status = 'ingested'
-                    GROUP BY source_channel, source_endpoint_identity,
-                             date_trunc('hour', received_at AT TIME ZONE 'UTC')
-                    UNION ALL
-                    SELECT
-                        connector_type,
-                        endpoint_identity,
-                        date_trunc('hour', received_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-                            AS hour_bucket,
-                        'filtered'               AS source,
-                        count(*)                 AS event_count
-                    FROM connectors.filtered_events
-                    WHERE received_at >= $1
-                    GROUP BY connector_type, endpoint_identity,
-                             date_trunc('hour', received_at AT TIME ZONE 'UTC')
-                ) combined
-                """,
-                window_start,
-            )
-            # Populate bucket arrays for each connector key seen in hourly_rows,
-            # routing to the ingested or filtered map by the `source` discriminator.
-            for hr in hourly_rows:
-                key = (hr["connector_type"], hr["endpoint_identity"])
-                target_map = hourly_map if hr["source"] == "ingested" else hourly_filtered_map
-                if key not in target_map:
-                    target_map[key] = [0] * 24
-                # Determine which bucket index this hour falls into (0 = oldest, 23 = newest)
-                bucket_offset = int((hr["hour_bucket"] - window_start).total_seconds() // 3600)
-                if 0 <= bucket_offset < 24:
-                    target_map[key][bucket_offset] = int(hr["event_count"])
-        except Exception:
-            logger.warning("connector summaries: failed to fetch hourly timeseries", exc_info=True)
-            # hourly_map/hourly_filtered_map stay empty — connectors fall back to
-            # all-zeros below, and hourly_events_available flips false so a
-            # genuine query failure is never rendered as an honest all-quiet chart.
-            hourly_events_available = False
+    bucket_map, bucket_meta = await locked_buckets(pool, sorted(roster_keys))
+    hourly_events_available = bucket_meta["hourly_events_available"]
+    if hourly_events_available:
+        for key, buckets in bucket_map.items():
+            hourly_map[key] = [bucket["messages_ingested"] for bucket in buckets]
+            hourly_filtered_map[key] = [bucket["messages_filtered"] for bucket in buckets]
 
     # Per-device liveness fallback for connector_types whose connector_registry
     # rows can't (yet) disambiguate devices on their own (bu-e16to). Some
@@ -1149,12 +1030,13 @@ async def list_connector_summaries_with_aggregates(
                     "messages_ingested": messages_ingested_24h,
                     "messages_failed": r["counter_messages_failed"] or 0,
                 },
-                "hourly_events": hourly,
+                "hourly_events": hourly if hourly_events_available else None,
+                "hourly_buckets": bucket_map.get(key, []),
                 # Distinct 'filtered' series — connectors.filtered_events volume for this
                 # connector, NEVER folded into hourly_events/messages_ingested above (that
                 # would fabricate ingestion volume that never happened). Render as a
                 # visually-quiet second series alongside hourly_events.
-                "hourly_filtered_events": hourly_filtered,
+                "hourly_filtered_events": hourly_filtered if hourly_events_available else None,
                 # Only suppress the ingestion_events-derived `devices` badge
                 # list once connector_registry has a row for *every* device the
                 # fallback knows about for this connector_type (registry_row_counts
@@ -1201,6 +1083,7 @@ async def list_connector_summaries_with_aggregates(
             # raised — mirrors device_liveness_available
             # (genuine-failure-only degraded flag; never fabricated zeros).
             "hourly_events_available": hourly_events_available,
+            "bucket_window": bucket_meta,
             # False only if the OwnTracks durable-point cadence query itself
             # raised. The connector warnings stay empty in that case and the
             # frontend names the degraded source explicitly.
@@ -1426,7 +1309,12 @@ async def get_connector_stats(
     stats = None
     try:
         async with pool.acquire() as connection:
-            async with connection.transaction():
+            async with connection.transaction(isolation="read_committed"):
+                catalog = await recording_catalog(connection)
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    f"connector-classification:{connector_type}:{endpoint_identity}",
+                )
                 existing = await connection.fetchrow(
                     "SELECT connector_type FROM connector_registry"
                     " WHERE connector_type = $1 AND endpoint_identity = $2"
@@ -1435,12 +1323,15 @@ async def get_connector_stats(
                     endpoint_identity,
                 )
                 if existing is not None:
+                    as_of = await connection.fetchval("SELECT clock_timestamp()")
                     stats = await _connector_stats_from_db(
                         connector_type,
                         endpoint_identity,
                         period,
                         db,
                         connection=connection,
+                        catalog=catalog,
+                        as_of=as_of,
                     )
     except Exception:
         logger.warning(

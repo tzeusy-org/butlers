@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-ingestion-dispatch-console-006: mounted detail histogram and source availability.
 /**
  * ConnectorDetailView — unit tests covering spec acceptance criteria:
  *
@@ -15,6 +16,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { ConnectorRosterRow } from './ConnectorRosterRow'
 import { MemoryRouter } from 'react-router'
 
 ;(
@@ -29,6 +32,7 @@ import type {
   ConnectorStats,
 } from '@/api/types'
 import { ConnectorDetailView } from './ConnectorDetailView'
+import { getConnectorStats } from '@/api/client'
 import type { ConnectorRecovery } from './connector-auth'
 import { ReauthCallout } from './ReauthCallout'
 import { stateColorVar, stateTextColorVar } from '@/lib/visual-token-roles'
@@ -735,13 +739,38 @@ describe('[bu-5ywn2] Routing rules section', () => {
 
   // Skip-aware histogram: degraded note (bu-c48im)
 
-  it('shows the degraded note when hourly_events_available is false', () => {
+  it('shows the degraded note when hourly_events_available is false', async () => {
     renderDetail(root, BASE_CONNECTOR, {
       stats: makeStats({ hourly_events_available: false }),
     })
     const note = container.querySelector('[data-testid="histogram-degraded-note"]')
     expect(note).not.toBeNull()
     expect(note?.textContent).toContain('24h throughput')
+    const values = () => [...container.querySelector('[data-testid="kpi-strip"]')!.children]
+      .map(cell => cell.children[1].textContent)
+    // A cached summary cannot override its explicit source-unavailable flag.
+    expect(values().slice(0, 3)).toEqual(['24', '—', '—'])
+    expect(container.querySelector('[data-testid="kpi-strip"] time')).not.toBeNull()
+    const fetch = vi.spyOn(globalThis, 'fetch')
+    try {
+      for (const [available, ingested, failed, expected] of [
+        [false, null, null, ['24', '—', '—']],
+        [true, null, null, ['24', '—', '—']],
+        [true, 0, 0, ['24', '0.0%', '0.0/hr']],
+        [true, 48, 2, ['24', '4.0%', '2.0/hr']],
+      ] as const) {
+        fetch.mockResolvedValueOnce(new Response(JSON.stringify({
+          data: [{ hour: '2026-05-10T02:00:00Z', messages_ingested: ingested, messages_failed: failed }],
+          meta: { hourly_events_available: available },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+        const response = await getConnectorStats('spotify', 'me')
+        renderDetail(root, BASE_CONNECTOR, { stats: response.data })
+        expect(values().slice(0, 3)).toEqual(expected)
+        expect(container.querySelector('[data-testid="kpi-strip"] time')).not.toBeNull()
+      }
+    } finally {
+      fetch.mockRestore()
+    }
   })
 
   it('hides the degraded note when the hourly source is available', () => {
@@ -751,6 +780,50 @@ describe('[bu-5ywn2] Routing rules section', () => {
     expect(
       container.querySelector('[data-testid="histogram-degraded-note"]'),
     ).toBeNull()
+    // Actual roster-row and detail-view adapters consume the same complete
+    // receiver-keyed wire cells; shuffled input cannot move the 2/20 marks.
+    const origin = Date.parse('2026-05-10T00:00:00Z')
+    const buckets = Array.from({ length: 24 }, (_, index) => ({
+      bucket: new Date(origin + index * 3_600_000).toISOString(),
+      bucket_start: new Date(origin + index * 3_600_000).toISOString(),
+      bucket_end: new Date(origin + (index + 1) * 3_600_000).toISOString(),
+      messages_ingested: index === 2 ? 2 : index === 20 ? 20 : 0,
+      messages_filtered: 0, messages_failed: 0,
+      listening: ([5, 6, 7].includes(index) ? 'deaf' : 'live') as 'deaf' | 'live',
+    })).reverse()
+    renderDetail(root, BASE_CONNECTOR, { stats: makeStats({ timeseries: buckets }) })
+    const detailCells = [...container.querySelectorAll('[data-testid="histogram-bars"] > div')]
+    const roster = document.createElement('div')
+    roster.innerHTML = renderToStaticMarkup(<MemoryRouter>
+      <ConnectorRosterRow connector={{ ...BASE_CONNECTOR, hourly_buckets: buckets }} />
+    </MemoryRouter>)
+    const rosterCells = [...roster.querySelectorAll('[data-testid="histogram-bars"] > div')]
+    expect(detailCells).toHaveLength(24)
+    expect(rosterCells.map(cell => cell.getAttribute('aria-label')))
+      .toEqual(detailCells.map(cell => cell.getAttribute('aria-label')))
+    expect(detailCells[2].getAttribute('aria-label')).toContain('2 events')
+    expect(detailCells[20].getAttribute('aria-label')).toContain('20 events')
+    expect(detailCells.filter(cell => cell.classList.contains('bucket-deaf'))).toHaveLength(3)
+    expect(roster.innerHTML).toContain('not listening 3h')
+    expect(container.innerHTML).toContain('not listening 3h')
+    // Sparse source positives use the exact same declared bounds in both
+    // mounted adapters. Missing cells supply no invented listening/counts.
+    const window = { window_start:'2026-05-10T00:00:00Z', window_end:'2026-05-11T00:00:00Z',
+      bucket_width_s:3600, counts_available:false }
+    const sparse = buckets.filter(bucket => [2, 20].includes(new Date(bucket.bucket_start).getUTCHours()))
+    renderDetail(root, BASE_CONNECTOR, { stats: makeStats({ timeseries:sparse, bucket_window:window }) })
+    roster.innerHTML = renderToStaticMarkup(<MemoryRouter>
+      <ConnectorRosterRow connector={{ ...BASE_CONNECTOR, hourly_buckets:sparse }} bucketWindow={window} />
+      </MemoryRouter>)
+    const sparseDetailCells = [...container.querySelectorAll('[data-testid="histogram-bars"] > div')]
+    const sparseRosterCells = [...roster.querySelectorAll('[data-testid="histogram-bars"] > div')]
+    expect(sparseDetailCells).toHaveLength(24)
+    expect(sparseRosterCells.map(cell => cell.getAttribute('aria-label')))
+      .toEqual(sparseDetailCells.map(cell => cell.getAttribute('aria-label')))
+    expect(sparseDetailCells[2].getAttribute('aria-label')).toContain('2 events')
+    expect(sparseDetailCells[20].getAttribute('aria-label')).toContain('20 events')
+    expect(sparseDetailCells[5].getAttribute('aria-label')).toContain('count unavailable; liveness unknown')
+    expect(sparseDetailCells.filter(cell => cell.classList.contains('bucket-deaf'))).toHaveLength(0)
   })
 
   it('does not show the degraded note while stats are still loading', () => {

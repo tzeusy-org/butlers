@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-butler-management-004: actual mounted Activity ranges, counts and independent data states.
 /**
  * ButlerActivityTab — RTL tests.
  *
@@ -46,15 +47,15 @@ vi.mock("@/hooks/use-sessions", () => ({
   useSessionAggregate: vi.fn(),
 }))
 
-// Stub ActivityStripe and DayBars to avoid SVG/canvas complexity
+// Stub the two canonical count renderers; time keys come from hook fixtures.
 vi.mock("@/components/butlers/ActivityStripe", () => ({
-  ActivityStripe: ({ counts }: { counts: number[] }) =>
-    createElement("div", { "data-testid": "activity-stripe", "aria-label": `stripe-${counts.length}` }),
+  ActivityStripe: ({ buckets }: { buckets: unknown[] }) =>
+    createElement("div", { "data-testid": "activity-stripe", "aria-label": `stripe-${buckets.length}` }),
 }))
 
-vi.mock("@/components/butlers/DayBars", () => ({
-  DayBars: ({ data }: { data: number[] }) =>
-    createElement("div", { "data-testid": "day-bars", "aria-label": `bars-${data.length}` }),
+vi.mock("@/components/ui/BucketStrip", () => ({
+  BucketStrip: ({ buckets }: { buckets: unknown[] }) =>
+    createElement("div", { "data-testid": "day-bars", "aria-label": `bars-${buckets.length}` }),
 }))
 
 import {

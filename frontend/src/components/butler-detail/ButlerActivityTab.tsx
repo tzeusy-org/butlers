@@ -28,8 +28,9 @@ import { AlertTriangle } from "lucide-react"
 
 import { Skeleton } from "@/components/ui/skeleton"
 import { RangeToggle, type RangeValue } from "@/components/ui/range-toggle"
+import { sessionCountBuckets } from "@/lib/bucket-series"
+import { BucketStrip } from "@/components/ui/BucketStrip"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
-import { DayBars } from "@/components/butlers/DayBars"
 import { KpiCell, Panel } from "@/components/butler-detail/atoms"
 import {
   useButlerHourlyActivity,
@@ -38,7 +39,6 @@ import {
   useButlerLatencyStats,
 } from "@/hooks/use-butler-analytics"
 import { useSessionAggregate } from "@/hooks/use-sessions"
-import { bucketDaysAgo } from "@/lib/daily-buckets"
 
 // Module-level helper so Date.now() is not called directly during render
 // (required by the react-hooks/purity ESLint rule).
@@ -157,14 +157,7 @@ function ActivityPanel({ butlerName, range, onRangeChange }: ActivityPanelProps)
   if (range === "24h") {
     const { data, isLoading, isError } = hourlyQuery
     const buckets = data?.data?.buckets ?? []
-    // Build oldest-first 24-element counts array (API returns newest-first by hour_index)
-    const counts: number[] = Array(24).fill(0)
-    for (const b of buckets) {
-      const idx = 23 - b.hour_index // hour_index 0 = newest → slot 23
-      if (idx >= 0 && idx < 24) {
-        counts[idx] = b.sessions_count
-      }
-    }
+    const keyedBuckets = sessionCountBuckets(buckets)
 
     return (
       <div
@@ -180,7 +173,7 @@ function ActivityPanel({ butlerName, range, onRangeChange }: ActivityPanelProps)
           ) : isError ? (
             <ErrorLine>Could not load hourly activity.</ErrorLine>
           ) : (
-            <ActivityStripe counts={counts} className="w-full" />
+            <ActivityStripe buckets={keyedBuckets} className="w-full" />
           )}
         </div>
       </div>
@@ -188,25 +181,14 @@ function ActivityPanel({ butlerName, range, onRangeChange }: ActivityPanelProps)
   }
 
   // 7d or 30d
-  const windowDays = range === "7d" ? 7 : 30
   const { data, isLoading, isError } = range === "7d" ? dailyQuery7d : dailyQuery30d
   const buckets = data?.data?.buckets ?? []
 
-  // Build a dense counts array for the window (days with no sessions stay 0)
-  const counts: number[] = Array(windowDays).fill(0)
-  if (buckets.length > 0) {
-    const now = new Date()
-    for (const b of buckets) {
-      // b.date is a UTC-anchored `YYYY-MM-DD` bucket key; measure the offset in
-      // UTC so the histogram doesn't shift a slot on viewers west of UTC.
-      const daysAgo = bucketDaysAgo(b.date, now)
-      if (daysAgo == null) continue
-      const idx = windowDays - 1 - daysAgo
-      if (idx >= 0 && idx < windowDays) {
-        counts[idx] = b.sessions_count
-      }
-    }
-  }
+  const keyedDays = buckets.map(bucket => ({
+    bucket_start: `${bucket.date}T00:00:00.000Z`,
+    bucket_end: new Date(Date.parse(`${bucket.date}T00:00:00.000Z`) + 86_400_000).toISOString(),
+    count: bucket.sessions_count, listening: "unknown" as const,
+  }))
 
   return (
     <div
@@ -222,7 +204,7 @@ function ActivityPanel({ butlerName, range, onRangeChange }: ActivityPanelProps)
         ) : isError ? (
           <ErrorLine>Could not load daily activity.</ErrorLine>
         ) : (
-          <DayBars data={counts} height={48} className="w-full" />
+          <BucketStrip buckets={keyedDays} height={48} className="w-full" />
         )}
       </div>
     </div>

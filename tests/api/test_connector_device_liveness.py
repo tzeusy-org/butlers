@@ -32,6 +32,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.ingestion_connectors import _get_db_manager
+from tests.api.connector_bucket_fixtures import attach_bucket_reader
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +108,7 @@ def _make_pool_with_fetch_sequence(fetch_calls: list[list]) -> AsyncMock:
 
 
 def _wire_db(app: FastAPI, pool: AsyncMock) -> None:
+    attach_bucket_reader(pool)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     app.dependency_overrides[_get_db_manager] = lambda: mock_db

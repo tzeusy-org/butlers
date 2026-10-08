@@ -25,6 +25,8 @@ from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 pytestmark = pytest.mark.unit
 
 
+# REQ-connector-base-spec-004: required explicit caller ownership declaration.
+# The real-PG parent/role branches live in test_cursor_store_parent_declaration.py.
 def test_parent_declaration_has_no_default() -> None:
     """A new call site cannot inherit the NULL by leaving the argument out."""
     param = inspect.signature(save_cursor).parameters["parent_endpoint_identity"]

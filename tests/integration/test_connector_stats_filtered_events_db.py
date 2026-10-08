@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -76,8 +76,14 @@ class _GatedStatsConnection:
         self._history_started = history_started
         self._release_history = release_history
 
-    def transaction(self):
-        return self._connection.transaction()
+    def transaction(self, **kwargs):
+        return self._connection.transaction(**kwargs)
+
+    async def execute(self, *args: object):
+        return await self._connection.execute(*args)
+
+    async def fetchval(self, *args: object):
+        return await self._connection.fetchval(*args)
 
     async def fetchrow(self, *args: object):
         return await self._connection.fetchrow(*args)
@@ -292,6 +298,10 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
     assert total_filtered == 4
 
 
+# REQ-dashboard-ingestion-dispatch-console-004: keyed exact-endpoint LIVE/DEAF/UNKNOWN controls.
+# REQ-dashboard-ingestion-dispatch-console-007: real counts survive failed listening reads.
+# REQ-dashboard-design-language-007: real source-key/grid and count/listening independence;
+# mounted accessibility/lint companions and genuine elapsed recording are distinct.
 async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     pool: asyncpg.Pool,
 ) -> None:
@@ -317,10 +327,202 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     )
 
     # Exactly one hour bucket, with the two series kept DISTINCT.
-    assert len(result.data) == 1
-    bucket = result.data[0]
+    assert len(result.data) == 24
+    bucket = next(bucket for bucket in result.data if bucket.messages_ingested == 2)
     assert bucket.messages_ingested == 2
     assert bucket.messages_filtered == 3
+
+    # SYNTHETIC CHRONOLOGY CONFORMANCE ONLY: the trusted disposable fixture
+    # plants receiver authority while guards are disabled, then restores the
+    # complete real catalog before the unmocked SQL read. This is not elapsed
+    # recording/admission proof; that separate owning-role node uses real clocks.
+    endpoint = "recording-conformance"
+    anchor = await pool.fetchval("SELECT clock_timestamp()")
+    await pool.execute(
+        "SELECT switchboard.switchboard_connector_heartbeat_log_ensure_partition($1)", anchor
+    )
+    await pool.execute(
+        "SELECT switchboard.switchboard_connector_heartbeat_log_ensure_partition($1)",
+        anchor - timedelta(days=2),
+    )
+    catalog = await pool.fetchval("SELECT switchboard.heartbeat_recording_catalog()")
+    await pool.execute("ALTER TABLE switchboard.connector_registry DISABLE TRIGGER USER")
+    await pool.execute("ALTER TABLE switchboard.connector_heartbeat_log DISABLE TRIGGER USER")
+    try:
+        await pool.execute(
+            "INSERT INTO connector_registry (connector_type,endpoint_identity,state, "
+            "operational_role,first_seen_at,heartbeat_history_coverage) "
+            "VALUES ('telegram_bot',$1,'healthy','runtime_instance',$2,$3)",
+            endpoint,
+            anchor - timedelta(days=2),
+            {
+                "version": 1,
+                "coverage_start": (anchor - timedelta(hours=30)).isoformat(),
+                "partitions": catalog,
+            },
+        )
+        for index in range(24):
+            if index in (5, 6, 7):
+                continue
+            await pool.execute(
+                "INSERT INTO connector_heartbeat_log (connector_type, endpoint_identity, "
+                "state, received_at) VALUES ('telegram_bot',$1,$2,$3)",
+                endpoint,
+                "error" if index == 20 else "healthy",
+                anchor - timedelta(hours=24 - index) + timedelta(minutes=30),
+            )
+    finally:
+        await pool.execute("ALTER TABLE switchboard.connector_registry ENABLE TRIGGER USER")
+        await pool.execute("ALTER TABLE switchboard.connector_heartbeat_log ENABLE TRIGGER USER")
+    for index, count in ((2, 2), (20, 20)):
+        for _ in range(count):
+            await _seed_ingestion_event(
+                pool,
+                received_at=anchor - timedelta(hours=24 - index) + timedelta(minutes=30),
+                connector_type="telegram_bot",
+                endpoint_identity=endpoint,
+            )
+    conformance = await ingestion_connectors._connector_stats_from_db(
+        "telegram_bot", endpoint, "24h", _RealPoolDB(pool)
+    )
+    assert len(conformance.data) == 24
+    assert conformance.data[2].messages_ingested == 2
+    assert conformance.data[20].messages_ingested == 20
+    # Roster and detail use one actual SQL reader and the same captured source
+    # window, rather than comparing independently moving clocks.
+    from butlers.api.connector_buckets import read_buckets
+
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            captured = datetime.fromisoformat(conformance.meta.as_of)
+            batch, _ = await read_buckets(
+                connection, [("telegram_bot", endpoint)], "24h", catalog=catalog, as_of=captured
+            )
+            detail = await ingestion_connectors._connector_stats_from_db(
+                "telegram_bot",
+                endpoint,
+                "24h",
+                _RealPoolDB(pool),
+                connection=connection,
+                catalog=catalog,
+                as_of=captured,
+            )
+    assert [item.model_dump(exclude={"hour"}) for item in detail.data] == batch[
+        ("telegram_bot", endpoint)
+    ]
+    assert [item["messages_ingested"] for item in batch[("telegram_bot", endpoint)]] == [
+        item.messages_ingested for item in conformance.data
+    ]
+    assert [i for i, item in enumerate(conformance.data) if item.listening == "deaf"] == [5, 6, 7]
+    assert all(
+        item.listening == "live" for i, item in enumerate(conformance.data) if i not in (5, 6, 7)
+    )
+    assert all(
+        datetime.fromisoformat(item.bucket_end) <= datetime.fromisoformat(conformance.meta.as_of)
+        for item in conformance.data
+    )
+    # Old best-effort history and a positive count never supply empty-bucket authority.
+    await pool.execute(
+        "UPDATE connector_registry SET last_heartbeat_at=clock_timestamp() "
+        "WHERE connector_type='telegram_bot' AND endpoint_identity=$1",
+        endpoint,
+    )
+    legacy = await ingestion_connectors._connector_stats_from_db(
+        "telegram_bot", endpoint, "24h", _RealPoolDB(pool)
+    )
+    assert [legacy.data[i].listening for i in (5, 6, 7)] == ["unknown"] * 3
+    assert legacy.data[2].messages_ingested == 2
+    assert legacy.data[20].listening == "live"
+
+    # Genuine board SQL positive: a canonical disposable session producer
+    # survives the new rolling origin; every source interval is closed/real.
+    from butlers.api.routers.butlers import _fetch_board_hourly_stripe
+    from butlers.core.sessions import session_create
+    from butlers.core.utils import generate_uuid7_string
+
+    await session_create(
+        pool, "synthetic count control", "trigger", request_id=generate_uuid7_string()
+    )
+    before = await pool.fetchval("SELECT clock_timestamp()")
+    board, total, unavailable = await _fetch_board_hourly_stripe(pool)
+    after = await pool.fetchval("SELECT clock_timestamp()")
+    assert not unavailable and len(board) == 24 and total >= 1
+    assert before - timedelta(hours=24) <= datetime.fromisoformat(board[0]["hour_start"])
+    assert datetime.fromisoformat(board[-1]["hour_start"]) + timedelta(hours=1) <= after
+    assert any(item["sessions_count"] > 0 for item in board)
+
+    # Genuine SQL/savepoint failures preserve the independent source and the
+    # outer transaction. These fixture DDL mutations never change privileges.
+    from butlers.api.connector_buckets import read_buckets, recording_catalog
+
+    await pool.execute(
+        "ALTER TABLE connector_registry RENAME COLUMN "
+        "heartbeat_history_coverage TO fixture_unavailable_coverage"
+    )
+    try:
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                captured = await connection.fetchval("SELECT clock_timestamp()")
+                values, meta = await read_buckets(
+                    connection, [("telegram_bot", endpoint)], "24h", catalog=None, as_of=captured
+                )
+                assert meta["hourly_events_available"] and not meta["heartbeat_history_available"]
+                assert (
+                    sum(item["messages_ingested"] for item in values[("telegram_bot", endpoint)])
+                    == 22
+                )
+                assert all(
+                    item["listening"] == "unknown" for item in values[("telegram_bot", endpoint)]
+                )
+                assert await connection.fetchval("SELECT 1") == 1
+    finally:
+        await pool.execute(
+            "ALTER TABLE connector_registry RENAME COLUMN "
+            "fixture_unavailable_coverage TO heartbeat_history_coverage"
+        )
+    # Separate acquisition sees retained count rows, not a caught aborted tx.
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.ingestion_events WHERE source_endpoint_identity=$1",
+            endpoint,
+        )
+        == 22
+    )
+    await pool.execute(
+        "ALTER TABLE public.ingestion_events RENAME COLUMN "
+        "source_provider TO fixture_unavailable_provider"
+    )
+    try:
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                catalog = await recording_catalog(connection)
+                captured = await connection.fetchval("SELECT clock_timestamp()")
+                values, meta = await read_buckets(
+                    connection, [("telegram_bot", endpoint)], "24h", catalog=catalog, as_of=captured
+                )
+                assert not meta["hourly_events_available"] and meta["heartbeat_history_available"]
+                assert all(
+                    item["messages_ingested"] is None for item in values[("telegram_bot", endpoint)]
+                )
+                assert values[("telegram_bot", endpoint)][20]["listening"] == "live"
+                assert await connection.fetchval("SELECT 1") == 1
+    finally:
+        await pool.execute(
+            "ALTER TABLE public.ingestion_events RENAME COLUMN "
+            "fixture_unavailable_provider TO source_provider"
+        )
+    restored = await ingestion_connectors._connector_stats_from_db(
+        "telegram_bot", endpoint, "24h", _RealPoolDB(pool)
+    )
+    assert restored.meta.hourly_events_available and restored.meta.heartbeat_history_available
+    assert restored.data[2].messages_ingested == 2 and restored.data[20].messages_ingested == 20
+    # Closed daily eligibility is distinct from physically retained monthly data.
+    daily = await ingestion_connectors._connector_stats_from_db(
+        "telegram_bot", endpoint, "30d", _RealPoolDB(pool)
+    )
+    assert len(daily.data) == 31
+    assert all(item.listening == "unknown" for item in daily.data[:-7])
+    assert daily.data[-1].counts_partial and daily.data[-1].listening in ("unknown", "live")
 
 
 async def test_stats_matches_websocket_connector_stored_under_source_provider(
@@ -330,10 +532,14 @@ async def test_stats_matches_websocket_connector_stored_under_source_provider(
     source_channel) is matched via COALESCE(source_provider, source_channel)."""
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
-    # _seed_ingestion_event writes both source_channel and source_provider to the
-    # connector_type, so COALESCE resolves correctly regardless.
+    # Use an actually different source channel so only provider precedence
+    # can find this event (the prior equal-column fixture was non-causal).
     await _seed_ingestion_event(
         pool, received_at=now, connector_type="home_assistant", endpoint_identity="ws://ha:8123"
+    )
+    await pool.execute(
+        "UPDATE public.ingestion_events SET source_channel='websocket' "
+        "WHERE source_endpoint_identity='ws://ha:8123'"
     )
 
     result = await ingestion_connectors._connector_stats_from_db(

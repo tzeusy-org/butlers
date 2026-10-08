@@ -111,7 +111,14 @@ class _FakeButlerPool:
         if "hours AS" in sql:
             if self.hourly_query_fails:
                 raise RuntimeError("hourly activity query failed")
-            return [{"sessions_count": c} for c in self.hourly_counts]
+            return [
+                {
+                    "sessions_count": c,
+                    "hour_start": datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+                    - timedelta(hours=i),
+                }
+                for i, c in enumerate(self.hourly_counts)
+            ]
         if "AS marker" in sql:
             if self.cost_query_fails:
                 raise RuntimeError("cost query failed")
@@ -492,6 +499,8 @@ async def test_board_cost_failure_is_partial_sum_with_error_flag():
     assert payload["aggregates"]["total_spend_today"] == rows_by_name["finance"]["cost_today"]
 
 
+# REQ-dashboard-butler-management-003: unavailable Overview count-source boundary.
+# Mounted Overview panels have their own frontend software companions.
 async def test_board_hourly_stripe_failure_flags_error_never_fabricates_zero_stripe():
     """A raising hourly-activity query must flag stripe_source_error, not a bare [0]*24."""
     configs = [
@@ -513,7 +522,8 @@ async def test_board_hourly_stripe_failure_flags_error_never_fabricates_zero_str
     assert rows_by_name["general"]["stripe_source_error"] is True
     # The failed butler's stripe/total still degrade to an honest-looking zero
     # array server-side, but the flag is what a client must gate on.
-    assert rows_by_name["general"]["hourly_stripe"] == [0] * 24
+    assert rows_by_name["general"]["hourly_stripe"] == []
+    assert rows_by_name["general"]["hourly_buckets"] == []
     assert rows_by_name["general"]["hourly_total"] == 0
     assert payload["aggregates"]["sessions_source_error"] is True
     assert payload["aggregates"]["sources_partially_degraded"] is True

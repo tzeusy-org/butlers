@@ -242,6 +242,7 @@ CONNECTOR_REGISTRY = TableStandin(
         ("archived_at", "TIMESTAMPTZ NULL"),
         ("operational_role", "TEXT NOT NULL DEFAULT 'unknown'"),
         ("parent_endpoint_identity", "TEXT NULL"),
+        ("heartbeat_history_coverage", "JSONB NULL"),
     ),
     table_constraints=(
         "PRIMARY KEY (connector_type, endpoint_identity)",
@@ -263,6 +264,22 @@ CONNECTOR_REGISTRY = TableStandin(
         "CREATE INDEX IF NOT EXISTS ix_connector_registry_live "
         "ON {table} (connector_type, endpoint_identity) "
         "WHERE deleted_at IS NULL AND archived_at IS NULL",
+    ),
+    excluded_triggers=(
+        TriggerExclusion(
+            name="heartbeat_registry_derive",
+            migration="sw_041",
+            reason="Same-xid recording guard depends on the omitted sibling heartbeat log, "
+            "its actual partitions/owners and closed trigger catalog; this stand-in "
+            "is observational only. Real controls live in the heartbeat migration suite.",
+        ),
+        TriggerExclusion(
+            name="heartbeat_registry_validate",
+            migration="sw_041",
+            reason="Post-write recording validation depends on the omitted sibling heartbeat "
+            "log/catalog; no authority is minted by a stand-in. Actual writer/role "
+            "controls live in the heartbeat migration suite.",
+        ),
     ),
 )
 

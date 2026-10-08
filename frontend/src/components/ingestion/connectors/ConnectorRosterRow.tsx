@@ -30,6 +30,7 @@ import { Time } from '@/components/ui/time'
 import { StateDot } from '@/components/ui/StateDot'
 import { stateTextColorVar } from '@/lib/visual-token-roles'
 import type { ConnectorSummary } from '@/api/types'
+import type { BucketWindow } from '@/lib/bucket-series'
 import { ConnectorCheckpoints } from './ConnectorCheckpoints'
 import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
 import { Sparkline } from './Sparkline'
@@ -44,7 +45,8 @@ import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
 interface ConnectorRosterRowProps {
   connector: ConnectorSummary
-  /** Pre-computed 24h hourly spark data (length-24 array). Absent → all zeros. */
+  bucketWindow?: BucketWindow | null
+  /** Legacy numeric compatibility prop; count charts use hourly_buckets only. */
   spark24h?: number[]
   /**
    * Pre-computed 24h filtered/skip-routed spark data (bu-scyro). Rendered as a
@@ -81,8 +83,7 @@ function formatNum(n: number): string {
  */
 export function ConnectorRosterRow({
   connector,
-  spark24h,
-  spark24hFiltered,
+  bucketWindow,
   events24h,
   catalogChannel,
   rosterSparkMax,
@@ -91,7 +92,11 @@ export function ConnectorRosterRow({
   const info = deriveConnectorDispatchInfo(c)
   const detailPath = `/ingestion/connectors/${encodeURIComponent(c.connector_type)}/${encodeURIComponent(c.endpoint_identity)}`
 
-  const bars = spark24h ?? Array(24).fill(0)
+  const buckets = (c.hourly_buckets ?? []).map(bucket => ({
+    bucket_start: bucket.bucket_start ?? "", bucket_end: bucket.bucket_end ?? "",
+    count: bucket.messages_ingested, filtered: bucket.messages_filtered,
+    listening: bucket.listening ?? "unknown", counts_partial: bucket.counts_partial,
+  }))
   // today.messages_ingested is already the 24h sum on the backend (derived from hourly_events).
   const eventsCount = events24h ?? c.today?.messages_ingested ?? 0
 
@@ -184,15 +189,14 @@ export function ConnectorRosterRow({
       {/* 24h sparkline */}
       <div className="flex flex-col gap-1">
         <Sparkline
-          data={bars}
-          secondaryData={spark24hFiltered}
+          buckets={buckets} window={bucketWindow}
           maxValue={rosterSparkMax}
           height={24}
         />
         <div className="flex justify-between font-mono text-[9px] text-muted-foreground/40 tracking-[0.04em]">
-          <span>00</span>
-          <span>12</span>
-          <span>24</span>
+          <span>−24h</span>
+          <span>−12h</span>
+          <span>as of read</span>
         </div>
       </div>
 
