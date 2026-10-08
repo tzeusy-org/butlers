@@ -254,6 +254,35 @@ def test_dependency_cache_contracts_bind_cache_images_to_the_current_locks(
         assert capsule["recipe_instructions"] == ["COPY"]
         assert "synthetic-private-output" not in json.dumps(capsule)
         assert "${CACHE}" not in json.dumps(capsule)
+    # BuildKit's CopyCommand guard has a distinct, fixed refusal species.
+    # These are classifier conformance inputs, not actual compiler executions.
+    variable_refusal = (
+        b"failed to solve: variable expansion is not supported for --from, "
+        b"synthetic-private-variable-argument\n"
+    )
+    for stdout, stderr in ((variable_refusal, b""), (b"", variable_refusal)):
+        kind = proof.closed_build_failure(stderr, stdout)
+        assert kind == "unsupported_copy_from_variable"
+        assert kind in proof.VARIABLE_COPY_FAILURE_KINDS
+        capsule = proof.closed_builder_diagnostic(stdout, stderr, recipe)
+        assert capsule["indicators"]["copy_from_variable_expansion_refusal"] is True
+        assert "synthetic-private-variable-argument" not in json.dumps(capsule)
+    for other in (
+        b"variable expansion is not supported for --mount, private-argument",
+        b"variable expansion is not supported for --fromage, private-argument",
+        b"variable expansion is not supported; failed to solve private-argument",
+        b"network mode none not supported; failed to solve private-argument",
+        b"docker exporter does not support exporting manifest lists",
+    ):
+        kind = proof.closed_build_failure(other)
+        assert kind == "unclassified_builder_failure"
+        assert kind not in proof.VARIABLE_COPY_FAILURE_KINDS
+        assert (
+            proof.closed_builder_diagnostic(b"", other)["indicators"][
+                "copy_from_variable_expansion_refusal"
+            ]
+            is False
+        )
     unrelated = (
         b"Dockerfile:2\nDockerfile:999\nfailed to resolve source metadata: permission denied"
     )

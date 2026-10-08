@@ -67,6 +67,17 @@ expected reference or missing-stage class, and the valid-alias companion must
 still build with the same input. No raw output, error arguments or child paths
 are printed or uploaded.
 
+The variable-COPY controls also recognize the distinct fixed refusal emitted
+by [BuildKit v0.33.0's `CopyCommand` guard](https://github.com/moby/buildkit/blob/v0.33.0/frontend/dockerfile/dockerfile2llb/convert.go#L951).
+That guard rejects shell expansion in `--from` and recommends a global `ARG`
+with a named `FROM` stage. The receipt reports
+`unsupported_copy_from_variable` only when its exact fixed prefix matches;
+generic unsupported network, exporter or other flag errors remain unclassified.
+Only the tiny old variable-COPY and three immutable old recipe controls accept
+this class alongside the older invalid-reference class. Blank, missing and
+malformed input controls keep their existing specific classes. Each control
+records its complete `expected_failure_kinds` list.
+
 Actual manual run 37764265658 at source `31a5195` prepared and verified the tiny
 OCI input, then refused the first old-COPY control after exit 1 with an unknown
 failure class. Cleanup passed. The valid alias and all three historical/current
@@ -80,6 +91,15 @@ public builder vocabulary, without token order or arbitrary strings. This is
 observation only: those observations cannot satisfy a negative class. The valid
 alias runs first to establish actual same-input health before attributing any
 old-COPY failure; it never replaces the old/malformed negatives or real recipes.
+
+Run 37767694283 at `c667e50` genuinely built the valid alias with the same sealed
+OCI input used by the next old-COPY control. That control exited 1, with only
+the solve-failure indicator matching; its error species remains UNKNOWN.
+Buildx reported v0.37.1, whose [module manifest](https://github.com/docker/buildx/blob/v0.37.1/go.mod)
+pins BuildKit v0.33.0. This client dependency does not establish the running
+builder daemon version or retrospectively classify the unknown failure. The
+new exact-prefix observation must be positioned by another actual controlled
+run. All three full historical and current recipe cohorts were unreached.
 
 The script has a 30-minute overall process deadline, finite per-command bounds
 and own-resource cleanup deadlines. The 45-minute manual job watchdog includes

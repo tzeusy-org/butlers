@@ -38,6 +38,13 @@ RECIPES = {
     "browser": "frontend/Dockerfile.meeting-prep-browser",
 }
 DIAGNOSTIC_WINDOW_BYTES = 65536
+# Fixed CopyCommand refusal prefix in BuildKit v0.33.0's toCommand guard.
+# Keep this distinct from generic unsupported-capability/error observations.
+COPY_FROM_VARIABLE_REFUSAL = "variable expansion is not supported for --from,"
+VARIABLE_COPY_FAILURE_KINDS = (
+    "invalid_copy_or_image_reference",
+    "unsupported_copy_from_variable",
+)
 BUILDER_PUBLIC_VOCABULARY = frozenset(
     "argument archive attestation build builder buildkit cache client container context copy "
     "daemon digest directory docker driver error export exporter failed fetch file flag format "
@@ -113,6 +120,8 @@ def _diagnostic_text(stdout: bytes, stderr: bytes) -> str:
 def closed_build_failure(stderr: bytes, stdout: bytes = b"") -> str:
     """Match only fixed builder classes; arbitrary bytes never enter a receipt."""
     text = _diagnostic_text(stdout, stderr)
+    if COPY_FROM_VARIABLE_REFUSAL in text:
+        return "unsupported_copy_from_variable"
     if any(p in text for p in ("invalid reference format", "invalid from flag value")):
         return "invalid_copy_or_image_reference"
     if any(p in text for p in ("base name", "blank", "requires either one or three arguments")):
@@ -128,6 +137,7 @@ def closed_builder_diagnostic(stdout: bytes, stderr: bytes, recipe: Path | None 
     """
     text = _diagnostic_text(stdout, stderr)
     indicators = {
+        "copy_from_variable_expansion_refusal": COPY_FROM_VARIABLE_REFUSAL in text,
         "invalid_reference_format": "invalid reference format" in text,
         "invalid_from_flag": "invalid from flag value" in text,
         "stage_name_parse_failure": "failed to parse stage name" in text,
@@ -384,21 +394,21 @@ def run_proof(output: Path, source: str) -> int:
             )
             cases = [
                 # Health is a prerequisite, not a replacement for any negative.
-                ("valid_alias", valid, control_args, True, "none"),
-                ("old_variable_copy", old, control_args, False, "invalid_copy_or_image_reference"),
+                ("valid_alias", valid, control_args, True, ("none",)),
+                ("old_variable_copy", old, control_args, False, VARIABLE_COPY_FAILURE_KINDS),
                 (
                     "blank_stage",
                     valid.replace("AS route-a-go-deps", "AS "),
                     control_args,
                     False,
-                    "invalid_or_missing_stage_input",
+                    ("invalid_or_missing_stage_input",),
                 ),
                 (
                     "missing_input",
                     valid,
                     [*control_args[:4], *control_args[6:]],
                     False,
-                    "invalid_or_missing_stage_input",
+                    ("invalid_or_missing_stage_input",),
                 ),
                 (
                     "invalid_input",
@@ -410,10 +420,10 @@ def run_proof(output: Path, source: str) -> int:
                         for v in control_args
                     ],
                     False,
-                    "invalid_copy_or_image_reference",
+                    ("invalid_copy_or_image_reference",),
                 ),
             ]
-            for name, text, args, positive, expected_failure in cases:
+            for name, text, args, positive, expected_failures in cases:
                 stage = "control_" + name
                 recipe = work / (name + ".Dockerfile")
                 recipe.write_text(text)
@@ -435,7 +445,7 @@ def run_proof(output: Path, source: str) -> int:
                         "exit": done.returncode,
                         "expected_positive": positive,
                         "failure_kind": kind,
-                        "expected_failure_kind": expected_failure,
+                        "expected_failure_kinds": list(expected_failures),
                         "builder_diagnostic": closed_builder_diagnostic(
                             done.stdout, done.stderr, recipe
                         ),
@@ -443,7 +453,7 @@ def run_proof(output: Path, source: str) -> int:
                         "network": "none",
                     }
                 )
-                if (done.returncode == 0) != positive or kind != expected_failure:
+                if (done.returncode == 0) != positive or kind not in expected_failures:
                     raise ProofRefusal("control_not_positioned")
                 if positive:
                     required(["docker", "image", "inspect", "--format", "{{.Id}}", tag], bound=10)
@@ -564,6 +574,7 @@ def run_proof(output: Path, source: str) -> int:
                         "exit": done.returncode,
                         "recipe_sha256": history["recipes"][relative],
                         "failure_kind": kind,
+                        "expected_failure_kinds": list(VARIABLE_COPY_FAILURE_KINDS),
                         "builder_diagnostic": closed_builder_diagnostic(
                             done.stdout, done.stderr, historical / relative
                         ),
@@ -572,7 +583,7 @@ def run_proof(output: Path, source: str) -> int:
                         "expected_positive": False,
                     }
                 )
-                if done.returncode == 0 or kind != "invalid_copy_or_image_reference":
+                if done.returncode == 0 or kind not in VARIABLE_COPY_FAILURE_KINDS:
                     raise ProofRefusal("historical_variable_copy_red_not_positioned")
             for name, relative in RECIPES.items():
                 stage = "offline_" + name
