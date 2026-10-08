@@ -19,7 +19,10 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import sys
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -36,6 +39,13 @@ from butlers.core.healing.worktree import (
     reap_stale_worktrees,
     remove_healing_worktree,
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_repository_custody_metadata(tmp_path: Path):
+    """These tests mock Git commands; give the real exclusion an owned metadata directory."""
+    (tmp_path / ".git").mkdir(exist_ok=True)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -178,6 +188,107 @@ class TestCreateHealingWorktree:
         with patch("butlers.core.healing.worktree._run_git", side_effect=git_lock):
             with pytest.raises(WorktreeCreationError):
                 await create_healing_worktree(tmp_path, "email", fp)
+
+        # REQ-testing-041: a cancelled/timed-out native child cannot keep
+        # mutating after the shared custody exclusion is released. These are
+        # real helper processes, not a mocked communicate()/wait() lifetime.
+        from butlers.core.git_custody import branch_exclusion
+        from butlers.core.healing import worktree as native
+
+        spawn = asyncio.create_subprocess_exec
+
+        async def discard(stream):
+            if stream is not None:
+                while await stream.read(65536):
+                    pass
+
+        for mode in ("cancel", "timeout", "cancel-flood", "timeout-flood"):
+            ready = asyncio.Event()
+            children = []
+            groups = []
+            operation = None
+
+            async def helper_git(executable, *args, **kwargs):
+                assert executable == "git"
+                script = "import sys,time; print('READY',flush=True); " + (
+                    "print('released'); print('companion',file=sys.stderr)"
+                    if args[0] == "released-control"
+                    else "time.sleep(30)"
+                )
+                flooded = "flood" in mode and args[0] != "released-control"
+                if flooded:
+                    script = (
+                        "import sys,time,threading; print('READY',flush=True); "
+                        "ts=[threading.Thread(target=lambda s: "
+                        "(s.write(b'X'*1048576),s.flush()),args=(s,),daemon=True) "
+                        "for s in (sys.stdout.buffer,sys.stderr.buffer)]; "
+                        "[t.start() for t in ts]; time.sleep(30)"
+                    )
+                child = await spawn(sys.executable, "-u", "-c", script, **kwargs)
+                children.append(child)
+                assert await asyncio.wait_for(child.stdout.readline(), 5) == b"READY\n"
+                if flooded:
+
+                    async def pipes_saturated():
+                        while not all(
+                            len(stream._buffer) > stream._limit and stream._paused
+                            for stream in (child.stdout, child.stderr)
+                        ):
+                            await asyncio.sleep(0.005)
+
+                    await asyncio.wait_for(pipes_saturated(), 5)
+                    assert child.stdout._paused and child.stderr._paused
+                groups.append(os.getpgid(child.pid) if args[0] != "released-control" else None)
+                ready.set()
+                return child
+
+            try:
+                with (
+                    patch(
+                        "butlers.core.healing.worktree.asyncio.create_subprocess_exec", helper_git
+                    ),
+                    patch(
+                        "butlers.core.healing.worktree._GIT_COMMAND_TIMEOUT_SECONDS",
+                        0.2,
+                        create=True,
+                    ),
+                ):
+                    operation = asyncio.create_task(create_healing_worktree(tmp_path, "email", fp))
+                    await asyncio.wait_for(ready.wait(), 5)
+                    if mode.startswith("cancel"):
+                        operation.cancel()
+                    done, _ = await asyncio.wait({operation}, timeout=2)
+                    assert operation in done, (
+                        f"{mode}: child_reaped={children[0].returncode is not None}, "
+                        "cleanup_completed=False"
+                    )
+                    if mode.startswith("cancel"):
+                        with pytest.raises(asyncio.CancelledError):
+                            await operation
+                    else:
+                        with pytest.raises(WorktreeCreationError, match="timed out"):
+                            await operation
+                    assert children[0].returncode is not None
+                    assert groups[0] == children[0].pid
+                    with branch_exclusion(tmp_path):
+                        rc, out, err = await native._run_git("released-control", cwd=tmp_path)
+                    assert (rc, out, err) == (0, "released", "companion")
+            finally:
+                # Independently finish a causal old-source red even when its
+                # killed child's paused pipes leave native wait() unfinished.
+                if operation is not None and not operation.done():
+                    operation.cancel()
+                for child in children:
+                    if child.returncode is None:
+                        child.kill()
+                    await asyncio.wait_for(
+                        asyncio.gather(discard(child.stdout), discard(child.stderr), child.wait()),
+                        5,
+                    )
+                if operation is not None:
+                    done, _ = await asyncio.wait({operation}, timeout=5)
+                    assert operation in done
+                    await asyncio.gather(operation, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +453,7 @@ class TestReapStaleWorktrees:
         # Orphaned branch (no worktree) → git branch -D called
         orphan_tmp = tmp_path / "orphan_test"
         orphan_tmp.mkdir()
+        (orphan_tmp / ".git").mkdir()
         orphan_branch = "self-healing/calendar/orphan000000-1710400000"
         pool_orphan = MagicMock()
 

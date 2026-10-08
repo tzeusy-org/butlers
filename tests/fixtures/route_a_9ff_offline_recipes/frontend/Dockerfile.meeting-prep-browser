@@ -1,10 +1,10 @@
 ARG ROUTE_A_PLAYWRIGHT_IMAGE
 ARG ROUTE_A_NPM_CACHE_IMAGE
-FROM ${ROUTE_A_NPM_CACHE_IMAGE} AS route-a-npm-cache
 FROM ${ROUTE_A_PLAYWRIGHT_IMAGE}
+ARG ROUTE_A_NPM_CACHE_IMAGE
 
 WORKDIR /work
-COPY --from=route-a-npm-cache /root/.npm/ /root/.npm/
+COPY --from=${ROUTE_A_NPM_CACHE_IMAGE} /root/.npm/ /root/.npm/
 COPY package.json package-lock.json ./
 RUN npm ci --offline --cache=/root/.npm
 COPY playwright.route-a.config.ts ./

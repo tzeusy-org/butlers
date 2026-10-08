@@ -61,7 +61,15 @@ Rules:
 
 - Never do PR-fix work in the main checkout.
 - Run all branch-local edits, tests, commits, and pushes from the isolated path.
-- Remove the worktree when the review is done and it is no longer needed.
+- Remove the worktree when the review is done and it is no longer needed,
+  after retaining evidence outside it; preserve dirty/live/foreign work.
+- New native investigations require a successful main fetch and a verified
+  immutable base commit before checkout/spawn. Failed refresh does not admit
+  stale local main. Existing PR follow-up stays bound to its exact head; rebase
+  only for an actual conflict or explicit reviewer requirement.
+- Repository claims/cleanup use the shared common-Git custody exclusion and
+  expected-SHA retirement described in `docs/operations/stale-branch-hygiene.md`.
+  Fresh preparation conveys no QA publication or remote-deletion authority.
 
 ### 2. Enumerate the closure set
 

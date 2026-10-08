@@ -362,7 +362,7 @@ async def test_dispatch_qa_success_and_never_raises():
     branch_name = "qa/finance/abcdef123456"
     attempt_id = uuid.uuid4()
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.communicate = AsyncMock(return_value=(("c" * 40).encode(), b""))
     mock_proc.returncode = 0
 
     with (
@@ -398,7 +398,7 @@ async def test_dispatch_qa_success_and_never_raises():
             "butlers.core.qa.dispatch.create_healing_worktree",
             new_callable=AsyncMock,
             return_value=(worktree_path, branch_name),
-        ),
+        ) as create_worktree,
         patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
         patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
     ):
@@ -412,7 +412,31 @@ async def test_dispatch_qa_success_and_never_raises():
             gh_token="ghtoken",
             task_registry=task_registry,
         )
-    assert result.accepted is True and result.reason == "dispatched"
+        assert result.accepted is True and result.reason == "dispatched"
+        pinned_base = create_worktree.await_args.kwargs["base_ref"]
+        for failure in ("fetch", "resolve"):
+            create_worktree.reset_mock()
+            if failure == "fetch":
+                mock_proc.returncode = 1
+            else:
+                mock_proc.returncode = 0
+                mock_proc.communicate.return_value = (b"not-a-commit", b"")
+            refused = await dispatch_qa_investigation(
+                pool=_make_pool(),
+                triaged_finding=_make_triaged(_make_finding(severity=1)),
+                patrol_id=uuid.uuid4(),
+                config=QaDispatchConfig(),
+                repo_root=Path("/tmp/repo"),
+                spawner=MagicMock(),
+                gh_token="ghtoken",
+                task_registry=task_registry,
+            )
+            # REQ-testing-043: failure must precede both creation and spawn.
+            for task in task_registry:
+                task.cancel()
+            assert refused.accepted is False and refused.reason == "main_refresh_failed"
+            create_worktree.assert_not_awaited()
+        assert pinned_base == "c" * 40
     for task in task_registry:
         task.cancel()
         try:

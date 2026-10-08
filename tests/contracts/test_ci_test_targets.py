@@ -926,8 +926,8 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
     assert events["workflow_dispatch"]["inputs"]["image-size-diagnostic"]["default"] is False
     ordinary = migration_workflow["jobs"]["migration-chain-head"]
     assert (
-        ordinary["if"]
-        == "github.event_name != 'workflow_dispatch' || !inputs['image-size-diagnostic']"
+        ordinary["if"] == "github.event_name != 'workflow_dispatch' || "
+        "(!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'])"
     )
     assert ordinary["timeout-minutes"] == 14
     diagnostic = migration_workflow["jobs"]["image-size-diagnostic"]
@@ -939,6 +939,12 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
     assert diagnostic["steps"][0]["with"]["ref"] == "${{ github.sha }}"
     assert diagnostic["steps"][1]["with"]["ref"] == "e7b7812a3fa65c80f3f070d38ee43f7fa6474881"
     assert all(step["with"]["persist-credentials"] is False for step in diagnostic["steps"][:2])
+    assert events["workflow_dispatch"]["inputs"]["offline-route-a-build-proof"]["default"] is False
+    assert migration_workflow["jobs"]["offline-route-a-build-proof"]["timeout-minutes"] == 45
+    guard = diagnostic["steps"][2]
+    assert guard["name"] == "Reject conflicting manual build modes"
+    assert guard["env"] == {"OTHER_BUILD_MODE": "${{ inputs['offline-route-a-build-proof'] }}"}
+    assert "exit 2" in guard["run"] and '"${OTHER_BUILD_MODE}" = "true"' in guard["run"]
     diagnostic_shell = "\n".join(step.get("run", "") for step in diagnostic["steps"])
     assert "ci_image_size_diagnostic.py" in diagnostic_shell
     assert "pytest" not in diagnostic_shell and "docker push" not in diagnostic_shell

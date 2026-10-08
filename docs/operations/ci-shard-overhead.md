@@ -128,7 +128,7 @@ execution. Both image builds and all runtime witnesses must actually succeed.
 Route A cache preparation uses the owning launcher's exact lock/Go hashes and
 cache labels. Actual Docker-save config/layers are converted into local OCI
 layouts; original diff IDs, actual engine config ID and cache labels are checked,
-and named contexts use immutable manifest digests. The unchanged Route A app
+and named contexts use immutable manifest digests. The current Route A app
 recipe builds with network disabled and preloaded inputs. These OCI build
 receipts do **not** establish the separate launcher's RepoDigest admission,
 seven-service/browser lifecycle or its database/teardown proof. That launcher
@@ -136,3 +136,25 @@ and its assertions remain unchanged. Build failures, missing inputs, identity
 mismatch or cleanup failure produce categorical failure/partial receipts, not
 mock build credit. No raw build/runtime errors, environment or provider text is
 exported. Only the diagnostic's own disposable tags/builder are removed.
+
+The immutable e7 Route A recipe uses unsupported variable `COPY --from`
+sources. The before comparison keeps that literal recipe and every original
+Git input intact. It generates a separate Dockerfile outside the before
+checkout: global cache arguments and two named cache stages replace only the
+three `COPY` source tokens. An exact inverse must restore the pinned original
+recipe bytes. The diagnostic checks every original application/cache input
+against its Git blob, rejects extra untracked inputs, and binds the original
+source tree, project, lock, Go manifests and actual sealed cache labels.
+
+With those same original inputs, the real literal build must first fail with
+the source-defined variable-COPY compiler category. The subsequent before
+Route A build uses the generated representation and is labelled
+`representation_adapted_original`. The normal before build still uses its
+literal Dockerfile. This establishes the intended before recipe only when
+the actual build and runtime probes pass; it never rewrites history or claims
+the literal broken recipe succeeded. The old image diagnostic's discarded
+stderr leaves its precise failure cause unknown. The current launcher's
+complete three-recipe validation and offline proof job stay intact. Manual
+image-size and offline-proof inputs are mutually exclusive; their original
+60-minute and 45-minute caps remain unchanged. Source preparation does not
+claim either image proof, trained-model execution or a wall-clock gain.

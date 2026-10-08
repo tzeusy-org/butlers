@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 BASE_SOURCE = "e7b7812a3fa65c80f3f070d38ee43f7fa6474881"
+BASE_ROUTE_RECIPE_SHA256 = "9badf1251a274a7e8526100b34fcd517aecdf640713aae157467f1f9ecc4e85f"
 DIAGNOSTIC_SECONDS = 1800
 
 RUNTIME_PROBE = """
@@ -53,6 +54,122 @@ class DiagnosticRefusal(RuntimeError):
 def digest_file(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def baseline_compatibility_recipe(original: bytes) -> bytes:
+    """Adapt only the pinned before recipe's unsupported COPY representation.
+
+    Keep every original instruction and input. Named stages bind the same
+    constructor-fixed cache arguments; the exact inverse must recover the
+    immutable original. The generated Dockerfile lives outside its checkout.
+    This does not make the literal historical recipe a successful build.
+    """
+    if hashlib.sha256(original).hexdigest() != BASE_ROUTE_RECIPE_SHA256:
+        raise DiagnosticRefusal("baseline_recipe_mismatch")
+    source = original.decode("utf-8")
+    marker = "FROM ${ROUTE_A_GO_IMAGE} AS go-builder\n"
+    prefix = (
+        "ARG ROUTE_A_GO_DEPS_IMAGE\n"
+        "ARG ROUTE_A_UV_CACHE_IMAGE\n\n"
+        "FROM ${ROUTE_A_GO_DEPS_IMAGE} AS route-a-go-deps\n"
+        "FROM ${ROUTE_A_UV_CACHE_IMAGE} AS route-a-uv-cache\n\n"
+    )
+    replacements = (
+        ("COPY --from=${ROUTE_A_GO_DEPS_IMAGE} ", "COPY --from=route-a-go-deps ", 2),
+        ("COPY --from=${ROUTE_A_UV_CACHE_IMAGE} ", "COPY --from=route-a-uv-cache ", 1),
+    )
+    if source.count(marker) != 1:
+        raise DiagnosticRefusal("baseline_recipe_representation")
+    adapted = source.replace(marker, prefix + marker, 1)
+    for before, after, count in replacements:
+        if source.count(before) != count or after in source:
+            raise DiagnosticRefusal("baseline_recipe_representation")
+        adapted = adapted.replace(before, after)
+    restored = adapted.replace(prefix, "", 1)
+    for before, after, _ in replacements:
+        restored = restored.replace(after, before)
+    if restored.encode("utf-8") != original:
+        raise DiagnosticRefusal("baseline_recipe_representation")
+    return adapted.encode("utf-8")
+
+
+def baseline_build_inputs(checkout: Path) -> dict:
+    """Bind every original application/cache COPY input to the pinned Git tree.
+
+    This is a historical diagnostic snapshot check, not launcher admission.
+    The current launcher still validates the complete current recipe family.
+    No generated Dockerfile or current source is written into this checkout.
+    """
+    paths = (
+        "Dockerfile",
+        "Dockerfile.base",
+        "Dockerfile.meeting-prep-route-a",
+        ".dockerignore",
+        "pyproject.toml",
+        "uv.lock",
+        "src",
+        "scripts",
+        "alembic",
+        "roster",
+        "whatsapp-bridge",
+        "pricing.toml",
+        "model_catalog_defaults.toml",
+    )
+    listing = subprocess.check_output(
+        ["git", "ls-tree", "-rz", BASE_SOURCE, "--", *paths], cwd=checkout
+    )
+    aggregate = hashlib.sha256()
+    count = 0
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        metadata, relative = entry.split(b"\t", 1)
+        mode, kind, expected = metadata.split()
+        source = checkout / os.fsdecode(relative)
+        if kind != b"blob" or mode not in (b"100644", b"100755", b"120000"):
+            raise DiagnosticRefusal("baseline_input_kind")
+        if mode == b"120000":
+            if not source.is_symlink():
+                raise DiagnosticRefusal("baseline_input_mismatch")
+            body = os.fsencode(os.readlink(source))
+        else:
+            if source.is_symlink() or not source.is_file():
+                raise DiagnosticRefusal("baseline_input_mismatch")
+            if bool(source.stat().st_mode & 0o111) != (mode == b"100755"):
+                raise DiagnosticRefusal("baseline_input_mode_mismatch")
+            body = source.read_bytes()
+        # Git's object identity verifies actual bytes against immutable history;
+        # SHA256 separately binds the complete ordered diagnostic input set.
+        blob = hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest()
+        if blob.encode() != expected:
+            raise DiagnosticRefusal("baseline_input_mismatch")
+        aggregate.update(relative + b"\0" + hashlib.sha256(body).digest())
+        count += 1
+    if not count:
+        raise DiagnosticRefusal("baseline_inputs_absent")
+    # Ignored/untracked material must not silently enter an original COPY tree.
+    for options in (
+        ("--others", "--exclude-standard"),
+        ("--others", "--ignored", "--exclude-standard"),
+    ):
+        if subprocess.check_output(["git", "ls-files", "-z", *options, "--", *paths], cwd=checkout):
+            raise DiagnosticRefusal("baseline_inputs_untracked")
+    tree = subprocess.check_output(
+        ["git", "rev-parse", BASE_SOURCE + "^{tree}"], cwd=checkout, text=True
+    ).strip()
+    return {
+        "source": BASE_SOURCE,
+        "tree": tree,
+        "copy_input_paths": list(paths),
+        "input_files": count,
+        "actual_input_sha256": aggregate.hexdigest(),
+        "all_original_git_blob_bytes_equal": True,
+        "literal_recipe_sha256": digest_file(checkout / "Dockerfile.meeting-prep-route-a"),
+        "project_sha256": digest_file(checkout / "pyproject.toml"),
+        "lock_sha256": digest_file(checkout / "uv.lock"),
+        "go_module_sha256": digest_file(checkout / "whatsapp-bridge/go.mod"),
+        "go_sum_sha256": digest_file(checkout / "whatsapp-bridge/go.sum"),
+    }
 
 
 def write_oci_layout(archive, destination: Path, labels: dict[str, str]) -> str:
@@ -155,7 +272,9 @@ def write_oci_layout(archive, destination: Path, labels: dict[str, str]) -> str:
 def run_diagnostic(current: Path, baseline: Path, output: Path, source_sha: str) -> dict:
     if os.environ.get("GITHUB_ACTIONS") != "true" or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise DiagnosticRefusal("hosted_exact_source_required")
+    from prove_route_a_offline_builds import closed_build_failure
     from run_meeting_prep_route_a_evidence import (
+        SafetyError,
         dependency_cache_contracts,
         validate_sealed_build_inputs,
     )
@@ -251,16 +370,45 @@ def run_diagnostic(current: Path, baseline: Path, output: Path, source_sha: str)
                 ["git", "status", "--porcelain", "--untracked-files=no"], cwd=checkout, capture=True
             ).strip():
                 raise DiagnosticRefusal("dirty_source")
-            validate_sealed_build_inputs(checkout)
-        if (current / "Dockerfile.base").read_bytes() != (
-            baseline / "Dockerfile.base"
-        ).read_bytes():
-            raise DiagnosticRefusal("incompatible_base_comparison")
+        validate_sealed_build_inputs(current)
+        original = (baseline / "Dockerfile.meeting-prep-route-a").read_bytes()
+        adapted = baseline_compatibility_recipe(original)
+        receipt["baseline_inputs"] = baseline_build_inputs(baseline)
+        adapted_recipe = output / "before-route-a-compatibility.Dockerfile"
+        adapted_recipe.write_bytes(adapted)
+        receipt["baseline_representation"] = {
+            "literal_recipe_sha256": hashlib.sha256(original).hexdigest(),
+            "adapted_recipe_sha256": hashlib.sha256(adapted).hexdigest(),
+            "exact_inverse_restores_original": True,
+            "generated_outside_before_checkout": not adapted_recipe.is_relative_to(baseline),
+            "literal_historical_success_claimed": False,
+            "changes": "global cache ARGs, two fixed input stages, three COPY source tokens",
+        }
+        if adapted_recipe.is_relative_to(baseline):
+            raise DiagnosticRefusal("baseline_adapter_location")
+        shared_base_inputs = (
+            "Dockerfile.base",
+            "scripts/runtime_cli_sandbox_init.c",
+            "scripts/generate_runtime_cli_sandbox_manifest.py",
+        )
+        for relative in shared_base_inputs:
+            if (current / relative).read_bytes() != (baseline / relative).read_bytes():
+                raise DiagnosticRefusal("incompatible_base_comparison")
+        receipt["shared_base_copied_inputs"] = {
+            relative: digest_file(current / relative) for relative in shared_base_inputs
+        }
         go = re.search(
             r"^FROM (golang:[^ ]+@sha256:[0-9a-f]{64})", (current / "Dockerfile").read_text(), re.M
         )
         if go is None:
             raise DiagnosticRefusal("missing_pinned_go")
+        baseline_go = re.search(
+            r"^FROM (golang:[^ ]+@sha256:[0-9a-f]{64})",
+            (baseline / "Dockerfile").read_text(),
+            re.M,
+        )
+        if baseline_go is None or baseline_go[1] != go[1]:
+            raise DiagnosticRefusal("incompatible_go_comparison")
         stage = "base_build"
         command(
             ["docker", "build", "-f", "Dockerfile.base", "-t", "butlers-base:latest", "."],
@@ -352,6 +500,42 @@ def run_diagnostic(current: Path, baseline: Path, output: Path, source_sha: str)
                     "--build-context",
                     alias + "=" + sealed,
                 ]
+            if variant == "before":
+                stage = "before_literal_route_a_compiler_negative"
+                remaining = min(120, int(deadline - time.monotonic()))
+                if remaining <= 0:
+                    raise DiagnosticRefusal("diagnostic_deadline")
+                # Real compiler output stays in process memory. Export only the
+                # public source-defined category, never stderr or image values.
+                negative = subprocess.run(
+                    [
+                        "timeout",
+                        "--signal=TERM",
+                        "--kill-after=15s",
+                        str(remaining),
+                        *args,
+                        ".",
+                    ],
+                    cwd=checkout,
+                    capture_output=True,
+                    check=False,
+                )
+                category = closed_build_failure(negative.stderr, negative.stdout)
+                receipt["baseline_representation"]["literal_compiler_observation"] = {
+                    "category": category,
+                    "returncode_nonzero": negative.returncode != 0,
+                }
+                if negative.returncode == 0 or category != "unsupported_copy_from_variable":
+                    raise DiagnosticRefusal("baseline_compiler_negative_unpositioned")
+                receipt["baseline_representation"]["literal_compiler_negative"] = {
+                    "category": category,
+                    "returncode_nonzero": True,
+                    "actual_same_original_source_and_sealed_inputs": True,
+                }
+                # Same e7 build context, source, lock, caches and args. Only -f
+                # names the separately generated, exactly reversible recipe.
+                args[args.index("-f") + 1] = str(adapted_recipe)
+                stage = "before_adapted_route_a_offline_build"
             command(args + ["."], cwd=checkout, bound=900)
             for kind, image in (("normal", normal), ("route_a", route)):
                 stage = variant + "_" + kind + "_runtime"
@@ -415,6 +599,11 @@ def run_diagnostic(current: Path, baseline: Path, output: Path, source_sha: str)
                 receipt["images"][variant][kind] = {
                     "source": sha,
                     "bytes": size,
+                    "recipe_basis": (
+                        "representation_adapted_original"
+                        if variant == "before" and kind == "route_a"
+                        else "literal_recipe"
+                    ),
                     "runtime": probe,
                     "go_bridge_help": True,
                     "postgres_client": True,
@@ -437,7 +626,14 @@ def run_diagnostic(current: Path, baseline: Path, output: Path, source_sha: str)
 
                 shutil.rmtree(output / (variant + "-" + kind + "-oci"))
         receipt["status"] = "passed"
-    except (DiagnosticRefusal, subprocess.SubprocessError, OSError, ValueError, KeyError) as error:
+    except (
+        DiagnosticRefusal,
+        SafetyError,
+        subprocess.SubprocessError,
+        OSError,
+        ValueError,
+        KeyError,
+    ) as error:
         receipt.update(status="failed", failed_stage=stage, error_category=type(error).__name__)
         if isinstance(error, subprocess.CalledProcessError):
             receipt["command_returncode"] = error.returncode

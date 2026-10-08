@@ -57,7 +57,7 @@ def _base_input_fingerprint(inputs: tuple[str, ...], *, cwd: Path, env: dict[str
     return result.stdout.strip()
 
 
-def test_base_image_installs_uv_git_and_gh_for_qa_runtime(tmp_path: Path) -> None:
+def test_base_image_installs_uv_git_and_gh_for_qa_runtime(tmp_path: Path, monkeypatch) -> None:
     text = _dockerfile_base_text()
     assert "git" in text
     assert "python -m pip install --no-cache-dir uv" in text
@@ -145,6 +145,71 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime(tmp_path: Path) -> Non
     # The diagnostic refuses local Docker execution before its first build.
     with pytest.raises(diagnostic.DiagnosticRefusal, match="hosted_exact_source"):
         diagnostic.run_diagnostic(Path.cwd(), Path.cwd(), tmp_path / "no-local-docker", "not-a-sha")
+    # Actual immutable before body; only a generated COPY representation changes.
+    # This software comparator is not a Docker/compiler or trained-model witness.
+    original = subprocess.check_output(
+        ["git", "show", diagnostic.BASE_SOURCE + ":Dockerfile.meeting-prep-route-a"]
+    )
+    adapted = diagnostic.baseline_compatibility_recipe(original)
+    assert hashlib.sha256(original).hexdigest() == diagnostic.BASE_ROUTE_RECIPE_SHA256
+    prefix = (
+        b"ARG ROUTE_A_GO_DEPS_IMAGE\nARG ROUTE_A_UV_CACHE_IMAGE\n\n"
+        b"FROM ${ROUTE_A_GO_DEPS_IMAGE} AS route-a-go-deps\n"
+        b"FROM ${ROUTE_A_UV_CACHE_IMAGE} AS route-a-uv-cache\n\n"
+    )
+    restored = adapted.replace(prefix, b"", 1)
+    restored = restored.replace(
+        b"COPY --from=route-a-go-deps ", b"COPY --from=${ROUTE_A_GO_DEPS_IMAGE} "
+    )
+    restored = restored.replace(
+        b"COPY --from=route-a-uv-cache ", b"COPY --from=${ROUTE_A_UV_CACHE_IMAGE} "
+    )
+    assert restored == original
+    assert b"COPY --from=${" not in adapted
+    assert b"uv sync --offline --frozen --no-dev --extra whatsapp" in adapted
+    assert b"ENV UV_TORCH_BACKEND=cpu" in adapted
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_recipe_mismatch"):
+        diagnostic.baseline_compatibility_recipe(original + b"\n")
+
+    # Actual old Git inputs, not current files substituted as the before source.
+    # A private index/worktree isolates the read-only snapshot from this checkout.
+    before = tmp_path / "immutable-before"
+    before.mkdir()
+    archived = subprocess.check_output(["git", "archive", diagnostic.BASE_SOURCE])
+    with tarfile.open(fileobj=io.BytesIO(archived)) as snapshot:
+        snapshot.extractall(before, filter="data")
+    git_dir = subprocess.check_output(["git", "rev-parse", "--absolute-git-dir"], text=True).strip()
+    monkeypatch.setenv("GIT_DIR", git_dir)
+    monkeypatch.setenv("GIT_WORK_TREE", str(before))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "before-index"))
+    subprocess.run(["git", "read-tree", diagnostic.BASE_SOURCE], check=True)
+    inputs = diagnostic.baseline_build_inputs(before)
+    assert inputs["source"] == diagnostic.BASE_SOURCE
+    assert inputs["input_files"] > 0 and inputs["all_original_git_blob_bytes_equal"] is True
+    assert inputs["literal_recipe_sha256"] == diagnostic.BASE_ROUTE_RECIPE_SHA256
+    for shared_base_input in (
+        "Dockerfile.base",
+        "scripts/runtime_cli_sandbox_init.c",
+        "scripts/generate_runtime_cli_sandbox_manifest.py",
+    ):
+        assert (Path.cwd() / shared_base_input).read_bytes() == (
+            before / shared_base_input
+        ).read_bytes()
+    sys_path = str(Path.cwd() / "scripts")
+    monkeypatch.syspath_prepend(sys_path)
+    from run_meeting_prep_route_a_evidence import SafetyError, validate_sealed_build_inputs
+
+    # The current launcher remains strict: it refuses the original variable COPY.
+    with pytest.raises(SafetyError):
+        validate_sealed_build_inputs(before)
+    lock = before / "uv.lock"
+    lock.write_bytes(lock.read_bytes() + b"\n")
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_input_mismatch"):
+        diagnostic.baseline_build_inputs(before)
+    lock.write_bytes(subprocess.check_output(["git", "show", diagnostic.BASE_SOURCE + ":uv.lock"]))
+    (before / "src/extra-untracked.py").write_text("# not an original input\n")
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_inputs_untracked"):
+        diagnostic.baseline_build_inputs(before)
 
 
 def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> None:

@@ -17,13 +17,17 @@ on:
         description: Build before/current normal and offline Route A images without publishing
         type: boolean
         default: false
+      offline-route-a-build-proof:
+        description: Prove the three sealed offline recipes without publishing or running the launcher
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   migration-chain-head:
-    if: github.event_name != 'workflow_dispatch' || !inputs['image-size-diagnostic']
+    if: github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'])
     timeout-minutes: 14
     name: Migration chain head
     runs-on: ubuntu-latest
@@ -62,6 +66,58 @@ jobs:
       - name: Verify merged migration chain
         run: uv run pytest tests/config/test_migration_chain_head.py -q
 
+  offline-route-a-build-proof:
+    # Exclusive manual proof. Push/default-dispatch migration behavior is retained.
+    if: github.event_name == 'workflow_dispatch' && inputs['offline-route-a-build-proof']
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject conflicting manual build modes
+        env:
+          OTHER_BUILD_MODE: ${{ inputs['image-size-diagnostic'] }}
+        run: |
+          if [ "${OTHER_BUILD_MODE}" = "true" ]; then
+            echo "::error::manual build proof modes are mutually exclusive"
+            exit 2
+          fi
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: |
+          set -euo pipefail
+          max_attempts=5
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              break
+            fi
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Build actual old controls and all three current offline recipes
+        env:
+          ROUTE_PROOF_SOURCE: ${{ github.sha }}
+        run: |
+          uv run --script scripts/prove_route_a_offline_builds.py \
+            --source "${ROUTE_PROOF_SOURCE}" \
+            --output "${RUNNER_TEMP}/route-a-offline-build-proof"
+      - name: Upload closed source and input identity receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: route-a-offline-build-proof
+          path: ${{ runner.temp }}/route-a-offline-build-proof/offline-build-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
   image-size-diagnostic:
     # Isolated manual proof only; original push/default dispatch is unchanged.
     if: github.event_name == 'workflow_dispatch' && inputs['image-size-diagnostic']
@@ -78,6 +134,14 @@ jobs:
           ref: e7b7812a3fa65c80f3f070d38ee43f7fa6474881
           path: before
           persist-credentials: false
+      - name: Reject conflicting manual build modes
+        env:
+          OTHER_BUILD_MODE: ${{ inputs['offline-route-a-build-proof'] }}
+        run: |
+          if [ "${OTHER_BUILD_MODE}" = "true" ]; then
+            echo "::error::manual build proof modes are mutually exclusive"
+            exit 2
+          fi
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"

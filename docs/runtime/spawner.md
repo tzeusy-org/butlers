@@ -276,7 +276,9 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
   under `/tmp`).
 - QA dispatch needs `gh` in `Dockerfile.base` to open its PR, pushes over HTTPS with `GH_TOKEN` and
   `gh auth setup-git` (no SSH agent in the sandbox), and branches from a freshly fetched
-  `origin/main` via the worktree `base_ref`. Review follow-up backoff uses
+  verified immutable `origin/main` commit via the worktree `base_ref`. Failed fetch or
+  resolution refuses before creation/spawn, with categorical error and attempt/base-SHA
+  preparation receipt. Existing follow-up head bindings remain unchanged. Review follow-up backoff uses
   `healing_attempts.last_follow_up_at` / `follow_up_count`, separate from `last_review_check_at`.
 - Token accounting: adapters report `usage.input_tokens` as the uncached bucket only, with cache
   reads and writes separate (Codex/OpenAI `prompt_tokens` include cache and must be reduced; see

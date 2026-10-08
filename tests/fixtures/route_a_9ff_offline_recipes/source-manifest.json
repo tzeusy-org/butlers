@@ -1,0 +1,9 @@
+{
+  "source": "9ff27ce876c15ce21271be6246372a49fe05d56e",
+  "recipes": {
+    "Dockerfile.meeting-prep-route-a": "9badf1251a274a7e8526100b34fcd517aecdf640713aae157467f1f9ecc4e85f",
+    "frontend/Dockerfile.meeting-prep-evidence": "e62c3c44167a13766de60f4c4e03b0df9a00884b5d0b3555ec4d0542755093d1",
+    "frontend/Dockerfile.meeting-prep-browser": "c9929de9d1db94f4ad91dc35cc40f21641fac17bb2a7b7f1bf372243b368963e"
+  },
+  "scope": "Immutable historical recipe bodies only; never patched, never credited as historical successful images. Actual old builds use the same materialized current dependency-lock/cache inputs (locks are unchanged) and current build context, an explicitly controlled recipe-representation comparison."
+}

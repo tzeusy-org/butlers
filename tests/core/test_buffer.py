@@ -507,6 +507,7 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
     """Switchboard gets DurableBuffer; non-switchboard has None; shutdown clears buffer."""
     from pathlib import Path
 
+    from butlers.core import fact_authority
     from butlers.core.buffer import DurableBuffer
     from butlers.daemon import ButlerDaemon
 
@@ -566,22 +567,30 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
         '[butler]\nname = "switchboard"\nport = 41100\n\n'
         '[butler.db]\nname = "butlers"\nschema = "switchboard"\n'
     )
-    with (
-        common_patches["db_from_env"],
-        common_patches["run_migrations"],
-        common_patches["validate_credentials"],
-        common_patches["validate_module_credentials"],
-        common_patches["init_telemetry"],
-        common_patches["sync_schedules"],
-        common_patches["FastMCP"],
-        common_patches["Spawner"],
-        common_patches["get_adapter"],
-        common_patches["shutil_which"],
-        common_patches["start_mcp_server"],
-        common_patches["connect_switchboard"],
-    ):
-        daemon = ButlerDaemon(sw_dir)
-        await daemon.start()
-    assert daemon._buffer is not None and isinstance(daemon._buffer, DurableBuffer)
-    await daemon.shutdown()
-    assert daemon._buffer is None
+    # This mocked lifecycle installs the real process-local source issuer.
+    # Preserve the object already owned by another test, including on failure;
+    # replacing it with None would also discard a preexisting live registry.
+    prior_registry = fact_authority.source_registry()
+    with patch.object(fact_authority, "_source_registry", prior_registry):
+        with (
+            common_patches["db_from_env"],
+            common_patches["run_migrations"],
+            common_patches["validate_credentials"],
+            common_patches["validate_module_credentials"],
+            common_patches["init_telemetry"],
+            common_patches["sync_schedules"],
+            common_patches["FastMCP"],
+            common_patches["Spawner"],
+            common_patches["get_adapter"],
+            common_patches["shutil_which"],
+            common_patches["start_mcp_server"],
+            common_patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(sw_dir)
+            await daemon.start()
+        assert daemon._buffer is not None and isinstance(daemon._buffer, DurableBuffer)
+        assert fact_authority.source_registry() is daemon._fact_source_registry
+        assert daemon._fact_source_registry.pool is mock_pool
+        await daemon.shutdown()
+        assert daemon._buffer is None
+    assert fact_authority.source_registry() is prior_registry

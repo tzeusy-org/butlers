@@ -268,11 +268,13 @@ jobs:
       - name: Write PR title and body to files
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          printf '%s' "$PR_TITLE" > "${RUNNER_TEMP}/pr_title.txt"
-          printf '%s' "$PR_BODY" > "${RUNNER_TEMP}/pr_body.txt"
+          # Fetch-point admission: reruns see actual current metadata, while
+          # the commit range below remains bound to this event's source head.
+          python3 scripts/fetch_pr_metadata.py \
+            --number "$PR_NUMBER" --output-dir "$RUNNER_TEMP"
 
       - name: Fetch review comments (best-effort)
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
@@ -287,11 +289,11 @@ jobs:
           # script below does the field mapping so no shell/jq quoting games
           # are needed here.
           gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate \
-            > "${RUNNER_TEMP}/rc_review_comments.json" || true
+            > "${RUNNER_TEMP}/rc_review_comments.json" 2>/dev/null || true
           gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-            > "${RUNNER_TEMP}/rc_issue_comments.json" || true
+            > "${RUNNER_TEMP}/rc_issue_comments.json" 2>/dev/null || true
           gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
-            > "${RUNNER_TEMP}/rc_reviews.json" || true
+            > "${RUNNER_TEMP}/rc_reviews.json" 2>/dev/null || true
           python3 scripts/combine_review_comment_sources.py \
             --output "${RUNNER_TEMP}/review_comments.json" \
             --input review-comment "${RUNNER_TEMP}/rc_review_comments.json" \
@@ -302,7 +304,7 @@ jobs:
         id: session_links
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         run: |
-          python3 scripts/session_link_guard.py \
+          python3 scripts/session_link_guard.py --redact-findings \
             --pr-title-file "${RUNNER_TEMP}/pr_title.txt" \
             --pr-body-file "${RUNNER_TEMP}/pr_body.txt" \
             --commit-range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \

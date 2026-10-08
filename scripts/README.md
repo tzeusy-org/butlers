@@ -281,6 +281,7 @@ omitted from this human command index; they are not maintainer entry points.
 | [`compose.sh`](compose.sh) | Supported Compose launcher for the local stack and protected restore-drill variants; use it instead of composing protected fragments directly. |
 | [`run_meeting_prep_route_a_evidence.py`](run_meeting_prep_route_a_evidence.py) | Fail-closed launcher for the Route A synthetic meeting-prep browser receipt. It accepts only a clean linked worktree at an exact SHA, a seven-service topology, and preloaded digest-pinned base/dependency-cache images whose labels match the checked-out locks; it records sanitized provenance and teardown receipts and must never target the ordinary Compose project, an external database, or a credential-bearing environment. |
 | [`route_a_meeting_prep_fixture.py`](route_a_meeting_prep_fixture.py) | Internal fixture loader for that launcher only. It writes fixed synthetic cached-prep envelopes to the disposable Route A database and refuses password-bearing or nonlocal database configuration. |
+| [`prove_route_a_offline_builds.py`](prove_route_a_offline_builds.py) | Exclusive hosted-only proof of actual old variable-COPY refusal and all three current offline recipes using sealed OCI inputs. It publishes only closed identity receipts, never images, and does not establish full Route A RepoDigest admission, runtime, browser interaction or SQL evidence; see [the operation contract](../docs/operations/route-a-offline-build-proof.md). |
 | [`setup_worktree.sh`](setup_worktree.sh) | Prepares a newly created worktree with its machine-local pointers and cache links; run from that worktree. |
 | [`bump_version.py`](bump_version.py) | Updates the project version in `pyproject.toml`; use only as part of a reviewed release preparation. |
 | [`release_tag.py`](release_tag.py) | Creates the annotated tag for the current project version locally; pushing the tag remains a separate release action. |
@@ -309,3 +310,18 @@ applying it to a database.
 | [`migrate_fact_subjects.py`](migrate_fact_subjects.py) | Normalizes historical fact subjects and backfills their entity links. |
 | [`reconcile_whatsapp_entities.py`](reconcile_whatsapp_entities.py) | Runs the content-blind WhatsApp entity reconciliation maintenance pass. |
 | [`retract_digest_measurements.py`](retract_digest_measurements.py) | Retracts measurement-weight facts created from butler-generated digest or briefing text. |
+
+
+## ci_branch_hygiene.py and fetch_pr_metadata.py
+
+`uv run --no-sync python scripts/ci_branch_hygiene.py` inventories, plans,
+independently bundles/verifies recovery, and observes complete CI push windows.
+Live apply/remote restoration/setting reversal require explicit execution and
+an exact separately approved manifest; default calls cannot mutate remote state.
+See [the operational procedure](../docs/operations/stale-branch-hygiene.md).
+
+`fetch_pr_metadata.py` is the mandatory guard producer for validated current
+fixed-PR title/body. It writes runner-temp inputs and digests privately, removes
+stale inputs on failure and emits only categorical diagnostics. The scanner's
+`--redact-findings` CLI mode retains detection and omits matched text; its private
+formatter and JSON interfaces remain available for existing consumers.
