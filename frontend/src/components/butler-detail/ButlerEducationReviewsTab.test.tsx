@@ -684,6 +684,34 @@ describe("ButlerEducationReviewsTab — explicit empty states", () => {
   it("renders mind maps empty state when no maps exist", () => {
     renderTab();
     expect(screen.queryByTestId("mind-maps-list")).toBeNull();
+    expect(screen.getByText("No active mind maps (start learning to see progress here).")).toBeTruthy();
+    cleanup();
+    vi.mocked(useMindMaps).mockReturnValue({
+      data: undefined, isLoading: false, isError: true,
+    } as unknown as ReturnType<typeof useMindMaps>);
+    renderTab();
+    expect(screen.getAllByRole("alert").some((note) => note.textContent?.includes("Curriculum list"))).toBe(true);
+    expect(screen.queryByText("No active mind maps (start learning to see progress here).")).toBeNull();
+    expect(screen.queryByText("Select a mind map to see retention trend.")).toBeNull();
+    cleanup();
+    vi.mocked(useMindMaps).mockReturnValue({
+      data: { data: [{ id: "known-map", title: "Known curriculum", status: "active" }] },
+      isLoading: false, isError: true,
+    } as unknown as ReturnType<typeof useMindMaps>);
+    vi.mocked(useMindMapAnalyticsTrend).mockReturnValue({
+      data: { ...TREND_DATA, mind_map_id: "known-map" }, isLoading: false, isError: false,
+    } as unknown as ReturnType<typeof useMindMapAnalyticsTrend>);
+    renderTab();
+    expect(screen.getByText("Known curriculum")).toBeTruthy();
+    expect(screen.getByTestId("retention-chart")).toBeTruthy();
+    expect(screen.getAllByRole("alert").some((note) => note.textContent?.includes("Curriculum list"))).toBe(true);
+    expect(screen.queryByText("No active mind maps (start learning to see progress here).")).toBeNull();
+    cleanup();
+    vi.mocked(useMindMaps).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useMindMaps>);
+    renderTab();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("No active mind maps (start learning to see progress here).")).toBeTruthy();
+    expect(screen.getByText("Select a mind map to see retention trend.")).toBeTruthy();
   });
 });
 

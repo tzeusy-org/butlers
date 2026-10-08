@@ -536,6 +536,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Request one to start adaptive learning.
 - Active curricula
 - Setting-up curricula
+- Selected curriculum
 - Select a curriculum
 
 ## `frontend/src/pages/EntityDetailPage.tsx`
@@ -1590,9 +1591,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Select a mind map to see retention trend.
 - No retention data in this window.
 - new Date(e.next_review_at)
+- Curriculum list
 - {}% mastered
 - Curriculum
-- Curriculum list
 - Total cards
 - Mastered
 - Overdue
@@ -4858,4 +4859,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3866*
+*Total strings: 3867*

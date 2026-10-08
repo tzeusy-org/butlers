@@ -72,6 +72,7 @@ interface AggregatedData {
   perMapMastery: Array<MasterySummary | null>;
   isLoading: boolean;
   failedSources: Array<{ title: string; source: string }>;
+  mapsDegraded: boolean;
   pendingDegraded: boolean;
   frontierDegraded: boolean;
 }
@@ -176,6 +177,7 @@ function useReviewsTabData(): AggregatedData {
     }
     return {
       failedSources,
+      mapsDegraded: mapsUnavailable,
       pendingDegraded: mapsUnavailable || pendingResults.length !== maps.length || pendingResults.some((result) => result.isError || result.data == null),
       frontierDegraded: mapsUnavailable || frontierResults.length !== maps.length || frontierResults.some((result) => result.isError || result.data == null),
       pendingEntries,
@@ -299,9 +301,11 @@ interface MindMapProgressItem {
 function MindMapsProgressPanel({
   items,
   isLoading,
+  degraded,
 }: {
   items: MindMapProgressItem[];
   isLoading: boolean;
+  degraded: boolean;
 }) {
   return (
     <Section data-testid="mind-maps-progress-panel">
@@ -309,10 +313,11 @@ function MindMapsProgressPanel({
         <SectionTitle>Mind maps</SectionTitle>
       </SectionHeader>
       <SectionContent>
+        {degraded && <SourceDegradedNote label="Curriculum list" />}
         {isLoading ? (
           <LoadingLine />
         ) : items.length === 0 ? (
-          <EmptyStateLine>No active mind maps (start learning to see progress here).</EmptyStateLine>
+          !degraded && <EmptyStateLine>No active mind maps (start learning to see progress here).</EmptyStateLine>
         ) : (
           <ul className="divide-y" data-testid="mind-maps-list">
             {items.map((item) => {
@@ -597,10 +602,11 @@ function extractMasteryPct(entry: AnalyticsTrendEntry): number | null {
 }
 
 function RetentionTrendPanel({
-  mindMapId, title,
+  mindMapId, title, mapsDegraded,
 }: {
   mindMapId: string | null;
   title: string;
+  mapsDegraded: boolean;
 }) {
   const { data, isLoading, isError } = useMindMapAnalyticsTrend(mindMapId, 7);
 
@@ -631,12 +637,13 @@ function RetentionTrendPanel({
         <SectionTitle>Retention · 7d</SectionTitle>
       </SectionHeader>
       <SectionContent>
+        {mapsDegraded && <SourceDegradedNote label="Curriculum list" />}
         {isLoading ? (
           <LoadingLine />
         ) : isError ? (
           <SourceDegradedNote label={title} detail="retention trend could not be reached" />
         ) : !mindMapId ? (
-          <EmptyStateLine>Select a mind map to see retention trend.</EmptyStateLine>
+          !mapsDegraded && <EmptyStateLine>Select a mind map to see retention trend.</EmptyStateLine>
         ) : chartData.length === 0 ? (
           <EmptyStateLine>No retention data in this window.</EmptyStateLine>
         ) : (
@@ -672,7 +679,7 @@ function RetentionTrendPanel({
 // ---------------------------------------------------------------------------
 
 export default function ButlerEducationReviewsTab() {
-  const { pendingEntries, mastery, frontierEntries, mindMaps, perMapMastery, isLoading, failedSources, pendingDegraded, frontierDegraded } = useReviewsTabData();
+  const { pendingEntries, mastery, frontierEntries, mindMaps, perMapMastery, isLoading, failedSources, mapsDegraded, pendingDegraded, frontierDegraded } = useReviewsTabData();
 
   // Capture now once — shared by overdueCount and timeline grouping to keep them consistent.
   const now = new Date();
@@ -701,7 +708,7 @@ export default function ButlerEducationReviewsTab() {
       {/* Row 2: Mind maps progress + pending reviews timeline */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
         <div className="lg:col-span-2">
-          <MindMapsProgressPanel items={mindMapProgressItems} isLoading={isLoading} />
+          <MindMapsProgressPanel items={mindMapProgressItems} isLoading={isLoading} degraded={mapsDegraded} />
         </div>
         <div className="lg:col-span-2">
           <ReviewTimelinePanel entries={pendingEntries} isLoading={isLoading} degraded={pendingDegraded} now={now} />
@@ -714,7 +721,7 @@ export default function ButlerEducationReviewsTab() {
           <FrontierPanel entries={frontierEntries} isLoading={isLoading} degraded={frontierDegraded} />
         </div>
         <div className="lg:col-span-2">
-          <RetentionTrendPanel mindMapId={primaryMapId} title={mindMaps[0]?.title ?? "Curriculum"} />
+          <RetentionTrendPanel mindMapId={primaryMapId} title={mindMaps[0]?.title ?? "Curriculum"} mapsDegraded={mapsDegraded} />
         </div>
       </div>
     </div>

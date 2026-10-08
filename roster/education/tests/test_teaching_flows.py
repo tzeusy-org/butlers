@@ -1412,6 +1412,62 @@ class TestCheckStaleFlows:
         assert map_id in result
         mock_abandon.assert_called_once_with(pool, map_id, schedule_delete=schedule_delete)
 
+        # The distinct map job must use node activity even when a flow exists;
+        # the original flow-clock assertion above remains its own positive.
+        from butlers.tools.education.mind_maps import mind_map_abandon_stale
+
+        outcomes = []
+        for node_days, flow_days in [(2, 45), (45, 2), (2, None), (45, None)]:
+            now = datetime.now(tz=UTC)
+            candidate = _make_pool(
+                fetch_returns=[
+                    [
+                        _make_row(
+                            {
+                                "id": map_id,
+                                "status": "active",
+                                "created_at": now,
+                                "node_count": 1,
+                                "last_activity": now - timedelta(days=node_days),
+                                "all_mastered": False,
+                            }
+                        )
+                    ]
+                ]
+            )
+            flow = (
+                _flow_state(
+                    status="teaching",
+                    mind_map_id=map_id,
+                    last_session_at=(now - timedelta(days=flow_days)).isoformat(),
+                )
+                if flow_days is not None
+                else None
+            )
+            with (
+                patch(
+                    "butlers.tools.education.teaching_flows.state_get", AsyncMock(return_value=flow)
+                ),
+                patch(
+                    "butlers.tools.education.teaching_flows.teaching_flow_abandon", AsyncMock()
+                ) as abandon_flow,
+                patch(
+                    "butlers.tools.education.teaching_flows.mind_map_update_status", AsyncMock()
+                ) as abandon_map,
+                patch(
+                    "butlers.tools.education.teaching_flows._cleanup_review_schedules", AsyncMock()
+                ),
+            ):
+                selected = await mind_map_abandon_stale(candidate)
+            outcomes.append(map_id in selected)
+            if node_days > 30 and flow_days is not None:
+                assert abandon_flow.await_count == 1
+                assert abandon_map.await_count == 0
+            elif node_days > 30:
+                abandon_map.assert_awaited_once_with(candidate, map_id, "abandoned")
+                assert abandon_flow.await_count == 0
+        assert outcomes == [False, True, False, True]
+
     async def test_recently_active_flow_is_not_abandoned(self) -> None:
         from butlers.tools.education.teaching_flows import check_stale_flows
 

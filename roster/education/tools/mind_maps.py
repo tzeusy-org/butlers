@@ -166,7 +166,7 @@ async def mind_map_abandon_stale(
     """Abandon stalled drafts and inactive populated maps through the shared sweep.
 
     Empty drafts use a strict 24-hour creation threshold. Populated maps use
-    flow activity, or newest node activity when no flow exists, with the strict
+    newest node activity, independently of the flow's session clock, with the strict
     ``inactivity_days`` boundary. Completed and all-mastered maps stay unchanged;
     already-abandoned maps retry only idempotent review-schedule cleanup.
 
@@ -185,11 +185,11 @@ async def mind_map_abandon_stale(
     list of str
         The UUIDs of the mind maps that were transitioned to ``'abandoned'``.
     """
-    from butlers.tools.education.teaching_flows import check_stale_flows
+    from butlers.tools.education.teaching_flows import _abandon_stale_maps
 
     async def delete_schedule(name: str) -> None:
         await pool.execute("DELETE FROM scheduled_tasks WHERE name = $1", name)
 
-    return await check_stale_flows(
-        pool, stale_days=inactivity_days, schedule_delete=delete_schedule
+    return await _abandon_stale_maps(
+        pool, node_activity=True, stale_days=inactivity_days, schedule_delete=delete_schedule
     )

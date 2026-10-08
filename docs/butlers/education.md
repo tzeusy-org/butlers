@@ -36,11 +36,18 @@ unsettled drafts; it preserves abandonment, audit history and these data columns
 
 Weekly cleanup enumerates map rows, including flow-less drafts. Zero-node drafts
 older than 24 hours are abandoned; populated unfinished maps become stale after
-30 days without activity. Recent drafts and completed or all-mastered maps are
+30 days without node activity. The separate teaching-flow sweep uses its
+last-session clock; a recent session does not replace node activity in the
+registered map sweep, and a recent node does not replace the flow clock.
+Recent drafts and completed or all-mastered maps are
 preserved. Review cleanup can resume after abandonment without rewriting state.
 The dashboard keeps drafts visible, distinguishes fresh/slow/stalled setup from
 an integrity fault, and names failed review sources while retaining successful
 reviews. A partial result never produces a complete total or an all-clear.
+An abandoned selection remains addressable through its identity-matched detail
+query, retaining its status badge and reactivation action after it leaves the
+active/draft lists. Unavailable progress sources show a degraded state rather
+than claiming that no active maps exist.
 
 Curriculum-request admission remains receipt-backed: acceptance precedes detached
 work, `uq_curriculum_requests_one_open` guards the one-open slot, and terminal

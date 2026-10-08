@@ -56,8 +56,17 @@ export default function EducationPage() {
   }, [mindMaps, selectedMapId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const { data: selectedMapDetail } = useMindMap(selectedMapId);
-  const selectedMap = mindMaps.find((m) => m.id === selectedMapId) ?? null;
+  const selectedDetailQuery = useMindMap(selectedMapId);
+  // A status mutation invalidates both the list and detail queries. Keep the
+  // selected curriculum reachable when it leaves the eligible list, using only
+  // the detail belonging to this selection (never a previous query's data).
+  const selectedMapDetail = selectedDetailQuery.data?.id === selectedMapId
+    ? selectedDetailQuery.data : undefined;
+  const selectedMap = selectedMapDetail ?? mindMaps.find((m) => m.id === selectedMapId) ?? null;
+  const selectableMaps = selectedMap && !mindMaps.some((map) => map.id === selectedMap.id)
+    ? [...mindMaps, selectedMap] : mindMaps;
+  const selectedDetailUnavailable = !!selectedMapId && (selectedDetailQuery.isError
+    || (!selectedMapDetail && !selectedDetailQuery.isLoading));
 
   const handleNodeSelection = useCallback((selection: EducationNodeSelection) => {
     setSelectedMapId(selection.mindMapId);
@@ -94,7 +103,7 @@ export default function EducationPage() {
   );
   useRegisterCommands(educationCommands);
 
-  if (isLoading) {
+  if (isLoading || (selectableMaps.length === 0 && selectedDetailQuery.isLoading)) {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold tracking-tight">Education</h1>
@@ -110,7 +119,7 @@ export default function EducationPage() {
   // cache so a background-refetch error keeps the last-good curriculum list
   // visible (React Query never clears data on error) rather than blanking a
   // populated page.
-  if (isError && mindMaps.length === 0) {
+  if ((isError || selectedDetailUnavailable) && selectableMaps.length === 0) {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold tracking-tight">Education</h1>
@@ -122,7 +131,10 @@ export default function EducationPage() {
           <p className="text-sm text-destructive">
             Couldn't reach the education service. Retry.
           </p>
-          <Button variant="outline" onClick={() => void refetch()}>
+          <Button variant="outline" onClick={() => {
+            void refetch();
+            if (selectedMapId) void selectedDetailQuery.refetch();
+          }}>
             Retry
           </Button>
         </div>
@@ -130,7 +142,7 @@ export default function EducationPage() {
     );
   }
 
-  if (mindMaps.length === 0) {
+  if (selectableMaps.length === 0) {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold tracking-tight">Education</h1>
@@ -171,6 +183,9 @@ export default function EducationPage() {
       {receiptPanel}
       {activeMaps.isError && <SourceDegradedNote label="Active curricula" onRetry={() => void refetch()} />}
       {draftMaps.isError && <SourceDegradedNote label="Setting-up curricula" onRetry={() => void refetch()} />}
+      {selectedDetailUnavailable && (
+        <SourceDegradedNote label="Selected curriculum" onRetry={() => void selectedDetailQuery.refetch()} />
+      )}
 
       {/* Mind map selector */}
       <Select value={selectedMapId ?? ""} onValueChange={handleMindMapSelection}>
@@ -178,7 +193,7 @@ export default function EducationPage() {
           <SelectValue placeholder="Select a curriculum" />
         </SelectTrigger>
         <SelectContent>
-          {mindMaps.map((m) => (
+          {selectableMaps.map((m) => (
             <SelectItem key={m.id} value={m.id}>
               {m.title}{m.status === "draft" ? " (Setting up)" : ""}
             </SelectItem>

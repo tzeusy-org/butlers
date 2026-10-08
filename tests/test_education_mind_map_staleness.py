@@ -177,6 +177,43 @@ async def test_registered_job_handler_transitions_stale_maps(pool: asyncpg.Pool)
     assert await _status(pool, stale) == "abandoned"
     assert await _status(pool, recent) == "active"
 
+    # Keep node and flow clocks independent through the actual registered job
+    # and atomic map/flow writer, with a separate pool read after it commits.
+    from butlers.core.state import state_get, state_set
+
+    recent_node = await _create_map(pool, title="Recent nodes old flow")
+    old_node = await _create_map(pool, title="Old nodes recent flow")
+    for map_id, node_days, flow_days in [(recent_node, 2, 45), (old_node, 45, 2)]:
+        await _add_node(pool, map_id, age_days=node_days)
+        await pool.execute("UPDATE education.mind_maps SET status='active' WHERE id=$1", map_id)
+        await state_set(
+            pool,
+            f"flow:{map_id}",
+            {
+                "mind_map_id": map_id,
+                "status": "teaching",
+                "session_count": 1,
+                "last_session_at": (datetime.now(tz=UTC) - timedelta(days=flow_days)).isoformat(),
+                "current_node_id": str(
+                    await pool.fetchval(
+                        "SELECT id FROM education.mind_map_nodes WHERE mind_map_id=$1", map_id
+                    )
+                ),
+                "diagnostic_results": {},
+                "started_at": datetime.now(tz=UTC).isoformat(),
+                "current_phase": "explaining",
+                "current_technique": "worked-example",
+            },
+        )
+
+    result = await handler(pool, None)
+    assert result["abandoned_count"] == 1
+    assert result["abandoned_ids"] == [old_node]
+    assert await _status(pool, recent_node) == "active"
+    assert await _status(pool, old_node) == "abandoned"
+    assert (await state_get(pool, f"flow:{recent_node}"))["status"] == "teaching"
+    assert (await state_get(pool, f"flow:{old_node}"))["status"] == "abandoned"
+
 
 @pytest.fixture(scope="module")
 def legacy_db_url(postgres_container):

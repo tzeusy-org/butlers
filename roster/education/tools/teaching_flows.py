@@ -773,6 +773,19 @@ async def check_stale_flows(
     list of str
         UUIDs of mind maps that were abandoned by this check.
     """
+    return await _abandon_stale_maps(
+        pool, node_activity=False, stale_days=stale_days, schedule_delete=schedule_delete
+    )
+
+
+async def _abandon_stale_maps(
+    pool: asyncpg.Pool,
+    *,
+    node_activity: bool,
+    stale_days: int,
+    schedule_delete: ScheduleDeleteFn,
+) -> list[str]:
+    """Share lifecycle writes and cleanup while keeping the two tool clocks distinct."""
     now = datetime.now(tz=UTC)
     cutoff = now - timedelta(days=stale_days)
     draft_cutoff = now - timedelta(hours=24)
@@ -800,7 +813,7 @@ async def check_stale_flows(
         if empty_draft and row["created_at"] >= draft_cutoff:
             continue
         stalled_draft = empty_draft and row["created_at"] < draft_cutoff
-        if flow_state:
+        if flow_state and not node_activity:
             activity = flow_state.get("last_session_at")
             try:
                 last_activity = datetime.fromisoformat(activity) if activity else None
