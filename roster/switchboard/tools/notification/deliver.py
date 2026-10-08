@@ -13,6 +13,7 @@ import asyncpg
 from opentelemetry import trace
 from pydantic import ValidationError
 
+from butlers.conversation_identity import telegram_conversation_id, whatsapp_conversation_id
 from butlers.core.approval_delivery_transport import (
     RecoveryAuthorityError,
     TrustedRecoveryContext,
@@ -166,6 +167,34 @@ def _transport_fragment(transport: TransportResult | None) -> dict[str, Any]:
     return {"transport": transport.as_dict()} if transport is not None else {}
 
 
+def _outbound_conversation_id(
+    notify_request: NotifyRequestV1, thread_identity: str, source_channel: str
+) -> str:
+    """Return the history key an outbound row shares with its conversation's inbound rows.
+
+    A caller that carried the inbound ``external_conversation_id`` forward is
+    authoritative. Otherwise the key is derived from where the message went: a
+    Telegram delivery lands in the chat named by the recipient or by the reply
+    target's ``<chat_id>`` prefix, and a WhatsApp delivery in the chat JID. Both
+    match the keys connectors emit and sw_041 backfilled.
+    """
+    ctx = notify_request.request_context
+    if ctx is not None and ctx.external_conversation_id is not None:
+        return ctx.external_conversation_id
+    if notify_request.delivery.channel == "telegram":
+        return telegram_conversation_id(thread_identity.partition(":")[0])
+    if notify_request.delivery.channel == "whatsapp" or source_channel in (
+        "whatsapp",
+        "whatsapp_user_client",
+    ):
+        return (
+            thread_identity
+            if thread_identity.startswith("whatsapp:")
+            else whatsapp_conversation_id(thread_identity)
+        )
+    return thread_identity
+
+
 async def _write_outbound_message_inbox(
     pool: asyncpg.Pool,
     *,
@@ -176,8 +205,8 @@ async def _write_outbound_message_inbox(
 
     For reply-intent messages the thread identity comes from request_context.
     For send-intent messages (proactive notifications) the thread identity is
-    derived from delivery.recipient when the channel is telegram — the recipient
-    IS the chat_id that the message was delivered to.
+    derived from delivery.recipient when the channel is telegram or whatsapp —
+    the recipient IS the chat_id / chat JID that the message was delivered to.
 
     Errors are logged but never propagate — the delivery has already succeeded.
     """
@@ -186,11 +215,11 @@ async def _write_outbound_message_inbox(
     ctx = notify_request.request_context
     thread_identity = ctx.source_thread_identity if ctx is not None else None
 
-    # Derive thread identity from delivery.recipient for telegram send-intent
-    # notifications that lack explicit thread context.
+    # Derive thread identity from delivery.recipient for telegram and whatsapp
+    # send-intent notifications that lack explicit thread context.
     if thread_identity is None:
         delivery = notify_request.delivery
-        if delivery.channel == "telegram" and delivery.recipient:
+        if delivery.channel in ("telegram", "whatsapp") and delivery.recipient:
             thread_identity = delivery.recipient
 
     if thread_identity is None:
@@ -214,6 +243,9 @@ async def _write_outbound_message_inbox(
         "source_endpoint_identity": f"butler:{origin_butler}",
         "source_sender_identity": origin_butler,
         "source_thread_identity": thread_identity,
+        "external_conversation_id": _outbound_conversation_id(
+            notify_request, thread_identity, source_channel
+        ),
     }
     raw_payload = {
         "content": message_text,

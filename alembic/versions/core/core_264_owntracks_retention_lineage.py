@@ -1,7 +1,7 @@
 """OwnTracks immutable birth, permanent floors and committed source receipts.
 
 Revision ID: core_264
-Revises: core_261
+Revises: core_265
 
 Raw mutation remains connector_writer-owned. Chronicler receives only the
 explicit additional SELECT receipt surfaces. Legacy NULL accepted lineage is
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "core_264"
-down_revision = "core_261"
+down_revision = "core_265"
 branch_labels = None
 depends_on = None
 

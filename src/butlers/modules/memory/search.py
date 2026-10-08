@@ -6,11 +6,9 @@ All functions accept an asyncpg connection pool and return ranked results.
 
 from __future__ import annotations
 
-import importlib.util
 import math
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
@@ -18,25 +16,7 @@ from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-# ---------------------------------------------------------------------------
-# Load sibling modules from disk (roster/ is not a Python package).
-# ---------------------------------------------------------------------------
-
-_MODULE_DIR = Path(__file__).resolve().parent
-
-
-def _load_module(name: str):
-    path = _MODULE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_search_vector_mod = _load_module("search_vector")
-preprocess_search_query = _search_vector_mod.preprocess_search_query
-tsquery_sql = _search_vector_mod.tsquery_sql
+from butlers.modules.memory.search_vector import preprocess_search_query
 
 _VALID_TABLES = frozenset({"episodes", "facts", "rules"})
 # Tables that support scope filtering (facts/rules use `scope` column).

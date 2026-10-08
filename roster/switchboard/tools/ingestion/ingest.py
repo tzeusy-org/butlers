@@ -46,6 +46,7 @@ import asyncpg
 from opentelemetry import metrics as otel_metrics
 from pydantic import BaseModel, ConfigDict
 
+from butlers.conversation_identity import event_conversation_identity
 from butlers.core.account_security_events import classify_ingest_record, publish_security_event
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
@@ -413,8 +414,14 @@ def _build_request_context(
     }
 
     # Optional fields
-    if event.external_thread_id:
-        context["source_thread_identity"] = event.external_thread_id
+    external_conversation_id, reply_target_ref = event_conversation_identity(event.model_dump())
+    if external_conversation_id:
+        context["external_conversation_id"] = external_conversation_id
+    if reply_target_ref:
+        # Compatibility name consumed by notify.v1. It is deliberately the
+        # per-message reply target, never the continuity key.
+        context["source_thread_identity"] = reply_target_ref
+        context["reply_target_ref"] = reply_target_ref
 
     if control.idempotency_key:
         context["idempotency_key"] = control.idempotency_key
@@ -516,7 +523,7 @@ def _make_ingestion_envelope(
             mime_parts.append(part.lower())
 
     event = payload.get("event") or {}
-    thread_id = event.get("external_thread_id")
+    thread_id, _ = event_conversation_identity(event)
 
     # Build raw_key based on channel
     raw_key = ""
@@ -773,9 +780,10 @@ async def ingest_v1(
     # policy_evaluator=None means caller did not provide one — skip annotation
     triage_decision: PolicyDecision | None = None
     source_channel = envelope.source.channel
-    thread_id: str | None = None
-    if envelope.event.external_thread_id:
-        thread_id = str(envelope.event.external_thread_id)
+    # thread_id is the continuity key (email thread affinity); reply_target_ref
+    # keeps public.ingestion_events.source_thread_identity a reply target, as
+    # correct_route hands it back to notify as source_thread_identity.
+    thread_id, reply_target_ref = event_conversation_identity(envelope.event.model_dump())
 
     # 4a. Envelope pin — already validated above against the live, routable
     # butler registry before any duplicate return.  Bypasses thread-affinity
@@ -865,6 +873,8 @@ async def ingest_v1(
         },
         "event": {
             "external_event_id": envelope.event.external_event_id,
+            "external_conversation_id": envelope.event.external_conversation_id,
+            "reply_target_ref": envelope.event.reply_target_ref,
             "external_thread_id": envelope.event.external_thread_id,
             "observed_at": envelope.event.observed_at.isoformat(),
         },
@@ -1116,7 +1126,7 @@ async def ingest_v1(
                     _strip_null_bytes(envelope.source.endpoint_identity),
                     _strip_null_bytes(envelope.sender.identity),
                     _strip_null_bytes(envelope.sender.display_name),
-                    _strip_null_bytes(envelope.event.external_thread_id),
+                    _strip_null_bytes(reply_target_ref),
                     _strip_null_bytes(envelope.event.external_event_id),
                     _strip_null_bytes(dedupe_key),
                     "connector_api",

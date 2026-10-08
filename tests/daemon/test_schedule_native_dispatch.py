@@ -40,6 +40,7 @@ class TestNativeScheduleDispatch:
             "eligibility_sweep",
             "decision_review_digest",
             "decision_escalation_check",
+            "decision_routing",
         } <= set(switchboard_jobs)
         removed = {
             "connector_stats_hourly_rollup",

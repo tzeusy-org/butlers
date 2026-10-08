@@ -69,6 +69,12 @@ def test_butler_toml_has_decision_review_schedules():
     assert escalation["dispatch_mode"] == "job"
     assert escalation["job_name"] == "decision_escalation_check"
 
+    routing = next((s for s in schedules if s["name"] == "decision-routing"), None)
+    assert routing is not None
+    assert routing["cron"] == "7,22,37,52 * * * *"
+    assert routing["dispatch_mode"] == "job"
+    assert routing["job_name"] == "decision_routing"
+
 
 async def test_eligibility_sweep_state_transitions():
     """Butler transitions to stale/quarantined when TTL thresholds are exceeded."""

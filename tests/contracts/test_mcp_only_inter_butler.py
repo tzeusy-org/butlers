@@ -201,6 +201,9 @@ class TestMcpOnlyInterButler:
         import pkgutil
         import sys
 
+        from butlers.modules.registry import default_registry
+
+        default_registry()  # This test explicitly needs the complete roster set.
         # Discover roster modules via pkgutil so we don't silently skip when
         # sys.modules happens to be empty (e.g. in a fresh test process).
         try:
@@ -226,7 +229,7 @@ class TestMcpOnlyInterButler:
         all_roster_names = set(roster_module_names) | set(loaded_roster.keys())
 
         if not all_roster_names:
-            pytest.skip("No roster modules discovered — isolation check not applicable")
+            pytest.fail("No roster modules discovered: isolation coverage is incomplete")
 
         for mod_name in all_roster_names:
             butler_name = mod_name.replace("butlers.modules._roster_", "")

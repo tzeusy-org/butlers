@@ -8,7 +8,10 @@ Privileged PostgreSQL bootstrap script to run **before** the first Alembic
 migration on a fresh database. It must be executed by a privileged cluster
 superuser. Supply the normal connecting/migration user separately through the
 `butlers.connecting_user` GUC; it must not be the active bootstrap identity.
-It is safe to re-run later if the managed schema/role surface expands.
+It is safe to re-run later if the managed schema/role surface expands. Online
+entrypoints verify current prerequisite state before side effects, including dev;
+they do not invoke bootstrap or demand a blind rerun before every migration. See
+[reviewed bootstrap and existing core195 repair](../docs/data_and_storage/reviewed-bootstrap.md).
 
 **Prerequisites:** The PostgreSQL server must have the `pgvector` binary
 installed.  The standard `postgres` Docker image does not include it; use

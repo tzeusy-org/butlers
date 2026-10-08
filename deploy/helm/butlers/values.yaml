@@ -262,26 +262,45 @@ connectors:
     healthPort: 40090
     oauth: true
 
-# Serves the derived beads export to dashboard-api and butlers-up (/api/decisions,
-# beads tiles, jobs/decision_review) via a CronJob running `bd export` into a PVC
-# mounted read-only as a directory at /app/.beads. Only the CronJob pod gets the
-# Dolt endpoint and credential. OWNER-GATED: leave false until the owner has
-# approved placing a tracker credential in the namespace and created the Secret
-# (docs/operations/kubernetes-deployment.md, "Beads export").
+# Beads tracker bridge (bu-ckkpz.3): a CronJob that applies recorded Decision
+# Desk intents with `bd`, then runs `bd export` into a PVC that dashboard-api
+# and butlers-up mount read-only as /app/.beads (/api/decisions, beads tiles,
+# jobs/decision_review). Only the CronJob pod gets the Dolt endpoint and
+# credential, and the <release>-tracker-egress NetworkPolicy denies every other
+# pod a route to the tracker (docs/operations/kubernetes-deployment.md,
+# "Beads export"). OWNER-GATED per environment: dev is enabled (owner ruling
+# 2026-10-08, bu-sng0tu); prod stays off.
 beadsExport:
   enabled: false
   schedule: "*/15 * * * *"
-  # Required when enabled: an image containing `bd` (the app image does not).
+  # The bridge image (Dockerfile.beads, built by scripts/k8s/build-push.sh).
+  # Renders as <imageRepository>:<image.tag>; `image` overrides the whole ref.
+  imageRepository: ""
   image: ""
-  # Required when enabled: the Dolt server host (never committed; set in values.local.yaml).
+  # Site-specific; scripts/k8s/site-helm-args.sh sets both from BEADS_DOLT_SERVER_HOST.
   doltHost: ""
+  # Deny every other pod in the namespace a route to the tracker
+  # (templates/tracker-egress.yaml). Independent of `enabled`, so a rollback
+  # keeps the tracker closed.
+  denyTrackerEgress: false
+  # Every IPv4 address of doltHost as a /32, excluded from that egress.
+  doltEgressCidrs: []
   doltPort: 3307
   doltDatabase: butlers
-  # Required when enabled: existing Secret holding the Dolt user and password.
+  # Apply Decision Desk intents before each export.
+  applyDecisions: true
+  # The tracker audit actor for closes the applier makes.
+  actor: butlers-decision-desk
+  # Credential: the chart syncs <release>-beads-dolt from these BWS keys, unless
+  # credentialSecretName names an existing Secret instead.
   credentialSecretName: ""
+  credentialBwsKeys:
+    user: ""
+    password: ""
   credentialKeys:
     user: BEADS_DOLT_SERVER_USER
     password: BEADS_DOLT_PASSWORD
+  activeDeadlineSeconds: 600
   size: 256Mi
   resources:
     requests: {cpu: 50m, memory: 128Mi}

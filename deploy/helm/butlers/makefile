@@ -12,8 +12,12 @@ helm_args = -n $(NAMESPACE_$(1)) -f values.yaml -f values.$(1).yaml $(if $(LOCAL
 
 .PHONY: lint
 
+# Site hosts are never committed, so lint supplies documentation-range placeholders.
+LINT_SITE := --set beadsExport.imageRepository=registry.invalid/butlers-beads \
+	--set beadsExport.doltHost=dolt.invalid --set 'beadsExport.doltEgressCidrs={192.0.2.1/32}'
+
 lint:
-	helm lint . -f values.yaml -f values.dev.yaml --set image.tag=lint --set frontendImage.tag=lint
+	helm lint . -f values.yaml -f values.dev.yaml --set image.tag=lint --set frontendImage.tag=lint $(LINT_SITE)
 	helm lint . -f values.yaml -f values.prod.yaml --set image.tag=lint --set frontendImage.tag=lint
 
 template-%:

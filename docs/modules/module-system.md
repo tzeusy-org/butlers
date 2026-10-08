@@ -49,7 +49,10 @@ The invariants:
 
 `default_registry()` discovers every concrete `Module` subclass under the `butlers.modules`
 package, plus butler-specific modules in `roster/<butler>/modules/__init__.py`. Registration is
-idempotent.
+idempotent during discovery for the same class object; the public `register()` method still
+rejects duplicate names. Explicit discovery import failures are raised rather than returning an
+incomplete registry. Registry instances remain fresh; requested roster module names resolve from
+their real checkout package without pytest setup.
 
 The daemon loads modules with `load_all()`: **every** registered module is instantiated, whether or
 not `butler.toml` mentions it (absent modules get an empty config). Discovery is distinct

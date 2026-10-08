@@ -18,7 +18,9 @@
  *
  * There are no approve/deny/close actions here yet. This deliberately
  * read-only digest projects source-authored decision context when available,
- * but never carries mutation controls.
+ * but never carries mutation controls. A choice recorded elsewhere (the
+ * owner intent API or a Telegram one-tap, bu-ckkpz.3) renders as a read-only
+ * status line; applying it to the tracker happens later, out of band.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -30,7 +32,7 @@ import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { DecisionsVerdictOpener } from "@/components/decisions/decisions-verdict-opener.tsx";
 import { Time } from "@/components/ui/time";
-import type { DecisionBeadSummary } from "@/api/index.ts";
+import type { DecisionBeadSummary, DecisionIntentSummary } from "@/api/index.ts";
 import { beadDetailPath } from "@/lib/bead-detail";
 
 /**
@@ -89,6 +91,31 @@ function blockedKindLabel(kind: string | null | undefined): string {
 
 function formatStructuredDetailsReason(reason: string | null | undefined): string {
   return reason ? reason.replaceAll("_", " ") : "source metadata unavailable";
+}
+
+function formatReason(reason: string): string {
+  return reason.replaceAll("_", " ");
+}
+
+/** The recorded intent, stated as the tracker bridge last left it. */
+function DecisionIntentStatus({ intent }: { intent: DecisionIntentSummary }) {
+  let text: string;
+  if (intent.status === "applied") {
+    text = `Applied: ${intent.option}.`;
+  } else if (intent.status === "failed") {
+    text = `Applying ${intent.option} failed: ${formatReason(intent.failure_reason ?? "unknown")}.`;
+  } else {
+    text = `Recorded: ${intent.option}. Awaiting application to the tracker.`;
+    if (intent.last_error) {
+      text += ` The last attempt did not complete (${formatReason(intent.last_error)}).`;
+    }
+  }
+  return (
+    <div data-testid="decision-intent-status" data-status={intent.status} role="status">
+      <span className="font-mono uppercase tracking-wide">Choice: </span>
+      <span className="text-foreground">{text}</span>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +230,7 @@ function DecisionRow({
               <span className="text-foreground">{decision.default}</span>
             </div>
           )}
+          {decision.intent && <DecisionIntentStatus intent={decision.intent} />}
           {!decision.structured_details_available && (
             <div data-testid="decision-structured-details-unavailable" role="status">
               Structured decision details unavailable: {formatStructuredDetailsReason(
@@ -312,6 +340,16 @@ export default function DecisionsPage() {
         testId="decisions-degraded"
       />
     ) : null;
+  // The intent store degrades separately from the export: rows still render,
+  // but a missing status line must not read as "no choice recorded".
+  const intentsDegradedNote = data?.meta.sources_degraded?.includes("decision_intents") ? (
+    <SourceDegradedNote
+      label="Recorded choices"
+      detail="intent state unavailable: recorded choices may not be shown"
+      onRetry={() => void refetch()}
+      testId="decisions-intents-degraded"
+    />
+  ) : null;
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -379,6 +417,7 @@ export default function DecisionsPage() {
                 rendered above the rows for shape-consistency should that
                 ever change. */}
             {degradedNote && <div className="py-3">{degradedNote}</div>}
+            {intentsDegradedNote && <div className="py-3">{intentsDegradedNote}</div>}
             {decisions.map((decision) => (
               // role="listitem" lives on this wrapper, not the interactive
               // <button> inside DecisionRow -- overriding a button's own

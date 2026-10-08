@@ -58,7 +58,7 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
 
     core = _build_alembic_config(migrated_db_url, chains=["core"], target_schema="chronicler")
     for _ in range(2):
-        command.downgrade(core, "core@core_261")
+        command.downgrade(core, "core@core_265")
         command.upgrade(core, "core@head")
     await run_migrations(migrated_db_url, chain="core", schema="retention_second")
     pool = await asyncpg.create_pool(

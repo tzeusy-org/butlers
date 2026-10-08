@@ -18,6 +18,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core.model_routing import QuotaStatus
+from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
+from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.spawner import Spawner
 from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
@@ -44,6 +48,44 @@ class _ReclaimedLeaseHeartbeat:
 
     async def __aexit__(self, *_args: object) -> bool:
         return False
+
+
+class _ResumeRecordingAdapter(RuntimeAdapter):
+    supports_resume = True
+
+    def __init__(self) -> None:
+        self.invoke_calls: list[str | None] = []
+        self._last_process_info: dict[str, Any] | None = None
+        self.two_invocations = asyncio.Event()
+
+    @property
+    def binary_name(self) -> str:
+        return "mock"
+
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        return self._last_process_info
+
+    async def invoke(self, *_args: Any, **kwargs: Any) -> tuple[str, list, None]:
+        self.invoke_calls.append(kwargs.get("resume_session_id"))
+        if len(self.invoke_calls) == 2:
+            self.two_invocations.set()
+        self._last_process_info = {
+            "runtime_type": DEFAULT_RUNTIME_TYPE,
+            "provider_session_id": "provider-session-from-first-turn",
+        }
+        return "ok", [], None
+
+    async def reset(self) -> None:
+        return None
+
+    def build_config_file(self, _mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
+        config_file = tmp_dir / "runtime.json"
+        config_file.write_text("{}")
+        return config_file
+
+    def parse_system_prompt_file(self, _config_dir: Path) -> str:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +206,7 @@ def _route_request_context(
     source_sender_identity: str = "health",
     source_channel: str = "telegram_bot",
     source_thread_identity: str | None = "12345:678",
+    external_conversation_id: str | None = "telegram:12345",
 ) -> dict[str, Any]:
     ctx: dict[str, Any] = {
         "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
@@ -174,6 +217,8 @@ def _route_request_context(
     }
     if source_thread_identity is not None:
         ctx["source_thread_identity"] = source_thread_identity
+    if external_conversation_id is not None:
+        ctx["external_conversation_id"] = external_conversation_id
     return ctx
 
 
@@ -248,7 +293,7 @@ async def test_creates_conversation_anchor_and_forwards_conversation_id(
     call_kwargs = mock_get_or_create.call_args.kwargs
     assert call_kwargs["butler_name"] == "health"
     assert call_kwargs["source_channel"] == "telegram_bot"
-    assert call_kwargs["source_thread_identity"] == "12345:678"
+    assert call_kwargs["external_conversation_id"] == "telegram:12345"
     # The raw prompt, not the <routed_message>-wrapped text sent to the runtime.
     assert call_kwargs["first_message"] == "Hello from Telegram."
     assert "<routed_message>" not in call_kwargs["first_message"]
@@ -321,6 +366,148 @@ async def test_dashboard_channel_resolves_existing_conversation_without_forking(
     assert trigger_mock.call_args.kwargs["conversation_id"] == existing_conversation_id
 
 
+async def test_two_routed_telegram_ingests_reuse_anchor_and_resume_provider_session(
+    tmp_path: Path,
+) -> None:
+    patches = _patch_infra("health")
+    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+
+    anchors: dict[tuple[str, str, str], uuid.UUID] = {}
+
+    async def get_or_create_anchor(
+        _pool: Any,
+        *,
+        butler_name: str,
+        source_channel: str,
+        external_conversation_id: str,
+        first_message: str,
+    ) -> tuple[dict[str, Any], bool]:
+        del first_message
+        key = (butler_name, source_channel, external_conversation_id)
+        is_new = key not in anchors
+        conversation_id = anchors.setdefault(key, uuid.uuid4())
+        return {"id": conversation_id}, is_new
+
+    provider_state: dict[str, Any] | None = None
+
+    async def get_provider_session(*_args: Any, **_kwargs: Any) -> dict[str, Any] | None:
+        return provider_state
+
+    async def set_provider_session(
+        _pool: Any,
+        _conversation_id: uuid.UUID,
+        *,
+        provider_session_id: str,
+        provider_runtime_type: str,
+        **_kwargs: Any,
+    ) -> None:
+        nonlocal provider_state
+        provider_state = {
+            "provider_session_id": provider_session_id,
+            "provider_runtime_type": provider_runtime_type,
+            "provider_session_updated_at": __import__("datetime").datetime.now(
+                __import__("datetime").UTC
+            ),
+        }
+
+    adapter = _ResumeRecordingAdapter()
+    real_spawner = Spawner(
+        config=daemon.config,
+        config_dir=butler_dir,
+        pool=patches["mock_pool"],
+        runtime=adapter,
+    )
+    real_spawner._ensure_mcp_endpoints_warmed = AsyncMock(return_value=None)
+    daemon.spawner.trigger.side_effect = real_spawner.trigger
+    quota_allowed = QuotaStatus(
+        allowed=True,
+        usage_24h=0,
+        limit_24h=None,
+        usage_30d=0,
+        limit_30d=None,
+    )
+
+    with (
+        patch(
+            "butlers.core_tools._routing.route_inbox_insert",
+            new_callable=AsyncMock,
+            side_effect=[uuid.uuid4(), uuid.uuid4()],
+        ),
+        patch(
+            "butlers.core_tools._routing.route_inbox_claim_processing",
+            new_callable=AsyncMock,
+            side_effect=[uuid.uuid4(), uuid.uuid4()],
+        ),
+        patch(
+            "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
+            side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat(),
+        ),
+        _renew_processing_claim_patch(),
+        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
+        patch(
+            "butlers.api.conversations.conversation_get_or_create_by_thread",
+            new_callable=AsyncMock,
+            side_effect=get_or_create_anchor,
+        ) as anchor_lookup,
+        patch(
+            "butlers.core.spawner.session_create",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        patch(
+            "butlers.core.spawner.resolve_model_with_effective_tier",
+            new_callable=AsyncMock,
+            return_value=(
+                DEFAULT_RUNTIME_TYPE,
+                "test-model",
+                [],
+                uuid.uuid4(),
+                1800,
+                "workhorse",
+            ),
+        ),
+        patch(
+            "butlers.core.spawner.check_token_quota",
+            new_callable=AsyncMock,
+            return_value=quota_allowed,
+        ),
+        patch(
+            "butlers.core.spawner.conversation_get_provider_session",
+            new_callable=AsyncMock,
+            side_effect=get_provider_session,
+        ),
+        patch(
+            "butlers.core.spawner.conversation_set_provider_session",
+            new_callable=AsyncMock,
+            side_effect=set_provider_session,
+        ),
+    ):
+        for message_id, prompt in (("1", "first turn"), ("2", "second turn")):
+            await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(
+                    source_channel="telegram_bot",
+                    source_thread_identity=f"12345:{message_id}",
+                    external_conversation_id="telegram:12345",
+                ),
+                input={"prompt": prompt},
+            )
+            await asyncio.sleep(0.1)
+
+        await asyncio.wait_for(adapter.two_invocations.wait(), timeout=5)
+
+    assert anchor_lookup.await_count == 2
+    assert len(anchors) == 1
+    assert [call.kwargs["external_conversation_id"] for call in anchor_lookup.await_args_list] == [
+        "telegram:12345",
+        "telegram:12345",
+    ]
+    assert adapter.invoke_calls == [None, "provider-session-from-first-turn"]
+
+
 async def test_skips_conversation_anchor_when_no_thread_identity(tmp_path: Path) -> None:
     patches = _patch_infra("health")
     butler_dir = _make_butler_toml(tmp_path, butler_name="health")
@@ -357,7 +544,9 @@ async def test_skips_conversation_anchor_when_no_thread_identity(tmp_path: Path)
         await route_execute_fn(
             schema_version="route.v1",
             request_context=_route_request_context(
-                source_channel="api", source_thread_identity=None
+                source_channel="api",
+                source_thread_identity=None,
+                external_conversation_id=None,
             ),
             input={"prompt": "Run health check."},
         )

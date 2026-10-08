@@ -54,7 +54,7 @@ Every ingested message receives a canonical request context before any routing d
 - **`source_endpoint_identity`** --- the ingress identity that received the message (e.g., the bot's identity)
 - **`source_sender_identity`** --- the actor who sent the message (e.g., a Telegram user ID)
 
-Optional fields include `source_thread_identity` (conversation/thread identifier) and `trace_context` (OpenTelemetry propagation payload).
+Optional fields include `external_conversation_id` (the stable conversation key used for anchors, provider-session resume, and history), `reply_target_ref` with its notify-facing alias `source_thread_identity` (the per-message reply or reaction target), and `trace_context` (OpenTelemetry propagation payload).
 
 When fanout occurs (a message routes to multiple butlers), all sub-requests share the same `request_id` and source context. Sub-request metadata can add `subrequest_id` and `segment_id` but cannot replace the root context.
 

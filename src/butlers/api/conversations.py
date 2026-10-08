@@ -83,27 +83,6 @@ def _auto_title(message: str, max_len: int = 80) -> str:
     return truncated + "…"
 
 
-def _core_208_conversation_identity(source_channel: str, source_thread_identity: str) -> str:
-    """Derive a stable anchor key without changing the legacy ingest wire shape.
-
-    Telegram bot ingress uses ``<chat_id>:<message_id>`` as its reply target.
-    The message suffix must not split provider-session lineage across turns in
-    the same chat. Other core_208 channel keys are already conversation-stable.
-    """
-    if source_channel not in {"telegram", "telegram_bot"}:
-        return source_thread_identity
-
-    chat_id, separator, message_id = source_thread_identity.partition(":")
-    if (
-        separator
-        and chat_id.removeprefix("-").isdigit()
-        and message_id.isdigit()
-        and ":" not in message_id
-    ):
-        return f"telegram:{chat_id}"
-    return source_thread_identity
-
-
 # ---------------------------------------------------------------------------
 # Conversation CRUD
 # ---------------------------------------------------------------------------
@@ -335,34 +314,33 @@ async def conversation_get_or_create_by_thread(
     *,
     butler_name: str,
     source_channel: str,
-    source_thread_identity: str,
+    external_conversation_id: str,
     first_message: str,
 ) -> tuple[dict[str, Any], bool]:
     """Upsert the channel-agnostic conversation anchor for an inbound thread.
 
     Generalizes conversation creation beyond the dashboard-only
-    ``conversation_create``: any channel that already normalizes a
-    ``source_thread_identity`` at ingest (Telegram, email, ...) can call this
+    ``conversation_create``: any channel that supplies a stable
+    ``external_conversation_id`` at ingest (Telegram, email, ...) can call this
     once per inbound message to get a stable ``dashboard_conversations`` row
     to attach session lineage and a provider resume handle to, without
     needing to track its own anchor concept.
 
-    Core_208 compatibility keeps the legacy input name and schema column. The
-    helper normalizes Telegram's per-message reply target to a stable chat key
-    before persistence. It then acquires one pool connection and holds a
-    transaction-scoped advisory lock through INSERT conflict recovery. This
-    prevents two callers for one stable conversation from creating separate
-    anchors, and prevents the INSERT and fallback SELECT from switching pool
-    connections.
+    The key is the connector's conversation identity, never its per-message
+    reply target. The legacy ``source_thread_identity`` column receives the
+    same value so the core_185 index and the core_265 index stay congruent.
+    The helper acquires one pool connection and holds a transaction-scoped
+    advisory lock through INSERT conflict recovery. This prevents two callers
+    for one conversation from creating separate anchors, and prevents the
+    INSERT and fallback SELECT from switching pool connections.
 
     Returns ``(conversation, is_new)``.
     """
     conv_id = _generate_uuid7()
     title = _auto_title(first_message)
     now = datetime.now(UTC)
-    stable_identity = _core_208_conversation_identity(source_channel, source_thread_identity)
     lock_identity = json.dumps(
-        ["core_208_conversation_anchor", butler_name, source_channel, stable_identity],
+        ["conversation_anchor", butler_name, source_channel, external_conversation_id],
         separators=(",", ":"),
     )
 
@@ -379,20 +357,22 @@ async def conversation_get_or_create_by_thread(
             """
             INSERT INTO public.dashboard_conversations
                 (id, butler_name, title, status, created_at, updated_at,
-                 message_count, source_channel, source_thread_identity)
-            VALUES ($1, $2, $3, 'active', $4, $4, 0, $5, $6)
-            ON CONFLICT (butler_name, source_channel, source_thread_identity)
-                WHERE source_thread_identity IS NOT NULL
+                 message_count, source_channel, source_thread_identity,
+                 external_conversation_id)
+            VALUES ($1, $2, $3, 'active', $4, $4, 0, $5, $6, $6)
+            ON CONFLICT (butler_name, source_channel, external_conversation_id)
+                WHERE external_conversation_id IS NOT NULL
             DO NOTHING
             RETURNING id, butler_name, title, status, created_at, updated_at,
-                      message_count, routed_butler, source_channel, source_thread_identity
+                      message_count, routed_butler, source_channel, source_thread_identity,
+                      external_conversation_id
             """,
             conv_id,
             butler_name,
             title,
             now,
             source_channel,
-            stable_identity,
+            external_conversation_id,
         )
         if inserted is not None:
             return dict(inserted), True
@@ -400,18 +380,19 @@ async def conversation_get_or_create_by_thread(
         existing = await connection.fetchrow(
             """
             SELECT id, butler_name, title, status, created_at, updated_at,
-                   message_count, routed_butler, source_channel, source_thread_identity
+                   message_count, routed_butler, source_channel, source_thread_identity,
+                   external_conversation_id
             FROM public.dashboard_conversations
-            WHERE butler_name = $1 AND source_channel = $2 AND source_thread_identity = $3
+            WHERE butler_name = $1 AND source_channel = $2 AND external_conversation_id = $3
             """,
             butler_name,
             source_channel,
-            stable_identity,
+            external_conversation_id,
         )
         if existing is None:
             raise RuntimeError(
                 f"Conversation anchor for {butler_name}/{source_channel}/"
-                f"{stable_identity} disappeared after an upsert conflict"
+                f"{external_conversation_id} disappeared after an upsert conflict"
             )
         return dict(existing), False
 

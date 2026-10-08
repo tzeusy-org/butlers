@@ -8,15 +8,16 @@ use the EmbeddingEngine for semantic vector generation.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import logging
 import math
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from butlers.modules.memory.embedding import EmbeddingEngine
+from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
 
 if TYPE_CHECKING:
     from asyncpg import Connection, Pool
@@ -43,29 +44,6 @@ class StaleSupersessionTargetError(ValueError):
 
 
 # ---------------------------------------------------------------------------
-# Load sibling modules from disk (roster/ is not a Python package).
-# ---------------------------------------------------------------------------
-
-_MODULE_DIR = Path(__file__).resolve().parent
-
-
-def _load_module(name: str):
-    path = _MODULE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_embedding_mod = _load_module("embedding")
-_search_mod = _load_module("search_vector")
-
-EmbeddingEngine = _embedding_mod.EmbeddingEngine
-preprocess_text = _search_mod.preprocess_text
-tsvector_sql = _search_mod.tsvector_sql
-
-# ---------------------------------------------------------------------------
 # Discovery-catalog write-time sensitivity exclusion (defense-in-depth)
 # ---------------------------------------------------------------------------
 #
@@ -76,16 +54,10 @@ tsvector_sql = _search_mod.tsvector_sql
 # explicitly authorize higher levels via max_sensitivity), write-time
 # exclusion means an under-authorized reader can never even race a purge.
 #
-# This vocabulary is intentionally DUPLICATED from
-# search.py::CATALOG_SENSITIVITY_LEVELS / DEFAULT_CATALOG_SENSITIVITY rather
-# than imported: a static import of search.py -- even just for these two
-# constants -- would make search.py's pgvector distance operators reachable
-# from every transitive importer of this module, including relationship's
-# deterministic-Finder endpoint guardrail (see the identical rationale next
-# to `_search_helper.search_catalog` in `__init__.py`, and
-# `roster/relationship/tests/test_finder_no_llm_transitive.py`).
-# `tests/modules/memory/test_catalog_write_time_sensitivity.py` pins parity
-# against the real search.py constants so the two cannot silently drift.
+# Keep the write policy's vocabulary local; the parity test below pins it to
+# search.py's read ceiling. Deterministic API readers use their own lightweight
+# channel/attribution modules rather than importing semantic storage/search.
+# `tests/modules/memory/test_catalog_write_time_sensitivity.py` pins parity.
 _CATALOG_SENSITIVITY_LEVELS: tuple[str, ...] = ("normal", "pii", "confidential")
 _DEFAULT_CATALOG_SENSITIVITY = "normal"
 

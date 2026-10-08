@@ -10166,6 +10166,31 @@ export interface DecisionBeadSummary {
   /** "p1_bug" | "deploy" */
   escalated_blocked_kind?: string | null;
   escalated_block_hours?: number | null;
+  /**
+   * The owner's recorded choice (bu-ckkpz.3): the live intent, else the most
+   * recent failed one. Absent or null when none was recorded, or when the
+   * intent store was unreadable (then `meta.sources_degraded` names
+   * `decision_intents`).
+   */
+  intent?: DecisionIntentSummary | null;
+}
+
+/**
+ * A recorded owner choice for one decision bead. The runtime only records it;
+ * the beads bridge applies it to the tracker later, so `pending`/`applying`
+ * mean "awaiting application", not "done".
+ */
+export interface DecisionIntentSummary {
+  id: string;
+  bead_id: string;
+  option: string;
+  status: "pending" | "applying" | "applied" | "failed";
+  source: "dashboard" | "telegram";
+  created_at: string;
+  /** Categorical reason, set exactly when `status` is `failed`. */
+  failure_reason: string | null;
+  /** Categorical reason the last application attempt did not complete. */
+  last_error: string | null;
 }
 
 /**
@@ -10188,6 +10213,8 @@ export interface DecisionsListMeta extends ApiMeta {
    * export was never reached (e.g. missing file).
    */
   export_as_of?: string | null;
+  /** `["decision_intents"]` when recorded choices could not be read (bu-ckkpz.3). */
+  sources_degraded?: string[];
 }
 
 /** GET /api/decisions response: open decision beads + digest-availability meta. */

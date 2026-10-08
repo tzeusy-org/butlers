@@ -424,7 +424,7 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
     dispatch = _current_dispatch_input.get()
     receiver = None
     if invocation is not None and invocation.target == "chronicler":
-        receiver = UUID(invocation.runtime_session_id)
+        receiver = UUID(invocation.runtime_session)
     elif dispatch is not None and dispatch.active:
         receiver = dispatch.session_id
     copies = []

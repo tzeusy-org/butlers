@@ -35,7 +35,7 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 | `log-init`, `log-cleanup` | Shared PVC `butlers-logs` + CronJob `butlers-log-cleanup` |
 | `wa_bridge_socket` volume | PVC `butlers-wa-bridge` (Unix socket shared by three pods on one node) |
 | `runtime_*` CLI volumes | PVC `butlers-runtime-home`, one subPath per CLI |
-| host `.beads/issues.export.jsonl` | Optional (`beadsExport.enabled`, default off): CronJob `butlers-beads-export` writing PVC `butlers-beads-export`, mounted read-only at `/app/.beads` (see [Beads export](#beads-export)) |
+| host `.beads/issues.export.jsonl` | Optional (`beadsExport.enabled`, on in dev, off in prod): CronJob `butlers-beads-export` writing PVC `butlers-beads-export`, mounted read-only at `/app/.beads` (see [Beads export](#beads-export)) |
 
 Service names match the compose service names, so in-cluster URLs (`http://butlers-up:41100/sse`,
 `http://dashboard-api:41200`) are unchanged.
@@ -49,36 +49,66 @@ Not ported (compose remains the only path for these):
 
 ## Beads export
 
+The export also carries the Decision Desk write bridge (`bu-ckkpz.3`).
+
 `/api/decisions`, the beads tiles, `GET /api/beads/{id}` and `jobs/decision_review` read
-`/app/.beads/issues.export.jsonl`. With `beadsExport.enabled=false` (default) nothing is mounted
-and they report unavailable. With it enabled, CronJob `butlers-beads-export` runs `bd export`
-against the Dolt tracker every `beadsExport.schedule`, writes a temp file on the PVC and renames
-it into place. `dashboard-api` and `butlers-up` mount the PVC read-only as a directory (not a
-`subPath`, which would pin the replaced inode). A failed run leaves the previous file; once it is
-older than `STALE_BEADS_EXPORT_AGE` readers report unavailable, never empty.
+`/app/.beads/issues.export.jsonl`. With `beadsExport.enabled=false` (the default, and prod) nothing
+is mounted and they report unavailable. Dev enables it (owner ruling 2026-10-08, `bu-sng0tu`).
 
-Trust boundary: only the CronJob pod receives the Dolt host and the credential Secret
-(`beadsExport.credentialSecretName`); runtime pods get just the PVC, which holds only the export
-file. Enabling it places a tracker credential in the namespace, which
-`REQ-beads-projection-001` makes owner-gated, so do not enable it without owner approval
-(owner decision on credential placement and the exporter image: `bu-sng0tu`).
+Each run of CronJob `butlers-beads-export` (`files/beads_cycle.sh` in the `butlers-beads` image):
 
-Open facts, all unverified; confirm each before enabling:
+1. writes a scratch `bd` workspace (`.beads/metadata.json` naming the database);
+2. applies recorded Decision Desk intents (`scripts/beads_decision_applier.py`, contract in
+   `REQ-owner-decision-desk-002`): each owner choice in `switchboard.decision_intents` closes its
+   decision bead at most once, with `decision-intent <id>` in the close reason;
+3. runs `bd export` into a temp file on the PVC and renames it into place.
 
-- `bd` is not in any image. The app image does not contain it, so `beadsExport.image` must be a
-  dedicated exporter image with a `bd` version pinned to match the tracker host.
-- `bd export` may need a scratch `.beads/metadata.json` workspace inside the pod; the script does
-  not create one.
-- The `BEADS_DOLT_*` env names the CronJob sets are unconfirmed against the pinned `bd` version.
-- Dolt reachability from `butlers-dev` pods is untested.
+The export always runs, and the Job fails if either step failed. `dashboard-api` and `butlers-up`
+mount the PVC read-only as a directory (not a `subPath`, which would pin the replaced inode). A
+failed export leaves the previous file; once it is older than `STALE_BEADS_EXPORT_AGE` readers
+report unavailable, never empty.
+
+Trust boundary (`REQ-beads-projection-007`):
+
+- Only the CronJob pod receives the Dolt host and credential. The credential is the dedicated
+  Secret `butlers-beads-dolt`, synced by its own ExternalSecret from BWS keys
+  `BUTLERS_RUNTIME_BEADS_DOLT_USER` / `BUTLERS_RUNTIME_BEADS_DOLT_PASSWORD`, never through the shared
+  `butlers-bws` Secret.
+- NetworkPolicy `butlers-tracker-egress` gives every other pod in the namespace egress to
+  everything except the tracker's IPv4 addresses (`beadsExport.doltEgressCidrs`). It renders from
+  `beadsExport.denyTrackerEgress` (on in dev), not from `enabled`, so disabling the bridge keeps
+  the tracker closed. It assumes IPv4-only pods (k3s single-stack); a dual-stack cluster needs an
+  IPv6 rule too.
+- The runtime never reaches the tracker. It records intents in Postgres; the CronJob applies them.
+
+Facts verified on `butlers-dev`, 2026-10-08:
+
+| Question | Answer |
+| --- | --- |
+| Reachability | Pods resolve `BEADS_DOLT_SERVER_HOST` (a dedicated tailnet address) and reach TCP 3307. |
+| Auth | The tracker's `root@%` has no password, so the NetworkPolicy, not the credential, is what confines the tracker to one pod. Setting a root password is an owner follow-up. |
+| Bridge user | A Dolt user granted `SELECT, INSERT, UPDATE, DELETE, EXECUTE, CREATE TEMPORARY TABLES, LOCK TABLES` on `butlers.*` exports, shows and closes beads. Its credential is in BWS (dev project). |
+| `bd` version | 1.3.1, pinned by release-tarball SHA-256 in `Dockerfile.beads`. The tracker is stamped 1.0.4 (66 schema migrations); 1.3.1 reads and writes it without migrating. |
+| Workspace | `bd export` needs `.beads/metadata.json` (`backend: dolt`, `dolt_mode: server`, `dolt_database`) pointed at by `BEADS_DIR`. The cycle script writes it. |
+| Env names | `BEADS_DOLT_SERVER_HOST`, `BEADS_DOLT_SERVER_PORT`, `BEADS_DOLT_SERVER_USER`, `BEADS_DOLT_PASSWORD`; `BD_ACTOR` sets the audit actor. |
+| Egress policy | Allowing `0.0.0.0/0` except the tracker's `/32` (it has one IPv4 address) plus all pods blocks 3307 to the tracker and keeps Postgres, Telegram, OTLP, the registry and in-cluster services reachable. |
+
+Configuration: `values.dev.yaml` sets `enabled`, `denyTrackerEgress`, the 5-minute schedule and
+the BWS key names. `scripts/k8s/site-helm-args.sh` supplies the site-specific values from
+`BEADS_DOLT_SERVER_HOST` and `BUTLERS_IMAGE_REGISTRY`: `beadsExport.doltHost`,
+`beadsExport.doltEgressCidrs` (every IPv4 address from `getent ahostsv4`, each as a `/32`) and
+`beadsExport.imageRepository`. An unresolvable host prints no CIDR, so the render fails rather
+than shipping without the egress boundary. `scripts/k8s/build-push.sh` builds
+`butlers-beads:<sha>` beside the app image.
+
+Decision prompts over Telegram (`jobs/decision_routing`) stay off until the owner consents:
+`commonEnv.BUTLERS_DECISION_ROUTING_ENABLED` is `"0"` on dev.
 
 Storage: the export PVC is `ReadWriteOnce`, written by the CronJob and read by two runtime pods.
 That only works with single-node k3s scheduling. Before going multi-node, require co-scheduling of
 those pods or switch `storage.storageClassName` to an RWX class.
 
-Once those are settled, set `beadsExport.image`, `beadsExport.doltHost` and
-`beadsExport.credentialSecretName` in `values.local.yaml`. Roll back by setting
-`beadsExport.enabled=false`.
+Roll back with `beadsExport.enabled=false`; recorded intents stay in Postgres, unapplied.
 
 ## Ingress
 
@@ -144,6 +174,66 @@ history butlers` lists the tags).
 
 The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
 `/secrets/.bws.prod.env`.
+
+### Rolling back the conversation-identity split (core_265, sw_041)
+
+A plain `make deploy-dev TAG=<previous sha>` is not enough to undo bu-7exe4.2. The new image
+migrates data: `core_265` collapses Telegram anchors into `public.core_265_*` snapshots, and
+`sw_041` backfills `external_conversation_id` into `switchboard.message_inbox`. Older images do
+not know either revision, so their `butlers db migrate` initContainer cannot start on the
+upgraded schema. The rollout is stop-the-world in both directions. Connectors and Switchboard
+must flip together: the old `IngestEventV1` (`extra="forbid"`) rejects the new
+`external_conversation_id` / `reply_target_ref` fields, and the new validator rejects a
+`telegram_bot` envelope that lacks them.
+
+1. Stop every writer: scale `butlers-up`, `dashboard-api`, and every connector Deployment to 0,
+   and confirm no pod is left.
+2. With the **current** image, which still contains both revisions, and the migration-role
+   database URL, downgrade `sw_041`. Then downgrade core to `core_261` in every schema whose
+   `alembic_version` is at `core_265` or a later core revision. Schemas below that never ran
+   the split and are skipped; asking alembic to "downgrade" one to `core_261` would fail midway.
+   `core_265` restores only when the last of the selected schemas leaves it, so an interrupted
+   pass restores nothing and can simply be rerun.
+
+   ```python
+   from alembic import command
+   from alembic.script import ScriptDirectory
+   from sqlalchemy import create_engine, text
+   from butlers.migrations import _build_alembic_config
+
+   url = "<migration-role database URL>"  # e.g. read from the pod env; never print it
+   script = ScriptDirectory.from_config(_build_alembic_config(url, ["core"]))
+   # core_265 and every later core revision: only these schemas hold the split.
+   split = {rev.revision for rev in script.walk_revisions(base="core_265", head="heads")}
+   with create_engine(url).connect() as conn:
+       schemas = conn.execute(text(
+           "SELECT table_schema FROM information_schema.tables WHERE table_name = 'alembic_version'"
+       )).scalars().all()
+       core_schemas = [
+           schema for schema in schemas
+           if split & set(conn.execute(text(
+               f'SELECT version_num FROM "{schema}".alembic_version'
+           )).scalars())
+       ]
+   command.downgrade(
+       _build_alembic_config(url, ["switchboard"], target_schema="switchboard"),
+       "switchboard@sw_040",
+   )
+   for schema in core_schemas:
+       command.downgrade(_build_alembic_config(url, ["core"], target_schema=schema), "core@core_261")
+   ```
+
+   The last `core_265` downgrade verifies its restore against the snapshots. If a row written
+   after the upgrade holds an original anchor identity, it raises `core_265 downgrade cannot
+   restore ...`, and the whole downgrade rolls back with the snapshots kept. Resolve the named
+   conflict and rerun. `sw_041` downgrade only drops its index; the backfilled JSON key is inert
+   to older code.
+3. Only then `make deploy-dev TAG=<previous sha>` (or `scripts/k8s/deploy-dev.sh <sha>`), which
+   restarts the connectors and Switchboard on the old envelope together.
+
+Never start the old image against the upgraded schema, and never run old connectors against the
+new Switchboard (or the reverse). Upgrading again later re-runs `core_265` from fresh
+snapshots.
 
 - `make image-*` tags images with the 12-character commit SHA and refuses a dirty worktree
   unless `ALLOW_DIRTY=1`. `make deploy-*` uses the same `TAG` (override with `TAG=<sha>`).

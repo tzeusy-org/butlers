@@ -10,8 +10,9 @@ here.
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DecisionBeadSummary(BaseModel):
@@ -41,3 +42,44 @@ class DecisionBeadSummary(BaseModel):
     due_at: datetime | None = None
     structured_details_available: bool = False
     structured_details_unavailable_reason: str | None = None
+    intent: DecisionIntentSummary | None = None
+
+
+class DecisionIntentSummary(BaseModel):
+    """A recorded owner choice and its honest apply state (bu-ckkpz.3).
+
+    ``status`` is ``pending``/``applying`` (recorded, awaiting the tracker
+    bridge), ``applied`` or ``failed``. ``failure_reason`` and ``last_error``
+    are categorical codes, never raw ``bd`` output.
+    """
+
+    id: UUID
+    bead_id: str
+    option: str
+    status: str
+    source: str
+    created_at: datetime
+    failure_reason: str | None = None
+    last_error: str | None = None
+
+
+class DecisionPromptDetail(BaseModel):
+    """One Telegram decision prompt, as the connector needs it to verify a tap."""
+
+    id: UUID
+    bead_id: str
+    options: list[str]
+    created_at: datetime
+    delivery_outcome: str | None = None
+    intent: DecisionIntentSummary | None = None
+
+
+class RecordDecisionIntentRequest(BaseModel):
+    option: str = Field(min_length=1, max_length=512)
+
+
+class ChooseDecisionPromptRequest(BaseModel):
+    option_index: int = Field(ge=0, le=15)
+
+
+DecisionBeadSummary.model_rebuild()

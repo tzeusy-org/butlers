@@ -2975,7 +2975,8 @@ class TestMessagePipelineProcessDashboardLanes:
                     "source_identity": "telegram:bot:synthetic",
                     "request_context": {
                         "source_sender_identity": "owner-sender",
-                        "source_thread_identity": "owner-thread",
+                        "source_thread_identity": "owner-chat:7",
+                        "external_conversation_id": "telegram:owner-chat",
                     },
                 },
                 message_inbox_id="00000000-0000-0000-0000-000000000007",
@@ -2990,6 +2991,9 @@ class TestMessagePipelineProcessDashboardLanes:
         assert envelope["input"]["prompt"] == "Just browsing"
         assert envelope["request_context"]["source_channel"] == "telegram_bot"
         assert envelope["request_context"]["source_sender_identity"] == "owner-sender"
+        # The fallback turn keeps the chat's anchor and reply target.
+        assert envelope["request_context"]["external_conversation_id"] == "telegram:owner-chat"
+        assert envelope["request_context"]["source_thread_identity"] == "owner-chat:7"
         assert envelope["target"]["butler"] == "general"
         assert "provider" not in envelope["source_metadata"]
         lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs

@@ -350,6 +350,12 @@ None. The memory module is a leaf module with no dependencies on other modules.
 
 ## Implementation Notes
 
+- Importing Memory storage or tools leaves `sentence_transformers`, `transformers` and `torch`
+  unloaded. `EmbeddingEngine` pays that dependency/model cost at first construction; registered
+  async tools acquire it with `asyncio.to_thread`. The per-model synchronized cache, default/configured
+  model and 384 dimensions remain unchanged. `_helpers.EmbeddingEngine` is the construction fake seam;
+  storage/search/embedding/search_vector aliases are canonical module objects, not file copies.
+
 - Catalog read authority is server-held in each schema's
   `runtime_config.catalog_read_sensitivity` (`normal|internal|confidential`). MCP search and fetch
   expose no caller ceiling. Cross-butler canonical fetches route through Switchboard to the owning

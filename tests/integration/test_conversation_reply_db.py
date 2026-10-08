@@ -351,14 +351,14 @@ async def test_conversation_get_or_create_by_thread_creates_once_then_reuses(
             pool,
             butler_name="telegram-relay",
             source_channel="telegram",
-            source_thread_identity="telegram:12345",
+            external_conversation_id="telegram:12345",
             first_message="hello from telegram",
         )
         second, second_is_new = await conversation_get_or_create_by_thread(
             pool,
             butler_name="telegram-relay",
             source_channel="telegram",
-            source_thread_identity="telegram:12345",
+            external_conversation_id="telegram:12345",
             first_message="a different first message on retry",
         )
 
@@ -371,7 +371,7 @@ async def test_conversation_get_or_create_by_thread_creates_once_then_reuses(
         count = await pool.fetchval(
             """
             SELECT count(*) FROM public.dashboard_conversations
-            WHERE butler_name = $1 AND source_channel = $2 AND source_thread_identity = $3
+            WHERE butler_name = $1 AND source_channel = $2 AND external_conversation_id = $3
             """,
             "telegram-relay",
             "telegram",
@@ -380,24 +380,21 @@ async def test_conversation_get_or_create_by_thread_creates_once_then_reuses(
         assert count == 1
 
 
-@pytest.mark.parametrize(
-    "message_keys",
-    [
-        ("-100123:41", "-100123:42"),
-        ("-100123:42", "-100123:41"),
-    ],
-)
-async def test_legacy_telegram_message_keys_converge_and_resume_provider_session(
+async def test_conversation_key_resumes_provider_session_without_legacy_alias(
     migrated_core_postgres_pool,
-    message_keys: tuple[str, str],
 ) -> None:
-    """Either legacy message order resolves one anchor and one provider lineage."""
+    """One conversation key resumes one lineage; a bare legacy key is not aliased.
+
+    The core_208-era canonicalization of ``<chat>:<message>`` keys is gone:
+    connectors derive ``telegram:<chat>`` themselves, and core_265 collapsed the
+    stored legacy anchors, so the helper stores whatever key it is given.
+    """
     async with migrated_core_postgres_pool() as pool:
         first, first_is_new = await conversation_get_or_create_by_thread(
             pool,
             butler_name="general",
             source_channel="telegram_bot",
-            source_thread_identity=message_keys[0],
+            external_conversation_id="telegram:-100123",
             first_message="first turn",
         )
         await conversation_set_provider_session(
@@ -412,7 +409,7 @@ async def test_legacy_telegram_message_keys_converge_and_resume_provider_session
             pool,
             butler_name="general",
             source_channel="telegram_bot",
-            source_thread_identity=message_keys[1],
+            external_conversation_id="telegram:-100123",
             first_message="second turn",
         )
         resumed = await conversation_get_provider_session(
@@ -420,21 +417,22 @@ async def test_legacy_telegram_message_keys_converge_and_resume_provider_session
             second["id"],
             butler_name="general",
         )
+        legacy, legacy_is_new = await conversation_get_or_create_by_thread(
+            pool,
+            butler_name="general",
+            source_channel="telegram_bot",
+            external_conversation_id="-100123:42",
+            first_message="unsplit producer",
+        )
 
         assert first_is_new is True
         assert second_is_new is False
         assert second["id"] == first["id"]
         assert resumed is not None
         assert resumed["provider_session_id"] == "provider-session-first-turn"
-        assert (
-            await pool.fetchval(
-                """
-                SELECT count(*) FROM public.dashboard_conversations
-                WHERE butler_name = 'general' AND source_channel = 'telegram_bot'
-                """
-            )
-            == 1
-        )
+        assert legacy_is_new is True
+        assert legacy["id"] != first["id"]
+        assert legacy["external_conversation_id"] == "-100123:42"
 
 
 @pytest.mark.parametrize("finish_holder", ["commit", "rollback"])
@@ -445,7 +443,6 @@ async def test_anchor_insert_conflict_or_disappearing_conflict_never_misses(
     """A real unique-index wait resolves after either holder transaction outcome."""
     async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=3) as pool:
         canonical_key = f"telegram:-100{1 if finish_holder == 'commit' else 2}"
-        raw_key = f"{canonical_key.removeprefix('telegram:')}:99"
         holder = await pool.acquire()
         holder_transaction = holder.transaction()
         await holder_transaction.start()
@@ -453,8 +450,9 @@ async def test_anchor_insert_conflict_or_disappearing_conflict_never_misses(
         await holder.execute(
             """
             INSERT INTO public.dashboard_conversations (
-                id, butler_name, title, source_channel, source_thread_identity
-            ) VALUES ($1, 'general', 'holder', 'telegram_bot', $2)
+                id, butler_name, title, source_channel, source_thread_identity,
+                external_conversation_id
+            ) VALUES ($1, 'general', 'holder', 'telegram_bot', $2, $2)
             """,
             holder_id,
             canonical_key,
@@ -466,7 +464,7 @@ async def test_anchor_insert_conflict_or_disappearing_conflict_never_misses(
                 _InstrumentedPool(pool, insert_started=insert_started),
                 butler_name="general",
                 source_channel="telegram_bot",
-                source_thread_identity=raw_key,
+                external_conversation_id=canonical_key,
                 first_message="contending turn",
             )
         )
@@ -478,7 +476,7 @@ async def test_anchor_insert_conflict_or_disappearing_conflict_never_misses(
         await pool.release(holder)
 
         conversation, is_new = await asyncio.wait_for(task, timeout=5)
-        assert conversation["source_thread_identity"] == canonical_key
+        assert conversation["external_conversation_id"] == canonical_key
         assert is_new is (finish_holder == "rollback")
         if finish_holder == "commit":
             assert conversation["id"] == holder_id
@@ -490,7 +488,7 @@ async def test_anchor_insert_conflict_or_disappearing_conflict_never_misses(
                 SELECT count(*) FROM public.dashboard_conversations
                 WHERE butler_name = 'general'
                   AND source_channel = 'telegram_bot'
-                  AND source_thread_identity = $1
+                  AND external_conversation_id = $1
                 """,
                 canonical_key,
             )
@@ -508,7 +506,7 @@ async def test_simultaneous_callers_converge_and_failed_transaction_retries_clea
                 _InstrumentedPool(pool, fail_after_insert=True),
                 butler_name="general",
                 source_channel="telegram_bot",
-                source_thread_identity="-100777:1",
+                external_conversation_id="telegram:-100777",
                 first_message="rolled back",
             )
         assert (
@@ -523,17 +521,17 @@ async def test_simultaneous_callers_converge_and_failed_transaction_retries_clea
 
         barrier = asyncio.Barrier(2)
 
-        async def resolve(raw_key: str):
+        async def resolve(first_message: str):
             return await conversation_get_or_create_by_thread(
                 _InstrumentedPool(pool, advisory_barrier=barrier),
                 butler_name="general",
                 source_channel="telegram_bot",
-                source_thread_identity=raw_key,
-                first_message=raw_key,
+                external_conversation_id="telegram:-100777",
+                first_message=first_message,
             )
 
         first, second = await asyncio.wait_for(
-            asyncio.gather(resolve("-100777:1"), resolve("-100777:2")),
+            asyncio.gather(resolve("first turn"), resolve("second turn")),
             timeout=5,
         )
 
@@ -558,21 +556,21 @@ async def test_conversation_get_or_create_by_thread_distinguishes_channels_and_t
             pool,
             butler_name="switchboard",
             source_channel="telegram",
-            source_thread_identity="telegram:1",
+            external_conversation_id="telegram:1",
             first_message="hi from telegram",
         )
         email_conv, _ = await conversation_get_or_create_by_thread(
             pool,
             butler_name="switchboard",
             source_channel="email",
-            source_thread_identity="telegram:1",
+            external_conversation_id="telegram:1",
             first_message="hi from email",
         )
         other_thread_conv, _ = await conversation_get_or_create_by_thread(
             pool,
             butler_name="switchboard",
             source_channel="telegram",
-            source_thread_identity="telegram:2",
+            external_conversation_id="telegram:2",
             first_message="a different telegram thread",
         )
 

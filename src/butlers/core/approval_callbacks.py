@@ -78,8 +78,24 @@ def _signature(
     requested_at: datetime,
     secret: str | bytes,
 ) -> str:
-    payload = f"{action_id}:{verb}:{_normalize_requested_at(requested_at)}".encode()
-    digest = hmac.new(_secret_bytes(secret), payload, hashlib.sha256).hexdigest()
+    return sign_callback_payload(
+        f"{action_id}:{verb}:{_normalize_requested_at(requested_at)}", secret=secret
+    )
+
+
+def callback_timestamp(value: datetime) -> str:
+    """Canonical UTC microsecond form of a timezone-aware callback binding time."""
+    return _normalize_requested_at(value)
+
+
+def sign_callback_payload(payload: str, *, secret: str | bytes) -> str:
+    """Return the 16-hex HMAC-SHA256 signature every one-tap callback token uses.
+
+    Shared with ``butlers.core.decision_callbacks`` (``dsk1`` Decision Desk
+    tokens), whose payloads carry their own prefix so the two token families
+    can never verify as each other under the one Tier-1 secret.
+    """
+    digest = hmac.new(_secret_bytes(secret), payload.encode(), hashlib.sha256).hexdigest()
     return digest[:_SIGNATURE_HEX_LENGTH]
 
 
@@ -181,7 +197,9 @@ __all__ = [
     "MAX_APPROVAL_CALLBACK_DATA_BYTES",
     "ApprovalCallbackToken",
     "ApprovalCallbackTokenError",
+    "callback_timestamp",
     "mint_approval_callback_token",
     "parse_approval_callback_token",
+    "sign_callback_payload",
     "verify_approval_callback_token",
 ]

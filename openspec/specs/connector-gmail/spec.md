@@ -78,7 +78,8 @@ The Gmail connector SHALL normalize every ingested Gmail message to the
   - `source.provider` = `"gmail"` (must be `gmail`, not `imap`)
   - `source.endpoint_identity` = `"gmail:user:<email_address>"`
   - `event.external_event_id` = the RFC822 `Message-ID` header value (falls back to the Gmail message ID when the header is absent)
-  - `event.external_thread_id` = Gmail `threadId`
+  - `event.external_conversation_id` = Gmail `threadId`
+  - `event.reply_target_ref` = Gmail `threadId`
   - `event.observed_at` = connector-observed timestamp (RFC3339)
   - `sender.identity` = normalized sender address from `From` header
   - `sender.display_name` = the raw display-name part of the `From` header (e.g. `"John Doe"` from `"John Doe <john@example.com>"`), or `null` when the header carried no display name; stored verbatim (not normalized) so identity enrichment can use the real name instead of guessing one from the address local-part
@@ -349,7 +350,8 @@ truth for accepted ingestion records across all tiers.
   `payload.normalized_text=<subject only>`, and `control.ingestion_tier="metadata"`
 - **AND** Switchboard persists a `message_inbox` row with `ingestion_tier='metadata'`,
   bypassing LLM classification; `raw_payload` retains the source endpoint identity,
-  `external_event_id` (Gmail message ID), `external_thread_id`, and sender identity
+  `external_event_id` (Gmail message ID), `external_conversation_id`,
+  `reply_target_ref`, and sender identity
 
 #### Scenario: Tier 2 metadata is queryable by tier
 - **WHEN** Tier 2 records are queried

@@ -85,7 +85,9 @@ graph TB
 | `source_provider` | SourceProvider enum | Yes | `telegram`, `gmail`, `imap`, `internal`, `live-listener`, `slack` |
 | `source_endpoint_identity` | string | Yes | Connector instance identity (e.g., bot username) |
 | `source_sender_identity` | string | Yes | Sender identifier within the channel |
-| `source_thread_identity` | string | No | Thread/conversation identifier for reply targeting |
+| `external_conversation_id` | string | No | Stable conversation key (anchors, resume, history) |
+| `reply_target_ref` | string | No | Per-message reply or reaction target |
+| `source_thread_identity` | string | No | Notify-facing alias of `reply_target_ref`; never the conversation key |
 | `received_at` | RFC3339 datetime | Yes | Timestamp of event reception |
 | `content` | string | Yes | Normalized message content |
 | `content_type` | string | No | MIME type hint |
@@ -119,6 +121,8 @@ target butler's MCP server)
 | `source_endpoint_identity` | string | Yes | Preserved from ingest envelope |
 | `source_sender_identity` | string | Yes | Preserved from ingest envelope |
 | `source_thread_identity` | string | No | Preserved from ingest envelope |
+| `external_conversation_id` | string | No | Preserved from ingest envelope |
+| `reply_target_ref` | string | No | Preserved from ingest envelope |
 | `target_butler` | string | Yes | Target butler name |
 | `prompt` | string | Yes | Classified message content |
 | `conversation_history` | string | No | Recent conversation context |

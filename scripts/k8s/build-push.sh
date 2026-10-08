@@ -8,6 +8,7 @@
 # Images:
 #   $REGISTRY/butlers-app:<sha>             shared by both environments
 #   $REGISTRY/butlers-frontend:<sha>-<env>  Vite bakes the base path in
+#   $REGISTRY/butlers-beads:<sha>           tracker bridge (Dockerfile.beads)
 set -euo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/../site-env.sh"
@@ -73,5 +74,11 @@ docker build -f Dockerfile.frontend "${secret_args[@]}" \
   --build-arg "API_URL=/${API_PREFIX}/api" \
   -t "$FRONTEND_IMAGE" . >&2
 docker push "$FRONTEND_IMAGE" >&2
+
+# ── Tracker bridge image (beadsExport CronJob) ────────────────────────
+BEADS_IMAGE="${REGISTRY}/butlers-beads:${TAG}"
+echo "Building ${BEADS_IMAGE}..." >&2
+docker build -f Dockerfile.beads -t "$BEADS_IMAGE" . >&2
+docker push "$BEADS_IMAGE" >&2
 
 echo "$TAG"
