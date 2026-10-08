@@ -1227,6 +1227,11 @@ else:
                 timeout=5,
             )
             assert result.returncode == expected
+    assert migration_workflow["jobs"]["offline-route-a-build-proof"]["timeout-minutes"] == 45
+    guard = diagnostic["steps"][2]
+    assert guard["name"] == "Reject conflicting manual build modes"
+    assert guard["env"] == {"OTHER_BUILD_MODE": "${{ inputs['offline-route-a-build-proof'] }}"}
+    assert "exit 2" in guard["run"] and '"${OTHER_BUILD_MODE}" = "true"' in guard["run"]
     diagnostic_shell = "\n".join(step.get("run", "") for step in diagnostic["steps"])
     assert "ci_image_size_diagnostic.py" in diagnostic_shell
     assert "pytest" not in diagnostic_shell and "docker push" not in diagnostic_shell

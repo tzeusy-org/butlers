@@ -14,6 +14,7 @@ import { MemoryRouter } from "react-router";
 
 vi.mock("@/hooks/use-education", () => ({
   useMindMaps: vi.fn(),
+  useMindMap: vi.fn(() => ({ data: undefined })),
   // The receipt panel (bu-6jv4m.10) reads this on every branch of the page.
   // A readable, empty receipt store renders nothing, which keeps these
   // state-contract assertions about the mind-map branches alone.

@@ -66,71 +66,6 @@ jobs:
       - name: Verify merged migration chain
         run: uv run pytest tests/config/test_migration_chain_head.py -q
 
-  image-size-diagnostic:
-    # Isolated manual proof only; original push/default dispatch is unchanged.
-    if: github.event_name == 'workflow_dispatch' && inputs['image-size-diagnostic']
-    timeout-minutes: 60
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-          path: current
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          ref: e7b7812a3fa65c80f3f070d38ee43f7fa6474881
-          path: before
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - name: Reject conflicting manual build modes
-        env:
-          OTHER_BUILD_MODE: ${{ inputs['offline-route-a-build-proof'] }}
-        run: |
-          if [ "${OTHER_BUILD_MODE}" = "true" ]; then
-            echo "::error::manual build proof modes are mutually exclusive"
-            exit 2
-          fi
-      - name: Install uv
-        working-directory: current
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              exit 1
-            fi
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-      - name: Install diagnostic dependencies
-        working-directory: current
-        run: python3 scripts/ci_environment.py prepare
-      - name: Build both before and current application images
-        working-directory: current
-        env:
-          DIAGNOSTIC_SOURCE_SHA: ${{ github.sha }}
-        run: |
-          uv run --no-sync python scripts/ci_image_size_diagnostic.py \
-            --current "${GITHUB_WORKSPACE}/current" \
-            --baseline "${GITHUB_WORKSPACE}/before" \
-            --source-sha "${DIAGNOSTIC_SOURCE_SHA}" \
-            --output "${RUNNER_TEMP}/ci-image-diagnostic"
-      - name: Upload categorical image-size evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: before-current-application-image-sizes
-          path: ${{ runner.temp }}/ci-image-diagnostic/image-size-receipt.json
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
-
   offline-route-a-build-proof:
     # Exclusive manual proof. Push/default-dispatch migration behavior is retained.
     if: github.event_name == 'workflow_dispatch' && inputs['offline-route-a-build-proof']
@@ -179,6 +114,71 @@ jobs:
         with:
           name: route-a-offline-build-proof
           path: ${{ runner.temp }}/route-a-offline-build-proof/offline-build-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  image-size-diagnostic:
+    # Isolated manual proof only; original push/default dispatch is unchanged.
+    if: github.event_name == 'workflow_dispatch' && inputs['image-size-diagnostic']
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: current
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: e7b7812a3fa65c80f3f070d38ee43f7fa6474881
+          path: before
+          persist-credentials: false
+      - name: Reject conflicting manual build modes
+        env:
+          OTHER_BUILD_MODE: ${{ inputs['offline-route-a-build-proof'] }}
+        run: |
+          if [ "${OTHER_BUILD_MODE}" = "true" ]; then
+            echo "::error::manual build proof modes are mutually exclusive"
+            exit 2
+          fi
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        working-directory: current
+        run: |
+          set -euo pipefail
+          max_attempts=5
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              break
+            fi
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Install diagnostic dependencies
+        working-directory: current
+        run: python3 scripts/ci_environment.py prepare
+      - name: Build both before and current application images
+        working-directory: current
+        env:
+          DIAGNOSTIC_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          uv run --no-sync python scripts/ci_image_size_diagnostic.py \
+            --current "${GITHUB_WORKSPACE}/current" \
+            --baseline "${GITHUB_WORKSPACE}/before" \
+            --source-sha "${DIAGNOSTIC_SOURCE_SHA}" \
+            --output "${RUNNER_TEMP}/ci-image-diagnostic"
+      - name: Upload categorical image-size evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: before-current-application-image-sizes
+          path: ${{ runner.temp }}/ci-image-diagnostic/image-size-receipt.json
           if-no-files-found: error
           retention-days: 14
           overwrite: true

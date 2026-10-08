@@ -398,6 +398,23 @@
       "review_uv_nominal_envelope_s": 640,
       "review_browser_hard_retry_interval_s": 0,
       "additional_provisional_cold_dependency_allowance_s": 0
+    },
+    {
+      "workflow": ".github/workflows/migration-chain-main.yml",
+      "job": "image-size-diagnostic",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 60,
+      "retry_extra_s": 0,
+      "state": "provisional bounded manual diagnostic only; no healthy p95 or timing/gain claim",
+      "sample_source": "docs/operations/ci-shard-overhead.md hosted diagnostic envelope",
+      "review_uv_nominal_envelope_s": 1280,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 520,
+      "installed_timeout_minutes": 60,
+      "diagnostic_execution_bound_s": 1800,
+      "review_policy": "Existing 25 watchdogs unchanged. New isolated job covers 640s UV installer + 640s frozen preparation + 1800s whole diagnostic + 520s checkout/cleanup/artifact reserve; actual healthy duration/calibration remains unknown."
     }
   ],
   "tests": [
