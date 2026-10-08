@@ -145,11 +145,12 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime(tmp_path: Path, monkey
     # The diagnostic refuses local Docker execution before its first build.
     with pytest.raises(diagnostic.DiagnosticRefusal, match="hosted_exact_source"):
         diagnostic.run_diagnostic(Path.cwd(), Path.cwd(), tmp_path / "no-local-docker", "not-a-sha")
-    # Actual immutable before body; only a generated COPY representation changes.
-    # This software comparator is not a Docker/compiler or trained-model witness.
-    original = subprocess.check_output(
-        ["git", "show", diagnostic.BASE_SOURCE + ":Dockerfile.meeting-prep-route-a"]
-    )
+    # The complete source-owned recipe fixture has the same pinned e7 bytes.
+    # Ordinary unit checkouts need no history/network. This software comparator
+    # is not a historical input, Docker/compiler or trained-model witness.
+    original = Path(
+        "tests/fixtures/route_a_9ff_offline_recipes/Dockerfile.meeting-prep-route-a"
+    ).read_bytes()
     adapted = diagnostic.baseline_compatibility_recipe(original)
     assert hashlib.sha256(original).hexdigest() == diagnostic.BASE_ROUTE_RECIPE_SHA256
     prefix = (
@@ -171,18 +172,39 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime(tmp_path: Path, monkey
     with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_recipe_mismatch"):
         diagnostic.baseline_compatibility_recipe(original + b"\n")
 
-    # Actual old Git inputs, not current files substituted as the before source.
-    # A private index/worktree isolates the read-only snapshot from this checkout.
+    # A self-contained miniature Git tree exercises the exact production byte,
+    # mode and extra-input checks without requiring history in a shallow shard.
+    # It is explicitly not the historical1690-input/image comparison: that
+    # remains in the unchanged hosted diagnostic's actual pinned e7 checkout.
     before = tmp_path / "immutable-before"
     before.mkdir()
-    archived = subprocess.check_output(["git", "archive", diagnostic.BASE_SOURCE])
-    with tarfile.open(fileobj=io.BytesIO(archived)) as snapshot:
-        snapshot.extractall(before, filter="data")
-    git_dir = subprocess.check_output(["git", "rev-parse", "--absolute-git-dir"], text=True).strip()
-    monkeypatch.setenv("GIT_DIR", git_dir)
+    for relative in (
+        "Dockerfile.base",
+        "scripts/runtime_cli_sandbox_init.c",
+        "scripts/generate_runtime_cli_sandbox_manifest.py",
+        "whatsapp-bridge/go.mod",
+        "whatsapp-bridge/go.sum",
+    ):
+        destination = before / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(Path(relative).read_bytes())
+    (before / "Dockerfile.meeting-prep-route-a").write_bytes(original)
+    (before / "pyproject.toml").write_text("# miniature software fixture project\n")
+    lock = before / "uv.lock"
+    lock.write_text("# miniature software fixture lock\n")
+    (before / "src").mkdir()
+    (before / "src/payload.py").write_text("# miniature software fixture source\n")
+    link = before / "src/alias.py"
+    link.symlink_to("payload.py")
+    monkeypatch.setenv("GIT_DIR", str(before / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(before))
-    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "before-index"))
-    subprocess.run(["git", "read-tree", diagnostic.BASE_SOURCE], check=True)
+    monkeypatch.setenv("GIT_INDEX_FILE", str(before / ".git/index"))
+    subprocess.run(["git", "init", "-q", str(before)], check=True)
+    subprocess.run(["git", "add", "--all"], check=True)
+    tree = subprocess.check_output(["git", "write-tree"], text=True).strip()
+    # The module instance is private to this node. Only this software fixture's
+    # source selector changes; production BASE_SOURCE and CLI remain fixed e7.
+    monkeypatch.setattr(diagnostic, "BASE_SOURCE", tree)
     inputs = diagnostic.baseline_build_inputs(before)
     assert inputs["source"] == diagnostic.BASE_SOURCE
     assert inputs["input_files"] > 0 and inputs["all_original_git_blob_bytes_equal"] is True
@@ -202,11 +224,23 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime(tmp_path: Path, monkey
     # The current launcher remains strict: it refuses the original variable COPY.
     with pytest.raises(SafetyError):
         validate_sealed_build_inputs(before)
-    lock = before / "uv.lock"
+    original_lock = lock.read_bytes()
     lock.write_bytes(lock.read_bytes() + b"\n")
     with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_input_mismatch"):
         diagnostic.baseline_build_inputs(before)
-    lock.write_bytes(subprocess.check_output(["git", "show", diagnostic.BASE_SOURCE + ":uv.lock"]))
+    lock.write_bytes(original_lock)
+    mode_source = before / "scripts/runtime_cli_sandbox_init.c"
+    original_mode = mode_source.stat().st_mode
+    mode_source.chmod(0o755)
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_input_mode_mismatch"):
+        diagnostic.baseline_build_inputs(before)
+    mode_source.chmod(original_mode)
+    link.unlink()
+    link.symlink_to("different.py")
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_input_mismatch"):
+        diagnostic.baseline_build_inputs(before)
+    link.unlink()
+    link.symlink_to("payload.py")
     (before / "src/extra-untracked.py").write_text("# not an original input\n")
     with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_inputs_untracked"):
         diagnostic.baseline_build_inputs(before)
