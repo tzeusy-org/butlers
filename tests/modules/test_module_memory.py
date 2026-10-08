@@ -1053,6 +1053,61 @@ class TestToolDelegation:
             source_schema="test-butler",
         )
 
+        # Actual registered closure: first construction must yield the event loop.
+        # This is a controlled constructor/domain delegate, not provider execution.
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        owner_thread = threading.get_ident()
+        constructor_threads: list[int] = []
+
+        def construct():
+            constructor_threads.append(threading.get_ident())
+            started.set()
+            try:
+                assert release.wait(2), "constructor control was not released"
+                return mod._embedding_engine
+            finally:
+                finished.set()
+
+        writing.memory_store_fact.reset_mock()
+        with patch.object(mod, "_get_embedding_engine", construct):
+            invocation = asyncio.create_task(
+                tools["memory_store_fact"](
+                    subject="user", predicate="likes", content="coffee", entity_id=entity_uuid
+                )
+            )
+            try:
+                assert await asyncio.to_thread(started.wait, 1)
+                assert not invocation.done()
+                assert constructor_threads != [owner_thread]
+                writing.memory_store_fact.assert_not_called()
+            finally:
+                release.set()
+                await invocation
+            writing.memory_store_fact.assert_called_once()
+
+            # Cancellation while acquiring an engine does not call the domain writer.
+            started.clear()
+            release.clear()
+            finished.clear()
+            writing.memory_store_fact.reset_mock()
+            invocation = asyncio.create_task(
+                tools["memory_store_fact"](
+                    subject="user", predicate="likes", content="coffee", entity_id=entity_uuid
+                )
+            )
+            try:
+                assert await asyncio.to_thread(started.wait, 1)
+                invocation.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await invocation
+                writing.memory_store_fact.assert_not_called()
+            finally:
+                release.set()
+                assert await asyncio.to_thread(finished.wait, 1)
+            writing.memory_store_fact.assert_not_called()
+
     @pytest.mark.parametrize(
         ("valid_at", "retention_class"),
         [

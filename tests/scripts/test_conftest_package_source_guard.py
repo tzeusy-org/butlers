@@ -167,4 +167,4 @@ def test_opt_out_suppresses_the_guard_and_nothing_else(
 
     assert result.returncode != 0, output[-2000:]
     assert root_conftest.PACKAGE_SOURCE_GUARD_BANNER not in output, output[-2000:]
-    assert "butlers.modules.registry" in output, output[-2000:]
+    assert "butlers.testing.shared_fixtures" in output, output[-2000:]

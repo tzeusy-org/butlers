@@ -32,53 +32,19 @@ from butlers.api.deps import (
 )
 from butlers.core import entity_graph_edges
 from butlers.credential_store import assert_entity_info_secured
-from butlers.identity import channel_value_for_storage
-from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
-from butlers.tools.relationship._ef_channel_helpers import (
+from butlers.entity_facts_channels import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
 )
-from butlers.tools.relationship._ef_channel_helpers import (
+from butlers.entity_facts_channels import (
     ef_object_to_display_value as _ef_object_to_display_value_shared,
 )
-from butlers.tools.relationship._ef_channel_helpers import (
+from butlers.entity_facts_channels import (
     ef_predicate_to_ci_type as _ef_predicate_to_ci_type_shared,
 )
-from butlers.tools.relationship._ef_channel_helpers import (
+from butlers.entity_facts_channels import (
     entity_facts_channels_by_entity as _entity_facts_channels_by_entity_shared,
 )
-from butlers.tools.relationship.entity_merge import (
-    SameEntityError,
-    SourceEntityNotFoundError,
-    SourceEntityTombstonedError,
-    TargetEntityNotFoundError,
-    TargetEntityTombstonedError,
-    TemporalOccurrenceCollisionError,
-    merge_entity_pair,
-)
-from butlers.tools.relationship.fact_identity_decisions import (
-    IdentityDecisionConflict,
-    attribution_response,
-    attribution_select_sql,
-    decide_identity_fact,
-)
-from butlers.tools.relationship.fact_temporal import (
-    MUTATOR_UNSUPPORTED as _TEMPORAL_MUTATOR_UNSUPPORTED,
-)
-from butlers.tools.relationship.fact_temporal import (
-    OCCURRENCE_AMBIGUOUS as _TEMPORAL_OCCURRENCE_AMBIGUOUS,
-)
-from butlers.tools.relationship.fact_temporal import (
-    temporal_bearing_sql as _temporal_bearing_sql,
-)
-from butlers.tools.relationship.merge_review import (
-    derive_shared_and_divergent_rows as _derive_shared_and_divergent_rows_shared,
-)
-from butlers.tools.relationship.merge_review import (
-    fetch_single_cardinality_predicates as _fetch_single_cardinality_predicates_shared,
-)
-from butlers.tools.relationship.merge_review import (
-    write_merge_review as _write_merge_review_shared,
-)
+from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 _GUIDED_ENTITY_INFO_ONLY_TYPES = frozenset({"telegram_api_hash"})
 _CONNECTOR_MANAGED_ENTITY_INFO_TYPES = SPOTIFY_MANAGED_ENTITY_INFO_TYPES
@@ -189,6 +155,13 @@ router = APIRouter(prefix="/api/relationship", tags=["relationship"])
 
 BUTLER_DB = "relationship"
 _CONTACTS_SYNC_TIMEOUT_S = 120.0
+
+
+async def merge_entity_pair(pool, *, source_entity_id: UUID, target_entity_id: UUID):
+    """Delegate the mutation at demand, keeping the router service seam patchable."""
+    from butlers.tools.relationship.entity_merge import merge_entity_pair as merge
+
+    return await merge(pool, source_entity_id=source_entity_id, target_entity_id=target_entity_id)
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -375,6 +348,10 @@ def _ef_row_to_ci_entry(fr: Any) -> Any:
     The returned entry carries ``source="entity_facts"`` and populates
     ``predicate`` + ``value_hash`` for entity-keyed mutation paths.
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_response,
+    )
+
     raw_obj: str = fr["object"]
     ci_type = _ef_predicate_to_ci_type(fr["predicate"], raw_obj)
     display_val = _ef_object_to_display_value(fr["predicate"], raw_obj)
@@ -4482,6 +4459,13 @@ async def _resolve_contact_fact_by_hash(
     occurrences share the value. The row carries a ``temporal`` flag (any
     effective-time value stored) for callers that must fence on it.
     """
+    from butlers.tools.relationship.fact_temporal import (
+        OCCURRENCE_AMBIGUOUS as _TEMPORAL_OCCURRENCE_AMBIGUOUS,
+    )
+    from butlers.tools.relationship.fact_temporal import (
+        temporal_bearing_sql as _temporal_bearing_sql,
+    )
+
     # Fetch all active rows for (subject, predicate) and filter by hash in
     # Python to avoid a full-table scan on the object column.
     candidate_rows = await pool.fetch(
@@ -4530,6 +4514,13 @@ async def _relock_contact_fact_for_edit(
     the selected value; 409 ``temporal_mutator_unsupported`` when it has become
     temporal-bearing. Either refusal happens before any write.
     """
+    from butlers.tools.relationship.fact_temporal import (
+        MUTATOR_UNSUPPORTED as _TEMPORAL_MUTATOR_UNSUPPORTED,
+    )
+    from butlers.tools.relationship.fact_temporal import (
+        temporal_bearing_sql as _temporal_bearing_sql,
+    )
+
     row = await conn.fetchrow(
         f"""
         SELECT f.object, f.validity, {_temporal_bearing_sql("f")} AS temporal
@@ -4569,6 +4560,10 @@ def _row_to_contact_fact(r: Any) -> Any:
     Raises TypeError if required keys are missing (should not happen with the
     canonical SELECT shape used in the contacts endpoints).
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_response,
+    )
+
     obj_val: str = r["object"]
     return ContactFact(
         id=r["id"],
@@ -4628,6 +4623,10 @@ async def list_entity_contacts(
 
     Ordered by ``predicate ASC, primary DESC NULLS LAST, created_at DESC``.
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_select_sql,
+    )
+
     pool = _pool(db)
 
     # Owner-only gate (Clause 12b) — roles-aware via _assert_owner_role.
@@ -4697,6 +4696,7 @@ async def add_entity_contact(
     case the endpoint returns HTTP 202 with ``outcome='pending_approval'`` and
     ``action_id`` set; ``fact`` is ``null``.
     """
+    from butlers.identity import channel_value_for_storage
     from butlers.tools.relationship.relationship_assert_fact import (
         AssertOutcome,
         relationship_assert_fact,
@@ -4881,6 +4881,11 @@ async def verify_entity_contact(
 
     On success, returns HTTP 200 with ``{"verified": true, "fact_id": "<uuid>"}``.
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        IdentityDecisionConflict,
+        decide_identity_fact,
+    )
+
     pool = _pool(db)
 
     # Validate that the predicate is a contact predicate (consistent with DELETE).
@@ -4960,6 +4965,12 @@ async def update_entity_contact(
     HTTP 202 with ``outcome='pending_approval'`` and ``action_id`` set;
     ``fact`` and ``retracted_fact_id`` are both ``null``.
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_select_sql,
+    )
+    from butlers.tools.relationship.fact_temporal import (
+        MUTATOR_UNSUPPORTED as _TEMPORAL_MUTATOR_UNSUPPORTED,
+    )
     from butlers.tools.relationship.relationship_assert_fact import (
         AssertOutcome,
         _lock_fact_entities,
@@ -5378,6 +5389,10 @@ async def list_entity_facts(
     Returns ``{"items": [], "next_cursor": null, "has_more": false}`` when no
     facts match.
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_response,
+        attribution_select_sql,
+    )
     from butlers.tools.relationship.staleness import identity_staleness_band_sql
 
     pool = _pool(db)
@@ -5984,6 +5999,15 @@ async def merge_entities(
     - ``404`` — either entity does not exist or is already tombstoned.
     - ``422`` — ``entityA == entityB`` (same entity) or validation failure.
     """
+    from butlers.tools.relationship.entity_merge import (
+        SameEntityError,
+        SourceEntityNotFoundError,
+        SourceEntityTombstonedError,
+        TargetEntityNotFoundError,
+        TargetEntityTombstonedError,
+        TemporalOccurrenceCollisionError,
+    )
+
     pool = _pool(db)
 
     # Amendment 12a: owner-only write gate (roles-aware, see _assert_owner_role).
@@ -6056,6 +6080,10 @@ async def merge_entities(
 
 def _compare_fact_from_identity_row(r: Any) -> Any:
     """Build a CompareFact from an identity-store (relationship.entity_facts) row."""
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_response,
+    )
+
     return CompareFact(
         id=r["id"],
         entity_id=r["subject"],
@@ -6098,6 +6126,9 @@ def _compare_fact_from_narrative_row(r: Any) -> Any:
 
 async def _fetch_identity_facts_for_compare(pool, entity_id: UUID) -> list[Any]:
     """Fetch active identity-store facts for an entity with staleness bands."""
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_select_sql,
+    )
     from butlers.tools.relationship.staleness import identity_staleness_band_sql
 
     return await pool.fetch(
@@ -6179,6 +6210,10 @@ async def _fetch_single_cardinality_predicates(pool) -> set[str]:
     ``butlers.tools.relationship.merge_review`` so the API and session-side merge
     paths share one definition.
     """
+    from butlers.tools.relationship.merge_review import (
+        fetch_single_cardinality_predicates as _fetch_single_cardinality_predicates_shared,
+    )
+
     return await _fetch_single_cardinality_predicates_shared(pool)
 
 
@@ -6199,6 +6234,10 @@ def _derive_shared_and_divergent(
     used by both the API and session-side merge paths); this wrapper adapts the
     raw rows into ``CompareFact`` models for the API response.
     """
+    from butlers.tools.relationship.merge_review import (
+        derive_shared_and_divergent_rows as _derive_shared_and_divergent_rows_shared,
+    )
+
     shared_rows, divergent_rows = _derive_shared_and_divergent_rows_shared(
         a_identity, b_identity, single_predicates
     )
@@ -6309,6 +6348,10 @@ async def _write_merge_review(
     are written at commit time only (no pending state); both merge and dismissal
     write a row.
     """
+    from butlers.tools.relationship.merge_review import (
+        write_merge_review as _write_merge_review_shared,
+    )
+
     return await _write_merge_review_shared(
         executor,
         entity_a=entity_a,
@@ -6511,6 +6554,11 @@ async def _fetch_identity_activity(
 
     INVARIANT: No SQL references to chronicler.* schemas.
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_response,
+        attribution_select_sql,
+    )
+
     rows = await pool.fetch(
         f"""
         SELECT
@@ -6935,6 +6983,11 @@ async def get_entity_delta_facts(
     403 ``{"code": "owner_required"}`` if no owner entity is registered. Returns
     404 if the entity does not exist.
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_response,
+        attribution_select_sql,
+    )
+
     pool = _pool(db)
 
     if (err := await _assert_owner_role(pool)) is not None:
@@ -7108,6 +7161,10 @@ async def get_entity_core_dates(
     Owner-only authz gate (Clause 12b): HTTP 403 ``{"code": "owner_required"}``
     if no owner entity is registered. Returns 404 if the entity does not exist.
     """
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_response,
+        attribution_select_sql,
+    )
     from butlers.tools.relationship.staleness import identity_staleness_band_sql
 
     pool = _pool(db)
@@ -7181,6 +7238,9 @@ async def get_entity_core_dates(
 async def list_identity_candidates(entity_id: UUID, db: DatabaseManager = Depends(_get_db_manager)):
     """Protected review surface, never used for reachability or delivery."""
     from butlers.core.fact_authority import current_fact_write_context
+    from butlers.tools.relationship.fact_identity_decisions import (
+        attribution_select_sql,
+    )
 
     CandidateFact = _models_module.CandidateFact
     CandidateFactsResponse = _models_module.CandidateFactsResponse
@@ -7208,6 +7268,11 @@ async def owner_identity_fact_decision(
     db: DatabaseManager = Depends(_get_db_manager),
 ):
     """Admit the exact owner action and commit all domain effects or none."""
+    from butlers.tools.relationship.fact_identity_decisions import (
+        IdentityDecisionConflict,
+        decide_identity_fact,
+    )
+
     pool = _pool(db)
     async with pool.acquire() as conn, conn.transaction():
         try:

@@ -129,16 +129,15 @@ because a grep of the Makefile cannot see it.
 
 ## Module Discovery
 
-The root conftest triggers roster module discovery at import time:
+Root conftest retains the own-source guard before the first Butlers import and imports the
+canonical shared fixtures once. It does not discover registries or preload roster jobs/routers.
+The owning modules, jobs and API packages resolve supported roster namespaces on demand;
+explicit inventory tests call complete discovery themselves and cannot pass with empty coverage.
 
-```python
-from butlers.modules.registry import default_registry as _default_registry
-_default_registry()
-```
-
-This ensures dynamically-loaded modules are available in `sys.modules` before test collection, preventing import errors in butler-specific test files.
-
-## Docker Availability Check
+`tests/contracts/test_import_budget.py` uses separate interpreters to enforce unused-import
+absence of the embedding stack and a five-second calibrated root-conftest cap. Its forty-second
+child timeout is independent. Recorded original/eager and slow controls establish that both
+assertions can fail. Local elapsed/RSS samples do not claim a CI wall-clock gain.
 
 The conftest checks for Docker availability:
 
