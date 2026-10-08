@@ -2471,6 +2471,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Failed to load the evidence chain.
 - Confidence
 - No corroborating signals linked to this activity.
+- Evidence expired
 - Private signal
 - Linked events
 - Failed to load events.
@@ -4866,4 +4867,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3871*
+*Total strings: 3872*

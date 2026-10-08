@@ -45,10 +45,24 @@ def upgrade() -> None:
             'pending','complete','terminal_no_output','invalid')),
           output_ids UUID[] NOT NULL DEFAULT '{}',
           output_revision BYTEA CHECK(octet_length(output_revision)=32),
+          original_output_revision BYTEA CHECK(octet_length(original_output_revision)=32),
           last_attempt_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           completed_at TIMESTAMPTZ,
           CHECK ((disposition IN ('complete','terminal_no_output')) = (completed_at IS NOT NULL)),
           PRIMARY KEY(raw_id,source_revision,adapter_name,mapping_revision)
+        );
+        CREATE TABLE location_projection_privacy_transitions (
+          decision_id UUID NOT NULL,
+          raw_id UUID NOT NULL,
+          source_revision BIGINT NOT NULL,
+          adapter_name TEXT NOT NULL,
+          mapping_revision BYTEA NOT NULL,
+          previous_revision BYTEA NOT NULL CHECK(octet_length(previous_revision)=32),
+          reduced_revision BYTEA NOT NULL CHECK(octet_length(reduced_revision)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          PRIMARY KEY(decision_id,raw_id,source_revision,adapter_name,mapping_revision),
+          FOREIGN KEY(raw_id,source_revision,adapter_name,mapping_revision)
+            REFERENCES location_projection_coverage(raw_id,source_revision,adapter_name,mapping_revision)
         );
         CREATE TABLE location_projection_cursors (
           adapter_name TEXT PRIMARY KEY,
@@ -57,7 +71,10 @@ def upgrade() -> None:
         );
         CREATE TABLE location_projection_heads (
           adapter_name TEXT PRIMARY KEY,
-          mapping_revision BYTEA NOT NULL CHECK(octet_length(mapping_revision)=32)
+          mapping_revision BYTEA NOT NULL CHECK(octet_length(mapping_revision)=32),
+          replay_pending BOOLEAN NOT NULL DEFAULT false,
+          replay_watermark TIMESTAMPTZ,
+          replay_raw_id UUID
         );
         CREATE TABLE location_projection_outputs (
           raw_id UUID NOT NULL,
@@ -151,7 +168,22 @@ def upgrade() -> None:
           decision_id UUID NOT NULL REFERENCES location_retention_plans(decision_id),
           spatial_precision_m INTEGER NOT NULL CHECK(spatial_precision_m=150),
           spatial_scheme_version INTEGER NOT NULL CHECK(spatial_scheme_version=1),
+          occurred_at TIMESTAMPTZ NOT NULL,
+          privacy TEXT NOT NULL,
           purged_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_expired_evidence_links (
+          episode_id UUID NOT NULL REFERENCES episodes(id),
+          event_id UUID NOT NULL REFERENCES location_evidence_tombstones(event_id),
+          relation TEXT NOT NULL,
+          PRIMARY KEY(episode_id,event_id,relation)
+        );
+        CREATE TABLE location_retention_local_receipts (
+          decision_id UUID PRIMARY KEY REFERENCES location_retention_plans(decision_id),
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          removed_event_count INTEGER NOT NULL CHECK(removed_event_count>=0),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
         CREATE TABLE location_summary_floors (
           episode_id UUID PRIMARY KEY REFERENCES episodes(id),
@@ -211,10 +243,13 @@ def upgrade() -> None:
           EXECUTE FUNCTION {quoted_schema}.freeze_location_grant();
     """)
     for table in (
+        "location_projection_privacy_transitions",
         "location_retention_plan_rows",
         "location_retention_plan_outputs",
         "location_retention_holder_receipts",
         "location_evidence_tombstones",
+        "location_expired_evidence_links",
+        "location_retention_local_receipts",
         "location_summary_floors",
     ):
         op.execute(f"""
@@ -235,11 +270,13 @@ def downgrade() -> None:
             RAISE EXCEPTION 'retention decisions exist; roll forward instead of erasing floors';
           END IF;
         END $$;
-        DROP TABLE location_summary_floors,location_evidence_tombstones,
+        DROP TABLE location_summary_floors,location_retention_local_receipts,
+          location_expired_evidence_links,location_evidence_tombstones,
           location_retention_holder_receipts,location_retention_grants,
           location_retention_plan_outputs,location_retention_plan_rows,
           location_retention_plans,location_retention_runs,
-          location_projection_outputs,location_projection_cursors,location_projection_heads,
+          location_projection_outputs,location_projection_privacy_transitions,
+          location_projection_cursors,location_projection_heads,
           location_projection_coverage,location_retention_policy;
         ALTER TABLE source_adapter_state
           DROP COLUMN raw_evidence_retention,

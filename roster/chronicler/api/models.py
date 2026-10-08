@@ -476,6 +476,9 @@ class EvidenceChainLink(BaseModel):
     """Human-readable label — the event title when present, else a
     ``"{source_name} {event_type}"`` fallback."""
     privacy: str
+    retention_state: str = "retained"
+    spatial_precision_m: int | None = None
+    retention_receipt: str | None = None
 
 
 class ActivityEvidenceChain(BaseModel):

@@ -115,6 +115,13 @@ async def output_digest(conn: asyncpg.Connection, outputs: set[tuple[str, UUID]]
     for kind, key in sorted(outputs, key=lambda pair: (pair[0], str(pair[1]))):
         if kind == "point_event":
             row = await conn.fetchrow("SELECT * FROM point_events WHERE id=$1", key)
+            if row is None:
+                # A genuine committed own tombstone is a new diminished
+                # generation, never a missing-row success or raw reconstruction.
+                row = await conn.fetchrow(
+                    "SELECT * FROM location_evidence_tombstones WHERE event_id=$1",
+                    key,
+                )
         elif kind == "episode":
             row = await conn.fetchrow("SELECT * FROM episodes WHERE id=$1", key)
         else:
@@ -175,23 +182,61 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                 await conn.execute(
                     """INSERT INTO location_projection_heads(adapter_name,mapping_revision)
                        VALUES($1,$2) ON CONFLICT(adapter_name) DO UPDATE
-                       SET mapping_revision=EXCLUDED.mapping_revision""",
+                       SET replay_pending=CASE WHEN location_projection_heads.mapping_revision
+                         IS DISTINCT FROM EXCLUDED.mapping_revision THEN true
+                         ELSE location_projection_heads.replay_pending END,
+                         replay_watermark=CASE WHEN location_projection_heads.mapping_revision
+                         IS DISTINCT FROM EXCLUDED.mapping_revision THEN NULL
+                         ELSE location_projection_heads.replay_watermark END,
+                         replay_raw_id=CASE WHEN location_projection_heads.mapping_revision
+                         IS DISTINCT FROM EXCLUDED.mapping_revision THEN NULL
+                         ELSE location_projection_heads.replay_raw_id END,
+                         mapping_revision=EXCLUDED.mapping_revision""",
                     adapter.source_name,
                     config,
                 )
-                rows = list(
-                    await conn.fetch(
-                        """SELECT p.* FROM connectors.owntracks_points p
-                       WHERE NOT EXISTS(SELECT 1 FROM location_projection_coverage c
-                         WHERE c.raw_id=p.id AND c.source_revision=p.source_revision
-                           AND c.adapter_name=$1 AND c.mapping_revision=$2)
-                       ORDER BY p.recorded_at,p.id LIMIT $3""",
-                        adapter.source_name,
-                        config,
-                        adapter.batch_limit,
-                    )
-                )
                 checkpoint = await get_checkpoint(conn, adapter.source_name)
+                head = await conn.fetchrow(
+                    "SELECT * FROM location_projection_heads WHERE adapter_name=$1",
+                    adapter.source_name,
+                )
+                replay_required = getattr(adapter, "retention_replay_required", lambda _: False)
+                # An interrupted legacy UUID cursor requests a bounded real
+                # source replay. Its durable private head survives pages; it
+                # cannot transform legacy invalid lineage into purge authority.
+                replay = bool(head and head["replay_pending"])
+                if not replay and replay_required(checkpoint):
+                    replay = True
+                    head = await conn.fetchrow(
+                        """UPDATE location_projection_heads SET replay_pending=true,
+                           replay_watermark=NULL,replay_raw_id=NULL WHERE adapter_name=$1
+                           RETURNING *""",
+                        adapter.source_name,
+                    )
+                if replay:
+                    rows = list(
+                        await conn.fetch(
+                            """SELECT p.* FROM connectors.owntracks_points p
+                           WHERE $1::timestamptz IS NULL OR (p.ts,p.id)>($1,$2::uuid)
+                           ORDER BY p.ts,p.id LIMIT $3""",
+                            head["replay_watermark"],
+                            head["replay_raw_id"],
+                            adapter.batch_limit,
+                        )
+                    )
+                else:
+                    rows = list(
+                        await conn.fetch(
+                            """SELECT p.* FROM connectors.owntracks_points p
+                           WHERE NOT EXISTS(SELECT 1 FROM location_projection_coverage c
+                             WHERE c.raw_id=p.id AND c.source_revision=p.source_revision
+                               AND c.adapter_name=$1 AND c.mapping_revision=$2)
+                           ORDER BY p.recorded_at,p.id LIMIT $3""",
+                            adapter.source_name,
+                            config,
+                            adapter.batch_limit,
+                        )
+                    )
                 witness = _Witness(rows)
                 token = _current.set(witness)
                 try:
@@ -203,7 +248,17 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                     )
                 finally:
                     _current.reset(token)
-                if result.error or result.skipped:
+                if result.skipped and not result.error:
+                    # The genuine optional-source read made no projection writes.
+                    # Do not advance coverage/cursor or convert it into failure.
+                    await mark_source_active(
+                        conn,
+                        adapter.source_name,
+                        active=False,
+                        inactive_reason="source_unavailable",
+                    )
+                    return result
+                if result.error:
                     raise RuntimeError("native location projection did not complete")
                 batch_id = uuid4()
                 for row in rows:
@@ -232,14 +287,32 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                         if outputs
                         else "terminal_no_output"
                     )
-                    await conn.execute(
+                    if replay:
+                        await conn.execute(
+                            """DELETE FROM location_projection_outputs WHERE raw_id=$1
+                               AND source_revision=$2 AND adapter_name=$3
+                               AND mapping_revision=$4""",
+                            raw_id,
+                            row["source_revision"],
+                            adapter.source_name,
+                            config,
+                        )
+                    write_status = await conn.execute(
                         """INSERT INTO location_projection_coverage
                            (raw_id,logical_source_digest,content_digest,source_revision,
                             adapter_name,mapping_revision,projection_batch_id,disposition,
-                            output_ids,output_revision,completed_at)
-                           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                            output_ids,output_revision,original_output_revision,completed_at)
+                           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,
                              CASE WHEN $8 IN ('complete','terminal_no_output')
-                                  THEN clock_timestamp() ELSE NULL END)""",
+                                  THEN clock_timestamp() ELSE NULL END)
+                           ON CONFLICT(raw_id,source_revision,adapter_name,mapping_revision)
+                           DO UPDATE SET projection_batch_id=EXCLUDED.projection_batch_id,
+                             disposition=EXCLUDED.disposition,output_ids=EXCLUDED.output_ids,
+                             output_revision=EXCLUDED.output_revision,
+                             completed_at=EXCLUDED.completed_at,last_attempt_at=clock_timestamp()
+                           WHERE location_projection_coverage.logical_source_digest=
+                             EXCLUDED.logical_source_digest AND
+                             location_projection_coverage.content_digest=EXCLUDED.content_digest""",
                         raw_id,
                         row["logical_source_digest"] or logical_digest(row["idempotency_key"]),
                         row["content_digest"] or content_digest({"unverified_raw_id": str(raw_id)}),
@@ -251,6 +324,8 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                         outputs,
                         await output_digest(conn, witness.typed_outputs.get(raw_id, set())),
                     )
+                    if write_status == "INSERT 0 0":
+                        raise RuntimeError("stored projection birth differs")
                     for output_kind, output_id in sorted(
                         witness.typed_outputs.get(raw_id, set()),
                         key=lambda pair: (pair[0], str(pair[1])),
@@ -332,6 +407,15 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                         adapter.source_name,
                         config,
                         revision,
+                    )
+                if replay:
+                    await conn.execute(
+                        """UPDATE location_projection_heads SET replay_pending=$2,
+                           replay_watermark=$3,replay_raw_id=$4 WHERE adapter_name=$1""",
+                        adapter.source_name,
+                        bool(rows),
+                        rows[-1]["ts"] if rows else None,
+                        rows[-1]["id"] if rows else None,
                     )
                 if rows:
                     last = rows[-1]

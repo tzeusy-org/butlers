@@ -3468,6 +3468,14 @@ async def get_evidence_chain(
         for r in link_rows
     ]
 
+    # Minimal source-owned expired descriptors remain resolvable after the raw
+    # FK links and point rows are gone; no title/GPS/network payload is retained.
+    from butlers.chronicler.location_evidence import expired_evidence_links
+
+    expired = await expired_evidence_links(pool, episode_id)
+    links.extend(EvidenceChainLink(**row) for row in expired)
+    links.sort(key=lambda row: (row.occurred_at, row.event_id))
+
     return ActivityEvidenceChain(
         episode_id=str(episode_id),
         layer=ep_row["layer"],

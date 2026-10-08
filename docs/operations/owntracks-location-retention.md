@@ -15,14 +15,20 @@ identity/revision/digests and the actual accepted request locator. Legacy rows
 without accepted-source evidence remain ineligible. Native point, place and
 SSID projection write their typed contribution, actual output-body digest,
 carry, coverage and checkpoint on the same Chronicler transaction. The shared
-policy lock precedes sorted adapter locks. Malformed native carries fail the
+policy lock precedes sorted adapter locks. The private replay head recovers an
+interrupted SSID UUID cursor across bounded actual source pages, without
+promoting legacy unknown accepted lineage to forgetting authority. Malformed native carries fail the
 transaction instead of becoming an empty successful carry.
 
 The six-hour deterministic Chronicler schedule commits an attempt before work.
 Preparation fixes at most 256 eligible raw generations and the exact policy
 version/cutoff/manifest. It coarsens typed movement/place summaries to the
 versioned approximately 150-metre geographic scheme while preserving measured
-metrics. It never fabricates missing path length. Prepared decisions survive a
+metrics. It never fabricates missing path length. All complete contributors to a changed summary are validated before reduction,
+including contributors outside the first 256-row plan. Their current digests
+advance in the same transaction through an immutable previous-to-reduced
+transition; original native generation and prior frozen plans stay unchanged.
+An unrelated output edit still refuses preparation. Prepared decisions survive a
 later widening. The singleton API uses a strict owner-authenticated CAS;
 generic model/state mutation of its reserved key is refused. The dashboard
 shows measured receipts separately from policy and confirms irreversible
@@ -45,8 +51,14 @@ This source stage **does not issue READY**, delete raw points, or claim a
 completed all-copy frontier. Its Switchboard skip receipt certifies only that
 holder. All routed receiver/session, filtered/error, bundle/prose/cache and
 carry copies, independent correction lineage, point tombstones/expired links,
-late-arrival reconstruction, map/source-strip cache generations and complete
-all-holder reconciliation remain mandatory engineering work. Existing legacy
+complete late-arrival reconstruction, map/source-strip cache generations and complete
+all-holder reconciliation remain mandatory engineering work. A local coarsening
+receipt has removed_event_count=0: neither connector raw rows nor Chronicle
+point-event raw bodies are deleted while that frontier is unknown. The typed
+expired-evidence reader and schema can represent genuinely committed minimal
+tombstones once the all-closed producer is delivered; they are not proof that
+such a disposition already happened. Existing raw point events remain readable
+and overdue; the UI never applies a deadline filter to conceal them. Existing legacy
 precision and unknown lineage are held, not called forgotten. Missing source
 receipts are unknown; an expired attempt lease cannot reuse an older success.
 
@@ -75,3 +87,22 @@ refuses and requires roll-forward. Restored history has no certified admission
 in this stage; preserve the unknown status rather than infer validity from row
 presence. See the active `enforce-owntracks-location-retention` change for the
 full normative contract and unchecked remaining tasks.
+
+## Replay and correction proof positions
+
+Empty own core264 downgrade retains inert local tables. Re-upgrade validates
+exact own table identity/columns/constraints, replaces only the same owning
+function and converges its own triggers. Populated receipts/floors still refuse
+downgrade; protected historical fences are unchanged. The existing migrated
+species now positions two empty replays, a distinct-schema replay, more than
+256 genuine native contributors across two plans, separately acquired durable
+readback, current-generation tamper refusal and unknown-frontier raw survival.
+These authored controls are SQL proof only when the exact hosted node executes.
+The fixture's synthetic accepted locators do not prove online source admission.
+
+SSID two-connection waiters observe the actual policy-first/adapter lock path,
+not an obsolete prefixed mutex. Rollback injection still reaches all five
+persistence boundaries, and exposed diagnostics are the closed
+location_projection_failed code, never exception/provider strings. Genuine
+optional unavailability preserves prior projection/checkpoint and marks the
+source inactive; a successful empty read stays an active positive.

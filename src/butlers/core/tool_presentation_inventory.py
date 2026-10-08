@@ -301,6 +301,18 @@ TOOL_PRESENTATION_INVENTORY = (
     # Roster modules.
     *_declare(
         "chronicler",
+        "retention",
+        "chronicler_location_retention_batches chronicler_location_retention_status",
+        presentable=False,
+    ),
+    *_declare(
+        "switchboard",
+        "routing",
+        "owntracks_retention_source_forget owntracks_retention_source_receipt",
+        presentable=False,
+    ),
+    *_declare(
+        "chronicler",
         "chronicle",
         "chronicler_day_close_bundle chronicler_gap_interview chronicler_get_episode "
         "chronicler_list_corrections chronicler_list_episodes chronicler_list_events "

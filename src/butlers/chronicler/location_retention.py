@@ -265,6 +265,118 @@ async def fail_attempt(pool: asyncpg.Pool, run_id: UUID, *, cancelled: bool = Fa
     )
 
 
+async def _output_generation_cohort(
+    conn: asyncpg.Connection, episode_ids: list[UUID], event_ids: list[UUID]
+) -> list:
+    """Freeze every real complete contributor before a monotone privacy write.
+
+    Called under policy/ordered adapter locks. A later bounded plan must inherit
+    the legitimate reduction without blessing unrelated edits. Original native
+    lineage and previous frozen plans remain unchanged.
+    """
+    from butlers.chronicler.location_projection import output_digest
+
+    cohort = await conn.fetch(
+        """SELECT c.* FROM location_projection_coverage c
+           WHERE c.disposition IN ('complete','terminal_no_output') AND EXISTS(
+             SELECT 1 FROM location_projection_outputs o
+             WHERE o.raw_id=c.raw_id AND o.source_revision=c.source_revision
+               AND o.adapter_name=c.adapter_name AND o.mapping_revision=c.mapping_revision
+               AND ((o.output_kind='episode' AND o.output_id=ANY($1::uuid[]))
+                 OR (o.output_kind='point_event' AND o.output_id=ANY($2::uuid[]))))
+           ORDER BY c.raw_id,c.source_revision,c.adapter_name,c.mapping_revision FOR UPDATE""",
+        episode_ids,
+        event_ids,
+    )
+    for contributor in cohort:
+        outputs = await _contributor_outputs(conn, contributor)
+        if await output_digest(conn, outputs) != contributor["output_revision"]:
+            raise PolicyUnavailableError("Native output generation changed")
+    return list(cohort)
+
+
+async def _contributor_outputs(conn: asyncpg.Connection, contributor: Any) -> set:
+    rows = await conn.fetch(
+        """SELECT output_kind,output_id FROM location_projection_outputs
+           WHERE raw_id=$1 AND source_revision=$2 AND adapter_name=$3
+             AND mapping_revision=$4 ORDER BY output_kind,output_id""",
+        contributor["raw_id"],
+        contributor["source_revision"],
+        contributor["adapter_name"],
+        contributor["mapping_revision"],
+    )
+    return {(row["output_kind"], row["output_id"]) for row in rows}
+
+
+async def _commit_privacy_generations(
+    conn: asyncpg.Connection,
+    decision_id: UUID,
+    cohort: list,
+) -> None:
+    """Only the actual owning coarsening transaction creates these transitions."""
+    from butlers.chronicler.location_projection import output_digest
+
+    for contributor in cohort:
+        reduced = await output_digest(conn, await _contributor_outputs(conn, contributor))
+        previous = contributor["output_revision"]
+        if previous == reduced:
+            continue
+        keys = (
+            contributor["raw_id"],
+            contributor["source_revision"],
+            contributor["adapter_name"],
+            contributor["mapping_revision"],
+        )
+        await conn.execute(
+            """INSERT INTO location_projection_privacy_transitions
+               (decision_id,raw_id,source_revision,adapter_name,mapping_revision,
+                previous_revision,reduced_revision) VALUES($1,$2,$3,$4,$5,$6,$7)""",
+            decision_id,
+            *keys,
+            previous,
+            reduced,
+        )
+        updated = await conn.fetchval(
+            """UPDATE location_projection_coverage SET output_revision=$5
+               WHERE raw_id=$1 AND source_revision=$2 AND adapter_name=$3
+                 AND mapping_revision=$4 AND output_revision=$6 RETURNING raw_id""",
+            *keys,
+            reduced,
+            previous,
+        )
+        if updated != contributor["raw_id"]:
+            raise PolicyUnavailableError("Native output generation changed")
+
+
+async def _record_local_preparation(
+    conn: asyncpg.Connection,
+    decision_id: UUID,
+    manifest: bytes,
+) -> None:
+    """Own coarsening receipt, never evidence of raw point/all-holder disposal.
+
+    Point-event DELETE/tombstones must wait for genuine all-holder closure.
+    They cannot run merely because summaries and this receipt have committed.
+    """
+    await conn.execute(
+        """INSERT INTO location_retention_local_receipts
+           (decision_id,manifest_digest,receipt_id,removed_event_count) VALUES($1,$2,$3,0)""",
+        decision_id,
+        manifest,
+        uuid4(),
+    )
+
+
+async def read_local_receipt(pool: asyncpg.Pool, decision_id: UUID) -> dict[str, Any] | None:
+    """Separate acquisition reads actual own preparation COMMIT, not all copies."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM location_retention_local_receipts WHERE decision_id=$1",
+            decision_id,
+        )
+    return dict(row) if row is not None else None
+
+
 async def prepare_batch(pool: asyncpg.Pool, run_id: UUID) -> UUID | None:
     """Irreversible own preparation; missing holder receipts still withhold READY.
 
@@ -456,6 +568,11 @@ async def prepare_batch(pool: asyncpg.Pool, run_id: UUID) -> UUID | None:
             episode_ids = sorted(
                 {o["output_id"] for o in outputs if o["output_kind"] == "episode"}, key=str
             )
+            event_ids = sorted(
+                {o["output_id"] for o in outputs if o["output_kind"] == "point_event"},
+                key=str,
+            )
+            generation_cohort = await _output_generation_cohort(conn, episode_ids, event_ids)
             episodes = await conn.fetch(
                 "SELECT * FROM episodes WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
                 episode_ids,
@@ -480,6 +597,8 @@ async def prepare_batch(pool: asyncpg.Pool, run_id: UUID) -> UUID | None:
                     episode["id"],
                     decision_id,
                 )
+            await _record_local_preparation(conn, decision_id, manifest)
+            await _commit_privacy_generations(conn, decision_id, generation_cohort)
             await conn.execute(
                 """UPDATE location_retention_runs SET status='pending',reason_code='holder_pending',
                    prepared_count=$2 WHERE run_id=$1""",

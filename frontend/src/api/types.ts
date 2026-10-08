@@ -6946,6 +6946,10 @@ export interface ChroniclerEvidenceChainLink {
   /** Human-readable label — the event title, else a source/type fallback. */
   descriptor: string;
   privacy: string;
+  /** Actual owning tombstone state; policy age does not populate this. */
+  retention_state?: "retained" | "forgotten";
+  spatial_precision_m?: number | null;
+  retention_receipt?: string | null;
 }
 
 /** Response envelope for GET /api/chronicler/episodes/{id}/evidence-chain. */

@@ -25,6 +25,74 @@ _RECEIPTS = (
 )
 
 
+def _validate_local_tables(schema: str) -> None:
+    expected = {
+        "location_retention_copy_receipts": [
+            ("decision_id", "uuid", True),
+            ("manifest_digest", "bytea", True),
+            ("receipt_id", "uuid", True),
+            ("source_kind", "text", True),
+            ("forgotten_count", "integer", True),
+            ("committed_at", "timestamp with time zone", True),
+        ],
+        "location_retention_source_floors": [
+            ("dedupe_digest", "bytea", True),
+            ("request_id", "uuid", True),
+            ("decision_id", "uuid", True),
+            ("logical_source_digest", "bytea", True),
+        ],
+    }
+    expected_constraints = {
+        "location_retention_copy_receipts": {
+            "PRIMARY KEY (decision_id)",
+            "UNIQUE (receipt_id)",
+            "CHECK ((octet_length(manifest_digest) = 32))",
+            "CHECK ((source_kind = 'switchboard_skipped'::text))",
+            "CHECK ((forgotten_count > 0))",
+        },
+        "location_retention_source_floors": {
+            "PRIMARY KEY (dedupe_digest)",
+            "CHECK ((octet_length(dedupe_digest) = 32))",
+            "CHECK ((octet_length(logical_source_digest) = 32))",
+            "FOREIGN KEY (decision_id) REFERENCES location_retention_copy_receipts(decision_id)",
+        },
+    }
+    bind = op.get_bind()
+    for table, shape in expected.items():
+        relation = bind.execute(
+            sa.text("""
+            SELECT c.oid,c.relkind,pg_catalog.pg_get_userbyid(c.relowner)=current_user
+            FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname=:schema AND c.relname=:table
+        """),
+            {"schema": schema, "table": table},
+        ).one()
+        if relation[1] != "r" or not relation[2]:
+            raise RuntimeError("Location retention local table identity differs")
+        actual = [
+            tuple(row)
+            for row in bind.execute(
+                sa.text("""
+            SELECT attname,pg_catalog.format_type(atttypid,atttypmod),attnotnull
+            FROM pg_catalog.pg_attribute WHERE attrelid=:oid AND attnum>0 AND NOT attisdropped
+            ORDER BY attnum
+        """),
+                {"oid": relation[0]},
+            )
+        ]
+        constraints = set(
+            bind.execute(
+                sa.text("""
+            SELECT pg_catalog.pg_get_constraintdef(oid) FROM pg_catalog.pg_constraint
+            WHERE conrelid=:oid AND convalidated
+        """),
+                {"oid": relation[0]},
+            ).scalars()
+        )
+        if actual != shape or constraints != expected_constraints[table]:
+            raise RuntimeError("Location retention local table shape differs")
+
+
 def upgrade() -> None:
     schema = op.get_bind().execute(sa.text("SELECT current_schema()")).scalar_one()
     quoted_schema = op.get_bind().dialect.identifier_preparer.quote(schema)
@@ -108,7 +176,7 @@ def upgrade() -> None:
     # Per-owning-schema ledger: source-holder actions never write through a
     # peer role. Core replay also covers Switchboard-only and legacy public DBs.
     op.execute("""
-        CREATE TABLE location_retention_copy_receipts (
+        CREATE TABLE IF NOT EXISTS location_retention_copy_receipts (
           decision_id UUID PRIMARY KEY,
           manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
           receipt_id UUID NOT NULL UNIQUE,
@@ -116,23 +184,26 @@ def upgrade() -> None:
           forgotten_count INTEGER NOT NULL CHECK(forgotten_count>0),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
-        CREATE TABLE location_retention_source_floors (
+        CREATE TABLE IF NOT EXISTS location_retention_source_floors (
           dedupe_digest BYTEA PRIMARY KEY CHECK(octet_length(dedupe_digest)=32),
           request_id UUID NOT NULL,
           decision_id UUID NOT NULL REFERENCES location_retention_copy_receipts(decision_id),
           logical_source_digest BYTEA NOT NULL CHECK(octet_length(logical_source_digest)=32)
         );
     """)
+    _validate_local_tables(schema)
     op.execute(f"""
-        CREATE FUNCTION {quoted_schema}.preserve_location_copy_history()
+        CREATE OR REPLACE FUNCTION {quoted_schema}.preserve_location_copy_history()
         RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
         SET search_path=pg_catalog,pg_temp AS $$
         BEGIN
           RAISE EXCEPTION 'Location source floors are permanent';
         END $$;
+        DROP TRIGGER IF EXISTS preserve_location_copy_history ON location_retention_copy_receipts;
         CREATE TRIGGER preserve_location_copy_history BEFORE UPDATE OR DELETE
           ON location_retention_copy_receipts FOR EACH ROW
           EXECUTE FUNCTION {quoted_schema}.preserve_location_copy_history();
+        DROP TRIGGER IF EXISTS preserve_location_source_floor ON location_retention_source_floors;
         CREATE TRIGGER preserve_location_source_floor BEFORE UPDATE OR DELETE
           ON location_retention_source_floors FOR EACH ROW
           EXECUTE FUNCTION {quoted_schema}.preserve_location_copy_history();

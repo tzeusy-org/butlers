@@ -312,6 +312,15 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             }
         )
 
+    def retention_replay_required(self, checkpoint: Any) -> bool:
+        """Native legacy/corrupted tuple recovery; never supplies purge coverage."""
+        if checkpoint is None or checkpoint.watermark is None:
+            return False
+        carry = checkpoint.carryover
+        return (
+            isinstance(carry, dict) and self._uuid_tiebreaker(carry, checkpoint.watermark) is None
+        )
+
     async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
         return await run_projection(self, chronicler_pool=chronicler_pool)
 

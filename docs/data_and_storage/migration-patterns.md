@@ -396,3 +396,10 @@ do not grant peer SQL writes. Trigger bodies use `pg_catalog,pg_temp` and
 qualified installed functions. A populated history/floor downgrade refuses;
 never erase floors to repair a revision. Actual migration/role controls must
 execute before reporting installed authority or recovery proof.
+
+Empty core264 rollback retains inert own ledgers. Its installer accepts only the
+exact own table columns/constraints and current owning identity before
+converging functions/triggers; populated history still requires roll-forward.
+Chronicler privacy preparation preserves every contributor's original output
+generation and records monotone previous-to-reduced transitions in the same
+transaction, including contributors outside the current bounded plan.

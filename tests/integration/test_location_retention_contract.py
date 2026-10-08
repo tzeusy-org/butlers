@@ -19,7 +19,9 @@ from butlers.chronicler.adapters.owntracks_ssid import OwnTracksSsidPresenceAdap
 from butlers.chronicler.contracts import seed_source_registry
 from butlers.chronicler.location_retention import (
     PolicyConflictError,
+    PolicyUnavailableError,
     prepare_batch,
+    read_local_receipt,
     read_policy,
     ready_batches,
     retention_status,
@@ -49,6 +51,16 @@ def migrated_db_url(postgres_container):
 
 async def test_native_projection_policy_rollback_and_real_role_fences(migrated_db_url):
     """REQ-location-retention-001/002/003/006; genuine SQL, not full source authority."""
+    # Bounded own migration replay before planting permanent history; this
+    # never crosses adopted196/198 downgrade fences or stamps a revision.
+    from alembic import command
+    from butlers.migrations import _build_alembic_config, run_migrations
+
+    core = _build_alembic_config(migrated_db_url, chains=["core"], target_schema="chronicler")
+    for _ in range(2):
+        command.downgrade(core, "core@core_261")
+        command.upgrade(core, "core@head")
+    await run_migrations(migrated_db_url, chain="core", schema="retention_second")
     pool = await asyncpg.create_pool(
         migrated_db_url,
         min_size=1,
@@ -57,6 +69,17 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
         server_settings={"search_path": "chronicler,public"},
     )
     try:
+        # Separate real acquisitions observe both retained installations.
+        for schema in ("chronicler", "retention_second"):
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_schema=$1 AND table_name IN "
+                    "('location_retention_copy_receipts','location_retention_source_floors')",
+                    schema,
+                )
+                == 2
+            )
         await seed_source_registry(pool)
         policy = await read_policy(pool)
         assert policy["days"] == 30 and policy["version"] == 1
@@ -115,6 +138,18 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
         run = await start_attempt(pool)
         decision = await prepare_batch(pool, run)
         assert decision is not None  # First actually closed segment qualifies.
+        local = await read_local_receipt(pool, decision)
+        assert local is not None and local["removed_event_count"] == 0
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM location_evidence_tombstones WHERE decision_id=$1",
+                decision,
+            )
+            == local["removed_event_count"]
+        )
+        # Unknown holder frontier preserves BOTH raw source and point events.
+        # A local coarsening receipt must not masquerade as deletion/closure.
+        assert await pool.fetchval("SELECT count(*) FROM point_events") == 3
         assert await ready_batches(pool) == []  # No fabricated copy-holder completion.
         assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 3
         status = await retention_status(pool)
@@ -169,5 +204,98 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
         # Separately acquired durable readback, including failed mutations.
         assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 3
         assert (await read_policy(pool))["days"] == 30
+        # More than one preparation batch shares the same genuine closed
+        # movement/place output. A legitimate reduction must update every
+        # contributor, while arbitrary output mutation remains ineligible.
+        more_ids = []
+        for minute in range(301):
+            raw_id = uuid4()
+            more_ids.append(raw_id)
+            source = f"large-native:{raw_id}"
+            moment = born - timedelta(days=1) + timedelta(minutes=minute if minute < 300 else 400)
+            await pool.execute(
+                """INSERT INTO connectors.owntracks_points
+                   (id,idempotency_key,ts,lat,lon,endpoint_identity,recorded_at,
+                    logical_source_digest,content_digest,accepted_request_id,
+                    accepted_payload_digest,accepted_normalized_digest)
+                   VALUES($1,$2,$3,1.31415926,103.81234567,'large-native',$3,$4,$5,$6,$5,$5)""",
+                raw_id,
+                source,
+                moment,
+                logical_digest(source),
+                content_digest({"native_fixture": minute}),
+                uuid4(),
+            )
+        # These synthetic accepted locators do not prove online admission.
+        for adapter in adapters:
+            actual = await adapter.run(pool=pool, chronicler_pool=pool)
+            assert actual.error is None and not actual.skipped
+        assert (
+            await pool.fetchval(
+                """SELECT max(n) FROM (SELECT count(DISTINCT raw_id) n
+               FROM location_projection_outputs WHERE output_kind='episode'
+                 AND raw_id=ANY($1::uuid[]) GROUP BY output_id) counts""",
+                more_ids,
+            )
+            > 256
+        )
+        first = await prepare_batch(pool, await start_attempt(pool))
+        assert first is not None
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM location_retention_plan_rows WHERE decision_id=$1",
+                first,
+            )
+            == 256
+        )
+        assert (
+            await pool.fetchval(
+                """SELECT count(*) FROM location_projection_privacy_transitions
+               WHERE decision_id=$1 AND raw_id=ANY($2::uuid[])""",
+                first,
+                more_ids,
+            )
+            > 256
+        )
+        second = await prepare_batch(pool, await start_attempt(pool))
+        assert second is not None and second != first
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM location_retention_plan_rows WHERE decision_id=$1",
+                second,
+            )
+            > 0
+        )
+        assert await read_local_receipt(pool, second) is not None
+        # Current generation integrity remains a real predicate. Plant a
+        # semantic tamper before preparing a new genuinely closed source group.
+        target = await pool.fetchrow(
+            "SELECT id,payload FROM episodes WHERE source_name='owntracks.points' "
+            "AND EXISTS(SELECT 1 FROM location_projection_outputs o "
+            "WHERE o.output_id=episodes.id AND o.raw_id=ANY($1::uuid[])) LIMIT 1",
+            more_ids,
+        )
+        original_payload = target["payload"]
+        await pool.execute(
+            "UPDATE episodes SET payload=payload || $2::jsonb WHERE id=$1",
+            target["id"],
+            {"unrelated_tamper": True},
+        )
+        from butlers.chronicler.location_retention import _output_generation_cohort
+
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                with pytest.raises(PolicyUnavailableError, match="generation changed"):
+                    await _output_generation_cohort(connection, [target["id"]], [])
+        # Restore only the deliberate test mutation, not missing coverage or
+        # authority, then verify current reduced generation and original lineage.
+        await pool.execute(
+            "UPDATE episodes SET payload=$2 WHERE id=$1", target["id"], original_payload
+        )
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                cohort = await _output_generation_cohort(connection, [target["id"]], [])
+                assert cohort and all(row["original_output_revision"] is not None for row in cohort)
+        assert await ready_batches(pool) == []  # Unknown foreign frontier cannot earn READY.
     finally:
         await pool.close()

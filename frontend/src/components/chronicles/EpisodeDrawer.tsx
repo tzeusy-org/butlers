@@ -490,6 +490,9 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
                           {link.relation}
                         </Badge>
                         <span className="text-muted-foreground">{link.source_name}</span>
+                        {link.retention_state === "forgotten" && (
+                          <Badge variant="secondary" className="text-[10px]">Evidence expired</Badge>
+                        )}
                       </div>
                       {link.privacy === "sensitive" ? (
                         <p className="text-muted-foreground">Private signal</p>

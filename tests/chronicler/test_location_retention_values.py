@@ -314,3 +314,119 @@ async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monk
     monkeypatch.setattr(location_projection, "native_projection_active", lambda: False)
     conn.fetchval.return_value = "malformed-legacy-carry"
     assert await storage.get_carryover(conn, "ordinary.source") == {}
+
+    # Genuine optional unavailable and successful empty sources stay distinct.
+    # Supplied connection inputs are software-only, not real SQL evidence.
+    from contextlib import asynccontextmanager
+    from unittest.mock import MagicMock
+
+    from butlers.chronicler.adapters.owntracks_ssid import OwnTracksSsidPresenceAdapter
+
+    @asynccontextmanager
+    async def acquired():
+        yield conn
+
+    @asynccontextmanager
+    async def transaction():
+        yield
+
+    conn = AsyncMock()
+    conn.transaction = transaction
+    conn.fetchrow.side_effect = lambda query, *args: (
+        {"version": 1} if "location_retention_policy" in query else None
+    )
+    conn.fetchval.return_value = True
+    conn.fetch.return_value = []
+    pool = MagicMock()
+    pool.acquire = acquired
+    pool.execute = AsyncMock()
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places={})
+    monkeypatch.setattr(location_projection, "get_checkpoint", AsyncMock(return_value=None))
+    monkeypatch.setattr(storage, "get_carryover", AsyncMock(return_value={}))
+    # The adapter imports its own storage binding; patch the actual read seam.
+    from butlers.chronicler.adapters import owntracks_ssid
+
+    monkeypatch.setattr(owntracks_ssid, "get_carryover", AsyncMock(return_value={}))
+    adapter._fetch_points = AsyncMock(return_value=None)
+    active = AsyncMock()
+    checkpoint = AsyncMock()
+    monkeypatch.setattr(location_projection, "mark_source_active", active)
+    monkeypatch.setattr(location_projection, "upsert_checkpoint", checkpoint)
+    skipped = await location_projection.run_projection(adapter, chronicler_pool=pool)
+    assert skipped.skipped and skipped.error is None
+    assert active.await_args.kwargs["active"] is False
+    checkpoint.assert_not_awaited()
+    adapter._fetch_points = AsyncMock(return_value=[])
+    successful = await location_projection.run_projection(adapter, chronicler_pool=pool)
+    assert successful.error is None and not successful.skipped
+    assert active.await_args.kwargs["active"] is True
+    assert checkpoint.await_args.kwargs["success"] is True
+
+    # Original generation must match before the legitimate privacy transition.
+    from uuid import uuid4
+
+    from butlers.chronicler import location_retention
+
+    key, raw_id, decision = uuid4(), uuid4(), uuid4()
+    original = {
+        "id": key,
+        "payload": {"start_lat": 1.31415926, "start_lon": 103.81234567, "path_m": 25},
+        "title": "synthetic precise location",
+    }
+    native = AsyncMock()
+    native.fetchrow.return_value = original
+    digest = await location_projection.output_digest(native, {("episode", key)})
+    contributor = {
+        "raw_id": raw_id,
+        "source_revision": 1,
+        "adapter_name": "owntracks.points",
+        "mapping_revision": b"x" * 32,
+        "output_revision": digest,
+        "original_output_revision": digest,
+    }
+    native.fetch.side_effect = lambda query, *args: (
+        [contributor] if "SELECT c.*" in query else [{"output_kind": "episode", "output_id": key}]
+    )
+    cohort = await location_retention._output_generation_cohort(native, [key], [])
+    assert cohort == [contributor]
+    native.fetchrow.return_value = {
+        **original,
+        "title": "Location summary",
+        "payload": reduced_summary(original["payload"]),
+    }
+    reduced = await location_projection.output_digest(native, {("episode", key)})
+    assert reduced != digest
+    native.fetchval.return_value = raw_id
+    await location_retention._commit_privacy_generations(native, decision, cohort)
+    assert native.execute.await_args.args[-2:] == (digest, reduced)
+    assert native.fetchval.await_args.args[-2:] == (reduced, digest)
+    assert contributor["original_output_revision"] == digest
+    with pytest.raises(location_retention.PolicyUnavailableError, match="generation changed"):
+        await location_retention._output_generation_cohort(native, [key], [])
+
+    # Expired descriptors carry a real minimal tombstone, never exact old title.
+    from butlers.chronicler.location_evidence import expired_evidence_links
+
+    reader = AsyncMock()
+    reader.fetchval.return_value = True
+    reader.fetch.return_value = [
+        {
+            "event_id": key,
+            "occurred_at": datetime(2026, 1, 1, tzinfo=UTC),
+            "privacy": "sensitive",
+            "decision_id": decision,
+            "spatial_precision_m": 150,
+            "relation": "supports",
+        }
+    ]
+    expired = await expired_evidence_links(reader, raw_id)
+    assert expired[0]["retention_state"] == "forgotten"
+    assert expired[0]["retention_receipt"] == str(decision)
+    assert expired[0]["spatial_precision_m"] == 150
+    assert expired[0]["descriptor"] == "Exact location evidence forgotten"
+    reader.fetchval.return_value = False
+    assert await expired_evidence_links(reader, raw_id) == []
+    reader.fetchval.return_value = True
+    reader.fetch.side_effect = RuntimeError("installed schema changed")
+    with pytest.raises(RuntimeError, match="installed schema changed"):
+        await expired_evidence_links(reader, raw_id)
