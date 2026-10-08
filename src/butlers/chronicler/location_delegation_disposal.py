@@ -102,6 +102,8 @@ async def source_question_cohort(conn: Any, decision: UUID) -> list[dict]:
                     or receipt["reduced_question_digest"] is None
                     or question_digest(dict(canonical)) != receipt["reduced_question_digest"]
                     or canonical["asking_butler"] != "chronicler"
+                    or canonical["reason"] != _REDUCED_REASON
+                    or not await _committed_question_profile(conn, receipt, canonical)
                 ):
                     raise PolicyUnavailableError("Native reduced source question body changed")
             if not disposed and (
@@ -647,14 +649,25 @@ async def dispose_source_questions(domain: Any, decision: UUID) -> None:
                 )
                 if canonical is None or question_digest(dict(canonical)) != digest:
                     raise PolicyUnavailableError("Native source ledger changed before disposal")
-                if not unanswered_source_question(canonical):
+                from butlers.chronicler.location_question_sources import (
+                    question_disposition_profile,
+                )
+
+                if not await question_disposition_profile(conn, header, canonical, plan):
+                    continue
+                from butlers.chronicler.location_question_sources import (
+                    source_question_tool_finished,
+                )
+
+                if not await source_question_tool_finished(conn, header, session, canonical):
                     continue
                 receipt = uuid4()
                 await conn.execute(
-                    "UPDATE public.delegation_ledger SET question=$2,status='failed',reason=$3 "
+                    "UPDATE public.delegation_ledger SET question=$2,status=$3,reason=$4 "
                     "WHERE id=$1",
                     header["ledger_id"],
                     _REDUCED_QUESTION,
+                    "failed" if unanswered_source_question(canonical) else "answered",
                     _REDUCED_REASON,
                 )
                 await conn.execute(
@@ -684,9 +697,8 @@ async def dispose_source_questions(domain: Any, decision: UUID) -> None:
             if (
                 canonical is None
                 or canonical["question"] != _REDUCED_QUESTION
-                or canonical["status"] != "failed"
                 or canonical["reason"] != _REDUCED_REASON
-                or not unanswered_source_question(canonical)
+                or not await _committed_question_profile(committed, row, canonical)
                 or row["reduced_question_digest"] is None
                 or question_digest(dict(canonical)) != row["reduced_question_digest"]
             ):
@@ -729,9 +741,8 @@ async def source_question_status(runtime: Any, decision: UUID, receipt: UUID) ->
             if (
                 canonical is None
                 or canonical["question"] != _REDUCED_QUESTION
-                or canonical["status"] != "failed"
                 or canonical["reason"] != _REDUCED_REASON
-                or not unanswered_source_question(canonical)
+                or not await _committed_question_profile(conn, row, canonical)
                 or question_digest(dict(canonical)) != row["reduced_question_digest"]
             ):
                 raise PolicyUnavailableError("Committed native source question is unknown")
@@ -742,6 +753,11 @@ async def source_question_status(runtime: Any, decision: UUID, receipt: UUID) ->
             ]
             if len(selected) != 1 or selected[0]["complete_input"] is not True:
                 raise PolicyUnavailableError("Native source question ancestry is unknown")
+            observed_answer = await conn.fetchrow(
+                "SELECT * FROM location_native_question_answer_observations "
+                "WHERE question_generation=$1",
+                row["question_generation"],
+            )
     return {
         "source_name": runtime.name,
         "decision_id": str(decision),
@@ -751,4 +767,22 @@ async def source_question_status(runtime: Any, decision: UUID, receipt: UUID) ->
         "question_generation": str(row["question_generation"]),
         "body_digest": row["body_digest"].hex(),
         "reduced_question_digest": row["reduced_question_digest"].hex(),
+        "answer_generation": str(observed_answer["answer_generation"])
+        if observed_answer is not None
+        else None,
+        "answer_receipt": str(observed_answer["answer_receipt"])
+        if observed_answer is not None
+        else None,
     }
+
+
+async def _committed_question_profile(conn: Any, row: Any, canonical: Any) -> bool:
+    if canonical["status"] == "failed" and unanswered_source_question(canonical):
+        return True
+    from butlers.chronicler.location_question_sources import answered_question_matches
+
+    observation = await conn.fetchrow(
+        "SELECT * FROM location_native_question_answer_observations WHERE question_generation=$1",
+        row["question_generation"],
+    )
+    return answered_question_matches(canonical, observation, row, row)

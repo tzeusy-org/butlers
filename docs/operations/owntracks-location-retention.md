@@ -828,3 +828,37 @@ reducer, together with recursive context/borrowed/routed closure. The existing
 owning migrated species adds preserved-metadata tamper/refusal/restoration and
 source-reader readback to its original producer/receiver/rollback assertions;
 those new controls remain unrun locally until exact hosted evidence.
+
+The following source increment extends that dated unanswered-only profile to an
+exact answered child. The scheduled Chronicle owner invokes the original stored
+answer target through Switchboard's registered close/status tools, validates the
+original question digest, answer generation/body/bundle, immutable wake identity,
+decision and manifest, then commits its own immutable answer observation under
+its policy-first lock and reads it separately. With all original question loans,
+source lifetimes and exact private `delegate_ask` input/result closed, it reduces
+only its own question; the answer remains the answer owner's reduced child and
+the answered/wake identities survive. Nonempty independent metadata and unknown
+or mixed ancestry still require their own lawful dispositions.
+
+After that question transaction, `location_retention_observe_source_question`
+selects only the answer owner's stored receipt. Its pre-reduction frozen question
+owner chooses the fixed registered reader; caller arguments cannot supply a peer,
+body or terminal verdict. The question reader must name the corresponding answer
+generation and original answer receipt. The answer owner compares the original
+question digest and full reduced reference, commits its separate observation and
+reads it back before accepting the reduced question on future status/context
+reads. A lost ACK resumes these same two receipts before attempting original
+answer reads, rather than refilling an original reference from a placeholder.
+This ordering prevents a question/answer receipt cycle. Legacy NULL owner or
+reference history cannot authenticate a changed question. Each child receipt
+remains separate from runtime/session/Tool and receiving-copy dispositions.
+
+The existing owning SQL species now calls the actual answer reducer and faults
+its actual receipt INSERT after its actual UPDATE using the same acquired physical
+connection. A separate acquisition must observe the original answer and no
+receipt, followed by the same restored producer's positive. The prior handwritten
+rollback remains a diagnostic companion, not producer-atomicity proof. This new
+SQL control and current two-owner schema/registration are hosted-unrun until an
+exact current candidate executes them. Software doubles and planted engine rows
+prove only their positioned predicates; they do not certify registered online
+remote holders, lawful full mixed-copy erasure, browser or protected delivery.

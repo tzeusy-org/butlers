@@ -73,7 +73,8 @@ TOOL_PRESENTATION_INVENTORY = (
         "location_retention_prepare_answer location_retention_answer_status "
         "location_retention_close_source_answers location_retention_source_answer_status "
         "location_retention_prepare_questions "
-        "location_retention_question_status location_retention_source_question_status",
+        "location_retention_question_status location_retention_source_question_status "
+        "location_retention_observe_source_question",
         presentable=False,
         namespace="delegation_control",
     ),

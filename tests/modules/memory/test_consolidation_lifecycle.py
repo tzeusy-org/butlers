@@ -2093,7 +2093,11 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
     )
     from butlers.core.delegation_ledger import mark_dispatch_outcome, record_answer, record_ask
     from butlers.core.sessions import session_complete
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
 
+    question_input = bytes.fromhex(
+        fingerprint_tool_call_payload({"question": "synthetic source ledger copy"})
+    )
     decision, run, generation = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     manifest = b"s" * 32
     await domain.execute(
@@ -2102,7 +2106,7 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
         "VALUES($1,$2,'delegate_ask','core',$3)",
         generation,
         session_id,
-        b"s" * 32,
+        question_input,
     )
     tool = _ToolCopy(runtime, generation, session_id, "delegate_ask", "core")
     token = _current_tool_copy.set(tool)
@@ -2118,13 +2122,70 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
             )
         )
         assert tool.read_observed is True and tool.mixed_inputs is False
-        await finish_tool_copy((tool, token), {"ledger_id": str(ledger), "status": "pending"})
+        question_result = {
+            "ledger_id": str(ledger),
+            "status": "routed",
+            "target_butler": "relationship",
+        }
+        await finish_tool_copy((tool, token), question_result)
     finally:
         if _current_tool_copy.get() is tool:
             _current_tool_copy.reset(token)
     header = await domain.fetchrow(
         "SELECT * FROM location_native_delegation_inputs WHERE ledger_id=$1",
         ledger,
+    )
+    # A second real owning ask freezes its original input while the same
+    # context is still live. Its remote answer receipt below is deliberately
+    # planted engine evidence, never an online other-butler attestation.
+    answered_text = "Synthetic answered source question"
+    answered_tool = uuid.uuid4()
+    answered_input = bytes.fromhex(fingerprint_tool_call_payload({"question": answered_text}))
+    await domain.execute(
+        "INSERT INTO location_runtime_tool_intents "
+        "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+        "VALUES($1,$2,'delegate_ask','core',$3)",
+        answered_tool,
+        session_id,
+        answered_input,
+    )
+    second_tool = _ToolCopy(runtime, answered_tool, session_id, "delegate_ask", "core")
+    second_token = _current_tool_copy.set(second_tool)
+    try:
+        answered_ledger = uuid.UUID(
+            await record_ask(
+                domain,
+                asking_butler="chronicler",
+                question=answered_text,
+                target_butler="relationship",
+                status="pending",
+                metadata={},
+            )
+        )
+        assert second_tool.read_observed is True and second_tool.mixed_inputs is False
+        answered_result = dict(
+            status="routed", ledger_id=str(answered_ledger), target_butler="relationship"
+        )
+        await finish_tool_copy((second_tool, second_token), answered_result)
+    finally:
+        if _current_tool_copy.get() is second_tool:
+            _current_tool_copy.reset(second_token)
+    answered_header = await domain.fetchrow(
+        "SELECT * FROM location_native_delegation_inputs WHERE ledger_id=$1",
+        answered_ledger,
+    )
+    from butlers.chronicler.location_answer_sources import _REDUCED_ANSWER
+    from butlers.core.delegation_ledger import compute_answer_digest, compute_wake_key
+
+    remote_body = compute_answer_digest("Synthetic remote answer")
+    remote_wake = compute_wake_key(answered_ledger, remote_body)
+    await domain.execute(
+        "UPDATE public.delegation_ledger SET status='answered',answer=$2,answer_digest=$3,"
+        "answering_butler='relationship',answered_at=clock_timestamp(),wake_key=$4 WHERE id=$1",
+        answered_ledger,
+        _REDUCED_ANSWER,
+        remote_body,
+        remote_wake,
     )
     loan, receiver, incarnation = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with domain.acquire() as conn:
@@ -2190,7 +2251,29 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
         context,
         uuid.uuid4(),
     )
-    await session_complete(domain, session_id, None, [], 1, True)
+    await session_complete(
+        domain,
+        session_id,
+        None,
+        [
+            {
+                "name": "delegate_ask",
+                "module": "core",
+                "outcome": "success",
+                "input_fingerprint": question_input.hex(),
+                "result": question_result,
+            },
+            {
+                "name": "delegate_ask",
+                "module": "core",
+                "outcome": "success",
+                "input_fingerprint": answered_input.hex(),
+                "result": answered_result,
+            },
+        ],
+        1,
+        True,
+    )
     # Business+receipt are atomic on failure too; no partial cleared source.
     with pytest.raises(RuntimeError, match="planted source disposal rollback"):
         async with domain.acquire() as conn:
@@ -2261,6 +2344,72 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
     assert (
         await domain.fetchval("SELECT question FROM public.delegation_ledger WHERE id=$1", ledger)
         == _REDUCED_QUESTION
+    )
+
+    async with domain.acquire() as committed:
+        assert (
+            await committed.fetchval(
+                "SELECT question FROM public.delegation_ledger WHERE id=$1", answered_ledger
+            )
+            == answered_text
+        )
+        assert not await committed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_native_delegation_dispositions "
+            "WHERE question_generation=$1)",
+            answered_header["question_generation"],
+        )
+    remote_generation, remote_receipt = uuid.uuid4(), uuid.uuid4()
+    await domain.execute(
+        "INSERT INTO location_native_question_answer_observations "
+        "(question_generation,decision_id,manifest_digest,answer_owner,answer_generation,"
+        "answer_receipt,answer_body_digest,answer_bundle_digest,wake_key) "
+        "VALUES($1,$2,$3,'relationship',$4,$5,$6,$7,$8)",
+        answered_header["question_generation"],
+        decision,
+        manifest,
+        remote_generation,
+        remote_receipt,
+        bytes.fromhex(remote_body),
+        b"r" * 32,
+        remote_wake,
+    )
+    with pytest.raises(asyncpg.RaiseError, match="permanent"):
+        await domain.execute(
+            "UPDATE location_native_question_answer_observations SET answer_owner='other' "
+            "WHERE question_generation=$1",
+            answered_header["question_generation"],
+        )
+    await dispose_source_questions(domain, decision)
+    async with domain.acquire() as committed:
+        reduced = await committed.fetchrow(
+            "SELECT * FROM public.delegation_ledger WHERE id=$1",
+            answered_ledger,
+        )
+        qreceipt = await committed.fetchrow(
+            "SELECT * FROM location_native_delegation_dispositions WHERE question_generation=$1",
+            answered_header["question_generation"],
+        )
+        assert reduced["question"] == _REDUCED_QUESTION and reduced["status"] == "answered"
+        assert reduced["answer"] == _REDUCED_ANSWER and reduced["wake_key"] == remote_wake
+        assert reduced["answer_digest"] == remote_body
+        assert qreceipt["body_digest"] == answered_header["body_digest"]
+    answered_status = await source_question_status(runtime, decision, qreceipt["receipt_id"])
+    assert answered_status["answer_generation"] == str(remote_generation)
+    assert answered_status["answer_receipt"] == str(remote_receipt)
+    await domain.execute(
+        "UPDATE public.delegation_ledger SET wake_key=$2 WHERE id=$1",
+        answered_ledger,
+        "changed",
+    )
+    with pytest.raises(PolicyUnavailableError, match="source question is unknown"):
+        await source_question_status(runtime, decision, qreceipt["receipt_id"])
+    await domain.execute(
+        "UPDATE public.delegation_ledger SET wake_key=$2 WHERE id=$1",
+        answered_ledger,
+        remote_wake,
+    )
+    assert (
+        await source_question_status(runtime, decision, qreceipt["receipt_id"]) == answered_status
     )
 
 
@@ -2881,6 +3030,62 @@ async def _assert_source_answer_disposal(domain, runtime):
         )
         assert not await observed.fetchval(
             "SELECT EXISTS(SELECT 1 FROM location_native_delegation_answer_dispositions WHERE answer_generation=$1)",
+            header["answer_generation"],
+        )
+    # Invoke the actual reducer with the same real physical connection. Only
+    # its receipt INSERT faults after its own actual canonical UPDATE; no
+    # handwritten alternate producer path can make this control green.
+    from contextlib import asynccontextmanager
+
+    class ReceiptFaultConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+        async def execute(self, sql, *args):
+            if sql.startswith("UPDATE public.delegation_ledger SET answer="):
+                value = await self.conn.execute(sql, *args)
+                producer_updates.append(True)
+                return value
+            if sql.startswith("INSERT INTO location_native_delegation_answer_dispositions "):
+                assert producer_updates
+                producer_faults.append(True)
+                raise RuntimeError("actual answer receipt insertion fault")
+            return await self.conn.execute(sql, *args)
+
+    class ReceiptFaultPool:
+        @asynccontextmanager
+        async def acquire(self):
+            async with domain.acquire() as conn:
+                yield ReceiptFaultConnection(conn)
+
+        async def execute(self, sql, *args):
+            # A regression using a separately committed pool write must reach
+            # the same fault, then fail the independent survivor assertion.
+            async with self.acquire() as conn:
+                return await conn.execute(sql, *args)
+
+    producer_updates = []
+    producer_faults = []
+    runtime.domain = ReceiptFaultPool()
+    try:
+        with pytest.raises(RuntimeError, match="actual answer receipt insertion fault"):
+            await dispose_source_answers(runtime, plan)
+    finally:
+        runtime.domain = domain
+    assert producer_faults == [True]
+    async with domain.acquire() as committed:
+        assert (
+            await committed.fetchval(
+                "SELECT answer FROM public.delegation_ledger WHERE id=$1", ledger
+            )
+            == answer
+        )
+        assert not await committed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_native_delegation_answer_dispositions "
+            "WHERE answer_generation=$1)",
             header["answer_generation"],
         )
     receipts = await dispose_source_answers(runtime, plan)

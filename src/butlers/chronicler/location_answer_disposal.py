@@ -192,9 +192,11 @@ async def source_answer_cohort(runtime: Any, conn: Any, plan: dict) -> list[dict
                     and canonical["answer_digest"] == header["body_digest"].hex()
                 )
             else:
-                from butlers.chronicler.location_answer_sources import disposed_answer_matches
+                from butlers.chronicler.location_answer_sources import committed_answer_matches
 
-                valid_body = disposed_answer_matches(runtime, header, canonical, disposition, plan)
+                valid_body = await committed_answer_matches(
+                    conn, runtime, header, canonical, disposition, plan
+                )
             if not valid_body:
                 raise PolicyUnavailableError("Native terminal answer body changed")
             loans = await conn.fetch(

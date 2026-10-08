@@ -103,6 +103,7 @@ class TestEphemeralMcpConfig:
             "location_retention_prepare_questions",
             "location_retention_question_status",
             "location_retention_source_question_status",
+            "location_retention_observe_source_question",
         }
         assert retention_tools <= set(inventory)
         assert all(inventory[name] == "delegation" for name in retention_tools)

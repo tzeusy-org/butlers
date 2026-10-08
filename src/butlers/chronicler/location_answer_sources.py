@@ -19,7 +19,14 @@ _REDUCED_ANSWER = "Delegated answer forgotten under the source retention policy.
 _REDUCED_DIGEST = hashlib.sha256(_REDUCED_ANSWER.encode()).digest()
 
 
-def disposed_answer_matches(runtime: Any, header: Any, canonical: Any, receipt: Any, plan: dict):
+def disposed_answer_matches(
+    runtime: Any,
+    header: Any,
+    canonical: Any,
+    receipt: Any,
+    plan: dict,
+    question_observation: Any = None,
+):
     """Read the immutable original reference and actual reduced canonical profile.
 
     NULL prototype history never supplies an original body witness. This profile
@@ -35,7 +42,9 @@ def disposed_answer_matches(runtime: Any, header: Any, canonical: Any, receipt: 
         and receipt["body_digest"] == header["body_digest"]
         and receipt["bundle_digest"] == header["bundle_digest"]
         and header["bundle_digest"] is not None
-        and receipt["question_digest"] == question_digest(dict(canonical))
+        and answer_question_reference_matches(
+            runtime, header, canonical, receipt, plan, question_observation
+        )
         and receipt["wake_key"] == canonical["wake_key"]
         and isinstance(receipt["wake_key"], str)
         and canonical["id"] == header["ledger_id"]
@@ -283,7 +292,9 @@ async def dispose_source_answers(runtime: Any, plan: dict) -> list[str]:
                     generation,
                 )
                 if prior is not None:
-                    if not disposed_answer_matches(runtime, header, canonical, prior, plan):
+                    if not await committed_answer_matches(
+                        conn, runtime, header, canonical, prior, plan
+                    ):
                         raise PolicyUnavailableError("Native source answer disposition differs")
                     receipts.append(str(prior["receipt_id"]))
                     continue
@@ -317,8 +328,8 @@ async def dispose_source_answers(runtime: Any, plan: dict) -> list[str]:
                 await conn.execute(
                     "INSERT INTO location_native_delegation_answer_dispositions "
                     "(answer_generation,decision_id,manifest_digest,body_digest,receipt_id,"
-                    "bundle_digest,question_digest,wake_key,reduced_digest) "
-                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                    "bundle_digest,question_digest,wake_key,reduced_digest,question_owner) "
+                    "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
                     generation,
                     decision,
                     manifest,
@@ -328,6 +339,7 @@ async def dispose_source_answers(runtime: Any, plan: dict) -> list[str]:
                     question_digest(dict(canonical)),
                     canonical["wake_key"],
                     _REDUCED_DIGEST,
+                    canonical["asking_butler"],
                 )
                 receipts.append(str(receipt))
     # No success on the write acquisition alone, including original-ID replay.
@@ -364,7 +376,7 @@ async def source_answer_status(
                 "FOR UPDATE OF delegation_ledger",
                 header["ledger_id"],
             )
-            if not disposed_answer_matches(runtime, header, canonical, row, plan):
+            if not await committed_answer_matches(conn, runtime, header, canonical, row, plan):
                 raise PolicyUnavailableError("Committed native source answer is unknown")
             from butlers.chronicler.location_answer_disposal import source_answer_cohort
 
@@ -384,6 +396,8 @@ async def source_answer_status(
         "body_digest": header["body_digest"].hex(),
         "bundle_digest": header["bundle_digest"].hex(),
         "receipt_id": str(receipt),
+        "question_digest": row["question_digest"].hex(),
+        "wake_key": row["wake_key"],
     }
 
 
@@ -455,8 +469,133 @@ async def closed_source_answer_tools(
             and len(parents) == header["parent_count"]
             and len({(p["parent_kind"], p["parent_generation"]) for p in parents}) == len(parents)
         )
-        if complete and disposed_answer_matches(runtime, header, canonical, disposition, plan):
+        if complete and await committed_answer_matches(
+            conn, runtime, header, canonical, disposition, plan, schema=schema
+        ):
             closed.add(header["tool_generation"])
         else:
             blocked.add(header["tool_generation"])
     return [{"tool_generation": generation} for generation in sorted(closed - blocked)]
+
+
+def answer_question_reference_matches(runtime, header, canonical, receipt, plan, observed):
+    from butlers.chronicler.location_delegation_disposal import _REDUCED_QUESTION, _REDUCED_REASON
+
+    current = question_digest(dict(canonical))
+    if current == receipt["question_digest"]:
+        return receipt.get("question_owner") in (None, canonical["asking_butler"])
+    return (
+        observed is not None
+        and canonical["question"] == _REDUCED_QUESTION
+        and canonical["reason"] == _REDUCED_REASON
+        and receipt.get("question_owner") is not None
+        and receipt["question_owner"] == canonical["asking_butler"] == observed["question_owner"]
+        and observed["answer_generation"] == header["answer_generation"]
+        and observed["decision_id"] == UUID(str(plan["decision_id"]))
+        and observed["manifest_digest"] == bytes.fromhex(plan["manifest_digest"])
+        and observed["original_question_digest"] == receipt["question_digest"]
+        and observed["reduced_question_digest"] == current
+    )
+
+
+async def committed_answer_matches(conn, runtime, header, canonical, receipt, plan, *, schema=None):
+    observed = None
+    if (
+        canonical is not None
+        and receipt is not None
+        and (question_digest(dict(canonical)) != receipt["question_digest"])
+    ):
+        # Prefix is only the validated own configured schema from its constructor.
+        prefix = schema + "." if schema is not None else ""
+        observed = await conn.fetchrow(
+            f"SELECT * FROM {prefix}location_native_answer_question_observations "
+            "WHERE answer_generation=$1",
+            header["answer_generation"],
+        )
+    return disposed_answer_matches(runtime, header, canonical, receipt, plan, observed)
+
+
+async def observe_source_question(
+    runtime, decision: UUID, answer_receipt: UUID, question_receipt: UUID
+):
+    """Select own answer receipt, then read its frozen question owner via Switchboard.
+
+    The request has no peer name, address, body or completion verdict. Original
+    question owner/digest were captured before answer reduction, and the question
+    status must bind this exact original answer receipt and complete source cohort.
+    """
+    async with runtime.domain.acquire() as read:
+        own = await read.fetchrow(
+            "SELECT d.*,a.ledger_id FROM location_native_delegation_answer_dispositions d "
+            "JOIN location_native_delegation_answers a USING(answer_generation) "
+            "WHERE d.decision_id=$1 AND d.receipt_id=$2",
+            decision,
+            answer_receipt,
+        )
+    if own is None or own["question_owner"] is None:
+        raise PolicyUnavailableError("Native answer original question owner is unknown")
+    result = await runtime.routed_tool(
+        own["question_owner"],
+        "location_retention_source_question_status",
+        {"decision_id": str(decision), "receipt_id": str(question_receipt)},
+    )
+    if (
+        result.get("source_name") != own["question_owner"]
+        or result.get("decision_id") != str(decision)
+        or result.get("manifest_digest") != own["manifest_digest"].hex()
+        or result.get("ledger_id") != str(own["ledger_id"])
+        or result.get("body_digest") != own["question_digest"].hex()
+        or result.get("answer_generation") != str(own["answer_generation"])
+        or result.get("answer_receipt") != str(answer_receipt)
+        or result.get("receipt_id") != str(question_receipt)
+    ):
+        raise PolicyUnavailableError("Native answer question observation differs")
+    values = dict(
+        answer_generation=own["answer_generation"],
+        decision_id=decision,
+        manifest_digest=own["manifest_digest"],
+        question_owner=own["question_owner"],
+        question_generation=UUID(result["question_generation"]),
+        question_receipt=question_receipt,
+        original_question_digest=own["question_digest"],
+        reduced_question_digest=bytes.fromhex(result["reduced_question_digest"]),
+    )
+    async with runtime.domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            current = await conn.fetchrow(
+                "SELECT * FROM location_native_delegation_answer_dispositions "
+                "WHERE answer_generation=$1",
+                own["answer_generation"],
+            )
+            header = await conn.fetchrow(
+                "SELECT * FROM location_native_delegation_answers WHERE answer_generation=$1",
+                own["answer_generation"],
+            )
+            canonical = await conn.fetchrow(
+                "SELECT * FROM public.delegation_ledger WHERE id=$1 "
+                "FOR UPDATE OF delegation_ledger",
+                own["ledger_id"],
+            )
+            plan = dict(decision_id=str(decision), manifest_digest=own["manifest_digest"].hex())
+            if (
+                current is None
+                or current["receipt_id"] != answer_receipt
+                or (not disposed_answer_matches(runtime, header, canonical, current, plan, values))
+            ):
+                raise PolicyUnavailableError("Native answer question committed binding differs")
+            await conn.execute(
+                "INSERT INTO location_native_answer_question_observations "
+                "(answer_generation,decision_id,manifest_digest,question_owner,question_generation,"
+                "question_receipt,original_question_digest,reduced_question_digest) "
+                "VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING",
+                *values.values(),
+            )
+    async with runtime.domain.acquire() as readback:
+        stored = await readback.fetchrow(
+            "SELECT * FROM location_native_answer_question_observations WHERE answer_generation=$1",
+            own["answer_generation"],
+        )
+    if stored is None or any(stored[key] != value for key, value in values.items()):
+        raise PolicyUnavailableError("Committed answer question observation is unknown")
+    return await source_answer_status(runtime, decision, answer_receipt)

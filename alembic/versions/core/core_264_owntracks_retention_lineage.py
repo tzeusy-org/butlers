@@ -52,7 +52,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
            'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_ordinary_delegation_inputs','location_native_delegation_inputs',
-           'location_received_answer_dispositions','location_received_answer_qualifications','location_received_answer_server_finished','location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_answer_observations','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
+           'location_received_answer_dispositions','location_received_answer_qualifications','location_received_answer_server_finished','location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_question_answer_observations','location_native_answer_question_observations','location_native_answer_observations','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -90,6 +90,8 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_received_answer_floors",
         "location_received_answer_inputs",
         "location_received_answer_attempts",
+        "location_native_question_answer_observations",
+        "location_native_answer_question_observations",
         "location_native_answer_observations",
         "location_native_answer_loans",
         "location_native_delegation_answer_parents",
@@ -377,6 +379,29 @@ def _validate_local_tables(schema: str) -> None:
                 ("committed_at", "timestamp with time zone", True),
                 ("bundle_digest", "bytea", False),
             ],
+            "location_native_question_answer_observations": [
+                ("question_generation", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("answer_owner", "text", True),
+                ("answer_generation", "uuid", True),
+                ("answer_receipt", "uuid", True),
+                ("answer_body_digest", "bytea", True),
+                ("answer_bundle_digest", "bytea", True),
+                ("wake_key", "text", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_native_answer_question_observations": [
+                ("answer_generation", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("question_owner", "text", True),
+                ("question_generation", "uuid", True),
+                ("question_receipt", "uuid", True),
+                ("original_question_digest", "bytea", True),
+                ("reduced_question_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
             "location_native_answer_observations": [
                 ("loan_id", "uuid", True),
                 ("decision_id", "uuid", True),
@@ -503,6 +528,7 @@ def _validate_local_tables(schema: str) -> None:
                 ("question_digest", "bytea", False),
                 ("wake_key", "text", False),
                 ("reduced_digest", "bytea", False),
+                ("question_owner", "text", False),
             ],
             "location_native_delegation_parents": [
                 ("question_generation", "uuid", True),
@@ -759,6 +785,22 @@ def _validate_local_tables(schema: str) -> None:
                 "location_runtime_tool_intents(tool_generation)",
                 "FOREIGN KEY (context_generation) REFERENCES "
                 "location_runtime_context_bindings(input_generation)",
+            },
+            "location_native_question_answer_observations": {
+                "PRIMARY KEY (question_generation)",
+                "FOREIGN KEY (question_generation) REFERENCES "
+                "location_native_delegation_inputs(question_generation)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
+                "CHECK ((octet_length(answer_body_digest) = 32))",
+                "CHECK ((octet_length(answer_bundle_digest) = 32))",
+            },
+            "location_native_answer_question_observations": {
+                "PRIMARY KEY (answer_generation)",
+                "FOREIGN KEY (answer_generation) REFERENCES "
+                "location_native_delegation_answers(answer_generation)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
+                "CHECK ((octet_length(original_question_digest) = 32))",
+                "CHECK ((octet_length(reduced_question_digest) = 32))",
             },
             "location_native_answer_observations": {
                 "PRIMARY KEY (loan_id)",
@@ -1166,7 +1208,8 @@ def upgrade() -> None:
           ADD COLUMN IF NOT EXISTS bundle_digest BYTEA CHECK(octet_length(bundle_digest)=32),
           ADD COLUMN IF NOT EXISTS question_digest BYTEA CHECK(octet_length(question_digest)=32),
           ADD COLUMN IF NOT EXISTS wake_key TEXT,
-          ADD COLUMN IF NOT EXISTS reduced_digest BYTEA CHECK(octet_length(reduced_digest)=32);
+          ADD COLUMN IF NOT EXISTS reduced_digest BYTEA CHECK(octet_length(reduced_digest)=32),
+          ADD COLUMN IF NOT EXISTS question_owner TEXT;
         CREATE TABLE IF NOT EXISTS location_native_answer_loans (
           loan_id UUID PRIMARY KEY,
           answer_generation UUID NOT NULL REFERENCES location_native_delegation_answers,
@@ -1418,6 +1461,31 @@ def upgrade() -> None:
           ADD COLUMN IF NOT EXISTS reduced_question_digest BYTEA
             CHECK(octet_length(reduced_question_digest)=32);
 
+        CREATE TABLE IF NOT EXISTS location_native_question_answer_observations (
+          question_generation UUID PRIMARY KEY
+            REFERENCES location_native_delegation_inputs(question_generation),
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          answer_owner TEXT NOT NULL,
+          answer_generation UUID NOT NULL,
+          answer_receipt UUID NOT NULL,
+          answer_body_digest BYTEA NOT NULL CHECK(octet_length(answer_body_digest)=32),
+          answer_bundle_digest BYTEA NOT NULL CHECK(octet_length(answer_bundle_digest)=32),
+          wake_key TEXT NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_native_answer_question_observations (
+          answer_generation UUID PRIMARY KEY
+            REFERENCES location_native_delegation_answers(answer_generation),
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          question_owner TEXT NOT NULL,
+          question_generation UUID NOT NULL,
+          question_receipt UUID NOT NULL,
+          original_question_digest BYTEA NOT NULL CHECK(octet_length(original_question_digest)=32),
+          reduced_question_digest BYTEA NOT NULL CHECK(octet_length(reduced_question_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE IF NOT EXISTS location_catalog_copy_finished (
           loan_id UUID PRIMARY KEY REFERENCES location_catalog_copy_lifetimes(loan_id),
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
@@ -1485,6 +1553,8 @@ def upgrade() -> None:
         "location_received_answer_floors",
         "location_received_answer_inputs",
         "location_received_answer_attempts",
+        "location_native_question_answer_observations",
+        "location_native_answer_question_observations",
         "location_native_answer_observations",
         "location_native_answer_loans",
         "location_native_delegation_answer_parents",

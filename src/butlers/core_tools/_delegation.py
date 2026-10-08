@@ -364,6 +364,21 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         return await answer_receiver_status(receiving_runtime(), decision_id, receipt_id)
 
     @_core_tool("delegation")
+    async def location_retention_observe_source_question(
+        decision_id: UUID, answer_receipt: UUID, question_receipt: UUID
+    ) -> dict:
+        """Observe this answer's frozen question owner, never a caller-selected peer.
+
+        Locators supply no body or terminal verdict. Both own immutable answer
+        and actual fixed registered question status must match before COMMIT.
+        """
+        from butlers.chronicler.location_answer_sources import observe_source_question
+
+        return await observe_source_question(
+            receiving_runtime(), decision_id, answer_receipt, question_receipt
+        )
+
+    @_core_tool("delegation")
     async def location_retention_close_source_answers(decision_id: UUID) -> dict:
         """Reconcile stored receiver loans and reduce only this owner's exact answers.
 

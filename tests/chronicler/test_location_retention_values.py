@@ -3122,6 +3122,9 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_metadata_wake_tool_values()
     await _assert_native_answer_source_values()
     await _assert_source_question_profile_values()
+    await _assert_answered_question_reference_values()
+    await _assert_answer_question_observation_values()
+    await _assert_source_question_tool_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
 
@@ -5859,6 +5862,9 @@ async def _assert_source_question_profile_values():
 
         async def fetchrow(self, sql, *args):
             assert self.tx
+            if "FROM location_native_question_answer_observations" in sql:
+                assert args == (generation,)
+                return None
             if "FROM location_native_delegation_dispositions" in sql:
                 assert args in ((decision, receipt), (generation,))
                 return terminal
@@ -5926,3 +5932,423 @@ async def _assert_source_question_profile_values():
     runtime.name = "other"
     with pytest.raises(PolicyUnavailableError, match="constructor differs"):
         await source_question_status(runtime, decision, receipt)
+
+
+async def _assert_answered_question_reference_values():
+    """Frozen two-owner identities and reduced profiles; no SQL/route claim."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_answer_sources import (
+        _REDUCED_ANSWER,
+        _REDUCED_DIGEST,
+        disposed_answer_matches,
+    )
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_delegation_disposal import _REDUCED_QUESTION, _REDUCED_REASON
+    from butlers.chronicler.location_question_sources import answered_question_matches
+
+    decision, answer, question, ledger, answer_receipt, question_receipt = [
+        uuid4() for _ in range(6)
+    ]
+    runtime = SimpleNamespace(name="relationship")
+    plan = dict(decision_id=decision, manifest_digest=b"m" * 32)
+    wire_plan = dict(decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+    canonical = dict(
+        id=ledger,
+        asking_butler="chronicler",
+        question="Synthetic original question",
+        target_butler="relationship",
+        catalog_match_id=None,
+        catalog_score=None,
+        metadata={},
+        status="answered",
+        answer=_REDUCED_ANSWER,
+        answering_butler="relationship",
+        answer_digest=(b"a" * 32).hex(),
+        wake_key="fixed wake",
+        reason=None,
+    )
+    original_digest = question_digest(canonical)
+    header = dict(
+        answer_generation=answer, ledger_id=ledger, body_digest=b"a" * 32, bundle_digest=b"b" * 32
+    )
+    receipt = dict(
+        answer_generation=answer,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        body_digest=b"a" * 32,
+        bundle_digest=b"b" * 32,
+        question_digest=original_digest,
+        wake_key="fixed wake",
+        reduced_digest=_REDUCED_DIGEST,
+        question_owner="chronicler",
+    )
+    qheader = dict(question_generation=question)
+    answer_observation = dict(
+        question_generation=question,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        answer_owner="relationship",
+        answer_generation=answer,
+        answer_receipt=answer_receipt,
+        answer_body_digest=b"a" * 32,
+        answer_bundle_digest=b"b" * 32,
+        wake_key="fixed wake",
+    )
+    assert answered_question_matches(canonical, answer_observation, qheader, plan)
+    assert disposed_answer_matches(runtime, header, canonical, receipt, wire_plan)
+    for key, value in [
+        ("answer_owner", "other"),
+        ("answer_body_digest", b"x" * 32),
+        ("manifest_digest", b"x" * 32),
+        ("wake_key", "other"),
+        ("question_generation", uuid4()),
+    ]:
+        assert not answered_question_matches(
+            canonical, answer_observation | {key: value}, qheader, plan
+        )
+    for key, value in [
+        ("metadata", {"independent": "preserve"}),
+        ("answer", "raw prose"),
+        ("status", "routed"),
+        ("reason", "preserve independent error"),
+        ("answering_butler", "other"),
+    ]:
+        assert not answered_question_matches(
+            canonical | {key: value}, answer_observation, qheader, plan
+        )
+    # Original comparison cannot be waived when another owner reduces the
+    # question. Only a stored observation of its actual full receipt can bind it.
+    canonical.update(question=_REDUCED_QUESTION, reason=_REDUCED_REASON)
+    assert not disposed_answer_matches(runtime, header, canonical, receipt, wire_plan)
+    question_observation = dict(
+        answer_generation=answer,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        question_owner="chronicler",
+        question_generation=question,
+        question_receipt=question_receipt,
+        original_question_digest=original_digest,
+        reduced_question_digest=question_digest(canonical),
+    )
+    assert disposed_answer_matches(
+        runtime, header, canonical, receipt, wire_plan, question_observation
+    )
+    for key, value in [
+        ("answer_generation", uuid4()),
+        ("decision_id", uuid4()),
+        ("manifest_digest", b"x" * 32),
+        ("question_owner", "other"),
+        ("original_question_digest", b"x" * 32),
+        ("reduced_question_digest", b"x" * 32),
+    ]:
+        assert not disposed_answer_matches(
+            runtime, header, canonical, receipt, wire_plan, question_observation | {key: value}
+        )
+    for key, value in [
+        ("question", "changed"),
+        ("reason", "other"),
+        ("metadata", {"copied": "new raw precision"}),
+    ]:
+        assert not disposed_answer_matches(
+            runtime, header, canonical | {key: value}, receipt, wire_plan, question_observation
+        )
+    assert not disposed_answer_matches(
+        runtime,
+        header,
+        canonical,
+        receipt | {"question_owner": None},
+        wire_plan,
+        question_observation,
+    )
+    assert answered_question_matches(canonical, answer_observation, qheader, plan)
+    assert disposed_answer_matches(
+        runtime, header, canonical, receipt, wire_plan, question_observation
+    )
+
+
+async def _assert_answer_question_observation_values():
+    """Actual observer/status functions over strict owning software transport only."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_answer_sources import (
+        _REDUCED_ANSWER,
+        _REDUCED_DIGEST,
+        observe_source_question,
+    )
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_delegation_disposal import _REDUCED_QUESTION, _REDUCED_REASON
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+
+    decision, answer, question, ledger, ar, qr, parent, loan, incarnation = [
+        uuid4() for _ in range(9)
+    ]
+    canonical = dict(
+        id=ledger,
+        asking_butler="chronicler",
+        question="Original frozen question",
+        target_butler="relationship",
+        catalog_match_id=None,
+        catalog_score=None,
+        metadata={},
+        status="answered",
+        answer=_REDUCED_ANSWER,
+        answering_butler="relationship",
+        answer_digest=(b"a" * 32).hex(),
+        wake_key="fixed wake",
+        reason=None,
+    )
+    original = question_digest(canonical)
+    canonical.update(question=_REDUCED_QUESTION, reason=_REDUCED_REASON)
+    header = dict(
+        answer_generation=answer,
+        ledger_id=ledger,
+        body_digest=b"a" * 32,
+        bundle_digest=b"b" * 32,
+        parent_count=1,
+        exclusive_input=True,
+    )
+    receipt = dict(
+        answer_generation=answer,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        body_digest=b"a" * 32,
+        bundle_digest=b"b" * 32,
+        question_digest=original,
+        wake_key="fixed wake",
+        reduced_digest=_REDUCED_DIGEST,
+        question_owner="chronicler",
+        receipt_id=ar,
+        ledger_id=ledger,
+    )
+    parent_row = dict(
+        parent_kind="received_question", parent_generation=parent, parent_digest=b"p" * 32
+    )
+    admitted = dict(
+        body_digest=b"p" * 32,
+        exclusive_input=True,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        receiving_incarnation=incarnation,
+        floor_incarnation=incarnation,
+        floor_digest=b"p" * 32,
+        question_generation=question,
+        floor_question=question,
+        loan_id=loan,
+        floor_loan=loan,
+        ledger_id=ledger,
+        floor_ledger=ledger,
+        source_name="chronicler",
+        floor_source="chronicler",
+    )
+    qstatus = dict(
+        source_name="chronicler",
+        decision_id=str(decision),
+        manifest_digest=(b"m" * 32).hex(),
+        ledger_id=str(ledger),
+        body_digest=original.hex(),
+        answer_generation=str(answer),
+        answer_receipt=str(ar),
+        receipt_id=str(qr),
+        question_generation=str(question),
+        reduced_question_digest=question_digest(canonical).hex(),
+    )
+    source_plan = dict(decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+
+    class Pool:
+        tx = False
+        observed = None
+        unavailable_readback = False
+        acquisitions = 0
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.acquisitions += 1
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            assert self.tx is False
+            self.tx = True
+            try:
+                yield
+            finally:
+                self.tx = False
+
+        async def fetchrow(self, sql, *args):
+            if "location_native_answer_question_observations" in sql:
+                assert args == (answer,)
+                if not self.tx and self.unavailable_readback:
+                    return None
+                return self.observed
+            if "FROM location_native_delegation_answer_dispositions" in sql:
+                assert args in ((decision, ar), (answer,))
+                return receipt
+            if "FROM location_native_delegation_answers" in sql:
+                assert args == (answer,)
+                return header
+            if "FROM location_received_delegation_inputs" in sql:
+                assert self.tx and args == (parent,)
+                return admitted
+            assert "FROM public.delegation_ledger" in sql and args == (ledger,) and self.tx
+            return canonical
+
+        async def fetch(self, sql, *args):
+            assert self.tx
+            if "FROM location_native_delegation_answers" in sql:
+                return [header] if args == (None,) else []
+            if "FROM location_native_delegation_answer_parents" in sql:
+                assert args == (answer,)
+                return [parent_row]
+            assert "FROM location_native_answer_loans" in sql and args == (answer,)
+            return []
+
+        async def execute(self, sql, *args):
+            assert self.tx and "INSERT INTO location_native_answer_question_observations" in sql
+            values = dict(
+                zip(
+                    (
+                        "answer_generation",
+                        "decision_id",
+                        "manifest_digest",
+                        "question_owner",
+                        "question_generation",
+                        "question_receipt",
+                        "original_question_digest",
+                        "reduced_question_digest",
+                    ),
+                    args,
+                )
+            )
+            if self.observed is None:
+                self.observed = values
+
+    pool = Pool()
+    routed = []
+
+    async def lock(conn):
+        assert conn is pool and pool.tx
+
+    async def route(target, tool, args):
+        assert not pool.tx and target == "chronicler"
+        routed.append((tool, args))
+        if tool == "location_retention_source_question_status":
+            assert args == dict(decision_id=str(decision), receipt_id=str(qr))
+            return qstatus
+        assert tool == "chronicler_location_retention_status"
+        assert args == dict(decision_id=str(decision))
+        return source_plan
+
+    runtime = SimpleNamespace(
+        active=True,
+        name="relationship",
+        incarnation=incarnation,
+        domain=pool,
+        lock_domain=lock,
+        routed_tool=route,
+    )
+    for key, changed in [
+        ("answer_generation", str(uuid4())),
+        ("answer_receipt", str(uuid4())),
+        ("source_name", "other"),
+        ("body_digest", "78" * 32),
+        ("manifest_digest", "78" * 32),
+        ("receipt_id", str(uuid4())),
+    ]:
+        original_field = qstatus[key]
+        qstatus[key] = changed
+        with pytest.raises(PolicyUnavailableError, match="observation differs"):
+            await observe_source_question(runtime, decision, ar, qr)
+        assert pool.observed is None
+        qstatus[key] = original_field
+    # A remote positive is not success before separate owning COMMIT readback.
+    pool.unavailable_readback = True
+    with pytest.raises(PolicyUnavailableError, match="observation is unknown"):
+        await observe_source_question(runtime, decision, ar, qr)
+    assert pool.observed is not None
+    pool.unavailable_readback = False
+    first = await observe_source_question(runtime, decision, ar, qr)
+    assert first["receipt_id"] == str(ar) and first["question_digest"] == original.hex()
+    assert await observe_source_question(runtime, decision, ar, qr) == first
+    frozen = dict(pool.observed)
+    canonical["metadata"] = {"new copied precision": True}
+    with pytest.raises(PolicyUnavailableError, match="committed binding differs"):
+        await observe_source_question(runtime, decision, ar, qr)
+    canonical["metadata"] = {}
+    assert pool.observed == frozen
+    before_routes = len(routed)
+    receipt["question_owner"] = None
+    with pytest.raises(PolicyUnavailableError, match="original question owner is unknown"):
+        await observe_source_question(runtime, decision, ar, qr)
+    assert len(routed) == before_routes
+    receipt["question_owner"] = "chronicler"
+    assert await observe_source_question(runtime, decision, ar, qr) == first
+
+
+async def _assert_source_question_tool_values():
+    from uuid import uuid4
+
+    from butlers.chronicler.location_question_sources import source_question_tool_finished
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    session, ledger, tool = uuid4(), uuid4(), uuid4()
+    canonical = dict(question="Synthetic original question", target_butler="relationship")
+    result = dict(status="routed", ledger_id=str(ledger), target_butler="relationship")
+    call = dict(
+        name="delegate_ask",
+        module="core",
+        outcome="success",
+        input_fingerprint=fingerprint_tool_call_payload({"question": canonical["question"]}),
+        result=result,
+    )
+    witness = dict(
+        tool_generation=tool,
+        module_name="core",
+        tool_name="delegate_ask",
+        outcome="success",
+        exclusive_inputs=True,
+        input_digest=bytes.fromhex(call["input_fingerprint"]),
+        result_digest=bytes.fromhex(fingerprint_tool_call_payload(result)),
+    )
+    header = dict(receiving_session=session, ledger_id=ledger, tool_generation=tool)
+    source_session = dict(tool_calls=[call])
+
+    class Conn:
+        rows = [witness]
+
+        async def fetch(self, sql, *args):
+            assert "FROM location_runtime_tool_intents" in sql and args == (session,)
+            return self.rows
+
+    conn = Conn()
+    assert await source_question_tool_finished(conn, header, source_session, canonical)
+    for key, changed in [
+        ("tool_generation", uuid4()),
+        ("module_name", "other"),
+        ("outcome", "error"),
+        ("exclusive_inputs", False),
+        ("input_digest", b"x" * 32),
+        ("result_digest", b"x" * 32),
+    ]:
+        conn.rows = [witness | {key: changed}]
+        assert not await source_question_tool_finished(conn, header, source_session, canonical)
+    conn.rows = [witness]
+    assert not await source_question_tool_finished(conn, header, dict(tool_calls=[]), canonical)
+    assert not await source_question_tool_finished(
+        conn, header, dict(tool_calls=[call, call]), canonical
+    )
+    for bad in [
+        result | {"status": "failed"},
+        result | {"error": "private body"},
+        result | {"target_butler": "other"},
+        result | {"ledger_id": str(uuid4())},
+    ]:
+        conn.rows = [witness | {"result_digest": bytes.fromhex(fingerprint_tool_call_payload(bad))}]
+        assert not await source_question_tool_finished(
+            conn, header, dict(tool_calls=[call | {"result": bad}]), canonical
+        )
+    conn.rows = [witness]
+    assert await source_question_tool_finished(conn, header, source_session, canonical)
