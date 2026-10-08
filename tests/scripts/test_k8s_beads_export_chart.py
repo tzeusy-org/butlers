@@ -143,13 +143,15 @@ def test_bridge_image_is_required_when_the_app_image_is_not_derivable() -> None:
 
 
 @needs_helm
-def test_dev_ships_the_owner_facing_decision_review_jobs_off() -> None:
+def test_dev_ships_review_jobs_on_and_one_tap_routing_off() -> None:
+    # Owner decision 2026-10-08 (bu-ckkpz): digest + P1 escalation on in dev;
+    # one-tap prompts stay off until bu-6es2sp.
     names = _by_kind_name(_render("dev", *_SITE))
     env = {
         e["name"]: e.get("value")
         for e in _pod_spec(names[("Deployment", "butlers-up")])["containers"][0]["env"]
     }
-    assert env["BUTLERS_DECISION_REVIEW_ENABLED"] == "0"
+    assert env["BUTLERS_DECISION_REVIEW_ENABLED"] == "1"
     assert env["BUTLERS_DECISION_ROUTING_ENABLED"] == "0"
 
 
