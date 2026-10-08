@@ -98,6 +98,18 @@ Scope: v1-mandatory
 - **WHEN** raw COMMIT or final Chronicler ACK is lost
 - **THEN** recovery reads the same source batch from a separate acquisition and finalizes that immutable decision only when its genuine committed receipt exists; absence is UNKNOWN and does not remint or double-count
 
+The native connector's separate committed observation SHALL bind the complete
+immutable header and every selected raw ID/revision/logical digest/disposition,
+including exact multiplicity and deleted/already-forgotten counts. A matching
+header with missing, duplicated, foreign or unclassified members SHALL remain
+unresolved. Replaying an existing complete receipt SHALL select the same frozen
+batch; an expired old lease may read that already committed result but SHALL
+not authorize a fresh DELETE. Chronicler reconciliation independently observes
+the same exact ledger under its existing owning role. Grouped real-role SQL
+engine controls with a planted remote frontier SHALL be labelled as engine
+evidence and SHALL NOT substitute for actual registered producer/holder
+admission or full all-holder closure.
+
 ### Requirement: Preserved Summaries and Reduced Spatial Precision
 
 Before raw forgetting the system SHALL apply P4. It SHALL preserve legitimate legs/visits and their metrics/privacy while reducing source-derived geometry and maintaining temporal precision separately.

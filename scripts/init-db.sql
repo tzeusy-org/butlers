@@ -565,6 +565,20 @@ BEGIN
         END IF;
     END LOOP;
 
+    -- Retention's permanent connector source floor is not an approved
+    -- Chronicler evidence surface. Converge this exact owned table after the
+    -- generic connector-read grants above, including on a bootstrap rerun.
+    -- Batch headers and all member dispositions remain explicit SELECT
+    -- observations; none of them conveys connector mutation authority.
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = _connector_schema
+          AND table_name = 'owntracks_retention_tombstones'
+    ) THEN
+        REVOKE ALL PRIVILEGES ON connectors.owntracks_retention_tombstones
+            FROM butler_chronicler_rw;
+    END IF;
+
     -- Connector role: write access to connector schema, switchboard operational
     -- tables, and shared public tables.
     EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', _db_name, _connector_role);

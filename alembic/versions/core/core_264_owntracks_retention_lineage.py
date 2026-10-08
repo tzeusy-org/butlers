@@ -641,6 +641,14 @@ def upgrade() -> None:
               IF '{table}' <> 'owntracks_retention_tombstones' AND EXISTS(
                 SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='butler_chronicler_rw') THEN
                 GRANT SELECT ON connectors.{table} TO butler_chronicler_rw;
+              ELSIF '{table}' = 'owntracks_retention_tombstones' AND EXISTS(
+                SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='butler_chronicler_rw') THEN
+                -- Bootstrap default privileges grant connector-table SELECT
+                -- to every butler. Skipping an explicit grant cannot undo it.
+                -- Only the connector owns this permanent source floor; the
+                -- approved Chronicler observations are batch/header members.
+                REVOKE ALL PRIVILEGES ON connectors.owntracks_retention_tombstones
+                  FROM butler_chronicler_rw;
               END IF;
             END $$;
         """)

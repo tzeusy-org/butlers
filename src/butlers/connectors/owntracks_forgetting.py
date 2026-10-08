@@ -145,12 +145,51 @@ class RegisteredRetentionSource:
 
 
 async def read_batch(pool: asyncpg.Pool, batch_id: UUID) -> dict | None:
-    """Separately acquired committed readback, including after lost commit ACK."""
+    """Separately acquired complete immutable ledger after lost commit ACK.
+
+    A header alone cannot certify all selected dispositions. Both relations
+    are append-only and commit together; this read still conveys observation,
+    never incoming source authority.
+    """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM connectors.owntracks_retention_batches WHERE batch_id=$1", batch_id
         )
-    return dict(row) if row is not None else None
+        if row is None:
+            return None
+        members = await conn.fetch(
+            "SELECT * FROM connectors.owntracks_retention_batch_rows WHERE batch_id=$1 "
+            "ORDER BY raw_id,source_revision",
+            batch_id,
+        )
+    return {**dict(row), "rows": [dict(member) for member in members]}
+
+
+def _receipt_matches(committed: dict, grant: ReadyGrant) -> bool:
+    members = committed["rows"]
+    wanted = {
+        (row.raw_id, row.source_revision, bytes.fromhex(row.logical_source_digest))
+        for row in grant.rows
+    }
+    observed = {
+        (row["raw_id"], row["source_revision"], row["logical_source_digest"]) for row in members
+    }
+    deleted = sum(row["disposition"] == "deleted" for row in members)
+    already = sum(row["disposition"] == "already_forgotten" for row in members)
+    return (
+        committed["batch_id"] == grant.batch_id
+        and committed["decision_id"] == grant.decision_id
+        and committed["grant_id"] == grant.grant_id
+        and committed["policy_version"] == grant.policy_version
+        and committed["cutoff"] == grant.cutoff
+        and committed["manifest_digest"] == bytes.fromhex(grant.manifest_digest)
+        and observed == wanted
+        and len(members) == len(wanted)
+        and all(row["batch_id"] == grant.batch_id for row in members)
+        and deleted + already == len(members)
+        and committed["deleted_count"] == deleted
+        and committed["already_forgotten_count"] == already
+    )
 
 
 def _same_raw(row: asyncpg.Record, expected: FrozenRaw) -> bool:
@@ -282,4 +321,6 @@ async def forget_ready_batch(pool: asyncpg.Pool, grant: ReadyGrant) -> dict:
     committed = await read_batch(pool, grant.batch_id)
     if committed is None:
         raise ForgettingRefusedError("committed_receipt_unknown")
+    if not _receipt_matches(committed, grant):
+        raise ForgettingRefusedError("committed_receipt_mismatch")
     return committed

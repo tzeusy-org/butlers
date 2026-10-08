@@ -49,7 +49,9 @@ def migrated_db_url(postgres_container):
     )
 
 
-async def test_native_projection_policy_rollback_and_real_role_fences(migrated_db_url):
+async def test_native_projection_policy_rollback_and_real_role_fences(
+    migrated_db_url, postgres_container
+):
     """REQ-location-retention-001/002/003/006; genuine SQL, not full source authority."""
     # Bounded own migration replay before planting permanent history; this
     # never crosses adopted196/198 downgrade fences or stamps a revision.
@@ -368,20 +370,67 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
                     )
         # SELECT positives use actual existing roles; unexecuted/missing rows
         # cannot supply the negative. Planting above establishes row reachability.
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("SET LOCAL ROLE butler_chronicler_rw")
-                assert await conn.fetchval("SELECT current_user") == "butler_chronicler_rw"
-                assert await conn.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 3
-                with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                    async with conn.transaction():
-                        await conn.execute(
-                            "DELETE FROM connectors.owntracks_points WHERE id=$1", raw_ids[0]
+        for replay_bootstrap in (False, True):
+            if replay_bootstrap:
+                from urllib.parse import urlparse
+
+                from butlers.testing.migration import (
+                    init_db_sql_for_dbapi,
+                    migration_bootstrap_db_url,
+                )
+
+                parsed = urlparse(migrated_db_url)
+                assert parsed.username is not None
+                # Established disposable bootstrap identity, never the
+                # ordinary runtime role or a fixture patch to a catalog ACL.
+                bootstrap = sa.create_engine(
+                    migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/")),
+                    isolation_level="AUTOCOMMIT",
+                )
+                raw_connection = bootstrap.raw_connection()
+                try:
+                    raw_connection.autocommit = True
+                    with raw_connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT set_config('butlers.connecting_user', %s, false)",
+                            (parsed.username,),
                         )
-                with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                    async with conn.transaction():
-                        await conn.fetch("SELECT * FROM connectors.owntracks_retention_tombstones")
-                assert await conn.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 3
+                        cursor.execute(init_db_sql_for_dbapi())
+                finally:
+                    raw_connection.close()
+                    bootstrap.dispose()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL ROLE butler_chronicler_rw")
+                    assert await conn.fetchval("SELECT current_user") == "butler_chronicler_rw"
+                    assert (
+                        await conn.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 3
+                    )
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                        async with conn.transaction():
+                            await conn.execute(
+                                "DELETE FROM connectors.owntracks_points WHERE id=$1", raw_ids[0]
+                            )
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                        async with conn.transaction():
+                            await conn.fetch(
+                                "SELECT * FROM connectors.owntracks_retention_tombstones"
+                            )
+                    assert (
+                        await conn.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 3
+                    )
+                    assert (
+                        await conn.fetchval(
+                            "SELECT has_table_privilege('connectors.owntracks_retention_batches','SELECT')"
+                        )
+                        is True
+                    )
+                    assert (
+                        await conn.fetchval(
+                            "SELECT has_table_privilege('connectors.owntracks_retention_batch_rows','SELECT')"
+                        )
+                        is True
+                    )
         # Separately acquired durable readback, including failed mutations.
         assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 3
         assert (await read_policy(pool))["days"] == 30
@@ -576,9 +625,120 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
                 )
                 == grant
             )
-            # No connector DELETE was executed by this owning engine. Raw
-            # workers and online source/MCP admission require their own proof.
             assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 304
+            # Continue through the actual connector SQL engine under its
+            # existing role, not through the migration creator. The planted
+            # remote observation above remains synthetic: this proves SQL
+            # disposal/rollback/readback, not registered online admission.
+            from butlers.chronicler.location_retention import reconcile_raw_batches
+            from butlers.connectors.owntracks_forgetting import (
+                ForgettingRefusedError,
+                ReadyGrant,
+                forget_ready_batch,
+                read_batch,
+            )
+
+            wire = await ready_batches(owning)
+            frozen = ReadyGrant.model_validate(
+                next(item for item in wire if item["decision_id"] == str(decision))
+            )
+            frozen.check_manifest()
+            frozen_ids = [row.raw_id for row in frozen.rows]
+            assert 1 <= len(frozen_ids) <= 256
+            with pytest.raises(ForgettingRefusedError, match="writer_identity_mismatch"):
+                await forget_ready_batch(owning, frozen)
+            assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 304
+
+            async def connector_connection(connection):
+                await register_jsonb_codec(connection)
+                await connection.execute("SET ROLE connector_writer")
+
+            connector = await asyncpg.create_pool(
+                migrated_db_url, min_size=1, max_size=2, init=connector_connection
+            )
+            try:
+                assert await connector.fetchval("SELECT current_user") == "connector_writer"
+                expired = frozen.model_copy(
+                    update={"lease_until": datetime.now(UTC) - timedelta(seconds=1)}
+                )
+                with pytest.raises(ForgettingRefusedError, match="claim_lease_expired"):
+                    await forget_ready_batch(connector, expired)
+                # The lease is checked after candidate tombstone inserts:
+                # refusal must roll those back, not merely preserve raw rows.
+                async with pool.acquire() as committed:
+                    assert await committed.fetchval(
+                        "SELECT count(*) FROM connectors.owntracks_points WHERE id=ANY($1::uuid[])",
+                        frozen_ids,
+                    ) == len(frozen_ids)
+                    assert (
+                        await committed.fetchval(
+                            "SELECT count(*) FROM connectors.owntracks_retention_tombstones "
+                            "WHERE batch_id=$1",
+                            frozen.batch_id,
+                        )
+                        == 0
+                    )
+                    assert (
+                        await committed.fetchval(
+                            "SELECT count(*) FROM connectors.owntracks_retention_batches "
+                            "WHERE batch_id=$1",
+                            frozen.batch_id,
+                        )
+                        == 0
+                    )
+                renewed = ReadyGrant.model_validate(
+                    next(
+                        item
+                        for item in await ready_batches(owning)
+                        if item["decision_id"] == str(decision)
+                    )
+                )
+                assert renewed.batch_id == frozen.batch_id and renewed.rows == frozen.rows
+                assert renewed.lease_version > frozen.lease_version
+                result = await forget_ready_batch(connector, renewed)
+                assert result["deleted_count"] == len(frozen_ids)
+                assert result["already_forgotten_count"] == 0
+                assert {row["raw_id"] for row in result["rows"]} == set(frozen_ids)
+                async with pool.acquire() as committed:
+                    assert (
+                        await committed.fetchval(
+                            "SELECT count(*) FROM connectors.owntracks_points "
+                            "WHERE id=ANY($1::uuid[])",
+                            frozen_ids,
+                        )
+                        == 0
+                    )
+                    assert await committed.fetchval(
+                        "SELECT count(*) FROM connectors.owntracks_points"
+                    ) == 304 - len(frozen_ids)
+                    assert await committed.fetchval(
+                        "SELECT count(*) FROM connectors.owntracks_retention_tombstones "
+                        "WHERE batch_id=$1",
+                        frozen.batch_id,
+                    ) == len(frozen_ids)
+                assert await read_batch(connector, renewed.batch_id) == result
+                # ACK loss/restart resumes the exact immutable batch even
+                # after its old lease expires; it cannot choose a new set.
+                assert await forget_ready_batch(connector, expired) == result
+                with pytest.raises(ForgettingRefusedError, match="receipt_identity_mismatch"):
+                    await forget_ready_batch(
+                        connector, renewed.model_copy(update={"grant_id": uuid4()})
+                    )
+                await reconcile_raw_batches(owning)
+                await reconcile_raw_batches(owning)
+                async with pool.acquire() as committed:
+                    assert (
+                        await committed.fetchval(
+                            "SELECT state FROM location_retention_plans WHERE decision_id=$1",
+                            decision,
+                        )
+                        == "complete"
+                    )
+                    assert await committed.fetchval(
+                        "SELECT deleted_count FROM location_retention_runs WHERE run_id=$1", run
+                    ) == len(frozen_ids)
+            finally:
+                await connector.close()
         finally:
             await module.on_shutdown()
             await owning.close()

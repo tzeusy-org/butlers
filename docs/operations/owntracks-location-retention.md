@@ -323,7 +323,37 @@ Handler failure capture precedes receipt cleanup. A secondary unavailable failur
 
 Actual native fact/rule writers now additionally freeze a nullable content-v1 witness beside the original immutable full-body digest. Only reference_count and last_referenced_at vary under this profile. Old NULL history is not filled from current data. Local selected reads compare the locked canonical body and immutable exclusive parent bundle; changed content/authority/metadata, unknown ancestry or prepared source generations retain/refuse their copies. Existing configured owning Memory roles and same-database registration remain required, and no peer schema or new grant is authorized.
 
-The reached preparation counter query uses explicit bigint arithmetic binds; its genuine SQL survivor remains pending. Session process-log enrichment supplies SQL text to both the ordinary and actual Chronicler capture adapter. Valid-log positives and old tuple-failure controls establish software transport only; the hosted sibling-pool timeout cause remains unproved.
+The dated 673e preparation diagnostic reached mixed INTEGER assignment and
+BIGINT arithmetic parameter inference. The current query explicitly casts every
+counter assignment and arithmetic use to INTEGER, matching the installed
+columns. At ecb3 the hosted owning test passed preparation, separately committed
+counter readback and the original policy/immutability controls before failing
+the later tombstone read-refusal assertion; the whole node has not passed.
+Session process-log
+enrichment supplies SQL text to both the ordinary and actual Chronicler capture
+adapter. At 673e all six owning sibling-pool PostgreSQL cases passed, including
+the previously timed-out detail case. That positive does not establish the old
+physical timeout mechanism or complete retention delivery.
+
+The connector now reads both the immutable batch header and all member
+dispositions after its own COMMIT, including on ACK-loss/restart replay. Missing,
+duplicate, foreign or unknown members and inconsistent counts refuse completed
+receipt return. An expired old lease can recover an already complete same-batch
+receipt; it cannot authorize new deletion. The existing grouped migrated
+contract extends through the real connector_writer engine, expired-lease
+tombstone rollback, raw deletion, separate readback and Chronicler replay
+reconciliation. Its accepted-source IDs and remote frontier are planted test
+data, so that authored SQL species remains distinct from actual online
+admission, and remains unrun locally.
+
+Bootstrap's generic connector-table default SELECT applies to newly created
+tables too. The retention migration and the post-broad bootstrap block now
+converge only the new connector tombstone's Chronicler privileges, leaving
+approved raw/header/member observations and connector_writer ownership intact.
+The original tombstone read refusal, raw SELECT positive and raw DELETE
+negative remain in the same real-role species before and after production
+bootstrap replay. The prior ecb3 hosted refusal genuinely failed with DID NOT
+RAISE; this correction still needs its exact-head hosted survivor.
 
 Native consolidation now rereads every actual full canonical episode/fact/rule
 under the policy-first writer before prompt admission. All producer-owned body

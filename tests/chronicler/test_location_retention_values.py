@@ -795,6 +795,98 @@ async def test_raw_reconciliation_binds_full_source_receipt_and_resumes_same_unk
     await reconcile_raw_batches(pool)
     assert (plan["decision_id"], plan["batch_id"], plan["grant_id"]) == frozen_ids
 
+    # Connector ACK/restart observation also requires every member, not just
+    # a matching committed header. This is an existing-receipt software path;
+    # it supplies no source enrollment, SQL or role evidence.
+    from butlers.connectors.owntracks_forgetting import (
+        ForgettingRefusedError,
+        FrozenRaw,
+        ReadyGrant,
+        forget_ready_batch,
+        frozen_manifest,
+    )
+
+    raw = FrozenRaw(
+        raw_id=expected["raw_id"],
+        source_revision=1,
+        logical_source_digest=expected["logical_source_digest"].hex(),
+        content_digest="c" * 64,
+        retention_at=plan["cutoff"] - timedelta(days=1),
+        accepted_request_id=uuid4(),
+        accepted_payload_digest="a" * 64,
+        accepted_normalized_digest="b" * 64,
+    )
+    grant = ReadyGrant(
+        grant_id=plan["grant_id"],
+        batch_id=plan["batch_id"],
+        decision_id=plan["decision_id"],
+        policy_version=plan["policy_version"],
+        cutoff=plan["cutoff"],
+        lease_version=1,
+        lease_until=plan["cutoff"],
+        rows=(raw,),
+        manifest_digest=frozen_manifest(
+            plan["decision_id"], plan["policy_version"], plan["cutoff"], [raw]
+        ).hex(),
+    )
+    ledger = {
+        **plan,
+        "manifest_digest": bytes.fromhex(grant.manifest_digest),
+        "deleted_count": 1,
+        "already_forgotten_count": 0,
+    }
+    members = [{**expected, "batch_id": grant.batch_id, "disposition": "deleted"}]
+    connector_trace = []
+
+    class ConnectorConn:
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+            connector_trace.append("commit")
+
+        async def fetchval(self, query, *args):
+            return "connector_writer"
+
+        async def fetchrow(self, query, *args):
+            connector_trace.append("header")
+            return ledger
+
+        async def fetch(self, query, *args):
+            connector_trace.append("members")
+            return members
+
+        async def execute(self, query, *args):
+            assert "INSERT" not in query and "DELETE" not in query
+
+    class ConnectorPool:
+        @asynccontextmanager
+        async def acquire(self):
+            connector_trace.append("acquire")
+            yield ConnectorConn()
+
+    connector = ConnectorPool()
+    result = await forget_ready_batch(connector, grant)
+    assert result["rows"] == members
+    assert connector_trace == ["acquire", "header", "commit", "acquire", "header", "members"]
+    for changed in (
+        [],
+        [*members, *members],
+        [{**members[0], "raw_id": uuid4()}],
+        [{**members[0], "logical_source_digest": b"x" * 32}],
+        [{**members[0], "disposition": "unknown"}],
+        [{**members[0], "batch_id": uuid4()}],
+    ):
+        original = members
+        members = changed
+        with pytest.raises(ForgettingRefusedError, match="committed_receipt_mismatch"):
+            await forget_ready_batch(connector, grant)
+        members = original
+    ledger["deleted_count"] = 0
+    with pytest.raises(ForgettingRefusedError, match="committed_receipt_mismatch"):
+        await forget_ready_batch(connector, grant)
+    ledger["deleted_count"] = 1
+    assert await forget_ready_batch(connector, grant) == result
+
 
 async def test_native_frontier_requires_planted_current_holder_and_committed_inventory():
     """REQ-location-retention-003/005; inventory engine software, NOT source/SQL proof."""
