@@ -298,6 +298,16 @@ def test_dependency_cache_contracts_bind_cache_images_to_the_current_locks(
     with pytest.raises(proof.ProofRefusal, match="hosted_exact_source_required"):
         proof.run_proof(tmp_path / "must-not-build", "invalid")
     assert not (tmp_path / "must-not-build").exists()
+    # Actual Git mismatch refuses before Docker; cleanup must retain that phase.
+    # The synthetic hosted flag is a software receipt control, not hosted proof.
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(proof, "validate_ambient_environment", lambda _: None)
+    refused = tmp_path / "source-refused"
+    assert proof.run_proof(refused, "b" * 40) == 1
+    refused_receipt = json.loads((refused / "offline-build-receipt.json").read_text())
+    assert refused_receipt["failed_stage"] == "source_validation"
+    assert refused_receipt["refusal"] == "source_mismatch"
+    assert refused_receipt["active_stage"] == "cleanup"
     historical = ROOT / "tests/fixtures/route_a_9ff_offline_recipes"
     source = json.loads((historical / "source-manifest.json").read_text())
     assert source["source"] == proof.BASE_SOURCE

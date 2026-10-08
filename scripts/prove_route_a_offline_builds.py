@@ -471,6 +471,7 @@ def run_proof(output: Path, source: str) -> int:
             receipt["status"] = "passed"
     except Exception as exc:  # A failed proof exports no arbitrary exception arguments or bytes.
         receipt["status"] = "failed"
+        receipt["failed_stage"] = stage
         receipt["refusal"] = str(exc) if isinstance(exc, ProofRefusal) else "proof_unavailable"
     finally:
         stage = "cleanup"
