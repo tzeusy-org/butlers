@@ -568,14 +568,26 @@ p.write_text(json.dumps(d));print(json.dumps(out))
         def __init__(self):
             super().__init__()
             self.row = None
+            self.rows = {}
             self.created = 0
             self.label = False
             self.omit_label = False
+            self.assessments = {first.run_id: red1, second.run_id: green}
+            self.run_ids = []
+
+        def read_assessment(self, run_id, *, provisional=False):
+            return self.assessments[run_id]
+
+        def runs(self, *, days=14):
+            return [
+                {"id": number, "event": "schedule", "head_branch": "main"}
+                for number in self.run_ids
+            ]
 
         def request(self, suffix, *, method="GET", body=None, binary=False):
             self.remaining -= 1
             if suffix.startswith("issues?"):
-                return [] if self.row is None else [self.row]
+                return list(self.rows.values())
             if suffix.startswith("labels?"):
                 return [{"name": "nightly-assurance"}] if self.label else []
             if suffix == "labels" and method == "POST":
@@ -586,17 +598,18 @@ p.write_text(json.dumps(d));print(json.dumps(out))
             if suffix == "issues" and method == "POST":
                 self.created += 1
                 self.row = {
-                    "number": 51,
+                    "number": 50 + self.created,
                     "state": "open",
                     "body": body["body"],
                     "labels": [] if self.omit_label else [{"name": "nightly-assurance"}],
                 }
+                self.rows[self.row["number"]] = self.row
                 return self.row
-            if suffix == "issues/51" and method == "PATCH":
-                self.row.update(body)
-                return self.row
-            if suffix == "issues/51":
-                return self.row
+            if suffix.startswith("issues/"):
+                row = self.rows[int(suffix.split("/")[1])]
+                if method == "PATCH":
+                    row.update(body)
+                return row
             raise AssertionError("unexpected-transport-operation")
 
     transport = Transport()
@@ -606,11 +619,86 @@ p.write_text(json.dumps(d));print(json.dumps(out))
     assert (
         transport.upsert_issue(green, recover=True) is None and transport.row["state"] == "closed"
     )
+    recovered_marker = parse_marker(transport.row["body"])
+    assert recovered_marker["key"] == red1.key
+    assert recovered_marker["recovery"] == marker_document(green)
+    assert transport.upsert_issue(red1) == 51 and transport.created == 1
     denied = Transport()
     denied.omit_label = True
     with pytest.raises(EvidenceUnavailable, match="incident-label-unacknowledged"):
         denied.upsert_issue(red1)
     assert denied.created == 1  # Durable create is not a successful alert.
+
+    # Full transport -> host -> disposable bd conformance. Official run reads
+    # are substituted at the API seam; issue mutation/readback and the real
+    # reconciler/CLI protocol run unchanged. This is software, not live adoption.
+    pipeline = Transport()
+    next_red = _assessment(second, conclusion="failure", failed=True)
+    recovered_green = _assessment(gap)
+    fourth_red = _assessment(later, conclusion="failure", failed=True)
+    fifth = RunIdentity(105, 1, "d" * 40, "schedule", "main", "2026-10-05")
+    fifth_red = _assessment(fifth, conclusion="failure", failed=True)
+    pipeline.assessments.update(
+        {101: next_red, 102: recovered_green, 104: fourth_red, 105: fifth_red}
+    )
+    pipeline.run_ids = [100, 101]
+    atomic_json(db, {"rows": [], "mutations": []})
+    pipeline_export, pipeline_receipt = (
+        tmp_path / "pipeline.json",
+        tmp_path / "pipeline-receipt.json",
+    )
+    script.reconcile(pipeline, beads, export=pipeline_export, receipt=pipeline_receipt)
+    incident = read_json(pipeline_export)["incidents"][0]
+    original_issue = incident["issue"]
+    original_bead = incident["incident_id"]
+    original_episode = incident["episode_id"]
+    assert original_issue == 51 and pipeline.created == 1
+    assert (
+        next(row for row in read_json(db)["rows"] if row["id"] == original_bead)["external_ref"]
+        == "gh-issue:51"
+    )
+    pipeline.run_ids.append(102)
+    script.reconcile(pipeline, beads, export=pipeline_export, receipt=pipeline_receipt)
+    assert read_json(pipeline_export)["incidents"][0]["status"] == "recovered"
+    assert pipeline.rows[original_issue]["state"] == "closed"
+    assert parse_marker(pipeline.rows[original_issue]["body"])["key"] == next_red.key
+    # A forged recovery must be independently refused before any bd command;
+    # an older genuine green cannot roll a later binding backwards.
+    original_body = pipeline.rows[original_issue]["body"]
+    forged = marker_document(next_red, recovery=recovered_green)
+    forged["recovery"]["head"] = "f" * 40
+    import json
+
+    from butlers.nightly_github import MARKER
+
+    pipeline.rows[original_issue]["body"] = f"{MARKER}{json.dumps(forged)}\n-->\n"
+    durable_pipeline = read_json(db)
+    with pytest.raises(EvidenceUnavailable, match="recovery-evidence-binding-unavailable"):
+        script.reconcile(pipeline, beads, export=pipeline_export, receipt=pipeline_receipt)
+    assert read_json(db) == durable_pipeline
+    pipeline.rows[original_issue]["body"] = original_body
+    stale_green = _assessment(RunIdentity(99, 1, "e" * 40, "schedule", "main", "2026-09-30"))
+    pipeline.assessments[99] = stale_green
+    with pytest.raises(EvidenceUnavailable, match="recovery-evidence-stale"):
+        pipeline.upsert_issue(stale_green, recover=True)
+    assert pipeline.rows[original_issue]["body"] == original_body
+    pipeline.run_ids.extend([104, 105])
+    script.reconcile(pipeline, beads, export=pipeline_export, receipt=pipeline_receipt)
+    recurrent = read_json(pipeline_export)["incidents"][0]
+    assert recurrent["issue"] == original_issue and pipeline.created == 1
+    assert recurrent["incident_id"] == original_bead
+    assert recurrent["episode_id"] != original_episode and recurrent["status"] == "open"
+    assert "recovery" not in parse_marker(pipeline.rows[original_issue]["body"])
+    assert (
+        next(row for row in read_json(db)["rows"] if row["id"] == original_bead)["external_ref"]
+        == "gh-issue:51"
+    )
+    assert pipeline.upsert_issue(red2) == 52 and pipeline.created == 2
+    assert (
+        parse_marker(pipeline.rows[51]["body"])["key"]
+        != parse_marker(pipeline.rows[52]["body"])["key"]
+    )
+    atomic_json(db, saved)
     atomic_json(tmp_path / "export.json", exported)
     link = tmp_path / "link.json"
     link.symlink_to(tmp_path / "export.json")

@@ -389,13 +389,7 @@ def reconcile(
             continue
         if marker["scope"] != "scheduled":
             continue
-        bound = github.read_assessment(marker["run_id"])
-        if (
-            bound.identity.attempt != marker["attempt"]
-            or bound.identity.head != marker["head"]
-            or bound.key != marker["key"]
-        ):
-            continue  # stale/forged candidate never authorizes a command
+        bound = github.read_marker_assessment(marker)
         recover = current.state == "green" and current.identity.night >= bound.identity.night
         if not recover and not second_red(assessments, bound):
             continue
@@ -468,14 +462,7 @@ def reconcile_conformance(
             continue
         if marker["scope"] != current.identity.scope:
             continue
-        bound = github.read_assessment(marker["run_id"])
-        if (
-            bound.identity.attempt != marker["attempt"]
-            or bound.identity.head != marker["head"]
-            or bound.key != marker["key"]
-            or bound.identity.scope != current.identity.scope
-        ):
-            continue
+        bound = github.read_marker_assessment(marker)
         recovery = current.state == "green"
         if not recovery and bound.key != current.key:
             continue

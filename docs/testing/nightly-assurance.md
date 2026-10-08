@@ -67,6 +67,14 @@ or overwrites an active claim. A recurrence reopens the same incident with a new
 episode. Pagination and request ceilings are explicit; exhausting either writes
 an unavailable receipt and does not refresh the export as an all-clear.
 
+The transport marker retains the red failure-set key when its issue closes.
+Recovery has a separate green run/attempt/head binding, independently verified
+against terminal evidence and ordered after that red. Copied, stale or forged
+recovery is unavailable. The same failure set later reopens that same issue and
+external reference, then the same Bead with a new episode; a changed set has its
+own issue. Software conformance covers this full transport and disposable CLI
+path, while actual host adoption and recovery still need their own readback.
+
 ## Runtime export and topology
 
 The host atomically replaces a bounded regular `incidents.json`. Its allowlisted
