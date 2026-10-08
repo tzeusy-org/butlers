@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -132,7 +136,7 @@ def test_rendered_compose_cannot_bypass_the_bind_allowlist(tmp_path: Path) -> No
         )
 
 
-def test_builds_are_offline_and_contexts_exclude_dotenv_variants() -> None:
+def test_builds_are_offline_and_contexts_exclude_dotenv_variants(tmp_path: Path) -> None:
     compose = launcher.load_compose()
     for service in ("frontend", "browser"):
         build = compose["services"][service]["build"]
@@ -147,12 +151,15 @@ def test_builds_are_offline_and_contexts_exclude_dotenv_variants() -> None:
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "ARG ROUTE_A_NPM_CACHE_IMAGE" in source
-        assert "COPY --from=${ROUTE_A_NPM_CACHE_IMAGE}" in source
+        assert "FROM ${ROUTE_A_NPM_CACHE_IMAGE} AS route-a-npm-cache" in source
+        assert "COPY --from=route-a-npm-cache" in source
         assert "npm ci --offline --cache=/root/.npm" in source
     route_a_dockerfile = (ROOT / launcher.ROUTE_A_DOCKERFILE).read_text(encoding="utf-8")
     assert "# syntax=" not in route_a_dockerfile
-    assert "COPY --from=${ROUTE_A_GO_DEPS_IMAGE}" in route_a_dockerfile
-    assert "COPY --from=${ROUTE_A_UV_CACHE_IMAGE}" in route_a_dockerfile
+    assert "FROM ${ROUTE_A_GO_DEPS_IMAGE} AS route-a-go-deps" in route_a_dockerfile
+    assert "FROM ${ROUTE_A_UV_CACHE_IMAGE} AS route-a-uv-cache" in route_a_dockerfile
+    assert "COPY --from=route-a-go-deps" in route_a_dockerfile
+    assert "COPY --from=route-a-uv-cache" in route_a_dockerfile
     assert "GOPROXY=off" in route_a_dockerfile
     assert "uv sync --offline" in route_a_dockerfile
     config = (ROOT / "frontend/playwright.route-a.config.ts").read_text(encoding="utf-8")
@@ -165,9 +172,58 @@ def test_builds_are_offline_and_contexts_exclude_dotenv_variants() -> None:
         '"--network",\n                    "none",\n                    "--pull=false"'
         in launcher_source
     )
+    launcher.validate_sealed_build_inputs(ROOT)
+    workflow = launcher.yaml.safe_load(
+        (ROOT / ".github/workflows/migration-chain-main.yml").read_text()
+    )
+    events = workflow.get("on", workflow.get(True))
+    assert events["workflow_dispatch"]["inputs"]["offline-route-a-build-proof"]["default"] is False
+    proof_job = workflow["jobs"]["offline-route-a-build-proof"]
+    guard = proof_job["steps"][0]
+    assert guard["name"] == "Reject conflicting manual build modes"
+    for flag, expected in (("false", 0), ("", 0), ("true", 2)):
+        done = subprocess.run(
+            ["bash", "-eu", "-c", guard["run"]],
+            env={**os.environ, "OTHER_BUILD_MODE": flag},
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        assert done.returncode == expected
+    recipes = (
+        launcher.ROUTE_A_DOCKERFILE,
+        "frontend/Dockerfile.meeting-prep-evidence",
+        "frontend/Dockerfile.meeting-prep-browser",
+    )
+    for relative in recipes:
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text((ROOT / relative).read_text())
+    for relative, argument, alias in (
+        (recipes[0], "ROUTE_A_GO_DEPS_IMAGE", "route-a-go-deps"),
+        (recipes[0], "ROUTE_A_UV_CACHE_IMAGE", "route-a-uv-cache"),
+        (recipes[1], "ROUTE_A_NPM_CACHE_IMAGE", "route-a-npm-cache"),
+        (recipes[2], "ROUTE_A_NPM_CACHE_IMAGE", "route-a-npm-cache"),
+    ):
+        recipe = tmp_path / relative
+        valid = recipe.read_text()
+        for invalid in (
+            valid.replace(f"COPY --from={alias}", f"COPY --from=${{{argument}}}"),
+            valid.replace(f"ARG {argument}\n", ""),
+            valid.replace(f" AS {alias}", " AS wrong-cache"),
+            valid.replace(f" AS {alias}", " AS "),
+            valid + f"\nFROM scratch AS {alias}\n",
+        ):
+            recipe.write_text(invalid)
+            with pytest.raises(launcher.SafetyError, match="sealed Route A input"):
+                launcher.validate_sealed_build_inputs(tmp_path)
+        recipe.write_text(valid)
+        launcher.validate_sealed_build_inputs(tmp_path)
 
 
-def test_dependency_cache_contracts_bind_cache_images_to_the_current_locks() -> None:
+def test_dependency_cache_contracts_bind_cache_images_to_the_current_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     contracts = launcher.dependency_cache_contracts(ROOT)
     assert set(contracts) == {
         "ROUTE_A_GO_DEPS_IMAGE",
@@ -180,6 +236,73 @@ def test_dependency_cache_contracts_bind_cache_images_to_the_current_locks() -> 
     assert all(
         len(contract[launcher.CACHE_INPUT_SHA_LABEL]) == 64 for contract in contracts.values()
     )
+    monkeypatch.setitem(sys.modules, "run_meeting_prep_route_a_evidence", launcher)
+    proof = _load("route_a_build_proof", "scripts/prove_route_a_offline_builds.py")
+    labels = contracts["ROUTE_A_NPM_CACHE_IMAGE"]
+    config = json.dumps({"config": {"Labels": labels}}).encode()
+    config_sha = hashlib.sha256(config).hexdigest()
+    manifest = json.dumps(
+        {
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": "sha256:" + config_sha,
+                "size": len(config),
+            },
+            "layers": [],
+        }
+    ).encode()
+    manifest_sha = hashlib.sha256(manifest).hexdigest()
+    members = {
+        "oci-layout": b'{"imageLayoutVersion":"1.0.0"}',
+        "index.json": json.dumps(
+            {
+                "manifests": [
+                    {
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "digest": "sha256:" + manifest_sha,
+                        "size": len(manifest),
+                    }
+                ]
+            }
+        ).encode(),
+        "blobs/sha256/" + manifest_sha: manifest,
+        "blobs/sha256/" + config_sha: config,
+    }
+
+    def archive(name: str, payloads: dict[str, bytes]) -> Path:
+        path = tmp_path / (name + ".tar")
+        with tarfile.open(path, "w") as output:
+            for name_, body in payloads.items():
+                member = tarfile.TarInfo(name_)
+                member.size = len(body)
+                output.addfile(member, io.BytesIO(body))
+        return path
+
+    # Software OCI validation only, never credited as actual Docker builds.
+    sealed = proof.seal_oci(archive("valid", members), tmp_path / "valid", labels)
+    assert sealed["manifest_digest"] == "sha256:" + manifest_sha
+    assert sealed["config_digest"] == "sha256:" + config_sha
+    assert sealed["all_blob_sizes_and_digests_verified"] is True
+    with pytest.raises(proof.ProofRefusal, match="blob_mismatch"):
+        proof.seal_oci(
+            archive("corrupt", {**members, "blobs/sha256/" + config_sha: b"corrupt"}),
+            tmp_path / "corrupt",
+            labels,
+        )
+    with pytest.raises(proof.ProofRefusal, match="label_mismatch"):
+        proof.seal_oci(
+            archive("wrong_label", members), tmp_path / "wrong_label", {"wrong": "label"}
+        )
+    with pytest.raises(proof.ProofRefusal, match="invalid_oci_archive"):
+        proof.seal_oci(archive("outside", {"../outside": b"sentinel"}), tmp_path / "outside", {})
+    with pytest.raises(proof.ProofRefusal, match="hosted_exact_source_required"):
+        proof.run_proof(tmp_path / "must-not-build", "invalid")
+    assert not (tmp_path / "must-not-build").exists()
+    historical = ROOT / "tests/fixtures/route_a_9ff_offline_recipes"
+    source = json.loads((historical / "source-manifest.json").read_text())
+    assert source["source"] == proof.BASE_SOURCE
+    for relative, expected in source["recipes"].items():
+        assert proof.digest(historical / relative) == expected
 
 
 def test_preloaded_cache_image_must_match_its_sealed_lock_contract(
