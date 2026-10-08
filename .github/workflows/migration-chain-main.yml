@@ -17,13 +17,25 @@ on:
         description: Build before/current normal and offline Route A images without publishing
         type: boolean
         default: false
+      offline-route-a-build-proof:
+        description: Prove the three sealed offline recipes without publishing or running the launcher
+        type: boolean
+        default: false
+      affected-calibration:
+        description: Measure actual affected scope without installing a profile
+        type: boolean
+        default: false
+      calibration-test-paths:
+        description: Public existing test paths; cost/corpus authority is not supplied by this input
+        type: string
+        default: '["tests/testing/test_scoped_runner.py", "tests/testing/test_source_test_map.py", "tests/scripts/test_ci_test_plan.py"]'
 
 permissions:
   contents: read
 
 jobs:
   migration-chain-head:
-    if: github.event_name != 'workflow_dispatch' || !inputs['image-size-diagnostic']
+    if: github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'] && !inputs['affected-calibration'])
     timeout-minutes: 14
     name: Migration chain head
     runs-on: ubuntu-latest
@@ -134,20 +146,10 @@ jobs:
           overwrite: true
 
   offline-route-a-build-proof:
-        description: Prove the three sealed offline recipes without publishing or running the launcher
-        type: boolean
-        default: false
-
-permissions:
-  contents: read
-
-jobs:
-  migration-chain-head:
-    if: github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'])
-    timeout-minutes: 14
-    name: Migration chain head
+    # Exclusive manual proof. Push/default-dispatch migration behavior is retained.
+    if: github.event_name == 'workflow_dispatch' && inputs['offline-route-a-build-proof']
+    timeout-minutes: 45
     runs-on: ubuntu-latest
-
     steps:
       - name: Reject conflicting manual build modes
         env:
@@ -157,45 +159,6 @@ jobs:
             echo "::error::manual build proof modes are mutually exclusive"
             exit 2
           fi
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-
-      - name: Install dependencies
-        run: uv sync --frozen --dev
-
-      - name: Verify merged migration chain
-        run: uv run pytest tests/config/test_migration_chain_head.py -q
-
-  offline-route-a-build-proof:
-    # Exclusive manual proof. Push/default-dispatch migration behavior is retained.
-    if: github.event_name == 'workflow_dispatch' && inputs['offline-route-a-build-proof']
-    timeout-minutes: 45
-    runs-on: ubuntu-latest
-    steps:
       - name: Reject conflicting manual proof modes
         env:
           IMAGE_MODE: ${{ inputs['image-size-diagnostic'] }}

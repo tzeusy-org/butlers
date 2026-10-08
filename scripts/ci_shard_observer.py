@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.scope_cost import context, environment
+
 
 def digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
@@ -43,6 +45,8 @@ class Observer:
         self.classes: dict[str, str] = {}
         self.completed: list[float] = []
         self.first_result: float | None = None
+        self.first_logical_test: float | None = None
+        self.phase_completions: list[float] = []
         self.workers: set[str] = set()
         self.resources: dict[str, dict] = {}
         self.tracers: set[str] = set()
@@ -68,6 +72,8 @@ class Observer:
         self.collections.append([node_digest(item, self.nonce) for item in ids])
 
     def pytest_runtest_logstart(self, nodeid, location) -> None:
+        if self.first_logical_test is None:
+            self.first_logical_test = time.monotonic() - self.started
         self.logical_starts[node_digest(nodeid, self.nonce)] += 1
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
@@ -85,6 +91,7 @@ class Observer:
             )
         self.classes[key] = classname
         offset = time.monotonic() - self.started
+        self.phase_completions.append(offset)
         self.phase_counts[(key, report.when)] += 1
         self.phases.setdefault(key, {})[report.when] = {
             "outcome": report.outcome,
@@ -132,6 +139,8 @@ class Observer:
         receipt = {
             **self.context,
             "schema": 1,
+            "cost_context": context(Path.cwd()),
+            "cost_environment": environment(Path.cwd()),
             "complete": complete,
             "pytest_exit": int(exitstatus),
             "collected_at": datetime.now(UTC).isoformat(),
@@ -146,6 +155,10 @@ class Observer:
             "worker_resources": self.resources,
             "actual_tracers": sorted(self.tracers),
             "first_result_s": self.first_result,
+            "first_logical_test_s": self.first_logical_test,
+            "last_test_completed_s": max(self.phase_completions)
+            if self.phase_completions
+            else None,
             "first_one_percent_s": one_percent,
             "last_five_percent_s": finish - tail_start if tail_start is not None else None,
             "setup_complete_s": min(

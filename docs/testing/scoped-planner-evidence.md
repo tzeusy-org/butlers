@@ -27,16 +27,16 @@ conservative actual API factory/loader consumer family.
 The committed cost profile is UNKNOWN. Missing, stale, incompatible or non-finite
 measurements select FULL. Complete profiles add serial whole-file phase costs and
 measured setup/startup/finalization without dividing by worker count. Their finite
-ceiling is the smaller of300 seconds and the compatible heavy-shard p90. New files
+ceiling is the smaller of 300 seconds and the compatible heavy-shard p90. New files
 may use only a labelled observed maximum; changed measured test bodies invalidate
 the profile. Estimates and advisory LPT weights are not actual elapsed evidence.
 
 The existing registered Migration Chain Integrity workflow has a default-false
 `affected-calibration` door. It is mutually exclusive with image-size and offline
 Route A proof modes. All false retains ordinary migration behavior. It uses the
-same actual affected command and existing observer with a300-second process-group
-bound, kill/reap cleanup, pinned3.12.15 own-source frozen environment, and sanitized
-artifacts. Its37-minute provisional outer envelope derives from finite setup and
+same actual affected command and existing observer with a 300-second process-group
+bound, kill/reap cleanup, pinned 3.12.15 own-source frozen environment, and sanitized
+artifacts. Its 37-minute provisional outer envelope derives from finite setup and
 artifact steps; zero healthy samples means no calibrated p95 or latency claim.
 
 For a source checkpoint, the coordinator can dispatch that existing workflow at
@@ -46,14 +46,20 @@ worker never dispatches it. A failed/absent/partial observation does not refill 
 profile. Download its actual receipt, official JUnit and actual job timestamps;
 retain them with independent identity checks. `build_test_scope_cost.py` accepts
 complete official full-population bundles and separately paired affected receipts,
-checks exact phase/node/provenance compatibility and produces only a candidate
+checks exact phase/node/provenance compatibility, source/configuration hashes,
+and recorded Python, runner, CPU model digest/count/affinity and tracer compatibility.
+The observer records first actual logical logstart before setup and last actual
+phase completion; neither is an alias for first result or an estimated timestamp.
+A single complete independently verified compatible pair may establish an explicitly
+sample-count-labelled finite empirical reference. It does not establish stable p90
+or fulfill the separate ten natural observations. The builder produces only a candidate
 JSON. It never installs its output. Review the candidate before replacing the
 profile, then run a new exact-head gate. Synthetic unit inputs exercise admission
 branches and cannot satisfy any historical or natural measurement requirement.
 
-The manual calibration cannot count as a natural PR. The145 frozen records,
->=57 safe scopes, three genuine eligible historical manifest diffs, last100 actual
-reader coverage, first50 distribution, first20 no-miss/fraction and ten actual
+The manual calibration cannot count as a natural PR. The 145 frozen records,
+at least 57 safe scopes, three genuine eligible historical manifest diffs, last 100 actual
+reader coverage, first 50 distribution, first 20 no-miss/fraction and ten actual
 compatible affected maxima remain separate mandatory outcomes. The replay tool
 keeps absent base/head evidence UNKNOWN and emits source decisions without running
 pytest. Explicitly no wall-clock gain is claimed.

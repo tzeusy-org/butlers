@@ -14,34 +14,59 @@ from pathlib import Path
 PROFILE = "scripts/test-scope-cost-profile.json"
 
 
-def context(root: Path) -> str:
-    files = [
+def environment(root: Path) -> dict:
+    """Record actual runtime/hardware separately from source/configuration.
+
+    An offline candidate builder may validate source on a different host, but
+    must preserve the independently observed paired runtime instead of stamping
+    its own hardware onto those measurements.
+    """
+    names = {
         "pyproject.toml",
         "uv.lock",
         "conftest.py",
-        "scripts/check_ci_test_shards.py",
-        "scripts/ci_shard_observer.py",
-        "src/butlers/testing/scoped_runner.py",
-    ]
+        "scripts/test-resource-readers.json",
+        "scripts/test-resource-reader-declarations.json",
+    }
+    for directory in ("src", "scripts", "alembic"):
+        names.update(str(p.relative_to(root)) for p in (root / directory).rglob("*.py"))
+    for directory in ("tests", "roster"):
+        names.update(str(p.relative_to(root)) for p in (root / directory).rglob("conftest.py"))
     values = {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest()
         if (root / name).is_file()
         else None
-        for name in files
+        for name in sorted(names)
     }
-    return hashlib.sha256(
-        json.dumps(
-            [
-                platform.python_version(),
-                platform.system(),
-                platform.machine(),
-                os.cpu_count(),
-                os.environ.get("RUNNER_ENVIRONMENT", "local"),
-                values,
-            ],
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
+    model = Path("/proc/cpuinfo")
+    models = (
+        sorted(
+            {
+                line.split(":", 1)[1].strip()
+                for line in model.read_text().splitlines()
+                if line.startswith("model name")
+            }
+        )
+        if model.is_file()
+        else []
+    )
+    runtime = {
+        "python": platform.python_version(),
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "logical_cpus": os.cpu_count(),
+        "cpu_affinity": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+        "cpu_model_digest": hashlib.sha256(json.dumps(models).encode()).hexdigest(),
+        "runner_environment": os.environ.get("RUNNER_ENVIRONMENT", "local"),
+    }
+    return {
+        "runtime": runtime,
+        "configuration": hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest(),
+    }
+
+
+def context(root: Path) -> str:
+    return hashlib.sha256(json.dumps(environment(root), sort_keys=True).encode()).hexdigest()
 
 
 def predict(root: Path, paths: list[str]) -> dict:

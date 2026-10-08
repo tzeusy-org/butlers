@@ -12,15 +12,16 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from ci_partition import reconcile  # noqa: E402
+from ci_partition import file_path, reconcile  # noqa: E402
 
-from butlers.testing.scope_cost import context  # noqa: E402
+from butlers.testing.scope_cost import environment  # noqa: E402
 
 
 def number(value: object) -> float:
@@ -30,12 +31,13 @@ def number(value: object) -> float:
 
 
 def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
-    if not isinstance(bundles, list) or len(bundles) < 10:
-        raise ValueError("ten compatible complete runs required")
+    if not isinstance(bundles, list) or not bundles:
+        raise ValueError("complete compatible reference and affected measurement required")
     source = (
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, timeout=10).decode().strip()
     )
     runs, samples, setup, files, tracers = [], [], [], {}, set()
+    observed_environment = None
     for bundle in bundles:
         run = bundle["run"]
         if not isinstance(run, str) or not run.isdecimal() or run in runs:
@@ -44,16 +46,36 @@ def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
             bundle["inventory"], bundle["assignment"], bundle["receipts"], root=root, current=False
         )
         affected = bundle["affected"]
-        if affected.get("kind") != "affected-cost.v1" or affected.get("cost_context") != context(
-            root
+        if affected.get("kind") != "affected-cost.v1" or affected.get("schema") != 1:
+            raise ValueError("cost context incompatible")
+        paired = affected.get("cost_environment")
+        if (
+            not isinstance(paired, dict)
+            or paired.get("configuration") != environment(root)["configuration"]
+            or not isinstance(paired.get("runtime"), dict)
+            or set(paired["runtime"]) != set(environment(root)["runtime"])
+            or affected.get("cost_context")
+            != hashlib.sha256(json.dumps(paired, sort_keys=True).encode()).hexdigest()
         ):
             raise ValueError("cost context incompatible")
+        if observed_environment is not None and paired != observed_environment:
+            raise ValueError("cost runtime incompatible")
+        observed_environment = paired
         if (
             affected.get("run") != bundle["affected_run"]
             or not str(bundle["affected_run"]).isdecimal()
         ):
             raise ValueError("cost source/run incompatible")
+        names = affected.get("files")
+        if not isinstance(names, list) or not names or len(names) != len(set(names)):
+            raise ValueError("affected file population incompatible")
+        for name in names:
+            file_path(name, root)
         affected_source = affected["source_head"]
+        if not isinstance(affected_source, str) or not re.fullmatch(
+            r"[0-9a-f]{40}", affected_source
+        ):
+            raise ValueError("affected source incompatible")
         if affected.get("file_hashes") != {
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in affected["files"]
@@ -88,13 +110,36 @@ def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
                 if phase["outcome"] not in {"passed", "skipped"}:
                     raise ValueError("affected phase unsuccessful")
                 phase_total += number(phase["duration_s"])
+        completed = [
+            number(p["completed_s"])
+            for phases in affected["nodes"].values()
+            for p in phases.values()
+        ]
+        if (
+            affected.get("selected_count") != len(affected["nodes"])
+            or affected.get("selected_node_digest")
+            != hashlib.sha256(
+                json.dumps(sorted(affected["nodes"]), sort_keys=True).encode()
+            ).hexdigest()
+        ):
+            raise ValueError("affected logical population incompatible")
+        if set(affected.get("node_files", {}).values()) != set(affected["files"]):
+            raise ValueError("affected file population incompatible")
+        command = affected.get("command", [])
+        if (
+            not isinstance(command, list)
+            or "-n" not in command
+            or command.index("-n") + 1 >= len(command)
+            or command[command.index("-n") + 1] != "auto"
+        ):
+            raise ValueError("affected command incompatible")
         step = number(affected["test_step_elapsed_s"])
         job = number(bundle["affected_job_seconds"])
         first, last = (
             number(affected["first_logical_test_s"]),
             number(affected["last_test_completed_s"]),
         )
-        if not 0 < first <= last <= step <= job:
+        if not 0 < first <= min(completed) <= last == max(completed) <= step <= job:
             raise ValueError("affected clock ordering incompatible")
         # Sum serial phase costs without dividing by workers. Independently add
         # actual job setup plus pytest startup/finalization, not elapsed minus
@@ -107,6 +152,12 @@ def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
         samples.append(max(number(v) for v in clocks.values()))
         for receipt in bundle["receipts"].values():
             identity = receipt["inventory_identity"]
+            if (
+                receipt.get("cost_environment") != paired
+                or receipt.get("cost_context") != affected["cost_context"]
+                or identity.get("python") != paired["runtime"]["python"]
+            ):
+                raise ValueError("heavy runtime/configuration incompatible")
             if str(identity["run"]) != run:
                 raise ValueError("heavy run incompatible")
             command = receipt["command"]
@@ -135,9 +186,14 @@ def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
         raise ValueError("cost tracer/files incompatible")
     return {
         "schema": "test-scope-cost.v1",
-        "context": context(root),
+        "context": hashlib.sha256(
+            json.dumps(observed_environment, sort_keys=True).encode()
+        ).hexdigest(),
+        "environment": observed_environment,
         "source_head": source,
         "reference": {
+            "sample_count": len(runs),
+            "qualification": "finite observed reference; natural ten-run outcome separate",
             "workers": "auto",
             "tracer": next(iter(tracers)),
             "runs": runs,

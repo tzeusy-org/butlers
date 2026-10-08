@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import math
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +21,8 @@ from butlers.testing.scoped_runner import (
     plan_worktree_tests,
 )
 from butlers.testing.source_test_map import FULL_SUITE
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 pytestmark = pytest.mark.unit
 
@@ -310,8 +316,36 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
     assert dynamic in registry["readers"]["openspec/**"]
     assert dynamic in registry["unresolved_dynamic_readers"]
 
+    # Actual CLI completeness guard: plant an undisclosed literal OpenSpec
+    # reader, observe refusal, then regenerate its real edge and observe pass.
+    guard = Path(__file__).resolve().parents[2] / "scripts/build_test_resource_map.py"
+    _write(
+        repo, REGISTRY, json.dumps(discover(repo, declarations), sort_keys=True, indent=2) + "\n"
+    )
+    _write(repo, "openspec/specs/control/spec.md", "real resource")
+    _write(
+        repo,
+        "tests/api/test_openspec_reader.py",
+        "from pathlib import Path\ndef test_resource():\n"
+        "    assert Path('openspec/specs/control/spec.md').read_text() == 'real resource'\n",
+    )
+    _git(repo, "add", "tests/api/test_openspec_reader.py")
 
-def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(tmp_path: Path) -> None:
+    def guard_command(*flags):
+        return subprocess.run(
+            [sys.executable, str(guard), "--root", str(repo), *flags],
+            capture_output=True,
+            timeout=30,
+        ).returncode
+
+    assert guard_command("--check") == 1
+    assert guard_command() == 0
+    assert guard_command("--check") == 0
+
+
+def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """REQ-pr-test-planning-003 REQ-pr-test-planning-004 REQ-pr-test-planning-005: verified Git delta and measured-cost protocol."""
     from butlers.testing.manifest_scope import eligible
     from butlers.testing.scope_cost import PROFILE, predict
@@ -352,5 +386,154 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(tmp_
         scoped_runner.build_pytest_command(ScopedTestPlan(scope="full", test_paths=FULL_SUITE))
     import build_test_scope_cost
 
-    with pytest.raises(ValueError, match="ten compatible"):
+    with pytest.raises(ValueError, match="complete compatible"):
         build_test_scope_cost.build([])
+
+    # Real miniature collection, all eleven actual shard executions and a
+    # separately paired affected child exercise the producer-reader seam.
+    # Local miniature elapsed values are not hosted calibration or p90 proof.
+    import ci_partition as partition
+
+    from butlers.testing.scope_cost import context
+
+    mini = tmp_path / "actual-cost-producer"
+    mini.mkdir()
+    (mini / "tests").mkdir()
+    (mini / "roster").mkdir()
+    (mini / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths=["tests","roster"]\n'
+        'markers=["integration","e2e","nightly","bench","perf","smoke"]\n'
+    )
+    (mini / "conftest.py").write_text("def pytest_xdist_auto_num_workers():\n    return 1\n")
+    for index in range(6):
+        (mini / f"tests/test_{index}.py").write_text(
+            "import pytest\n"
+            "def test_unit(): assert 2 + 2 == 4\n"
+            "@pytest.mark.integration\n"
+            "def test_integration(): assert 3 + 3 == 6\n"
+        )
+    _git(mini, "init", "-q")
+    _git(mini, "-c", "user.name=control", "-c", "user.email=control@example.invalid", "add", ".")
+    _git(
+        mini,
+        "-c",
+        "user.name=control",
+        "-c",
+        "user.email=control@example.invalid",
+        "commit",
+        "-qm",
+        "actual producer fixture",
+    )
+    for key in ("GITHUB_SHA", "GITHUB_REPOSITORY", "GITHUB_WORKFLOW", "GITHUB_EVENT_NAME"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GITHUB_RUN_ID", "41")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    inventory = partition.collect_inventory(root=mini)
+    assignment = partition.partition(inventory, {}, root=mini)
+    project = Path(__file__).resolve().parents[2]
+
+    def observed(label: str, files: list[str], metadata: dict, marker: str | None = None):
+        command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "auto",
+            "--cov=tests",
+            "-p",
+            "scripts.ci_shard_observer",
+        ]
+        if marker is not None:
+            command += ["-m", marker]
+        command += ["--", *files]
+        output = mini / (label + ".json")
+        started = time.monotonic()
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(project),
+            "CI_SHARD_STARTED": str(started),
+            "CI_SHARD_RECEIPT": str(output),
+            "CI_SHARD_CONTEXT": json.dumps({**metadata, "files": files, "command": command}),
+        }
+        result = subprocess.run(command, cwd=mini, env=env, capture_output=True, timeout=30)
+        assert result.returncode == 0
+        receipt = json.loads(output.read_text())
+        assert receipt["complete"] is True
+        assert 0 < receipt["first_logical_test_s"] <= receipt["last_test_completed_s"]
+        assert receipt["actual_tracers"] == ["CTracer"]
+        return receipt, time.monotonic() - started
+
+    receipts, clocks = {}, {}
+    for lane, bins in assignment["shards"].items():
+        for item in bins:
+            label = f"{lane}-{item['index']}"
+            receipts[label], clocks[label] = observed(
+                label,
+                item["files"],
+                {
+                    "lane": lane,
+                    "shard": item["index"],
+                    "inventory_digest": inventory["digest"],
+                    "assignment_digest": assignment["digest"],
+                    "inventory_identity": inventory["identity"],
+                    "nonce": inventory["nonce"],
+                },
+                partition.SELECTORS[lane],
+            )
+    files = ["tests/test_0.py"]
+    affected, elapsed = observed(
+        "affected",
+        files,
+        {
+            "kind": "affected-cost.v1",
+            "run": "42",
+            "attempt": "1",
+            "nonce": "actual-affected",
+            "source_head": inventory["identity"]["head"],
+            "worker_policy": "auto",
+            "cost_context": context(mini),
+            "file_hashes": {
+                name: hashlib.sha256((mini / name).read_bytes()).hexdigest() for name in files
+            },
+        },
+    )
+    bundle = {
+        "run": "41",
+        "affected_run": "42",
+        "inventory": inventory,
+        "assignment": assignment,
+        "receipts": receipts,
+        "heavy_job_seconds": clocks,
+        "affected": affected,
+        "affected_job_seconds": elapsed,
+    }
+    candidate = build_test_scope_cost.build([bundle], root=mini)
+    assert candidate["reference"]["sample_count"] == 1
+    assert candidate["reference"]["affected_setup_seconds"] > 0
+    assert set(candidate["files"]) == set(inventory["lanes"]["unit"])
+    # Exact missing-clock neutralization models the old producer's missing
+    # output; actual old producer control is retained separately in the packet.
+    for field in ("first_logical_test_s", "last_test_completed_s"):
+        missing = copy.deepcopy(bundle)
+        del missing["affected"][field]
+        with pytest.raises(KeyError):
+            build_test_scope_cost.build([missing], root=mini)
+    for value in (math.nan, -1.0, True, elapsed + 1.0):
+        malformed = copy.deepcopy(bundle)
+        malformed["affected"]["first_logical_test_s"] = value
+        with pytest.raises(ValueError, match="timer|clock"):
+            build_test_scope_cost.build([malformed], root=mini)
+
+    runtime_mismatch = copy.deepcopy(bundle)
+    runtime_mismatch["receipts"]["unit-1"]["cost_environment"]["runtime"]["logical_cpus"] += 1
+    with pytest.raises(ValueError, match="runtime/configuration"):
+        build_test_scope_cost.build([runtime_mismatch], root=mini)
+    stale = copy.deepcopy(bundle)
+    stale["affected"]["cost_environment"]["configuration"] = "0" * 64
+    with pytest.raises(ValueError, match="context"):
+        build_test_scope_cost.build([stale], root=mini)
+    missing_phase_clock = copy.deepcopy(bundle)
+    del next(iter(missing_phase_clock["affected"]["nodes"].values()))["teardown"]["completed_s"]
+    with pytest.raises(KeyError):
+        build_test_scope_cost.build([missing_phase_clock], root=mini)

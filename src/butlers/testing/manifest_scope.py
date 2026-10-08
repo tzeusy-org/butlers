@@ -20,6 +20,20 @@ def _ownership(root: Path, ref: str) -> dict[str, set[str]]:
         check=True,
         timeout=10,
     )
+    # Resolve the actual tree once. Per-row Git subprocesses make a genuine
+    # thousand-file historical inventory needlessly dominate plan-only work.
+    tree = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", ref, "tests/", "roster/"],
+        cwd=root,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    blobs = {
+        entry.split(b"\t", 1)[1].decode()
+        for entry in tree.stdout.split(b"\0")
+        if entry and entry.split(b"\t", 1)[0].split()[1] == b"blob"
+    }
     lanes: dict[str, set[str]] = {}
     for path in result.stdout.decode().splitlines():
         if not path.endswith(".txt"):
@@ -30,12 +44,8 @@ def _ownership(root: Path, ref: str) -> dict[str, set[str]]:
         rows = {row for row in _body(root, ref, path) if row and not row.startswith("#")}
         if lanes.setdefault(lane, set()) & rows:
             raise ValueError("MANIFEST_INELIGIBLE")
-        for row in rows:
-            check = subprocess.run(
-                ["git", "cat-file", "-e", f"{ref}:{row}"], cwd=root, capture_output=True, timeout=10
-            )
-            if check.returncode:
-                raise ValueError("MANIFEST_INELIGIBLE")
+        if not rows <= blobs:
+            raise ValueError("MANIFEST_INELIGIBLE")
         lanes[lane].update(rows)
     return lanes
 

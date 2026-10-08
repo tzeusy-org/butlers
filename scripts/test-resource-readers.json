@@ -1,6 +1,6 @@
 {
   "declarations_digest": "b395266968c3d3e55be723671da4249ccafd88cc8022e467d48b6a1df496b13b",
-  "digest": "77f5b9606ad49823fa8f274ea7da45f5d07885b2860a4043d630e4387fd05836",
+  "digest": "3f2b2503133a8b9aff18320e45fede7c0adf2a1bc85023dd71e7f3637596587a",
   "families": [
     "docs/",
     "about/",
@@ -8337,6 +8337,12 @@
     "frontend/control-b.test.ts": [
       "tests/contracts/test_ci_test_targets.py"
     ],
+    "frontend/descendant-late": [
+      "tests/contracts/test_ci_test_targets.py"
+    ],
+    "frontend/descendant-ready": [
+      "tests/contracts/test_ci_test_targets.py"
+    ],
     "frontend/dist": [
       "tests/contracts/test_ci_test_targets.py"
     ],
@@ -9740,6 +9746,9 @@
     "openspec/specs/connector-filtered-events/spec.md": [
       "tests/jobs/test_retention_owner_gate.py"
     ],
+    "openspec/specs/control/spec.md": [
+      "tests/testing/test_scoped_runner.py"
+    ],
     "openspec/specs/dashboard-admin-gateway/spec.md": [
       "tests/api/test_no_reveal_route_contract.py",
       "tests/api/test_secrets_legacy_no_reveal.py"
@@ -10410,7 +10419,7 @@
     "tests/contracts/test_chronicler_no_cross_schema.py": "e2e6527f5c68a5d731184b3aa5db815733b3e94bb4e69942d4378faa759091fe",
     "tests/contracts/test_chronicler_no_llm.py": "d7dcd6ec9cce0626e4fccdc81accaedb6e5b76a216d19e43f5e8683fca398132",
     "tests/contracts/test_chronicler_schema_drift.py": "e1d64c6465989345ec403780f15f1eab219c568067aefc35a9f569e5e1e5a597",
-    "tests/contracts/test_ci_test_targets.py": "3fdda90fe7264586322833e8cc4402a0d9953487b739175b4a7e2f6ac88a1167",
+    "tests/contracts/test_ci_test_targets.py": "53ba43717ef50013b229f8a119c5cd3840e23fb70b84cf06b25483d444d3adc5",
     "tests/contracts/test_citation_route_manifest.py": "b2c2573e2e07d07efda4257e4cb389b6a82f4b87baa3fe2005a4f7e6e44d9a89",
     "tests/contracts/test_client_openapi_contract.py": "99b61357c16eb6f0db7a09e3cd4e949dc6a813fe28661d930d0e410f6153b528",
     "tests/contracts/test_codex_auth_generation_plan_contract.py": "11d0e115e179380e24c8edfd0a695052c9b7774d89932530964467ef72a0401d",
@@ -11117,7 +11126,7 @@
     "tests/scripts/test_check_spec_overwrites.py": "9f418170ea22cbfa02b98eae9964745f1c7b88133c157e7338f8564f690b9f8b",
     "tests/scripts/test_check_test_budget.py": "32d1c49434d9545995264e2d209310d9ec698449a032905b8ee7f071d946930f",
     "tests/scripts/test_ci_branch_hygiene.py": "eca4e889fc8dbb7b12d5f0e36c6b6b2d3bd4b7b5e72e0213e19546aa65efff8c",
-    "tests/scripts/test_ci_partition.py": "0d185a590fafbf2a60bad0448c7e7cf59b0496c6477d7ff601c0424e1a75eea1",
+    "tests/scripts/test_ci_partition.py": "775f0e2e7d1b6c4807791723134c7c3c8d0375503ad0985f435be5ad792b19a0",
     "tests/scripts/test_ci_test_plan.py": "8db76fd097f8a102c09c7a998aec4b47fb914d435469f7e729156535450804f0",
     "tests/scripts/test_combine_review_comment_sources.py": "f0d694dcd228a6b49553c7aab44509a44f5dbd9d61d74a7c3fdd6879c06c3427",
     "tests/scripts/test_compose_dashboard_proxy_readiness.py": "c466ae191e9671cfbc13ffa47df9618e7b36da743989891d29608c123bf155db",
@@ -11178,7 +11187,7 @@
     "tests/test_passive_interaction_sender_identity.py": "59e1c0e8c449e83e2d2e45e070e28476627535c42ec3d9b16d1b3c36f6eb6392",
     "tests/test_telegram_prefix_resolution.py": "f2eaa7d302f0e657f5e0981702818e0c322b9e14af76b654e3b86eaf3d35b543",
     "tests/testing/test_changed_files.py": "8f30ba9018d18a48c2765b5ff7603ad9f759faad2cd47bddc352223f0ec83c3b",
-    "tests/testing/test_scoped_runner.py": "1c95f76f8ef6f3fdd92ba86738fc9f13ff30f0c1c2934bb645064ca17287e062",
+    "tests/testing/test_scoped_runner.py": "b597e0950d75968096cc0222f80a1575b0f2116bbf38b093b07fd69d54534feb",
     "tests/testing/test_source_test_map.py": "1a1edf582264174cb016e05591cf25eba79e99f436d4247fcf2e66e057338288",
     "tests/three_seams_helpers.py": "f57b7889f0e5c8835eb2fe1b9c6761ae8c21aa5ccd615260c4d8900895f3f1a4",
     "tests/tools/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
