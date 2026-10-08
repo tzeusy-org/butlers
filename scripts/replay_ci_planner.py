@@ -64,7 +64,8 @@ def replay(rows: list[dict], *, root: Path = ROOT) -> dict:
         "counts": dict(counts),
         "qualified_scoped": scoped,
         "unknown": sum(r["evidence"] == "UNKNOWN" for r in outcomes),
-        "limits": "Candidate source decisions only; actual testcase, timing and protected evidence separate",
+        "limits": ("Candidate source decisions only; actual testcase, timing "
+                   "and protected evidence separate"),
     }
 
 

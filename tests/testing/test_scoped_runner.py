@@ -235,7 +235,7 @@ def _synthetic_cost(repo: Path) -> None:
 
 
 def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_path: Path) -> None:
-    """REQ-pr-test-planning-001/002: actual read, wrong content and fresh route."""
+    """REQ-pr-test-planning-001 REQ-pr-test-planning-002: actual read, wrong content and fresh route."""
     import sys
 
     from butlers.testing.resource_readers import DECLARATIONS, REGISTRY, discover
@@ -312,7 +312,7 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
 
 
 def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(tmp_path: Path) -> None:
-    """REQ-pr-test-planning-003/004/005: verified Git delta and measured-cost protocol."""
+    """REQ-pr-test-planning-003 REQ-pr-test-planning-004 REQ-pr-test-planning-005: verified Git delta and measured-cost protocol."""
     from butlers.testing.manifest_scope import eligible
     from butlers.testing.scope_cost import PROFILE, predict
 

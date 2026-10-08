@@ -33,6 +33,12 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    unstaged, and untracked files. It **does not run pytest** and is never test
    evidence or merge-readiness evidence.
 
+   Resource readers are checked before a docs-only backend skip. Regenerate the
+   source-bound reader registry with `uv run --no-sync python scripts/build_test_resource_map.py`
+   after changing tests or reader declarations. Missing/stale readers and missing
+   compatible measured cost evidence select FULL; assignment median weights never
+   admit a cost ceiling. The planner remains feedback, never completed verification.
+
 3. Include `roster/<butler>/tests/` explicitly for roster work. For a deleted
    or moved test, run collection on its surviving parent scope. For test
    fixtures, imports, module registration, or topology changes, run:

@@ -1027,7 +1027,8 @@ else:
     ordinary = migration_workflow["jobs"]["migration-chain-head"]
     assert (
         ordinary["if"]
-        == "github.event_name != 'workflow_dispatch' || !inputs['image-size-diagnostic']"
+        == "github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] "
+        "&& !inputs['offline-route-a-build-proof'] && !inputs['affected-calibration'])"
     )
     assert ordinary["timeout-minutes"] == 14
     diagnostic = migration_workflow["jobs"]["image-size-diagnostic"]

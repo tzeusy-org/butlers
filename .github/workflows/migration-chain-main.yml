@@ -29,20 +29,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Reject conflicting manual proof modes
-        env:
-          IMAGE_MODE: ${{ inputs['image-size-diagnostic'] }}
-          OFFLINE_MODE: ${{ inputs['offline-route-a-build-proof'] }}
-          CALIBRATION_MODE: ${{ inputs['affected-calibration'] }}
-        run: |
-          enabled=0
-          for mode in "$IMAGE_MODE" "$OFFLINE_MODE" "$CALIBRATION_MODE"; do
-            if [ "$mode" = "true" ]; then enabled=$((enabled + 1)); fi
-          done
-          if [ "$enabled" -ne 1 ]; then
-            echo "::error::manual proof modes are mutually exclusive"
-            exit 2
-          fi
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
@@ -92,6 +78,20 @@ jobs:
           ref: e7b7812a3fa65c80f3f070d38ee43f7fa6474881
           path: before
           persist-credentials: false
+      - name: Reject conflicting manual proof modes
+        env:
+          IMAGE_MODE: ${{ inputs['image-size-diagnostic'] }}
+          OFFLINE_MODE: ${{ inputs['offline-route-a-build-proof'] }}
+          CALIBRATION_MODE: ${{ inputs['affected-calibration'] }}
+        run: |
+          enabled=0
+          for mode in "$IMAGE_MODE" "$OFFLINE_MODE" "$CALIBRATION_MODE"; do
+            if [ "$mode" = "true" ]; then enabled=$((enabled + 1)); fi
+          done
+          if [ "$enabled" -ne 1 ]; then
+            echo "::error::manual proof modes are mutually exclusive"
+            exit 2
+          fi
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -149,6 +149,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Reject conflicting manual build modes
+        env:
+          OTHER_BUILD_MODE: ${{ inputs['image-size-diagnostic'] }}
+        run: |
+          if [ "${OTHER_BUILD_MODE}" = "true" ]; then
+            echo "::error::manual build proof modes are mutually exclusive"
+            exit 2
+          fi
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
