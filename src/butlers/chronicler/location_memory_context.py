@@ -51,20 +51,31 @@ def current_runtime_context(pool: Any = None):
 
 
 async def begin_runtime_context(pool: Any, spawner: Any):
-    from butlers.chronicler.location_catalog_copies import _runtimes
     from butlers.chronicler.location_input_binding import (
         _current_dispatch_input,
         registered_dispatcher,
     )
 
-    runtime = next((r for r in _runtimes.values() if r.domain is pool and r.active), None)
+    runtime = context_writer(pool)
+    if runtime is not None and not runtime.active:
+        raise PolicyUnavailableError("Native context constructor lifetime ended")
     if runtime is None:
         return None
     if not registered_dispatcher(pool, spawner):
         raise PolicyUnavailableError("Native context constructor differs")
+    from butlers.chronicler.location_delegation_processing import current_scheduled_question
+
+    scheduled = current_scheduled_question(pool)
     dispatch = _current_dispatch_input.get()
     session = dispatch.session_id if dispatch is not None and dispatch.active else uuid4()
-    binding = _RuntimeContext(runtime, uuid4(), session, dispatch is not None and dispatch.active)
+    binding = _RuntimeContext(
+        runtime,
+        uuid4(),
+        session,
+        (dispatch is not None and dispatch.active) or (scheduled is not None),
+    )
+    if scheduled is not None and not scheduled.exclusive:
+        binding.known_context = False
     from butlers.chronicler.location_catalog_copies import _server_copy_scope
 
     server = _server_copy_scope.get()
@@ -81,6 +92,13 @@ async def begin_runtime_context(pool: Any, spawner: Any):
                 session,
                 binding.server_request,
             )
+            if scheduled is not None:
+                await conn.execute(
+                    "INSERT INTO location_runtime_context_question_intents "
+                    "(input_generation,claim_generation) VALUES($1,$2)",
+                    binding.generation,
+                    scheduled.generation,
+                )
     if (
         await pool.fetchval(
             "SELECT receiving_session FROM location_runtime_context_intents "
@@ -90,13 +108,23 @@ async def begin_runtime_context(pool: Any, spawner: Any):
         != session
     ):
         raise PolicyUnavailableError("Committed pre-context reservation is unknown")
+    if (
+        scheduled is not None
+        and await pool.fetchval(
+            "SELECT claim_generation FROM location_runtime_context_question_intents "
+            "WHERE input_generation=$1",
+            binding.generation,
+        )
+        != scheduled.generation
+    ):
+        raise PolicyUnavailableError("Committed question pre-context reservation is unknown")
     return binding, _current_runtime_context.set(binding)
 
 
 def observe_context_rows(pool: Any, table: str, rows: list[dict]) -> None:
     """Actual context compiler reports its selected full section inputs."""
     binding = current_runtime_context()
-    if binding is None or binding.runtime.memory is not pool:
+    if binding is None or getattr(binding.runtime, "memory", None) is not pool:
         return
     for row in rows:
         identity = row.get("id")
@@ -170,6 +198,9 @@ async def bind_context_session(conn: Any, pool: Any, session: UUID, prompt: str)
         binding.generated_prompt and binding.known_context,
         binding.context_bytes,
     )
+    from butlers.chronicler.location_delegation_processing import bind_question_context
+
+    await bind_question_context(conn, binding, prompt)
     binding.admitted = True
 
 
@@ -190,6 +221,20 @@ async def verify_context_session(pool: Any, session: UUID) -> None:
         is not True
     ):
         raise PolicyUnavailableError("Committed native context admission is unknown")
+
+    from butlers.chronicler.location_delegation_processing import current_scheduled_question
+
+    scheduled = current_scheduled_question(pool)
+    if scheduled is not None and not await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_received_delegation_contexts q "
+        "JOIN location_runtime_context_bindings b "
+        "USING(input_generation,receiving_session,bundle_digest) "
+        "WHERE q.input_generation=$1 AND q.claim_generation=$2 AND q.receiving_session=$3)",
+        binding.generation,
+        scheduled.generation,
+        session,
+    ):
+        raise PolicyUnavailableError("Committed native question context is unknown")
 
 
 async def end_runtime_context(handle: Any) -> None:
@@ -249,7 +294,7 @@ async def context_episode_writer(pool: Any, conn: Any) -> None:
     binding = current_runtime_context()
     if binding is None or not (binding.loans or binding.local_rows or binding.generated_prompt):
         return
-    if binding.runtime.memory is not pool or not binding.admitted:
+    if getattr(binding.runtime, "memory", None) is not pool or not binding.admitted:
         raise PolicyUnavailableError("Native context episode constructor differs")
     await _lock_memory_context(conn, binding)
     schema = _own_schema(binding.runtime)

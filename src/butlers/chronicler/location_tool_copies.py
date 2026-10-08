@@ -73,13 +73,16 @@ def registered_copy_invocation(target: str):
 
 
 async def begin_tool_copy(butler: str, module: str, name: str, fingerprint: str):
-    from butlers.chronicler.location_catalog_copies import _runtimes
     from butlers.core.copy_lifetime import _current_copy_invocation
+    from butlers.core.delegation_source import _writers
 
     invocation = _current_copy_invocation.get()
     if invocation is None:
         return None
-    runtime = next((r for r in _runtimes.values() if r.name == butler and r.active), None)
+    runtime = next(
+        (w.runtime for w in _writers.values() if w.runtime.name == butler and w.runtime.active),
+        None,
+    )
     if runtime is None:
         return None
     invocation = registered_copy_invocation(runtime.name)

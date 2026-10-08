@@ -580,12 +580,62 @@ parent cannot stand in for the exact question/body/decision/manifest terminal
 receipt. Borrowed catalog loans cannot be closed while their question descendants
 remain unresolved.
 
-This checkpoint installs the actual source producer and required census only.
-Fixed-source/receiver online challenge, pre-prompt scheduled input binding,
-answer/wake/resuming copies and lawful mixed-copy terminal reconciliation are
-still required implementation work. No terminal receipt producer is credited by
-its table or by these source births. The existing migrated Memory node is extended
-with actual same-writer ledger, immutable history and rollback/readback controls;
-its private invocation is planted engine lineage, not an online source proof.
-All original outcomes and browser/registered all-closed deletion requirements
-remain mandatory and unmet. No new runtime role, grant or peer-private SQL is used.
+The active receiving implementation now uses the existing Switchboard route
+for the question body and constructor-fixed registry endpoints for bounded
+metadata-only challenges. Public ledger/loan/task UUIDs select stored rows;
+they cannot supply a principal, verifier address or private admission. The source
+locks its own policy and canonical question/complete parents, calls the live
+receiver outside SQL, then rechecks and commits the exact source delivery. The
+receiver commits and separately reads back its exact source generation/body,
+receiving incarnation and own input before the schedule writer can copy prompt
+bytes. Source and receiver failures retain unknown committed copies.
+
+Infrastructure `delegate_receive` traffic has no local CLI invocation. Its real
+registered handler instead uses the daemon constructor's live ASGI request cell,
+with identity membership and the exact configured target. An actual CLI invocation
+retains its real session/tool binding when present. The private schema requires
+those CLI fields together, or the actual server request; it creates no fake
+runtime session. Native ASGI completion commits only that server-copy receipt,
+never remote-recipient erasure. Cloned cells and caller actor/session/ACK fields
+cannot mint the receiving birth.
+
+Both normal scheduler ticks and the manual registered schedule trigger reserve
+the full dispatched prompt before model processing. The stored schedule/body is
+checked against its immutable receiver map and a fresh fixed source/receiver
+challenge. Policy-first committed claim/readback precedes dispatch; a native
+pre-context intent then binds that claim into the actual composed session writer.
+Seasonal, continuity or independent additions remain nonexclusive. A forwarded
+question retains this received-question parent as well as every original native
+dispatch parent, even if a current mirror birth is absent. Missing intent/context,
+loan/lifetime, body, digest or parent evidence refuses rather than shrinking the
+bundle. Successful unbound runtime processing cannot return a completed result.
+
+A failed secondary lifetime witness preserves the original handler error or
+cancellation and leaves the copy unresolved. Successful processing still refuses
+a missing lifetime witness. The current same-process software controls use fixed
+endpoint/SQL doubles and planted inputs; they are not registered network or real
+role proof. The existing migrated Memory source node remains a separate hosted
+requirement, including the complete adopted core236 system/digest/provenance
+receipt seeded by the actual session producer before immutable binding.
+
+Question answer/wake/resuming copies, lawful mixed-copy terminal reconciliation,
+receiver restart/recovery and the full registered all-holder terminal path remain
+required source and proof work. No terminal producer is credited by its table,
+a server response or a successful schedule alone. All original outcomes and
+browser/registered all-closed deletion requirements remain mandatory and unmet.
+No new runtime role, grant or peer-private SQL is used.
+
+The daemon now installs an owning question-only runtime on its actual domain
+pool when Memory is not configured. It captures the current namespace/role
+before serving, binds the same core writer/context registry, and closes those
+private lifetimes during shutdown. It supplies no Memory pool, schema, receiver
+or catalog authority. Missing Switchboard discovery makes the registered
+metadata exchange unavailable; it never invents a local CLI or peer endpoint.
+Core source/context/tool transactions recheck the actual captured identity.
+The shared bounded metadata transport retains constructor-fixed Switchboard
+discovery, while question bodies remain on the existing routed tool path.
+These installed source paths are awaiting exact-head SQL/registered delivery
+proof; question/answer/wake/restart and lawful mixed terminal disposal remain
+required unfinished SOURCE, not completed retention. The prior 3ead hosted
+parent/session assertion remains unresolved. Boolean-only diagnostics preserve
+the original assertion and expose no UUID, digest, body, SQL argument or row.

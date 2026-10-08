@@ -572,6 +572,27 @@ class ButlerDaemon:
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
+        location_routes = [
+            mod.location_retention_route()
+            for mod in self._active_modules
+            if callable(getattr(mod, "location_retention_route", None))
+        ]
+        # Core receiving questions must not depend on optional Memory. Its own
+        # pool/schema and actual Switchboard client are constructor inputs;
+        # no fabricated Memory pool or caller source field enrolls this writer.
+        if not any(mod.name == "memory" for mod in self._active_modules):
+            from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+
+            client = self.switchboard_client
+            if self.config.name == "switchboard" and client is None:
+                client = LocalSwitchboardClient(self.mcp)
+            self._location_delegation_runtime = await NativeDelegationRuntime.create(
+                domain=self.db.pool,
+                name=self.config.name,
+                schema=self.db.schema or "public",
+                registry=client,
+            )
+            location_routes.append(self._location_delegation_runtime.route())
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -586,11 +607,7 @@ class ButlerDaemon:
                 for mod in self._active_modules
                 if callable(getattr(mod, "location_retention_admission", None))
             ],
-            location_retention_routes=[
-                mod.location_retention_route()
-                for mod in self._active_modules
-                if callable(getattr(mod, "location_retention_route", None))
-            ],
+            location_retention_routes=location_routes,
         )
         config = uvicorn.Config(
             app,
@@ -830,7 +847,7 @@ class ButlerDaemon:
         from butlers.chronicler.location_catalog_copies import CatalogServerCopyLifetime
 
         return _McpSseDisconnectGuard(
-            CatalogServerCopyLifetime(guarded_app), butler_name=butler_name
+            CatalogServerCopyLifetime(guarded_app, butler_name=butler_name), butler_name=butler_name
         )
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:

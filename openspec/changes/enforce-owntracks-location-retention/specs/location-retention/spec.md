@@ -165,6 +165,23 @@ The actual owning fact/rule artifact writer SHALL retain its original full-body 
 
 Native delegated-question producers SHALL freeze their exact question frame and every actual owning native/catalog parent under the policy-first ledger writer, commit that full birth before routing and separately read back the canonical ledger plus complete immutable parent set. Caller ledger/session/actor strings SHALL NOT enroll a producer or authorize a receiver. Question/asking substitutions SHALL refuse before scheduling. Ordinary unconfigured writers SHALL retain their explicit existing Pool/Connection contract. Disposed, prepared, mismatched, mixed and unknown inputs SHALL NOT acquire exclusive lineage or terminal authority. Question descendants SHALL remain in the all-holder census after source-session completion, and neither public terminal status nor emptied body SHALL prove receiving-schedule/runtime disposal. Borrowed loan closure SHALL require those exact question descendants' own committed dispositions; actual registered receiver and pre-prompt schedule admission and reconciliation SHALL remain separate mandatory controls.
 
+Native routed question input SHALL be admitted by the actual configured handler,
+current canonical source and fixed registered source/receiver challenge. Genuine
+infrastructure traffic SHALL bind the live constructor-owned server request,
+without inventing a local CLI session; actual CLI traffic SHALL retain its exact
+registered tool/session binding. Locators and caller actor/ACK fields SHALL NOT
+create that admission. Native ASGI completion SHALL attest only its own server
+copy. Normal and manual scheduled prompt dispatch SHALL commit and read back its
+complete current question-derived processing input before model processing, then
+bind its immutable pre-context claim and full composed input on the actual session
+writer. Every original dispatch and received-question dependency SHALL remain in
+forwarded ancestry. Missing, changed or partial dependency rows SHALL refuse;
+independent additions SHALL remain nonexclusive. Unknown successful result/lifetime
+witnesses SHALL prevent completion; failed secondary witnesses SHALL preserve the
+primary failure or cancellation and unresolved copy.
+
+The native daemon MUST enroll an owning question/session writer from its actual domain pool independently of optional Memory configuration, recheck its captured namespace/role inside every owning transaction, and terminate its private pending and admitted lifetimes at shutdown. This core-only enrollment MUST NOT fabricate a configured Memory pool, borrow a peer namespace, infer receiving authority from a caller session or invent a CLI context for an infrastructure route. It MUST retain the same fixed Switchboard-discovered metadata challenge and routed question-body transport, and missing constructor/registry/readback proof MUST remain unavailable rather than minting ancestry or terminal completion.
+
 ID: REQ-location-retention-005
 Source: bu-s11n0s.7 original nonresurrection non-goal and S2; about/heart-and-soul/security.md Sensitive Data Categories; openspec/specs/connector-filtered-events/spec.md Full Payload Shape and Replay lineage and event payload age independently; proposed source-protocol P5
 Scope: v1-mandatory

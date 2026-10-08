@@ -701,6 +701,11 @@ async def run_shutdown(daemon: Any) -> None:
             pass
         daemon._liveness_reporter_task = None
 
+    runtime = getattr(daemon, "_location_delegation_runtime", None)
+    if runtime is not None:
+        runtime.close()
+        daemon._location_delegation_runtime = None
+
     # 6. Module shutdown in reverse topological order (active modules only)
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
 

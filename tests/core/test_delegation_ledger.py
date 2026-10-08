@@ -590,6 +590,7 @@ async def _assert_native_delegated_question_birth():
             }
             self.context["context_digest"] = b"c" * 32
             self.context_loans = []
+            self.inherited = []
             self.later = []
             self.freeze_bundle()
             self.composed_changed = False
@@ -725,6 +726,8 @@ async def _assert_native_delegated_question_birth():
         async def fetch(self, sql, *args):
             if "location_native_dispatch_sessions" in sql:
                 return self.dispatch
+            if "FROM location_runtime_context_question_intents" in sql:
+                return self.inherited
             if "FROM location_runtime_tool_inputs" in sql:
                 return self.later
             if "location_catalog_copy_loans" in sql:
@@ -839,6 +842,57 @@ async def _assert_native_delegated_question_birth():
         assert (
             next(reversed(pool.headers.values()))["parent_count"] == 2
         )  # Complete shared loan, once.
+        original_a, original_b = uuid.uuid4(), uuid.uuid4()
+        pool.context_loans, pool.later = [], []
+        pool.freeze_bundle()
+        pool.dispatch = [
+            {
+                "parent_count": 2,
+                "copy_generation": parent,
+                "input_digest": b"o" * 32,
+                "output_id": uuid.uuid4(),
+                "birth_digest": b"o" * 32,
+                "lineage_known": True,
+                "exclusive_input": True,
+            }
+            for parent in (original_a, original_b)
+        ]
+        mirrored = await record()
+        captured = {
+            row["parent_generation"]
+            for row in pool.parents
+            if str(row["question_generation"])
+            == str(
+                next(
+                    generation
+                    for generation, header in pool.headers.items()
+                    if str(header["ledger_id"]) == mirrored
+                )
+            )
+        }
+        assert {original_a, original_b, pool.source_parent} == captured
+        pool.dispatch[0]["exclusive_input"] = False
+        await record()
+        assert next(reversed(pool.headers.values()))["exclusive_input"] is False
+        pool.dispatch = []
+        inherited = {
+            "claim_generation": uuid.uuid4(),
+            "bundle_digest": pool.context["bundle_digest"],
+            "receiving_generation": uuid.uuid4(),
+            "body_digest": b"q" * 32,
+        }
+        pool.inherited = [inherited]
+        await record()
+        assert next(reversed(pool.headers.values()))["parent_count"] == 2
+        for missing in ("bundle_digest", "receiving_generation", "body_digest"):
+            pool.inherited = [dict(inherited, **{missing: None})]
+            before = len(pool.headers)
+            with pytest.raises(PolicyUnavailableError, match="receiving ancestry differs"):
+                await record()
+            assert len(pool.headers) == before
+        pool.inherited = [inherited]
+        await record()
+        assert next(reversed(pool.headers.values()))["parent_count"] == 2
     finally:
         _current_tool_copy.reset(token)
         clear_writer(pool, writer)

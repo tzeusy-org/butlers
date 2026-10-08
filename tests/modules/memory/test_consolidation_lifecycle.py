@@ -1612,6 +1612,14 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
             catalog_score=None,
             metadata={"synthetic": "actual JSON object"},
         )
+        selected_native = await domain.fetch(
+            "SELECT DISTINCT copy_generation,input_digest FROM location_native_copy_births "
+            "WHERE receiving_session=$1",
+            session_id,
+        )
+        expected_native = {
+            ("native_copy", row["copy_generation"], row["input_digest"]) for row in selected_native
+        }
         identifier = uuid.UUID(await record_ask(domain, status="pending", **fields))
         async with domain.acquire() as observed:
             birth = await observed.fetchrow(
@@ -1634,6 +1642,41 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
             assert birth["parent_count"] == len(parents) > 0
             assert all(row["parent_kind"] == "native_copy" for row in parents)
             for row in parents:
+                # Boolean-only positioning preserves the original assertion;
+                # never emit source IDs, digests, rows, prompt or arguments.
+                diagnostic = await observed.fetchrow(
+                    "SELECT EXISTS(SELECT 1 FROM location_native_copy_births "
+                    "WHERE copy_generation=$1) AS generation_exists, "
+                    "EXISTS(SELECT 1 FROM location_native_copy_births "
+                    "WHERE copy_generation=$1 AND input_digest=$2) AS digest_matches, "
+                    "EXISTS(SELECT 1 FROM location_native_copy_births "
+                    "WHERE copy_generation=$1 AND receiving_session=$3) AS session_matches, "
+                    "EXISTS(SELECT 1 FROM location_native_copy_births "
+                    "WHERE copy_generation=$1 AND input_digest=$2 AND receiving_session=$3) "
+                    "AS exact_matches",
+                    row["parent_generation"],
+                    row["parent_digest"],
+                    session_id,
+                )
+                if diagnostic["exact_matches"] is not True:
+                    print(
+                        "closed_native_parent_readback "
+                        + json.dumps(
+                            {
+                                **{key: value is True for key, value in dict(diagnostic).items()},
+                                "tool_session_matches_fixture": tool.session == session_id,
+                                "stored_session_matches_tool": birth["receiving_session"]
+                                == uuid.UUID(str(tool.session)),
+                                "parent_count_matches": birth["parent_count"] == len(parents),
+                                "selected_parent_set_matches": {
+                                    (p["parent_kind"], p["parent_generation"], p["parent_digest"])
+                                    for p in parents
+                                }
+                                == expected_native,
+                            },
+                            sort_keys=True,
+                        )
+                    )
                 assert await observed.fetchval(
                     "SELECT EXISTS(SELECT 1 FROM location_native_copy_births "
                     "WHERE copy_generation=$1 AND input_digest=$2 AND receiving_session=$3)",
@@ -1678,5 +1721,38 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
                 "SELECT EXISTS(SELECT 1 FROM public.delegation_ledger "
                 "WHERE question='synthetic rollback')"
             )
+        # The core-only constructor must use this actual owning domain pool,
+        # independently of the optional Memory runtime. This is migrated
+        # constructor/identity proof, not online receiver/terminal evidence.
+        from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+        from butlers.chronicler.location_memory_context import register_context_writer
+        from butlers.core.delegation_source import _writers, clear_writer, register_writer
+
+        clear_writer(domain, runtime.delegation_writer)
+        core = None
+        try:
+            core = await NativeDelegationRuntime.create(
+                domain=domain, name="chronicler", schema=runtime.identity[0], registry=object()
+            )
+            assert _writers[domain] is core.delegation_writer
+            assert not hasattr(core, "memory")
+            async with domain.acquire() as conn:
+                async with conn.transaction():
+                    await core.lock_domain(conn)
+                    await conn.execute("SET LOCAL search_path TO public")
+                    with pytest.raises(PolicyUnavailableError, match="owning writer differs"):
+                        await core.lock_domain(conn)
+            async with domain.acquire() as readback:
+                assert await readback.fetchval("SELECT current_schema()") == runtime.identity[0]
+            core.close()
+            async with domain.acquire() as conn:
+                with pytest.raises(PolicyUnavailableError, match="owning writer differs"):
+                    await core.lock_domain(conn)
+            assert domain not in _writers
+        finally:
+            if core is not None:
+                core.close()
+            register_writer(domain, runtime.delegation_writer)
+            register_context_writer(runtime)
     finally:
         _current_tool_copy.reset(token)

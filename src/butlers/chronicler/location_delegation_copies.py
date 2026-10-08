@@ -36,6 +36,8 @@ def question_digest(fields: dict) -> bytes:
 class NativeDelegationWriter:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
+        self.pending: dict[str, Any] = {}
+        self.receiving: dict[Any, Any] = {}
 
     def capture_active(self) -> bool:
         from butlers.chronicler.location_tool_copies import _current_tool_copy
@@ -145,12 +147,38 @@ class NativeDelegationWriter:
                 parents = [
                     ("catalog_loan", selected, body) for selected, body in sorted(indexed.items())
                 ]
+                inherited = await conn.fetch(
+                    "SELECT n.claim_generation,q.bundle_digest,c.receiving_generation,"
+                    "i.body_digest FROM location_runtime_context_question_intents n "
+                    "LEFT JOIN location_received_delegation_contexts q "
+                    "USING(input_generation,claim_generation) "
+                    "LEFT JOIN location_received_delegation_claims c USING(claim_generation) "
+                    "LEFT JOIN location_received_delegation_inputs i USING(receiving_generation) "
+                    "WHERE n.input_generation=$1 ORDER BY c.receiving_generation",
+                    frozen["input_generation"],
+                )
+                for dependency in inherited:
+                    if (
+                        dependency["bundle_digest"] != frozen["bundle_digest"]
+                        or dependency["receiving_generation"] is None
+                        or not isinstance(dependency["body_digest"], bytes)
+                        or len(dependency["body_digest"]) != 32
+                    ):
+                        raise PolicyUnavailableError("Native delegation receiving ancestry differs")
+                    parents.append(
+                        (
+                            "received_question",
+                            dependency["receiving_generation"],
+                            dependency["body_digest"],
+                        )
+                    )
                 if runtime.name == "chronicler":
                     from butlers.chronicler.location_memory_ancestry import require_complete_parents
 
                     dispatch = await conn.fetch(
                         "SELECT i.parent_count,p.copy_generation,p.input_digest,"
-                        "b.output_id,b.input_digest AS birth_digest "
+                        "b.output_id,b.input_digest AS birth_digest,"
+                        "b.lineage_known,b.exclusive_input "
                         "FROM location_native_dispatch_sessions s "
                         "JOIN location_native_dispatch_inputs i USING(input_generation) "
                         "LEFT JOIN location_native_dispatch_parents p USING(input_generation) "
@@ -171,8 +199,23 @@ class NativeDelegationWriter:
                         row["lineage_known"] is True and row["exclusive_input"] is True
                         for row in own
                     )
+                    # Retain original declared parents even if a native mirror
+                    # birth is missing. The question cannot derive a smaller
+                    # ancestry merely from the current receiving-session rows.
+                    native = {}
+                    for row in list(dispatch) + list(own):
+                        selected, body = row["copy_generation"], row["input_digest"]
+                        if selected in native and native[selected] != body:
+                            raise PolicyUnavailableError(
+                                "Native delegation input generation differs"
+                            )
+                        native[selected] = body
+                    exclusive = exclusive and all(
+                        row["lineage_known"] is True and row["exclusive_input"] is True
+                        for row in dispatch
+                    )
                     parents.extend(
-                        ("native_copy", row["copy_generation"], row["input_digest"]) for row in own
+                        ("native_copy", selected, body) for selected, body in sorted(native.items())
                     )
                     for kind, selected, body in parents:
                         if kind == "native_copy" and await conn.fetchval(

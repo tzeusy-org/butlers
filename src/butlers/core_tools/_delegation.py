@@ -399,6 +399,12 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         # reservation remains a separate owning boundary.
         if row.get("question") != question or row.get("asking_butler") != asking_butler:
             return {"status": "error", "error": "Delegated question body differs."}
+        from butlers.core.delegation_source import create_question_schedule, receive_question
+
+        try:
+            question_input = await receive_question(pool, row)
+        except Exception:
+            return {"status": "error", "error": "Native question input is unavailable."}
         now = datetime.now(UTC)
         target_time = now + timedelta(minutes=1)
         cron = f"{target_time.minute} {target_time.hour} {target_time.day} {target_time.month} *"
@@ -409,13 +415,19 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             "Answer it using your own domain's knowledge/memory, then call the "
             f'delegate_answer tool with ledger_id="{ledger_id}" and your answer text.'
         )
-        try:
-            task_id = await _schedule_create(
-                pool,
+
+        async def write_question_schedule(conn):
+            return await _schedule_create(
+                conn,
                 f"delegate-answer-{ledger_id}",
                 cron,
                 prompt,
                 until_at=until_at,
+            )
+
+        try:
+            task_id = await create_question_schedule(
+                pool, question_input, prompt, write_question_schedule
             )
         except Exception as exc:
             return {

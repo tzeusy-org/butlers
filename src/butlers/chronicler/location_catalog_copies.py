@@ -19,8 +19,6 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-import httpx
-
 from butlers.chronicler.location_retention import PolicyUnavailableError
 from butlers.location_retention import content_digest
 
@@ -58,18 +56,23 @@ class _ServerCopyScope:
     loans: list[tuple[CatalogCopyRuntime, UUID, bytes, bool]]
     active: bool = True
     contexts: list[tuple[Any, UUID]] = field(default_factory=list)
+    target: str | None = None
+    questions: list[tuple[Any, UUID, bytes]] = field(default_factory=list)
 
 
 _server_copy_scope: ContextVar[_ServerCopyScope | None] = ContextVar(
     "native_catalog_server_copy", default=None
 )
 
+_server_copy_scopes: dict[UUID, _ServerCopyScope] = {}
+
 
 class CatalogServerCopyLifetime:
     """Native ASGI completion settles only the actual server response copy."""
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, *, butler_name: str | None = None) -> None:
         self.app = app
+        self.butler_name = butler_name
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.app, name)
@@ -78,7 +81,8 @@ class CatalogServerCopyLifetime:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
-        copies = _ServerCopyScope(uuid4(), [])
+        copies = _ServerCopyScope(uuid4(), [], target=self.butler_name)
+        _server_copy_scopes[copies.request] = copies
         token = _server_copy_scope.set(copies)
         final_body = False
 
@@ -96,12 +100,17 @@ class CatalogServerCopyLifetime:
                         await runtime.finish_source_response(loan, digest, copies.request)
                     else:
                         await runtime.finish_server_copy(loan, digest, copies.request)
+                from butlers.chronicler.location_delegation_receivers import finish_received_server
+
+                for runtime, generation, digest in copies.questions:
+                    await finish_received_server(runtime, generation, digest, copies.request)
                 from butlers.chronicler.location_memory_context import finish_context_server
 
                 for runtime, generation in copies.contexts:
                     await finish_context_server(runtime, generation, copies.request)
         finally:
             copies.active = False
+            _server_copy_scopes.pop(copies.request, None)
             _server_copy_scope.reset(token)
 
 
@@ -335,6 +344,8 @@ class CatalogCopyRuntime:
         from butlers.core.delegation_source import clear_writer
 
         clear_writer(self.domain, self.delegation_writer)
+        self.delegation_writer.pending.clear()
+        self.delegation_writer.receiving.clear()
         self.active = False
         self.pending.clear()
         if _runtimes.get(self.memory) is self:
@@ -423,61 +434,14 @@ class CatalogCopyRuntime:
             raise PolicyUnavailableError("Committed source response is unknown")
 
     async def endpoint(self, name: str, *, control: bool = True) -> str:
-        if not self.active:
-            raise PolicyUnavailableError("Catalog runtime lifetime ended")
-        from butlers.connectors.mcp_client import CachedMCPClient
+        from butlers.chronicler.location_copy_transport import registered_endpoint
 
-        rows = CachedMCPClient._parse_result(
-            await self.registry.call_tool("list_butlers", {}), "list_butlers"
-        )
-        if isinstance(rows, dict):
-            rows = rows.get("butlers")
-        matches = [row for row in rows or () if row.get("name") == name]
-        if len(matches) != 1 or matches[0].get("eligibility_state") != "active":
-            raise PolicyUnavailableError("Registered catalog endpoint is unavailable")
-        from butlers.core.mcp_urls import (
-            canonical_runtime_mcp_url,
-            resolve_cross_container_mcp_url,
-        )
-
-        endpoint = resolve_cross_container_mcp_url(
-            canonical_runtime_mcp_url(matches[0]["endpoint_url"])
-        )
-        url = urlsplit(endpoint)
-        if (
-            url.scheme not in {"http", "https"}
-            or not url.hostname
-            or url.username
-            or url.password
-            or url.query
-            or url.fragment
-        ):
-            raise PolicyUnavailableError("Registered catalog endpoint differs")
-        if not control:
-            return endpoint
-        return f"{url.scheme}://{url.netloc}{_PATH}"
+        return await registered_endpoint(self, name, control=control)
 
     async def exchange(self, endpoint: str, token: str, body: dict) -> dict:
-        # No redirects, credentials, caller endpoint or body-bearing logs.
-        async with asyncio.timeout(5):
-            async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
-                async with client.stream(
-                    "POST", endpoint, json=body, headers={_HEADER: token}
-                ) as response:
-                    if response.status_code != 200:
-                        raise PolicyUnavailableError("Catalog control is unavailable")
-                    raw = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        raw.extend(chunk)
-                        if len(raw) > 16384:
-                            raise PolicyUnavailableError("Catalog control is oversized")
-                    try:
-                        value = json.loads(raw, object_pairs_hook=_unique_object)
-                    except (ValueError, TypeError):
-                        raise PolicyUnavailableError("Catalog control differs") from None
-        if not isinstance(value, dict):
-            raise PolicyUnavailableError("Catalog control differs")
-        return value
+        from butlers.chronicler.location_copy_transport import exchange_metadata
+
+        return await exchange_metadata(self, endpoint, token, body)
 
     async def _challenge(self, token: str, body: dict) -> dict:
         pending = self.pending.get(token)
@@ -835,6 +799,33 @@ class CatalogCopyRuntime:
                 result = await self._source(token, body)
             elif body.get("op") == "authorize_route" and set(body) == {"op", "loan_id"}:
                 result = await self.authorize_route(UUID(body["loan_id"]), token)
+            elif body.get("op") == "question_challenge" and set(body) == {
+                "op",
+                "ledger_id",
+                "source",
+                "body_digest",
+            }:
+                from butlers.chronicler.location_delegation_receivers import question_challenge
+
+                result = await question_challenge(self.delegation_writer, token, body)
+            elif body.get("op") == "question_source" and set(body) == {
+                "op",
+                "ledger_id",
+                "receiver",
+            }:
+                from butlers.chronicler.location_delegation_receivers import prepare_question_source
+
+                result = await prepare_question_source(self.delegation_writer, token, body)
+            elif body.get("op") == "question_delivery" and set(body) == {
+                "op",
+                "loan_id",
+                "receiver",
+            }:
+                from butlers.chronicler.location_delegation_receivers import (
+                    verify_question_delivery,
+                )
+
+                result = await verify_question_delivery(self.delegation_writer, token, body)
             else:
                 raise ValueError
             return JSONResponse(result)

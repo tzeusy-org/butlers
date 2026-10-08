@@ -821,16 +821,30 @@ async def test_start_mcp_server_waits_until_uvicorn_reports_started(butler_dir: 
     daemon = ButlerDaemon(butler_dir)
     daemon.config = load_config(butler_dir)
     daemon.mcp = RuntimeFastMCP("test-butler")
-    daemon.db = MagicMock(pool=AsyncMock())
+    daemon.db = MagicMock(pool=AsyncMock(), schema="test_butler")
+    native_runtime = MagicMock()
+    native_factory = AsyncMock(return_value=native_runtime)
 
     with (
-        patch.object(ButlerDaemon, "_build_mcp_http_app", return_value=object()),
+        patch(
+            "butlers.chronicler.location_delegation_runtime.NativeDelegationRuntime.create",
+            native_factory,
+        ),
+        patch.object(ButlerDaemon, "_build_mcp_http_app", return_value=object()) as app_factory,
         patch("butlers.daemon.uvicorn.Config", _FakeUvicornConfig),
         patch("butlers.daemon.uvicorn.Server", _DelayedStartedServer),
         patch("butlers.daemon.socket.socket", _FakeSocket),
     ):
         await daemon._start_mcp_server()
 
+    native_factory.assert_awaited_once_with(
+        domain=daemon.db.pool,
+        name=daemon.config.name,
+        schema=daemon.db.schema,
+        registry=daemon.switchboard_client,
+    )
+    assert app_factory.call_args.kwargs["location_retention_routes"] == [native_runtime.route()]
+    assert daemon._location_delegation_runtime is native_runtime
     assert daemon._server is not None
     assert daemon._server.started is True
     assert daemon._server.config.kwargs["timeout_graceful_shutdown"] == (
