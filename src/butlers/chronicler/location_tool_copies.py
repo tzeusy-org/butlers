@@ -30,6 +30,13 @@ class _ToolCopy:
     mixed_inputs: bool = False
 
 
+# These names alone grant nothing: actual native selected-row producers must
+# commit their exact source/body/receiving births and mark every selected row.
+NATIVE_MEMORY_READ_TOOLS = frozenset(
+    {"memory_catalog_search", "memory_search", "memory_recall", "memory_get"}
+)
+
+
 _current_tool_copy: ContextVar[_ToolCopy | None] = ContextVar("native_tool_copy", default=None)
 
 

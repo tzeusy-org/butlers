@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -430,15 +429,17 @@ async def prepare_batch(pool: asyncpg.Pool, run_id: UUID) -> UUID | None:
     """Preserve original preparation outcome, with a closed failure diagnostic."""
     try:
         return await _prepare_batch(pool, run_id)
-    except asyncpg.PostgresError as exc:
-        state = exc.sqlstate
-        state = (
-            state if isinstance(state, str) and re.fullmatch(r"[A-Z0-9]{5}", state) else "unknown"
-        )
+    except Exception as exc:
+        from butlers.chronicler.location_policy import closed_failure
+
+        category, label, state = closed_failure(exc)
         logger.warning(
-            "Location preparation failure stage=preparation category=postgres sqlstate=%s", state
+            "Location preparation failure stage=preparation category=%s sqlstate=%s class=%s",
+            category,
+            state,
+            label,
         )
-        raise
+        raise  # Diagnosis never changes refusal, original exception or transaction outcome.
 
 
 async def _prepare_batch(pool: asyncpg.Pool, run_id: UUID) -> UUID | None:

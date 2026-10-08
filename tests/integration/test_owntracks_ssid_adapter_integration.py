@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -395,6 +396,18 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
         )
     )
     task: asyncio.Task | None = None
+    writer_pid: int | None = None
+
+    class ObservedWriterPool:
+        @asynccontextmanager
+        async def acquire(self):
+            nonlocal writer_pid
+            async with pool.acquire() as conn:
+                writer_pid = conn.get_server_pid()
+                yield conn
+
+        def __getattr__(self, name: str):
+            return getattr(pool, name)
 
     try:
         async with pool.acquire() as blocker:
@@ -407,21 +420,24 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
                     """,
                     "owntracks.points",
                 )
-                task = asyncio.create_task(adapter.run(pool=pool, chronicler_pool=pool))
+                task = asyncio.create_task(
+                    adapter.run(pool=pool, chronicler_pool=ObservedWriterPool())
+                )
 
                 async with asyncio.timeout(5):
-                    while not await pool.fetchval(
+                    while writer_pid is None or not await pool.fetchval(
                         """
                         SELECT EXISTS (
                             SELECT 1
                             FROM pg_locks
-                            WHERE locktype = 'advisory'
+                            WHERE pid = $1 AND locktype IN ('transactionid','advisory')
                               AND ((locktype='transactionid' AND database IS NULL)
                         OR (locktype='advisory' AND database=(
                           SELECT oid FROM pg_database WHERE datname=current_database())))
                               AND NOT granted
                         )
-                        """
+                        """,
+                        writer_pid,
                     ):
                         await asyncio.sleep(0.01)
 

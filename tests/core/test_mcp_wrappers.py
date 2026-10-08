@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -246,6 +247,7 @@ async def test_tool_call_logging_mcp_emits_structured_error_on_raise(caplog) -> 
     record = errors[0]
     assert record.exception == "ValueError"  # structured field for log_scanner exc_type
     assert record.butler_name == "finance"
+    await _assert_primary_error_and_receipt_failures(proxy)
 
 
 async def test_span_wrapping_mcp_emits_structured_error_on_raise(caplog) -> None:
@@ -270,6 +272,102 @@ async def test_span_wrapping_mcp_emits_structured_error_on_raise(caplog) -> None
     record = errors[0]
     assert record.exception == "ValueError"
     assert record.butler_name == "finance"
+    await _assert_primary_error_and_receipt_failures(proxy)
+
+
+async def _assert_primary_error_and_receipt_failures(proxy) -> None:
+    from butlers.chronicler import location_tool_copies
+    from butlers.chronicler.location_retention import PolicyUnavailableError
+
+    primary = ValueError("primary-handler-failure")
+
+    @proxy.tool()
+    async def failing_handler():
+        raise primary
+
+    @proxy.tool()
+    async def successful_handler():
+        return {"status": "success"}
+
+    entered = asyncio.Event()
+
+    @proxy.tool()
+    async def cancelled_handler():
+        entered.set()
+        await asyncio.Event().wait()
+
+    with (
+        patch.object(location_tool_copies, "begin_tool_copy", AsyncMock(return_value=object())),
+        patch("butlers.mcp_wrappers.capture_tool_call") as capture,
+    ):
+        for secondary in (PolicyUnavailableError("secondary-private-detail"), None):
+            captured_before_receipt = []
+
+            async def finish(_handle, *_args, **kwargs):
+                assert kwargs == {"failed": True}
+                # The original invocation is captured even if the receipt fails.
+                captured_before_receipt.append(
+                    capture.call_args is not None and capture.call_args.kwargs["outcome"] == "error"
+                )
+                if secondary is not None:
+                    raise secondary
+
+            with patch.object(
+                location_tool_copies, "finish_tool_copy", side_effect=finish
+            ) as receipt:
+                with pytest.raises(ValueError) as error:
+                    await failing_handler()
+                assert error.value is primary
+                receipt.assert_awaited_once()
+                assert captured_before_receipt == [True]
+                assert capture.call_args.kwargs["error"] == "ValueError: primary-handler-failure"
+                capture.reset_mock()
+
+        # Success must not escape when its committed result witness is unknown.
+        with patch.object(
+            location_tool_copies,
+            "finish_tool_copy",
+            AsyncMock(side_effect=PolicyUnavailableError("result-witness-unknown")),
+        ):
+            with pytest.raises(PolicyUnavailableError, match="result-witness-unknown"):
+                await successful_handler()
+            capture.assert_not_called()
+        with patch.object(location_tool_copies, "finish_tool_copy", AsyncMock()) as receipt:
+            assert await successful_handler() == {"status": "success"}
+            assert capture.call_args.kwargs["outcome"] == "success"
+            receipt.assert_awaited_once()
+        capture.reset_mock()
+
+        # A real Task cancellation survives a secondary receipt failure; no
+        # ordinary completed/error result is invented for the cancelled handler.
+        with patch.object(
+            location_tool_copies,
+            "finish_tool_copy",
+            AsyncMock(side_effect=PolicyUnavailableError("cancel-receipt-unknown")),
+        ) as receipt:
+            task = asyncio.create_task(cancelled_handler())
+            await entered.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            receipt.assert_awaited_once()
+            capture.assert_not_called()
+
+        # Cancellation newly requested while failure cleanup waits must remain
+        # cancellation; the prior handler error has already been captured.
+        cleanup_entered = asyncio.Event()
+
+        async def waiting_receipt(*args, **kwargs):
+            cleanup_entered.set()
+            await asyncio.Event().wait()
+
+        with patch.object(location_tool_copies, "finish_tool_copy", side_effect=waiting_receipt):
+            task = asyncio.create_task(failing_handler())
+            await cleanup_entered.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert capture.call_args.kwargs["error"] == "ValueError: primary-handler-failure"
 
 
 async def test_failed_tool_call_routes_to_scanned_log_and_parses_as_finding(tmp_path) -> None:

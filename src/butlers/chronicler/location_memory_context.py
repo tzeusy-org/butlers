@@ -661,17 +661,34 @@ def captured_artifact_calls(calls: Any, artifacts: list[Any], witnesses: list[An
         return False
     owned = {(row["memory_table"], str(row["artifact_id"])) for row in artifacts}
     names = {"memory_store_fact": "facts", "memory_store_rule": "rules"}
+    from butlers.chronicler.location_tool_copies import (
+        NATIVE_MEMORY_READ_TOOLS,
+        matched_tool_records,
+    )
+
+    if any(
+        isinstance(call, dict) and call.get("name") in NATIVE_MEMORY_READ_TOOLS for call in calls
+    ):
+        try:
+            if not matched_tool_records(calls, witnesses):
+                return False
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False  # Incomplete witnesses never supply disposal authority.
     for call in calls:
         if not isinstance(call, dict) or call.get("outcome") != "success":
             return False
-        if call.get("name") == "memory_catalog_search" and any(
-            row["tool_name"] == call["name"]
-            and row["module_name"] == "memory"
-            and row["exclusive_inputs"] is True
-            and row["outcome"] == "success"
-            for row in witnesses
-        ):
-            continue  # Complete actual selected-row producer, never a caller label.
+        if call.get("name") in NATIVE_MEMORY_READ_TOOLS:
+            applicable = [row for row in witnesses if row["tool_name"] == call["name"]]
+            if not applicable or any(
+                row["module_name"] != "memory"
+                or row["exclusive_inputs"] is not True
+                or row["outcome"] != "success"
+                for row in applicable
+            ):
+                return False
+            # The caller also requires full one-to-one input/result matching.
+            # One exclusive call cannot bless another same-name mixed call.
+            continue
         result = call.get("result")
         table = names.get(call.get("name"))
         if not isinstance(result, dict) or (table, str(result.get("id"))) not in owned:
@@ -880,7 +897,7 @@ async def capture_context_catalog_source(
     )
     if frozen is None or frozen["exclusive_input"] is not True:
         return False
-    from butlers.chronicler.location_tool_copies import current_tool_copy
+    from butlers.chronicler.location_tool_copies import NATIVE_MEMORY_READ_TOOLS, current_tool_copy
 
     current_tool = current_tool_copy(binding.runtime)
     tools = await conn.fetch(
@@ -899,10 +916,10 @@ async def capture_context_catalog_source(
         if (
             tool["module_name"] != "memory"
             or tool["tool_name"]
-            not in {"memory_store_fact", "memory_store_rule", "memory_catalog_search"}
+            not in ({"memory_store_fact", "memory_store_rule"} | NATIVE_MEMORY_READ_TOOLS)
             or (not active_write and tool["outcome"] != "success")
             or (
-                tool["tool_name"] == "memory_catalog_search"
+                tool["tool_name"] in NATIVE_MEMORY_READ_TOOLS
                 and tool["exclusive_inputs"] is not True
             )
         ):

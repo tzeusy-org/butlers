@@ -312,3 +312,7 @@ row transactionid-lock observer, without relaxing overlap, rollback or roles.
 New artifact/tool history tables participate in exact replay owner/shape checks
 and immutable history triggers. Owning PostgreSQL controls remain unrun locally;
 software controls, collection and mock transactions do not certify them.
+
+Native Memory read continuation keeps exact episode source content separate from mutable reference counters. The configured owning Memory producer records actual selected parent/body and receiving-session births before bytes return. Private tool witnesses become exclusive only after all selected inputs are known; a nonempty independent or currently unclassified fact/rule selection preserves the complete receiving context. Same-name calls retain full one-to-one input/result matching and each applicable read witness must be exclusive.
+
+Handler failure capture precedes receipt cleanup. A secondary unavailable failure receipt leaves holders unresolved and preserves the original handler error/cancellation. A new task cancellation during cleanup propagates. Successful-result receipt failures continue to refuse result return. These source mechanisms do not establish real-role or all-holder completion before actual hosted/online proof.

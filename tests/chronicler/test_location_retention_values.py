@@ -397,6 +397,20 @@ async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monk
 
     from butlers.chronicler import location_retention
 
+    # A non-Postgres preparation exception still publishes only closed labels,
+    # and the same original error escapes; no missing-object remedy is inferred.
+    primary = ValueError("synthetic-private-preparation-body")
+    with monkeypatch.context() as narrow:
+        narrow.setattr(location_retention, "_prepare_batch", AsyncMock(side_effect=primary))
+        caplog.clear()
+        with pytest.raises(ValueError) as failed:
+            await location_retention.prepare_batch(pool, uuid4())
+        assert failed.value is primary
+        assert "stage=preparation category=native sqlstate=unknown class=value_error" in caplog.text
+        assert "synthetic-private-preparation-body" not in caplog.text
+        narrow.setattr(location_retention, "_prepare_batch", AsyncMock(return_value=uuid4()))
+        assert await location_retention.prepare_batch(pool, uuid4()) is not None
+
     key, raw_id, decision = uuid4(), uuid4(), uuid4()
     original = {
         "id": key,
@@ -1268,7 +1282,134 @@ async def test_native_memory_writer_reserves_before_embedding_and_commits_exact_
         copies._receivers.pop(pool, None)
         location_retention._copy_pools.discard(pool)
 
+    await _assert_native_episode_tool_reads()
+
+
+async def _assert_native_episode_tool_reads():
+    """Real get/read entry; constructor/DB doubles, no role or SQL credit."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
     from uuid import uuid4
+
+    from butlers.chronicler import location_memory_copies as copies
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
+    from butlers.modules.memory.storage import get_memory
+
+    class Memory:
+        def __init__(self):
+            self.trace = []
+            self.births = []
+            self.parents = True
+            self.changed = False
+            self.fenced = False
+            self.unknown = False
+            self.row = {"id": uuid4(), "content": "own native episode", "reference_count": 0}
+            self.original = copies.episode_body_digest(self.row)
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.trace.append("begin")
+            yield
+            self.trace.append("commit")
+
+        async def fetchrow(self, sql, *args):
+            assert "location_retention_policy" in sql
+            self.trace.append("policy")
+            return {"version": 1}
+
+        async def fetchval(self, sql, *args):
+            if "current_schema" in sql:
+                return "chronicler_mem"
+            if "current_user" in sql:
+                return "actual-owner-double"
+            if "location_retention_frontiers" in sql:
+                return self.fenced
+            if "count(*) FROM chronicler.location_native_copy_births" in sql:
+                self.trace.append("readback")
+                return 0 if self.unknown else 1
+            raise AssertionError(sql)
+
+        async def execute(self, sql, *args):
+            if "INSERT INTO chronicler.location_native_copy_births" in sql:
+                self.trace.append("birth")
+                self.births.append(args)
+
+        async def fetch(self, sql, *args):
+            if "FROM chronicler.location_native_memory_commits" in sql:
+                return (
+                    [
+                        {
+                            "output_kind": "point_event",
+                            "output_id": self.row["id"],
+                            "lineage_known": True,
+                            "exclusive_input": True,
+                            "body_digest": self.original,
+                        }
+                    ]
+                    if self.parents
+                    else []
+                )
+            self.trace.append("body_read")
+            if sql.startswith("UPDATE episodes"):
+                self.row["reference_count"] += 1
+            return (
+                [{**self.row, "content": "changed independent body"}]
+                if self.changed
+                else [self.row]
+            )
+
+    domain, memory = object(), Memory()
+    runtime = SimpleNamespace(domain=domain, memory=memory, active=True)
+    copies._receivers[domain] = (memory, "chronicler_mem", "actual-owner-double")
+    _runtimes[domain] = runtime
+    tool = _ToolCopy(runtime, uuid4(), uuid4(), "memory_get", "memory")
+    token = _current_tool_copy.set(tool)
+    try:
+        result = await get_memory(
+            memory, "episode", memory.row["id"], allowed_sensitivities=["normal"]
+        )
+        assert result["reference_count"] == 1
+        assert tool.read_observed and not tool.mixed_inputs
+        assert memory.births[-1][4] is True and memory.births[-1][5] == tool.session
+        assert memory.trace.index("policy") < memory.trace.index("body_read")
+        assert (
+            memory.trace.index("birth")
+            < memory.trace.index("commit")
+            < memory.trace.index("readback")
+        )
+        memory.changed = True
+        await copies.capture_memory_rows(memory, "episodes", "SELECT * FROM episodes")
+        assert tool.mixed_inputs and memory.births[-1][4] is False
+        memory.changed = False
+        tool.mixed_inputs = False
+        memory.parents = False
+        await copies.capture_memory_rows(memory, "episodes", "SELECT * FROM episodes")
+        assert tool.mixed_inputs  # A row with no native parent is independent, not exclusive.
+        memory.parents = True
+        tool.mixed_inputs = False
+        await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+        assert tool.mixed_inputs  # Unknown fact ancestry cannot borrow episode authority.
+        memory.fenced = True
+        before = len(memory.births)
+        with pytest.raises(copies.PolicyUnavailableError, match="fenced"):
+            await copies.capture_memory_rows(memory, "episodes", "SELECT * FROM episodes")
+        assert len(memory.births) == before
+        memory.fenced = False
+        memory.unknown = True
+        tool.read_observed = False
+        with pytest.raises(copies.PolicyUnavailableError, match="birth is unknown"):
+            await copies.capture_memory_rows(memory, "episodes", "SELECT * FROM episodes")
+        assert tool.read_observed is False
+    finally:
+        _current_tool_copy.reset(token)
+        _runtimes.pop(domain)
+        copies._receivers.pop(domain)
 
 
 @pytest.mark.asyncio
@@ -1792,6 +1933,33 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
         }
         for call in session["tool_calls"]
     ]
+    from butlers.chronicler.location_memory_context import captured_artifact_calls
+    from butlers.chronicler.location_tool_copies import matched_tool_records
+
+    second_read = {**read_call, "input_fingerprint": "c" * 64}
+    second_witness = {**pool.tool_witnesses[1], "input_digest": bytes.fromhex("c" * 64)}
+    two_reads = [read_call, second_read]
+    two_witnesses = [pool.tool_witnesses[1], second_witness]
+    assert matched_tool_records(two_reads, two_witnesses)
+    assert captured_artifact_calls(two_reads, [], two_witnesses)
+    second_witness["exclusive_inputs"] = False
+    assert matched_tool_records(two_reads, two_witnesses)  # Matching is no erasure authority.
+    assert captured_artifact_calls(two_reads, [], two_witnesses) is False
+    second_witness["exclusive_inputs"] = True
+    for native_name in ("memory_search", "memory_recall", "memory_get"):
+        native_read = {**read_call, "name": native_name}
+        native_witness = {**two_witnesses[0], "tool_name": native_name}
+        assert matched_tool_records([native_read], [native_witness])
+        assert captured_artifact_calls([native_read], [], [native_witness])
+        native_witness["exclusive_inputs"] = False
+        assert captured_artifact_calls([native_read], [], [native_witness]) is False
+    assert matched_tool_records(two_reads + [second_read], two_witnesses) is False
+    assert matched_tool_records([read_call, read_call], [two_witnesses[0]]) is False
+    assert captured_artifact_calls([read_call, read_call], [], [two_witnesses[0]]) is False
+    assert captured_artifact_calls(two_reads, [], [{"tool_name": read_call["name"]}]) is False
+    assert matched_tool_records([read_call, read_call], [two_witnesses[0], two_witnesses[0]])
+    assert captured_artifact_calls([read_call, read_call], [], [two_witnesses[0], two_witnesses[0]])
+
     pool.tool_loans = [{**loan, "loan_id": uuid4()}]
     assert await dispose_runtime_context(runtime, generation, plan) is False
     assert not pool.deleted  # Unselected late input preserves the entire context.

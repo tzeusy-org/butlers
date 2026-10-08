@@ -410,8 +410,9 @@ async def dispose_native_memory(domain: Any, decision: UUID) -> None:
 async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> list[Any]:
     """Policy-first native episode reads, with actual receiving lineage.
 
-    Other memory types keep their original behavior. Consolidated descendants
-    are not assumed to inherit authority from a nullable episode reference.
+    Actual episode content is compared with its owning immutable commit.
+    Independent/changed/unknown selected rows keep native tool inputs mixed;
+    consolidated descendants never inherit from a nullable episode reference.
     """
     owners = [(domain, runtime) for domain, runtime in _receivers.items() if runtime[0] is pool]
     from butlers.chronicler.location_export_lifetime import (
@@ -421,8 +422,21 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
     from butlers.chronicler.location_retention import _api_copy_pools
 
     api_export = pool in _api_copy_pools
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_tool_copies import current_tool_copy
+
+    runtime = _runtimes.get(owners[0][0]) if len(owners) == 1 else None
+    tool = current_tool_copy(runtime) if runtime is not None else None
+    if tool is not None and tool.runtime.memory is not pool:
+        raise PolicyUnavailableError("Native Memory tool writer differs")
     if table != "episodes" or (not owners and not api_export):
-        return await pool.fetch(query, *args)
+        rows = await pool.fetch(query, *args)
+        if tool is not None:
+            tool.read_observed = True
+            # Until the real fact/rule producer proves its full native ancestry,
+            # an actual nonempty selection cannot borrow episode authority.
+            tool.mixed_inputs |= bool(rows)
+        return rows
     if api_export:
         request = native_export_request()
         if request is None:
@@ -444,18 +458,22 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
 
     context = current_runtime_context()
     receiver = context.session if context is not None else None
-    if invocation is not None and invocation.target == "chronicler":
+    if tool is not None:
+        receiver = tool.session  # Only the already admitted private tool binding.
+    elif invocation is not None and invocation.target == "chronicler":
         receiver = UUID(invocation.runtime_session)
     elif dispatch is not None and dispatch.active:
         receiver = dispatch.session_id
     copies = []
+    mixed_inputs = False
     async with pool.acquire() as conn:
         async with conn.transaction():
             await _lock(conn, schema, role)
             rows = await conn.fetch(query, *args)
             for row in rows:
                 parents = await conn.fetch(
-                    "SELECT DISTINCT b.output_kind,b.output_id,b.lineage_known,b.exclusive_input "
+                    "SELECT DISTINCT b.output_kind,b.output_id,b.lineage_known,b.exclusive_input,"
+                    "c.body_digest "
                     "FROM chronicler.location_native_memory_commits c "
                     "JOIN chronicler.location_native_memory_parents p USING(reservation_id) "
                     "JOIN chronicler.location_native_copy_births b "
@@ -464,7 +482,11 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                     row["id"],
                 )
                 if not parents:
+                    mixed_inputs = True
                     continue
+                unchanged = all(
+                    parent["body_digest"] == episode_body_digest(row) for parent in parents
+                )
                 if await conn.fetchval(
                     "SELECT EXISTS(SELECT 1 FROM chronicler.location_retention_frontiers f "
                     "JOIN chronicler.location_retention_plans p USING(decision_id) "
@@ -483,8 +505,11 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                 for parent in parents:
                     key = (parent["output_kind"], parent["output_id"])
                     outputs[key] = outputs.get(key, True) and (
-                        parent["lineage_known"] is True and parent["exclusive_input"] is True
+                        unchanged
+                        and parent["lineage_known"] is True
+                        and parent["exclusive_input"] is True
                     )
+                mixed_inputs |= not all(outputs.values())
                 for (kind, output), known in outputs.items():
                     await conn.execute(
                         "INSERT INTO chronicler.location_native_copy_births "
@@ -515,6 +540,9 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                 raise PolicyUnavailableError("Committed Memory read birth is unknown")
             if api_export:
                 register_native_export(pool, "native_read", generation, digest)
+    if tool is not None:
+        tool.read_observed = True
+        tool.mixed_inputs |= mixed_inputs
     return rows
 
 
@@ -522,7 +550,7 @@ async def capture_memory_row(pool: Any, table: str, query: str, args=()) -> Any:
     from butlers.chronicler.location_retention import _api_copy_pools
 
     native = pool in _api_copy_pools or any(runtime[0] is pool for runtime in _receivers.values())
-    if table != "episodes" or not native:
+    if not native:
         return await pool.fetchrow(query, *args)
     rows = await capture_memory_rows(pool, table, query, args)
     return rows[0] if rows else None

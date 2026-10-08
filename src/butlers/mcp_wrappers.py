@@ -11,6 +11,7 @@ Classes:
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import logging
@@ -43,6 +44,32 @@ _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL = {
 }
 
 _MANUAL_DAY_CLOSE_ALLOWED_TOOLS = frozenset({"chronicler_day_close_bundle"})
+
+
+async def _finish_failed_tool_copy(handle: Any, primary: BaseException) -> None:
+    """Best-effort error receipt without replacing the handler's primary error.
+
+    A failed receipt leaves its durable input/loans unresolved. Cancellation
+    also retains the original cancellation; this does not attest disposal.
+    Successful-handler receipts use the strict path and may still refuse a result.
+    """
+    from butlers.chronicler.location_policy import closed_failure
+    from butlers.chronicler.location_tool_copies import finish_tool_copy
+
+    try:
+        await finish_tool_copy(handle, failed=True)
+    except asyncio.CancelledError:
+        if not isinstance(primary, asyncio.CancelledError):
+            raise  # A new cancellation during cleanup still cancels the task.
+        logger.warning("Native cancelled tool failure receipt unavailable")
+    except Exception as secondary:
+        category, label, state = closed_failure(secondary)
+        logger.warning(
+            "Native tool failure receipt unavailable (category=%s class=%s sqlstate=%s)",
+            category,
+            label,
+            state,
+        )
 
 
 def _manual_day_close_tool_policy(*, butler_name: str, tool_name: str) -> dict[str, Any] | None:
@@ -287,8 +314,8 @@ class _SpanWrappingMCP:
                     with tool_span(resolved_tool_name, butler_name=self._butler_name):
                         result = await fn(*args, **kwargs)
                 except BaseException as exc:
-                    await finish_tool_copy(copy_handle, failed=True)
                     if not isinstance(exc, Exception):
+                        await _finish_failed_tool_copy(copy_handle, exc)
                         raise
                     capture_tool_call(
                         tool_name=resolved_tool_name,
@@ -304,6 +331,7 @@ class _SpanWrappingMCP:
                         tool_name=resolved_tool_name,
                         exc=exc,
                     )
+                    await _finish_failed_tool_copy(copy_handle, exc)
                     raise
 
                 await finish_tool_copy(copy_handle, result)
@@ -395,8 +423,8 @@ class _ToolCallLoggingMCP:
                 try:
                     result = await fn(*args, **kwargs)
                 except BaseException as exc:
-                    await finish_tool_copy(copy_handle, failed=True)
                     if not isinstance(exc, Exception):
+                        await _finish_failed_tool_copy(copy_handle, exc)
                         raise
                     capture_tool_call(
                         tool_name=resolved_tool_name,
@@ -412,6 +440,7 @@ class _ToolCallLoggingMCP:
                         tool_name=resolved_tool_name,
                         exc=exc,
                     )
+                    await _finish_failed_tool_copy(copy_handle, exc)
                     raise
                 await finish_tool_copy(copy_handle, result)
                 capture_tool_call(
