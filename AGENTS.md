@@ -171,6 +171,18 @@ make check-ci-test-shards     # new or moved test files must be listed exactly o
 make check-guards             # every `guards` CI step (dashes, spec, names, frontend-copy inventory, ...)
 ```
 
+
+### CI fixed-overhead interfaces
+
+CI environment restoration is advisory: `scripts/ci_environment.py prepare`
+always performs finite frozen editable repair and validates the current real
+venv/src. Never run it on a linked/shared venv. Shard duration receipts retain
+exact membership and lexical UNKNOWN fallback; worker/core experiment options
+retain normal defaults until complete comparable evidence selects a change.
+[CI shard overhead](docs/operations/ci-shard-overhead.md) defines the actual
+receipt scopes and original pending hard targets. Preserve the test ladder,
+watchdogs, healthy-workload floors, full merge-group and coverage publisher.
+
 <!-- bv-agent-instructions-v1 -->
 
 ## Beads Workflow Integration

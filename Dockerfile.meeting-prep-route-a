@@ -26,10 +26,9 @@ COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
 
 WORKDIR /app
 ENV GIT_SHA=${GIT_SHA}
-ENV UV_TORCH_BACKEND=cpu
 COPY pyproject.toml uv.lock ./
 COPY src/ src/
-RUN uv sync --offline --frozen --no-dev --extra whatsapp
+RUN uv sync --offline --frozen --no-dev
 COPY alembic/alembic.ini alembic.ini
 COPY alembic/ alembic/
 COPY scripts/ scripts/
