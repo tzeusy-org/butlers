@@ -1290,6 +1290,7 @@ async def _assert_native_memory_mutation_chain(pool, domain):
                             "WHERE input_generation=$1",
                             captured["input_generation"],
                         )
+            await _assert_two_parent_native_mutation_inputs(pool, domain, runtime, session_id)
         finally:
             if _current_tool_copy.get() is tool:
                 _current_tool_copy.reset(token)
@@ -1329,3 +1330,122 @@ async def _assert_native_memory_mutation_chain(pool, domain):
             )
     finally:
         _api_writers.pop(domain, None)
+
+
+async def _assert_two_parent_native_mutation_inputs(pool, domain, runtime, session_id):
+    """Declared ancestry SQL controls; private receiving/source bindings planted."""
+    from butlers.chronicler.location_memory_copies import artifact_content_digest
+    from butlers.chronicler.location_projection import _digest_value
+    from butlers.chronicler.location_retention import PolicyUnavailableError
+    from butlers.chronicler.location_tool_copies import (
+        _current_tool_copy,
+        _ToolCopy,
+        finish_tool_copy,
+    )
+    from butlers.location_retention import content_digest
+    from butlers.modules.memory.storage import confirm_memory
+
+    for species in ("missing", "mismatched_digest", "extra", "complete"):
+        artifact, generation, bundle, tool_id = (uuid.uuid4() for _ in range(4))
+        parents = [uuid.uuid4() for _ in range(3 if species == "extra" else 2)]
+        async with pool.acquire() as writer:
+            async with writer.transaction():
+                await writer.execute(
+                    "INSERT INTO facts(id,subject,predicate,content) "
+                    "VALUES($1,'native','location','two-parent fixed source body')",
+                    artifact,
+                )
+                row = await writer.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
+                await writer.execute(
+                    "INSERT INTO chronicler.location_native_dispatch_inputs "
+                    "(input_generation,server_request,prompt_digest,parent_count,origin_kind) "
+                    "VALUES($1,$2,$3,2,'native_memory')",
+                    bundle,
+                    uuid.uuid4(),
+                    b"p" * 32,
+                )
+                await writer.execute(
+                    "INSERT INTO chronicler.location_native_memory_bundles "
+                    "(input_generation,bundle_digest,exclusive_input) VALUES($1,$2,true)",
+                    bundle,
+                    b"b" * 32,
+                )
+                for index, parent in enumerate(parents):
+                    await writer.execute(
+                        "INSERT INTO chronicler.location_native_dispatch_parents "
+                        "(input_generation,copy_generation,input_digest) VALUES($1,$2,$3)",
+                        bundle,
+                        parent,
+                        b"n" * 32,
+                    )
+                    if index == 1 and species == "missing":
+                        continue
+                    await writer.execute(
+                        "INSERT INTO chronicler.location_native_copy_births "
+                        "(copy_generation,output_kind,output_id,input_digest,lineage_known,"
+                        "exclusive_input,producer_kind) "
+                        "VALUES($1,'point_event',$2,$3,true,true,'native_memory')",
+                        parent,
+                        uuid.uuid4(),
+                        b"z" * 32 if index == 1 and species == "mismatched_digest" else b"n" * 32,
+                    )
+                await writer.execute(
+                    "INSERT INTO chronicler.location_native_memory_artifacts "
+                    "(artifact_generation,input_generation,memory_table,artifact_id,body_digest,"
+                    "content_digest) VALUES($1,$2,'facts',$3,$4,$5)",
+                    generation,
+                    bundle,
+                    artifact,
+                    content_digest({"memory_artifact": _digest_value(dict(row))}),
+                    artifact_content_digest("facts", row),
+                )
+        await domain.execute(
+            "INSERT INTO location_runtime_tool_intents "
+            "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+            "VALUES($1,$2,'memory_confirm','memory',$3)",
+            tool_id,
+            session_id,
+            b"t" * 32,
+        )
+        binding = _ToolCopy(runtime, tool_id, session_id, "memory_confirm", "memory")
+        token = _current_tool_copy.set(binding)
+        try:
+            if species != "complete":
+                with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                    await confirm_memory(pool, "fact", artifact)
+                assert (
+                    await pool.fetchval(
+                        "SELECT last_confirmed_at FROM facts WHERE id=$1",
+                        artifact,
+                    )
+                    is None
+                )
+                assert not await domain.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_native_memory_mutation_inputs "
+                    "WHERE tool_generation=$1)",
+                    tool_id,
+                )
+                assert not binding.read_observed
+            else:
+                assert await confirm_memory(pool, "fact", artifact)
+                await finish_tool_copy((binding, token), {"confirmed": True})
+                async with domain.acquire() as observed:
+                    captured = await observed.fetchrow(
+                        "SELECT * FROM location_native_memory_mutation_inputs WHERE tool_generation=$1",
+                        tool_id,
+                    )
+                    assert captured["parent_count"] == 2 and captured["lifecycle_only"] is True
+                    assert (
+                        await observed.fetchval(
+                            "SELECT count(*) FROM location_native_copy_births WHERE copy_generation=$1 "
+                            "AND receiving_session=$2 AND input_digest=$3 AND lineage_known "
+                            "AND exclusive_input",
+                            captured["input_generation"],
+                            session_id,
+                            captured["before_digest"],
+                        )
+                        == 2
+                    )
+        finally:
+            if _current_tool_copy.get() is binding:
+                _current_tool_copy.reset(token)

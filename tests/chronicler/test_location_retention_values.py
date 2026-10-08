@@ -2925,6 +2925,7 @@ async def _assert_native_memory_mutation_versions():
                     "bundle_exclusive": True,
                 }
             ]
+            self.declared_parent_count = 1
             self.intent_present = True
             self.input_unknown = False
             self.trace = []
@@ -2978,9 +2979,22 @@ async def _assert_native_memory_mutation_versions():
             return deepcopy(self.row)
 
         async def fetch(self, sql, *args):
-            if "SELECT DISTINCT b.output_kind" in sql:
+            if "AS bundle_exclusive" in sql:
                 self.trace.append("parent_read")
-                return deepcopy(self.parents)
+                rows = []
+                for parent in self.parents:
+                    row = deepcopy(parent)
+                    row.setdefault("copy_generation", row["output_id"])
+                    row.setdefault("input_digest", b"p" * 32)
+                    row.setdefault("birth_digest", row["input_digest"])
+                    row["parent_count"] = self.declared_parent_count
+                    if row["output_id"] is None or row["birth_digest"] != row["input_digest"]:
+                        if "LEFT JOIN" not in sql:
+                            continue  # Faithful old INNER JOIN drops this frozen declared parent.
+                        if row["output_id"] is None or "AND b.input_digest=p.input_digest" in sql:
+                            row["output_id"], row["birth_digest"] = None, None
+                    rows.append(row)
+                return rows
             assert "location_native_memory_mutations" in sql
             return deepcopy(self.transitions)
 
@@ -3149,6 +3163,37 @@ async def _assert_native_memory_mutation_versions():
     _runtimes[native] = runtime
     copies._receivers[domain] = (native, "chronicler_mem", native.role)
     try:
+        # Two immutable declared parents must not collapse to one usable birth.
+        partial = Writer()
+        partial.declared_parent_count = 2
+        first = {**partial.parents[0], "copy_generation": uuid4(), "input_digest": b"a" * 32}
+        second = {**first, "copy_generation": uuid4(), "output_id": uuid4()}
+        partial.parents = [first, {**second, "output_id": None}]
+        _runtimes[partial] = runtime
+        copies._receivers[domain] = (partial, "chronicler_mem", partial.role)
+        try:
+            before = deepcopy(partial.row)
+            with pytest.raises(copies.PolicyUnavailableError, match="complete input ancestry"):
+                await confirm_memory(partial, "fact", partial.row["id"])
+            assert partial.row == before and partial.input_births == []
+            partial.parents = [first, second]
+            assert await confirm_memory(partial, "fact", partial.row["id"])
+            assert partial.mutation_inputs[-1]["parent_count"] == 2
+            assert len(partial.input_births) == 2  # Genuine full sibling positive.
+            baseline = deepcopy((partial.row, partial.input_births, partial.mutation_inputs))
+            for corrupt in (
+                [first, {**second, "birth_digest": b"z" * 32}],
+                [first, second, {**second, "copy_generation": uuid4(), "output_id": uuid4()}],
+            ):
+                tool.generation = uuid4()
+                partial.parents = corrupt
+                with pytest.raises(copies.PolicyUnavailableError, match="complete input ancestry"):
+                    await confirm_memory(partial, "fact", partial.row["id"])
+                assert (partial.row, partial.input_births, partial.mutation_inputs) == baseline
+        finally:
+            _runtimes.pop(partial)
+            copies._receivers[domain] = (native, "chronicler_mem", native.role)
+            tool.generation = uuid4()
         frozen = deepcopy(native.original)
         assert await confirm_memory(native, "fact", native.row["id"])
         assert len(native.input_births) == len(native.mutation_inputs) == 1
@@ -3177,7 +3222,14 @@ async def _assert_native_memory_mutation_versions():
         assert len(native.mutation_inputs) == 2  # COMMIT cannot be falsely rolled back.
         native.input_unknown = False
         tool.generation = uuid4()
-        native.parents.append({**parents[0], "output_id": uuid4(), "lineage_known": False})
+        native.parents.append(
+            {
+                **parents[0],
+                "copy_generation": parents[0]["output_id"],
+                "output_id": uuid4(),
+                "lineage_known": False,
+            }
+        )
         assert await confirm_memory(native, "fact", native.row["id"])
         assert native.mutation_inputs[-1]["parent_count"] == 2
         assert native.mutation_inputs[-1]["lifecycle_only"] is False

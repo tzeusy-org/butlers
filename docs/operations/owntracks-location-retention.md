@@ -497,3 +497,16 @@ managed browser invalidation or protected whole delivery. The new mutation-input
 and terminal continuation requires its own exact-head hosted evidence. Full
 mixed/borrowed/routed/delegated descendant closure remains mandatory SOURCE and
 proof work; no permanent refusal substitutes for lawful own-copy reduction.
+
+
+The mutation-input ancestry producer also verifies the immutable original
+dispatch parent_count against the complete declared parent set. It observes
+every birth for each declared generation with LEFT JOIN and checks each digest,
+rather than allowing an INNER JOIN to silently drop a missing or mismatched
+birth. Missing, extra or mismatched ancestry refuses before input capture or
+business mutation. The existing software native-confirm node positions a
+frozen two-parent bundle with one missing birth: the prior INNER JOIN genuinely
+fails to raise, while the corrected full two-parent companion passes. The same
+existing migrated SQL species retains its original one-parent positive and adds
+separate planted missing/digest/extra/full-two-parent controls. That new SQL is
+locally unrun and needs its exact current hosted witness.
