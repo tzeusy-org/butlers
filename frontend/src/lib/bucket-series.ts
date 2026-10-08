@@ -46,6 +46,17 @@ export function orderedBuckets(input: readonly CountBucket[]): CountBucket[] {
   return result
 }
 
+/** Legacy equal-width cells define their own window only when complete and contiguous. */
+export function contiguousBuckets(input: readonly CountBucket[]): CountBucket[] {
+  const ordered = orderedBuckets(input)
+  if (!ordered.length) return ordered
+  const width = Date.parse(ordered[0].bucket_end) - Date.parse(ordered[0].bucket_start)
+  if (ordered.some((bucket, index) =>
+    Date.parse(bucket.bucket_end) - Date.parse(bucket.bucket_start) !== width ||
+    (index > 0 && Date.parse(ordered[index - 1].bucket_end) !== Date.parse(bucket.bucket_start)))) return []
+  return ordered
+}
+
 /** Only an explicit successfully read window can authorize missing count zero. */
 export function denseCountBuckets(input: readonly CountBucket[], window: BucketWindow): CountBucket[] {
   const start = Date.parse(window.window_start), end = Date.parse(window.window_end)

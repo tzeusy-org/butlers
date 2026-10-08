@@ -226,6 +226,27 @@ describe("getConnectorStats timeseries transformation", () => {
     mockResponse({ data: [], meta: { hourly_events_available: false } });
     const resp = await getConnectorStats("gmail", "u@x.com", "24h");
     expect(resp.data.hourly_events_available).toBe(false);
+    const unavailable = { messages_ingested: null, messages_failed: null,
+      error_rate_pct: null, avg_messages_per_hour: null, uptime_pct: null };
+    expect(resp.data.summary).toEqual(unavailable);
+    const row = { hour: "2026-02-23T10:00:00Z", messages_ingested: null, messages_failed: null };
+    mockResponse({ data: [row], meta: { hourly_events_available: false } });
+    expect((await getConnectorStats("gmail", "u@x.com")).data.summary).toEqual(unavailable);
+    // NULL observations remain unknown even beside an otherwise readable source.
+    mockResponse({ data: [row], meta: { hourly_events_available: true } });
+    expect((await getConnectorStats("gmail", "u@x.com")).data.summary).toEqual(unavailable);
+    mockResponse({ data: [{ ...row, messages_failed: 2 }], meta: { hourly_events_available: true } });
+    expect((await getConnectorStats("gmail", "u@x.com")).data.summary)
+      .toEqual({ ...unavailable, messages_failed: 2 });
+    for (const [ingested, failed] of [[0, 0], [48, 2]]) {
+      mockResponse({ data: [{ ...row, messages_ingested: ingested, messages_failed: failed }],
+        meta: { hourly_events_available: true } });
+      const measured = (await getConnectorStats("gmail", "u@x.com")).data.summary;
+      expect(measured.messages_ingested).toBe(ingested);
+      expect(measured.messages_failed).toBe(failed);
+      expect(measured.error_rate_pct).toBe(ingested + failed ? failed / (ingested + failed) * 100 : 0);
+      expect(measured.avg_messages_per_hour).toBe(ingested / 24);
+    }
   });
 
   it("treats absent hourly_events_available as available (true)", async () => {

@@ -278,12 +278,12 @@ export function ConnectorDetailView({
               },
               {
                 label: 'error rate',
-                value: statsUnavailable ? '—' : fmtPct(stats?.summary?.error_rate_pct),
+                value: hourlyEventsAvailable ? fmtPct(stats?.summary?.error_rate_pct) : '—',
                 delta: `${fmtNum(connector.today?.messages_failed)} failed`,
               },
               {
                 label: 'avg · per hour',
-                value: statsUnavailable ? '—' : fmtAvg(stats?.summary?.avg_messages_per_hour),
+                value: hourlyEventsAvailable ? fmtAvg(stats?.summary?.avg_messages_per_hour) : '—',
                 delta: '24h window',
               },
               {

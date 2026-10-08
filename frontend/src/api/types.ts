@@ -4133,11 +4133,12 @@ export interface ConnectorStatsBucket {
 }
 
 export interface ConnectorStatsSummary {
-  messages_ingested: number;
-  messages_failed: number;
-  error_rate_pct: number;
+  /** NULL preserves unavailable source counts, independently of heartbeat health. */
+  messages_ingested: number | null;
+  messages_failed: number | null;
+  error_rate_pct: number | null;
   uptime_pct: number | null;
-  avg_messages_per_hour: number;
+  avg_messages_per_hour: number | null;
 }
 
 /** Client view model projected from canonical connector stats rows. */
@@ -4152,9 +4153,9 @@ export interface ConnectorStats {
   /**
    * DB-source health flag (bu-c48im), threaded from the response
    * `meta.hourly_events_available`. `false` only when the backend's combined
-   * ingested+filtered query genuinely failed — in that case the histogram falls
-   * back to all-zero and must surface a degraded note rather than render as an
-   * honest quiet window. Absent/`true` means the series is trustworthy.
+   * ingested+filtered query genuinely failed. Counts and derived summaries then
+   * remain unavailable; independently readable heartbeat/today data survives.
+   * Absent/`true` preserves older responses; NULL observations remain unknown.
    */
   hourly_events_available: boolean;
 }

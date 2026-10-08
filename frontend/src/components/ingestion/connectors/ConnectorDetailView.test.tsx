@@ -32,6 +32,7 @@ import type {
   ConnectorStats,
 } from '@/api/types'
 import { ConnectorDetailView } from './ConnectorDetailView'
+import { getConnectorStats } from '@/api/client'
 import type { ConnectorRecovery } from './connector-auth'
 import { ReauthCallout } from './ReauthCallout'
 import { stateColorVar, stateTextColorVar } from '@/lib/visual-token-roles'
@@ -738,13 +739,38 @@ describe('[bu-5ywn2] Routing rules section', () => {
 
   // Skip-aware histogram: degraded note (bu-c48im)
 
-  it('shows the degraded note when hourly_events_available is false', () => {
+  it('shows the degraded note when hourly_events_available is false', async () => {
     renderDetail(root, BASE_CONNECTOR, {
       stats: makeStats({ hourly_events_available: false }),
     })
     const note = container.querySelector('[data-testid="histogram-degraded-note"]')
     expect(note).not.toBeNull()
     expect(note?.textContent).toContain('24h throughput')
+    const values = () => [...container.querySelector('[data-testid="kpi-strip"]')!.children]
+      .map(cell => cell.children[1].textContent)
+    // A cached summary cannot override its explicit source-unavailable flag.
+    expect(values().slice(0, 3)).toEqual(['24', '—', '—'])
+    expect(container.querySelector('[data-testid="kpi-strip"] time')).not.toBeNull()
+    const fetch = vi.spyOn(globalThis, 'fetch')
+    try {
+      for (const [available, ingested, failed, expected] of [
+        [false, null, null, ['24', '—', '—']],
+        [true, null, null, ['24', '—', '—']],
+        [true, 0, 0, ['24', '0.0%', '0.0/hr']],
+        [true, 48, 2, ['24', '4.0%', '2.0/hr']],
+      ] as const) {
+        fetch.mockResolvedValueOnce(new Response(JSON.stringify({
+          data: [{ hour: '2026-05-10T02:00:00Z', messages_ingested: ingested, messages_failed: failed }],
+          meta: { hourly_events_available: available },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+        const response = await getConnectorStats('spotify', 'me')
+        renderDetail(root, BASE_CONNECTOR, { stats: response.data })
+        expect(values().slice(0, 3)).toEqual(expected)
+        expect(container.querySelector('[data-testid="kpi-strip"] time')).not.toBeNull()
+      }
+    } finally {
+      fetch.mockRestore()
+    }
   })
 
   it('hides the degraded note when the hourly source is available', () => {

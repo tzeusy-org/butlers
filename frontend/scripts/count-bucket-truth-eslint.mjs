@@ -20,6 +20,12 @@ export const countBucketTruthRule = {
         (node.arguments[1].body.value === 0 || node.arguments[1].body.body?.some(statement =>
           statement.type === 'ReturnStatement' && statement.argument?.value === 0))
     }
+    function containsZeroFill(node) {
+      if (!node || typeof node !== 'object') return false
+      if (zeroFill(node)) return true
+      return Object.entries(node).some(([key, value]) => key !== 'parent' &&
+        (Array.isArray(value) ? value.some(containsZeroFill) : containsZeroFill(value)))
+    }
     function identifiers(node, found = new Set()) {
       if (!node || typeof node !== 'object') return found
       if (node.type === 'Identifier') found.add(node.name)
@@ -32,7 +38,7 @@ export const countBucketTruthRule = {
     }
     function visitExpression(node, name) {
       if (!node) return
-      if (zeroFill(node)) { tainted.add(name) }
+      if (containsZeroFill(node)) { tainted.add(name) }
       aliases.push({ name, refs: identifiers(node), node })
     }
     return {
@@ -66,7 +72,7 @@ export const countBucketTruthRule = {
           }
         }
         for (const sink of sinks) {
-          if (zeroFill(sink) || [...identifiers(sink)].some(name => tainted.has(name))) {
+          if (containsZeroFill(sink) || [...identifiers(sink)].some(name => tainted.has(name))) {
             context.report({ node: sink, messageId: 'zero' })
           }
         }

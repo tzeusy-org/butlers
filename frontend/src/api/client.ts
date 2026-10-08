@@ -4563,13 +4563,18 @@ function _toConnectorStats(
     counts_partial: r.counts_partial,
   }));
 
-  const totalIngested = timeseries.reduce((s, r) => s + (r.messages_ingested ?? 0), 0);
-  const totalFailed = timeseries.reduce((s, r) => s + (r.messages_failed ?? 0), 0);
-  const totalProcessed = totalIngested + totalFailed;
-  const errorRatePct = totalProcessed > 0 ? (totalFailed / totalProcessed) * 100 : 0;
+  // An unreadable source or NULL observation cannot authorize a measured zero.
+  // Keep independently readable components, but require both for an error rate.
+  const totalIngested = hourlyEventsAvailable && timeseries.every(r => r.messages_ingested !== null)
+    ? timeseries.reduce((sum, r) => sum + r.messages_ingested!, 0) : null;
+  const totalFailed = hourlyEventsAvailable && timeseries.every(r => r.messages_failed !== null)
+    ? timeseries.reduce((sum, r) => sum + r.messages_failed!, 0) : null;
+  const totalProcessed = totalIngested !== null && totalFailed !== null ? totalIngested + totalFailed : null;
+  const errorRatePct = totalProcessed !== null && totalFailed !== null
+    ? (totalProcessed > 0 ? (totalFailed / totalProcessed) * 100 : 0) : null;
   // Approximate avg per hour: for 24h use hourly rows directly; for 7d/30d divide total by hours
   const periodHours = period === "24h" ? 24 : period === "7d" ? 168 : 720;
-  const avgPerHour = periodHours > 0 ? totalIngested / periodHours : 0;
+  const avgPerHour = totalIngested !== null ? totalIngested / periodHours : null;
 
   const summary: ConnectorStatsSummary = {
     messages_ingested: totalIngested,

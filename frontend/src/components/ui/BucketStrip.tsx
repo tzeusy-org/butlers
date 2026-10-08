@@ -1,4 +1,4 @@
-import { denseCountBuckets, orderedBuckets, type BucketWindow, type CountBucket } from "@/lib/bucket-series"
+import { denseCountBuckets, contiguousBuckets, type BucketWindow, type CountBucket } from "@/lib/bucket-series"
 import { formatOwnerDateTime } from "@/components/ui/time"
 import { useTimezone } from "@/components/ui/timezone-context"
 
@@ -17,7 +17,7 @@ interface BucketStripProps {
 /** One count grammar: actual source keys, independent receiver evidence, no animation. */
 export function BucketStrip({ buckets, window, className, height = 28, maxValue, onBucketClick, variant = "histogram", noun = "events" }: BucketStripProps) {
   const timezone = useTimezone()
-  const ordered = window === null ? [] : window ? denseCountBuckets(buckets, window) : orderedBuckets(buckets)
+  const ordered = window === null ? [] : window ? denseCountBuckets(buckets, window) : contiguousBuckets(buckets)
   const peak = maxValue ?? Math.max(...ordered.map(bucket => bucket.count ?? 0), 1)
   const filteredPeak = Math.max(...ordered.map(bucket => bucket.filtered ?? 0), 1)
   const total = ordered.reduce((sum, bucket) => sum + (bucket.count ?? 0), 0)

@@ -60,6 +60,32 @@ describe('ConnectorHistogram', () => {
     const html = renderToStaticMarkup(<ConnectorHistogram data={short} />)
     expect(html).toContain('data-testid="histogram-bars"')
     expect(html.match(/class="relative flex-1/g)).toHaveLength(10)
+    const origin = Date.parse('2026-05-10T00:00:00Z')
+    const sparse: CountBucket[] = [2, 20].map(hour => ({
+      bucket_start: new Date(origin + hour * 3_600_000).toISOString(),
+      bucket_end: new Date(origin + (hour + 1) * 3_600_000).toISOString(),
+      count: 5, listening: 'unknown',
+    }))
+    const render = (buckets: CountBucket[], window?: { window_start: string; window_end: string; bucket_width_s: number; counts_available: boolean }) =>
+      renderToStaticMarkup(<AppTimezoneProvider timezone="UTC"><SourceConnectorHistogram buckets={buckets} window={window} /></AppTimezoneProvider>)
+    const ambiguous = render(sparse)
+    expect(ambiguous).toContain('Count window unavailable')
+    expect(ambiguous).not.toContain('histogram-bars')
+    expect(ambiguous).not.toContain('total 10 events')
+    const declared = render([...sparse].reverse(), {
+      window_start: new Date(origin).toISOString(), window_end: new Date(origin + 24 * 3_600_000).toISOString(),
+      bucket_width_s: 3600, counts_available: true,
+    })
+    expect(declared.match(/class="relative flex-1/g)).toHaveLength(24)
+    expect(declared).toContain('total 10 events')
+    const contiguous = Array.from({ length: 10 }, (_, hour) => ({ ...sparse[0],
+      bucket_start: new Date(origin + hour * 3_600_000).toISOString(),
+      bucket_end: new Date(origin + (hour + 1) * 3_600_000).toISOString(),
+    }))
+    expect(render(contiguous.reverse()).match(/class="relative flex-1/g)).toHaveLength(10)
+    expect(render([sparse[0]])).toContain('total 5 events')
+    const irregular = [{ ...sparse[0], bucket_end: sparse[1].bucket_start }, sparse[1]]
+    expect(render(irregular)).toContain('Count window unavailable')
   })
 
   it('handles a single non-zero bucket (no all-zero false positive)', () => {
