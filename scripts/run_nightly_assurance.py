@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -73,8 +74,41 @@ def command(variant: str) -> list[str]:
     )
 
 
-def clock_conformance(library: Path, environment: dict[str, str]) -> dict:
+def clock_conformance(
+    library: Path, environment: dict[str, str], *, witness: dict | None = None
+) -> dict:
     """Measure the actual child environment, not an assumed libfaketime default."""
+
+    witness = witness if witness is not None else {}
+
+    def phase(name: str) -> None:
+        witness["stage"] = name
+
+    def observation_from(child: subprocess.CompletedProcess, prefix: str) -> dict:
+        # Only the fixed child program's closed numeric/date fields are read.
+        # Its bytes, extra keys and error text never enter any retained receipt.
+        phase(f"{prefix}-payload")
+        witness[f"{prefix}_exit_code"] = child.returncode
+        if len(child.stdout) > 4096:
+            raise ValueError("clock-observation-unavailable")
+        observation = json.loads(child.stdout)
+        if not isinstance(observation, dict) or set(observation) != {
+            "wall",
+            "monotonic_start",
+            "monotonic_delta",
+        }:
+            raise ValueError("clock-observation-unavailable")
+        for key in ("monotonic_start", "monotonic_delta"):
+            if type(observation[key]) not in (int, float) or not math.isfinite(observation[key]):
+                raise ValueError("clock-observation-unavailable")
+        wall = datetime.fromisoformat(observation["wall"])
+        if wall.utcoffset() != UTC.utcoffset(None):
+            raise ValueError("clock-observation-unavailable")
+        return observation
+
+    def metric(name: str, value: float) -> None:
+        # A hostile value cannot turn a fixed witness into unbounded data.
+        witness[name] = round(value, 6) if math.isfinite(value) and abs(value) <= 604800 else None
 
     script = (
         "import datetime,json,time; s=time.monotonic(); w=datetime.datetime.now(datetime.UTC);"
@@ -83,6 +117,7 @@ def clock_conformance(library: Path, environment: dict[str, str]) -> dict:
     )
     parent_monotonic = time.monotonic()
     parent_wall = datetime.now(UTC)
+    phase("first-child-run")
     child = subprocess.run(
         ["uv", "run", "--no-sync", "python", "-c", script],
         env=environment,
@@ -90,21 +125,30 @@ def clock_conformance(library: Path, environment: dict[str, str]) -> dict:
         timeout=15,
         check=True,
     )
-    observation = json.loads(child.stdout)
+    observation = observation_from(child, "first")
+    phase("first-monotonic")
+    metric("first_elapsed_seconds", observation["monotonic_delta"])
+    witness["first_monotonic_within_parent"] = (
+        parent_monotonic <= observation["monotonic_start"] <= time.monotonic()
+    )
     if not 0.03 <= observation["monotonic_delta"] <= 5:
         raise ValueError("monotonic-conformance-failed")
     if not parent_monotonic <= observation["monotonic_start"] <= time.monotonic():
         raise ValueError("child-monotonic-clock-shifted")
     wall = datetime.fromisoformat(observation["wall"])
     request = environment["FAKETIME"]
+    phase("requested-wall")
     if request in {"+45d", "+120d"}:
         from datetime import timedelta
 
         expected_wall = parent_wall + timedelta(days=45 if request == "+45d" else 120)
     else:
         expected_wall = datetime.strptime(request, "@%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    phase("first-wall")
+    metric("first_wall_error_seconds", (wall - expected_wall).total_seconds())
     if not -1 <= (wall - expected_wall).total_seconds() <= 15:
         raise ValueError("wall-conformance-failed")
+    phase("restart-child-run")
     restarted = subprocess.run(
         ["uv", "run", "--no-sync", "python", "-c", script],
         env=environment,
@@ -112,8 +156,13 @@ def clock_conformance(library: Path, environment: dict[str, str]) -> dict:
         timeout=15,
         check=True,
     )
-    restart = json.loads(restarted.stdout)
+    restart = observation_from(restarted, "restart")
     restart_wall = datetime.fromisoformat(restart["wall"])
+    phase("restart-wall")
+    metric(
+        "restart_wall_error_seconds",
+        (restart_wall - (expected_wall if request.startswith("@") else wall)).total_seconds(),
+    )
     if request.startswith("@"):
         # Start-at resets for an independently execed child; it is not a
         # shared clock origin across controller/xdist workers.
@@ -121,12 +170,18 @@ def clock_conformance(library: Path, environment: dict[str, str]) -> dict:
             raise ValueError("child-start-at-reset-unavailable")
     elif not -1 <= (restart_wall - wall).total_seconds() <= 15:
         raise ValueError("child-offset-wall-unavailable")
+    phase("restart-monotonic")
+    metric("restart_elapsed_seconds", restart["monotonic_delta"])
+    witness["restart_monotonic_within_parent"] = (
+        parent_monotonic <= restart["monotonic_start"] <= time.monotonic()
+    )
     if (
         not parent_monotonic <= restart["monotonic_start"] <= time.monotonic()
         or not 0.03 <= restart["monotonic_delta"] <= 5
     ):
         raise ValueError("child-restart-monotonic-unavailable")
     # Capture the installed package version without reflecting arbitrary CLI output.
+    phase("installed-package-query")
     package = subprocess.run(
         ["dpkg-query", "-W", "-f=${Version}", "libfaketime"],
         capture_output=True,
@@ -135,9 +190,14 @@ def clock_conformance(library: Path, environment: dict[str, str]) -> dict:
     )
     import re
 
+    phase("installed-package-version")
+    witness["package_query_exit_code"] = package.returncode
     version = package.stdout.decode("ascii", errors="ignore").strip()
     if package.returncode or not re.fullmatch(r"[0-9][A-Za-z0-9.+~:-]{0,100}", version):
         raise ValueError("installed-library-version-unavailable")
+    phase("library-digest")
+    library_sha256 = hashlib.sha256(library.read_bytes()).hexdigest()
+    phase("complete")
     return {
         **observation,
         "parent_wall": parent_wall.isoformat(),
@@ -145,7 +205,7 @@ def clock_conformance(library: Path, environment: dict[str, str]) -> dict:
         "child_restart": restart,
         "start_at_resets_per_child": request.startswith("@"),
         "wall_verified": True,
-        "library_sha256": hashlib.sha256(library.read_bytes()).hexdigest(),
+        "library_sha256": library_sha256,
         "faketime": environment["FAKETIME"],
         "monotonic_unshifted": True,
     }
@@ -240,6 +300,7 @@ def _run_phase(
     environment["BUTLERS_NIGHTLY_CLOCK_VARIANT"] = variant
     output.mkdir(parents=True, exist_ok=True)
     clock = None
+    preflight = {"stage": "library-selection"}
     try:
         if variant != "schema" and variant != "exact-image":
             if library is None:
@@ -257,7 +318,7 @@ def _run_phase(
             environment["BUTLERS_NIGHTLY_CLOCK_REQUIRED"] = "1"
             if boundary:
                 environment["FAKETIME"] = f"@{identity.night} 12:34:50"
-            clock = clock_conformance(library, environment)
+            clock = clock_conformance(library, environment, witness=preflight)
             if boundary:
                 output.mkdir(parents=True, exist_ok=True)
                 timestamp = output / "clock.txt"
@@ -274,10 +335,25 @@ def _run_phase(
                         else "0"
                     ),
                 )
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError) as exception:
         # A preflight refusal must survive as an external receipt, rather than
         # leaving a missing producer artifact that looks like an empty green.
         # Never retain exception arguments or the child's stdout/stderr.
+        # Closed class labels only, no exception arguments or subprocess bytes.
+        preflight["error_kind"] = (
+            "child-timeout"
+            if isinstance(exception, subprocess.TimeoutExpired)
+            else "child-nonzero"
+            if isinstance(exception, subprocess.CalledProcessError)
+            else "io-unavailable"
+            if isinstance(exception, OSError)
+            else "invalid-observation"
+        )
+        if isinstance(exception, subprocess.CalledProcessError):
+            code = exception.returncode
+            preflight["child_exit_code"] = (
+                code if type(code) is int and -255 <= code <= 255 else None
+            )
         sanitize_junit_report(
             raw_report=output / "absent-raw-junit.xml",
             sanitized_report=output / "junit.xml",
@@ -299,6 +375,7 @@ def _run_phase(
                 "completed_at": datetime.now(UTC).isoformat(),
                 "clock": None,
                 "clock_conformance_verified": False,
+                "clock_preflight": preflight,
                 "boundary": None,
                 "unavailable": ["clock-preflight-unavailable"],
                 "junit_sha256": hashlib.sha256((output / "junit.xml").read_bytes()).hexdigest(),

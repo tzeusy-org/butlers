@@ -195,6 +195,85 @@ def test_nightly_evidence_replay_privacy_and_host_command_boundary(tmp_path, mon
         refusal["controller_complete"] is False and refusal["clock_conformance_verified"] is False
     )
     assert refusal["unavailable"] == ["clock-preflight-unavailable"]
+    assert refusal["clock_preflight"] == {
+        "stage": "library-selection",
+        "error_kind": "invalid-observation",
+    }
+    # Position every closed preflight failure species without retaining child
+    # output/error arguments. Real installed-library conformance is separate.
+    import json
+    import subprocess
+
+    class ParentWall(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 1, tzinfo=UTC)
+
+    sample = {
+        "wall": "2026-11-15T00:00:00+00:00",
+        "monotonic_start": 11.0,
+        "monotonic_delta": 0.05,
+    }
+    library = tmp_path / "library.so"
+    library.write_bytes(b"synthetic-library-body")
+    for species, wanted_stage in (
+        ("positive", "complete"),
+        ("child-nonzero", "first-child-run"),
+        ("payload", "first-payload"),
+        ("nonfinite", "first-payload"),
+        ("first-monotonic", "first-monotonic"),
+        ("shifted-monotonic", "first-monotonic"),
+        ("first-wall", "first-wall"),
+        ("restart-wall", "restart-wall"),
+        ("restart-monotonic", "restart-monotonic"),
+        ("package", "installed-package-version"),
+    ):
+        child_calls = []
+
+        def child(arguments, **kwargs):
+            if arguments[0] == "dpkg-query":
+                return subprocess.CompletedProcess(
+                    arguments, 1 if species == "package" else 0, b"1.2.3", b"private-error"
+                )
+            child_calls.append(arguments)
+            if species == "child-nonzero":
+                raise subprocess.CalledProcessError(
+                    3, arguments, output=b"private-output", stderr=b"private-error"
+                )
+            observed = dict(sample)
+            if species == "payload":
+                return subprocess.CompletedProcess(arguments, 0, b"[]", b"private-error")
+            if species == "nonfinite":
+                observed["monotonic_delta"] = float("inf")
+            if species == "first-monotonic":
+                observed["monotonic_delta"] = 0.0
+            if species == "shifted-monotonic":
+                observed["monotonic_start"] = 1000.0
+            if species == "first-wall" or (species == "restart-wall" and len(child_calls) == 2):
+                observed["wall"] = "2026-10-01T00:00:00+00:00"
+            if species == "restart-monotonic" and len(child_calls) == 2:
+                observed["monotonic_delta"] = 0.0
+            return subprocess.CompletedProcess(
+                arguments, 0, json.dumps(observed).encode(), b"private-error"
+            )
+
+        observed_stage = {}
+        with monkeypatch.context() as clock_patch:
+            clock_patch.setattr(runner, "datetime", ParentWall)
+            clock_patch.setattr(runner.time, "monotonic", lambda: 11.0)
+            clock_patch.setattr(runner.subprocess, "run", child)
+            if species == "positive":
+                actual_clock = runner.clock_conformance(
+                    library, {"FAKETIME": "+45d"}, witness=observed_stage
+                )
+                assert actual_clock["wall_verified"] and actual_clock["monotonic_unshifted"]
+            else:
+                with pytest.raises((ValueError, subprocess.CalledProcessError)):
+                    runner.clock_conformance(library, {"FAKETIME": "+45d"}, witness=observed_stage)
+        assert observed_stage["stage"] == wanted_stage
+        assert all(
+            word not in json.dumps(observed_stage) for word in ("private-output", "private-error")
+        )
     first = RunIdentity(100, 1, "a" * 40, "schedule", "main", "2026-10-01")
     second = RunIdentity(101, 1, "b" * 40, "schedule", "main", "2026-10-02")
     green = _assessment(second)
