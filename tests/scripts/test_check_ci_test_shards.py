@@ -451,6 +451,40 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
             receipt=receipt,
             repo_root=tmp_path,
         ) == (["tests/test_b.py", "tests/test_a.py"], "compatible")
+        # These are protocol mutations, not evidence of skipped test bodies.
+        # A skipped setup cannot have a call; a dynamic call skip can.
+        for species in (
+            "setup-skip-with-call",
+            "setup-skip-without-call",
+            "dynamic-call-skip",
+            "restored",
+        ):
+            observed = copy.deepcopy(record)
+            node = next(iter(observed["nodes"]))
+            phases = observed["nodes"][node]
+            if species.startswith("setup-skip"):
+                phases["setup"]["outcome"] = "skipped"
+            if species == "setup-skip-without-call":
+                observed["file_durations_s"][observed["node_files"][node]] -= phases.pop("call")[
+                    "duration_s"
+                ]
+            if species == "dynamic-call-skip":
+                phases["call"]["outcome"] = "skipped"
+            receipt.write_text(json.dumps(observed))
+            expected = (
+                (["tests/test_a.py", "tests/test_b.py"], "unknown:invalid")
+                if species == "setup-skip-with-call"
+                else (["tests/test_b.py", "tests/test_a.py"], "compatible")
+            )
+            assert (
+                shards.duration_order(
+                    ["tests/test_a.py", "tests/test_b.py"],
+                    context=context,
+                    receipt=receipt,
+                    repo_root=tmp_path,
+                )
+                == expected
+            ), species
         for disable in (False, True):
             output = tmp_path / f"scheduler-{disable}.xml"
             args = [
