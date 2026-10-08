@@ -1065,6 +1065,7 @@ else:
     ):
         _workflow_step(job=preflight, name=step_name)
     assert "check_integration_coverage.py" not in str(preflight)
+
     # REQ-testing-047 / REQ-testing-050: twelve former orphan-service sites retain their
     # genuine provisioned PG17 fixtures; a CI ambient URL is no authority.
     for job in [preflight, *unit_jobs, *integration_jobs, jobs["check-affected"]]:
@@ -1270,6 +1271,12 @@ else:
     assert diagnostic["steps"][0]["with"]["ref"] == "${{ github.sha }}"
     assert diagnostic["steps"][1]["with"]["ref"] == "e7b7812a3fa65c80f3f070d38ee43f7fa6474881"
     assert all(step["with"]["persist-credentials"] is False for step in diagnostic["steps"][:2])
+    assert events["workflow_dispatch"]["inputs"]["offline-route-a-build-proof"]["default"] is False
+    assert migration_workflow["jobs"]["offline-route-a-build-proof"]["timeout-minutes"] == 45
+    guard = _workflow_step(job=diagnostic, name="Reject conflicting manual build modes")
+    assert guard["name"] == "Reject conflicting manual build modes"
+    assert guard["env"] == {"OTHER_BUILD_MODE": "${{ inputs['offline-route-a-build-proof'] }}"}
+    assert "exit 2" in guard["run"] and '"${OTHER_BUILD_MODE}" = "true"' in guard["run"]
     diagnostic_shell = "\n".join(step.get("run", "") for step in diagnostic["steps"])
     assert "ci_image_size_diagnostic.py" in diagnostic_shell
     assert "pytest" not in diagnostic_shell and "docker push" not in diagnostic_shell

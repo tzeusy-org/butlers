@@ -1,7 +1,8 @@
 """Private testcase identities and real controller completion times for CI shards.
 
-This plugin observes the existing selection. It never selects, skips, or retries
-tests. Raw parametrized identities are hashed before any receipt is written.
+This plugin preserves the existing selection and applies its validated file
+schedule after lexical collection. It never selects, skips, or retries tests.
+Raw parametrized identities are hashed before any receipt is written.
 """
 
 from __future__ import annotations
@@ -33,6 +34,31 @@ def node_digest(node_id: str, nonce: str | None = None) -> str:
     cannot prevent guessing low-entropy raw parameter values.
     """
     return digest([nonce, node_id]) if nonce is not None else digest(node_id)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]):
+    """Apply file priority last, in each worker, without changing its selection.
+
+    The outer wrapper resumes after fixture reordering and marker deselection.
+    Stable sorting retains the resulting intra-file order and loadfile groups.
+    ``CI_SHARD_CONTEXT.files`` is the runner's already validated schedule;
+    collection argv remains lexical to preserve conftest collector identity.
+    """
+    result = yield
+    if os.environ.get("CI_SHARD_CONTEXT"):
+        files = json.loads(os.environ["CI_SHARD_CONTEXT"])["files"]
+        if (
+            not isinstance(files, list)
+            or not all(isinstance(file, str) for file in files)
+            or len(files) != len(set(files))
+        ):
+            raise pytest.UsageError("invalid CI shard file schedule")
+        priority = {file: index for index, file in enumerate(files)}
+        if any(item.nodeid.split("::", 1)[0] not in priority for item in items):
+            raise pytest.UsageError("collected item outside CI shard file schedule")
+        items.sort(key=lambda item: priority[item.nodeid.split("::", 1)[0]])
+    return result
 
 
 class Observer:

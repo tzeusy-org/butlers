@@ -53,7 +53,7 @@
     "tests/fixtures/ci_shards/hand_manifest.py": {
       "body_sha256": {
         "tests/fixtures/ci_shards/hand_manifest.py": "5d6a170f982893878c164cc24f7dbb389ca065ffc53ce2a17bba3ab1df92469f",
-        "tests/scripts/test_check_ci_test_shards.py": "ec6ed315e178f8dc82cb79f7eef7bcebddc3fc61250aefbc60c301fd8b7f7565",
+        "tests/scripts/test_check_ci_test_shards.py": "44b8c09633875038bbc565a95809ab5808dad97be4c3856aabbbc3d9793cdac9",
         "tests/scripts/test_ci_partition.py": "775f0e2e7d1b6c4807791723134c7c3c8d0375503ad0985f435be5ad792b19a0"
       },
       "caller_sources": [
@@ -76,7 +76,7 @@
       "body_sha256": {
         "roster/relationship/tests/test_entity_posture.py": "1b9bad82fe9cae32627268af9e3690538423c084c30042c3888470d150a18c6e",
         "tests/connectors/test_filtered_event_buffer.py": "5806b98c15d7e37a1af0580b884f07e99c3fb6d1554e7b3f12f829405fe79e05",
-        "tests/contracts/test_ci_test_targets.py": "b21434e6f393101767151e248a1d9b2f0fa6fcbb84f5a3bdc0e9cb781e348fd9",
+        "tests/contracts/test_ci_test_targets.py": "d2987fd64f427d92089ea5b28c61750cf7348d53cbc3ca9b4e5f1f730eca734a",
         "tests/core/test_provider_allowance.py": "66eb7581cd5d64488330f0be6f0470b315d4d32cfc960173b3719b925c65df93",
         "tests/integration/test_filtered_event_buffer_jsonb_roundtrip.py": "ded278f9b2423ab5c16e20cacfbffd206f02287a5e28a400911c5516ab44be09",
         "tests/three_seams_helpers.py": "f57b7889f0e5c8835eb2fe1b9c6761ae8c21aa5ccd615260c4d8900895f3f1a4"
