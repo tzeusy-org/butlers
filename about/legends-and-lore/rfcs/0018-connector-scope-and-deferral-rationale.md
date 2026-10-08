@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-06-14
+**Amended:** 2026-10-08 (context feeds admitted; GitHub deferred)
 
 ## Summary
 
@@ -74,6 +75,21 @@ All connectors share one pattern: a standalone process emitting `ingest.v1` enve
 MCP submission to the Switchboard, cursor-based checkpointing, and heartbeat liveness.
 Adding a connector that does not fit this pattern is itself a scope question, not a routine
 addition.
+
+### Admitted context feeds (2026-10-08)
+
+Three sources were built before the v1 scope boundary was condensed and were then admitted by owner
+decision on 2026-10-08 (v1.md#connectors). They are deterministic scheduled pulls owned by one
+butler, not `ingest.v1` connectors, and each avoids the reason its category was deferred below:
+
+| Feed | Owner butler | Why the deferral rationale does not apply |
+|---|---|---|
+| SimpleFIN bank feed | Finance | SimpleFIN Bridge is a low-cost read-only aggregator, not Plaid's paid production plan or Link OAuth web flow. |
+| Flight status | Travel | AviationStack status polls only flight numbers already parsed from Gmail booking confirmations, so it adds only the travel-day status the row below calls incremental, without per-query AeroAPI pricing. |
+| Atmosphere | Home | Open-Meteo is keyless and needs no personal station or extra Home Assistant integration; it covers weather, air quality and pollen for one configured home location. |
+
+A GitHub activity feed (PAT events poll for occupation perception) was proposed and stays deferred
+under the same rule: not named in v1.md, so it waits.
 
 ## Deferred Connectors
 
