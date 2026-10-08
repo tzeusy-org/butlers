@@ -11,11 +11,13 @@ deterministic inputs — no network, no real GitHub PR required.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
 import session_link_guard as slg  # noqa: E402
@@ -359,6 +361,79 @@ def test_main_exits_nonzero_on_leaking_pr_body(
     assert exit_code == 1
     out = capsys.readouterr().out
     assert "claude-code-session-url" in out
+
+    # REQ-testing-044: public mode retains detection without exposing a match.
+    assert slg.main(["--pr-body-file", str(body_file), "--redact-findings"]) == 1
+    public = capsys.readouterr().out
+    assert "claude-code-session-url" in public and _CLAUDE_EXAMPLE_URL not in public
+    assert slg.main(["--pr-body-file", str(body_file), "--redact-findings", "--json"]) == 1
+    categories = json.loads(capsys.readouterr().out)
+    assert categories["count"] == 2 and all("matched_text" not in x for x in categories["findings"])
+    # Execute the actual workflow producer with a private, synthetic gh adapter.
+    # The stale event strings are deliberately clean and cannot supply authority.
+    root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    step = next(
+        x
+        for job in workflow["jobs"].values()
+        for x in job.get("steps", [])
+        if x.get("name") == "Write PR title and body to files"
+    )
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    fake = binary / "gh"
+    fake.write_text(
+        '#!/bin/sh\n[ "$1" = api ] || exit 9\n'
+        '[ "$2" = repos/tzeusy-org/butlers/pulls/123 ] || exit 9\n'
+        'cat "$PR_FIXTURE"\n'
+    )
+    fake.chmod(0o755)
+    fixture = tmp_path / "private-response.json"
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    environment = {
+        **os.environ,
+        "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+        "PR_NUMBER": "123",
+        "PR_TITLE": "clean frozen title",
+        "PR_BODY": "clean frozen body",
+        "PR_FIXTURE": str(fixture),
+        "RUNNER_TEMP": str(runner),
+    }
+    for body_text, number, expected in (
+        (_CLAUDE_EXAMPLE_URL, 123, 1),
+        (None, 123, 0),
+        ("clean", 124, None),
+        ({"malformed": True}, 123, None),
+    ):
+        fixture.write_text(
+            json.dumps(
+                {
+                    "number": number,
+                    "title": "actual live title",
+                    "body": body_text,
+                    "base": {"repo": {"full_name": "tzeusy-org/butlers"}},
+                }
+            )
+        )
+        producer = subprocess.run(
+            ["bash", "-e", "-c", step["run"]],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert _CLAUDE_EXAMPLE_URL not in producer.stdout + producer.stderr
+        if expected is None:
+            assert producer.returncode != 0 and not (runner / "pr_body.txt").exists()
+        else:
+            assert producer.returncode == 0
+            assert (
+                slg.main(["--pr-body-file", str(runner / "pr_body.txt"), "--redact-findings"])
+                == expected
+            )
+            assert _CLAUDE_EXAMPLE_URL not in capsys.readouterr().out
 
 
 def test_main_exits_nonzero_on_leaking_pr_title(

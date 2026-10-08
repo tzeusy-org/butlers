@@ -598,3 +598,22 @@ A check that saw nothing must not read as a pass; each trap below does exactly t
   catalogue `subskills/`), and validate with the th-engineering `skill-standards` `audit_skill.py`
   (0 errors). Moving a skill deeper breaks repo-relative links, `parents[N]` root computations and
   absolute `.claude/skills/...` paths together.
+
+
+### Stale branches, cache custody and live PR metadata
+
+- Use [stale branch hygiene](docs/operations/stale-branch-hygiene.md) for dry-run,
+  independently verified object recovery and concrete owner-approved retirement.
+  Closed PR names, backdated commits, missing workers and an under-100 target are
+  not deletion permission. Cache eviction is irreversible and rebuildable.
+- Trusted coordinator claims/worktree setup and native QA/healing creation and
+  cleanup share `<common-git-dir>/ci-branch-custody.lock`; do not nest an external
+  acquisition around a native operation that already acquires it. Remote deletion
+  still uses an expected-SHA lease. Retain dirty/live/foreign workers and receipts.
+- PR guards fetch validated current title/body at execution, so a manual body-fix
+  rerun sees live metadata. The commit range remains the triggering source head.
+  API failure refuses; public diagnostics omit matched session text. No token
+  widening, `pull_request_target`, public forbidden canary or mass old-head push.
+- A source merge does not complete live branch/cache/setting application, an
+  actual body-edit rerun, or both seven AND fourteen-day push observation windows.
+  Preserve separate receipts and claim no wall-clock gain without its evidence.

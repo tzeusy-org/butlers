@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -3266,6 +3267,41 @@ async def _is_circuit_breaker_tripped(
 # ---------------------------------------------------------------------------
 
 
+class MainRefreshError(RuntimeError):
+    """Trusted initial preparation could not bind a fresh main commit."""
+
+
+async def _refresh_main_commit(repo_root: Path) -> str:
+    """Fetch canonical main and return a verified immutable commit identity."""
+    output = b""
+    for args in (
+        ("fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"),
+        ("rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
+    ):
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                *args,
+                cwd=str(repo_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            output, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            if proc.returncode != 0:
+                raise MainRefreshError("main refresh unavailable")
+        except (OSError, TimeoutError) as exc:
+            raise MainRefreshError("main refresh unavailable") from exc
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+    commit = output.decode("ascii", errors="replace").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise MainRefreshError("main commit identity unavailable")
+    return commit
+
+
 async def dispatch_qa_investigation(
     pool: asyncpg.Pool,
     triaged_finding: TriagedFinding,
@@ -3655,35 +3691,18 @@ async def dispatch_qa_investigation(
         # All gates passed — create worktree
         # ---------------------------------------------------------------
 
-        # Fetch latest main before creating the worktree branch.
-        # On success, branch from origin/main so long-lived daemon worktrees
-        # always start from the freshest available remote ref.
-        _fetch_ok = False
+        # Freshness is admission, never a local-main fallback (REQ-testing-043).
         try:
-            fetch_proc = await asyncio.create_subprocess_exec(
-                "git",
-                "fetch",
-                "origin",
-                "main",
-                cwd=str(repo_root),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+            _base_ref = await _refresh_main_commit(repo_root)
+        except MainRefreshError:
+            logger.warning("QA dispatch refused: main refresh unavailable")
+            await update_attempt_status(
+                pool, attempt_id, "failed", error_detail="Main refresh unavailable"
             )
-            _, fetch_stderr = await fetch_proc.communicate()
-            if fetch_proc.returncode != 0:
-                logger.warning(
-                    "git fetch origin main failed (non-fatal): %s — falling back to local main",
-                    fetch_stderr.decode("utf-8", errors="replace").strip(),
-                )
-            else:
-                _fetch_ok = True
-        except Exception as fetch_exc:
-            logger.warning(
-                "git fetch origin main failed (non-fatal): %s — falling back to local main",
-                fetch_exc,
+            return QaDispatchResult(
+                accepted=False, fingerprint=fp, reason="main_refresh_failed", attempt_id=attempt_id
             )
-
-        _base_ref = "origin/main" if _fetch_ok else "main"
+        logger.info("QA preparation: attempt=%s base_sha=%s", attempt_id, _base_ref)
 
         try:
             worktree_path, branch_name = await create_healing_worktree(

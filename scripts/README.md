@@ -309,3 +309,18 @@ applying it to a database.
 | [`migrate_fact_subjects.py`](migrate_fact_subjects.py) | Normalizes historical fact subjects and backfills their entity links. |
 | [`reconcile_whatsapp_entities.py`](reconcile_whatsapp_entities.py) | Runs the content-blind WhatsApp entity reconciliation maintenance pass. |
 | [`retract_digest_measurements.py`](retract_digest_measurements.py) | Retracts measurement-weight facts created from butler-generated digest or briefing text. |
+
+
+## ci_branch_hygiene.py and fetch_pr_metadata.py
+
+`uv run --no-sync python scripts/ci_branch_hygiene.py` inventories, plans,
+independently bundles/verifies recovery, and observes complete CI push windows.
+Live apply/remote restoration/setting reversal require explicit execution and
+an exact separately approved manifest; default calls cannot mutate remote state.
+See [the operational procedure](../docs/operations/stale-branch-hygiene.md).
+
+`fetch_pr_metadata.py` is the mandatory guard producer for validated current
+fixed-PR title/body. It writes runner-temp inputs and digests privately, removes
+stale inputs on failure and emits only categorical diagnostics. The scanner's
+`--redact-findings` CLI mode retains detection and omits matched text; its private
+formatter and JSON interfaces remain available for existing consumers.
