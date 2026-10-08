@@ -53,7 +53,8 @@ def replay(rows: list[dict], *, root: Path = ROOT, mode: str = "current-vectors"
 
     CURRENT vector replay is P7's scratch-corpus comparison. Its pinned base is
     the current planner checkout, not a reconstructed historical branch. A
-    manifest exception still needs the separate actual historical diff mode.
+    manifest exception still needs an independently verified actual historical
+    diff, supplied either as an optional annotation or in historical-diffs mode.
     """
     if mode not in {"current-vectors", "historical-diffs"}:
         raise ValueError("UNSAFE_REPLAY_MODE")
