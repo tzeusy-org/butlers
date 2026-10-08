@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import inspect
 import logging
 import pkgutil
-import sys
 from collections import deque
 from pathlib import Path
 
@@ -38,40 +36,15 @@ def _register_roster_modules(registry: ModuleRegistry) -> None:
         if not modules_pkg_init.is_file():
             continue
 
-        target, is_package = modules_pkg_init, True
-
-        butler_name = entry.name
-        synthetic_name = f"butlers.modules._roster_{butler_name}"
-
-        # Skip if already loaded (e.g. from a previous default_registry() call).
-        if synthetic_name in sys.modules:
-            mod = sys.modules[synthetic_name]
-        else:
-            try:
-                if is_package:
-                    spec = importlib.util.spec_from_file_location(
-                        synthetic_name,
-                        target,
-                        submodule_search_locations=[str(target.parent)],
-                    )
-                else:
-                    spec = importlib.util.spec_from_file_location(synthetic_name, target)
-
-                if spec is None or spec.loader is None:
-                    continue
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules[synthetic_name] = mod
-                spec.loader.exec_module(mod)
-            except Exception:
-                logger.warning("Failed to load roster module: %s", butler_name, exc_info=True)
-                continue
+        synthetic_name = f"butlers.modules._roster_{entry.name}"
+        try:
+            mod = importlib.import_module(synthetic_name)
+        except Exception as exc:
+            raise ImportError(f"Failed to discover module: {synthetic_name}") from exc
 
         for _name, obj in inspect.getmembers(mod, inspect.isclass):
             if issubclass(obj, Module) and obj is not Module and not inspect.isabstract(obj):
-                try:
-                    registry.register(obj)
-                except ValueError:
-                    pass  # already registered
+                _register_discovered(registry, obj)
 
 
 def default_registry() -> ModuleRegistry:
@@ -88,17 +61,19 @@ def default_registry() -> ModuleRegistry:
     ):
         try:
             mod = importlib.import_module(modname)
-        except Exception:
-            logger.debug("Skipping unimportable module: %s", modname, exc_info=True)
-            continue
+        except Exception as exc:
+            raise ImportError(f"Failed to discover module: {modname}") from exc
         for _name, obj in inspect.getmembers(mod, inspect.isclass):
             if issubclass(obj, Module) and obj is not Module and not inspect.isabstract(obj):
-                try:
-                    registry.register(obj)
-                except ValueError:
-                    pass  # Already registered (e.g. re-exported from __init__)
+                _register_discovered(registry, obj)
     _register_roster_modules(registry)
     return registry
+
+
+def _register_discovered(registry: ModuleRegistry, cls: type[Module]) -> None:
+    if cls in registry._modules.values():
+        return  # Only the same concrete class re-export is idempotent.
+    registry.register(cls)
 
 
 class ModuleRegistry:

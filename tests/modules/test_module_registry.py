@@ -204,3 +204,63 @@ def test_load_all_returns_new_instances_each_call():
     result1 = reg.load_all({})
     result2 = reg.load_all({})
     assert result1[0] is not result2[0]
+
+
+def test_explicit_discovery_and_router_load_failures_are_visible(monkeypatch, tmp_path, caplog):
+    """REQ-core-modules-004, REQ-dashboard-api-066: no partial cached success."""
+    import importlib
+    import sys
+
+    import butlers.modules.registry as registry_module
+    from butlers.api.router_discovery import _load_router_module, discover_butler_routers
+
+    real_import = importlib.import_module
+    monkeypatch.setattr(
+        registry_module.pkgutil,
+        "walk_packages",
+        lambda *a, **k: [(None, "synthetic_broken", False)],
+    )
+
+    def broken(name, *args, **kwargs):
+        if name == "synthetic_broken":
+            raise RuntimeError("controlled discovery failure")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(registry_module.importlib, "import_module", broken)
+    with pytest.raises(ImportError, match="synthetic_broken"):
+        registry_module.default_registry()
+    assert "synthetic_broken" not in sys.modules
+    monkeypatch.setattr(registry_module.pkgutil, "walk_packages", lambda *a, **k: [])
+    assert "relationship" in registry_module.default_registry().available_modules
+
+    file = tmp_path / "router.py"
+    key = "controlled_failed_router"
+    monkeypatch.delitem(sys.modules, key, raising=False)
+    file.write_text("raise RuntimeError('controlled body failure')\n")
+    with pytest.raises(RuntimeError, match="controlled body failure"):
+        _load_router_module(file, key)
+    assert key not in sys.modules
+    file.write_text("from fastapi import APIRouter\nrouter=APIRouter()\n")
+    module = _load_router_module(file, key)
+    assert module.router.routes == []
+    assert _load_router_module(file, key) is module
+    other = tmp_path / "other.py"
+    other.write_text("from fastapi import APIRouter\nrouter=APIRouter()\n")
+    with pytest.raises(ImportError, match="source differs"):
+        _load_router_module(other, key)
+    monkeypatch.delitem(sys.modules, key)
+
+    # Bulk optional API policy is separate from strict direct-load policy.
+    invalid = tmp_path / "optional" / "api" / "router.py"
+    invalid.parent.mkdir(parents=True)
+    invalid.write_text("raise RuntimeError('controlled optional failure')\n")
+    healthy = tmp_path / "healthy" / "api" / "router.py"
+    healthy.parent.mkdir(parents=True)
+    healthy.write_text("from fastapi import APIRouter\nrouter=APIRouter()\n")
+    found = dict(discover_butler_routers(tmp_path))
+    assert list(found) == ["healthy"]
+    assert found["healthy"].router.routes == []
+    assert "optional" in caplog.text and "controlled optional failure" in caplog.text
+    for name in list(sys.modules):
+        if name.startswith(("healthy_api_router_", "optional_api_router_")):
+            monkeypatch.delitem(sys.modules, name)

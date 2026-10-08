@@ -100,9 +100,6 @@ def _assert_butlers_resolves_in_tree() -> None:
 
 _assert_butlers_resolves_in_tree()
 
-# Trigger roster module discovery so dynamically-loaded modules
-# are available in sys.modules before test collection.
-from butlers.modules.registry import default_registry as _default_registry  # noqa: E402
 from butlers.testing.shared_fixtures import (  # noqa: E402
     MockSpawner,
     SpawnerResult,
@@ -110,28 +107,6 @@ from butlers.testing.shared_fixtures import (  # noqa: E402
 )
 
 __all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
-
-_default_registry()
-
-# Pre-load roster job modules so ``from butlers.jobs._roster.<butler>_jobs``
-# imports work in tests without relying on roster/ being a namespace package
-# on sys.path (which fails in Docker).
-from butlers.jobs._roster_loader import load_roster_jobs as _load_roster_jobs  # noqa: E402
-
-for _butler in ("finance", "health", "relationship", "travel"):
-    try:
-        _load_roster_jobs(_butler)
-    except FileNotFoundError:
-        pass
-
-# Pre-load roster API routers so ``from butlers.api._roster.<butler>.router``
-# and ``from butlers.api._roster.<butler>.models`` work in tests.
-from butlers.api.router_discovery import discover_butler_routers as _discover_routers  # noqa: E402
-
-try:
-    _discover_routers()
-except Exception:
-    pass
 
 
 @pytest.fixture(autouse=True)
