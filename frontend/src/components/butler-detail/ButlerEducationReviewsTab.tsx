@@ -32,7 +32,7 @@ import {
   useAllFrontierNodes,
   useMindMapAnalyticsTrend,
 } from "@/hooks/use-education";
-import { ErrorLine } from "@/components/butler-detail/atoms";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { toneClass } from "@/components/butler-detail/atoms-utils";
 import { chartColor } from "@/lib/chart-colors";
 import { useTickingNow } from "@/hooks/use-ticking-now";
@@ -71,6 +71,9 @@ interface AggregatedData {
   mindMaps: Array<{ id: string; title: string; status: string }>;
   perMapMastery: Array<MasterySummary | null>;
   isLoading: boolean;
+  failedSources: Array<{ title: string; source: string }>;
+  pendingDegraded: boolean;
+  frontierDegraded: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +82,7 @@ interface AggregatedData {
 
 /** Aggregates all data for the Reviews tab in a single hook call per data type. */
 function useReviewsTabData(): AggregatedData {
-  const { data: mapsResp, isLoading: mapsLoading } = useMindMaps({ status: "active" });
+  const { data: mapsResp, isLoading: mapsLoading, isError: mapsError } = useMindMaps({ status: "active" });
   // Stable reference: memoize the data array so inner useMemo deps don't fire on
   // every render when data hasn't changed (TanStack Query returns new object
   // references on each render even when data is the same).
@@ -162,7 +165,19 @@ function useReviewsTabData(): AggregatedData {
       (r) => r.data ?? null,
     );
 
+    const mapsUnavailable = mapsError || (!mapsLoading && mapsResp == null);
+    const failedSources = mapsUnavailable ? [{ title: "Curriculum list", source: "curriculum list" }] : [];
+    for (const [results, source] of [[pendingResults, "review schedule"], [summaryResults, "mastery"], [frontierResults, "frontier"]] as const) {
+      results.forEach((result, index) => {
+        if (result.isError || (!result.isLoading && result.data == null)) {
+          failedSources.push({ title: maps[index].title, source });
+        }
+      });
+    }
     return {
+      failedSources,
+      pendingDegraded: mapsUnavailable || pendingResults.length !== maps.length || pendingResults.some((result) => result.isError || result.data == null),
+      frontierDegraded: mapsUnavailable || frontierResults.length !== maps.length || frontierResults.some((result) => result.isError || result.data == null),
       pendingEntries,
       mastery,
       frontierEntries,
@@ -170,7 +185,7 @@ function useReviewsTabData(): AggregatedData {
       perMapMastery,
       isLoading,
     };
-  }, [maps, pendingResults, summaryResults, frontierResults, isLoading]);
+  }, [maps, pendingResults, summaryResults, frontierResults, isLoading, mapsError, mapsLoading, mapsResp]);
 }
 
 // ---------------------------------------------------------------------------
@@ -395,10 +410,12 @@ function groupByTimePeriod(entries: ReviewEntry[], now: Date, tz: string): Timel
 function ReviewTimelinePanel({
   entries,
   isLoading,
+  degraded,
   now,
 }: {
   entries: ReviewEntry[];
   isLoading: boolean;
+  degraded: boolean;
   now: Date;
 }) {
   // Owner-configured timezone anchors the Today / This-week boundaries so
@@ -415,6 +432,8 @@ function ReviewTimelinePanel({
       <SectionContent className="max-h-72 overflow-y-auto">
         {isLoading ? (
           <LoadingLine />
+        ) : !hasAny && degraded ? (
+          <p className="text-sm text-muted-foreground">Review schedule is incomplete.</p>
         ) : !hasAny ? (
           <EmptyStateLine>
             No reviews scheduled: keep learning and reviews will appear here.
@@ -472,9 +491,11 @@ function ReviewTimelinePanel({
 function FrontierPanel({
   entries,
   isLoading,
+  degraded,
 }: {
   entries: FrontierEntry[];
   isLoading: boolean;
+  degraded: boolean;
 }) {
   const top5 = entries.slice(0, 5);
 
@@ -486,6 +507,8 @@ function FrontierPanel({
       <SectionContent>
         {isLoading ? (
           <LoadingLine />
+        ) : top5.length === 0 && degraded ? (
+          <p className="text-sm text-muted-foreground">Frontier is incomplete.</p>
         ) : top5.length === 0 ? (
           <EmptyStateLine>No frontier nodes yet. Keep mastering prerequisites!</EmptyStateLine>
         ) : (
@@ -574,9 +597,10 @@ function extractMasteryPct(entry: AnalyticsTrendEntry): number | null {
 }
 
 function RetentionTrendPanel({
-  mindMapId,
+  mindMapId, title,
 }: {
   mindMapId: string | null;
+  title: string;
 }) {
   const { data, isLoading, isError } = useMindMapAnalyticsTrend(mindMapId, 7);
 
@@ -610,7 +634,7 @@ function RetentionTrendPanel({
         {isLoading ? (
           <LoadingLine />
         ) : isError ? (
-          <ErrorLine>Could not load retention trend.</ErrorLine>
+          <SourceDegradedNote label={title} detail="retention trend could not be reached" />
         ) : !mindMapId ? (
           <EmptyStateLine>Select a mind map to see retention trend.</EmptyStateLine>
         ) : chartData.length === 0 ? (
@@ -648,7 +672,7 @@ function RetentionTrendPanel({
 // ---------------------------------------------------------------------------
 
 export default function ButlerEducationReviewsTab() {
-  const { pendingEntries, mastery, frontierEntries, mindMaps, perMapMastery, isLoading } = useReviewsTabData();
+  const { pendingEntries, mastery, frontierEntries, mindMaps, perMapMastery, isLoading, failedSources, pendingDegraded, frontierDegraded } = useReviewsTabData();
 
   // Capture now once — shared by overdueCount and timeline grouping to keep them consistent.
   const now = new Date();
@@ -671,7 +695,8 @@ export default function ButlerEducationReviewsTab() {
   return (
     <div className="space-y-4 pt-4" data-testid="education-reviews-tab">
       {/* Row 1: KPI quartet */}
-      <KpiQuartet mastery={mastery} overdueCount={overdueCount} isLoading={isLoading} />
+      {failedSources.map((source, index) => <SourceDegradedNote key={`${source.source}-${index}`} label={source.title} detail={`${source.source} could not be reached`} />)}
+      {failedSources.length === 0 && <KpiQuartet mastery={mastery} overdueCount={overdueCount} isLoading={isLoading} />}
 
       {/* Row 2: Mind maps progress + pending reviews timeline */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
@@ -679,17 +704,17 @@ export default function ButlerEducationReviewsTab() {
           <MindMapsProgressPanel items={mindMapProgressItems} isLoading={isLoading} />
         </div>
         <div className="lg:col-span-2">
-          <ReviewTimelinePanel entries={pendingEntries} isLoading={isLoading} now={now} />
+          <ReviewTimelinePanel entries={pendingEntries} isLoading={isLoading} degraded={pendingDegraded} now={now} />
         </div>
       </div>
 
       {/* Row 3: Frontier nodes + 7d retention trend */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
         <div className="lg:col-span-2">
-          <FrontierPanel entries={frontierEntries} isLoading={isLoading} />
+          <FrontierPanel entries={frontierEntries} isLoading={isLoading} degraded={frontierDegraded} />
         </div>
         <div className="lg:col-span-2">
-          <RetentionTrendPanel mindMapId={primaryMapId} />
+          <RetentionTrendPanel mindMapId={primaryMapId} title={mindMaps[0]?.title ?? "Curriculum"} />
         </div>
       </div>
     </div>

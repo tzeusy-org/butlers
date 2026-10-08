@@ -46,7 +46,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -98,6 +98,11 @@ def _make_pool(
 ) -> AsyncMock:
     """Build an AsyncMock behaving like an asyncpg.Pool (FIFO consumption)."""
     pool = AsyncMock()
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=pool)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    pool.acquire = MagicMock(return_value=acquisition)
+    pool.transaction = MagicMock(return_value=acquisition)
 
     if fetchrow_returns is not None:
         pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
@@ -112,7 +117,7 @@ def _make_pool(
     if fetchval_returns is not None:
         pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
     else:
-        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetchval = AsyncMock(return_value="active")
 
     if execute_returns is not None:
         pool.execute = AsyncMock(side_effect=list(execute_returns))
@@ -1364,7 +1369,17 @@ class TestCheckStaleFlows:
 
         pool = _make_pool(
             fetch_returns=[
-                [_make_row({"id": map_id})],  # mind_maps query
+                [
+                    _make_row(
+                        {
+                            "id": map_id,
+                            "status": "active",
+                            "created_at": datetime.now(tz=UTC),
+                            "node_count": 1,
+                            "last_activity": datetime.now(tz=UTC),
+                        }
+                    )
+                ],  # mind_maps query
                 [],  # node list for cleanup
                 [],  # batch schedules for cleanup
             ],
@@ -1403,7 +1418,21 @@ class TestCheckStaleFlows:
         map_id = str(uuid.uuid4())
         recent_time = (datetime.now(tz=UTC) - timedelta(days=5)).isoformat()
 
-        pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+        pool = _make_pool(
+            fetch_returns=[
+                [
+                    _make_row(
+                        {
+                            "id": map_id,
+                            "status": "active",
+                            "created_at": datetime.now(tz=UTC),
+                            "node_count": 1,
+                            "last_activity": datetime.now(tz=UTC),
+                        }
+                    )
+                ]
+            ]
+        )
 
         state = _flow_state(
             status="teaching",
@@ -1428,7 +1457,21 @@ class TestCheckStaleFlows:
         map_id = str(uuid.uuid4())
         old_time = (datetime.now(tz=UTC) - timedelta(days=60)).isoformat()
 
-        pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+        pool = _make_pool(
+            fetch_returns=[
+                [
+                    _make_row(
+                        {
+                            "id": map_id,
+                            "status": "active",
+                            "created_at": datetime.now(tz=UTC),
+                            "node_count": 1,
+                            "last_activity": datetime.now(tz=UTC),
+                        }
+                    )
+                ]
+            ]
+        )
 
         state = _flow_state(
             status="completed",
@@ -1453,7 +1496,21 @@ class TestCheckStaleFlows:
         map_id = str(uuid.uuid4())
         old_time = (datetime.now(tz=UTC) - timedelta(days=60)).isoformat()
 
-        pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+        pool = _make_pool(
+            fetch_returns=[
+                [
+                    _make_row(
+                        {
+                            "id": map_id,
+                            "status": "active",
+                            "created_at": datetime.now(tz=UTC),
+                            "node_count": 1,
+                            "last_activity": datetime.now(tz=UTC),
+                        }
+                    )
+                ]
+            ]
+        )
 
         state = _flow_state(
             status="abandoned",
@@ -1478,7 +1535,22 @@ class TestCheckStaleFlows:
         map_ids = [str(uuid.uuid4()) for _ in range(3)]
         stale_time = (datetime.now(tz=UTC) - timedelta(days=40)).isoformat()
 
-        pool = _make_pool(fetch_returns=[[_make_row({"id": mid}) for mid in map_ids]])
+        pool = _make_pool(
+            fetch_returns=[
+                [
+                    _make_row(
+                        {
+                            "id": mid,
+                            "status": "active",
+                            "created_at": datetime.now(tz=UTC),
+                            "node_count": 1,
+                            "last_activity": datetime.now(tz=UTC),
+                        }
+                    )
+                    for mid in map_ids
+                ]
+            ]
+        )
 
         states = [
             _flow_state(
@@ -1517,7 +1589,21 @@ class TestCheckStaleFlows:
         from butlers.tools.education.teaching_flows import check_stale_flows
 
         map_id = str(uuid.uuid4())
-        pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+        pool = _make_pool(
+            fetch_returns=[
+                [
+                    _make_row(
+                        {
+                            "id": map_id,
+                            "status": "active",
+                            "created_at": datetime.now(tz=UTC),
+                            "node_count": 1,
+                            "last_activity": datetime.now(tz=UTC),
+                        }
+                    )
+                ]
+            ]
+        )
 
         with patch(
             "butlers.tools.education.teaching_flows.state_get", AsyncMock(return_value=None)
@@ -1532,9 +1618,24 @@ class TestCheckStaleFlows:
 
         map_id = str(uuid.uuid4())
         # Exactly 30 days ago — not stale (cutoff requires > 30)
-        boundary_time = (datetime.now(tz=UTC) - timedelta(days=30)).isoformat()
+        check_time = datetime.now(tz=UTC)
+        boundary_time = (check_time - timedelta(days=30)).isoformat()
 
-        pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+        pool = _make_pool(
+            fetch_returns=[
+                [
+                    _make_row(
+                        {
+                            "id": map_id,
+                            "status": "active",
+                            "created_at": datetime.now(tz=UTC),
+                            "node_count": 1,
+                            "last_activity": datetime.now(tz=UTC),
+                        }
+                    )
+                ]
+            ]
+        )
 
         state = _flow_state(
             status="teaching",
@@ -1544,9 +1645,13 @@ class TestCheckStaleFlows:
             last_session_at=boundary_time,
         )
 
-        with patch(
-            "butlers.tools.education.teaching_flows.state_get", AsyncMock(return_value=state)
+        with (
+            patch("butlers.tools.education.teaching_flows.datetime", wraps=datetime) as clock,
+            patch(
+                "butlers.tools.education.teaching_flows.state_get", AsyncMock(return_value=state)
+            ),
         ):
+            clock.now.return_value = check_time
             result = await check_stale_flows(pool)
 
         # At exactly 30 days, it's on the boundary — should not be abandoned
@@ -1692,3 +1797,123 @@ class TestTechniqueRecording:
         state["current_technique"] = {"id": "socratic"}
         with pytest.raises(ValueError, match="current_technique"):
             _validate_state_invariants(state)
+
+
+async def test_start_uses_one_transaction_and_propagates_either_write_failure():
+    from butlers.tools.education.teaching_flows import teaching_flow_start
+
+    for failure in ("map", "state"):
+        pool = _make_pool(fetchrow_returns=[_make_row({"id": "map"})])
+        if failure == "map":
+            pool.fetchrow.side_effect = RuntimeError("map write refused")
+        with patch("butlers.tools.education.teaching_flows.state_set", AsyncMock()) as write:
+            if failure == "state":
+                write.side_effect = RuntimeError("state write refused")
+            with pytest.raises(RuntimeError, match="write refused"):
+                await teaching_flow_start(pool, "topic")
+            if failure == "map":
+                write.assert_not_awaited()
+            else:
+                assert write.call_args.args[0] is pool
+            assert pool.transaction.call_count == 1
+            assert pool.transaction.return_value.__aexit__.call_args.args[0] is RuntimeError
+
+
+async def test_planning_requires_an_active_map_before_frontier_or_state_write():
+    from butlers.tools.education.teaching_flows import teaching_flow_advance
+
+    for status in ("draft", "abandoned", "completed"):
+        pool = _make_pool(
+            fetchrow_returns=[
+                _make_state_row(
+                    _flow_state(status="planning", current_node_id=None, current_phase=None)
+                )
+            ],
+            fetchval_returns=[status],
+        )
+        with patch(
+            "butlers.tools.education.teaching_flows.mind_map_frontier", AsyncMock()
+        ) as frontier:
+            with pytest.raises(ValueError, match="curriculum has not been generated"):
+                await teaching_flow_advance(pool, "map")
+            frontier.assert_not_awaited()
+            pool.execute.assert_not_awaited()
+
+
+async def test_stalled_draft_sweep_reaches_orphans_and_respects_24_hour_boundary():
+    from butlers.tools.education.teaching_flows import check_stale_flows
+
+    now = datetime.now(tz=UTC)
+    for has_state in (False, True):
+        for age in (timedelta(hours=23), timedelta(hours=24), timedelta(hours=25)):
+            pool = _make_pool(
+                fetch_returns=[
+                    [
+                        _make_row(
+                            {
+                                "id": "map",
+                                "status": "draft",
+                                "created_at": now - age,
+                                "node_count": 0,
+                                "last_activity": None,
+                            }
+                        )
+                    ]
+                ]
+            )
+            state = (
+                _flow_state(
+                    status="diagnosing",
+                    current_phase=None,
+                    last_session_at=(now - timedelta(days=60)).isoformat(),
+                )
+                if has_state
+                else None
+            )
+            with (
+                patch("butlers.tools.education.teaching_flows.datetime", wraps=datetime) as clock,
+                patch(
+                    "butlers.tools.education.teaching_flows.state_get",
+                    AsyncMock(return_value=state),
+                ),
+                patch(
+                    "butlers.tools.education.teaching_flows.teaching_flow_abandon", AsyncMock()
+                ) as flow_abandon,
+                patch(
+                    "butlers.tools.education.teaching_flows.mind_map_update_status", AsyncMock()
+                ) as map_abandon,
+                patch(
+                    "butlers.tools.education.teaching_flows._cleanup_review_schedules", AsyncMock()
+                ),
+            ):
+                clock.now.return_value = now
+                result = await check_stale_flows(pool)
+                assert result == (["map"] if age > timedelta(hours=24) else [])
+                assert flow_abandon.await_count == int(has_state and age > timedelta(hours=24))
+                assert map_abandon.await_count == int(not has_state and age > timedelta(hours=24))
+
+
+async def test_sweep_retries_abandoned_cleanup_without_rewriting_map_or_flow():
+    from butlers.tools.education.teaching_flows import check_stale_flows
+
+    pool = _make_pool()
+    map_row = _make_row({"id": "map", "status": "abandoned"})
+    # Both passes exercise the real cleanup helper; the first callback fails,
+    # the second succeeds. Already-abandoned state is never written again.
+    pool.fetch.side_effect = [
+        [map_row],
+        [{"id": "node"}],
+        [{"name": "review-node-rep1"}],
+        [],
+        [map_row],
+        [{"id": "node"}],
+        [{"name": "review-node-rep1"}],
+        [],
+    ]
+    delete = AsyncMock(side_effect=[RuntimeError("controlled cleanup refusal"), None])
+    with patch("butlers.tools.education.teaching_flows.state_get", AsyncMock(return_value=None)):
+        assert await check_stale_flows(pool, schedule_delete=delete) == []
+        assert await check_stale_flows(pool, schedule_delete=delete) == []
+    assert delete.await_count == 2
+    pool.execute.assert_not_awaited()
+    pool.fetchrow.assert_not_awaited()

@@ -45,8 +45,9 @@ both permits and forbids the same state is worse than either.
   Adds the lifecycle invariant and names its single enforcement point. Adds
   the one-time legacy transition for existing active zero-node maps. Extends
   the staleness sweep to reach draft maps and orphans.
-- `module-education-curriculum`: `curriculum_generate()` becomes the sole path
-  that activates a mind map, and it must refuse to activate an empty graph.
+- `module-education-curriculum`: `curriculum_generate()` activates generated graphs only through the status
+  tool, which also owns the required explicit populated lifecycle transitions.
+  Generation must refuse to activate an empty graph.
   The lifecycle's previously unrepresentable `creation` phase becomes the
   concrete `draft` status. This resolves a standing contradiction as a side
   effect rather than as separate work: the spec has always declared a

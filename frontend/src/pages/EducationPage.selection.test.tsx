@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router";
 
 vi.mock("@/hooks/use-education", () => ({
   useMindMaps: vi.fn(),
+  useMindMap: vi.fn(() => ({ data: undefined })),
   // The receipt panel (bu-6jv4m.10) reads this on every branch of the page.
   // A readable, empty receipt store renders nothing, which keeps these
   // state-contract assertions about the mind-map branches alone.
@@ -178,4 +179,19 @@ describe("EducationPage shared node selection", () => {
     expect(screen.getByRole("combobox").textContent).toContain("Beta");
     expect(reviewsTab.getAttribute("data-state")).toBe("active");
   });
+});
+
+
+it("keeps drafts visible and selects an active map first, falling back to a lone draft", async () => {
+  for (const maps of [
+    [{ id: "draft", title: "Setup", status: "draft" }, { id: "active", title: "Learning", status: "active" }],
+    [{ id: "draft", title: "Setup", status: "draft" }],
+  ]) {
+    mockUseMindMaps.mockReturnValue({ data: { data: maps }, isLoading: false } as unknown as ReturnType<typeof useMindMaps>);
+    const view = renderPage();
+    await waitFor(() => expect(screen.getByRole("combobox").textContent).toContain(maps.length === 2 ? "Learning" : "Setup"));
+    if (maps.length === 1) expect(screen.getByRole("combobox").textContent).toContain("Setting up");
+    expect(screen.getByRole("tab", { name: "Curriculum" })).toBeTruthy();
+    view.unmount();
+  }
 });

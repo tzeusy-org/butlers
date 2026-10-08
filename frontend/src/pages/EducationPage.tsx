@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { useMindMaps } from "@/hooks/use-education";
+import { useMindMap, useMindMaps } from "@/hooks/use-education";
 import MindMapGraph from "@/components/education/MindMapGraph";
 import NodeDetailPanel from "@/components/education/NodeDetailPanel";
 import CurriculumActions from "@/components/education/CurriculumActions";
@@ -25,8 +25,8 @@ import QuizHistoryList from "@/components/education/QuizHistoryList";
 import type { EducationNodeSelection } from "@/components/education/types";
 
 export default function EducationPage() {
-  const { data: mindMapsResponse, isLoading, isError, refetch } = useMindMaps({ status: "active" });
-  const mindMaps = useMemo(() => mindMapsResponse?.data ?? [], [mindMapsResponse]);
+  const { data: mindMapsResponse, isLoading, isError, refetch } = useMindMaps();
+  const mindMaps = useMemo(() => (mindMapsResponse?.data ?? []).filter((map) => map.status === "active" || map.status === "draft"), [mindMapsResponse]);
 
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -39,11 +39,12 @@ export default function EducationPage() {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (mindMaps.length > 0 && !selectedMapId) {
-      setSelectedMapId(mindMaps[0].id);
+      setSelectedMapId((mindMaps.find((map) => map.status === "active") ?? mindMaps[0]).id);
     }
   }, [mindMaps, selectedMapId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  const { data: selectedMapDetail } = useMindMap(selectedMapId);
   const selectedMap = mindMaps.find((m) => m.id === selectedMapId) ?? null;
 
   const handleNodeSelection = useCallback((selection: EducationNodeSelection) => {
@@ -165,7 +166,7 @@ export default function EducationPage() {
         <SelectContent>
           {mindMaps.map((m) => (
             <SelectItem key={m.id} value={m.id}>
-              {m.title}
+              {m.title}{m.status === "draft" ? " (Setting up)" : ""}
             </SelectItem>
           ))}
         </SelectContent>
@@ -188,6 +189,7 @@ export default function EducationPage() {
             <CurriculumActions
               mindMapId={selectedMap.id}
               status={selectedMap.status}
+              nodeCount={selectedMapDetail?.nodes.length}
             />
           )}
           {selectedMapId && (

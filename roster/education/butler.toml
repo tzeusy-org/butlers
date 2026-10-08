@@ -58,10 +58,13 @@ name = "weekly-stale-flow-check"
 cron = "0 4 * * 1"
 dispatch_mode = "prompt"
 prompt = """
-Check for stale teaching flows and clean up associated pending review schedules. A flow is stale
-if last_session_at is more than 30 days ago and status is not completed or abandoned. For each
-stale flow: transition status to abandoned, call spaced_repetition_schedule_cleanup() to remove
-pending review schedules, and store a memory fact recording the abandonment.
+Use the stale-flow-cleanup skill. Enumerate mind_map_list() and evaluate draft and active maps,
+including those with no teaching flow. Abandon zero-node drafts older than 24 hours, and populated
+unfinished maps with flow last_session_at or node activity older than 30 days. For a map with flow
+state call teaching_flow_abandon(); for an orphan call mind_map_update_status(status="abandoned").
+Clean associated pending review schedules and store a memory fact recording the abandonment.
+Preserve recent drafts, completed maps and maps whose nodes are all mastered. Resume idempotent
+schedule cleanup for an already abandoned map after a prior cleanup failure without rewriting state.
 If any flows were abandoned, notify the user via notify(channel="telegram", intent="send",
 message=<cleanup_summary>).
 """

@@ -545,7 +545,7 @@ describe("ButlerEducationReviewsTab — retention trend chart", () => {
 
     renderTab();
     expect(screen.queryByTestId("retention-chart")).toBeNull();
-    const errorLines = screen.getAllByTestId("error-state-line");
+    const errorLines = screen.getAllByRole("alert");
     expect(errorLines.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -775,7 +775,7 @@ describe("ButlerEducationReviewsTab — no fixed 5-map cap", () => {
       mapIds.map((id) =>
         id === "map-6"
           ? ({ data: MAP6_MASTERY, isLoading: false } as unknown as ReturnType<typeof useAllMasterySummaries>[number])
-          : ({ data: null, isLoading: false } as unknown as ReturnType<typeof useAllMasterySummaries>[number]),
+          : ({ data: { ...MAP6_MASTERY, mind_map_id: id, total_nodes: 0, mastered_count: 0, avg_mastery_score: 0 }, isLoading: false } as unknown as ReturnType<typeof useAllMasterySummaries>[number]),
       ),
     );
 
@@ -835,4 +835,23 @@ describe("ButlerDetailPage — education reviews tab in getAllTabs", () => {
     expect(getAllTabs("general")).not.toContain("reviews");
     expect(getAllTabs("health")).not.toContain("reviews");
   });
+});
+
+
+it("names a failed map, retains successful reviews and suppresses complete KPIs until recovery", () => {
+  vi.resetAllMocks();
+  setupWithData();
+  vi.mocked(useAllPendingReviews).mockReturnValue([
+    { data: PENDING_REVIEWS, isLoading: false },
+    { data: undefined, isLoading: false, isError: true },
+  ] as unknown as ReturnType<typeof useAllPendingReviews>);
+  const view = renderTab();
+  expect(screen.getByRole("alert").textContent).toContain("Calculus");
+  expect(screen.getByText("List comprehensions")).toBeTruthy();
+  expect(screen.queryByTestId("mastery-kpi-strip")).toBeNull();
+  expect(screen.queryByText(/no reviews scheduled/i)).toBeNull();
+  setupWithData();
+  view.rerender(<MemoryRouter><QueryClientProvider client={new QueryClient()}><AppTimezoneProvider timezone="UTC"><ButlerEducationReviewsTab /></AppTimezoneProvider></QueryClientProvider></MemoryRouter>);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByTestId("mastery-kpi-strip")).toBeTruthy();
 });
