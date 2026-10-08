@@ -779,7 +779,7 @@ def captured_artifact_calls(
     Unknown operations/outcomes keep the complete source context held.
     """
     if calls is None:
-        return True
+        return not witnesses
     if not isinstance(calls, list):
         return False
     owned = {(row["memory_table"], str(row["artifact_id"])) for row in artifacts}
@@ -790,7 +790,7 @@ def captured_artifact_calls(
         matched_tool_records,
     )
 
-    if any(
+    if witnesses or any(
         isinstance(call, dict)
         and call.get("name") in (NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS | {"delegate_ask"})
         for call in calls

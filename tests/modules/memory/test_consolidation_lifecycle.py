@@ -1945,6 +1945,9 @@ async def _assert_question_receiver_disposal(domain, runtime):
                 task,
                 hashlib.sha256(prompt.encode()).digest(),
             )
+    # Actual copied processing is reserved before the permanent floor, not
+    # manufactured from a terminal session after retention preparation.
+    await _assert_core_question_context_disposal(domain, runtime, binding, task, prompt)
     # No final native response receipt: an enabled/ended-looking task does not
     # attest completion of the actual source-owned transient server copy.
     assert await _close_question_receiver(runtime, binding) is None
@@ -2087,8 +2090,9 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
             await conn.execute(
                 "INSERT INTO location_retention_plan_outputs "
                 "(decision_id,raw_id,source_revision,adapter_name,mapping_revision,output_kind,output_id) "
-                "SELECT DISTINCT $1,$2::uuid,1,'synthetic_source',$3::bytea,output_kind,output_id "
-                "FROM location_native_copy_births WHERE receiving_session=$4",
+                "SELECT DISTINCT $1::uuid,$2::uuid,1::integer,'synthetic_source',"
+                "$3::bytea,output_kind,output_id "
+                "FROM location_native_copy_births WHERE receiving_session=$4::uuid",
                 decision,
                 uuid.uuid4(),
                 b"m" * 32,
@@ -2184,3 +2188,141 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
         await domain.fetchval("SELECT question FROM public.delegation_ledger WHERE id=$1", ledger)
         == _REDUCED_QUESTION
     )
+
+
+async def _assert_core_question_context_disposal(domain, runtime, binding, task, prompt):
+    """Real configured core-only SQL profile; producer/source cells planted, not online proof."""
+    import hashlib
+
+    from butlers.chronicler.location_delegation_contexts import dispose_core_question_contexts
+    from butlers.chronicler.location_delegation_disposal import _close_question_receiver
+    from butlers.core.session_process_logs import write as write_process_log
+    from butlers.core.sessions import session_complete, session_create
+    from butlers.location_retention import content_digest
+
+    generation, claim = uuid.uuid4(), uuid.uuid4()
+    system = "Independent configured core instructions stay byte exact"
+    session = await session_create(
+        domain,
+        prompt=prompt,
+        trigger_source="trigger",
+        request_id=str(uuid.uuid4()),
+        effective_system_prompt=system,
+        prompt_digest=hashlib.sha256(system.encode()).hexdigest(),
+        prompt_provenance=[],
+    )
+    digest = hashlib.sha256(prompt.encode()).digest()
+    empty = hashlib.sha256(b"").digest()
+    bundle = content_digest(
+        {
+            "loans": [],
+            "context": empty.hex(),
+            "system": hashlib.sha256(system.encode()).hexdigest(),
+            "prompt": digest.hex(),
+        }
+    )
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_received_delegation_claims "
+                "(claim_generation,receiving_generation,task_id,prompt_digest,receiving_incarnation,exclusive_input) "
+                "VALUES($1,$2,$3,$4,$5,true)",
+                claim,
+                binding["receiving_generation"],
+                task,
+                digest,
+                runtime.incarnation,
+            )
+            await conn.execute(
+                "INSERT INTO location_runtime_context_intents(input_generation,receiving_session) VALUES($1,$2)",
+                generation,
+                session,
+            )
+            await conn.execute(
+                "INSERT INTO location_runtime_context_question_intents(input_generation,claim_generation) VALUES($1,$2)",
+                generation,
+                claim,
+            )
+            await conn.execute(
+                "INSERT INTO location_runtime_context_bindings "
+                "(input_generation,receiving_session,bundle_digest,context_digest,system_digest,prompt_digest,exclusive_input,context_bytes) "
+                "VALUES($1,$2,$3,$4,$5,$6,true,0)",
+                generation,
+                session,
+                bundle,
+                empty,
+                hashlib.sha256(system.encode()).digest(),
+                digest,
+            )
+            await conn.execute(
+                "INSERT INTO location_received_delegation_contexts "
+                "(input_generation,claim_generation,receiving_session,bundle_digest) VALUES($1,$2,$3,$4)",
+                generation,
+                claim,
+                session,
+                bundle,
+            )
+    await write_process_log(domain, session, command=prompt, stderr="synthetic copied output")
+    assert await _close_question_receiver(runtime, binding) is None
+    await dispose_core_question_contexts(runtime, binding)
+    assert await domain.fetchval("SELECT prompt FROM sessions WHERE id=$1", session) == prompt
+    assert not await domain.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_runtime_context_dispositions WHERE input_generation=$1)",
+        generation,
+    )
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_received_delegation_claims_ended(claim_generation,receipt_id) VALUES($1,$2)",
+                claim,
+                uuid.uuid4(),
+            )
+            await conn.execute(
+                "INSERT INTO location_runtime_context_ended(input_generation,receipt_id) VALUES($1,$2)",
+                generation,
+                uuid.uuid4(),
+            )
+    await session_complete(domain, session, "synthetic derived response", [], 1, True)
+    await dispose_core_question_contexts(runtime, binding)
+    async with domain.acquire() as observed:
+        row = await observed.fetchrow("SELECT * FROM sessions WHERE id=$1", session)
+        receipt = await observed.fetchval(
+            "SELECT receipt_id FROM location_runtime_context_dispositions WHERE input_generation=$1",
+            generation,
+        )
+        assert receipt is not None
+        diagnostic = await observed.fetchrow(
+            "SELECT command,stderr FROM session_process_logs WHERE session_id=$1", session
+        )
+        assert (
+            diagnostic["command"] == "[Location input forgotten]" and diagnostic["stderr"] is None
+        )
+        assert row["prompt"] == "[Location input forgotten]"
+        assert row["result"] == "[Location output forgotten]"
+        assert row["effective_system_prompt"] == system and row["prompt_provenance"] == []
+    await dispose_core_question_contexts(runtime, binding)
+    assert (
+        await domain.fetchval(
+            "SELECT receipt_id FROM location_runtime_context_dispositions WHERE input_generation=$1",
+            generation,
+        )
+        == receipt
+    )
+
+    await write_process_log(domain, session, command=prompt, stderr="synthetic late copied output")
+    await dispose_core_question_contexts(runtime, binding)
+    async with domain.acquire() as observed:
+        diagnostic = await observed.fetchrow(
+            "SELECT command,stderr FROM session_process_logs WHERE session_id=$1", session
+        )
+        assert diagnostic["command"] == "[Location-derived diagnostic forgotten]"
+        assert diagnostic["stderr"] is None
+        assert (
+            await observed.fetchval(
+                "SELECT receipt_id FROM location_runtime_context_dispositions WHERE input_generation=$1",
+                generation,
+            )
+            == receipt
+        )

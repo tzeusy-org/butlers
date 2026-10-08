@@ -2671,6 +2671,8 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     second_witness = {**pool.tool_witnesses[1], "input_digest": bytes.fromhex("c" * 64)}
     two_reads = [read_call, second_read]
     two_witnesses = [pool.tool_witnesses[1], second_witness]
+    assert not captured_artifact_calls(None, [], two_witnesses)
+    assert not captured_artifact_calls([], [], two_witnesses)
     assert matched_tool_records(two_reads, two_witnesses)
     assert captured_artifact_calls(two_reads, [], two_witnesses)
     second_witness["exclusive_inputs"] = False
@@ -3058,6 +3060,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     assert update[3] == [{"source": "base", "sha": "retained"}]
     assert any("location_catalog_copy_finished" in sql for sql, _ in pool.writes)
     await _assert_closed_native_mutation_copy_disposal()
+    await _assert_core_question_context_values()
 
 
 @pytest.mark.asyncio
@@ -3662,3 +3665,240 @@ async def _assert_closed_native_mutation_copy_disposal():
     with pytest.raises(PolicyUnavailableError, match="disposition is unknown"):
         await dispose_bound_native_copies(owner, decision)
     assert owner.receipt == original_receipt  # Unknown readback cannot invent rollback/replacement.
+
+
+async def _assert_core_question_context_values():
+    """Planted software constructor/body controls, not real role/source/online proof."""
+    import hashlib
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_contexts import dispose_core_question_contexts
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_memory_context import _context_writers
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.core.delegation_source import _writers
+
+    generation, session_id = uuid4(), uuid4()
+    prompt, system = "Synthetic full question input", "Independent configured system"
+    frozen = {
+        "input_generation": generation,
+        "receiving_session": session_id,
+        "exclusive_input": True,
+        "context_bytes": 0,
+        "context_digest": hashlib.sha256(b"").digest(),
+        "system_digest": hashlib.sha256(system.encode()).digest(),
+        "prompt_digest": hashlib.sha256(prompt.encode()).digest(),
+        "ended_receipt": uuid4(),
+        "server_request": None,
+    }
+    frozen["bundle_digest"] = content_digest(
+        {
+            "loans": [],
+            "context": frozen["context_digest"].hex(),
+            "system": frozen["system_digest"].hex(),
+            "prompt": frozen["prompt_digest"].hex(),
+        }
+    )
+    session = {
+        "prompt": prompt,
+        "effective_system_prompt": system,
+        "tool_calls": [],
+        "completed_at": datetime.now(UTC),
+        "result": "Synthetic source-derived result",
+        "error": None,
+        "prompt_provenance": [{"source": "independent", "sha": "unchanged"}],
+    }
+    captured = {
+        "receiving_session": session_id,
+        "input_generation": generation,
+        "bundle_digest": frozen["bundle_digest"],
+        "prompt_digest": frozen["prompt_digest"],
+        "exclusive_input": True,
+        "ended_receipt": uuid4(),
+    }
+
+    log = {"command": "Synthetic copied native prompt", "stderr": "Synthetic source output"}
+
+    class Pool:
+        role = "fixed_role"
+        in_transaction = False
+        receipts = {}
+        descendants = False
+        writes = []
+        acquired = 0
+        admitted_valid = True
+        captured_valid = True
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.acquired += 1
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.in_transaction = True
+            try:
+                yield
+            finally:
+                self.in_transaction = False
+
+        async def fetchrow(self, sql, *args):
+            if "location_received_delegation_floors" in sql:
+                return binding
+            if "location_received_delegation_inputs" in sql:
+                return {**binding, "exclusive_input": self.admitted_valid, "parent_count": 1}
+            if "SELECT d.*,b.receiving_session" in sql:
+                receipt = self.receipts.get(args[0])
+                return (
+                    None
+                    if receipt is None
+                    else {
+                        **receipt,
+                        "receiving_session": session_id,
+                        "system_digest": frozen["system_digest"],
+                    }
+                )
+            if "location_runtime_context_dispositions" in sql:
+                return self.receipts.get(args[0])
+            if "location_runtime_context_bindings" in sql:
+                return frozen
+            if "SELECT * FROM sessions" in sql:
+                return session
+            raise AssertionError("Unknown core context query")
+
+        async def fetch(self, sql, *args):
+            if "location_runtime_context_question_intents" in sql:
+                return [{"input_generation": generation}]
+            if "location_received_delegation_contexts" in sql:
+                return [captured] if self.captured_valid else []
+            raise AssertionError("Unknown core context cohort")
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "relationship"
+            if sql == "SELECT current_user":
+                return self.role
+            if "location_catalog_copy_lifetimes" in sql:
+                return self.descendants
+            if "session_process_logs" in sql:
+                return (
+                    log["command"]
+                    not in {"[Location input forgotten]", "[Location-derived diagnostic forgotten]"}
+                    or log["stderr"] is not None
+                )
+            raise AssertionError("Unknown core context predicate")
+
+        async def execute(self, sql, *args):
+            if "pg_advisory_xact_lock" in sql:
+                assert self.in_transaction
+                return
+            assert self.in_transaction
+            self.writes.append(sql)
+            if "UPDATE session_process_logs" in sql:
+                log.update(command="[Location input forgotten]", stderr=None)
+                return
+            if "UPDATE sessions" in sql:
+                session.update(
+                    prompt="[Location input forgotten]",
+                    result="[Location output forgotten]",
+                    tool_calls=[],
+                    error=None,
+                )
+                return
+            if "INSERT INTO location_runtime_context_dispositions" in sql:
+                self.receipts[args[0]] = dict(
+                    input_generation=args[0],
+                    decision_id=args[1],
+                    manifest_digest=args[2],
+                    receipt_id=args[3],
+                )
+                return
+            raise AssertionError("Unknown core context write")
+
+    pool = Pool()
+    runtime = NativeDelegationRuntime(
+        domain=pool,
+        name="relationship",
+        registry=object(),
+        identity=("relationship", "fixed_role"),
+    )
+    binding = {
+        "receiving_generation": uuid4(),
+        "decision_id": uuid4(),
+        "manifest_digest": b"m" * 32,
+        "source_name": "chronicler",
+        "question_generation": uuid4(),
+        "ledger_id": uuid4(),
+        "loan_id": uuid4(),
+        "body_digest": b"b" * 32,
+        "receiving_incarnation": runtime.incarnation,
+    }
+    captured.update(
+        receiving_generation=binding["receiving_generation"],
+        receiving_incarnation=runtime.incarnation,
+    )
+    # Explicit planted private registry, never advertised as constructor enrollment.
+    _writers[pool] = runtime.delegation_writer
+    _context_writers[pool] = runtime
+    try:
+        for row, key, damaged in (
+            (frozen, "exclusive_input", False),
+            (frozen, "ended_receipt", None),
+            (frozen, "context_bytes", 1),
+            (frozen, "bundle_digest", b"x" * 32),
+            (captured, "ended_receipt", None),
+            (captured, "receiving_incarnation", uuid4()),
+            (session, "completed_at", None),
+            (session, "prompt", "Changed independent body"),
+            (session, "tool_calls", [{"name": "unknown_operation"}]),
+        ):
+            original = row[key]
+            row[key] = damaged
+            await dispose_core_question_contexts(runtime, binding)
+            assert not pool.receipts and not pool.writes
+            row[key] = original
+        for key in ("admitted_valid", "captured_valid"):
+            setattr(pool, key, False)
+            await dispose_core_question_contexts(runtime, binding)
+            assert not pool.receipts and not pool.writes
+            setattr(pool, key, True)
+        assert log == {
+            "command": "Synthetic copied native prompt",
+            "stderr": "Synthetic source output",
+        }
+        pool.descendants = True
+        await dispose_core_question_contexts(runtime, binding)
+        assert not pool.receipts and not pool.writes
+        pool.descendants = False
+        pool.role = "wrong_role"
+        with pytest.raises(PolicyUnavailableError, match="owning writer differs"):
+            await dispose_core_question_contexts(runtime, binding)
+        assert not pool.writes
+        pool.role = "fixed_role"
+        before = pool.acquired
+        await dispose_core_question_contexts(runtime, binding)
+        assert pool.acquired == before + 2  # Actual independent committed readback path.
+        receipt = pool.receipts[generation]["receipt_id"]
+        assert session["prompt"] == "[Location input forgotten]"
+        assert session["result"] == "[Location output forgotten]"
+        assert session["effective_system_prompt"] == system
+        assert session["prompt_provenance"] == [{"source": "independent", "sha": "unchanged"}]
+        assert log == {"command": "[Location input forgotten]", "stderr": None}
+        writes = list(pool.writes)
+        await dispose_core_question_contexts(runtime, binding)
+        assert pool.receipts[generation]["receipt_id"] == receipt and pool.writes == writes
+        log["command"] = "[Location-derived diagnostic forgotten]"
+        await dispose_core_question_contexts(runtime, binding)
+        assert pool.receipts[generation]["receipt_id"] == receipt and pool.writes == writes
+        log["stderr"] = "Synthetic retained copy after unknown readback"
+        with pytest.raises(
+            PolicyUnavailableError, match="Committed native core context disposal is unknown"
+        ):
+            await dispose_core_question_contexts(runtime, binding)
+        assert pool.receipts[generation]["receipt_id"] == receipt and pool.writes == writes
+        log["stderr"] = None
+        await dispose_core_question_contexts(runtime, binding)
+        assert pool.receipts[generation]["receipt_id"] == receipt and pool.writes == writes
+    finally:
+        runtime.close()

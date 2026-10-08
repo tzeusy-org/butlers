@@ -333,6 +333,13 @@ async def prepare_question_receivers(runtime: Any, decision: UUID) -> dict:
                 continue
             binding = _floor_binding(runtime, plan, question, loan)
             receipt = await _close_question_receiver(runtime, binding)
+            if receipt is None:
+                from butlers.chronicler.location_delegation_contexts import (
+                    dispose_core_question_contexts,
+                )
+
+                await dispose_core_question_contexts(runtime, binding)
+                receipt = await _close_question_receiver(runtime, binding)
             if receipt is not None:
                 receipts.append(str(receipt))
     return {"decision_id": str(decision), "receipt_ids": receipts}
