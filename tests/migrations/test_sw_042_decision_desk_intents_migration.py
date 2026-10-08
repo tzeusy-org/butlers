@@ -55,7 +55,7 @@ def test_sw_042_upgrade_downgrade_round_trip(postgres_container) -> None:
         assert "UNIQUE" in index
         assert "pending" in index and "applied" in index and "failed" not in index
 
-        command.downgrade(config, "switchboard@sw_040")
+        command.downgrade(config, "switchboard@sw_041")
         assert _tables(engine) == set()
 
         command.upgrade(config, "switchboard@sw_042")

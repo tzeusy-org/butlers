@@ -1,7 +1,7 @@
 """Decision Desk prompts and intents: the runtime half of the tracker write bridge.
 
 Revision ID: sw_042
-Revises: sw_040
+Revises: sw_041
 Create Date: 2026-10-08 00:00:00.000000
 
 bu-ckkpz.3 (OpenSpec change ``owner-decision-desk-write-bridge``). The runtime
@@ -25,7 +25,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "sw_042"
-down_revision = "sw_040"
+down_revision = "sw_041"
 branch_labels = None
 depends_on = None
 
