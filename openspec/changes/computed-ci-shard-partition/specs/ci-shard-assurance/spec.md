@@ -141,7 +141,7 @@ Scope: v1-mandatory
 - **THEN** its identity is retained as historical and no extra/missing current population is silently omitted or accepted
 
 ### Requirement: Frontend static test and browser evidence is complete
-The frontend required context SHALL combine mandatory static/knip/build evidence with both complete Vitest shard verdicts. The advisory browser job SHALL consume the one genuine source-bound build artifact without rebuilding and SHALL preserve all locked browser/OS dependency and finite installer assertions.
+The frontend required context SHALL combine mandatory static/knip/build evidence with both complete Vitest shard verdicts. The advisory browser job SHALL consume the one genuine source-bound build artifact without rebuilding and SHALL preserve all locked browser/OS dependency and finite installer assertions. Every Vitest child SHALL collect one fresh complete unsharded installed item reference before its actual shard execution. Its pre-body-emitted declaration tree, logical-ready and terminal-result multiplicities SHALL match that independent CURRENT reference and exact installed whole-file selector, including all parameter and skip/todo distinctions. Required frontend success SHALL independently reconcile both complete full references and both opaque selected/start/result ledgers; file counts, cached previous populations and matrix SUCCESS alone MUST NOT authorize it. Default isolated-fork selectors/configuration SHALL remain unchanged. Full collection plus execution and own cleanup SHALL share one900s total envelope under unchanged finite job caps; the former failed180s full-prepass outcome and subphase relocation SHALL be recorded explicitly without hard-metric or prior-cap credit.
 
 ID: REQ-ci-shard-assurance-007
 Source: bu-ly3lv5.6 P10; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
@@ -162,6 +162,34 @@ Scope: v1-mandatory
 #### Scenario: Stale or absent build is not readiness
 - **WHEN** dist is empty, missing, stale, tampered or belongs to another attempt
 - **THEN** the browser proof is unavailable/non-passing rather than a fabricated cache hit
+
+#### Scenario: Fresh files and parameters define current authority
+- **WHEN** an eligible file or parameter case is added, deleted or changed
+- **THEN** fresh actual unsharded full collection and matching shard declaration trees govern complete current item identity without admitting a previous8280 population or using file enumeration as item proof
+
+#### Scenario: Collection must precede every logical item event
+- **WHEN** a ready or result event appears before its actual module collection, or a declared occurrence is missing, duplicated or replaced at equal aggregate count
+- **THEN** both the producer and independent frontend reconciler refuse success while a genuine complete declaration/start/result companion passes
+
+#### Scenario: Skipped and todo declarations remain explicit
+- **WHEN** declared skip, todo, inherited skip or dynamic skip items are collected
+- **THEN** their genuine declaration and logical event multiplicities remain present with truthful outcome distinctions, and pending, failed or unexecuted items cannot be relabelled skipped to pass
+
+#### Scenario: Both current halves cover the independent full source
+- **WHEN** both installed shard selectors complete
+- **THEN** independent frontend verification checks both fresh complete unsharded references agree, every current full specification exactly once, matching selected per-file collected trees and disjoint item multisets and exact ready/result multiplicities before its required success
+
+#### Scenario: Unknown child and transport evidence are non-green
+- **WHEN** a required file, collected item, receipt, final trailer, source identity or result is missing, stale, extra, malformed or failed
+- **THEN** the required frontend context fails without revealing names, parameters, raw output or exception text, and bounded cleanup releases only its own invocation resources
+
+#### Scenario: Relocated bounds retain their actual meaning
+- **WHEN** one genuine full unsharded collection and actual shard execution spend the same900s total deadline
+- **THEN** the former failed180s whole-item prepass stays failed, its subphase relocation is explicit, all original finite job caps and ten-run hard metrics remain binding, and no wall-clock gain or guardsp95 success is inferred
+
+#### Scenario: Future shard-sensitive declarations refuse readiness
+- **WHEN** a newly added or changed file declares different items under the actual shard config than its fresh unsharded full reference
+- **THEN** both producer and required frontend reconciliation fail despite matching file coverage or aggregate counts, while identical complete current declarations pass
 
 ### Requirement: Measured efficiency and owned integration remain explicit
 The implementation SHALL preserve finite watchdogs, all protected checks and the five-minute lane target. Matrix conversion and frontend expansion SHALL account for actual expanded rows and a concurrent peak no greater than14. Unavailable p95/spread/timing evidence SHALL remain an unfinished observation, never an inferred gain.

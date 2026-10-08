@@ -66,14 +66,36 @@ still participates in cache compatibility and inventory admission. A cached
 minor-version resolution cannot silently choose a different patch in a child.
 
 Each Vitest child prepares its failure carrier before identity or collection.
-The receipt records a closed stage (`identity`, `collect-full`,
-`collect-shard-1`, `collect-shard-2`, `partition`, `execute`, `report`, or
-`complete`) and, on failure, a closed category. An early failure has
-`complete: false` and no claimed collected population. Wrapper exit is separate
-from an actual Vitest exit, which exists only after execution returns. No raw
-subprocess output or exception text enters the receipt. The existing 180-second
-collection, 900-second execution and finite hosted job bounds remain in force;
-these provisional bounds do not establish the five-minute performance target.
+It performs one fresh complete unsharded collection through the locked installed
+API, then executes its exact installed shard selector in a separate process with
+the default isolated forks and workers. Both phases and cleanup share one900-second
+total deadline. The former eager whole-item180-second prepass failed on the actual
+four-CPU environment; its subphase bound is explicitly relocated into the combined
+provisional envelope. This neither makes that former outcome pass nor changes the
+18-minute jobs, the guards180-second p95 obligation or any hard timing promise.
+
+The fresh unsharded reference retains all parameter identities/multiplicities and
+declared skip/todo/inherited-skip modes. Its active projection must match the
+ordinary CLI list formatter, which excludes declared skip/todo. The execution
+reporter independently snapshots the genuine pre-body-emitted module trees and
+logical-ready/results. The installed worker sends collection as an asynchronous
+RPC event; no controller-before-body acknowledgement is claimed. Skipped suites'
+synthetic logical events do not claim body execution. Missing/duplicate items,
+starts/results, pending/failed/unknown states and controller errors cannot pass.
+
+The required frontend consumer downloads both current source/run/attempt-bound
+artifacts and checks complete full-reference equality, installed whole-file half
+coverage/disjointness and selected declarations/occurrence events/outcomes. A
+future shard-sensitive declaration therefore refuses even with identical file or
+aggregate counts. Previous8280 counts and file-only scans are never current item
+authority. Static gate order, one genuine build/browser reuse and required context
+names are unchanged; no extra job, pool/config override or permission is added.
+
+Closed stages remain identity, collect-full, execute, report and complete. Removed
+redundant half-list phases are replaced by actual half-tree comparison to the
+fresh full reference. Failure remains complete:false; actual exit exists only
+when its process returned. Raw subprocess output and exception text stay in RAM
+and are discarded; artifacts contain opaque hashes, source paths and fixed enums.
 
 Each invocation owns a fresh process group. Its existing deadline includes a
 cleanup reserve (at most ten seconds) for TERM, KILL and pipe drainage. A fork
@@ -89,9 +111,25 @@ on Node24.6 establish a real single-file positive and continuing full collection
 the hosted minor version and environment remain separately bound observations.
 These controls do not establish a hosted full-population positive or the hosted
 timeout cause. Process cleanup and deterministic
-phase reconstruction do not establish that missing proof. Pool, worker settings,
-CLI collection, configuration, corpus and the 180/900-second limits are retained.
+phase reconstruction do not establish that missing proof. Pool, worker settings, configuration and corpus remain unchanged. The failed
+eager180-second prepass is retained as failure evidence; the proposed genuine
+full-reference plus execution transport uses the unchanged900-second total bound.
+Actual complete identity/execution and budget conformance are required before adoption.
 An optional ten-second fixed Node probe records only the actual PATH-selected
 Node version and `availableParallelism()` count. Malformed/unavailable results
 are null (UNKNOWN). These observations neither establish configured worker
 counts nor admit items, change limits, select a pool or supply timing authority.
+
+The execution reporter is pinned to Vitest 3.2.4. Its controller instance serializes
+`TestRun.updated` metadata batches in arrival order. It preserves the original
+receiver, arguments, resolved value and rejection returned to each caller; only
+transport bookkeeping is serialized. A rejected update remains a recorded
+non-green failure even when a later update succeeds. Terminal reporting drains a
+stable promise tail before closing admission, including updates appended while
+an earlier callback is awaited. An update after that terminal latch is refused.
+The independent verifier requires zero update errors and an empty reporter-error
+map, as well as the original complete declarations, logical starts and outcomes.
+This pins an installed private interface: an unknown version or method lifecycle
+refuses admission and needs a reviewed protocol update. It does not introduce a
+controller-before-test-body barrier, or change worker isolation, selectors, test
+bodies, clocks or timeouts.
