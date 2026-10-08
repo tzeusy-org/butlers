@@ -84,8 +84,10 @@ unavailable evidence; the wrapper never searches for or kills unrelated PIDs.
 
 The f57c pull-request observation reached all eleven backend children without a
 test failure, but both installed Vitest collectors timed out before emitting item
-inventories. Local locked-Vitest controls on Node24 establish a real single-file
-positive and continuing full collection, not a hosted Node22 full-population
-positive or an underlying hosted timeout cause. Process cleanup and deterministic
+inventories. The immutable workflow installs Node24. Local locked-Vitest controls
+on Node24.6 establish a real single-file positive and continuing full collection;
+the hosted minor version and environment remain separately bound observations.
+These controls do not establish a hosted full-population positive or the hosted
+timeout cause. Process cleanup and deterministic
 phase reconstruction do not establish that missing proof. Pool, worker settings,
 CLI collection, configuration, corpus and the 180/900-second limits are retained.
