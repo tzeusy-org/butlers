@@ -174,6 +174,7 @@ def _validate_local_tables(schema: str) -> None:
                 ("memory_table", "text", True),
                 ("artifact_id", "uuid", True),
                 ("body_digest", "bytea", True),
+                ("content_digest", "bytea", False),
                 ("committed_at", "timestamp with time zone", True),
             ],
             "location_runtime_tool_intents": [
@@ -296,6 +297,7 @@ def _validate_local_tables(schema: str) -> None:
                 "location_runtime_context_intents(input_generation)",
                 "CHECK ((memory_table = ANY (ARRAY['facts'::text, 'rules'::text])))",
                 "CHECK ((octet_length(body_digest) = 32))",
+                "CHECK (((content_digest IS NULL) OR (octet_length(content_digest) = 32)))",
             },
             "location_runtime_tool_intents": {
                 "PRIMARY KEY (tool_generation)",
@@ -514,6 +516,7 @@ def upgrade() -> None:
           memory_table TEXT NOT NULL CHECK(memory_table IN ('facts','rules')),
           artifact_id UUID NOT NULL,
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          content_digest BYTEA CHECK(content_digest IS NULL OR octet_length(content_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
         CREATE TABLE IF NOT EXISTS location_runtime_context_dispositions (

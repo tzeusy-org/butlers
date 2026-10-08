@@ -522,7 +522,7 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                 canonical = await conn.fetchrow(
                     f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", identifier
                 )
-                from butlers.chronicler.location_projection import _digest_value
+                from butlers.chronicler.location_memory_copies import artifact_body_matches
 
                 if (
                     canonical is None
@@ -543,26 +543,21 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                 ):
                     already_disposed.add(artifact["artifact_generation"])
                     continue
-                if (
-                    canonical is None
-                    or content_digest({"memory_artifact": _digest_value(dict(canonical))})
-                    != artifact["body_digest"]
-                    or await conn.fetchval(
-                        f"SELECT EXISTS(SELECT 1 FROM {schema}.location_runtime_context_artifacts "
-                        "WHERE memory_table=$1 AND artifact_id=$2 AND input_generation<>$3) "
-                        "OR EXISTS(SELECT 1 FROM public.memory_catalog WHERE source_schema=$4 "
-                        "AND source_table=$1 AND source_id=$2) "
-                        "OR EXISTS(SELECT 1 FROM memory_links WHERE source_id=$2 OR target_id=$2) "
-                        + (
-                            "OR EXISTS(SELECT 1 FROM facts WHERE supersedes_id=$2)"
-                            if table == "facts"
-                            else ""
-                        ),
-                        table,
-                        identifier,
-                        input_generation,
-                        runtime.memory_identity[0],
-                    )
+                if not artifact_body_matches(canonical, artifact) or await conn.fetchval(
+                    f"SELECT EXISTS(SELECT 1 FROM {schema}.location_runtime_context_artifacts "
+                    "WHERE memory_table=$1 AND artifact_id=$2 AND input_generation<>$3) "
+                    "OR EXISTS(SELECT 1 FROM public.memory_catalog WHERE source_schema=$4 "
+                    "AND source_table=$1 AND source_id=$2) "
+                    "OR EXISTS(SELECT 1 FROM memory_links WHERE source_id=$2 OR target_id=$2) "
+                    + (
+                        "OR EXISTS(SELECT 1 FROM facts WHERE supersedes_id=$2)"
+                        if table == "facts"
+                        else ""
+                    ),
+                    table,
+                    identifier,
+                    input_generation,
+                    runtime.memory_identity[0],
                 ):
                     return False
             for artifact in artifacts:
@@ -831,6 +826,7 @@ async def bind_context_artifact(conn: Any, table: str, artifact: UUID) -> None:
 
 
 async def finish_context_artifacts(binding: _ArtifactWriter) -> None:
+    from butlers.chronicler.location_memory_copies import artifact_content_digest
     from butlers.chronicler.location_projection import _digest_value
 
     schema = _own_schema(binding.runtime)
@@ -844,13 +840,15 @@ async def finish_context_artifacts(binding: _ArtifactWriter) -> None:
         digest = content_digest({"memory_artifact": _digest_value(dict(row))})
         await binding.connection.execute(
             f"INSERT INTO {schema}.location_runtime_context_artifacts "
-            "(artifact_generation,input_generation,memory_table,artifact_id,body_digest) "
-            "VALUES($1,$2,$3,$4,$5)",
+            "(artifact_generation,input_generation,memory_table,artifact_id,"
+            "body_digest,content_digest) "
+            "VALUES($1,$2,$3,$4,$5,$6)",
             artifact_generation,
             binding.generation,
             table,
             artifact,
             digest,
+            artifact_content_digest(table, row),
         )
         captured = await capture_context_catalog_source(
             binding, artifact_generation, table, artifact, digest
@@ -889,6 +887,17 @@ async def capture_context_catalog_source(
     if binding.runtime.name != "chronicler":
         return False
     conn = binding.connection
+    from butlers.chronicler.location_memory_copies import artifact_content_digest
+    from butlers.chronicler.location_projection import _digest_value
+
+    if table not in {"facts", "rules"}:
+        raise PolicyUnavailableError("Native source artifact profile differs")
+    canonical = await conn.fetchrow(f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", artifact)
+    if (
+        canonical is None
+        or content_digest({"memory_artifact": _digest_value(dict(canonical))}) != digest
+    ):
+        raise PolicyUnavailableError("Native source artifact body differs")
     frozen = await conn.fetchrow(
         "SELECT b.*,i.server_request FROM chronicler.location_runtime_context_bindings b "
         "JOIN chronicler.location_runtime_context_intents i USING(input_generation) "
@@ -1020,12 +1029,14 @@ async def capture_context_catalog_source(
         raise PolicyUnavailableError("Native context catalog bundle differs")
     await conn.execute(
         "INSERT INTO chronicler.location_native_memory_artifacts "
-        "(artifact_generation,input_generation,memory_table,artifact_id,body_digest) "
-        "VALUES($1,$2,$3,$4,$5)",
+        "(artifact_generation,input_generation,memory_table,artifact_id,"
+        "body_digest,content_digest) "
+        "VALUES($1,$2,$3,$4,$5,$6)",
         generation,
         lineage_generation,
         table,
         artifact,
         digest,
+        artifact_content_digest(table, canonical),
     )
     return True

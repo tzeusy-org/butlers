@@ -502,7 +502,7 @@ async def _prepare_batch(pool: asyncpg.Pool, run_id: UUID) -> UUID | None:
             )
             await conn.execute(
                 """UPDATE location_retention_runs SET overdue_count=$2,blocked_count=$3,
-                   holder_pending_count=$2-$3,counts_observed_at=clock_timestamp()
+                   holder_pending_count=$2::bigint-$3::bigint,counts_observed_at=clock_timestamp()
                    WHERE run_id=$1""",
                 run_id,
                 overdue,
@@ -532,7 +532,7 @@ async def _prepare_batch(pool: asyncpg.Pool, run_id: UUID) -> UUID | None:
             if not rows:
                 await conn.execute(
                     """UPDATE location_retention_runs SET status='pending',
-                       reason_code=CASE WHEN $2=0 THEN 'holder_pending'
+                       reason_code=CASE WHEN $2::bigint=0 THEN 'holder_pending'
                          ELSE 'projection_pending' END,
                        completion_at=NULL
                        WHERE run_id=$1""",

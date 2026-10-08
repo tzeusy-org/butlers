@@ -224,6 +224,24 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
                 )
                 is True
             )
+        async with pool.acquire() as content_catalog:
+            assert (
+                await content_catalog.fetchval(
+                    "SELECT is_nullable='YES' FROM information_schema.columns "
+                    "WHERE table_schema='chronicler' AND table_name='location_runtime_context_artifacts' "
+                    "AND column_name='content_digest'"
+                )
+                is True
+            )
+            # No default/backfill fabricates a new witness for the old planted history.
+            assert (
+                await content_catalog.fetchval(
+                    "SELECT content_digest IS NULL FROM location_runtime_context_artifacts "
+                    "WHERE artifact_id=$1",
+                    artifact_id,
+                )
+                is True
+            )
         await seed_source_registry(pool)
         policy = await read_policy(pool)
         assert policy["days"] == 30 and policy["version"] == 1
@@ -290,6 +308,17 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
         run = await start_attempt(pool)
         decision = await prepare_batch(pool, run)
         assert decision is not None  # First actually closed segment qualifies.
+        # Separate acquisition witnesses the actual committed counters. The
+        # planted native source has overdue rows and both closed/open coverage.
+        async with pool.acquire() as committed_counts:
+            counts = await committed_counts.fetchrow(
+                "SELECT overdue_count,blocked_count,holder_pending_count "
+                "FROM location_retention_runs WHERE run_id=$1",
+                run,
+            )
+        assert counts["overdue_count"] == 3
+        assert 0 < counts["blocked_count"] < 3
+        assert counts["holder_pending_count"] == 3 - counts["blocked_count"]
         local = await read_local_receipt(pool, decision)
         assert local is not None and local["removed_event_count"] == 0
         assert (

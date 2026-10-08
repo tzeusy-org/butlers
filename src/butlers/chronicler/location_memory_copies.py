@@ -8,6 +8,7 @@ its actual Memory writer transaction. Missing descendants/leases stay held.
 
 from __future__ import annotations
 
+import math
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -67,6 +68,43 @@ def episode_body_digest(row: Any) -> bytes:
                 }
             )
         }
+    )
+
+
+def artifact_content_digest(table: str, row: Any) -> bytes:
+    """Versioned producer content witness; only read-reference metadata varies."""
+    from butlers.chronicler.location_projection import _digest_value
+
+    if table not in {"facts", "rules"}:
+        raise PolicyUnavailableError("Native artifact content profile differs")
+    return content_digest(
+        {
+            "profile": "native_memory_artifact_content.v1",
+            "table": table,
+            "body": _digest_value(
+                {
+                    key: value
+                    for key, value in dict(row).items()
+                    if key not in {"reference_count", "last_referenced_at"}
+                }
+            ),
+        }
+    )
+
+
+def artifact_body_matches(row: Any, witness: Any) -> bool:
+    """Frozen full body or SAME-writer optional content witness; no backfill."""
+    from butlers.chronicler.location_projection import _digest_value
+
+    if row is None:
+        return False
+    if content_digest({"memory_artifact": _digest_value(dict(row))}) == witness["body_digest"]:
+        return True
+    frozen = witness.get("content_digest")
+    return (
+        isinstance(frozen, bytes)
+        and len(frozen) == 32
+        and artifact_content_digest(witness["memory_table"], row) == frozen
     )
 
 
@@ -408,9 +446,10 @@ async def dispose_native_memory(domain: Any, decision: UUID) -> None:
 
 
 async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> list[Any]:
-    """Policy-first native episode reads, with actual receiving lineage.
+    """Policy-first native Memory reads, with actual receiving lineage.
 
-    Actual episode content is compared with its owning immutable commit.
+    Episode content binds its owning commit; fact/rule content binds its
+    original producer full body or optional versioned content witness.
     Independent/changed/unknown selected rows keep native tool inputs mixed;
     consolidated descendants never inherit from a nullable episode reference.
     """
@@ -429,12 +468,11 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
     tool = current_tool_copy(runtime) if runtime is not None else None
     if tool is not None and tool.runtime.memory is not pool:
         raise PolicyUnavailableError("Native Memory tool writer differs")
-    if table != "episodes" or (not owners and not api_export):
+    if table not in {"episodes", "facts", "rules"} or (not owners and not api_export):
         rows = await pool.fetch(query, *args)
         if tool is not None:
             tool.read_observed = True
-            # Until the real fact/rule producer proves its full native ancestry,
-            # an actual nonempty selection cannot borrow episode authority.
+            # An unrecognized selection cannot borrow another row's authority.
             tool.mixed_inputs |= bool(rows)
         return rows
     if api_export:
@@ -471,32 +509,70 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
             await _lock(conn, schema, role)
             rows = await conn.fetch(query, *args)
             for row in rows:
-                parents = await conn.fetch(
-                    "SELECT DISTINCT b.output_kind,b.output_id,b.lineage_known,b.exclusive_input,"
-                    "c.body_digest "
-                    "FROM chronicler.location_native_memory_commits c "
-                    "JOIN chronicler.location_native_memory_parents p USING(reservation_id) "
-                    "JOIN chronicler.location_native_copy_births b "
-                    "USING(copy_generation,input_digest) "
-                    "WHERE c.episode_id=$1 ORDER BY b.output_kind,b.output_id",
-                    row["id"],
+                canonical = await conn.fetchrow(
+                    f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", row["id"]
                 )
+                selected_matches = (
+                    canonical is not None
+                    and all(row.get(key) == value for key, value in dict(canonical).items())
+                    and not (set(row) - set(canonical) - {"similarity", "rank"})
+                    and all(
+                        type(row[key]) in (int, float) and math.isfinite(row[key])
+                        for key in set(row) - set(canonical)
+                    )
+                )
+                if table == "episodes":
+                    parents = await conn.fetch(
+                        "SELECT DISTINCT b.output_kind,b.output_id,b.lineage_known,"
+                        "b.exclusive_input,"
+                        "c.body_digest FROM chronicler.location_native_memory_commits c "
+                        "JOIN chronicler.location_native_memory_parents p USING(reservation_id) "
+                        "JOIN chronicler.location_native_copy_births b "
+                        "USING(copy_generation,input_digest) "
+                        "WHERE c.episode_id=$1 ORDER BY b.output_kind,b.output_id",
+                        row["id"],
+                    )
+                else:
+                    parents = await conn.fetch(
+                        "SELECT DISTINCT b.output_kind,b.output_id,"
+                        "(b.lineage_known AND m.exclusive_input) AS lineage_known,"
+                        "(b.exclusive_input AND m.exclusive_input) AS exclusive_input,"
+                        "a.body_digest,a.content_digest,a.memory_table "
+                        "FROM chronicler.location_native_memory_artifacts a "
+                        "JOIN chronicler.location_native_memory_bundles m USING(input_generation) "
+                        "JOIN chronicler.location_native_dispatch_parents p "
+                        "USING(input_generation) "
+                        "JOIN chronicler.location_native_copy_births b "
+                        "USING(copy_generation,input_digest) "
+                        "WHERE a.memory_table=$1 AND a.artifact_id=$2 "
+                        "ORDER BY b.output_kind,b.output_id",
+                        table,
+                        row["id"],
+                    )
                 if not parents:
                     mixed_inputs = True
                     continue
-                unchanged = all(
-                    parent["body_digest"] == episode_body_digest(row) for parent in parents
+                unchanged = selected_matches and all(
+                    parent["body_digest"] == episode_body_digest(canonical)
+                    if table == "episodes"
+                    else artifact_body_matches(canonical, parent)
+                    for parent in parents
                 )
                 if await conn.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM chronicler.location_retention_frontiers f "
-                    "JOIN chronicler.location_retention_plans p USING(decision_id) "
+                    "SELECT EXISTS(SELECT 1 FROM chronicler.location_retention_plans p "
                     "JOIN chronicler.location_retention_plan_outputs o USING(decision_id) "
                     "JOIN chronicler.location_native_copy_births b USING(output_kind,output_id) "
-                    "JOIN chronicler.location_native_memory_parents m "
-                    "USING(copy_generation,input_digest) "
+                    "WHERE (EXISTS("
+                    "SELECT 1 FROM chronicler.location_native_memory_parents m "
                     "JOIN chronicler.location_native_memory_commits c USING(reservation_id) "
-                    "WHERE c.episode_id=$1 AND p.state<>'complete')",
+                    "WHERE c.episode_id=$1 AND m.copy_generation=b.copy_generation "
+                    "AND m.input_digest=b.input_digest) OR EXISTS("
+                    "SELECT 1 FROM chronicler.location_native_memory_artifacts a "
+                    "JOIN chronicler.location_native_dispatch_parents i USING(input_generation) "
+                    "WHERE a.memory_table=$2 AND a.artifact_id=$1 "
+                    "AND i.copy_generation=b.copy_generation AND i.input_digest=b.input_digest)))",
                     row["id"],
+                    table,
                 ):
                     raise PolicyUnavailableError("Native Memory read generation is fenced")
                 generation = uuid4()
@@ -526,7 +602,7 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                         request,
                     )
                 if context is not None and context.runtime.memory is pool:
-                    context.local_rows.add(("episodes", UUID(str(row["id"]))))
+                    context.local_rows.add((table, UUID(str(row["id"]))))
                 copies.append((generation, digest, len(outputs)))
     async with pool.acquire() as committed:
         for generation, digest, count in copies:

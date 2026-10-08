@@ -149,6 +149,26 @@ async def test_global_session_detail_resolves_across_schemas() -> None:
     session_id = uuid4()
     row = _make_detail_row(session_id)
     app = _make_app(owning_butler="general", row=row)
+    owning_pool = app.dependency_overrides[_sessions_get_db]().pool.return_value
+    observed_log_queries = []
+
+    async def actual_log_adapter(sql, *args):
+        if not isinstance(sql, str):
+            observed_log_queries.append(sql)
+            raise TypeError("SQL transport requires text")
+        if "FROM session_process_logs" in sql:
+            observed_log_queries.append(sql)
+            assert args == (session_id,)
+            return {
+                "pid": 42,
+                "runtime_type": "codex",
+                "exit_code": 0,
+                "retry_attempted": True,
+                "attempt_count": 2,
+            }
+        return None
+
+    owning_pool.fetchrow.side_effect = actual_log_adapter
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -166,6 +186,10 @@ async def test_global_session_detail_resolves_across_schemas() -> None:
     assert data["purpose_lane"] == "private_content"
     assert "effective_prompt" not in data
     assert "prompt_provenance" not in data
+    assert data["process_log"] is not None
+    assert data["process_log"]["pid"] == 42
+    assert data["process_log"]["attempt_count"] == 2
+    assert observed_log_queries and all(isinstance(sql, str) for sql in observed_log_queries)
 
 
 async def test_global_session_detail_includes_linked_message_when_present() -> None:

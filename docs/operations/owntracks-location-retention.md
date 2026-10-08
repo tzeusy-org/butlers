@@ -100,9 +100,13 @@ membership, actual derived artifacts and inert-link endpoint dispositions.
 The native consolidation path re-reads the complete claimed episode and existing
 fact/rule bundle, captures immutable parents and a prompt binding before runtime
 dispatch, and finalizes actual artifact bodies at the protected executor's owning
-transaction after provenance/link/state writes. The initial pre-prompt processing
-reservation remains unfinished in this checkpoint: this pre-dispatch hook is not
-evidence of a reservation before every earlier claim/read/prompt operation.
+transaction after provenance/link/state writes. The actual registered owning
+consolidation runner additionally captures its full episode/fact/rule claim
+bundle before prompt rendering, after the policy-first claim locks. It commits
+and independently reads back that reservation before runtime admission. Native
+runner unwind can settle only its own processing copy; runtime, tool, catalog
+and stored descendants retain their independent holders. Actual hosted
+role/rollback/concurrency proof remains required.
 
 Shared catalog selection retains the original relevance, sensitivity and limit
 query while first selecting metadata. A configured Chronicler catalog body is
@@ -316,3 +320,7 @@ software controls, collection and mock transactions do not certify them.
 Native Memory read continuation keeps exact episode source content separate from mutable reference counters. The configured owning Memory producer records actual selected parent/body and receiving-session births before bytes return. Private tool witnesses become exclusive only after all selected inputs are known; a nonempty independent or currently unclassified fact/rule selection preserves the complete receiving context. Same-name calls retain full one-to-one input/result matching and each applicable read witness must be exclusive.
 
 Handler failure capture precedes receipt cleanup. A secondary unavailable failure receipt leaves holders unresolved and preserves the original handler error/cancellation. A new task cancellation during cleanup propagates. Successful-result receipt failures continue to refuse result return. These source mechanisms do not establish real-role or all-holder completion before actual hosted/online proof.
+
+Actual native fact/rule writers now additionally freeze a nullable content-v1 witness beside the original immutable full-body digest. Only reference_count and last_referenced_at vary under this profile. Old NULL history is not filled from current data. Local selected reads compare the locked canonical body and immutable exclusive parent bundle; changed content/authority/metadata, unknown ancestry or prepared source generations retain/refuse their copies. Existing configured owning Memory roles and same-database registration remain required, and no peer schema or new grant is authorized.
+
+The reached preparation counter query uses explicit bigint arithmetic binds; its genuine SQL survivor remains pending. Session process-log enrichment supplies SQL text to both the ordinary and actual Chronicler capture adapter. Valid-log positives and old tuple-failure controls establish software transport only; the hosted sibling-pool timeout cause remains unproved.

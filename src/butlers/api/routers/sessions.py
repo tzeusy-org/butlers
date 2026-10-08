@@ -356,15 +356,13 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
         )
 
     try:
-        log_query = (
-            """
+        log_query = """
             SELECT pid, exit_code, command, stderr, runtime_type,
                    retry_attempted, retry_succeeded, result_source, attempt_count,
                    created_at, expires_at
             FROM session_process_logs
             WHERE session_id = $1 AND expires_at >= now()
-            """,
-        )
+            """
         from butlers.chronicler.location_session_exports import capture_session_rows
 
         if detail.butler == "chronicler":

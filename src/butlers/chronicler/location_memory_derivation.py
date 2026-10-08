@@ -324,19 +324,23 @@ async def finalize_derivation_artifacts(conn: Any) -> None:
     )
     if runtime_receipt is None or runtime_receipt["system_digest"] != binding.system_digest:
         raise PolicyUnavailableError("Native artifact runtime input is unknown")
+    from butlers.chronicler.location_memory_copies import artifact_content_digest
+
     for table, artifact in sorted(binding.pending_artifacts):
         row = await conn.fetchrow(f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", artifact)
         if row is None:
             raise PolicyUnavailableError("Native final artifact body is unavailable")
         await conn.execute(
             "INSERT INTO chronicler.location_native_memory_artifacts "
-            "(artifact_generation,input_generation,memory_table,artifact_id,body_digest) "
-            "VALUES($1,$2,$3,$4,$5)",
+            "(artifact_generation,input_generation,memory_table,artifact_id,"
+            "body_digest,content_digest) "
+            "VALUES($1,$2,$3,$4,$5,$6)",
             uuid4(),
             binding.generation,
             table,
             artifact,
             content_digest({"memory_artifact": _digest_value(dict(row))}),
+            artifact_content_digest(table, row),
         )
         catalog = await conn.fetchrow(
             "SELECT source_schema FROM public.memory_catalog "

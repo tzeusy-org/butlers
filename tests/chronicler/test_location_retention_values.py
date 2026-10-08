@@ -1109,6 +1109,35 @@ async def test_native_session_api_export_binds_actual_parents_and_refuses_unknow
         export.active = False
         with pytest.raises(location_retention.PolicyUnavailableError, match="lifetime"):
             await capture_session_rows(pool, "SELECT id,result FROM sessions", ())
+        # The real Chronicler enrichment must send SQL text through the actual
+        # native adapter, then bind the planted process-log body to its export.
+        from butlers.api.models.session import SessionDetail
+        from butlers.api.routers.sessions import _attach_session_extras
+
+        export.active, pool.native = True, True
+        original_fetch = pool.fetch
+        observed_log_queries = []
+
+        async def log_fetch(sql, *args):
+            assert isinstance(sql, str)
+            if "FROM session_process_logs" in sql:
+                observed_log_queries.append(sql)
+                return [{"pid": 43, "runtime_type": "codex", "exit_code": 0}]
+            return await original_fetch(sql, *args)
+
+        pool.fetch = log_fetch
+        detail = SessionDetail(
+            id=pool.row["id"],
+            butler="chronicler",
+            prompt="native",
+            trigger_source="api",
+            started_at=datetime.now(UTC),
+        )
+        before = len(pool.births)
+        await _attach_session_extras(detail, pool, pool.row["id"])
+        assert observed_log_queries and detail.process_log is not None
+        assert detail.process_log.pid == 43
+        assert len(pool.births) == before + 1
     finally:
         location_retention._api_copy_pools.discard(pool)
         _current_location_export.reset(token)
@@ -1306,6 +1335,9 @@ async def _assert_native_episode_tool_reads():
             self.unknown = False
             self.row = {"id": uuid4(), "content": "own native episode", "reference_count": 0}
             self.original = copies.episode_body_digest(self.row)
+            self.artifact = None
+            self.artifact_exclusive = True
+            self.extra = {}
 
         @asynccontextmanager
         async def acquire(self):
@@ -1319,6 +1351,8 @@ async def _assert_native_episode_tool_reads():
             self.trace.append("commit")
 
         async def fetchrow(self, sql, *args):
+            if "SELECT * FROM" in sql:
+                return self.row
             assert "location_retention_policy" in sql
             self.trace.append("policy")
             return {"version": 1}
@@ -1328,7 +1362,7 @@ async def _assert_native_episode_tool_reads():
                 return "chronicler_mem"
             if "current_user" in sql:
                 return "actual-owner-double"
-            if "location_retention_frontiers" in sql:
+            if "location_retention_plans" in sql:
                 return self.fenced
             if "count(*) FROM chronicler.location_native_copy_births" in sql:
                 self.trace.append("readback")
@@ -1341,6 +1375,18 @@ async def _assert_native_episode_tool_reads():
                 self.births.append(args)
 
         async def fetch(self, sql, *args):
+            if "FROM chronicler.location_native_memory_artifacts" in sql:
+                if self.artifact is None:
+                    return []
+                return [
+                    {
+                        **self.artifact,
+                        "output_kind": "point_event",
+                        "output_id": self.row["id"],
+                        "lineage_known": self.artifact_exclusive,
+                        "exclusive_input": self.artifact_exclusive,
+                    }
+                ]
             if "FROM chronicler.location_native_memory_commits" in sql:
                 return (
                     [
@@ -1356,12 +1402,12 @@ async def _assert_native_episode_tool_reads():
                     else []
                 )
             self.trace.append("body_read")
-            if sql.startswith("UPDATE episodes"):
+            if sql.startswith("UPDATE "):
                 self.row["reference_count"] += 1
             return (
-                [{**self.row, "content": "changed independent body"}]
+                [{**self.row, **self.extra, "content": "changed independent body"}]
                 if self.changed
-                else [self.row]
+                else [{**self.row, **self.extra}]
             )
 
     domain, memory = object(), Memory()
@@ -1395,6 +1441,61 @@ async def _assert_native_episode_tool_reads():
         tool.mixed_inputs = False
         await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
         assert tool.mixed_inputs  # Unknown fact ancestry cannot borrow episode authority.
+        from butlers.chronicler.location_projection import _digest_value
+
+        original_full = content_digest({"memory_artifact": _digest_value(memory.row)})
+        memory.artifact = {
+            "memory_table": "facts",
+            "body_digest": original_full,
+            "content_digest": copies.artifact_content_digest("facts", memory.row),
+        }
+        tool.mixed_inputs = False
+        await get_memory(memory, "fact", memory.row["id"], allowed_sensitivities=["normal"])
+        assert tool.read_observed and not tool.mixed_inputs
+        assert memory.artifact["body_digest"] == original_full  # History never refreshed.
+        assert memory.births[-1][4] is True and memory.births[-1][5] == tool.session
+        memory.extra = {"rank": 0.75, "similarity": 1.0}
+        tool.mixed_inputs = False
+        await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+        assert not tool.mixed_inputs  # Actual numeric search scores preserve the body.
+        for extra in (
+            {"rank": "private copied prose"},
+            {"rank": True},
+            {"unregistered": "private copied prose"},
+        ):
+            memory.extra = extra
+            tool.mixed_inputs = False
+            await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+            assert tool.mixed_inputs and memory.births[-1][4] is False
+        memory.extra = {"rank": float("nan")}
+        before = len(memory.births)
+        with pytest.raises(ValueError, match="JSON compliant"):
+            await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+        assert len(memory.births) == before  # Invalid score cannot emit an admitted copy.
+        memory.extra = {}
+        memory.artifact["content_digest"] = None
+        tool.mixed_inputs = False
+        await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+        assert tool.mixed_inputs  # Legacy NULL is not refilled from the current row.
+        memory.artifact["content_digest"] = copies.artifact_content_digest("facts", memory.row)
+        tool.mixed_inputs = False
+        memory.row["content"] = "independent modified fact"
+        await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+        assert tool.mixed_inputs and memory.births[-1][4] is False
+        memory.row["content"] = "own native episode"
+        memory.artifact_exclusive = False
+        tool.mixed_inputs = False
+        await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+        assert tool.mixed_inputs
+        memory.artifact_exclusive = True
+        memory.artifact = {
+            "memory_table": "rules",
+            "body_digest": original_full,
+            "content_digest": copies.artifact_content_digest("rules", memory.row),
+        }
+        tool.mixed_inputs = False
+        await get_memory(memory, "rule", memory.row["id"], allowed_sensitivities=["normal"])
+        assert not tool.mixed_inputs
         memory.fenced = True
         before = len(memory.births)
         with pytest.raises(copies.PolicyUnavailableError, match="fenced"):
@@ -1999,6 +2100,8 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     native_parent, late_parent, active_tool = uuid4(), uuid4(), uuid4()
     native_pool = Pool()
     native_pool.writes = []
+    native_pool.artifact_row = {"id": identifier, "content": "actual source-owned output"}
+    native_digest = content_digest({"memory_artifact": _digest_value(native_pool.artifact_row)})
     native_pool.tool_witnesses = [
         {**row, "tool_generation": uuid4()} for row in pool.tool_witnesses
     ]
@@ -2059,7 +2162,28 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
                 emitted_artifact,
                 "rules",
                 identifier,
-                b"a" * 32,
+                native_digest,
+            )
+            is True
+        )
+        source_artifact = [
+            args
+            for sql, args in native_pool.writes
+            if "INSERT INTO chronicler.location_native_memory_artifacts" in sql
+        ][0]
+        assert source_artifact[-2] == native_digest
+        from butlers.chronicler.location_memory_copies import artifact_content_digest
+
+        assert source_artifact[-1] == artifact_content_digest("rules", native_pool.artifact_row)
+        native_pool.writes.clear()
+        with pytest.raises(PolicyUnavailableError, match="body differs"):
+            await contexts.capture_context_catalog_source(
+                writer, uuid4(), "rules", identifier, b"x" * 32
+            )
+        assert native_pool.writes == []
+        assert (
+            await contexts.capture_context_catalog_source(
+                writer, emitted_artifact, "rules", identifier, native_digest
             )
             is True
         )
@@ -2078,7 +2202,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
                 uuid4(),
                 "rules",
                 identifier,
-                b"a" * 32,
+                native_digest,
             )
             is False
         )
@@ -2091,7 +2215,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
                 uuid4(),
                 "rules",
                 identifier,
-                b"a" * 32,
+                native_digest,
             )
             is False
         )

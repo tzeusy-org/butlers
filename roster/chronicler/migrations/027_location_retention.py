@@ -324,6 +324,7 @@ def upgrade() -> None:
           memory_table TEXT NOT NULL CHECK(memory_table IN ('facts','rules')),
           artifact_id UUID NOT NULL,
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          content_digest BYTEA CHECK(content_digest IS NULL OR octet_length(content_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           UNIQUE(memory_table,artifact_id)
         );
