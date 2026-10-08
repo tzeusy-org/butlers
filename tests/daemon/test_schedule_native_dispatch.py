@@ -26,7 +26,7 @@ class TestNativeScheduleDispatch:
         daemon.spawner = mock_spawner
         return daemon, mock_spawner
 
-    async def test_registry_and_job_dispatch_and_errors(self, tmp_path):
+    async def test_registry_and_job_dispatch_and_errors(self, tmp_path, monkeypatch):
         """Registry has memory jobs + eligibility_sweep; rollup jobs removed; job-mode dispatches; unknown/blank raise."""
         from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
@@ -41,6 +41,7 @@ class TestNativeScheduleDispatch:
             "decision_review_digest",
             "decision_escalation_check",
         } <= set(switchboard_jobs)
+        assert "nightly_assurance" in switchboard_jobs
         removed = {
             "connector_stats_hourly_rollup",
             "connector_stats_daily_rollup",
@@ -67,6 +68,16 @@ class TestNativeScheduleDispatch:
             )
         assert result == native_result
         mock_handler.assert_awaited_once_with(daemon.db.pool, {"dry_run": True})
+        mock_spawner.trigger.assert_not_awaited()
+
+        # REQ-nightly-ci-assurance-002: exercise the owning registered handler
+        # through actual native dispatch. Missing host evidence is unavailable
+        # and does not spawn an LLM or fabricate an empty incident population.
+        monkeypatch.setenv("BUTLERS_NIGHTLY_INCIDENT_EXPORT", str(tmp_path / "absent.json"))
+        assurance_result = await daemon._dispatch_scheduled_task(
+            trigger_source="schedule:nightly-assurance", job_name="nightly_assurance"
+        )
+        assert assurance_result == {"available": False, "reason": "nightly_export_unavailable"}
         mock_spawner.trigger.assert_not_awaited()
 
         # Job-mode with complexity param: handler doesn't get complexity

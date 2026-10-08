@@ -155,6 +155,13 @@ cron = "0 */6 * * *"
 dispatch_mode = "job"
 job_name = "decision_escalation_check"
 
+# Read-only, content-blind host incident export; no runtime Beads/GitHub access.
+[[butler.schedule]]
+name = "nightly-assurance"
+cron = "17 * * * *"
+dispatch_mode = "job"
+job_name = "nightly_assurance"
+
 # Domain-event-bus delivery reconciliation sweep (bu-1yw6d, PR #3585 review
 # follow-up) — re-drives pending/failed public.domain_event_deliveries rows
 # that a fresh publish's fan-out never resolved (crash after claim, or a

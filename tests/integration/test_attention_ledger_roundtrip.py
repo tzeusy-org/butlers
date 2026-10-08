@@ -185,7 +185,9 @@ async def test_seed_does_not_clobber_existing_approvals_policy(pool: asyncpg.Poo
 # ---------------------------------------------------------------------------
 
 
-async def test_record_attention_event_round_trips(pool: asyncpg.Pool) -> None:
+async def test_record_attention_event_round_trips(
+    pool: asyncpg.Pool, migrated_db_url: str, tmp_path, monkeypatch
+) -> None:
     row_id = await record_attention_event(
         pool,
         origin_butler="finance",
@@ -217,6 +219,12 @@ async def test_record_attention_event_round_trips(pool: asyncpg.Pool) -> None:
     if isinstance(stored_metadata, str):
         stored_metadata = json.loads(stored_metadata)
     assert stored_metadata == {"insight_count": 3}
+
+    # REQ-nightly-ci-assurance-002: same real canonical audit/ledger boundary,
+    # with ordinary SET ROLE and independent durable readback.
+    from tests.integration.nightly_assurance_helpers import exercise_nightly_runtime_boundary
+
+    await exercise_nightly_runtime_boundary(pool, migrated_db_url, tmp_path, monkeypatch)
 
 
 async def test_expired_outcome_round_trips_and_is_summarized_per_origin(

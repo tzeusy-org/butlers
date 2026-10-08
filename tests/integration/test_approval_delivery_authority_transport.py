@@ -240,7 +240,7 @@ async def _registered_servers(pools):
 
 async def _admit_source_actions(pool, *, ordinal, count=1):
     for index in range(count):
-        now = datetime.now(UTC)
+        now = await pool.fetchval("SELECT clock_timestamp()")
         await park_pending_action(
             pool,
             action_id=uuid.uuid4(),

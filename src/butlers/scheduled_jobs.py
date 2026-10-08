@@ -185,6 +185,16 @@ async def _run_switchboard_decision_escalation_check_job(
     return await run_decision_escalation_check(pool, job_args)
 
 
+async def _run_switchboard_nightly_assurance_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Consume the trusted host's content-blind nightly incident export."""
+    from butlers.jobs.nightly_assurance import run_nightly_assurance
+
+    return await run_nightly_assurance(pool, job_args)
+
+
 def _build_switchboard_insight_notify_fn(
     pool: asyncpg.Pool,
 ) -> Any:
@@ -2210,6 +2220,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
             "decision_review_digest": _run_switchboard_decision_review_digest_job,
             "decision_escalation_check": _run_switchboard_decision_escalation_check_job,
+            "nightly_assurance": _run_switchboard_nightly_assurance_job,
             "domain_event_reconciliation_sweep": (
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),

@@ -974,7 +974,9 @@ async def test_tick_dispatches_normally_once_allowance_reset_passed(pool):
     await pool.execute(
         "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
     )
-    await _exhaust_every_catalog_account(pool, datetime.now(UTC) - timedelta(minutes=1))
+    # Routing's allowance predicate compares reset_at with PostgreSQL now().
+    reset_at = await pool.fetchval("SELECT clock_timestamp() - interval '1 minute'")
+    await _exhaust_every_catalog_account(pool, reset_at)
     try:
         dispatch = _Dispatch()
         count = await tick(pool, dispatch, butler_name="general")
@@ -1494,12 +1496,16 @@ async def test_qa_tick_rechecks_own_policy_before_each_dispatch(
         assert rows["qa-patrol"]["next_run_at"] <= datetime.now(UTC)  # still due
 
         await _set_qa_policy(owner, "active", "operator")
+        from butlers.testing.nightly_evidence import minute_milestone
+
+        minute_milestone("before-resume", cutover_flag)
         resumed = _Dispatch()
         assert await tick(qa, resumed, butler_name="qa", eligibility_pool=poison) == 2
         assert sorted(c["trigger_source"] for c in resumed.calls) == [
             "deadline:qa-deadline-2",
             "schedule:qa-patrol",
         ]
+        minute_milestone("before-repeat", cutover_flag)
         again = _Dispatch()
         assert await tick(qa, again, butler_name="qa", eligibility_pool=poison) == 0
         assert again.calls == []

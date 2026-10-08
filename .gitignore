@@ -114,3 +114,6 @@ bu-*/
 # Pursuit working files (dossier retention policy)
 docs/redesigns/*-harvest.json
 docs/redesigns/*-state.json
+
+# Trusted host content-blind nightly export; never tracker credentials.
+.nightly-assurance/

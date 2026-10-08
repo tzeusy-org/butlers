@@ -21,6 +21,7 @@ The Switchboard is the sole entry point for all inbound messages. It classifies 
 - **Agent registry:** Maintain liveness state for all registered agents (butlers and staffers). Run periodic eligibility sweeps.
 - **Connector registry:** Track which ingress connectors are active, healthy, and eligible for message receipt.
 - **Butler-to-staffer routing:** Route delivery requests (e.g., `notify()`) from domain butlers to infrastructure staffers such as Messenger.
+- **Operational assurance:** Observe the trusted host's content-blind nightly incident export and route an owner notification through existing policy and Messenger delivery. Tracker mutation stays with the host coordinator; missing evidence remains unavailable.
 
 ## Non-Responsibilities
 
