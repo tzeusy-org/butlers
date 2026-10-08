@@ -81,11 +81,36 @@ async def _run() -> None:
         )
         pidfd = None
         try:
-            await asyncio.wait_for(process.stdout.readline(), timeout=0.1)
+            pre_release = await asyncio.wait_for(process.stdout.readline(), timeout=0.1)
         except TimeoutError:
             pass
         else:
-            raise RuntimeError("provider output arrived before the exact gate release")
+            # A closed pipe and actual output are distinct failures. Never emit
+            # the child bytes: stderr is merged here and may contain secrets.
+            try:
+                await asyncio.wait_for(process.wait(), timeout=0.2)
+            except TimeoutError:
+                pass
+            raise RuntimeError(
+                json.dumps(
+                    {
+                        "probe": "exact-image-release-v1",
+                        "phase": "before-release",
+                        "observation": "early-eof" if pre_release == b"" else "nonempty-output",
+                        "process_state": ("running" if process.returncode is None else "exited"),
+                        "exit_kind": (
+                            "unknown"
+                            if process.returncode is None
+                            else "zero"
+                            if process.returncode == 0
+                            else "shim-refused"
+                            if process.returncode == 125
+                            else "nonzero"
+                        ),
+                    },
+                    sort_keys=True,
+                )
+            )
 
         sandbox._release_payload(block_write)
         _close_fd(block_write)
