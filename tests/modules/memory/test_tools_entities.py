@@ -10,6 +10,7 @@ entity_merge so that episode_entities rows are re-pointed on merge (bu-cojsp).
 
 from __future__ import annotations
 
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -308,9 +309,9 @@ class TestEntityResolveSchema:
         mcp.tool.side_effect = capture_tool
 
         parent_mock = MagicMock()
-        with patch.dict(
-            "sys.modules",
-            {
+        # Restore only mocked keys; real first-use imports must retain canonical identity.
+        with pytest.MonkeyPatch.context() as module_patch:
+            mocked_modules = {
                 "butlers.modules.memory.tools": parent_mock,
                 "butlers.modules.memory.tools.writing": MagicMock(),
                 "butlers.modules.memory.tools.reading": MagicMock(),
@@ -318,8 +319,9 @@ class TestEntityResolveSchema:
                 "butlers.modules.memory.tools.management": MagicMock(),
                 "butlers.modules.memory.tools.context": MagicMock(),
                 "butlers.modules.memory.tools.entities": MagicMock(),
-            },
-        ):
+            }
+            for name, mocked_module in mocked_modules.items():
+                module_patch.setitem(sys.modules, name, mocked_module)
             await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
         return registered["memory_entity_resolve"]
 
@@ -614,9 +616,9 @@ def _register_memory_entity_merge_tool(mod, *, entity_merge_result):
     fake_tools_pkg.entities = fake_entities
 
     async def _run():
-        with patch.dict(
-            "sys.modules",
-            {
+        # Restore only mocked keys; real first-use imports must retain canonical identity.
+        with pytest.MonkeyPatch.context() as module_patch:
+            mocked_modules = {
                 "butlers.modules.memory.tools": fake_tools_pkg,
                 "butlers.modules.memory.tools.writing": MagicMock(),
                 "butlers.modules.memory.tools.reading": MagicMock(),
@@ -628,8 +630,9 @@ def _register_memory_entity_merge_tool(mod, *, entity_merge_result):
                 "butlers.modules.memory.consolidation": MagicMock(),
                 "butlers.modules.memory.reembedding": MagicMock(),
                 "butlers.modules.memory.tools.entities": fake_entities,
-            },
-        ):
+            }
+            for name, mocked_module in mocked_modules.items():
+                module_patch.setitem(sys.modules, name, mocked_module)
             await mod.register_tools(mcp=mcp, config=None, db=mod._db, butler_name="memory")
         return registered, fake_entities
 

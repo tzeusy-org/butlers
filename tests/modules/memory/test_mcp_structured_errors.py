@@ -16,6 +16,7 @@ Tests verify that:
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -125,9 +126,9 @@ class TestMemoryMcpStructuredErrors:
 
         mcp.tool.side_effect = capture_tool
 
-        with patch.dict(
-            "sys.modules",
-            {
+        # Restore only mocked keys; real first-use imports must retain canonical identity.
+        with pytest.MonkeyPatch.context() as module_patch:
+            mocked_modules = {
                 "butlers.modules.memory.tools": parent_mock,
                 "butlers.modules.memory.tools.writing": mock_writing,
                 "butlers.modules.memory.tools.reading": MagicMock(),
@@ -135,8 +136,9 @@ class TestMemoryMcpStructuredErrors:
                 "butlers.modules.memory.tools.management": MagicMock(),
                 "butlers.modules.memory.tools.context": MagicMock(),
                 "butlers.modules.memory.tools.entities": MagicMock(),
-            },
-        ):
+            }
+            for name, mocked_module in mocked_modules.items():
+                module_patch.setitem(sys.modules, name, mocked_module)
             await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
 
         mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
@@ -247,6 +249,11 @@ class TestMemoryMcpStructuredErrors:
             )
 
         assert set(result.keys()) == {"error", "message", "recovery"}
+        # Registration may first import real siblings while tool implementations
+        # are mocked. Their canonical cache must survive the mock fixture lifetime.
+        from butlers.modules import memory
+
+        assert sys.modules.get("butlers.modules.memory.consolidation") is memory.consolidation
 
     async def test_error_and_message_contain_original_exception_text(self) -> None:
         """The error and message fields must contain the original exception text."""

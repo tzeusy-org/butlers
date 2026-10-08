@@ -157,11 +157,13 @@ BUTLER_DB = "relationship"
 _CONTACTS_SYNC_TIMEOUT_S = 120.0
 
 
-async def merge_entity_pair(pool, *, source_entity_id: UUID, target_entity_id: UUID):
-    """Delegate the mutation at demand, keeping the router service seam patchable."""
+async def merge_entity_pair(pool, *, source_entity_id: UUID, target_entity_id: UUID, **kwargs):
+    """Delegate at demand; the owning service validates every optional argument."""
     from butlers.tools.relationship.entity_merge import merge_entity_pair as merge
 
-    return await merge(pool, source_entity_id=source_entity_id, target_entity_id=target_entity_id)
+    return await merge(
+        pool, source_entity_id=source_entity_id, target_entity_id=target_entity_id, **kwargs
+    )
 
 
 def _get_db_manager() -> DatabaseManager:
