@@ -413,6 +413,7 @@ def reconcile(
                     or not {"setup", "teardown"} <= phases.keys()
                     or set(phases) - {"setup", "call", "teardown"}
                     or (phases["setup"]["outcome"] == "passed" and "call" not in phases)
+                    or (phases["setup"]["outcome"] == "skipped" and "call" in phases)
                 ):
                     raise ValueError("child phase incomplete")
                 for value in phases.values():

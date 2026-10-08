@@ -358,6 +358,23 @@ def test_reconciliation_requires_complete_node_identity(
     with pytest.raises(ValueError):
         partition.validate_assignment(data, malformed_assignment, root=tmp_path)
     assert partition.reconcile(data, assignment, receipts, root=tmp_path)["complete"] is True
+    # Synthetic phase relations use the same fresh actual miniature inventory.
+    # Setup-skip has no body phase; a dynamic skip legitimately occurs in call.
+    for kind in ("setup-skip", "dynamic-call-skip"):
+        skipped = copy.deepcopy(receipts)
+        node = next(iter(skipped[first]["nodes"]))
+        phases = skipped[first]["nodes"][node]
+        if kind == "setup-skip":
+            phases["setup"]["outcome"] = "skipped"
+            phases.pop("call")
+        else:
+            phases["call"]["outcome"] = "skipped"
+        assert partition.reconcile(data, assignment, skipped, root=tmp_path)["complete"] is True
+    inconsistent = copy.deepcopy(receipts)
+    node = next(iter(inconsistent[first]["nodes"]))
+    inconsistent[first]["nodes"][node]["setup"]["outcome"] = "skipped"
+    with pytest.raises(ValueError, match="phase incomplete"):
+        partition.reconcile(data, assignment, inconsistent, root=tmp_path)
     # Synthetic raw timers pin deterministic wire reconstruction, not hosted
     # execution. JSON sorts node/phase keys and must not change exact totals.
     timed = copy.deepcopy(receipts)
