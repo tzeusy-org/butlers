@@ -91,8 +91,12 @@ worker/instrumentation species, configuration or measured body refuses with
 `COST_UNKNOWN`. The real command's 300-second deadline remains the owning bound.
 A candidate built on a different local host retains both its own builder
 context and the actual observations; ordinary local replay cannot borrow a
-hosted class. Existing v1 traced profiles retain their stricter exact-context
-comparison. No v2 profile is installed by this SOURCE change.
+hosted class. Current admission requires the complete v2 species, hardware
+ledger and whole-file provenance. Legacy v1 context-only profiles return
+`COST_UNKNOWN`, including profiles carrying a traced label without current
+worker authority. An immutable historical reader remains a separate diagnostic
+control and cannot admit current cost. No profile is installed by this SOURCE
+change.
 
 A fresh exact-source full/affected pair must emit these positive policy and
 worker fields. The authentic prior 9e reference predates them and stays an

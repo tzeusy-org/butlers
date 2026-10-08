@@ -37,7 +37,7 @@ def _write(repo: Path, relative_path: str, content: str = "x = 1\n") -> None:
     target.write_text(content, encoding="utf-8")
 
 
-def _repo(tmp_path: Path) -> tuple[Path, str]:
+def _repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
     repo = tmp_path / "planner-repo"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -56,37 +56,21 @@ def _repo(tmp_path: Path) -> tuple[Path, str]:
     base = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
-    # Synthetic inner cost-conformance values, never hosted timing evidence.
-    from butlers.testing.scope_cost import PROFILE, context
+    # Current v2 admission fields are explicit simulated conformance inputs,
+    # never authenticated hosted measurements.
+    from butlers.testing.scope_cost import PROFILE
 
-    profile = {
-        "schema": "test-scope-cost.v1",
-        "source_head": base,
-        "context": context(repo),
-        "reference": {
-            "workers": "auto",
-            "tracer": "CTracer",
-            "runs": ["synthetic"],
-            "heavy_shard_seconds": [300.0],
-            "affected_setup_seconds": 1.0,
-        },
-        "files": {
-            str(p.relative_to(repo)): {
-                "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
-                "seconds": 1.0,
-            }
-            for p in repo.rglob("test_*.py")
-        },
-    }
-    _write(repo, PROFILE, json.dumps(profile))
+    _synthetic_cost(repo, monkeypatch)
     _git(repo, "add", PROFILE)
     _git(repo, "commit", "-qm", "synthetic cost-conformance input")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
     return repo, base
 
 
-def test_untracked_test_file_produces_plan_only_exact_scope(tmp_path: Path) -> None:
-    repo, base = _repo(tmp_path)
+def test_untracked_test_file_produces_plan_only_exact_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base = _repo(tmp_path, monkeypatch)
     _write(repo, "tests/api/test_new.py", "def test_new():\n    assert True\n")
 
     plan = plan_worktree_tests(base, repo_dir=repo)
@@ -99,8 +83,10 @@ def test_untracked_test_file_produces_plan_only_exact_scope(tmp_path: Path) -> N
     assert "Running:" not in report
 
 
-def test_deleted_test_file_widens_to_existing_parent_for_collection(tmp_path: Path) -> None:
-    repo, base = _repo(tmp_path)
+def test_deleted_test_file_widens_to_existing_parent_for_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base = _repo(tmp_path, monkeypatch)
     (repo / "tests/api/test_existing.py").unlink()
 
     plan = plan_worktree_tests(base, repo_dir=repo)
@@ -110,8 +96,10 @@ def test_deleted_test_file_widens_to_existing_parent_for_collection(tmp_path: Pa
     assert "Deleted test path" in plan.reason
 
 
-def test_renamed_test_deduplicates_the_parent_scope_and_collects(tmp_path: Path) -> None:
-    repo, base = _repo(tmp_path)
+def test_renamed_test_deduplicates_the_parent_scope_and_collects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base = _repo(tmp_path, monkeypatch)
     _git(repo, "mv", "tests/api/test_existing.py", "tests/api/test_renamed.py")
 
     plan = plan_worktree_tests(base, repo_dir=repo)
@@ -128,8 +116,10 @@ def test_renamed_test_deduplicates_the_parent_scope_and_collects(tmp_path: Path)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_makefile_change_escalates_instead_of_claiming_no_tests(tmp_path: Path) -> None:
-    repo, base = _repo(tmp_path)
+def test_makefile_change_escalates_instead_of_claiming_no_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base = _repo(tmp_path, monkeypatch)
     _write(repo, "Makefile", "all:\n\t@true\n")
 
     plan = plan_worktree_tests(base, repo_dir=repo)
@@ -139,8 +129,10 @@ def test_makefile_change_escalates_instead_of_claiming_no_tests(tmp_path: Path) 
     assert "Escalate" in plan.reason
 
 
-def test_unavailable_base_fails_closed_to_escalation(tmp_path: Path) -> None:
-    repo, _ = _repo(tmp_path)
+def test_unavailable_base_fails_closed_to_escalation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = _repo(tmp_path, monkeypatch)
 
     plan = plan_worktree_tests("does-not-exist", repo_dir=repo)
 
@@ -187,8 +179,10 @@ def test_unavailable_base_fails_closed_to_escalation(tmp_path: Path) -> None:
     assert "BASE_UNAVAILABLE" in wrong["records"][0]["decision"]["reason_codes"]
 
 
-def test_full_scope_uses_the_requested_worktree_testpaths(tmp_path: Path) -> None:
-    repo, base = _repo(tmp_path)
+def test_full_scope_uses_the_requested_worktree_testpaths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base = _repo(tmp_path, monkeypatch)
     _write(
         repo,
         "pyproject.toml",
@@ -203,8 +197,10 @@ def test_full_scope_uses_the_requested_worktree_testpaths(tmp_path: Path) -> Non
     assert plan.test_paths == ["custom_tests/"]
 
 
-def test_default_allowlist_scopes_a_direct_e2e_test_edit(tmp_path: Path) -> None:
-    repo, base = _repo(tmp_path)
+def test_default_allowlist_scopes_a_direct_e2e_test_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, base = _repo(tmp_path, monkeypatch)
     _write(repo, "tests/e2e/test_new.py", "def test_new():\n    assert True\n")
 
     plan = plan_worktree_tests(base, repo_dir=repo)
@@ -214,9 +210,9 @@ def test_default_allowlist_scopes_a_direct_e2e_test_edit(tmp_path: Path) -> None
 
 
 def test_custom_fallback_allowlist_escalates_a_path_the_default_allowlist_ignores(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo, base = _repo(tmp_path)
+    repo, base = _repo(tmp_path, monkeypatch)
     _write(repo, "tests/e2e/test_new.py", "def test_new():\n    assert True\n")
     widened_allowlist = FULL_SUITE_FALLBACK_ALLOWLIST + ("tests/e2e/",)
 
@@ -250,20 +246,44 @@ def test_cli_main_is_plan_only_and_never_calls_legacy_runner(
     assert "[SCOPED] fixture plan" in output
 
 
-def _synthetic_cost(repo: Path) -> None:
-    """Inner admission conformance; these numbers are not hosted measurements."""
-    from butlers.testing.scope_cost import PROFILE, context
+def _synthetic_cost(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit v2 inner conformance; labels/numbers are not hosted measurements."""
+    from butlers.testing.scope_cost import PROFILE, environment, runner_class
 
+    for key, value in {
+        "RUNNER_ENVIRONMENT": "github-hosted",
+        "CI_COST_RUNNER_LABEL": "ubuntu-latest",
+        "ImageOS": "ubuntu24",
+        "ImageVersion": "20261001.1.0",
+        "CI_COST_EXPECTED_WORKERS": "1",
+        "PYTEST_XDIST_AUTO_WORKERS": "1",
+        "CI_COVERAGE": "1",
+        "CI_COVERAGE_CORE": "ctrace",
+    }.items():
+        monkeypatch.setenv(key, value)
+    observed = environment(repo)
+    classification = runner_class(observed)
+    source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
+    model = observed["runtime"]["cpu_model_digest"]
+    measurement = {
+        "environment": observed,
+        "run": "41",
+        "attempt": "1",
+        "source": source,
+        "job": "affected",
+        "workers": 1,
+        "instrumentation": "CTracer",
+    }
     profile = {
-        "schema": "test-scope-cost.v1",
-        "context": context(repo),
-        "source_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo)
-        .decode()
-        .strip(),
+        "schema": "test-scope-cost.v2",
+        "context": hashlib.sha256(json.dumps(classification, sort_keys=True).encode()).hexdigest(),
+        "runner_class": classification,
+        "hardware_ledger": {model: [measurement]},
+        "source_head": source,
         "reference": {
             "workers": "auto",
             "tracer": "CTracer",
-            "runs": ["synthetic"],
+            "runs": ["41"],
             "heavy_shard_seconds": [300.0],
             "affected_setup_seconds": 1.0,
         },
@@ -271,6 +291,7 @@ def _synthetic_cost(repo: Path) -> None:
             str(p.relative_to(repo)): {
                 "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
                 "seconds": 1.0,
+                "observations": [{"seconds": 1.0, "model": model, "measurement": measurement}],
             }
             for p in repo.rglob("test_*.py")
         },
@@ -278,7 +299,9 @@ def _synthetic_cost(repo: Path) -> None:
     _write(repo, PROFILE, json.dumps(profile))
 
 
-def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_path: Path) -> None:
+def test_public_resource_readers_are_current_and_selected_before_docs_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """REQ-pr-test-planning-001 REQ-pr-test-planning-002: actual read, wrong content and fresh route."""
     import sys
 
@@ -287,7 +310,7 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
     from ci_route import route
 
-    repo, _ = _repo(tmp_path)
+    repo, _ = _repo(tmp_path, monkeypatch)
     reader = "tests/api/test_reader.py"
     _write(
         repo,
@@ -309,7 +332,7 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "actual reader")
     _write(repo, REGISTRY, json.dumps(discover(repo, declarations)))
-    _synthetic_cost(repo)
+    _synthetic_cost(repo, monkeypatch)
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "synthetic source-bound conformance")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
@@ -554,7 +577,7 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     from butlers.testing.manifest_scope import eligible
     from butlers.testing.scope_cost import PROFILE, predict
 
-    repo, _ = _repo(tmp_path)
+    repo, _ = _repo(tmp_path, monkeypatch)
     manifest = ".github/ci-test-shards/unit-1.txt"
     _write(repo, manifest, "# unit\ntests/api/test_existing.py\n")
     _git(repo, "add", manifest)
@@ -589,7 +612,7 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     with pytest.raises(ValueError, match="MANIFEST_INELIGIBLE"):
         eligible(repo, [manifest, new, duplicate], base, "HEAD")
     assert predict(repo, [new])["prediction_state"] == "provisional-new-file"
-    _synthetic_cost(repo)
+    _synthetic_cost(repo, monkeypatch)
     assert predict(repo, [new])["prediction_state"] == "measured-compatible"
     profile = json.loads((repo / PROFILE).read_text())
     profile["reference"]["heavy_shard_seconds"] = [0.5]
@@ -750,6 +773,8 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     (mini / "software-traced-bundle.json").write_text(json.dumps(bundle))
     candidate = build_test_scope_cost.build([bundle], root=mini)
     assert candidate["reference"]["sample_count"] == 1
+    _write(mini, PROFILE, json.dumps(candidate))
+    assert predict(mini, files)["prediction_state"] == "measured-compatible"
     assert candidate["reference"]["affected_setup_seconds"] > 0
     assert set(candidate["files"]) == set(inventory["lanes"]["unit"])
     # Exact missing-clock neutralization models the old producer's missing
@@ -872,13 +897,20 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     planted["reference"]["heavy_shard_seconds"] = [20.0]
     _write(mini, PROFILE, json.dumps(planted))
     assert predict(mini, [mixed_name])["reason"] == "COST_EXCEEDED"
+    # Current admission must not fall back to the legacy context-only reader.
+    # The actual historical reader's separate partial-max control is retained
+    # outside production/test module identities in the author evidence packet.
     old_partial_max = copy.deepcopy(planted)
     old_partial_max["schema"] = "test-scope-cost.v1"
     old_partial_max["context"] = context(mini)
     old_partial_max["reference"]["tracer"] = "CTracer"
     old_partial_max["files"][mixed_name]["seconds"] = 12.0
+    for key in ("hardware_ledger", "runner_class", "environment", "builder_environment"):
+        old_partial_max.pop(key, None)
+    for row in old_partial_max["files"].values():
+        row.pop("observations", None)
     _write(mini, PROFILE, json.dumps(old_partial_max))
-    assert predict(mini, [mixed_name])["reason"] is None
+    assert predict(mini, [mixed_name])["reason"] == "COST_UNKNOWN"
     overlapping = copy.deepcopy(planted)
     overlapping["files"][mixed_name]["observations"].append(copy.deepcopy(samples[0]))
     _write(mini, PROFILE, json.dumps(overlapping))

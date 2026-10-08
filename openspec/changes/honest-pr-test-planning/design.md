@@ -103,8 +103,11 @@ workers/instrumentation. Every job/file retains its model and run/attempt/source
 in a separate ledger. Maximum observed serial phase costs plus actual affected
 setup/finalization form a finite empirical envelope, not a claim of identical
 CPUs or a guarantee for arbitrary hardware. Unknown model/policy/species/body
-remains FULL. Existing strict traced v1 comparison is preserved. No profile is
-installed here; current source/config changes require a fresh root-authenticated
+remains FULL. Current admission requires complete v2 species, hardware ledger
+and whole-file provenance. Legacy v1 context-only profiles return COST_UNKNOWN;
+the actual historical partial-max reader is a separate diagnostic, never current
+admission authority. No profile is installed here; current source/config changes
+require a fresh root-authenticated
 complete full/affected pair and review before adoption. The prior9e authentic
 reference is diagnostic only, with no restamping. All original seven outcomes,
 145 vectors, >=57 actualSCOPED, three actualmanifestSCOPED and natural cohorts

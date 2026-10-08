@@ -297,11 +297,10 @@ def predict(root: Path, paths: list[str]) -> dict:
     try:
         raw = (root / PROFILE).read_bytes()
         profile = json.loads(raw)
-        if profile.get("schema") == "test-scope-cost.v2":
-            if not compatible_profile(profile, environment(root)):
-                return unknown
-        elif profile.get("schema") != "test-scope-cost.v1" or profile.get("context") != context(
-            root
+        # Legacy context-only profiles lack the current species/ledger and
+        # complete whole-file provenance. They cannot qualify current cost.
+        if profile.get("schema") != "test-scope-cost.v2" or not compatible_profile(
+            profile, environment(root)
         ):
             return unknown
         source = profile["source_head"]
@@ -316,11 +315,7 @@ def predict(root: Path, paths: list[str]) -> dict:
         if found.returncode:
             return unknown
         reference = profile["reference"]
-        species = (
-            {"CTracer", "SysMonitor", "untraced"}
-            if profile["schema"] == "test-scope-cost.v2"
-            else {"CTracer", "SysMonitor"}
-        )
+        species = {"CTracer", "SysMonitor", "untraced"}
         if reference["workers"] != "auto" or reference["tracer"] not in species:
             return unknown
         samples = reference["heavy_shard_seconds"]
