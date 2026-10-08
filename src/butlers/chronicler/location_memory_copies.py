@@ -234,8 +234,21 @@ async def capture_memory_episode(domain: Any, memory: Any, session: Any, content
 async def memory_episode_writer(pool: Any):
     binding = _current_memory_copy.get()
     if binding is None:
+        from butlers.chronicler.location_memory_context import (
+            context_episode_writer,
+            current_runtime_context,
+        )
+
+        context = current_runtime_context()
         async with pool.acquire() as conn:
-            yield conn
+            if context is None or not (
+                context.loans or context.local_rows or context.generated_prompt
+            ):
+                yield conn
+            else:
+                async with conn.transaction():
+                    await context_episode_writer(pool, conn)
+                    yield conn
         return
     if not binding.active or pool is not binding.pool:
         raise PolicyUnavailableError("Native Memory writer lifetime differs")
@@ -330,8 +343,13 @@ async def dispose_native_memory(domain: Any, decision: UUID) -> None:
                     "SELECT EXISTS(SELECT 1 FROM "
                     "chronicler.location_native_memory_bundle_episodes e "
                     "WHERE e.episode_id=$1 AND (NOT EXISTS("
+                    "SELECT 1 FROM chronicler.location_native_dispatch_parents p "
+                    "WHERE p.input_generation=e.input_generation) OR EXISTS("
+                    "SELECT 1 FROM chronicler.location_native_dispatch_parents p "
+                    "WHERE p.input_generation=e.input_generation AND NOT EXISTS("
                     "SELECT 1 FROM chronicler.location_native_copy_dispositions d "
-                    "WHERE d.copy_generation=e.input_generation) OR EXISTS("
+                    "WHERE d.copy_generation=p.copy_generation AND d.input_digest=p.input_digest "
+                    "AND d.decision_id=$2)) OR EXISTS("
                     "SELECT 1 FROM chronicler.location_native_memory_artifacts a "
                     "WHERE a.input_generation=e.input_generation AND NOT EXISTS("
                     "SELECT 1 FROM chronicler.location_native_memory_artifact_dispositions d "
@@ -418,11 +436,14 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
         _, (_, schema, role) = owners[0]
     from butlers.chronicler.location_input_binding import _current_dispatch_input
     from butlers.chronicler.location_projection import _digest_value
-    from butlers.core.fact_authority import _current_copy_invocation
+    from butlers.core.copy_lifetime import _current_copy_invocation
 
     invocation = _current_copy_invocation.get()
     dispatch = _current_dispatch_input.get()
-    receiver = None
+    from butlers.chronicler.location_memory_context import current_runtime_context
+
+    context = current_runtime_context()
+    receiver = context.session if context is not None else None
     if invocation is not None and invocation.target == "chronicler":
         receiver = UUID(invocation.runtime_session)
     elif dispatch is not None and dispatch.active:
@@ -479,6 +500,8 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                         "api_export" if api_export else "native_mcp",
                         request,
                     )
+                if context is not None and context.runtime.memory is pool:
+                    context.local_rows.add(("episodes", UUID(str(row["id"]))))
                 copies.append((generation, digest, len(outputs)))
     async with pool.acquire() as committed:
         for generation, digest, count in copies:

@@ -83,11 +83,11 @@ async def native_consolidation_input(
     from butlers.chronicler.location_input_binding import (
         _current_dispatch_input,
         _DispatchInput,
+        registered_dispatcher,
         reserve_dispatch_receiver,
     )
     from butlers.chronicler.location_memory_copies import _lock, _receivers
     from butlers.chronicler.location_projection import _digest_value
-    from butlers.core.spawner import Spawner
 
     registered = next(
         (
@@ -110,7 +110,7 @@ async def native_consolidation_input(
     if not parents:
         yield
         return
-    if not isinstance(spawner, Spawner) or spawner._pool is not domain:
+    if not registered_dispatcher(domain, spawner) or spawner._pool is not domain:
         raise PolicyUnavailableError("Native consolidation receiver differs")
     generation, server_request, parent_generation = uuid4(), uuid4(), uuid4()
     digest = hashlib.sha256(prompt.encode("utf-8")).digest()

@@ -121,3 +121,27 @@ species; unit budget remains17853. Tests: +11 ~7 -0 (Python; frontend +2).
 A fresh published exact-head hosted run and independent review must judge
 source and failure corrections. Source publication is not whole completion,
 protected landing, deployed forgetting or live fleet proof.
+
+
+## Native processing/runtime continuation at the same source stage
+
+The owning implementation now includes private constructor registration of the
+actual Spawner/result type and actual domain/Memory schema, role and database
+witnesses. Consolidation policy-first claim/read hooks commit full immutable
+processing bundles and independently read them back before rendering. A native
+processing receipt closes only that scope. Spawner pre-context intents, composed
+session bindings, actual episode writer capture and native runtime/server
+finalizers retain separate immutable generations and terminal receipts. The
+scheduled entry reaches own-context disposal before native session reduction;
+late output/log/Memory writers are fenced. Dispatch-parent joins, not UUID
+similarity, establish artifact ancestry, and every parent must be disposed.
+
+These hooks preserve independent instructions, mixed/unknown contexts and
+unclosed tool/derived descendants. The still-unbound routed/mutating-tool
+processing descendants remain mandatory unfinished source work, and all
+original S1/S2/S3/P1-P9 outcomes remain UNMET. Software doubles verify causal
+positions only; they do not prove installation, native MCP, role or commit
+semantics. Closed failure diagnostics retain the original refusal and expose
+only fixed class/stage/category plus validated SQLSTATE. The separate private
+Memory fixture now uses actual migrations and actual distinct domain/Memory
+pools; no catalog patch, role widening or grant is introduced.

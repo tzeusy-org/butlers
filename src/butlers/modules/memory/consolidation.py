@@ -198,6 +198,37 @@ async def run_consolidation(
         - ``episodes_consolidated``: total episodes marked as consolidated.
         - ``errors``: list of error messages from failed groups.
     """
+    from butlers.chronicler.location_memory_processing import processing_lifetime
+
+    async with processing_lifetime(pool):
+        return await _run_consolidation(
+            pool,
+            embedding_engine,
+            cc_spawner,
+            batch_size=batch_size,
+            enable_shared_catalog=enable_shared_catalog,
+            source_schema=source_schema,
+            retry_failed=retry_failed,
+        )
+
+
+async def _run_consolidation(
+    pool: Pool,
+    embedding_engine: Any,
+    cc_spawner: Spawner | None = None,
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    enable_shared_catalog: bool = False,
+    source_schema: str | None = None,
+    retry_failed: bool = True,
+) -> dict[str, Any]:
+    from butlers.chronicler.location_memory_processing import (
+        capture_claim,
+        lock_claim,
+        read_dedup_bundle,
+        verify_claims,
+    )
+
     # A hostname/PID identifies an operator process but not one invocation of
     # that process. The per-run suffix is the opaque lease-owner fence used by
     # terminal success/failure persistence.
@@ -213,6 +244,7 @@ async def run_consolidation(
     # -------------------------------------------------------------------------
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await lock_claim(pool, conn)
             rows = await conn.fetch(
                 """
                 SELECT id, butler, content, importance, metadata, created_at,
@@ -239,6 +271,7 @@ async def run_consolidation(
                 batch_size,
             )
 
+            await capture_claim(conn, rows)
             if rows:
                 episode_ids_to_lease = [row["id"] for row in rows]
                 # Set lease: prevent other workers from claiming the same episodes
@@ -253,6 +286,8 @@ async def run_consolidation(
                     worker,
                     episode_ids_to_lease,
                 )
+
+    await verify_claims(pool)
 
     # Group episodes by (tenant_id, butler_name) to prevent cross-tenant mixing
     groups: dict[tuple[str, str], list[dict]] = {}
@@ -284,31 +319,9 @@ async def run_consolidation(
                 # Includes 'fading' facts (bu-5ud8p.1): they are still live,
                 # and consolidation should recognize an episode that reconfirms
                 # a fading fact as an update to it, not create a duplicate.
-                facts_rows = await pool.fetch(
-                    "SELECT id, subject, predicate, content, permanence, entity_id, valid_at "
-                    "FROM facts "
-                    "WHERE validity IN ('active', 'fading') AND source_butler = $1 "
-                    "  AND tenant_id = $2 "
-                    "ORDER BY created_at DESC "
-                    "LIMIT 100",
-                    butler_name,
-                    tenant_id,
+                existing_facts, existing_rules = await read_dedup_bundle(
+                    pool, episodes, butler_name, tenant_id
                 )
-                existing_facts = [dict(row) for row in facts_rows]
-
-                rules_rows = await pool.fetch(
-                    "SELECT id, content, maturity "
-                    "FROM rules "
-                    "WHERE maturity NOT IN ('anti_pattern') "
-                    "  AND (metadata->>'forgotten')::boolean IS NOT TRUE "
-                    "  AND source_butler = $1 "
-                    "  AND tenant_id = $2 "
-                    "ORDER BY created_at DESC "
-                    "LIMIT 50",
-                    butler_name,
-                    tenant_id,
-                )
-                existing_rules = [dict(row) for row in rules_rows]
 
                 # 2. Build consolidation prompt
                 prompt = build_consolidation_prompt(

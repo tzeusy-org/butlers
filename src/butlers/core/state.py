@@ -60,7 +60,7 @@ class CASConflictError(Exception):
 async def state_get(pool: asyncpg.Pool, key: str) -> Any | None:
     """Return the JSONB value for *key*, or ``None`` if the key does not exist."""
     if key == POLICY_STATE_KEY:
-        from butlers.chronicler.location_retention import read_policy
+        from butlers.chronicler.location_policy import read_policy
 
         return await read_policy(pool)
     row = await pool.fetchval(

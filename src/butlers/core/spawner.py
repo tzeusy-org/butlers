@@ -1569,6 +1569,7 @@ class Spawner:
         attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
+        context_lifetime = None
         session_id: uuid.UUID | None = None
         fact_invocation_token: str | None = None
         runtime_session_id: str | None = None
@@ -2374,6 +2375,9 @@ class Spawner:
             if self._config.name == "switchboard":
                 routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
 
+            from butlers.chronicler.location_memory_context import begin_runtime_context
+
+            context_lifetime = await begin_runtime_context(self._pool, self)
             memory_ctx: str | None = None
             memory_enabled = _memory_module_enabled(self._config)
             if memory_enabled:
@@ -3878,6 +3882,11 @@ class Spawner:
             # Clear session context before ending span so tool handlers
             # arriving after this point don't attach to a finished span.
             clear_active_session_context()
-            # End span and detach context
-            span.end()
-            trace.context_api.detach(token)
+            from butlers.chronicler.location_memory_context import end_runtime_context
+
+            try:
+                await end_runtime_context(context_lifetime)
+            finally:
+                # Closed receipt failure still releases local tracing state.
+                span.end()
+                trace.context_api.detach(token)

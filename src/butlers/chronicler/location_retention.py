@@ -17,22 +17,39 @@ from uuid import UUID, uuid4
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
+from butlers.chronicler.location_copy_pools import (
+    _api_copy_pools as _api_copy_pools,
+)
+from butlers.chronicler.location_copy_pools import (
+    _copy_pools as _copy_pools,
+)
+from butlers.chronicler.location_copy_pools import (
+    native_copy_pool as native_copy_pool,
+)
+from butlers.chronicler.location_copy_pools import (
+    register_api_copy_pool as register_api_copy_pool,
+)
+from butlers.chronicler.location_copy_pools import (
+    register_native_copy_pool as register_native_copy_pool,
+)
+from butlers.chronicler.location_copy_pools import (
+    unregister_native_copy_pool as unregister_native_copy_pool,
+)
+from butlers.chronicler.location_policy import (
+    PolicyConflictError as PolicyConflictError,
+)
+from butlers.chronicler.location_policy import (
+    PolicyUnavailableError as PolicyUnavailableError,
+)
+from butlers.chronicler.location_policy import (
+    _policy as _policy,
+)
+from butlers.chronicler.location_policy import (
+    read_policy as read_policy,
+)
 from butlers.location_retention import ADAPTER_NAMES, attempt_status, reduced_summary, strict_days
 
 logger = logging.getLogger(__name__)
-
-# Source-configured exact pool objects, not caller butler/session strings.
-_copy_pools: set[Any] = set()
-_api_copy_pools: set[Any] = set()
-
-
-def register_api_copy_pool(pool: Any) -> None:
-    """Actual DatabaseManager pool at the fixed owning API constructor seam."""
-    for old in tuple(_api_copy_pools):
-        if isinstance(old, asyncpg.Pool) and old.is_closing():
-            _api_copy_pools.discard(old)
-    if isinstance(pool, asyncpg.Pool) and not pool.is_closing():
-        _api_copy_pools.add(pool)
 
 
 def _api_capture_configured(pool: Any) -> bool:
@@ -45,74 +62,12 @@ def _api_capture_configured(pool: Any) -> bool:
     return False
 
 
-def _prune_closed_copy_pools() -> None:
-    # asyncpg.Pool has slots and does not support weak references. Keep the
-    # exact live pool until shutdown; a closing pool refuses new acquisitions.
-    for pool in tuple(_copy_pools):
-        if isinstance(pool, asyncpg.Pool) and pool.is_closing():
-            _copy_pools.discard(pool)
-
-
-def register_native_copy_pool(pool: Any) -> None:
-    """Fixed owning module constructor; no model/caller enrollment door."""
-    _prune_closed_copy_pools()
-    if isinstance(pool, asyncpg.Pool) and not pool.is_closing():
-        _copy_pools.add(pool)
-
-
-def native_copy_pool(pool: Any) -> bool:
-    _prune_closed_copy_pools()
-    return pool in _copy_pools
-
-
-def unregister_native_copy_pool(pool: Any) -> None:
-    # Module shutdown may precede a final in-flight completion. Keep its fence
-    # for the exact live pool; closed-pool pruning releases it after disposal.
-    if isinstance(pool, asyncpg.Pool) and not pool.is_closing():
-        return
-    _copy_pools.discard(pool)
-
-
 class PolicyUpdate(BaseModel):
     """Closed owner-control wire: no caller actor, cutoff, provider or grant."""
 
     model_config = ConfigDict(extra="forbid")
     days: StrictInt = Field(ge=1, le=30)
     expected_version: StrictInt = Field(gt=0, le=2**63 - 1)
-
-
-class PolicyUnavailableError(RuntimeError):
-    """Missing/malformed installed authority is not a default-success policy."""
-
-
-class PolicyConflictError(RuntimeError):
-    """The owner must review the currently committed version before changing it."""
-
-
-def _policy(row: Any) -> dict[str, Any]:
-    if row is None:
-        raise PolicyUnavailableError("Location retention policy is unavailable")
-    try:
-        days = strict_days(row["days"])
-        version = row["version"]
-        if type(version) is not int or version <= 0 or row["spatial_scheme_version"] != 1:
-            raise ValueError
-    except (KeyError, TypeError, ValueError) as exc:
-        raise PolicyUnavailableError("Location retention policy is unavailable") from exc
-    return {
-        "days": days,
-        "version": version,
-        "updated_at": row["updated_at"],
-        "raw_age_basis": "original effective event time; four-hour server skew fallback",
-        "precision_after_forgetting_m": 150,
-        "widening_restores_forgotten_points": False,
-        "prepared_decisions_may_finish": True,
-    }
-
-
-async def read_policy(pool: asyncpg.Pool) -> dict[str, Any]:
-    row = await pool.fetchrow("SELECT * FROM location_retention_policy WHERE singleton")
-    return _policy(row)
 
 
 async def ready_batches(pool: asyncpg.Pool) -> list[dict[str, Any]]:
@@ -206,14 +161,16 @@ async def plan_status(pool: asyncpg.Pool, decision_id: UUID) -> dict[str, Any]:
         "SELECT DISTINCT l.*,g.artifact_generation,"
         "(b.exclusive_input AND NOT EXISTS("
         "SELECT 1 FROM location_native_copy_births c "
-        "WHERE c.copy_generation=a.input_generation AND NOT EXISTS("
+        "JOIN location_native_dispatch_parents i USING(copy_generation,input_digest) "
+        "WHERE i.input_generation=a.input_generation AND NOT EXISTS("
         "SELECT 1 FROM location_retention_plan_outputs p WHERE p.decision_id=$1 "
         "AND p.output_kind=c.output_kind AND p.output_id=c.output_id))) AS complete_input "
         "FROM location_native_catalog_loans l "
         "JOIN location_native_catalog_generations g USING(source_generation) "
         "JOIN location_native_memory_artifacts a USING(artifact_generation) "
         "JOIN location_native_memory_bundles b USING(input_generation) "
-        "JOIN location_native_copy_births c ON c.copy_generation=a.input_generation "
+        "JOIN location_native_dispatch_parents i USING(input_generation) "
+        "JOIN location_native_copy_births c USING(copy_generation,input_digest) "
         "JOIN location_retention_plan_outputs p USING(output_kind,output_id) "
         "WHERE p.decision_id=$1 ORDER BY l.loan_id",
         decision_id,
@@ -940,6 +897,9 @@ async def run_retention(pool: asyncpg.Pool, *, switchboard_client: Any = None) -
             "WHERE state='holder_pending' ORDER BY prepared_at,decision_id LIMIT 8"
         )
         for decision in decisions:
+            from butlers.chronicler.location_memory_context import dispose_own_contexts
+
+            await dispose_own_contexts(pool, decision["decision_id"])
             await dispose_bound_native_copies(pool, decision["decision_id"])
             from butlers.chronicler.location_catalog_copies import (
                 dispose_catalog_artifacts,
@@ -1333,12 +1293,28 @@ async def capture_native_read(pool: asyncpg.Pool, kind: str, reader: Any) -> lis
     """
     if not native_copy_pool(pool):
         if isinstance(pool, asyncpg.Pool):
-            raise PolicyUnavailableError("Owning native source is not configured")
+            return await _read_unconfigured(pool, kind, reader)
         return await reader(pool)
     return await _capture_read(pool, kind, reader, api_export=False)
 
 
 async def capture_api_read(pool: asyncpg.Pool, kind: str, reader: Any) -> list[Any]:
+    try:
+        return await _capture_api_read(pool, kind, reader)
+    except Exception as exc:
+        from butlers.chronicler.location_policy import closed_failure
+
+        category, error_class, state = closed_failure(exc)
+        logger.warning(
+            "Location API read failure stage=owning_api_read category=%s sqlstate=%s class=%s",
+            category,
+            state,
+            error_class,
+        )
+        raise
+
+
+async def _capture_api_read(pool: asyncpg.Pool, kind: str, reader: Any) -> list[Any]:
     """Fixed API reader captures its own export; no recipient authority.
 
     API-managed pools deliberately retain their existing database identity.
@@ -1349,9 +1325,35 @@ async def capture_api_read(pool: asyncpg.Pool, kind: str, reader: Any) -> list[A
     held. A failed birth
     COMMIT/readback refuses emission instead of silently producing a copy.
     """
+    if pool not in _api_copy_pools and isinstance(pool, asyncpg.Pool):
+        return await _read_unconfigured(pool, kind, reader)
     if not _api_capture_configured(pool):
         return await reader(pool)
     return await _capture_read(pool, kind, reader, api_export=True)
+
+
+async def _read_unconfigured(pool: Any, kind: str, reader: Any) -> list[Any]:
+    """Actual ordinary own rows only; no enrollment, birth or disposal credit."""
+    if kind not in {"episode", "point_event"}:
+        raise ValueError("Unregistered native read producer")
+    rows = await reader(pool)
+    ids = [row.id if hasattr(row, "id") else row["id"] for row in rows]
+    native = await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_projection_outputs "
+        "WHERE output_kind=$1 AND output_id=ANY($2::uuid[])) OR EXISTS("
+        "SELECT 1 FROM location_native_copy_births "
+        "WHERE output_kind=$1 AND output_id=ANY($2::uuid[]))",
+        kind,
+        ids,
+    )
+    if native or any(
+        (row.source_name if hasattr(row, "source_name") else row["source_name"]).startswith(
+            "owntracks."
+        )
+        for row in rows
+    ):
+        raise PolicyUnavailableError("Owning native source is not configured")
+    return rows
 
 
 async def _capture_read(
@@ -1360,7 +1362,7 @@ async def _capture_read(
     from dataclasses import asdict, is_dataclass
 
     from butlers.chronicler.location_projection import _digest_value
-    from butlers.core import fact_authority
+    from butlers.core.copy_lifetime import _current_copy_invocation
     from butlers.location_retention import content_digest
 
     if kind not in {"point_event", "episode"}:
@@ -1433,7 +1435,7 @@ async def _capture_read(
             server_request = native_export_request() if api_export else None
             if api_export and server_request is None:
                 raise PolicyUnavailableError("Owning export lifetime is unavailable")
-            invocation = fact_authority._current_copy_invocation.get()
+            invocation = _current_copy_invocation.get()
             try:
                 receiving_session = (
                     UUID(invocation.runtime_session)
@@ -1502,9 +1504,11 @@ async def bind_native_cache_inputs(conn: Any, cache_key: str, native_result: Any
     Only the source-produced SpawnerResult and actual stored copy births can
     bind this writer. A disposed input never produces a new cached copy.
     """
-    from butlers.core.spawner import SpawnerResult
+    from butlers.chronicler.location_input_binding import (
+        native_result as native_result_is_registered,
+    )
 
-    if not isinstance(native_result, SpawnerResult) or native_result.session_id is None:
+    if not native_result_is_registered(native_result) or native_result.session_id is None:
         return
     session_id = native_result.session_id
     births = await conn.fetch(
@@ -1824,10 +1828,23 @@ async def dispose_bound_native_copies(pool: asyncpg.Pool, decision_id: UUID) -> 
                     "JOIN location_native_dispatch_inputs i USING(input_generation) "
                     "LEFT JOIN location_native_memory_runtime_receipts r USING(input_generation) "
                     "WHERE d.receiving_session=$1 AND i.origin_kind='native_memory' "
-                    "AND (r.input_generation IS NULL OR r.memory_context_present))",
+                    "AND (r.input_generation IS NULL OR r.memory_context_present) AND NOT EXISTS("
+                    "SELECT 1 FROM location_runtime_context_bindings c "
+                    "JOIN location_runtime_context_dispositions x USING(input_generation) "
+                    "WHERE c.receiving_session=d.receiving_session AND x.decision_id=$2))",
                     session_id,
+                    decision_id,
                 ):
                     continue  # Independently composed context is never erased by a subset.
+                if await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_runtime_context_intents i "
+                    "WHERE i.receiving_session=$1 AND NOT EXISTS("
+                    "SELECT 1 FROM location_runtime_context_dispositions d "
+                    "WHERE d.input_generation=i.input_generation AND d.decision_id=$2))",
+                    session_id,
+                    decision_id,
+                ):
+                    continue  # Preserve frozen full session body until its own context closes.
                 calls = session["tool_calls"]
                 allowed = {
                     "chronicler_list_events",

@@ -97,14 +97,28 @@ async def write(
             ttl_days,
         )
 
-    if native_copy_pool(pool):
+    from butlers.chronicler.location_memory_context import (
+        context_session_forgotten,
+        context_writer,
+    )
+
+    if native_copy_pool(pool) or context_writer(pool) is not None:
         async with pool.acquire() as writer:
             async with writer.transaction():
-                forgotten = await lock_native_session_completion(writer, session_id)
-                input_bound = forgotten and await writer.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM location_native_dispatch_sessions "
-                    "WHERE receiving_session=$1)",
-                    session_id,
+                forgotten = (
+                    await lock_native_session_completion(writer, session_id)
+                    if native_copy_pool(pool)
+                    else False
+                )
+                context_forgotten = await context_session_forgotten(pool, writer, session_id)
+                forgotten = forgotten or context_forgotten
+                input_bound = context_forgotten or (
+                    forgotten
+                    and await writer.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_native_dispatch_sessions "
+                        "WHERE receiving_session=$1)",
+                        session_id,
+                    )
                 )
                 await persist(writer, forgotten=forgotten, input_bound=input_bound)
     else:

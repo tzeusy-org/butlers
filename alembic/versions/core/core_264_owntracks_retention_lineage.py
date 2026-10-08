@@ -49,7 +49,8 @@ def _create_local_tables(schema: str, statement: str) -> None:
         WHERE n.nspname=:schema AND c.relname IN
           ('location_retention_copy_receipts','location_retention_source_floors',
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
-           'location_catalog_copy_lifetimes','location_catalog_copy_finished')
+           'location_catalog_copy_lifetimes','location_catalog_copy_finished',
+           'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -63,6 +64,12 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_catalog_copy_dispositions",
         "location_catalog_copy_lifetimes",
         "location_catalog_copy_finished",
+        "location_runtime_context_intents",
+        "location_runtime_context_bindings",
+        "location_runtime_context_ended",
+        "location_runtime_context_server_finished",
+        "location_runtime_context_episodes",
+        "location_runtime_context_dispositions",
     ):
         if table not in present:
             op.execute(f"ALTER TABLE {quote(schema)}.{quote(table)} OWNER TO {quote(owner)}")
@@ -117,6 +124,55 @@ def _validate_local_tables(schema: str) -> None:
             ],
         }
     )
+    expected.update(
+        {
+            "location_runtime_context_intents": [
+                ("input_generation", "uuid", True),
+                ("receiving_session", "uuid", True),
+                ("server_request", "uuid", False),
+                ("captured_at", "timestamp with time zone", True),
+            ],
+            "location_runtime_context_bindings": [
+                ("input_generation", "uuid", True),
+                ("receiving_session", "uuid", True),
+                ("bundle_digest", "bytea", True),
+                ("context_digest", "bytea", True),
+                ("system_digest", "bytea", True),
+                ("prompt_digest", "bytea", True),
+                ("exclusive_input", "boolean", True),
+                ("context_bytes", "integer", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_runtime_context_ended": [
+                ("input_generation", "uuid", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+        }
+    )
+    expected.update(
+        {
+            "location_runtime_context_server_finished": [
+                ("input_generation", "uuid", True),
+                ("server_request", "uuid", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_runtime_context_episodes": [
+                ("input_generation", "uuid", True),
+                ("episode_id", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_runtime_context_dispositions": [
+                ("input_generation", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+        }
+    )
     expected_constraints = {
         "location_retention_copy_receipts": {
             "PRIMARY KEY (decision_id)",
@@ -156,6 +212,56 @@ def _validate_local_tables(schema: str) -> None:
                 "CHECK ((octet_length(manifest_digest) = 32))",
                 "UNIQUE (receipt_id)",
                 "FOREIGN KEY (loan_id) REFERENCES location_catalog_copy_loans(loan_id)",
+            },
+        }
+    )
+    expected_constraints.update(
+        {
+            "location_runtime_context_intents": {
+                "PRIMARY KEY (input_generation)",
+                "UNIQUE (receiving_session)",
+            },
+            "location_runtime_context_bindings": {
+                "PRIMARY KEY (input_generation)",
+                "CHECK ((octet_length(system_digest) = 32))",
+                "CHECK ((octet_length(prompt_digest) = 32))",
+                "FOREIGN KEY (receiving_session) REFERENCES sessions(id)",
+                "FOREIGN KEY (input_generation) REFERENCES "
+                "location_runtime_context_intents(input_generation)",
+                "UNIQUE (receiving_session)",
+                "CHECK ((octet_length(context_digest) = 32))",
+                "CHECK ((octet_length(bundle_digest) = 32))",
+                "CHECK ((context_bytes >= 0))",
+            },
+            "location_runtime_context_ended": {
+                "PRIMARY KEY (input_generation)",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (input_generation) REFERENCES "
+                "location_runtime_context_intents(input_generation)",
+            },
+        }
+    )
+    expected_constraints.update(
+        {
+            "location_runtime_context_server_finished": {
+                "FOREIGN KEY (input_generation) REFERENCES "
+                "location_runtime_context_intents(input_generation)",
+                "PRIMARY KEY (input_generation)",
+                "UNIQUE (receipt_id)",
+            },
+            "location_runtime_context_episodes": {
+                "FOREIGN KEY (input_generation) REFERENCES "
+                "location_runtime_context_intents(input_generation)",
+                "UNIQUE (episode_id)",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "PRIMARY KEY (input_generation, episode_id)",
+            },
+            "location_runtime_context_dispositions": {
+                "FOREIGN KEY (input_generation) REFERENCES "
+                "location_runtime_context_intents(input_generation)",
+                "PRIMARY KEY (input_generation)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
+                "UNIQUE (receipt_id)",
             },
         }
     )
@@ -304,6 +410,48 @@ def upgrade() -> None:
           forgotten_count INTEGER NOT NULL CHECK(forgotten_count>0),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        CREATE TABLE IF NOT EXISTS location_runtime_context_intents (
+          input_generation UUID PRIMARY KEY,
+          receiving_session UUID NOT NULL UNIQUE,
+          server_request UUID,
+          captured_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_context_bindings (
+          input_generation UUID PRIMARY KEY REFERENCES location_runtime_context_intents,
+          receiving_session UUID NOT NULL UNIQUE REFERENCES sessions(id),
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          context_digest BYTEA NOT NULL CHECK(octet_length(context_digest)=32),
+          system_digest BYTEA NOT NULL CHECK(octet_length(system_digest)=32),
+          prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          exclusive_input BOOLEAN NOT NULL,
+          context_bytes INTEGER NOT NULL CHECK(context_bytes>=0),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_context_ended (
+          input_generation UUID PRIMARY KEY REFERENCES location_runtime_context_intents,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_context_server_finished (
+          input_generation UUID PRIMARY KEY REFERENCES location_runtime_context_intents,
+          server_request UUID NOT NULL,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_context_episodes (
+          input_generation UUID NOT NULL REFERENCES location_runtime_context_intents,
+          episode_id UUID NOT NULL UNIQUE,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          PRIMARY KEY(input_generation,episode_id)
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_context_dispositions (
+          input_generation UUID PRIMARY KEY REFERENCES location_runtime_context_intents,
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE IF NOT EXISTS location_catalog_copy_loans (
           loan_id UUID PRIMARY KEY,
           source_generation UUID NOT NULL,
@@ -363,6 +511,12 @@ def upgrade() -> None:
         "location_catalog_copy_dispositions",
         "location_catalog_copy_lifetimes",
         "location_catalog_copy_finished",
+        "location_runtime_context_intents",
+        "location_runtime_context_bindings",
+        "location_runtime_context_ended",
+        "location_runtime_context_server_finished",
+        "location_runtime_context_episodes",
+        "location_runtime_context_dispositions",
     ):
         op.execute(f"""
             DROP TRIGGER IF EXISTS preserve_location_copy_history ON {table};
@@ -401,7 +555,8 @@ def downgrade() -> None:
              OR EXISTS(SELECT 1 FROM connectors.owntracks_points
                        WHERE accepted_request_id IS NOT NULL)
              OR EXISTS(SELECT 1 FROM location_retention_copy_receipts)
-             OR EXISTS(SELECT 1 FROM location_catalog_copy_loans) THEN
+             OR EXISTS(SELECT 1 FROM location_catalog_copy_loans)
+             OR EXISTS(SELECT 1 FROM location_runtime_context_intents) THEN
             RAISE EXCEPTION 'retention history exists; roll forward instead of erasing floors';
           END IF;
         END $$;

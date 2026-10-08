@@ -275,6 +275,24 @@ def upgrade() -> None:
           replacement_generation UUID NOT NULL,
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        CREATE TABLE location_native_processing_claims (
+          claim_id UUID PRIMARY KEY,
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          parent_count INTEGER NOT NULL CHECK(parent_count>0),
+          captured_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_processing_parents (
+          claim_id UUID NOT NULL REFERENCES location_native_processing_claims,
+          copy_generation UUID NOT NULL,
+          input_digest BYTEA NOT NULL CHECK(octet_length(input_digest)=32),
+          PRIMARY KEY(claim_id,copy_generation)
+        );
+        CREATE TABLE location_native_processing_finished (
+          claim_id UUID PRIMARY KEY REFERENCES location_native_processing_claims,
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE location_native_memory_bundles (
           input_generation UUID PRIMARY KEY REFERENCES location_native_dispatch_inputs(input_generation),
           bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
@@ -470,6 +488,9 @@ def upgrade() -> None:
         "location_native_catalog_loans",
         "location_native_catalog_dispositions",
         "location_native_catalog_server_dispositions",
+        "location_native_processing_claims",
+        "location_native_processing_parents",
+        "location_native_processing_finished",
         "location_native_memory_bundles",
         "location_native_memory_bundle_episodes",
         "location_native_memory_artifacts",
@@ -507,6 +528,7 @@ def downgrade() -> None:
              OR EXISTS(SELECT 1 FROM location_native_cache_inputs)
              OR EXISTS(SELECT 1 FROM location_legacy_cache_observations)
              OR EXISTS(SELECT 1 FROM location_native_memory_reservations)
+             OR EXISTS(SELECT 1 FROM location_native_processing_claims)
              OR EXISTS(SELECT 1 FROM location_native_memory_bundles)
              OR EXISTS(SELECT 1 FROM location_native_catalog_generations)
              OR EXISTS(SELECT 1 FROM location_native_cache_exports)
@@ -525,6 +547,8 @@ def downgrade() -> None:
           location_native_memory_artifact_dispositions,location_native_memory_artifacts,
           location_native_memory_runtime_receipts,location_native_memory_bundle_episodes,
           location_native_memory_bundles,
+          location_native_processing_finished,location_native_processing_parents,
+          location_native_processing_claims,
           location_native_copy_births,location_native_copy_dispositions,
           location_native_dispatch_sessions,location_native_dispatch_reservations,
           location_native_dispatch_parents,

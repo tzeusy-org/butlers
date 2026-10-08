@@ -14,6 +14,26 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
+_dispatchers: dict[Any, tuple[Any, type]] = {}
+
+
+def register_dispatch_runtime(spawner: Any, result_type: type) -> None:
+    """Actual daemon constructor supplies its already constructed runtime.
+
+    Kept dependency-free: native readers must not load runtime or embedding
+    implementations merely to check their own stored lineage.
+    """
+    _dispatchers[spawner._pool] = (spawner, result_type)
+
+
+def registered_dispatcher(pool: Any, spawner: Any) -> bool:
+    entry = _dispatchers.get(pool)
+    return entry is not None and entry[0] is spawner
+
+
+def native_result(result: Any) -> bool:
+    return any(isinstance(result, entry[1]) for entry in _dispatchers.values())
+
 
 @dataclass
 class _DispatchInput:
@@ -38,10 +58,9 @@ class NativeLocationDispatch:
 
     def __init__(self, spawner: Any) -> None:
         from butlers.chronicler.location_retention import native_copy_pool
-        from butlers.core.spawner import Spawner
 
         if (
-            not isinstance(spawner, Spawner)
+            not registered_dispatcher(spawner._pool, spawner)
             or spawner._config.name != "chronicler"
             or not native_copy_pool(spawner._pool)
         ):
@@ -230,7 +249,6 @@ async def write_bound_dispatch_cache(
         record_legacy_replacement,
     )
     from butlers.chronicler.storage import _lock_location_writes, upsert_tier2_cache
-    from butlers.core.spawner import SpawnerResult
 
     scope = _current_location_export.get()
     native = scope is not None and any(
@@ -238,7 +256,7 @@ async def write_bound_dispatch_cache(
     )
     if not native:
         return False
-    if not isinstance(dispatch, NativeLocationDispatch) or not isinstance(result, SpawnerResult):
+    if not isinstance(dispatch, NativeLocationDispatch) or not native_result(result):
         raise PolicyUnavailableError("Native cache receiving result differs")
     pool = dispatch._spawner._pool
     if not native_copy_pool(pool) or result.session_id is None:

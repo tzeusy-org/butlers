@@ -309,6 +309,7 @@ class MemoryModule(Module):
         self._entity_rebind_tasks: list[asyncio.Task[None]] = []
         self._location_catalog_runtime: Any = None
         self._location_domain_identity: tuple[str, str] | None = None
+        self._location_memory_identity: tuple[str, str] | None = None
 
     @property
     def name(self) -> str:
@@ -343,7 +344,11 @@ class MemoryModule(Module):
 
         if self._location_catalog_runtime is not None:
             self._location_catalog_runtime.close()
-        if spawner._pool is not self._db.pool or self._location_domain_identity is None:
+        if (
+            spawner._pool is not self._db.pool
+            or self._location_domain_identity is None
+            or self._location_memory_identity is None
+        ):
             raise RuntimeError("Native catalog runtime constructor differs")
         self._location_catalog_runtime = CatalogCopyRuntime(
             domain=self._db.pool,
@@ -351,6 +356,7 @@ class MemoryModule(Module):
             name=spawner._config.name,
             registry=switchboard_client,
             identity=self._location_domain_identity,
+            memory_identity=self._location_memory_identity,
         )
 
     def location_retention_admission(self, app: Any) -> Any:
@@ -393,6 +399,21 @@ class MemoryModule(Module):
                     await conn.fetchval("SELECT current_schema()"),
                     await conn.fetchval("SELECT current_user"),
                 )
+                domain_db = await conn.fetchval(
+                    "SELECT oid FROM pg_database WHERE datname=current_database()"
+                )
+            async with self._get_pool().acquire() as conn:
+                self._location_memory_identity = (
+                    await conn.fetchval("SELECT current_schema()"),
+                    await conn.fetchval("SELECT current_user"),
+                )
+                if (
+                    await conn.fetchval(
+                        "SELECT oid FROM pg_database WHERE datname=current_database()"
+                    )
+                    != domain_db
+                ):
+                    raise RuntimeError("Native catalog Memory database differs")
 
         # Register LISTEN before draining the durable ledger. Events committed
         # during replay are then queued rather than lost at the startup boundary.

@@ -67,6 +67,8 @@ _CHRONICLER_RELATIONS: frozenset[str] = frozenset(
         "tier2_cache",
         # ── Tables (025_day_close_cache_tuple_locks.py) ───────────────────
         "day_close_cache_locks",
+        # Actual own-schema table installed by chronicler_027.
+        "location_projection_privacy_transitions",
         # ── Core butler tables (every butler schema) ──────────────────────
         "scheduled_tasks",
         # ── Per-butler tables accessed via fan-out (not via chronicler pool) ─

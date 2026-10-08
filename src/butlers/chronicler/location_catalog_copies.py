@@ -14,7 +14,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -57,6 +57,7 @@ class _ServerCopyScope:
     request: UUID
     loans: list[tuple[CatalogCopyRuntime, UUID, bytes, bool]]
     active: bool = True
+    contexts: list[tuple[Any, UUID]] = field(default_factory=list)
 
 
 _server_copy_scope: ContextVar[_ServerCopyScope | None] = ContextVar(
@@ -95,6 +96,10 @@ class CatalogServerCopyLifetime:
                         await runtime.finish_source_response(loan, digest, copies.request)
                     else:
                         await runtime.finish_server_copy(loan, digest, copies.request)
+                from butlers.chronicler.location_memory_context import finish_context_server
+
+                for runtime, generation in copies.contexts:
+                    await finish_context_server(runtime, generation, copies.request)
         finally:
             copies.active = False
             _server_copy_scope.reset(token)
@@ -291,7 +296,14 @@ class CatalogCopyRuntime:
     """Constructor-owned Memory domain/writer and configured registry client."""
 
     def __init__(
-        self, *, domain: Any, memory: Any, name: str, registry: Any, identity: tuple[str, str]
+        self,
+        *,
+        domain: Any,
+        memory: Any,
+        name: str,
+        registry: Any,
+        identity: tuple[str, str],
+        memory_identity: tuple[str, str],
     ) -> None:
         import asyncpg
 
@@ -301,10 +313,14 @@ class CatalogCopyRuntime:
             raise PolicyUnavailableError("Catalog registry is unavailable")
         self.domain, self.memory, self.name, self.registry = domain, memory, name, registry
         self.identity = identity
+        self.memory_identity = memory_identity
         self.incarnation = uuid4()
         self.pending: dict[str, _Pending] = {}
         self.active = True
         _runtimes[memory] = self
+        from butlers.chronicler.location_memory_context import register_context_writer
+
+        register_context_writer(self)
 
     def close(self) -> None:
         self.active = False
@@ -318,6 +334,10 @@ class CatalogCopyRuntime:
             await conn.fetchval("SELECT current_user"),
         ) != self.identity:
             raise PolicyUnavailableError("Native catalog domain writer differs")
+        if self.name == "chronicler":
+            from butlers.chronicler.storage import _lock_location_writes
+
+            await _lock_location_writes(conn)
         await conn.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
             "location:catalog-copy:" + self.name,
@@ -699,9 +719,10 @@ class CatalogCopyRuntime:
                 )
                 if artifact is None or await conn.fetchval(
                     "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_copy_births b "
+                    "JOIN chronicler.location_native_dispatch_parents i "
+                    "USING(copy_generation,input_digest) "
                     "JOIN chronicler.location_retention_plan_outputs p "
-                    "USING(output_kind,output_id) "
-                    "WHERE b.copy_generation=$1)",
+                    "USING(output_kind,output_id) WHERE i.input_generation=$1)",
                     artifact["input_generation"],
                 ):
                     raise PolicyUnavailableError("Native catalog input has been fenced")
@@ -900,12 +921,16 @@ class CatalogCopyRuntime:
             # Bind a processing holder before the admitted bytes leave this
             # producer. Runtime session identity comes from the registered
             # guard cell, never a query/session/actor string.
-            from butlers.core.fact_authority import _current_copy_invocation
+            from butlers.chronicler.location_memory_context import current_runtime_context
+            from butlers.core.copy_lifetime import _current_copy_invocation
 
+            context = current_runtime_context()
             invocation = _current_copy_invocation.get()
             scope = _server_copy_scope.get()
             holder_kind, holder_id = "unbound_processing", uuid4()
-            if invocation is not None and invocation.target == self.name:
+            if context is not None and context.runtime is self:
+                holder_id = context.generation
+            elif invocation is not None and invocation.target == self.name:
                 holder_kind, holder_id = "runtime_session", UUID(invocation.runtime_session)
             elif scope is not None and scope.active:
                 holder_kind, holder_id = "server_response", scope.request
@@ -934,6 +959,9 @@ class CatalogCopyRuntime:
                 != holder_id
             ):
                 raise PolicyUnavailableError("Committed receiving lifetime is unknown")
+            if context is not None and context.runtime is self:
+                context.loans.append((loan, digest))
+                context.local_rows.add(("catalog", catalog))
             if holder_kind == "server_response":
                 if scope is None or not scope.active or len(scope.loans) >= _MAX_PENDING:
                     raise PolicyUnavailableError("Native server copy capacity is unavailable")
@@ -959,6 +987,15 @@ class CatalogCopyRuntime:
         confirmed = []
         for source in loans:
             loan = UUID(source["loan_id"])
+            input_generation = await self.domain.fetchval(
+                "SELECT holder_id FROM location_catalog_copy_lifetimes "
+                "WHERE loan_id=$1 AND holder_kind='unbound_processing'",
+                loan,
+            )
+            if input_generation is not None:
+                from butlers.chronicler.location_memory_context import dispose_runtime_context
+
+                await dispose_runtime_context(self, input_generation, plan)
             if source.get("complete_input") is not True:
                 continue
             async with self.domain.acquire() as conn:
@@ -1108,8 +1145,10 @@ async def bind_catalog(conn: Any, pool: Any, schema: str, table: str, artifact: 
         raise PolicyUnavailableError("Native catalog persisted body is unavailable")
     if await conn.fetchval(
         "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_copy_births b "
+        "JOIN chronicler.location_native_dispatch_parents i "
+        "USING(copy_generation,input_digest) "
         "JOIN chronicler.location_retention_plan_outputs p USING(output_kind,output_id) "
-        "WHERE b.copy_generation=$1)",
+        "WHERE i.input_generation=$1)",
         binding["input_generation"],
     ):
         raise PolicyUnavailableError("Native catalog source has been fenced")
@@ -1224,7 +1263,8 @@ async def catalog_holder_inventory(conn: Any, decision: UUID) -> list[Any]:
     """
     return await conn.fetch(
         "WITH artifacts AS (SELECT DISTINCT a.* FROM location_native_memory_artifacts a "
-        "JOIN location_native_copy_births b ON b.copy_generation=a.input_generation "
+        "JOIN location_native_dispatch_parents i USING(input_generation) "
+        "JOIN location_native_copy_births b USING(copy_generation,input_digest) "
         "JOIN location_retention_plan_outputs p USING(output_kind,output_id) "
         "WHERE p.decision_id=$1), generations AS ("
         "SELECT g.* FROM location_native_catalog_generations g JOIN artifacts a "
@@ -1242,7 +1282,24 @@ async def catalog_holder_inventory(conn: Any, decision: UUID) -> list[Any]:
         "LEFT JOIN location_retention_holder_receipts r "
         "ON r.decision_id=$1 AND r.owning_butler=l.receiver_name "
         "AND r.holder_kind='catalog_consumer' AND r.holder_generation=l.loan_id "
-        "AND r.source_digest=l.body_digest ORDER BY owning_butler,holder_kind,holder_generation",
+        "AND r.source_digest=l.body_digest UNION ALL "
+        "SELECT DISTINCT 'chronicler','native_processing',c.claim_id,c.bundle_digest,f.receipt_id "
+        "FROM location_native_processing_claims c "
+        "JOIN location_native_processing_parents n USING(claim_id) "
+        "JOIN location_native_copy_births b USING(copy_generation,input_digest) "
+        "JOIN location_retention_plan_outputs p USING(output_kind,output_id) "
+        "LEFT JOIN location_native_processing_finished f "
+        "ON f.claim_id=c.claim_id AND f.bundle_digest=c.bundle_digest "
+        "WHERE p.decision_id=$1 UNION "
+        "SELECT DISTINCT 'chronicler','native_runtime_context',i.input_generation,"
+        "COALESCE(c.bundle_digest,b.input_digest),x.receipt_id "
+        "FROM location_runtime_context_intents i "
+        "JOIN location_native_copy_births b USING(receiving_session) "
+        "JOIN location_retention_plan_outputs p USING(output_kind,output_id) "
+        "LEFT JOIN location_runtime_context_bindings c USING(input_generation) "
+        "LEFT JOIN location_runtime_context_dispositions x "
+        "ON x.input_generation=i.input_generation AND x.decision_id=p.decision_id "
+        "WHERE p.decision_id=$1 ORDER BY owning_butler,holder_kind,holder_generation",
         decision,
     )
 
@@ -1259,7 +1316,8 @@ async def catalog_frontier_closed(conn: Any, decision: UUID) -> bool:
     if await conn.fetchval(
         "SELECT EXISTS(SELECT 1 FROM location_native_catalog_generations g "
         "JOIN location_native_memory_artifacts a USING(artifact_generation) "
-        "JOIN location_native_copy_births b ON b.copy_generation=a.input_generation "
+        "JOIN location_native_dispatch_parents i USING(input_generation) "
+        "JOIN location_native_copy_births b USING(copy_generation,input_digest) "
         "JOIN location_retention_plan_outputs p USING(output_kind,output_id) "
         "WHERE p.decision_id=$1 AND NOT EXISTS("
         "SELECT 1 FROM location_native_catalog_dispositions d "
@@ -1269,7 +1327,8 @@ async def catalog_frontier_closed(conn: Any, decision: UUID) -> bool:
         return False
     return not await conn.fetchval(
         "SELECT EXISTS(SELECT 1 FROM location_native_memory_artifacts a "
-        "JOIN location_native_copy_births b ON b.copy_generation=a.input_generation "
+        "JOIN location_native_dispatch_parents i USING(input_generation) "
+        "JOIN location_native_copy_births b USING(copy_generation,input_digest) "
         "JOIN location_retention_plan_outputs p USING(output_kind,output_id) "
         "WHERE p.decision_id=$1 AND NOT EXISTS("
         "SELECT 1 FROM location_native_memory_artifact_dispositions d "
@@ -1295,7 +1354,8 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
     candidates = await domain.fetch(
         "SELECT DISTINCT a.* FROM location_native_memory_artifacts a "
         "JOIN location_native_memory_bundles m USING(input_generation) "
-        "JOIN location_native_copy_births b ON b.copy_generation=a.input_generation "
+        "JOIN location_native_dispatch_parents i USING(input_generation) "
+        "JOIN location_native_copy_births b USING(copy_generation,input_digest) "
         "JOIN location_retention_plan_outputs p USING(output_kind,output_id) "
         "WHERE p.decision_id=$1 AND m.exclusive_input AND NOT EXISTS("
         "SELECT 1 FROM location_native_memory_artifact_dispositions d "
@@ -1312,13 +1372,18 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
             async with conn.transaction():
                 await _lock(conn, schema, role)
                 if await conn.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_copy_births b "
-                    "WHERE b.copy_generation=$1 AND (NOT b.lineage_known OR NOT b.exclusive_input "
+                    "SELECT NOT EXISTS(SELECT 1 FROM chronicler.location_native_dispatch_parents "
+                    "WHERE input_generation=$1) OR EXISTS("
+                    "SELECT 1 FROM chronicler.location_native_dispatch_parents i "
+                    "LEFT JOIN chronicler.location_native_copy_births b "
+                    "USING(copy_generation,input_digest) WHERE i.input_generation=$1 AND "
+                    "(b.copy_generation IS NULL OR NOT b.lineage_known OR NOT b.exclusive_input "
                     "OR NOT EXISTS(SELECT 1 FROM chronicler.location_retention_plan_outputs p "
                     "WHERE p.decision_id=$2 AND p.output_kind=b.output_kind "
-                    "AND p.output_id=b.output_id))) OR NOT EXISTS("
-                    "SELECT 1 FROM chronicler.location_native_copy_dispositions "
-                    "WHERE copy_generation=$1)",
+                    "AND p.output_id=b.output_id) OR NOT EXISTS("
+                    "SELECT 1 FROM chronicler.location_native_copy_dispositions d "
+                    "WHERE d.copy_generation=i.copy_generation AND d.input_digest=i.input_digest "
+                    "AND d.decision_id=$2)))",
                     artifact["input_generation"],
                     decision,
                 ):

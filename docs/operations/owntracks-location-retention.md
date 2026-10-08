@@ -208,3 +208,44 @@ tombstone and permanent-history dependencies. Synthetic producer capture is
 source parity only; the real migrated/view/role contracts remain required. Genuine
 optional unavailability preserves prior projection/checkpoint and marks the
 source inactive; a successful empty read stays an active positive.
+
+## Native processing and runtime-context continuation
+
+The actual native consolidation claim/read boundaries now reserve immutable
+full episode/fact/rule bundles under qualified owning policy-first locks.
+Claims commit and are independently read back before prompt rendering. Scope
+completion records only the ended Python processing lifetime; the catalog,
+runtime and stored descendant holders remain separate. Incomplete claims are
+included in the actual source census and keep raw evidence held.
+
+The daemon privately registers its actual Spawner and result type. Memory's
+startup captures its actual configured domain and Memory schema/role and
+same-database witness. The Spawner reserves its own receiving session before
+context recall, commits the full composed session binding before runtime
+admission, and captures stored episode descendants on the actual writer.
+Runtime/server finalizers supply only their own terminal receipts. The scheduled
+Chronicler entry invokes own-context disposal before ordinary native-session
+reduction. It preserves independent instructions/provenance while reducing the
+exact unchanged source context suffix and disposing complete closed native
+input/output/episodes. Late owning writers check the committed disposition.
+Other butlers receive no read of Chronicler private policy through this hook.
+
+The ancestry census now resolves input generations through dispatch_parents.
+All captured parents must have their exact committed disposition; any changed,
+fresh, independent, mixed, leased, active or unknown descendant remains held.
+Unbound routed/tool descendants and mutating tool descendants without native
+terminal bindings remain mandatory unfinished work; their mere classification
+as unavailable is not delivery. The existing all-closed engine controls do not
+prove online source admission or complete runtime erasure. Real roles,
+concurrent commits, registered routing, native processing callbacks and durable
+readback still require exact hosted/native evidence.
+
+The separate private-claim fixture now uses migrated Chronicler and configured
+chronicler_mem schemas in the same database instead of describing a private
+Memory pool as the domain pool. It preserves every prior claimant/retry
+assertion and provides no new role or grant. Software-only read classification
+preserves actual ordinary rows, but refuses canonical projection/native-copy
+ancestry regardless of display label. Fixed diagnostic classes and SQLSTATE
+are emitted at actual failure boundaries without exception arguments. These
+changes do not establish the causes of the previous hosted failures or certify
+SQL success.

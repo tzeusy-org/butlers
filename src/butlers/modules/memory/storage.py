@@ -1089,6 +1089,9 @@ async def store_episode(
                 authority=authority,
             )
             await bind_memory_episode(conn, existing_episode_id)
+            from butlers.chronicler.location_memory_context import bind_context_episode
+
+            await bind_context_episode(pool, conn, existing_episode_id)
             return existing_episode_id
 
         episode_id = uuid.uuid4()
@@ -1111,6 +1114,9 @@ async def store_episode(
             authority=authority,
         )
         await bind_memory_episode(conn, episode_id)
+        from butlers.chronicler.location_memory_context import bind_context_episode
+
+        await bind_context_episode(pool, conn, episode_id)
         return episode_id
 
 

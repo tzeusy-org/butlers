@@ -163,7 +163,7 @@ class DatabaseManager:
         )
         self._pools[butler_name] = pool
         if butler_name == "chronicler":
-            from butlers.chronicler.location_retention import register_api_copy_pool
+            from butlers.chronicler.location_copy_pools import register_api_copy_pool
 
             register_api_copy_pool(pool)
         self._butler_schemas[butler_name] = local_schema

@@ -68,7 +68,7 @@ from butlers.config import (
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
 from butlers.core.scheduler import tick as _tick
-from butlers.core.spawner import Spawner
+from butlers.core.spawner import Spawner, SpawnerResult
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
 from butlers.core.tool_call_capture import (
@@ -829,8 +829,8 @@ class ButlerDaemon:
 
         from butlers.chronicler.location_catalog_copies import CatalogServerCopyLifetime
 
-        return CatalogServerCopyLifetime(
-            _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
+        return _McpSseDisconnectGuard(
+            CatalogServerCopyLifetime(guarded_app), butler_name=butler_name
         )
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
@@ -2045,6 +2045,11 @@ class ButlerDaemon:
             if (_parent / "pyproject.toml").exists():
                 repo_root = _parent
                 break
+
+        from butlers.chronicler.location_input_binding import register_dispatch_runtime
+
+        if isinstance(self.spawner, Spawner):
+            register_dispatch_runtime(self.spawner, SpawnerResult)
 
         for mod in self._active_modules:
             wire_fn = getattr(mod, "wire_runtime", None)

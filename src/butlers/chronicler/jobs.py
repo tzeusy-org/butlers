@@ -143,6 +143,31 @@ async def _run_adapter(
     await seed_source_registry(db_pool)
     result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
     if result.error is not None:
+        if result.error == "location_projection_failed":
+            import re
+
+            diagnostics = [
+                warning
+                for warning in result.warnings
+                if re.fullmatch(
+                    r"location_projection_diagnostic:[a-z_]+:(?:postgres|native):(?:[A-Z0-9]{5}|unknown)",
+                    warning,
+                )
+            ]
+            closed = diagnostics[0] if len(diagnostics) == 1 else "diagnostic_unavailable"
+            classes = [
+                w
+                for w in result.warnings
+                if re.fullmatch(
+                    r"location_projection_class:(?:policy_unavailable|policy_conflict|"
+                    r"insufficient_privilege|undefined_table|undefined_column|check_violation|"
+                    r"foreign_key_violation|unique_violation|other_postgres|attribute_error|"
+                    r"key_error|type_error|value_error|runtime_error|other_native)",
+                    w,
+                )
+            ]
+            error_class = classes[0] if len(classes) == 1 else "class_unavailable"
+            raise RuntimeError(f"location_projection_failed:{closed}:{error_class}")
         raise RuntimeError(f"{result.source_name} projection failed: {result.error}")
     if not result.skipped and any(
         (

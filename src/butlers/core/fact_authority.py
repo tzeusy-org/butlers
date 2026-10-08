@@ -24,6 +24,8 @@ import httpx
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from butlers.core.copy_lifetime import _current_copy_invocation as _current_copy_invocation
+
 AUTHORITY_TOKENS = frozenset({"owner", "owner_device", "third_party", "system", "mixed"})
 INVOCATION_HEADER = "X-Butlers-Fact-Invocation"
 SOURCE_HEADER = "X-Butlers-Fact-Source"
@@ -551,9 +553,6 @@ _invocations: dict[str, _Invocation] = {}
 _incarnation = secrets.token_urlsafe(24)
 # This private binding records a receiving copy holder only. It grants no
 # custody privilege or fact authority; query/session locators never fill it.
-_current_copy_invocation: contextvars.ContextVar[_Invocation | None] = contextvars.ContextVar(
-    "registered_copy_invocation", default=None
-)
 _current_report: contextvars.ContextVar[FactWriteContext | None] = contextvars.ContextVar(
     "admitted_fact_report", default=None
 )

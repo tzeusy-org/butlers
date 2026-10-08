@@ -8,7 +8,6 @@ identity credential and does not certify other adapters or foreign copies.
 from __future__ import annotations
 
 import logging
-import re
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -454,13 +453,15 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
     except Exception as exc:
         # Only predetermined stage and validated SQLSTATE: never exception
         # text, source/SSID/coordinates, SQL arguments, IDs or provider strings.
-        state = getattr(exc, "sqlstate", None)
-        state = (
-            state if isinstance(state, str) and re.fullmatch(r"[A-Z0-9]{5}", state) else "unknown"
-        )
-        category = "postgres" if isinstance(exc, asyncpg.PostgresError) else "native"
+        from butlers.chronicler.location_policy import closed_failure
+
+        category, error_class, state = closed_failure(exc)
         logger.warning(
-            "Location projection failure stage=%s category=%s sqlstate=%s", stage, category, state
+            "Location projection failure stage=%s category=%s sqlstate=%s class=%s",
+            stage,
+            category,
+            state,
+            error_class,
         )
         # Outside the failed transaction, and with a closed reason only. If this
         # second write also fails it propagates; no fabricated successful state.
@@ -474,6 +475,8 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
             )
         except Exception:
             warnings.append("failure_receipt_unavailable")
+        warnings.append(f"location_projection_diagnostic:{stage}:{category}:{state}")
+        warnings.append(f"location_projection_class:{error_class}")
         return AdapterResult(
             source_name=adapter.source_name, error="location_projection_failed", warnings=warnings
         )

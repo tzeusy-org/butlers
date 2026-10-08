@@ -327,13 +327,13 @@ async def session_create(
             safe_prompt_provenance,
             purpose_lane,
         ]
-        if binding is not None:
+        if binding is not None or runtime_context is not None:
             # Fixed source-selected receiving UUID; no request/session-string
             # selector enters this branch. Ordinary INSERT shape is unchanged.
             statement = statement.replace(
                 "prompt_provenance, purpose_lane)", "prompt_provenance, purpose_lane, id)"
             ).replace("$10, $11, $12)", "$10, $11, $12, $13)")
-            values.append(binding.session_id)
+            values.append(binding.session_id if binding is not None else runtime_context.session)
         return await writer.fetchval(statement, *values)
 
     async def insert_session(writer):
@@ -361,6 +361,13 @@ async def session_create(
     )
 
     binding = _current_dispatch_input.get()
+    from butlers.chronicler.location_memory_context import (
+        bind_context_session,
+        current_runtime_context,
+        verify_context_session,
+    )
+
+    runtime_context = current_runtime_context(pool)
     if binding is not None:
         from butlers.chronicler.location_retention import PolicyUnavailableError, native_copy_pool
         from butlers.chronicler.storage import _lock_location_writes
@@ -383,6 +390,7 @@ async def session_create(
 
                 session_id = await insert_session(SavepointWriter())
                 await bind_dispatch_session(writer, session_id, sanitized_prompt)
+                await bind_context_session(writer, pool, session_id, sanitized_prompt)
         async with pool.acquire() as committed:
             observed = await committed.fetchval(
                 "SELECT receiving_session FROM location_native_dispatch_sessions "
@@ -392,8 +400,15 @@ async def session_create(
             )
         if observed != session_id:
             raise PolicyUnavailableError("Committed native session admission is unknown")
+    elif runtime_context is not None:
+        async with pool.acquire() as writer:
+            async with writer.transaction():
+                await runtime_context.runtime.lock_domain(writer)
+                session_id = await insert_session(writer)
+                await bind_context_session(writer, pool, session_id, sanitized_prompt)
     else:
         session_id = await insert_session(pool)
+    await verify_context_session(pool, session_id)
     logger.info("Session created: %s (trigger=%s, model=%s)", session_id, trigger_source, model)
 
     # Fan a "session started" event onto the multiplexed fleet event bus
@@ -508,10 +523,20 @@ async def session_complete(
             cache_creation_tokens,
         )
 
-    if native_copy_pool(pool):
+    from butlers.chronicler.location_memory_context import (
+        context_session_forgotten,
+        context_writer,
+    )
+
+    if native_copy_pool(pool) or context_writer(pool) is not None:
         async with pool.acquire() as writer:
             async with writer.transaction():
-                forgotten = await lock_native_session_completion(writer, session_id)
+                forgotten = (
+                    await lock_native_session_completion(writer, session_id)
+                    if native_copy_pool(pool)
+                    else False
+                )
+                forgotten = await context_session_forgotten(pool, writer, session_id) or forgotten
                 row = await persist(writer, forgotten=forgotten)
     else:
         row = await persist(pool)

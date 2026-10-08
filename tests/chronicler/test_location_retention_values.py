@@ -1436,3 +1436,278 @@ async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is
     with pytest.raises(RuntimeError, match="interrupted"):
         await lifecycle({"type": "http", "interrupted": True}, no_receive, delivered)
     assert len(finished) == 1  # Last body alone cannot close a live/failed delegate.
+
+
+@pytest.mark.asyncio
+async def test_native_processing_reserves_full_reads_before_render_and_keeps_failed_readback_held():
+    """REQ-location-retention-005; native software position only, not SQL authority."""
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler import location_memory_processing as processing
+    from butlers.chronicler.location_memory_copies import _receivers
+    from butlers.chronicler.location_retention import PolicyUnavailableError
+
+    parent = uuid4()
+    episode = {"id": uuid4(), "content": "source sentinel", "butler": "chronicler"}
+    unrelated = {"id": uuid4(), "content": "independent preserved sentinel"}
+    trace = []
+
+    class Pool:
+        readable = True
+        claim = None
+        digest = None
+        receipts = []
+
+        @asynccontextmanager
+        async def acquire(self):
+            trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            trace.append("begin")
+            yield
+            trace.append("commit")
+
+        async def fetchrow(self, sql, *args):
+            if "location_retention_policy" in sql:
+                trace.append("policy-first")
+                return {"version": 1}
+            raise AssertionError("unexpected owning read")
+
+        async def fetch(self, sql, *args):
+            if "FROM facts" in sql:
+                trace.append("facts-read")
+                return [unrelated]
+            if "FROM rules" in sql:
+                return []
+            if "location_native_memory_commits" in sql:
+                return [{"copy_generation": parent, "input_digest": b"p" * 32}]
+            if "location_native_memory_artifacts" in sql:
+                return []
+            raise AssertionError("unexpected owning read")
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "chronicler_mem"
+            if sql == "SELECT current_user":
+                return "installed-own-role-double"
+            if "count(*)=c.parent_count" in sql:
+                trace.append("separate-readback")
+                return self.readable
+            if "processing_claims" in sql:
+                return True
+            if "processing_finished" in sql:
+                return len(self.receipts)
+            return False
+
+        async def execute(self, sql, *args):
+            if "INSERT INTO chronicler.location_native_processing_claims" in sql:
+                trace.append("full-bundle-reserved")
+                self.claim, self.digest = args[:2]
+            if "INSERT INTO chronicler.location_native_processing_finished" in sql:
+                trace.append("native-processing-ended")
+                self.receipts.append(args[-1])
+
+    domain, pool = object(), Pool()
+    _receivers[domain] = (pool, "chronicler_mem", "installed-own-role-double")
+    try:
+        async with processing.processing_lifetime(pool):
+            facts, rules = await processing.read_dedup_bundle(
+                pool, [episode], "chronicler", "shared"
+            )
+            trace.append("render")
+            assert facts == [unrelated] and rules == []
+            assert trace.index("policy-first") < trace.index("facts-read")
+            assert trace.index("full-bundle-reserved") < trace.index("commit")
+            assert trace.index("commit") < trace.index("separate-readback") < trace.index("render")
+            first_digest = pool.digest
+            facts, _ = await processing.read_dedup_bundle(
+                pool, [{**episode, "content": "changed source sentinel"}], "chronicler", "shared"
+            )
+            assert pool.digest != first_digest
+            pool.readable = False
+            with pytest.raises(PolicyUnavailableError, match="Committed processing input"):
+                await processing.read_dedup_bundle(pool, [episode], "chronicler", "shared")
+        assert trace[-2:] == ["commit", "acquire"]
+        assert len(pool.receipts) == 3  # Actual native scope end; not a runtime/descendant receipt.
+    finally:
+        _receivers.pop(domain)
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_or_active_context():
+    """REQ-location-retention-005; planted software state/control, SQL remains separate."""
+    import hashlib
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_memory_context import dispose_runtime_context
+
+    generation, session_id, loan_id, source_generation, incarnation, decision = (
+        uuid4() for _ in range(6)
+    )
+    context = "# Memory Context\n- native source sentinel"
+    base = "Independent configured instructions stay byte exact"
+    prompt = "server generated source input"
+    system = base + "\n\n" + context
+    body_digest = b"b" * 32
+    frozen = {
+        "receiving_session": session_id,
+        "exclusive_input": True,
+        "ended_receipt": uuid4(),
+        "server_request": None,
+        "context_bytes": len(context.encode()),
+        "context_digest": hashlib.sha256(context.encode()).digest(),
+        "system_digest": hashlib.sha256(system.encode()).digest(),
+        "prompt_digest": hashlib.sha256(prompt.encode()).digest(),
+    }
+    frozen["bundle_digest"] = content_digest(
+        {
+            "loans": [[str(loan_id), body_digest.hex()]],
+            "context": frozen["context_digest"].hex(),
+            "system": frozen["system_digest"].hex(),
+            "prompt": frozen["prompt_digest"].hex(),
+        }
+    )
+    session = {
+        "prompt": prompt,
+        "effective_system_prompt": system,
+        "tool_calls": [],
+        "completed_at": datetime.now(UTC),
+        "prompt_provenance": [
+            {"source": "base", "sha": "retained"},
+            {"source": "memory_context", "sha": "removed"},
+        ],
+    }
+    loan = {
+        "loan_id": loan_id,
+        "source_generation": source_generation,
+        "body_digest": body_digest,
+        "receiving_incarnation": incarnation,
+    }
+    plan = {
+        "decision_id": str(decision),
+        "manifest_digest": (b"m" * 32).hex(),
+        "catalog_loans": [
+            {
+                **{key: str(value) for key, value in loan.items()},
+                "body_digest": body_digest.hex(),
+                "receiver_name": "chronicler",
+                "complete_input": True,
+            }
+        ],
+    }
+
+    class Pool:
+        writes = []
+        receipt = None
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        def is_closed(self):
+            return False
+
+        async def fetchrow(self, sql, *args):
+            return frozen if "context_bindings" in sql else session
+
+        async def fetch(self, sql, *args):
+            if "context_episodes" in sql:
+                return []
+            return [loan]
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "chronicler_mem"
+            if sql == "SELECT current_user":
+                return "own-role-double"
+            if "count(*) FROM location_catalog_copy_finished" in sql:
+                return 1
+            if "location_runtime_context_dispositions" in sql:
+                return self.receipt
+            return False
+
+        async def execute(self, sql, *args):
+            self.writes.append((sql, args))
+            if "INSERT INTO" in sql and "context_dispositions" in sql:
+                self.receipt = args[-1]
+
+    pool = Pool()
+    runtime = SimpleNamespace(
+        memory=pool,
+        domain=pool,
+        identity=("chronicler", "own-role-double"),
+        memory_identity=("chronicler_mem", "own-role-double"),
+        name="chronicler",
+    )
+    for field, value in (("exclusive_input", False), ("ended_receipt", None)):
+        prior = frozen[field]
+        frozen[field] = value
+        assert await dispose_runtime_context(runtime, generation, plan) is False
+        assert not any("UPDATE" in sql or "DELETE" in sql for sql, _ in pool.writes)
+        frozen[field] = prior
+    session["effective_system_prompt"] = "changed or independent current body"
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    session["effective_system_prompt"] = system
+    empty_plan = {**plan, "catalog_loans": []}
+    assert await dispose_runtime_context(runtime, generation, empty_plan) is False
+    assert await dispose_runtime_context(runtime, generation, plan) is True
+    update = next(args for sql, args in pool.writes if "UPDATE" in sql and ".sessions " in sql)
+    assert update[2] == base
+    assert update[3] == [{"source": "base", "sha": "retained"}]
+    assert any("location_catalog_copy_finished" in sql for sql, _ in pool.writes)
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_reader_preserves_ordinary_rows_and_closed_diagnostics_do_not_leak():
+    """REQ-location-retention-005/007; planted reader classification, software only."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    import asyncpg
+
+    from butlers.chronicler.location_policy import PolicyUnavailableError, closed_failure
+    from butlers.chronicler.location_retention import _read_unconfigured
+
+    row = SimpleNamespace(id=uuid4(), source_name="calendar.events", title="ordinary sentinel")
+
+    class Pool:
+        projected = False
+
+        async def fetchval(self, sql, kind, ids):
+            assert "location_projection_outputs" in sql
+            assert kind == "episode" and ids == [row.id]
+            return self.projected
+
+    pool = Pool()
+
+    async def reader(actual):
+        assert actual is pool
+        return [row]
+
+    assert await _read_unconfigured(pool, "episode", reader) == [row]
+    pool.projected = True
+    with pytest.raises(PolicyUnavailableError):
+        await _read_unconfigured(pool, "episode", reader)
+    pool.projected = False
+    row.source_name = "owntracks.ssid"
+    with pytest.raises(PolicyUnavailableError):
+        await _read_unconfigured(pool, "episode", reader)
+    row.source_name = "calendar.events"
+    assert await _read_unconfigured(pool, "episode", reader) == [row]
+    sentinel = "synthetic raw private location must not be emitted"
+    for exc, expected in (
+        (asyncpg.UndefinedColumnError(sentinel), ("postgres", "undefined_column", "42703")),
+        (PolicyUnavailableError(sentinel), ("native", "policy_unavailable", "unknown")),
+        (TypeError(sentinel), ("native", "type_error", "unknown")),
+    ):
+        assert closed_failure(exc) == expected
+        assert sentinel not in repr(closed_failure(exc))
