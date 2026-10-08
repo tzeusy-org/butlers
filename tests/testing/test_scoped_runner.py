@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -42,11 +44,38 @@ def _repo(tmp_path: Path) -> tuple[Path, str]:
     )
     _write(repo, "tests/api/test_existing.py", "def test_existing():\n    assert True\n")
     _write(repo, "roster/health/tests/test_existing.py", "def test_existing():\n    assert True\n")
+    _write(repo, "tests/api/test_survivor.py", "def test_survivor():\n    assert True\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "baseline")
     base = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
+    # Synthetic inner cost-conformance values, never hosted timing evidence.
+    from butlers.testing.scope_cost import PROFILE, context
+
+    profile = {
+        "schema": "test-scope-cost.v1",
+        "source_head": base,
+        "context": context(repo),
+        "reference": {
+            "workers": "auto",
+            "tracer": "CTracer",
+            "runs": ["synthetic"],
+            "heavy_shard_seconds": [300.0],
+            "affected_setup_seconds": 1.0,
+        },
+        "files": {
+            str(p.relative_to(repo)): {
+                "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                "seconds": 1.0,
+            }
+            for p in repo.rglob("test_*.py")
+        },
+    }
+    _write(repo, PROFILE, json.dumps(profile))
+    _git(repo, "add", PROFILE)
+    _git(repo, "commit", "-qm", "synthetic cost-conformance input")
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
     return repo, base
 
 
@@ -175,3 +204,153 @@ def test_cli_main_is_plan_only_and_never_calls_legacy_runner(
     output = capsys.readouterr().out
     assert "[PLAN ONLY] pytest was not executed" in output
     assert "[SCOPED] fixture plan" in output
+
+
+def _synthetic_cost(repo: Path) -> None:
+    """Inner admission conformance; these numbers are not hosted measurements."""
+    from butlers.testing.scope_cost import PROFILE, context
+
+    profile = {
+        "schema": "test-scope-cost.v1",
+        "context": context(repo),
+        "source_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo)
+        .decode()
+        .strip(),
+        "reference": {
+            "workers": "auto",
+            "tracer": "CTracer",
+            "runs": ["synthetic"],
+            "heavy_shard_seconds": [300.0],
+            "affected_setup_seconds": 1.0,
+        },
+        "files": {
+            str(p.relative_to(repo)): {
+                "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                "seconds": 1.0,
+            }
+            for p in repo.rglob("test_*.py")
+        },
+    }
+    _write(repo, PROFILE, json.dumps(profile))
+
+
+def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_path: Path) -> None:
+    """REQ-pr-test-planning-001/002: actual read, wrong content and fresh route."""
+    import sys
+
+    from butlers.testing.resource_readers import DECLARATIONS, REGISTRY, discover
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from ci_route import route
+
+    repo, _ = _repo(tmp_path)
+    reader = "tests/api/test_reader.py"
+    _write(
+        repo,
+        reader,
+        "from pathlib import Path\ndef test_reader():\n"
+        "    assert Path('docs/contract.md').read_text() == 'healthy'\n",
+    )
+    _write(repo, "docs/contract.md", "healthy")
+    declarations = {"schema": "test-resource-declarations.v1", "dynamic": {reader: ["docs/**"]}}
+    _write(repo, DECLARATIONS, json.dumps(declarations))
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "actual reader")
+    _write(repo, REGISTRY, json.dumps(discover(repo, declarations)))
+    _synthetic_cost(repo)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "synthetic source-bound conformance")
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
+    _write(repo, "docs/contract.md", "wrong")
+    plan = plan_worktree_tests(base, repo_dir=repo)
+    assert plan.scope == "scoped" and plan.test_paths == [reader]
+    child = subprocess.run(
+        [sys.executable, "-m", "pytest", reader, "-q"], cwd=repo, capture_output=True, timeout=30
+    )
+    assert child.returncode == 1  # The selected real reader reaches its content assertion.
+    _write(repo, "docs/contract.md", "healthy")
+    child = subprocess.run(
+        [sys.executable, "-m", "pytest", reader, "-q"], cwd=repo, capture_output=True, timeout=30
+    )
+    assert child.returncode == 0
+    _write(repo, "docs/contract.md", "changed")
+    _git(repo, "add", "docs/contract.md")
+    _git(repo, "commit", "-qm", "changed public resource")
+    routed = route(
+        event="pull_request",
+        ref="refs/pull/1/merge",
+        files=["docs/contract.md"],
+        docs=["docs/contract.md"],
+        base=base,
+        root=repo,
+    )
+    assert routed["backend"] == "true" and routed["mode"] == "scoped"
+    assert routed["inventory"] == "true"  # Resource-driven collection may change item membership.
+    (repo / REGISTRY).unlink()
+    assert (
+        route(
+            event="pull_request",
+            ref="refs/pull/1/merge",
+            files=["docs/contract.md"],
+            docs=["docs/contract.md"],
+            base=base,
+            root=repo,
+        )["mode"]
+        == "full"
+    )
+    _write(repo, REGISTRY, json.dumps(discover(repo, declarations)))
+    _write(repo, reader, (repo / reader).read_text() + "\n# changed reader\n")
+    stale = plan_worktree_tests(base, repo_dir=repo)
+    assert stale.scope == "full" and "READER_REGISTRY_STALE" in stale.reason_codes
+    # A new undeclared dynamic reader is conservatively bound to every family.
+    dynamic = "tests/api/test_dynamic.py"
+    _write(repo, dynamic, "def read_unknown(path):\n    return path.read_text()\n")
+    _git(repo, "add", dynamic)
+    registry = discover(repo, declarations)
+    assert dynamic in registry["readers"]["openspec/**"]
+    assert dynamic in registry["unresolved_dynamic_readers"]
+
+
+def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(tmp_path: Path) -> None:
+    """REQ-pr-test-planning-003/004/005: verified Git delta and measured-cost protocol."""
+    from butlers.testing.manifest_scope import eligible
+    from butlers.testing.scope_cost import PROFILE, predict
+
+    repo, _ = _repo(tmp_path)
+    manifest = ".github/ci-test-shards/unit-1.txt"
+    _write(repo, manifest, "# unit\ntests/api/test_existing.py\n")
+    _git(repo, "add", manifest)
+    _git(repo, "commit", "-qm", "actual historical manifest")
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
+    new = "tests/api/test_added.py"
+    _write(repo, new, "def test_added():\n    assert True\n")
+    _write(repo, manifest, "# unit\ntests/api/test_existing.py\n" + new + "\n")
+    _git(repo, "add", manifest, new)
+    _git(repo, "commit", "-qm", "actual same-diff added test")
+    assert eligible(repo, [manifest, new], base, "HEAD") == {manifest}
+    with pytest.raises(ValueError, match="MANIFEST_INELIGIBLE"):
+        eligible(repo, [manifest], base, "HEAD")
+    duplicate = ".github/ci-test-shards/unit-2.txt"
+    _write(repo, duplicate, "tests/api/test_existing.py\n")
+    _git(repo, "add", duplicate)
+    _git(repo, "commit", "-qm", "duplicate ownership causal negative")
+    with pytest.raises(ValueError, match="MANIFEST_INELIGIBLE"):
+        eligible(repo, [manifest, new, duplicate], base, "HEAD")
+    assert predict(repo, [new])["prediction_state"] == "provisional-new-file"
+    _synthetic_cost(repo)
+    assert predict(repo, [new])["prediction_state"] == "measured-compatible"
+    profile = json.loads((repo / PROFILE).read_text())
+    profile["reference"]["heavy_shard_seconds"] = [0.5]
+    _write(repo, PROFILE, json.dumps(profile))
+    assert predict(repo, [new])["reason"] == "COST_EXCEEDED"
+    profile["reference"]["heavy_shard_seconds"] = [float("nan")]
+    _write(repo, PROFILE, json.dumps(profile))
+    assert predict(repo, [new])["reason"] == "COST_UNKNOWN"
+    (repo / PROFILE).unlink()
+    assert predict(repo, [new])["reason"] == "COST_UNKNOWN"
+    with pytest.raises(ValueError, match="FULL"):
+        scoped_runner.build_pytest_command(ScopedTestPlan(scope="full", test_paths=FULL_SUITE))
+    import build_test_scope_cost
+
+    with pytest.raises(ValueError, match="ten compatible"):
+        build_test_scope_cost.build([])

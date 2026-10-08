@@ -33,9 +33,11 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
     selected.write_text("def test_selected(): pass\n")
     calls = []
 
+    fixture_scope = "scoped"
+
     def planned(*args, **kwargs):
         calls.append((args, kwargs))
-        return _plan("scoped", ["tests/test_selected.py"])
+        return _plan(fixture_scope, ["tests/test_selected.py"] if fixture_scope == "scoped" else [])
 
     monkeypatch.setattr(ci_route, "plan_scoped_tests", planned)
     inputs = dict(
@@ -68,10 +70,12 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
         assert widened["test_paths"] == []
     assert ci_route.route(**{**inputs, "event": "merge_group", "files": None})["mode"] == "full"
     assert ci_route.route(**{**inputs, "event": "push", "ref": "refs/heads/main"})["mode"] == "push"
+    fixture_scope = "none"
     docs = ci_route.route(**{**inputs, "files": ["docs/guide.md"], "docs": ["docs/guide.md"]})
     assert docs == dict(
         backend="false", frontend="false", mode="docs", test_paths=[], inventory="false"
     )
+    fixture_scope = "full"
     frontend = ci_route.route(**{**inputs, "files": ["frontend/src/App.tsx"]})
     assert frontend["mode"] == "full" and frontend["frontend"] == "true"
     with pytest.raises(ValueError):

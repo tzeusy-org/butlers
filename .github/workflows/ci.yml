@@ -279,6 +279,11 @@ jobs:
       # indistinguishable from its pass: "archived with no task warning" reads as
       # evidence the tasks were done. This fails on any unarchived change the gate
       # cannot see, so the difference is restored before the change reaches archive.
+      - name: Check public resource reader declarations
+        id: resource_readers
+        if: ${{ !cancelled() }}
+        run: python3 scripts/build_test_resource_map.py --check
+
       - name: Check every change's tasks.md is countable by the archive gate
         id: countable_tasks
         if: ${{ !cancelled() }}
@@ -368,6 +373,7 @@ jobs:
             session_links=${{ steps.session_links.outcome }}
             em_dashes=${{ steps.em_dashes.outcome }}
             spec_overwrites=${{ steps.spec_overwrites.outcome }}
+            resource_readers=${{ steps.resource_readers.outcome }}
             openspec_strict=${{ steps.openspec_strict.outcome }}
             archived_requirements=${{ steps.archived_requirements.outcome }}
             countable_tasks=${{ steps.countable_tasks.outcome }}
@@ -1010,10 +1016,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: |
           mkdir -p "$TEST_EVIDENCE_DIR"
-          mapfile -t TEST_PATHS < <(python3 -c "import json, os; print('\n'.join(json.loads(os.environ['TEST_PATHS_JSON'])))")
-          echo "Running affected-test lane over: ${TEST_PATHS[*]}"
-          uv run pytest "${TEST_PATHS[@]}" -q --tb=short -n auto --dist loadfile \
-            --junitxml="$TEST_EVIDENCE_DIR/raw-junit.xml"
+          uv run --no-sync python scripts/ci_affected_measurement.py
 
       - name: Prepare affected-test duration evidence
         if: always()
@@ -1032,6 +1035,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/affected/junit.xml
             ${{ runner.temp }}/ci-artifacts/affected/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/affected/affected-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1107,7 +1111,10 @@ jobs:
                   return False
               if bool(paths) != (mode == "scoped"):
                   return False
-              if outputs.get("inventory") != ("true" if mode in {"full", "push"} else "false"):
+              inventories = {"true", "false"} if mode == "scoped" else {
+                  "true" if mode in {"full", "push"} else "false"
+              }
+              if outputs.get("inventory") not in inventories:
                   return False
               results = {
                   "route": "success",

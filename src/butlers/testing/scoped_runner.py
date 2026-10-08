@@ -15,10 +15,11 @@ Usage from the refinery::
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from butlers.testing.changed_files import (
@@ -26,7 +27,16 @@ from butlers.testing.changed_files import (
     get_changed_files,
     get_worktree_changed_files,
 )
-from butlers.testing.source_test_map import FULL_SUITE, configured_testpaths, resolve_test_paths
+from butlers.testing.manifest_scope import eligible as eligible_manifests
+from butlers.testing.resource_readers import load as load_readers
+from butlers.testing.resource_readers import resource_family, safe_path
+from butlers.testing.scope_cost import predict
+from butlers.testing.source_test_map import (
+    FULL_SUITE,
+    FULL_SUITE_FALLBACK_ALLOWLIST,
+    configured_testpaths,
+    resolve_test_paths,
+)
 
 # Kept for the explicit legacy ``run_scoped_tests`` API.  A planned path is
 # never silently ignored: DB and migration coverage is part of the selector's
@@ -41,26 +51,8 @@ DEFAULT_EXTRA_ARGS: list[str] = ["-n", "auto"]
 # regardless of what source_test_map would normally select.  Patterns ending
 # with "/" are treated as path prefixes; all others are exact matches.
 #
-# This list is intentionally separate from source_test_map.FULL_SUITE_TRIGGERS
-# so that the runner can apply coarser-grained shared-infrastructure rules
-# with detailed per-file logging, and so it can be overridden per invocation.
+# The catalog is shared with source_test_map; callers may add stricter boundaries.
 # ---------------------------------------------------------------------------
-
-FULL_SUITE_FALLBACK_ALLOWLIST: tuple[str, ...] = (
-    "conftest.py",
-    "Makefile",
-    "uv.lock",
-    ".github/",
-    "alembic/",
-    "migrations/",
-    "src/butlers/core/",
-    "src/butlers/db.py",
-    "src/butlers/migrations/",
-    "src/butlers/testing/",
-    "src/butlers/modules/base.py",
-    "src/butlers/modules/registry.py",
-    "pyproject.toml",
-)
 
 
 @dataclass(frozen=True)
@@ -72,6 +64,22 @@ class ScopedTestPlan:
     changed_files: list[str] = field(default_factory=list)
     reason: str = ""
     sources: tuple[str, ...] = ()
+    schema: str = "scoped-plan.v1"
+    source_head: str | None = None
+    base_head: str | None = None
+    backend_applicable: bool = False
+    reason_codes: tuple[str, ...] = ()
+    reason_details: dict[str, list[str]] = field(default_factory=dict)
+    reader_registry_digest: str | None = None
+    cost_profile_digest: str | None = None
+    predicted_seconds: float | None = None
+    ceiling_seconds: float | None = None
+    prediction_state: str = "unknown"
+    ignored_residue: tuple[str, ...] = ()
+
+    def data(self) -> dict:
+        """Closed-reason source decision, never a test/elapsed result."""
+        return {**asdict(self), "mode": self.scope, "changed_sources": self.sources}
 
     def report(self) -> str:
         """Human-readable report of the test plan."""
@@ -131,6 +139,7 @@ def _normalise_existing_test_paths(
     test_paths: list[str],
     *,
     repo_dir: str | Path | None,
+    changed_files: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Keep emitted paths valid, broadening deleted test files to their parent.
 
@@ -147,8 +156,10 @@ def _normalise_existing_test_paths(
         candidate = root / test_path
         if candidate.exists():
             resolved = test_path
-        elif test_path.endswith(".py") and (
-            test_path.startswith("tests/") or test_path.startswith("roster/")
+        elif (
+            test_path in (changed_files or [])
+            and test_path.endswith(".py")
+            and (test_path.startswith("tests/") or test_path.startswith("roster/"))
         ):
             parent = Path(test_path).parent
             while parent != Path(".") and not (root / parent).exists():
@@ -177,69 +188,156 @@ def _plan_for_changed_files(
 ) -> ScopedTestPlan:
     """Build a plan from already-discovered paths."""
 
-    full_suite = _full_suite(repo_dir)
+    root = Path(repo_dir or ".").resolve()
+    full_suite = _full_suite(root)
+    details: dict[str, list[str]] = {}
 
-    if not changed.files:
-        return ScopedTestPlan(
-            scope="none",
-            reason="No branch, staged, unstaged, or untracked files changed",
-            sources=changed.sources,
+    def reject(code: str, path: str = "") -> None:
+        details.setdefault(code, []).append(path)
+
+    def ref(value: str) -> str | None:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", value + "^{commit}"],
+            cwd=root,
+            capture_output=True,
+            timeout=10,
         )
+        return result.stdout.decode().strip() if result.returncode == 0 else None
 
-    trigger = find_fallback_trigger(changed.files, fallback_allowlist)
-    if trigger:
-        file, pattern = trigger
-        return ScopedTestPlan(
-            scope="full",
-            test_paths=full_suite,
-            changed_files=changed.files,
-            sources=changed.sources,
-            reason=(
-                f"Escalate: {file!r} matches shared-infrastructure pattern {pattern!r}; "
-                "state the affected test lanes explicitly"
-            ),
-        )
+    source_head, base_head = ref(changed.head_ref or "HEAD"), ref(changed.base_ref or "HEAD")
+    if source_head is None or base_head is None:
+        reject("BASE_UNAVAILABLE")
+    if any(not safe_path(path) for path in changed.files):
+        reject("UNSAFE_DIFF")
+    try:
+        manifests = eligible_manifests(root, changed.files, changed.base_ref, changed.head_ref)
+    except ValueError:
+        manifests = set()
+        reject("MANIFEST_INELIGIBLE")
+    files = [path for path in changed.files if path not in manifests]
+    registry_digest = None
+    if any(resource_family(path) for path in files):
+        try:
+            registry_digest = load_readers(root)["digest"]
+        except ValueError as exc:
+            reject(str(exc))  # These exceptions carry only closed source enums.
+    for path in files:
+        trigger = find_fallback_trigger([path], fallback_allowlist)
+        if trigger:
+            code = (
+                "MIGRATION_BOUNDARY"
+                if (
+                    "migrations/" in path
+                    or path.startswith("alembic/")
+                    or path.endswith("contacts/backfill.py")
+                )
+                else "SHARED_INFRASTRUCTURE"
+            )
+            reject(code, path)
+    connectors = {
+        Path(path).stem.split("_")[0]
+        for path in files
+        if path.startswith("src/butlers/connectors/")
+    }
+    if len(connectors) > 1:
+        reject("MULTI_CONNECTOR_BOUNDARY")
+    test_paths = resolve_test_paths(files, repo_dir=root) if files else []
+    if test_paths == full_suite and not details:
+        reject("UNKNOWN_SOURCE")
+    # A missing static mapping is not allowed to masquerade as a deleted test.
+    from butlers.testing.source_test_map import _PREFIX_MAP
 
-    test_paths = resolve_test_paths(changed.files, repo_dir=repo_dir)
-
-    if not test_paths:
-        return ScopedTestPlan(
-            scope="none",
-            changed_files=changed.files,
-            sources=changed.sources,
-            reason="Known non-testable paths only; no pytest command was selected",
-        )
-
-    if test_paths == full_suite:
-        return ScopedTestPlan(
-            scope="full",
-            test_paths=full_suite,
-            changed_files=changed.files,
-            sources=changed.sources,
-            reason="Escalate: cross-cutting, migration, configuration, or unknown path detected",
-        )
-
-    existing_paths, notes = _normalise_existing_test_paths(test_paths, repo_dir=repo_dir)
-    if not existing_paths:
-        return ScopedTestPlan(
-            scope="full",
-            test_paths=full_suite,
-            changed_files=changed.files,
-            sources=changed.sources,
-            reason="Escalate: " + "; ".join(notes),
-        )
-
-    reason = (
-        f"Scoped to {len(existing_paths)} test path(s) from {len(changed.files)} changed file(s)"
+    for path in files:
+        if path.startswith("src/"):
+            for prefix, targets in _PREFIX_MAP:
+                if path.startswith(prefix):
+                    for target in targets:
+                        if not (root / target).exists():
+                            reject("STATIC_TARGET_MISSING", target)
+                    break
+    # Actual roster router consumers include factory-loaded APIs, not just
+    # direct imports. Unknown loader semantics widen to the audited API family.
+    for path in files:
+        if path.startswith("roster/") and "/api/" in path:
+            butler = path.split("/")[1]
+            candidates = []
+            for file in sorted((root / "tests/api").rglob("test_*.py")):
+                body = file.read_text()
+                if butler in body or "create_app" in body or "spec_from_file_location" in body:
+                    candidates.append(str(file.relative_to(root)))
+            if not candidates:
+                reject("READER_UNCLASSIFIED", path)
+            elif test_paths != full_suite:
+                test_paths = sorted(set(test_paths) | set(candidates))
+    existing_paths, notes = _normalise_existing_test_paths(
+        test_paths, repo_dir=root, changed_files=changed.files
     )
+    if test_paths and not existing_paths:
+        reject("STATIC_TARGET_MISSING")
+    if any(path in full_suite for path in existing_paths):
+        reject("ROOT_WIDENING")
+    if (
+        any(path.startswith("tests/e2e/") for path in existing_paths)
+        and "tests/e2e/" in fallback_allowlist
+    ):
+        reject("E2E_BOUNDARY")
+    cost = (
+        predict(root, existing_paths)
+        if existing_paths and not details
+        else {
+            "prediction_state": "unknown",
+            "predicted_seconds": None,
+            "ceiling_seconds": None,
+            "cost_profile_digest": None,
+            "reason": None,
+        }
+    )
+    if cost["reason"]:
+        reject(cost["reason"])
+    mode = "full" if details else "scoped" if existing_paths else "none"
+    reason = (
+        "Escalate: " + ", ".join(sorted(details))
+        if details
+        else (
+            f"Scoped to {len(existing_paths)} test path(s) "
+            f"from {len(changed.files)} changed file(s)"
+            if existing_paths
+            else "Known non-testable paths only; no pytest command was selected"
+        )
+    )
+    if details:
+        matches = [
+            f"{path!r} matches {pattern!r}"
+            for path in files
+            if (found := find_fallback_trigger([path], fallback_allowlist))
+            for pattern in [found[1]]
+        ]
+        if matches:
+            reason += "; " + "; ".join(matches)
     if notes:
         reason += "; " + "; ".join(notes)
     return ScopedTestPlan(
-        scope="scoped",
-        test_paths=existing_paths,
+        scope=mode,
+        test_paths=full_suite if mode == "full" else existing_paths,
         changed_files=changed.files,
         sources=changed.sources,
+        ignored_residue=changed.ignored_residue,
         reason=reason,
+        source_head=source_head,
+        base_head=base_head,
+        backend_applicable=mode != "none",
+        reason_codes=tuple(sorted(details)),
+        reason_details={k: sorted(set(v)) for k, v in sorted(details.items())},
+        reader_registry_digest=registry_digest,
+        **{
+            key: cost[key]
+            for key in (
+                "prediction_state",
+                "predicted_seconds",
+                "ceiling_seconds",
+                "cost_profile_digest",
+            )
+        },
     )
 
 
@@ -257,8 +355,18 @@ def plan_scoped_tests(
     message identifying the triggering file and pattern.  Otherwise delegates
     to ``resolve_test_paths`` for fine-grained scoping.
     """
+    try:
+        changed = get_changed_files(branch, base, repo_dir=repo_dir)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return ScopedTestPlan(
+            scope="full",
+            test_paths=_full_suite(repo_dir),
+            backend_applicable=True,
+            reason="Escalate: BASE_UNAVAILABLE",
+            reason_codes=("BASE_UNAVAILABLE",),
+        )
     return _plan_for_changed_files(
-        get_changed_files(branch, base, repo_dir=repo_dir),
+        changed,
         repo_dir=repo_dir,
         fallback_allowlist=fallback_allowlist,
     )
@@ -274,11 +382,13 @@ def plan_worktree_tests(
 
     try:
         changed = get_worktree_changed_files(base, repo_dir=repo_dir)
-    except RuntimeError as exc:
+    except (RuntimeError, OSError, subprocess.SubprocessError):
         return ScopedTestPlan(
             scope="full",
             test_paths=_full_suite(repo_dir),
-            reason=f"Escalate: unable to compute worktree diff against {base!r}: {exc}",
+            reason="Escalate: unable to compute worktree diff; BASE_UNAVAILABLE",
+            reason_codes=("BASE_UNAVAILABLE",),
+            backend_applicable=True,
         )
     return _plan_for_changed_files(
         changed,
@@ -295,8 +405,10 @@ def build_pytest_command(
 ) -> list[str]:
     """Build the pytest command line from a scoped test plan.
 
-    Raises ``ValueError`` if ``plan.scope`` is ``"none"``.
+    Raises ``ValueError`` for NONE or FULL; broad execution has an explicit lane.
     """
+    if plan.scope == "full":
+        raise ValueError("FULL requires the explicit CI-shaped broad verification lane")
     if plan.scope == "none":
         raise ValueError(f"No tests to run: {plan.reason}")
 
@@ -379,6 +491,7 @@ def main(argv: list[str] | None = None) -> int:
         else plan_worktree_tests(base=args.base, repo_dir=args.repo_dir)
     )
     print(plan.report())
+    print(json.dumps(plan.data(), sort_keys=True))
     return 0
 
 

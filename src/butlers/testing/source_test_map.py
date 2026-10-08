@@ -17,6 +17,9 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from butlers.testing.resource_readers import load as load_readers
+from butlers.testing.resource_readers import resource_family, select
+
 
 def configured_testpaths(repo_dir: str | Path | None = None) -> list[str]:
     """Read pytest's configured roots instead of maintaining a second list.
@@ -49,6 +52,8 @@ FULL_SUITE_TRIGGERS: frozenset[str] = frozenset(
         "src/butlers/db.py",
         "src/butlers/modules/base.py",
         "src/butlers/modules/registry.py",
+        "src/butlers/modules/contacts/__init__.py",
+        "src/butlers/modules/contacts/backfill.py",
         "src/butlers/testing/__init__.py",
         "src/butlers/testing/changed_files.py",
         "src/butlers/testing/migration.py",
@@ -70,6 +75,9 @@ FULL_SUITE_PREFIX_TRIGGERS: tuple[str, ...] = (
     "src/butlers/migrations/",
     "src/butlers/testing/",
 )
+
+# Single source-owned trigger catalog shared with local/CI admission.
+FULL_SUITE_FALLBACK_ALLOWLIST = tuple(sorted(FULL_SUITE_TRIGGERS)) + FULL_SUITE_PREFIX_TRIGGERS
 
 # The sentinel returned when the plan must escalate.  It is loaded from pytest
 # configuration so it cannot drift from ``testpaths``.
@@ -99,7 +107,11 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     # --- Connectors ---
     (
         "src/butlers/connectors/gmail",
-        ["tests/connectors/", "tests/test_gmail_connector.py", "tests/test_gmail_policy.py"],
+        [
+            "tests/connectors/",
+            "tests/connectors/test_gmail_connector.py",
+            "tests/connectors/test_gmail_policy_evaluator.py",
+        ],
     ),
     ("src/butlers/connectors/", ["tests/connectors/"]),
     # --- Modules: memory (specific before generic) ---
@@ -107,16 +119,16 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     # --- Modules: approvals ---
     (
         "src/butlers/modules/approvals/",
-        ["tests/modules/", "tests/test_approvals_models.py"],
+        ["tests/modules/", "tests/modules/test_approvals_models.py"],
     ),
     # --- Modules: contacts ---
     (
         "src/butlers/modules/contacts/",
         [
             "tests/modules/",
-            "tests/test_identity.py",
-            "tests/test_resolve_owner_entity_info.py",
-            "tests/test_upsert_delete_owner_entity_info.py",
+            "tests/core/test_identity.py",
+            "tests/core/test_resolve_owner_entity_info.py",
+            "tests/core/test_upsert_delete_owner_entity_info.py",
         ],
     ),
     # --- Modules: mailbox ---
@@ -129,7 +141,7 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     # --- Tools ---
     ("src/butlers/tools/", ["tests/tools/"]),
     # --- Storage ---
-    ("src/butlers/storage/", ["tests/test_blob_storage.py"]),
+    ("src/butlers/storage/", ["tests/core/test_blob_storage.py"]),
     # --- CLI ---
     ("src/butlers/cli.py", ["tests/cli/"]),
     # --- Daemon ---
@@ -142,15 +154,15 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     (
         "src/butlers/credential_store.py",
         [
-            "tests/test_credential_store.py",
-            "tests/test_secrets_credentials.py",
-            "tests/test_shared_credential_consumption.py",
+            "tests/config/test_credential_store.py",
+            "tests/config/test_secrets_credentials.py",
+            "tests/modules/test_module_credential_resolution.py",
         ],
     ),
     ("src/butlers/credentials.py", ["tests/config/test_credentials.py"]),
     (
         "src/butlers/google_credentials.py",
-        ["tests/test_google_credentials.py", "tests/test_google_credentials_credential_store.py"],
+        ["tests/config/test_google_credentials.py"],
     ),
     # --- Alembic migrations ---
     ("alembic/", ["tests/migrations/", "tests/config/"]),
@@ -277,8 +289,28 @@ def resolve_test_paths(
             return full_suite
 
     test_paths: set[str] = set()
+    root = Path(repo_dir) if repo_dir is not None else Path(__file__).resolve().parents[3]
+    resource_paths = [name for name in normalised if resource_family(name)]
+    registry = None
+    if resource_paths:
+        try:
+            registry = load_readers(root)
+        except ValueError:
+            return full_suite
+    connectors = {
+        Path(name).name.split(".")[0]
+        for name in normalised
+        if name.startswith("src/butlers/connectors/")
+    }
+    if len(connectors) > 1:
+        return full_suite
 
     for f in normalised:
+        if resource_family(f):
+            if f.startswith("deploy/") and not f.endswith((".md", ".txt")):
+                return full_suite
+            test_paths.update(select(f, registry))
+            continue
         # 2. If the changed file IS a test file, include it directly
         if f.startswith("tests/") or (f.startswith("roster/") and "/tests/" in f):
             # For conftest changes inside test dirs, include the parent test dir

@@ -1,0 +1,5 @@
+{
+  "schema": "test-scope-cost.v1",
+  "prediction_state": "unknown",
+  "reason": "No compatible measured affected setup/heavy-shard/file profile admitted yet"
+}

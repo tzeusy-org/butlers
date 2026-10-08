@@ -1,0 +1,68 @@
+name: Affected scope calibration (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      test-paths:
+        description: Existing public test paths to measure; never installs a profile or selects CI membership
+        type: string
+        default: '["tests/testing/test_scoped_runner.py", "tests/testing/test_source_test_map.py", "tests/scripts/test_ci_test_plan.py"]'
+env:
+  UV_PYTHON: "3.12.15"
+permissions:
+  contents: read
+jobs:
+  affected-calibration:
+    timeout-minutes: 37
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        timeout-minutes: 2
+        with:
+          python-version: "3.12.15"
+      - name: Install uv
+        timeout-minutes: 11
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 5); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then exit 1; fi
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Prepare ordinary frozen own-source environment
+        timeout-minutes: 11
+        run: python3 scripts/ci_environment.py prepare
+      - name: Measure actual affected command
+        timeout-minutes: 6
+        env:
+          TEST_PATHS_JSON: ${{ inputs.test-paths }}
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/scope-calibration
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: uv run --no-sync python scripts/ci_affected_measurement.py
+      - name: Sanitize ordinary test evidence
+        timeout-minutes: 2
+        if: always()
+        run: |
+          python3 scripts/summarize_junit_durations.py \
+            --input "${RUNNER_TEMP}/scope-calibration/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/scope-calibration/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/scope-calibration/top-durations.txt" --limit 25
+      - uses: actions/upload-artifact@v4
+        timeout-minutes: 2
+        if: always()
+        with:
+          name: affected-scope-calibration
+          path: |
+            ${{ runner.temp }}/scope-calibration/affected-observation.json
+            ${{ runner.temp }}/scope-calibration/junit.xml
+            ${{ runner.temp }}/scope-calibration/top-durations.txt
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true

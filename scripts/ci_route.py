@@ -25,6 +25,7 @@ def route(
     docs: list[str],
     base: str | None,
     root: Path = ROOT,
+    decision: dict | None = None,
 ) -> dict:
     """Missing classifier input cannot narrow; final unsupported events refuse."""
     if event == "merge_group" or (event == "push" and ref == "refs/heads/main"):
@@ -48,34 +49,20 @@ def route(
             "test_paths": [],
             "inventory": "true",
         }
-    backend = bool(set(files) - set(docs))
     frontend = any(
         name.startswith(("frontend/", ".github/workflows/", "scripts/ci_", "scripts/check_ci_"))
         for name in files
     )
     result = {
-        "backend": str(backend).lower(),
+        "backend": "true",
         "frontend": str(frontend).lower(),
-        "mode": "docs",
+        "mode": "full",
         "test_paths": [],
-        "inventory": "false",
+        "inventory": "true",
     }
-    if not backend:
-        return result
-    result.update(mode="full", inventory="true")
-    # Admission to the optional inventory omission is deliberately narrower than
-    # the existing affected-path planner. All inventory inputs and uncertainty
-    # require fresh full inventory and execution.
-    unchanged = all(
-        name.startswith("src/")
-        and name.endswith(".py")
-        and not name.startswith(
-            ("src/butlers/testing/", "src/butlers/core/", "src/butlers/modules/registry")
-        )
-        for name in files
-        if name not in docs
-    )
-    if not unchanged or not base:
+    # Reader selection must run before a docs classifier can suppress Python.
+    # Classifier labels select no tests and carry no completeness authority.
+    if not base:
         return result
     try:
         plan = plan_scoped_tests(
@@ -84,14 +71,31 @@ def route(
             repo_dir=root,
             fallback_allowlist=FULL_SUITE_FALLBACK_ALLOWLIST + ("tests/e2e/",),
         )
-        if (
+        if decision is not None:
+            decision.update(plan.data())
+        if plan.scope == "none" and not plan.backend_applicable and set(files) <= set(docs):
+            result.update(backend="false", mode="docs", inventory="false")
+        elif (
             plan.scope == "scoped"
             and plan.test_paths
-            and all((root / path).is_file() for path in plan.test_paths)
+            and all((root / path).exists() for path in plan.test_paths)
         ):
-            result.update(mode="scoped", inventory="false", test_paths=plan.test_paths)
+            unchanged = all(
+                name.startswith("src/")
+                and name.endswith(".py")
+                and not name.startswith(
+                    ("src/butlers/testing/", "src/butlers/core/", "src/butlers/modules/registry")
+                )
+                for name in files
+            )
+            result.update(
+                mode="scoped",
+                inventory="false" if unchanged else "true",
+                test_paths=plan.test_paths,
+            )
     except (OSError, ValueError, RuntimeError):
-        pass
+        if decision is not None:
+            decision.update(mode="full", reason_codes=["BASE_UNAVAILABLE"])
     return result
 
 
@@ -151,7 +155,10 @@ def verdict(*, needs: dict, event: str, ref: str) -> bool:
         return False
     if bool(paths) != (mode == "scoped"):
         return False
-    if outputs.get("inventory") != ("true" if mode in {"full", "push"} else "false"):
+    inventories = (
+        {"true", "false"} if mode == "scoped" else {"true" if mode in {"full", "push"} else "false"}
+    )
+    if outputs.get("inventory") not in inventories:
         return False
     results = {
         "route": "success",
@@ -179,17 +186,21 @@ def main() -> int:
                 )
                 else 1
             )
+        decision = {}
         result = route(
             event=os.environ["EVENT_NAME"],
             ref=os.environ["REF"],
             files=json.loads(os.environ.get("ALL_FILES") or "null"),
             docs=json.loads(os.environ.get("DOCS_FILES") or "[]"),
             base=os.environ.get("BASE_SHA"),
+            decision=decision,
         )
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
                 for name, value in result.items():
                     stream.write(f"{name}={json.dumps(value) if name == 'test_paths' else value}\n")
+        if decision:
+            print(json.dumps({"planner": decision}, sort_keys=True))
         print(
             json.dumps(
                 {name: value for name, value in result.items() if name != "test_paths"},

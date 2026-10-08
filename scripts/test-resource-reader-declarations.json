@@ -1,0 +1,8 @@
+{
+  "schema": "test-resource-declarations.v1",
+  "dynamic": {
+    "tests/contracts/test_client_openapi_contract.py": [
+      "frontend/**"
+    ]
+  }
+}

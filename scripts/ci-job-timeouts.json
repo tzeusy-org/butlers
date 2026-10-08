@@ -383,6 +383,21 @@
       "state": "provisional finite 150-run/300-artifact horizon with each read bounded30s; complete current calibration unknown",
       "sample_source": "source-enumerated finite API horizon; no healthy timing claim",
       "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/ci-scope-calibration.yml",
+      "job": "affected-calibration",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 37,
+      "installed_timeout_minutes": 37,
+      "state": "provisional; bounded calibration preparation/execution envelope, no healthy/p95 measurement",
+      "sample_source": "source:ci-scope-calibration step bounds + ci_environment640s + affected300s/kill/reap",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "review_policy": "ceil((120 checkout +120 Python setup +640 UV5attempts/4sleep +640 frozen repair +360 owning command/cleanup +120 sanitize +120 upload)/60)=36min; installed37min retains60s job finalization/headroom. Individual step watchdogs sum36min. These are bounded provisional envelopes, not measured latency/p95 or hard target attainment."
     }
   ],
   "tests": [
