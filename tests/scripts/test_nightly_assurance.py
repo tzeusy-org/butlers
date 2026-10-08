@@ -237,6 +237,8 @@ def test_nightly_evidence_replay_privacy_and_host_command_boundary(tmp_path, mon
                 )
             child_calls.append(arguments)
             if species == "child-nonzero":
+                if arguments[0] != "uv":
+                    return subprocess.CompletedProcess(arguments, 1, b"", b"private-error")
                 raise subprocess.CalledProcessError(
                     3, arguments, output=b"private-output", stderr=b"private-error"
                 )
@@ -273,6 +275,79 @@ def test_nightly_evidence_replay_privacy_and_host_command_boundary(tmp_path, mon
         assert observed_stage["stage"] == wanted_stage
         assert all(
             word not in json.dumps(observed_stage) for word in ("private-output", "private-error")
+        )
+    # A same-environment direct entrypoint diagnoses a failed uv child; it
+    # never rescues the refused preflight or supplies a green receipt.
+    for direct_species in ("positive", "nonzero", "payload", "timeout"):
+        invocations = []
+
+        def failed_launcher(arguments, **kwargs):
+            invocations.append((arguments, kwargs))
+            if arguments[0] == "uv":
+                raise subprocess.CalledProcessError(
+                    1,
+                    arguments,
+                    output=b"private-output",
+                    stderr=b"error: Failed to inspect Python interpreter; private-error",
+                )
+            assert arguments[0] == sys.executable and arguments[1] == "-c"
+            assert kwargs["timeout"] == 15 and kwargs["check"] is False
+            if direct_species == "timeout":
+                raise subprocess.TimeoutExpired(arguments, 15, output=b"private-output")
+            return subprocess.CompletedProcess(
+                arguments,
+                1 if direct_species == "nonzero" else 0,
+                b"[]" if direct_species == "payload" else json.dumps(sample).encode(),
+                b"private-error",
+            )
+
+        diagnostic = {}
+        environment = {"FAKETIME": "+45d", "LD_PRELOAD": str(library)}
+        with monkeypatch.context() as launch_patch:
+            launch_patch.setattr(runner, "datetime", ParentWall)
+            launch_patch.setattr(runner.time, "monotonic", lambda: 11.0)
+            launch_patch.setattr(runner.subprocess, "run", failed_launcher)
+            with pytest.raises(subprocess.CalledProcessError) as refused_child:
+                runner.clock_conformance(library, environment, witness=diagnostic)
+            assert refused_child.value.cmd[0] == "uv" and refused_child.value.returncode == 1
+            # Actual outer producer keeps its external refusal even when
+            # the diagnostic Python-entry observation is entirely positive.
+            if direct_species == "positive":
+                destination = tmp_path / "launcher-refused"
+                assert (
+                    runner.run(
+                        identity=refusal_identity,
+                        variant="offset-45",
+                        output=destination,
+                        library=library,
+                    )
+                    == 2
+                )
+                refused_receipt = read_json(destination / "receipt.json")
+                assert refused_receipt["controller_complete"] is False
+                assert refused_receipt["clock_conformance_verified"] is False
+                assert refused_receipt["manifest"] == [] and refused_receipt["outcomes"] == {}
+                assert refused_receipt["clock_preflight"]["direct_python"]["result"] == (
+                    "observation-read"
+                )
+        assert invocations[0][1]["env"] == invocations[1][1]["env"] == environment
+        assert diagnostic["stage"] == "first-child-run"
+        assert diagnostic["launcher_failure"]["interpreter_query_phrase"] is True
+        assert diagnostic["direct_python"]["diagnostic_only"] is True
+        assert (
+            diagnostic["direct_python"]["result"]
+            == {
+                "positive": "observation-read",
+                "nonzero": "child-nonzero",
+                "payload": "invalid-observation",
+                "timeout": "child-timeout",
+            }[direct_species]
+        )
+        if direct_species == "positive":
+            assert diagnostic["direct_python"]["wall_within_original_bound"] is True
+            assert diagnostic["direct_python"]["monotonic_within_original_bound"] is True
+        assert all(
+            word not in json.dumps(diagnostic) for word in ("private-output", "private-error")
         )
     first = RunIdentity(100, 1, "a" * 40, "schedule", "main", "2026-10-01")
     second = RunIdentity(101, 1, "b" * 40, "schedule", "main", "2026-10-02")

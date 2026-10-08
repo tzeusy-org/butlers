@@ -9,6 +9,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -117,14 +118,89 @@ def clock_conformance(
     )
     parent_monotonic = time.monotonic()
     parent_wall = datetime.now(UTC)
+
+    def failed_child_diagnostic(error: subprocess.CalledProcessError, prefix: str) -> None:
+        # Diagnose the launcher without changing the failed admission verdict.
+        # Child bytes exist only in memory; a fixed indicator is an observation,
+        # not proof that the named component or phrase is the underlying cause.
+        streams = (error.stdout, error.stderr)
+        bounded = all(value is None or isinstance(value, bytes) for value in streams) and all(
+            len(value or b"") <= 16384 for value in streams
+        )
+        content = b"\n".join(value or b"" for value in streams).lower() if bounded else b""
+        witness["launcher_failure"] = {
+            "output_within_diagnostic_bound": bounded,
+            "interpreter_query_phrase": any(
+                phrase in content
+                for phrase in (b"failed to inspect python", b"failed to query python")
+            ),
+            "python_startup_phrase": b"fatal python error" in content,
+            "library_shared_memory_phrase": b"libfaketime" in content
+            and any(phrase in content for phrase in (b"shm", b"semaphore")),
+            "dynamic_loader_phrase": b"ld_preload" in content and b"cannot be preloaded" in content,
+        }
+        witness["direct_python"] = {
+            "diagnostic_only": True,
+            "parent_version": list(sys.version_info[:3]),
+            "parent_is_venv": sys.prefix != sys.base_prefix,
+        }
+        direct = witness["direct_python"]
+        try:
+            # Same fixed program, interpreter already running this wrapper,
+            # same preload/environment and unchanged 15-second child bound.
+            child = subprocess.run(
+                [sys.executable, "-c", script],
+                env=environment,
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+            direct["exit_code"] = (
+                child.returncode
+                if type(child.returncode) is int and -255 <= child.returncode <= 255
+                else None
+            )
+            if child.returncode:
+                direct["result"] = "child-nonzero"
+                return
+            observed = observation_from(child, "direct")
+            request = environment["FAKETIME"]
+            if request in {"+45d", "+120d"}:
+                from datetime import timedelta
+
+                expected = parent_wall + timedelta(days=45 if request == "+45d" else 120)
+            else:
+                expected = datetime.strptime(request, "@%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+            error_seconds = (datetime.fromisoformat(observed["wall"]) - expected).total_seconds()
+            metric("direct_wall_error_seconds", error_seconds)
+            metric("direct_elapsed_seconds", observed["monotonic_delta"])
+            direct["wall_within_original_bound"] = -1 <= error_seconds <= 15
+            direct["monotonic_within_original_bound"] = (
+                parent_monotonic <= observed["monotonic_start"] <= time.monotonic()
+                and 0.03 <= observed["monotonic_delta"] <= 5
+            )
+            direct["result"] = "observation-read"
+        except subprocess.TimeoutExpired:
+            direct["result"] = "child-timeout"
+        except OSError:
+            direct["result"] = "io-unavailable"
+        except (ValueError, TypeError, KeyError):
+            direct["result"] = "invalid-observation"
+        finally:
+            phase(f"{prefix}-child-run")
+
     phase("first-child-run")
-    child = subprocess.run(
-        ["uv", "run", "--no-sync", "python", "-c", script],
-        env=environment,
-        capture_output=True,
-        timeout=15,
-        check=True,
-    )
+    try:
+        child = subprocess.run(
+            ["uv", "run", "--no-sync", "python", "-c", script],
+            env=environment,
+            capture_output=True,
+            timeout=15,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        failed_child_diagnostic(error, "first")
+        raise
     observation = observation_from(child, "first")
     phase("first-monotonic")
     metric("first_elapsed_seconds", observation["monotonic_delta"])
@@ -149,13 +225,17 @@ def clock_conformance(
     if not -1 <= (wall - expected_wall).total_seconds() <= 15:
         raise ValueError("wall-conformance-failed")
     phase("restart-child-run")
-    restarted = subprocess.run(
-        ["uv", "run", "--no-sync", "python", "-c", script],
-        env=environment,
-        capture_output=True,
-        timeout=15,
-        check=True,
-    )
+    try:
+        restarted = subprocess.run(
+            ["uv", "run", "--no-sync", "python", "-c", script],
+            env=environment,
+            capture_output=True,
+            timeout=15,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        failed_child_diagnostic(error, "restart")
+        raise
     restart = observation_from(restarted, "restart")
     restart_wall = datetime.fromisoformat(restart["wall"])
     phase("restart-wall")

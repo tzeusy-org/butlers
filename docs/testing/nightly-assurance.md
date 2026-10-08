@@ -130,6 +130,13 @@ monotonic observations. Progressing start-at resets when an independent child
 execs; the receipt records that behavior rather than assuming one shared origin. PostgreSQL
 clocks are independent of the pytest process; DB-authoritative fixtures seed
 relative to the actual DB clock. A source clock correction is not SQL proof.
+
+A clock-preflight launcher failure retains only fixed error indicators and a
+bounded diagnostic of the same program through the wrapper's own Python
+interpreter, under the same preload environment. Raw child bytes and exception
+arguments are discarded. A positive direct-interpreter observation never
+rescues a failed `uv` launch: the original preflight remains non-green with zero
+test cases. Phrase indicators distinguish observations, not underlying causes.
 Worker/service/container recovery causes need real endpoint and phase evidence.
 
 Folded hour/minute jobs run only after the original same-run species genuinely
