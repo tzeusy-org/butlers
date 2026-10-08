@@ -3120,6 +3120,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_native_answer_receiver_values()
     await _assert_native_answer_context_values()
     await _assert_metadata_wake_tool_values()
+    await _assert_native_answer_source_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
 
@@ -4938,6 +4939,9 @@ async def _assert_native_answer_cohort_values():
         async def fetchrow(self, sql, *args):
             if "FROM location_retention_policy" in sql:
                 return {"version": 1}
+            if "FROM location_native_delegation_answer_dispositions" in sql:
+                assert args == (generation,)
+                return None
             assert "FROM public.delegation_ledger" in sql and args == (ledger,)
             return canonical
 
@@ -5500,3 +5504,276 @@ async def _assert_metadata_wake_tool_values():
     conn.calls = [record]
     conn.rows = [witness]
     assert await metadata_wake_tool_finished(conn, attempt)
+
+
+async def _assert_native_answer_source_values():
+    """Owning source protocol sequence/value refusal, not real route/SQL proof."""
+    import hashlib
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_answer_sources import (
+        _REDUCED_ANSWER,
+        disposed_answer_matches,
+        receiver_observation_matches,
+        reconcile_answer_receivers,
+    )
+    from butlers.chronicler.location_delegation_answers import answer_bundle_digest
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.core.delegation_ledger import compute_answer_digest, compute_wake_key
+
+    ledger, generation, decision, incarnation, receiving, receiver_inc, loan_id, receipt = [
+        uuid4() for _ in range(8)
+    ]
+    canonical = dict(
+        id=ledger,
+        asking_butler="relationship",
+        target_butler="chronicler",
+        answering_butler="chronicler",
+        question="Synthetic fixed question",
+        answer="Synthetic original answer",
+        metadata={},
+        catalog_match_id=None,
+        catalog_score=None,
+        status="answered",
+    )
+    canonical["answer_digest"] = compute_answer_digest(canonical["answer"])
+    canonical["wake_key"] = compute_wake_key(ledger, canonical["answer_digest"])
+    header = dict(
+        answer_generation=generation,
+        ledger_id=ledger,
+        body_digest=hashlib.sha256(canonical["answer"].encode()).digest(),
+        bundle_digest=answer_bundle_digest(canonical),
+    )
+    terminal = dict(
+        answer_generation=generation,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        body_digest=header["body_digest"],
+        bundle_digest=header["bundle_digest"],
+        question_digest=question_digest(canonical),
+        wake_key=canonical["wake_key"],
+        reduced_digest=hashlib.sha256(_REDUCED_ANSWER.encode()).digest(),
+    )
+    canonical["answer"] = _REDUCED_ANSWER
+    runtime = SimpleNamespace(name="chronicler", incarnation=incarnation)
+    plan = dict(
+        decision_id=str(decision), manifest_digest=(b"m" * 32).hex(), source_name=runtime.name
+    )
+    assert disposed_answer_matches(runtime, header, canonical, terminal, plan)
+    for changed in (
+        {"answer": "changed"},
+        {"question": "changed"},
+        {"wake_key": "changed"},
+        {"answer_digest": "ab" * 32},
+        {"target_butler": "other"},
+        {"status": "routed"},
+    ):
+        assert not disposed_answer_matches(
+            runtime, header, {**canonical, **changed}, terminal, plan
+        )
+    for changed in (
+        {"bundle_digest": None},
+        {"question_digest": None},
+        {"wake_key": None},
+        {"reduced_digest": b"x" * 32},
+        {"body_digest": b"x" * 32},
+        {"decision_id": uuid4()},
+    ):
+        assert not disposed_answer_matches(
+            runtime, header, canonical, {**terminal, **changed}, plan
+        )
+    answer = dict(
+        source_name=runtime.name,
+        answer_generation=str(generation),
+        ledger_id=str(ledger),
+        body_digest=header["body_digest"].hex(),
+        bundle_digest=header["bundle_digest"].hex(),
+        complete_input=True,
+    )
+    loan = dict(
+        loan_id=str(loan_id),
+        receiver_name="relationship",
+        source_incarnation=str(incarnation),
+        receiving_generation=str(receiving),
+        receiving_incarnation=str(receiver_inc),
+        bundle_digest=answer["bundle_digest"],
+    )
+    result = dict(
+        source_name=runtime.name,
+        source_incarnation=str(incarnation),
+        decision_id=plan["decision_id"],
+        manifest_digest=plan["manifest_digest"],
+        answer_generation=answer["answer_generation"],
+        ledger_id=str(ledger),
+        **{
+            key: loan[key]
+            for key in ("loan_id", "receiving_generation", "receiving_incarnation", "bundle_digest")
+        },
+        receipt_id=str(receipt),
+    )
+    assert receiver_observation_matches(runtime, plan, answer, loan, result)
+    for key in result:
+        if key != "receipt_id":
+            assert not receiver_observation_matches(
+                runtime, plan, answer, loan, {**result, key: "changed"}
+            )
+    assert not receiver_observation_matches(
+        runtime, plan, {**answer, "complete_input": False}, loan, result
+    )
+    assert not receiver_observation_matches(
+        runtime, plan, answer, {**loan, "source_incarnation": str(uuid4())}, result
+    )
+
+    # Child receipt selection cannot bless another same-name Tool execution.
+    from butlers.chronicler.location_memory_context import captured_artifact_calls
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    answer_call = dict(
+        name="delegate_answer",
+        module="core",
+        outcome="success",
+        input_fingerprint="ab" * 32,
+        result=dict(status="ok", ledger_id=str(ledger), answer_recorded=True),
+    )
+    witness = dict(
+        tool_generation=uuid4(),
+        tool_name="delegate_answer",
+        module_name="core",
+        outcome="success",
+        input_digest=bytes.fromhex(answer_call["input_fingerprint"]),
+        result_digest=bytes.fromhex(fingerprint_tool_call_payload(answer_call["result"])),
+        exclusive_inputs=True,
+    )
+    closed = dict(tool_generation=witness["tool_generation"])
+    assert not captured_artifact_calls([answer_call], [], [witness])
+    assert captured_artifact_calls([answer_call], [], [witness], closed_answers=[closed])
+    assert not captured_artifact_calls(
+        [answer_call], [], [witness], closed_answers=[dict(tool_generation=uuid4())]
+    )
+    assert not captured_artifact_calls(
+        [answer_call], [], [{**witness, "exclusive_inputs": False}], closed_answers=[closed]
+    )
+    assert not captured_artifact_calls(
+        [answer_call, answer_call], [], [witness], closed_answers=[closed]
+    )
+    sibling_call = {**answer_call, "input_fingerprint": "cd" * 32}
+    sibling = {**witness, "tool_generation": uuid4(), "input_digest": bytes.fromhex("cd" * 32)}
+    assert not captured_artifact_calls(
+        [answer_call, sibling_call], [], [witness, sibling], closed_answers=[closed]
+    )
+    assert captured_artifact_calls(
+        [answer_call, sibling_call],
+        [],
+        [witness, sibling],
+        closed_answers=[closed, dict(tool_generation=sibling["tool_generation"])],
+    )
+
+    class Pool:
+        def __init__(self):
+            self.tx = False
+            self.trace = []
+            self.observed = None
+            self.unknown = False
+            self.changed = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            assert not self.tx
+            self.tx = True
+            try:
+                yield
+            finally:
+                self.tx = False
+                self.trace.append("commit")
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_native_answer_loans" in sql:
+                assert self.tx and args == (loan_id,)
+                return dict(
+                    answer_generation=generation,
+                    ledger_id=ledger,
+                    body_digest=header["body_digest"],
+                    answer_bundle=header["bundle_digest"],
+                    bundle_digest=header["bundle_digest"],
+                    receiver_name="relationship",
+                    source_incarnation=uuid4() if self.changed else incarnation,
+                    receiving_generation=receiving,
+                    receiving_incarnation=receiver_inc,
+                )
+            assert "FROM location_native_answer_observations" in sql and args == (loan_id,)
+            assert not self.tx
+            self.trace.append("readback")
+            return None if self.unknown else self.observed
+
+        async def execute(self, sql, *args):
+            assert self.tx and "INSERT INTO location_native_answer_observations" in sql
+            self.trace.append("write")
+            self.observed = dict(
+                loan_id=args[0],
+                decision_id=args[1],
+                manifest_digest=args[2],
+                receiver_receipt=args[3],
+            )
+
+    pool = Pool()
+    runtime.domain = pool
+
+    async def lock(conn):
+        assert conn is pool and pool.tx
+        pool.trace.append("lock")
+
+    runtime.lock_domain = lock
+    pending = False
+    foreign = False
+
+    async def route(target, tool, args):
+        assert not pool.tx and target == "relationship"
+        pool.trace.append(tool)
+        if tool == "location_retention_prepare_answer":
+            assert args == dict(decision_id=str(decision), loan_id=str(loan_id))
+            return dict(
+                decision_id=str(decision),
+                loan_id=str(loan_id),
+                receipt_id=None if pending else str(receipt),
+            )
+        assert tool == "location_retention_answer_status"
+        assert args == dict(decision_id=str(decision), receipt_id=str(receipt))
+        return {**result, "source_incarnation": str(uuid4())} if foreign else result
+
+    runtime.routed_tool = route
+    answer["loans"] = [loan]
+    plan["answer_cohort"] = [answer]
+    await reconcile_answer_receivers(runtime, plan)
+    assert pool.observed["receiver_receipt"] == receipt
+    assert pool.trace.index("location_retention_answer_status") < pool.trace.index("lock")
+    assert pool.trace.index("write") < pool.trace.index("commit") < pool.trace.index("readback")
+    pool.trace.clear()
+    pending = True
+    await reconcile_answer_receivers(runtime, plan)
+    assert pool.trace == ["location_retention_prepare_answer"]
+    pending = False
+    foreign = True
+    pool.trace.clear()
+    with pytest.raises(PolicyUnavailableError, match="observation differs"):
+        await reconcile_answer_receivers(runtime, plan)
+    assert "write" not in pool.trace
+    foreign = False
+    pool.changed = True
+    pool.trace.clear()
+    with pytest.raises(PolicyUnavailableError, match="loan readback differs"):
+        await reconcile_answer_receivers(runtime, plan)
+    assert "write" not in pool.trace
+    pool.changed = False
+    pool.unknown = True
+    with pytest.raises(PolicyUnavailableError, match="observation is unknown"):
+        await reconcile_answer_receivers(runtime, plan)
+    pool.unknown = False
+    await reconcile_answer_receivers(runtime, plan)
+    assert pool.observed["receiver_receipt"] == receipt

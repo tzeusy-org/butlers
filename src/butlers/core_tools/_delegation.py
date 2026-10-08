@@ -351,6 +351,25 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         return await answer_receiver_status(receiving_runtime(), decision_id, receipt_id)
 
     @_core_tool("delegation")
+    async def location_retention_close_source_answers(decision_id: UUID) -> dict:
+        """Reconcile stored receiver loans and reduce only this owner's exact answers.
+
+        The fixed constructor obtains the actual Chronicle source plan through
+        Switchboard. Receiver lifetimes and source contexts remain independent;
+        this locator supplies no plan, actor, endpoint or disposal verdict.
+        """
+        from butlers.chronicler.location_answer_sources import close_source_answers
+
+        return await close_source_answers(receiving_runtime(), decision_id)
+
+    @_core_tool("delegation")
+    async def location_retention_source_answer_status(decision_id: UUID, receipt_id: UUID) -> dict:
+        """Read original-reference and reduced-body witnesses from this answer owner."""
+        from butlers.chronicler.location_answer_sources import source_answer_status
+
+        return await source_answer_status(receiving_runtime(), decision_id, receipt_id)
+
+    @_core_tool("delegation")
     @tool_span("delegate_ask", butler_name=butler_name)
     async def delegate_ask(
         question: Annotated[

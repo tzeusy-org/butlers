@@ -178,13 +178,24 @@ async def source_answer_cohort(runtime: Any, conn: Any, plan: dict) -> list[dict
                 "FOR UPDATE OF delegation_ledger",
                 header["ledger_id"],
             )
-            if (
-                canonical is None
-                or header["bundle_digest"] is None
-                or canonical["answering_butler"] != runtime.name
-                or answer_bundle_digest(canonical) != header["bundle_digest"]
-                or canonical["answer_digest"] != header["body_digest"].hex()
-            ):
+            disposition = await conn.fetchrow(
+                "SELECT * FROM location_native_delegation_answer_dispositions "
+                "WHERE answer_generation=$1",
+                header["answer_generation"],
+            )
+            if disposition is None:
+                valid_body = (
+                    canonical is not None
+                    and header["bundle_digest"] is not None
+                    and canonical["answering_butler"] == runtime.name
+                    and answer_bundle_digest(canonical) == header["bundle_digest"]
+                    and canonical["answer_digest"] == header["body_digest"].hex()
+                )
+            else:
+                from butlers.chronicler.location_answer_sources import disposed_answer_matches
+
+                valid_body = disposed_answer_matches(runtime, header, canonical, disposition, plan)
+            if not valid_body:
                 raise PolicyUnavailableError("Native terminal answer body changed")
             loans = await conn.fetch(
                 "SELECT * FROM location_native_answer_loans WHERE answer_generation=$1 "

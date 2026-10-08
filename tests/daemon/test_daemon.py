@@ -572,6 +572,8 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
         "location_retention_prepare_questions",
         "location_retention_question_status",
         "location_retention_answer_plan",
+        "location_retention_close_source_answers",
+        "location_retention_source_answer_status",
         "location_retention_prepare_answer",
         "location_retention_answer_status",
     }

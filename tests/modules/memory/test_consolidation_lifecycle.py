@@ -1862,6 +1862,7 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
 
         await _assert_source_question_disposal(domain, runtime, session_id, context)
         await _assert_received_answer_disposal(domain, runtime)
+        await _assert_source_answer_disposal(domain, runtime)
         unrelated_case = uuid.uuid4()
         assert await delegation_frontier_closed(domain, unrelated_case)
         # Purge predicate must not erase a declared cohort by joining only
@@ -2656,3 +2657,255 @@ async def _assert_received_answer_disposal(domain, runtime):
                     uuid.uuid4(),
                 )
     assert (await answer_receiver_status(runtime, decision, receipt))["receipt_id"] == str(receipt)
+
+
+async def _assert_source_answer_disposal(domain, runtime):
+    """Real own writer/reducer/rollback/receipt; planted source/remote engine scope.
+
+    The actual canonical first-answer producer captures a fresh configured Tool
+    and full input binding. Initial native births and the receiving observation
+    below are deliberately planted, NOT online route/remote erasure proof.
+    """
+    import hashlib
+
+    from butlers.chronicler.location_answer_disposal import source_answer_cohort
+    from butlers.chronicler.location_answer_sources import (
+        _REDUCED_ANSWER,
+        dispose_source_answers,
+        source_answer_status,
+    )
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_tool_copies import (
+        _current_tool_copy,
+        _ToolCopy,
+        finish_tool_copy,
+    )
+    from butlers.core.delegation_ledger import record_answer
+    from butlers.core.sessions import session_complete, session_create
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+    from butlers.location_retention import content_digest
+
+    ledger, context, tool_id, native, output, decision, run, loan, receiving, receiver_inc = [
+        uuid.uuid4() for _ in range(10)
+    ]
+    prompt, system, answer = (
+        "Synthetic source prompt",
+        "Synthetic fixed base",
+        "Synthetic source answer",
+    )
+    session = await session_create(
+        domain,
+        prompt=prompt,
+        trigger_source="trigger",
+        request_id=str(uuid.uuid4()),
+        effective_system_prompt=system,
+        prompt_digest=hashlib.sha256(system.encode()).hexdigest(),
+        prompt_provenance=[],
+    )
+    pd, sd, cd = [hashlib.sha256(value.encode()).digest() for value in (prompt, system, "")]
+    bundle = content_digest(dict(loans=[], context=cd.hex(), system=sd.hex(), prompt=pd.hex()))
+    input_digest = bytes.fromhex(
+        fingerprint_tool_call_payload(dict(ledger_id=str(ledger), answer=answer))
+    )
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_runtime_context_intents(input_generation,receiving_session) VALUES($1,$2)",
+                context,
+                session,
+            )
+            await conn.execute(
+                "INSERT INTO location_runtime_context_bindings "
+                "(input_generation,receiving_session,bundle_digest,context_digest,system_digest,"
+                "prompt_digest,exclusive_input,context_bytes) VALUES($1,$2,$3,$4,$5,$6,true,0)",
+                context,
+                session,
+                bundle,
+                cd,
+                sd,
+                pd,
+            )
+            await conn.execute(
+                "INSERT INTO location_native_copy_births "
+                "(copy_generation,output_kind,output_id,input_digest,lineage_known,receiving_session,"
+                "exclusive_input,producer_kind) VALUES($1,'point_event',$2,$3,true,$4,true,'native_mcp')",
+                native,
+                output,
+                pd,
+                session,
+            )
+            await conn.execute(
+                "INSERT INTO location_runtime_tool_intents "
+                "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+                "VALUES($1,$2,'delegate_answer','core',$3)",
+                tool_id,
+                session,
+                input_digest,
+            )
+            await conn.execute(
+                "INSERT INTO public.delegation_ledger "
+                "(id,asking_butler,question,target_butler,status) "
+                "VALUES($1,'relationship','Synthetic immutable question','chronicler','routed')",
+                ledger,
+            )
+    tool = _ToolCopy(runtime, tool_id, session, "delegate_answer", "core")
+    token = _current_tool_copy.set(tool)
+    try:
+        actual = await record_answer(domain, ledger, answering_butler="chronicler", answer=answer)
+        assert actual is not None and tool.read_observed is True and tool.mixed_inputs is False
+        result = dict(status="ok", ledger_id=str(ledger), answer_recorded=True)
+        await finish_tool_copy((tool, token), result)
+    finally:
+        if _current_tool_copy.get() is tool:
+            _current_tool_copy.reset(token)
+    call = dict(
+        name="delegate_answer",
+        module="core",
+        outcome="success",
+        input_fingerprint=input_digest.hex(),
+        result=result,
+    )
+    await session_complete(domain, session, None, [call], 1, True)
+    header = await domain.fetchrow(
+        "SELECT * FROM location_native_delegation_answers WHERE ledger_id=$1", ledger
+    )
+    assert header["parent_count"] == 1 and header["exclusive_input"] is True
+    manifest = b"v" * 32
+    plan = dict(
+        decision_id=str(decision),
+        manifest_digest=manifest.hex(),
+        source_name=runtime.name,
+        catalog_loans=[],
+    )
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_retention_runs(run_id,policy_version,cutoff,lease_until,status) "
+                "VALUES($1,1,clock_timestamp(),clock_timestamp()+interval '5 minutes','pending')",
+                run,
+            )
+            await conn.execute(
+                "INSERT INTO location_retention_plans(decision_id,run_id,policy_version,cutoff,manifest_digest,state) "
+                "VALUES($1,$2,1,clock_timestamp(),$3,'holder_pending')",
+                decision,
+                run,
+                manifest,
+            )
+            await conn.execute(
+                "INSERT INTO location_retention_plan_outputs "
+                "(decision_id,raw_id,source_revision,adapter_name,mapping_revision,output_kind,output_id) "
+                "VALUES($1,$2,1,'synthetic_source',$3,'point_event',$4)",
+                decision,
+                uuid.uuid4(),
+                b"m" * 32,
+                output,
+            )
+            await conn.execute(
+                "INSERT INTO location_native_answer_loans "
+                "(loan_id,answer_generation,receiving_generation,receiver_name,receiving_incarnation,bundle_digest,source_incarnation) "
+                "VALUES($1,$2,$3,'relationship',$4,$5,$6)",
+                loan,
+                header["answer_generation"],
+                receiving,
+                receiver_inc,
+                header["bundle_digest"],
+                runtime.incarnation,
+            )
+    # A body/Tool completion alone cannot attest an unfinished context or receiver.
+    assert await dispose_source_answers(runtime, plan) == []
+    assert (
+        await domain.fetchval("SELECT answer FROM public.delegation_ledger WHERE id=$1", ledger)
+        == answer
+    )
+    await domain.execute(
+        "INSERT INTO location_runtime_context_ended(input_generation,receipt_id) VALUES($1,$2)",
+        context,
+        uuid.uuid4(),
+    )
+    assert await dispose_source_answers(runtime, plan) == []
+    # This is a planted receiver observation for reducer SQL, not a network receipt.
+    await domain.execute(
+        "INSERT INTO location_native_answer_observations(loan_id,decision_id,manifest_digest,receiver_receipt) VALUES($1,$2,$3,$4)",
+        loan,
+        decision,
+        manifest,
+        uuid.uuid4(),
+    )
+    # The exact own business write and immutable reference receipt roll back together.
+    with pytest.raises(RuntimeError, match="planted answer rollback"):
+        async with domain.acquire() as conn:
+            async with conn.transaction():
+                await runtime.lock_domain(conn)
+                await conn.execute(
+                    "UPDATE public.delegation_ledger SET answer=$2 WHERE id=$1",
+                    ledger,
+                    _REDUCED_ANSWER,
+                )
+                await conn.execute(
+                    "INSERT INTO location_native_delegation_answer_dispositions "
+                    "(answer_generation,decision_id,manifest_digest,body_digest,receipt_id) VALUES($1,$2,$3,$4,$5)",
+                    header["answer_generation"],
+                    decision,
+                    manifest,
+                    header["body_digest"],
+                    uuid.uuid4(),
+                )
+                raise RuntimeError("planted answer rollback")
+    async with domain.acquire() as observed:
+        assert (
+            await observed.fetchval(
+                "SELECT answer FROM public.delegation_ledger WHERE id=$1", ledger
+            )
+            == answer
+        )
+        assert not await observed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_native_delegation_answer_dispositions WHERE answer_generation=$1)",
+            header["answer_generation"],
+        )
+    receipts = await dispose_source_answers(runtime, plan)
+    assert len(receipts) == 1
+    async with domain.acquire() as observed:
+        reduced = await observed.fetchrow(
+            "SELECT * FROM public.delegation_ledger WHERE id=$1", ledger
+        )
+        assert reduced["answer"] == _REDUCED_ANSWER
+        assert reduced["question"] == actual["question"]
+        assert (
+            reduced["answer_digest"] == actual["answer_digest"]
+            and reduced["wake_key"] == actual["wake_key"]
+        )
+        assert not await observed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_runtime_context_dispositions WHERE input_generation=$1)",
+            context,
+        )
+        async with observed.transaction():
+            cohort = await source_answer_cohort(runtime, observed, plan)
+        selected = [
+            row for row in cohort if row["answer_generation"] == str(header["answer_generation"])
+        ]
+        assert len(selected) == 1 and selected[0]["complete_input"] is True
+        with pytest.raises(asyncpg.RaiseError, match="Location source floors are permanent"):
+            async with observed.transaction():
+                await observed.execute(
+                    "UPDATE location_native_answer_observations SET receiver_receipt=$2 WHERE loan_id=$1",
+                    loan,
+                    uuid.uuid4(),
+                )
+    assert await dispose_source_answers(runtime, plan) == receipts
+    status = await source_answer_status(runtime, decision, uuid.UUID(receipts[0]), plan=plan)
+    assert (
+        status["body_digest"] == header["body_digest"].hex()
+        and status["bundle_digest"] == header["bundle_digest"].hex()
+    )
+    await domain.execute(
+        "UPDATE public.delegation_ledger SET answer='Synthetic unrelated tamper' WHERE id=$1",
+        ledger,
+    )
+    with pytest.raises(PolicyUnavailableError, match="source answer is unknown"):
+        await source_answer_status(runtime, decision, uuid.UUID(receipts[0]), plan=plan)
+    await domain.execute(
+        "UPDATE public.delegation_ledger SET answer=$2 WHERE id=$1", ledger, _REDUCED_ANSWER
+    )
+    assert await dispose_source_answers(runtime, plan) == receipts

@@ -774,3 +774,37 @@ transient processing, never an independent model context or a scheduled body cop
 The new two-sibling/earlier-claim interleaving controls are positioned in the existing
 migrated species and remain hosted-only proof obligations. Software neutralization
 of the shared-task lifetime guard goes red with the original prompt still required.
+
+
+The current answer source path uses fixed registered
+`location_retention_close_source_answers` and
+`location_retention_source_answer_status` tools. The scheduled entry discovers
+owners from immutable question loans and invokes each owning reducer through
+Switchboard. Each source owner reads the actual receiver prepare/status,
+compares every loan generation/body/both incarnations under its own writer lock,
+commits its own append-only observation and rereads it separately. Network
+requests never run inside the owning transaction; a pending receiver yields no
+observation. No peer-private SQL, new role or grant supplies this protocol.
+
+Only after all current receiving loans close and the exact source Tool input,
+result and frozen ended context/server lifetime match may the source reduce its
+canonical answer. The same transaction freezes original answer/bundle/question
+and wake reference bytes plus the actual reduced-body digest. It preserves the
+question and wake/answer identities, and rereads the full committed profile and
+original ancestry before returning or replaying the same receipt. Nullable old
+prototype receipt fields stay unknown rather than being filled from current
+rows. This child receipt cannot attest the source runtime context or Tool record.
+The configured full context engine separately requires every original source
+answer of each selected delegate_answer Tool and its one-to-one full private
+input/result witnesses before that context can close.
+
+The existing migrated Memory species now adds a genuine first-answer writer
+with planted native input lineage, then missing receiving observation/unfinished
+source lifetime negatives, atomic body/receipt rollback, independent body and
+original-reference readback, immutable observation refusal, exact reduced-body
+tamper/refusal/restoration and same-ID replay. Remote observations are planted
+SQL-engine inputs; this is not online registered receiving erasure proof. These
+new controls remain unrun locally and await their exact hosted source head.
+Recursive answered-question and lawful mixed/routed copies, full restart and
+real registered all-holder/browser/protected outcomes remain mandatory; this
+source increment does not label them delivered or permanently substitute hold.
