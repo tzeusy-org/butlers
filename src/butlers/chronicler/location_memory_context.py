@@ -512,7 +512,8 @@ async def _dispose_runtime_context_once(
                 f"JOIN {schema}.location_catalog_copy_lifetimes h "
                 "ON h.loan_id=i.loan_id AND h.body_digest=i.body_digest "
                 "AND h.holder_id=i.tool_generation AND h.holder_kind='unbound_processing' "
-                f"JOIN {schema}.location_catalog_copy_loans l USING(loan_id,body_digest) "
+                f"JOIN {schema}.location_catalog_copy_loans l "
+                "ON l.loan_id=i.loan_id AND l.body_digest=i.body_digest "
                 "WHERE t.receiving_session=$1 ORDER BY l.loan_id",
                 frozen["receiving_session"],
             )
