@@ -259,6 +259,23 @@ Conventions:
 - Migrations use raw SQL via `op.execute()` rather than Alembic ORM operations.
 - Revision IDs follow `<prefix>_<number>` convention.
 
+#### Reviewed Bootstrap Prerequisite
+
+Every supported database, including ordinary dev, must complete reviewed
+`scripts/init-db.sql` as its distinct configured cluster-superuser bootstrap
+identity before its first online Alembic migration, and rerun it when the managed
+role/schema/interface surface changes. Both online entrypoints inspect the actual
+current catalog before extension, schema or version/revision side effects and
+refuse missing, partial, unreadable or untrusted provenance. This read-only check
+runs no installer, grants no privilege and trusts no writable completion marker.
+Staged and legitimately finalized states both remain supported; consumed installer
+grants are not demanded back on repeat or second-schema migrations. Protected
+point-of-use guards and managed privileged rollback constraints remain independent.
+Direct runtime development fallback does not waive online migration/startup
+admission, DND authorization or hardened role enforcement. The profile is current
+catalog evidence, not script-history attestation. It does not enable the recovery
+executor or provide its secret. See the [operator procedure](../../../docs/data_and_storage/reviewed-bootstrap.md).
+
 #### Execution Order at Startup
 
 1. Core migrations (`chain="core"`)

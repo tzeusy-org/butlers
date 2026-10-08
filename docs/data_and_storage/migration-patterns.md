@@ -325,6 +325,12 @@ SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
 
 ## Implementation Notes
 
+- Supported online entrypoints first verify the reviewed bootstrap profile before
+  extension, target-schema or version/revision mutations. Ordinary dev is included;
+  direct runtime fallback does not waive migration admission. See
+  [reviewed bootstrap](reviewed-bootstrap.md) for separate privileged/normal
+  identities, genuine core195 repair and finalized repeat/downgrade boundaries.
+
 - Alembic loads every `*.py` in a versions directory, so a stray file with a duplicate `revision`
   breaks the chain even when chain tests only check expected filenames.
 - Revision identifiers are global across chains and branches. Parallel branches collide: two PRs

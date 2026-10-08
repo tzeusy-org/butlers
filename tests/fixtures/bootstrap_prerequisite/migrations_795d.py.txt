@@ -18,7 +18,6 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from butlers.bootstrap_prerequisite import check_bootstrap_database
 
 logger = logging.getLogger(__name__)
 
@@ -353,17 +352,13 @@ async def run_migrations(db_url: str, chain: str = "core", schema: str | None = 
         schema: Optional target schema for one-db/multi-schema topology.
     """
     chains = _resolve_target_chains(chain)
-    normalized_schema = _normalize_schema(schema)
-    for resolved_chain in chains:
-        if _resolve_chain_dir(resolved_chain) is None:
-            raise ValueError(f"Unknown migration chain: {resolved_chain!r}")
-    check_bootstrap_database(db_url)
 
     # Extensions must exist before any migration that uses extension-provided
     # types (e.g. pgvector's ``vector``).  The call is idempotent.
     if "core" in chains or chain == "core":
         _bootstrap_extensions(db_url)
 
+    normalized_schema = _normalize_schema(schema)
     config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
     for resolved_chain in chains:
         _upgrade_chain(config, resolved_chain, normalized_schema)

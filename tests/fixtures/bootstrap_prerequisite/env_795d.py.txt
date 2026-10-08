@@ -16,7 +16,6 @@ from pathlib import Path
 from sqlalchemy import create_engine, pool
 
 from alembic import context
-from butlers.bootstrap_prerequisite import check_bootstrap_connection
 
 # The directory containing shared version chain subdirectories (core only)
 VERSIONS_DIR = Path(__file__).parent / "versions"
@@ -164,10 +163,6 @@ def run_migrations_online() -> None:
     version_table_schema = _get_config_schema_option(_VERSION_TABLE_SCHEMA_OPTION)
 
     with connectable.connect() as connection:
-        check_bootstrap_connection(connection)
-        # Close only this fresh connection's inspection transaction. Alembic
-        # must own the revision transaction even without a target schema.
-        connection.rollback()
         if target_schema is not None:
             own_schema = _quote_ident(target_schema)
             # Alembic ensures version_table before running revisions, so create
