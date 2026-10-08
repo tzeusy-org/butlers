@@ -22,9 +22,9 @@ permissions:
 jobs:
   kernel-discriminator:
     timeout-minutes: 30
-    # Branch-only handshake discriminator. Original nightly owns the complete
-    # release, descendant, peer and signer corpus; this job counts as none of
-    # its scheduled-night, complete-kernel or production-correction evidence.
+    # Branch-only complete original kernel corpus. This retains every release,
+    # descendant, peer and signer assertion. It is a diagnostic environment
+    # species, never scheduled-night or production-correction evidence.
     runs-on: ${{ inputs.runner }}
 
     steps:
@@ -117,7 +117,7 @@ jobs:
           head = bounded(os.environ["GIT_SHA"], r"[0-9a-f]{40}")
           image = "butlers-app:" + head
           document = {
-              "diagnostic_kind": "runner-environment-handshake-only",
+              "diagnostic_kind": "runner-environment-four-original-kernel-nodes",
               "head": head,
               "runner_selection": os.environ["DIAGNOSTIC_RUNNER"],
               "os": "ubuntu",
@@ -131,9 +131,10 @@ jobs:
           print(json.dumps(document, sort_keys=True))
           PYIDENTITY
 
-      - name: Original handshake with explicit diagnostic-only posture
+      - name: Four original kernel nodes with explicit diagnostic-only posture
         run: |
-          uv run --no-sync pytest tests/cli/test_runtime_cli_sandbox.py::test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled -v --tb=short -n 0
+          uv run --no-sync pytest tests/cli/test_runtime_cli_sandbox.py -v --tb=short \
+            -k 'test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled or test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence or test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other or test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment'
         env:
           BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST: "1"
           BUTLERS_RUNTIME_SANDBOX_IMAGE: butlers-app:${{ github.sha }}
