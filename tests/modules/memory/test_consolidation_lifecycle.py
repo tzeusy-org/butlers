@@ -1816,6 +1816,9 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
                 "SELECT * FROM public.delegation_ledger WHERE id=$1", answer_ledger
             )
             assert result["wake_key"] == stored_answer["wake_key"]
+            from butlers.chronicler.location_delegation_answers import answer_bundle_digest
+
+            assert answer_birth["bundle_digest"] == answer_bundle_digest(stored_answer)
             assert stored_answer["answer_digest"] == answer_birth["body_digest"].hex()
             assert answer_birth["tool_generation"] == answer_tool
             assert answer_birth["context_generation"] == context

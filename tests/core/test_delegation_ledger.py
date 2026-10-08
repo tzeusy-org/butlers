@@ -673,6 +673,7 @@ async def _assert_native_delegated_question_birth():
                             "body_digest",
                             "parent_count",
                             "exclusive_input",
+                            "bundle_digest",
                         ),
                         args,
                     )
@@ -722,6 +723,8 @@ async def _assert_native_delegated_question_birth():
                 return False
             if "location_native_copy_dispositions" in sql:
                 return self.fenced
+            if "location_received_answer_floors" in sql:
+                return getattr(self, "return_fenced", False)
             if "location_catalog_copy_dispositions" in sql:
                 return False
             if "location_native_delegation_dispositions" in sql:
@@ -757,6 +760,11 @@ async def _assert_native_delegated_question_birth():
                 row = self.ledger.get(args[0])
                 if row is None or row["status"] != "routed" or row["target_butler"] != args[1]:
                     return None
+                # Actual migrated public ledger nullable columns exist even
+                # for the independent direct INSERT species.
+                row.setdefault("catalog_match_id", None)
+                row.setdefault("catalog_score", None)
+                row.setdefault("metadata", None)
                 row.update(
                     id=args[0],
                     status="answered",
@@ -785,7 +793,11 @@ async def _assert_native_delegated_question_birth():
                 trace.append("readback")
                 return None if self.unknown else self.headers.get(args[0])
             if "public.delegation_ledger" in sql:
-                return self.ledger.get(args[0])
+                row = self.ledger.get(args[0])
+                damaged = getattr(self, "answer_readback_damage", None)
+                if not self.in_transaction and damaged and row is not None:
+                    return dict(row, **{damaged: "synthetic changed reference"})
+                return row
             raise AssertionError("unexpected source row")
 
         async def fetch(self, sql, *args):
@@ -806,6 +818,8 @@ async def _assert_native_delegated_question_birth():
                 return [p for p in self.answer_parents if p["answer_generation"] == args[0]]
             if "location_native_dispatch_sessions" in sql:
                 return self.dispatch
+            if "FROM location_runtime_context_answer_intents" in sql:
+                return getattr(self, "returned", [])
             if "FROM location_runtime_context_question_intents" in sql:
                 return self.inherited
             if "FROM location_runtime_tool_inputs" in sql:
@@ -1009,9 +1023,52 @@ async def _assert_native_delegated_question_birth():
         await record()
         assert next(reversed(pool.headers.values()))["parent_count"] == 2
         pool.inherited = []
+        return_rows = [
+            {
+                "parent_count": 2,
+                "claim_digest": b"r" * 32,
+                "context_bundle": pool.context["bundle_digest"],
+                "claim_bundle_digest": b"r" * 32,
+                "receiving_generation": uuid.uuid4(),
+                "parent_digest": b"a" * 32,
+                "birth_digest": b"a" * 32,
+                "exclusive_input": True,
+            }
+            for _ in range(2)
+        ]
+        pool.returned = deepcopy(return_rows)
+        await record()
+        assert next(reversed(pool.headers.values()))["parent_count"] == 3
+        assert {
+            p["parent_generation"] for p in pool.parents if p["parent_kind"] == "received_answer"
+        } >= {r["receiving_generation"] for r in return_rows}
+        for damaged in (
+            [return_rows[0]],
+            [return_rows[0], dict(return_rows[1], birth_digest=None)],
+            [return_rows[0], dict(return_rows[1], claim_bundle_digest=b"z" * 32)],
+            return_rows + [dict(return_rows[1], receiving_generation=uuid.uuid4())],
+        ):
+            pool.returned = deepcopy(damaged)
+            before = deepcopy((pool.ledger, pool.headers, pool.parents))
+            with pytest.raises(PolicyUnavailableError, match="complete return ancestry differs"):
+                await record()
+            assert (pool.ledger, pool.headers, pool.parents) == before
+        pool.returned = deepcopy(return_rows)
+        pool.return_fenced = True
+        with pytest.raises(PolicyUnavailableError, match="return input is fenced"):
+            await record()
+        pool.return_fenced = False
+        await record()
+        assert next(reversed(pool.headers.values()))["parent_count"] == 3
+        pool.returned = []
         tool.name = "delegate_answer"
         answer_ledger = uuid.uuid4()
-        pool.ledger[answer_ledger] = {"status": "routed", "target_butler": "chronicler"}
+        pool.ledger[answer_ledger] = {
+            "status": "routed",
+            "target_butler": "chronicler",
+            "asking_butler": "relationship",
+            "question": "Synthetic independent question",
+        }
         trace.clear()
         answer = await record_answer(
             pool, answer_ledger, answering_butler="chronicler", answer="synthetic answer"
@@ -1019,6 +1076,17 @@ async def _assert_native_delegated_question_birth():
         assert answer["answer"] == "synthetic answer" and answer["wake_state"] == "callback_pending"
         birth = next(iter(pool.answers.values()))
         assert birth["body_digest"].hex() == answer["answer_digest"]
+        from butlers.chronicler.location_delegation_answers import answer_bundle_digest
+
+        assert birth["bundle_digest"] == answer_bundle_digest(answer)
+        for key in ("question", "asking_butler", "wake_key", "answer", "metadata"):
+            changed = dict(answer, **{key: "synthetic changed reference"})
+            try:
+                changed_digest = answer_bundle_digest(changed)
+            except PolicyUnavailableError:
+                pass
+            else:
+                assert changed_digest != birth["bundle_digest"]
         assert birth["context_generation"] == pool.context["input_generation"]
         assert birth["parent_count"] == len(pool.answer_parents) == 1
         assert (
@@ -1041,7 +1109,12 @@ async def _assert_native_delegated_question_birth():
             )
         for failure in ("input", "rollback", "readback"):
             selected = uuid.uuid4()
-            pool.ledger[selected] = {"status": "routed", "target_butler": "chronicler"}
+            pool.ledger[selected] = {
+                "status": "routed",
+                "target_butler": "chronicler",
+                "asking_butler": "relationship",
+                "question": "Synthetic independent question",
+            }
             pool.intent = failure != "input"
             pool.fail_business = failure == "rollback"
             pool.unknown = failure == "readback"
@@ -1063,6 +1136,24 @@ async def _assert_native_delegated_question_birth():
                 assert pool.ledger[selected]["status"] == "routed"
                 assert (pool.answers, pool.answer_parents) == before
         pool.intent, pool.fail_business, pool.unknown = True, False, False
+        for key in ("question", "asking_butler", "metadata"):
+            selected = uuid.uuid4()
+            pool.ledger[selected] = {
+                "status": "routed",
+                "target_butler": "chronicler",
+                "asking_butler": "relationship",
+                "question": "Synthetic frozen question",
+            }
+            pool.answer_readback_damage = key
+            tool.read_observed = False
+            with pytest.raises(PolicyUnavailableError, match="birth is unknown"):
+                await record_answer(
+                    pool, selected, answering_butler="chronicler", answer="synthetic exact answer"
+                )
+            assert tool.read_observed is False
+            assert pool.ledger[selected]["status"] == "answered"
+            assert pool.ledger[selected]["question"] == "Synthetic frozen question"
+            pool.answer_readback_damage = None
         # Current registered constructor remains installed. Absence of a
         # producer never admits an eligible answer; actual rejected canonical
         # guards return None without any business write or native birth.

@@ -16,6 +16,39 @@ from uuid import UUID, uuid4
 from butlers.chronicler.location_policy import PolicyUnavailableError
 
 
+def answer_bundle_digest(row: Any) -> bytes:
+    """Frozen canonical reference bytes and wake identity, never authority.
+
+    An answer text hash cannot bind the question, recipient or callback that
+    the actual return-task producer will consume. Mutable wake disposition
+    and task acknowledgements are not part of this immutable body identity.
+    """
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.core.delegation_ledger import compute_answer_digest, compute_wake_key
+    from butlers.location_retention import content_digest
+
+    fields = ("asking_butler", "target_butler", "question", "answer", "answering_butler")
+    if (
+        row["status"] != "answered"
+        or any(not isinstance(row[key], str) or not row[key] for key in fields)
+        or row["answering_butler"] != row["target_butler"]
+        or row["answer_digest"] != compute_answer_digest(row["answer"])
+        or row["wake_key"] != compute_wake_key(row["id"], row["answer_digest"])
+    ):
+        raise PolicyUnavailableError("Native answer canonical bundle differs")
+    return content_digest(
+        {
+            "native_answer.v1": {
+                "ledger_id": str(UUID(str(row["id"]))),
+                "question_digest": question_digest(dict(row)).hex(),
+                **{key: row[key] for key in fields},
+                "answer_digest": row["answer_digest"],
+                "wake_key": row["wake_key"],
+            }
+        }
+    )
+
+
 async def capture_answer(writer: Any, ledger: UUID, answering: str, answer: str, write: Any):
     from butlers.chronicler.location_tool_copies import current_tool_copy
 
@@ -46,11 +79,12 @@ async def capture_answer(writer: Any, ledger: UUID, answering: str, answer: str,
                 or row["answer_digest"] != digest.hex()
             ):
                 raise PolicyUnavailableError("Native canonical answer differs")
+            bundle = answer_bundle_digest(row)
             await conn.execute(
                 "INSERT INTO location_native_delegation_answers "
                 "(answer_generation,ledger_id,receiving_session,tool_generation,"
-                "context_generation,body_digest,parent_count,exclusive_input) "
-                "VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+                "context_generation,body_digest,parent_count,exclusive_input,bundle_digest) "
+                "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
                 generation,
                 ledger,
                 tool.session,
@@ -59,6 +93,7 @@ async def capture_answer(writer: Any, ledger: UUID, answering: str, answer: str,
                 digest,
                 len(parents),
                 exclusive,
+                bundle,
             )
             for kind, selected, body in parents:
                 await conn.execute(
@@ -91,6 +126,7 @@ async def capture_answer(writer: Any, ledger: UUID, answering: str, answer: str,
         or receipt["tool_generation"] != tool.generation
         or receipt["context_generation"] != frozen["input_generation"]
         or receipt["body_digest"] != digest
+        or receipt["bundle_digest"] != bundle
         or receipt["parent_count"] != len(parents)
         or receipt["exclusive_input"] is not exclusive
         or {(p["parent_kind"], p["parent_generation"], p["parent_digest"]) for p in committed}
@@ -99,6 +135,7 @@ async def capture_answer(writer: Any, ledger: UUID, answering: str, answer: str,
         or actual["answer"] != answer
         or actual["answer_digest"] != digest.hex()
         or actual["answering_butler"] != runtime.name
+        or answer_bundle_digest(actual) != bundle
     ):
         raise PolicyUnavailableError("Committed native answer birth is unknown")
     tool.read_observed = True

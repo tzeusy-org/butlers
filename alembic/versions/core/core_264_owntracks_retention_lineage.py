@@ -52,7 +52,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
            'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_ordinary_delegation_inputs','location_native_delegation_inputs',
-           'location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
+           'location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -78,6 +78,16 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_runtime_tool_results",
         "location_ordinary_delegation_inputs",
         "location_native_delegation_inputs",
+        "location_received_answer_claims",
+        "location_received_answer_claim_parents",
+        "location_received_answer_claims_ended",
+        "location_runtime_context_answer_intents",
+        "location_received_answer_contexts",
+        "location_received_answer_schedules",
+        "location_received_answer_floors",
+        "location_received_answer_inputs",
+        "location_received_answer_attempts",
+        "location_native_answer_loans",
         "location_native_delegation_answer_parents",
         "location_native_delegation_answer_dispositions",
         "location_native_delegation_answers",
@@ -360,6 +370,84 @@ def _validate_local_tables(schema: str) -> None:
                 ("parent_count", "integer", True),
                 ("exclusive_input", "boolean", True),
                 ("committed_at", "timestamp with time zone", True),
+                ("bundle_digest", "bytea", False),
+            ],
+            "location_native_answer_loans": [
+                ("loan_id", "uuid", True),
+                ("answer_generation", "uuid", True),
+                ("receiving_generation", "uuid", True),
+                ("receiver_name", "text", True),
+                ("receiving_incarnation", "uuid", True),
+                ("bundle_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_attempts": [
+                ("receiving_generation", "uuid", True),
+                ("ledger_id", "uuid", True),
+                ("source_name", "text", True),
+                ("wake_key", "text", True),
+                ("receiving_incarnation", "uuid", True),
+                ("receiving_session", "uuid", False),
+                ("tool_generation", "uuid", False),
+                ("server_request", "uuid", False),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_claims": [
+                ("claim_generation", "uuid", True),
+                ("task_id", "uuid", True),
+                ("prompt_digest", "bytea", True),
+                ("bundle_digest", "bytea", True),
+                ("parent_count", "integer", True),
+                ("receiving_incarnation", "uuid", True),
+                ("exclusive_input", "boolean", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_claim_parents": [
+                ("claim_generation", "uuid", True),
+                ("receiving_generation", "uuid", True),
+                ("bundle_digest", "bytea", True),
+            ],
+            "location_received_answer_claims_ended": [
+                ("claim_generation", "uuid", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_runtime_context_answer_intents": [
+                ("input_generation", "uuid", True),
+                ("claim_generation", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_contexts": [
+                ("input_generation", "uuid", True),
+                ("claim_generation", "uuid", True),
+                ("receiving_session", "uuid", True),
+                ("bundle_digest", "bytea", True),
+                ("claim_bundle_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_schedules": [
+                ("receiving_generation", "uuid", True),
+                ("task_id", "uuid", True),
+                ("prompt_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_floors": [
+                ("receiving_generation", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("bundle_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_inputs": [
+                ("receiving_generation", "uuid", True),
+                ("source_name", "text", True),
+                ("answer_generation", "uuid", True),
+                ("loan_id", "uuid", True),
+                ("bundle_digest", "bytea", True),
+                ("source_incarnation", "uuid", True),
+                ("parent_count", "integer", True),
+                ("exclusive_input", "boolean", True),
+                ("committed_at", "timestamp with time zone", True),
             ],
             "location_native_delegation_answer_parents": [
                 ("answer_generation", "uuid", True),
@@ -620,6 +708,7 @@ def _validate_local_tables(schema: str) -> None:
                 "location_native_delegation_inputs(question_generation)",
             },
             "location_native_delegation_answers": {
+                "CHECK (((bundle_digest IS NULL) OR (octet_length(bundle_digest) = 32)))",
                 "PRIMARY KEY (answer_generation)",
                 "UNIQUE (ledger_id)",
                 "CHECK ((octet_length(body_digest) = 32))",
@@ -629,11 +718,85 @@ def _validate_local_tables(schema: str) -> None:
                 "FOREIGN KEY (context_generation) REFERENCES "
                 "location_runtime_context_bindings(input_generation)",
             },
+            "location_native_answer_loans": {
+                "PRIMARY KEY (loan_id)",
+                "UNIQUE (receiving_generation)",
+                "FOREIGN KEY (answer_generation) REFERENCES "
+                "location_native_delegation_answers(answer_generation)",
+                "CHECK ((octet_length(bundle_digest) = 32))",
+            },
+            "location_received_answer_attempts": {
+                "PRIMARY KEY (receiving_generation)",
+                "FOREIGN KEY (tool_generation) REFERENCES "
+                "location_runtime_tool_intents(tool_generation)",
+                "CHECK (((server_request IS NOT NULL) OR ((receiving_session IS NOT NULL) "
+                "AND (tool_generation IS NOT NULL))))",
+            },
+            "location_received_answer_claims": {
+                "PRIMARY KEY (claim_generation)",
+                "FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)",
+                "CHECK ((octet_length(prompt_digest) = 32))",
+                "CHECK ((octet_length(bundle_digest) = 32))",
+                "CHECK ((parent_count >= 1))",
+            },
+            "location_received_answer_claim_parents": {
+                "PRIMARY KEY (claim_generation, receiving_generation)",
+                "FOREIGN KEY (claim_generation) REFERENCES "
+                "location_received_answer_claims(claim_generation)",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_answer_inputs(receiving_generation)",
+                "CHECK ((octet_length(bundle_digest) = 32))",
+            },
+            "location_received_answer_claims_ended": {
+                "PRIMARY KEY (claim_generation)",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (claim_generation) REFERENCES "
+                "location_received_answer_claims(claim_generation)",
+            },
+            "location_runtime_context_answer_intents": {
+                "PRIMARY KEY (input_generation)",
+                "FOREIGN KEY (input_generation) REFERENCES "
+                "location_runtime_context_intents(input_generation)",
+                "FOREIGN KEY (claim_generation) REFERENCES "
+                "location_received_answer_claims(claim_generation)",
+            },
+            "location_received_answer_contexts": {
+                "PRIMARY KEY (input_generation)",
+                "FOREIGN KEY (input_generation) REFERENCES "
+                "location_runtime_context_intents(input_generation)",
+                "FOREIGN KEY (claim_generation) REFERENCES "
+                "location_received_answer_claims(claim_generation)",
+                "FOREIGN KEY (receiving_session) REFERENCES sessions(id)",
+                "CHECK ((octet_length(bundle_digest) = 32))",
+                "CHECK ((octet_length(claim_bundle_digest) = 32))",
+            },
+            "location_received_answer_schedules": {
+                "PRIMARY KEY (receiving_generation)",
+                "CHECK ((octet_length(prompt_digest) = 32))",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_answer_inputs(receiving_generation)",
+                "FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)",
+            },
+            "location_received_answer_floors": {
+                "PRIMARY KEY (receiving_generation)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
+                "CHECK ((octet_length(bundle_digest) = 32))",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_answer_inputs(receiving_generation)",
+            },
+            "location_received_answer_inputs": {
+                "CHECK ((parent_count >= 0))",
+                "PRIMARY KEY (receiving_generation)",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_answer_attempts(receiving_generation)",
+                "UNIQUE (loan_id)",
+                "CHECK ((octet_length(bundle_digest) = 32))",
+            },
             "location_native_delegation_answer_parents": {
                 "PRIMARY KEY (answer_generation, parent_kind, parent_generation)",
                 "CHECK ((octet_length(parent_digest) = 32))",
                 "CHECK ((parent_kind = ANY (ARRAY['native_copy'::text, 'catalog_loan'::text, "
-                "'received_question'::text])))",
+                "'received_question'::text, 'received_answer'::text])))",
                 "FOREIGN KEY (answer_generation) REFERENCES "
                 "location_native_delegation_answers(answer_generation)",
             },
@@ -649,7 +812,7 @@ def _validate_local_tables(schema: str) -> None:
                 "PRIMARY KEY (question_generation, parent_kind, parent_generation)",
                 "CHECK ((octet_length(parent_digest) = 32))",
                 "CHECK ((parent_kind = ANY (ARRAY['native_copy'::text, 'catalog_loan'::text, "
-                "'received_question'::text])))",
+                "'received_question'::text, 'received_answer'::text])))",
                 "FOREIGN KEY (question_generation) REFERENCES "
                 "location_native_delegation_inputs(question_generation)",
             },
@@ -908,10 +1071,14 @@ def upgrade() -> None:
           exclusive_input BOOLEAN NOT NULL,
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        ALTER TABLE location_native_delegation_answers
+          ADD COLUMN IF NOT EXISTS bundle_digest BYTEA
+            CHECK(bundle_digest IS NULL OR octet_length(bundle_digest)=32);
         CREATE TABLE IF NOT EXISTS location_native_delegation_answer_parents (
           answer_generation UUID NOT NULL REFERENCES location_native_delegation_answers,
           parent_kind TEXT NOT NULL
-            CHECK(parent_kind IN ('native_copy','catalog_loan','received_question')),
+            CHECK(parent_kind IN ('native_copy','catalog_loan',
+              'received_question','received_answer')),
           parent_generation UUID NOT NULL,
           parent_digest BYTEA NOT NULL CHECK(octet_length(parent_digest)=32),
           PRIMARY KEY(answer_generation,parent_kind,parent_generation)
@@ -922,6 +1089,86 @@ def upgrade() -> None:
           manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
           receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_native_answer_loans (
+          loan_id UUID PRIMARY KEY,
+          answer_generation UUID NOT NULL REFERENCES location_native_delegation_answers,
+          receiving_generation UUID NOT NULL UNIQUE,
+          receiver_name TEXT NOT NULL,
+          receiving_incarnation UUID NOT NULL,
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_attempts (
+          receiving_generation UUID PRIMARY KEY,
+          ledger_id UUID NOT NULL,
+          source_name TEXT NOT NULL,
+          wake_key TEXT NOT NULL,
+          receiving_incarnation UUID NOT NULL,
+          receiving_session UUID,
+          tool_generation UUID REFERENCES location_runtime_tool_intents,
+          server_request UUID,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          CHECK(server_request IS NOT NULL OR
+            (receiving_session IS NOT NULL AND tool_generation IS NOT NULL))
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_inputs (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_attempts,
+          source_name TEXT NOT NULL,
+          answer_generation UUID NOT NULL,
+          loan_id UUID NOT NULL UNIQUE,
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          source_incarnation UUID NOT NULL,
+          parent_count INTEGER NOT NULL CHECK(parent_count>=0),
+          exclusive_input BOOLEAN NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_schedules (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_inputs,
+          task_id UUID NOT NULL REFERENCES scheduled_tasks(id),
+          prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_floors (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_inputs,
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_claims (
+          claim_generation UUID PRIMARY KEY,
+          task_id UUID NOT NULL REFERENCES scheduled_tasks(id),
+          prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          parent_count INTEGER NOT NULL CHECK(parent_count>=1),
+          receiving_incarnation UUID NOT NULL,
+          exclusive_input BOOLEAN NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_claim_parents (
+          claim_generation UUID NOT NULL REFERENCES location_received_answer_claims,
+          receiving_generation UUID NOT NULL REFERENCES location_received_answer_inputs,
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          PRIMARY KEY(claim_generation,receiving_generation)
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_claims_ended (
+          claim_generation UUID PRIMARY KEY REFERENCES location_received_answer_claims,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_context_answer_intents (
+          input_generation UUID PRIMARY KEY REFERENCES location_runtime_context_intents,
+          claim_generation UUID NOT NULL REFERENCES location_received_answer_claims,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_contexts (
+          input_generation UUID PRIMARY KEY REFERENCES location_runtime_context_intents,
+          claim_generation UUID NOT NULL REFERENCES location_received_answer_claims,
+          receiving_session UUID NOT NULL REFERENCES sessions(id),
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          claim_bundle_digest BYTEA NOT NULL CHECK(octet_length(claim_bundle_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
         CREATE TABLE IF NOT EXISTS location_ordinary_delegation_inputs (
@@ -947,7 +1194,8 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS location_native_delegation_parents (
           question_generation UUID NOT NULL REFERENCES location_native_delegation_inputs,
           parent_kind TEXT NOT NULL
-            CHECK(parent_kind IN ('native_copy','catalog_loan','received_question')),
+            CHECK(parent_kind IN ('native_copy','catalog_loan',
+              'received_question','received_answer')),
           parent_generation UUID NOT NULL,
           parent_digest BYTEA NOT NULL CHECK(octet_length(parent_digest)=32),
           PRIMARY KEY(question_generation,parent_kind,parent_generation)
@@ -1111,6 +1359,16 @@ def upgrade() -> None:
         "location_runtime_tool_results",
         "location_ordinary_delegation_inputs",
         "location_native_delegation_inputs",
+        "location_received_answer_claims",
+        "location_received_answer_claim_parents",
+        "location_received_answer_claims_ended",
+        "location_runtime_context_answer_intents",
+        "location_received_answer_contexts",
+        "location_received_answer_schedules",
+        "location_received_answer_floors",
+        "location_received_answer_inputs",
+        "location_received_answer_attempts",
+        "location_native_answer_loans",
         "location_native_delegation_answer_parents",
         "location_native_delegation_answer_dispositions",
         "location_native_delegation_answers",

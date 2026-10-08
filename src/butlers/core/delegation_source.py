@@ -61,9 +61,11 @@ async def dispatch_scheduled_question(
 ):
     """Actual scheduler boundary; public task/trigger fields cannot mint a binding."""
     from butlers.chronicler.location_delegation_processing import scheduled_question_scope
+    from butlers.chronicler.location_return_processing import scheduled_answer_scope
 
     async with scheduled_question_scope(pool, task, prompt):
-        return await dispatch(**kwargs)
+        async with scheduled_answer_scope(pool, task, prompt):
+            return await dispatch(**kwargs)
 
 
 async def capture_answer(pool: Any, ledger: Any, answering: str, answer: str, write: Any):
@@ -105,3 +107,22 @@ async def capture_answer(pool: Any, ledger: Any, answering: str, answer: str, wr
     from butlers.chronicler.location_delegation_answers import capture_answer as capture
 
     return await capture(selected[0], ledger, answering, answer, write)
+
+
+async def receive_answer(pool: Any, ledger: Any, wake_key: str):
+    """Fixed constructor admission before the wake handler copies canonical bodies."""
+    writer = _writers.get(pool)
+    if writer is None:
+        return None  # Explicit unconfigured business contract, no lineage claim.
+    from butlers.chronicler.location_delegation_returns import reserve_received_answer
+
+    return await reserve_received_answer(writer, ledger, wake_key)
+
+
+async def create_answer_schedule(pool: Any, admission: Any, write: Any):
+    writer = _writers.get(pool)
+    if writer is None or getattr(admission, "writer", None) is not writer:
+        raise RuntimeError("Native return schedule owning writer differs")
+    from butlers.chronicler.location_delegation_returns import schedule_received_answer
+
+    return await schedule_received_answer(admission, write)

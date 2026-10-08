@@ -345,7 +345,9 @@ class CatalogCopyRuntime:
 
         clear_writer(self.domain, self.delegation_writer)
         self.delegation_writer.pending.clear()
+        self.delegation_writer.answer_pending.clear()
         self.delegation_writer.receiving.clear()
+        self.delegation_writer.receiving_answers.clear()
         self.active = False
         self.pending.clear()
         if _runtimes.get(self.memory) is self:
@@ -808,6 +810,10 @@ class CatalogCopyRuntime:
                 )
 
                 result = await verify_question_delivery(self.delegation_writer, token, body)
+            elif body.get("op") in {"answer_challenge", "answer_source", "answer_delivery"}:
+                from butlers.chronicler.location_delegation_returns import answer_control
+
+                result = await answer_control(self.delegation_writer, token, body)
             else:
                 raise ValueError
             return JSONResponse(result)

@@ -37,7 +37,9 @@ class NativeDelegationWriter:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
         self.pending: dict[str, Any] = {}
+        self.answer_pending: dict[str, Any] = {}
         self.receiving: dict[Any, Any] = {}
+        self.receiving_answers: dict[Any, Any] = {}
 
     def capture_active(self) -> bool:
         from butlers.chronicler.location_tool_copies import _current_tool_copy
@@ -155,6 +157,46 @@ class NativeDelegationWriter:
                     dependency["body_digest"],
                 )
             )
+        returned = await conn.fetch(
+            "SELECT c.parent_count,c.bundle_digest AS claim_digest,c.exclusive_input,"
+            "q.bundle_digest AS context_bundle,q.claim_bundle_digest,"
+            "p.receiving_generation,p.bundle_digest AS parent_digest,"
+            "i.bundle_digest AS birth_digest "
+            "FROM location_runtime_context_answer_intents n "
+            "LEFT JOIN location_received_answer_contexts q "
+            "USING(input_generation,claim_generation) "
+            "LEFT JOIN location_received_answer_claims c USING(claim_generation) "
+            "LEFT JOIN location_received_answer_claim_parents p USING(claim_generation) "
+            "LEFT JOIN location_received_answer_inputs i USING(receiving_generation) "
+            "WHERE n.input_generation=$1 ORDER BY p.receiving_generation",
+            frozen["input_generation"],
+        )
+        if returned:
+            count = returned[0]["parent_count"]
+            if (
+                type(count) is not int
+                or count < 1
+                or count != len(returned)
+                or len({r["receiving_generation"] for r in returned}) != count
+                or any(
+                    row["parent_count"] != count
+                    or row["receiving_generation"] is None
+                    or row["context_bundle"] != frozen["bundle_digest"]
+                    or not isinstance(row["claim_digest"], bytes)
+                    or len(row["claim_digest"]) != 32
+                    or row["claim_digest"] != row["claim_bundle_digest"]
+                    or not isinstance(row["parent_digest"], bytes)
+                    or len(row["parent_digest"]) != 32
+                    or row["parent_digest"] != row["birth_digest"]
+                    for row in returned
+                )
+            ):
+                raise PolicyUnavailableError("Native delegation complete return ancestry differs")
+            exclusive = exclusive and all(row["exclusive_input"] is True for row in returned)
+            parents.extend(
+                ("received_answer", row["receiving_generation"], row["parent_digest"])
+                for row in returned
+            )
         if runtime.name == "chronicler":
             from butlers.chronicler.location_memory_ancestry import require_complete_parents
 
@@ -215,6 +257,12 @@ class NativeDelegationWriter:
 
                 if await receiving_question_fenced(conn, selected):
                     raise PolicyUnavailableError("Native delegation receiving input is fenced")
+            if kind == "received_answer" and await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_answer_floors "
+                "WHERE receiving_generation=$1)",
+                selected,
+            ):
+                raise PolicyUnavailableError("Native delegation return input is fenced")
             if kind == "catalog_loan" and await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM location_catalog_copy_dispositions "
                 "WHERE loan_id=$1) OR EXISTS(SELECT 1 FROM location_catalog_copy_finished "

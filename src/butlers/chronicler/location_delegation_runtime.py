@@ -101,6 +101,10 @@ class NativeDelegationRuntime:
             if not self.active or not isinstance(token, str) or not 32 <= len(token) <= 128:
                 raise ValueError
             body = await _request_json(request)
+            if body.get("op") in {"answer_challenge", "answer_source", "answer_delivery"}:
+                from butlers.chronicler.location_delegation_returns import answer_control
+
+                return JSONResponse(await answer_control(self.delegation_writer, token, body))
             declared = handlers.get(body.get("op"))
             if declared is None or set(body) != declared[0]:
                 raise ValueError
@@ -124,4 +128,6 @@ class NativeDelegationRuntime:
         if _context_writers.get(self.domain) is self:
             del _context_writers[self.domain]
         self.delegation_writer.pending.clear()
+        self.delegation_writer.answer_pending.clear()
         self.delegation_writer.receiving.clear()
+        self.delegation_writer.receiving_answers.clear()

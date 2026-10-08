@@ -3114,6 +3114,9 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     pool.diagnostic["stderr"] = None
     assert await dispose_runtime_context(runtime, generation, plan)
     await _assert_core_question_context_values()
+    await _assert_native_answer_challenge_values()
+    await _assert_native_answer_schedule_values()
+    await _assert_native_return_processing_values()
 
 
 @pytest.mark.asyncio
@@ -3998,4 +4001,737 @@ async def _assert_core_question_context_values():
         await dispose_core_question_contexts(runtime, binding)
         assert pool.receipts[generation]["receipt_id"] == receipt and pool.writes == writes
     finally:
+        runtime.close()
+
+
+async def _assert_native_answer_challenge_values():
+    """Real private handler, planted owning cells; not online enrollment or SQL proof."""
+    import json
+    import time
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from starlette.requests import Request
+
+    from butlers.chronicler.location_catalog_copies import _HEADER
+    from butlers.chronicler.location_delegation_returns import _AnswerPending, answer_challenge
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_tool_copies import _ToolCopy
+
+    class Pool:
+        in_transaction = False
+        available = True
+        intent = True
+        role = "fixed_role"
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.in_transaction = True
+            try:
+                yield
+            finally:
+                self.in_transaction = False
+
+        async def fetchrow(self, sql, *args):
+            assert self.in_transaction and args == (pending.receiving,)
+            assert "FROM location_received_answer_attempts" in sql
+            return attempt if self.available else None
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "relationship"
+            if sql == "SELECT current_user":
+                return self.role
+            assert self.in_transaction and "FROM location_runtime_tool_intents" in sql
+            assert args == (tool.generation, tool.session)
+            return self.intent
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction and "pg_advisory_xact_lock" in sql
+
+    pool = Pool()
+    runtime = NativeDelegationRuntime(
+        domain=pool, name="relationship", registry=object(), identity=("relationship", "fixed_role")
+    )
+    tool = _ToolCopy(runtime, uuid4(), uuid4(), "delegate_wake", "core")
+    pending = _AnswerPending(
+        uuid4(), "chronicler", "synthetic-fixed-wake", uuid4(), time.monotonic() + 30, tool=tool
+    )
+    token = "synthetic-answer-challenge-token-32"
+    runtime.delegation_writer.answer_pending[token] = pending
+    attempt = {
+        "ledger_id": pending.ledger,
+        "source_name": pending.source,
+        "wake_key": pending.wake_key,
+        "receiving_incarnation": runtime.incarnation,
+        "receiving_session": tool.session,
+        "tool_generation": tool.generation,
+        "server_request": None,
+    }
+    body = {
+        "op": "answer_challenge",
+        "ledger_id": str(pending.ledger),
+        "source": pending.source,
+        "wake_key": pending.wake_key,
+    }
+    # Callback is a separate HTTP invocation: no inherited caller ContextVar.
+    expected = await answer_challenge(runtime.delegation_writer, token, body)
+    assert expected["receiving_generation"] == str(pending.receiving)
+    assert expected["receiving_incarnation"] == str(runtime.incarnation)
+    for key in ("ledger_id", "source_name", "wake_key", "receiving_session", "tool_generation"):
+        original = attempt[key]
+        attempt[key] = (
+            uuid4() if isinstance(original, type(pending.ledger)) else "synthetic different"
+        )
+        with pytest.raises(PolicyUnavailableError, match="attempt differs"):
+            await answer_challenge(runtime.delegation_writer, token, body)
+        attempt[key] = original
+    for key in ("available", "intent"):
+        setattr(pool, key, False)
+        with pytest.raises(PolicyUnavailableError):
+            await answer_challenge(runtime.delegation_writer, token, body)
+        setattr(pool, key, True)
+    tool.active = False
+    with pytest.raises(PolicyUnavailableError, match="receiving tool differs"):
+        await answer_challenge(runtime.delegation_writer, token, body)
+    tool.active = True
+    original_deadline = pending.deadline
+    pending.deadline = float("-inf")
+    with pytest.raises(PolicyUnavailableError, match="receiving lifetime differs"):
+        await answer_challenge(runtime.delegation_writer, token, body)
+    pending.deadline = original_deadline
+    assert await answer_challenge(runtime.delegation_writer, token, body) == expected
+
+    async def actual_control(raw: bytes):
+        async def receive():
+            return {"type": "http.request", "body": raw, "more_body": False}
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/internal/location-copy/v1",
+                "headers": [(_HEADER.lower().encode(), token.encode())],
+            },
+            receive,
+        )
+        return await runtime.control(request)
+
+    response = await actual_control(json.dumps(body).encode())
+    assert response.status_code == 200 and json.loads(response.body) == expected
+    assert (
+        await actual_control(json.dumps({**body, "actor": "caller-forged"}).encode())
+    ).status_code == 503
+    duplicate = json.dumps(body).encode()[:-1] + b',"source":"caller-forged"}'
+    assert (await actual_control(duplicate)).status_code == 503
+    runtime.close()
+    assert not runtime.delegation_writer.answer_pending
+
+
+async def _assert_native_answer_schedule_values():
+    """Owning same-transaction/readback species; planted cells, no online SQL credit."""
+    import hashlib
+    import time
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_answers import answer_bundle_digest
+    from butlers.chronicler.location_delegation_returns import (
+        _ReceivedAnswer,
+        schedule_received_answer,
+    )
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_tool_copies import _ToolCopy
+    from butlers.core.delegation_ledger import compute_answer_digest, compute_wake_key
+    from butlers.core.delegation_wake import _build_return_task_prompt
+
+    ledger, generation, task = uuid4(), uuid4(), uuid4()
+    canonical = {
+        "id": ledger,
+        "asking_butler": "relationship",
+        "target_butler": "chronicler",
+        "question": "Synthetic admitted location question",
+        "answer": "Synthetic admitted answer",
+        "answering_butler": "chronicler",
+        "catalog_match_id": None,
+        "catalog_score": None,
+        "metadata": {},
+        "status": "answered",
+    }
+    canonical["answer_digest"] = compute_answer_digest(canonical["answer"])
+    canonical["wake_key"] = compute_wake_key(ledger, canonical["answer_digest"])
+    digest = answer_bundle_digest(canonical)
+    prompt = _build_return_task_prompt(
+        ledger_id=ledger,
+        asking_butler=canonical["asking_butler"],
+        target_butler=canonical["target_butler"],
+        question=canonical["question"],
+        answer=canonical["answer"],
+        wake_key=canonical["wake_key"],
+        answer_digest=canonical["answer_digest"],
+    )
+
+    class Pool:
+        in_transaction = False
+        acquired = 0
+        available = True
+        fenced = False
+        unknown = False
+        changed_task = False
+        fail_binding = False
+        result = None
+        task_body = None
+        binding = None
+        trace = []
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.acquired += 1
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            original = deepcopy((self.task_body, self.binding))
+            enclosing = self.in_transaction
+            self.in_transaction = True
+            try:
+                yield
+            except BaseException:
+                self.task_body, self.binding = original
+                self.trace.append("rollback")
+                raise
+            else:
+                self.trace.append("commit")
+            finally:
+                self.in_transaction = enclosing
+
+        async def fetchrow(self, sql, *args):
+            if "JOIN location_received_answer_attempts" in sql:
+                assert self.in_transaction and args == (generation,)
+                return (
+                    {
+                        "ledger_id": ledger,
+                        "bundle_digest": digest,
+                        "wake_key": canonical["wake_key"],
+                        "receiving_incarnation": runtime.incarnation,
+                    }
+                    if self.available
+                    else None
+                )
+            if "FROM public.delegation_ledger" in sql:
+                assert args == (ledger,)
+                return canonical
+            if "FROM scheduled_tasks WHERE name" in sql:
+                assert self.in_transaction
+                return None
+            assert "FROM location_received_answer_schedules" in sql and args == (generation,)
+            if not self.in_transaction:
+                self.trace.append("readback")
+                if self.unknown:
+                    return None
+            return self.binding
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "relationship"
+            if sql == "SELECT current_user":
+                return "fixed_role"
+            if "FROM location_received_answer_floors" in sql:
+                assert self.in_transaction and args == (generation,)
+                return self.fenced
+            assert "FROM scheduled_tasks" in sql and args == (task,)
+            return self.task_body
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction
+            if "pg_advisory_xact_lock" in sql:
+                self.trace.append("policy")
+                return
+            assert "INSERT INTO location_received_answer_schedules" in sql
+            self.trace.append("binding")
+            if self.fail_binding:
+                raise RuntimeError("synthetic binding failure")
+            self.binding = dict(
+                receiving_generation=args[0], task_id=args[1], prompt_digest=args[2]
+            )
+
+    pool = Pool()
+    runtime = NativeDelegationRuntime(
+        domain=pool, name="relationship", registry=object(), identity=("relationship", "fixed_role")
+    )
+    tool = _ToolCopy(runtime, uuid4(), uuid4(), "delegate_wake", "core")
+
+    def admission():
+        selected = _ReceivedAnswer(
+            runtime.delegation_writer, generation, ledger, digest, time.monotonic() + 30, tool=tool
+        )
+        runtime.delegation_writer.receiving_answers[generation] = selected
+        return selected
+
+    async def write(conn, row):
+        assert conn is pool and conn.in_transaction and row == canonical
+        pool.trace.append("business")
+        pool.task_body = prompt if not pool.changed_task else prompt + "independent suffix"
+        return {"status": "ok", "task_id": str(task)}
+
+    try:
+        for field in ("available", "fenced"):
+            setattr(pool, field, field == "fenced")
+            with pytest.raises(PolicyUnavailableError):
+                await schedule_received_answer(admission(), write)
+            assert pool.task_body is None and pool.binding is None
+            setattr(pool, field, field == "available")
+        original = canonical["question"]
+        canonical["question"] = "Changed unrelated question under same answer hash"
+        with pytest.raises(PolicyUnavailableError, match="input differs"):
+            await schedule_received_answer(admission(), write)
+        assert "business" not in pool.trace
+        canonical["question"] = original
+        for field in ("changed_task", "fail_binding"):
+            setattr(pool, field, True)
+            with pytest.raises((PolicyUnavailableError, RuntimeError)):
+                await schedule_received_answer(admission(), write)
+            assert pool.task_body is None and pool.binding is None
+            setattr(pool, field, False)
+        pool.trace.clear()
+        result = await schedule_received_answer(admission(), write)
+        assert result == {"status": "ok", "task_id": str(task)}
+        assert pool.trace.index("policy") < pool.trace.index("business")
+        assert pool.trace.index("business") < pool.trace.index("binding")
+        assert pool.trace.index("binding") < pool.trace.index("commit")
+        assert pool.trace.index("commit") < pool.trace.index("readback")
+        assert pool.binding["prompt_digest"] == hashlib.sha256(prompt.encode()).digest()
+        assert pool.task_body == prompt
+        assert not runtime.delegation_writer.receiving_answers
+        committed = deepcopy(pool.binding)
+        pool.unknown = True
+        with pytest.raises(PolicyUnavailableError, match="Committed native return task is unknown"):
+            await schedule_received_answer(admission(), write)
+        assert pool.binding == committed and pool.task_body == prompt  # No false rollback.
+        pool.unknown = False
+        assert await schedule_received_answer(admission(), write) == result
+        expired = admission()
+        expired.deadline = float("-inf")
+        with pytest.raises(PolicyUnavailableError, match="admitted lifetime differs"):
+            await schedule_received_answer(expired, write)
+        assert pool.binding == committed and pool.task_body == prompt
+        # Exercise the real wake handler and same-connection reconciliation.
+        # The admission boundary is planted here; this is software wiring,
+        # never online source or PostgreSQL authority evidence.
+        from butlers.core import delegation_source, delegation_wake
+
+        prior_writer = delegation_source._writers.get(pool)
+        pool.task_body = pool.binding = None
+
+        async def admitted(actual_pool, selected_ledger, selected_wake):
+            assert actual_pool is pool and selected_ledger == ledger
+            assert selected_wake == canonical["wake_key"]
+            return dict(canonical), admission()
+
+        async def no_early_read(*args, **kwargs):
+            raise AssertionError("full body read bypassed native reservation")
+
+        async def create(actual, name, cron, body, **kwargs):
+            assert actual is pool and actual.in_transaction
+            assert name == f"delegate-return-{ledger}" and body == prompt
+            pool.trace.append("business")
+            pool.task_body = body
+            return task
+
+        async def owning_event(actual, *args, **kwargs):
+            assert actual is pool and actual.in_transaction
+
+        try:
+            delegation_source.register_writer(pool, runtime.delegation_writer)
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(delegation_source, "receive_answer", admitted)
+                patch.setattr(delegation_wake, "get_delegation", no_early_read)
+                patch.setattr(delegation_wake, "schedule_create", create)
+                for name in (
+                    "advance_wake_callback_routed",
+                    "record_wake_task_created",
+                    "record_wake_attempt",
+                ):
+                    patch.setattr(delegation_wake, name, owning_event)
+                result = await delegation_wake.handle_delegate_wake(
+                    pool,
+                    ledger_id=ledger,
+                    wake_key=canonical["wake_key"],
+                    asking_butler="relationship",
+                )
+            assert result["status"] == "ok" and result["task_id"] == str(task)
+            assert pool.task_body == prompt
+            assert pool.binding["prompt_digest"] == hashlib.sha256(prompt.encode()).digest()
+            assert not runtime.delegation_writer.receiving_answers
+        finally:
+            delegation_source.clear_writer(pool, runtime.delegation_writer)
+            if prior_writer is not None:
+                delegation_source.register_writer(pool, prior_writer)
+    finally:
+        runtime.close()
+
+
+async def _assert_native_return_processing_values():
+    """Real scheduler/context entry, with planted software source and owning rows."""
+    import asyncio
+    import hashlib
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_answers import answer_bundle_digest
+    from butlers.chronicler.location_delegation_returns import answer_challenge
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_input_binding import _dispatchers, register_dispatch_runtime
+    from butlers.chronicler.location_memory_context import (
+        _context_writers,
+        begin_runtime_context,
+        bind_context_session,
+        capture_context_prompt,
+        end_runtime_context,
+        register_context_writer,
+        verify_context_session,
+    )
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_return_processing import (
+        _bundle,
+        current_scheduled_answer,
+        scheduled_answer_scope,
+    )
+    from butlers.core.delegation_ledger import compute_answer_digest, compute_wake_key
+    from butlers.core.delegation_source import clear_writer, register_writer
+
+    ledger, task, source_incarnation = uuid4(), uuid4(), uuid4()
+    canonical = dict(
+        id=ledger,
+        asking_butler="relationship",
+        target_butler="chronicler",
+        question="Synthetic admitted question",
+        answer="Synthetic admitted answer",
+        answering_butler="chronicler",
+        status="answered",
+        catalog_match_id=None,
+        catalog_score=None,
+        metadata={},
+    )
+    canonical["answer_digest"] = compute_answer_digest(canonical["answer"])
+    canonical["wake_key"] = compute_wake_key(ledger, canonical["answer_digest"])
+    source_digest = answer_bundle_digest(canonical)
+    prompt = "Synthetic immutable return prompt"
+    prompt_digest = hashlib.sha256(prompt.encode()).digest()
+    parents = [
+        dict(
+            declared_receiving=uuid4(),
+            receiving_generation=None,
+            answer_generation=uuid4(),
+            loan_id=uuid4(),
+            source_incarnation=source_incarnation,
+            bundle_digest=source_digest,
+            prompt_digest=prompt_digest,
+            scheduled_prompt=prompt,
+            exclusive_input=True,
+            parent_count=1,
+            source_name="chronicler",
+            ledger_id=ledger,
+            wake_key=canonical["wake_key"],
+            receiving_incarnation=None,
+        )
+        for _ in range(2)
+    ]
+    for row in parents:
+        row["receiving_generation"] = row["declared_receiving"]
+    assert _bundle(parents, prompt) == _bundle(list(reversed(parents)), prompt)
+    for field, changed in (("exclusive_input", False), ("parent_count", 2)):
+        altered = [parents[0], dict(parents[1], **{field: changed})]
+        assert _bundle(altered, prompt) != _bundle(parents, prompt)
+    for corrupt in (
+        [parents[0], dict(parents[1], receiving_generation=None)],
+        [parents[0], dict(parents[1], bundle_digest=None)],
+        [parents[0], dict(parents[1], scheduled_prompt=prompt + "changed")],
+        [parents[0], parents[0]],
+        [parents[0], dict(parents[1], parent_count=True)],
+        [parents[0], dict(parents[1], parent_count=-1)],
+    ):
+        with pytest.raises(PolicyUnavailableError):
+            _bundle(corrupt, prompt)
+
+    class Pool:
+        in_transaction = False
+        unknown = False
+        fenced = False
+        processing_started = False
+        end_failure = None
+        claims = {}
+        claim_parents = []
+        context = None
+        ended = {}
+        context_ended = {}
+        context_intent = None
+        answer_intent = None
+        answer_context = None
+        session = None
+        trace = []
+
+        def is_closing(self):
+            return False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.in_transaction = True
+            try:
+                yield
+            finally:
+                self.in_transaction = False
+                self.trace.append("commit")
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction
+            if "pg_advisory_xact_lock" in sql:
+                self.trace.append("policy")
+            elif "INSERT INTO location_runtime_context_ended" in sql:
+                self.context_ended[args[0]] = args[1]
+            elif "INSERT INTO location_received_answer_claims_ended" in sql:
+                if self.end_failure is not None:
+                    raise self.end_failure
+                self.ended[args[0]] = args[1]
+            elif "INSERT INTO location_received_answer_claim_parents" in sql:
+                self.claim_parents.append(
+                    dict(
+                        claim_generation=args[0],
+                        receiving_generation=args[1],
+                        bundle_digest=args[2],
+                    )
+                )
+            elif "INSERT INTO location_received_answer_claims" in sql:
+                self.trace.append("processing_claim")
+                self.claims[args[0]] = dict(
+                    zip(
+                        (
+                            "claim_generation",
+                            "task_id",
+                            "prompt_digest",
+                            "bundle_digest",
+                            "parent_count",
+                            "receiving_incarnation",
+                            "exclusive_input",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_runtime_context_intents" in sql:
+                self.context_intent = dict(input_generation=args[0], receiving_session=args[1])
+                self.trace.append("context_intent")
+            elif "INSERT INTO location_runtime_context_answer_intents" in sql:
+                self.answer_intent = dict(input_generation=args[0], claim_generation=args[1])
+            elif "INSERT INTO location_runtime_context_bindings" in sql:
+                self.context = dict(
+                    zip(
+                        (
+                            "input_generation",
+                            "receiving_session",
+                            "bundle_digest",
+                            "context_digest",
+                            "system_digest",
+                            "prompt_digest",
+                            "exclusive_input",
+                            "context_bytes",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_answer_contexts" in sql:
+                self.answer_context = dict(
+                    zip(
+                        (
+                            "input_generation",
+                            "claim_generation",
+                            "receiving_session",
+                            "bundle_digest",
+                            "claim_bundle_digest",
+                        ),
+                        args,
+                    )
+                )
+            else:
+                raise AssertionError("unexpected owning return write")
+
+        async def fetch(self, sql, *args):
+            if "FROM location_received_answer_schedules" in sql:
+                assert self.in_transaction and args == (task,)
+                return parents
+            assert "FROM location_received_answer_claim_parents" in sql
+            assert not self.in_transaction
+            return [p for p in self.claim_parents if p["claim_generation"] == args[0]]
+
+        async def fetchrow(self, sql, *args):
+            if "FROM public.delegation_ledger" in sql:
+                return canonical
+            if "FROM location_received_answer_attempts" in sql:
+                assert self.in_transaction
+                return next(
+                    dict(
+                        ledger_id=ledger,
+                        source_name=r["source_name"],
+                        wake_key=r["wake_key"],
+                        receiving_incarnation=r["receiving_incarnation"],
+                    )
+                    for r in parents
+                    if r["receiving_generation"] == args[0]
+                )
+            if "FROM location_received_answer_inputs i" in sql:
+                assert self.in_transaction
+                return dict(prompt=prompt, prompt_digest=prompt_digest)
+            if "FROM location_received_answer_claims" in sql:
+                self.trace.append("claim_readback")
+                return None if self.unknown else self.claims.get(args[0])
+            if "FROM location_runtime_context_bindings" in sql:
+                return self.context
+            if "FROM sessions" in sql:
+                return self.session
+            raise AssertionError("unexpected owning return row")
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "relationship"
+            if sql == "SELECT current_user":
+                return "fixed_role"
+            if "FROM location_received_answer_floors" in sql:
+                return self.fenced
+            if "FROM location_runtime_context_ended" in sql:
+                return self.context_ended.get(args[0])
+            if "FROM location_received_answer_claims_ended" in sql:
+                return self.ended.get(args[0])
+            if "FROM location_runtime_context_intents" in sql:
+                return self.context_intent["receiving_session"]
+            if "FROM location_runtime_context_answer_intents" in sql:
+                return self.answer_intent["claim_generation"]
+            if "FROM location_runtime_context_bindings" in sql:
+                return self.context is not None and self.context["receiving_session"] == args[1]
+            if "FROM location_received_answer_contexts" in sql:
+                return (
+                    self.answer_context is not None
+                    and self.answer_context["claim_generation"] == args[0 if len(args) == 1 else 1]
+                )
+            raise AssertionError("unexpected owning return lookup")
+
+    class Registry:
+        async def call_tool(self, name, args):
+            assert name == "list_butlers" and args == {}
+            return SimpleNamespace(
+                data=[
+                    dict(
+                        name="chronicler",
+                        eligibility_state="active",
+                        endpoint_url="http://synthetic.example.test:41103/sse",
+                    )
+                ]
+            )
+
+    pool = Pool()
+    runtime = NativeDelegationRuntime(
+        domain=pool,
+        name="relationship",
+        registry=Registry(),
+        identity=("relationship", "fixed_role"),
+    )
+    for row in parents:
+        row["receiving_incarnation"] = runtime.incarnation
+    spawner = SimpleNamespace(_pool=pool)
+    register_dispatch_runtime(spawner, object)
+    register_context_writer(runtime)
+    register_writer(pool, runtime.delegation_writer)
+
+    async def exchange(endpoint, token, body):
+        assert endpoint == "http://synthetic.example.test:41103/internal/location-retention/catalog"
+        selected = next(r for r in parents if str(r["loan_id"]) == body["loan_id"])
+        observed = await answer_challenge(
+            runtime.delegation_writer,
+            token,
+            dict(
+                op="answer_challenge",
+                ledger_id=str(ledger),
+                source="chronicler",
+                wake_key=canonical["wake_key"],
+            ),
+        )
+        assert observed["receiving_generation"] == str(selected["receiving_generation"])
+        return dict(
+            loan_id=str(selected["loan_id"]),
+            answer_generation=str(selected["answer_generation"]),
+            bundle_digest=source_digest.hex(),
+            source_incarnation=str(source_incarnation),
+            parent_count=1,
+            exclusive_input=selected["exclusive_input"],
+        )
+
+    runtime.exchange = exchange
+    try:
+        for field in ("fenced", "unknown"):
+            setattr(pool, field, True)
+            with pytest.raises(PolicyUnavailableError):
+                async with scheduled_answer_scope(pool, task, prompt):
+                    pool.processing_started = True
+            assert not pool.processing_started and current_scheduled_answer(pool) is None
+            setattr(pool, field, False)
+        pool.trace.clear()
+        async with scheduled_answer_scope(pool, task, prompt):
+            selected = current_scheduled_answer(pool)
+            assert selected is not None and selected.exclusive
+            assert pool.trace.index("processing_claim") < pool.trace.index("claim_readback")
+            context = await begin_runtime_context(pool, spawner)
+            try:
+                actual = context[0]
+                pool.session = dict(prompt=prompt, effective_system_prompt="synthetic fixed system")
+                capture_context_prompt(None, pool.session["effective_system_prompt"])
+                async with pool.transaction():
+                    await bind_context_session(pool, pool, actual.session, prompt)
+                await verify_context_session(pool, actual.session)
+                assert pool.context["exclusive_input"] is True
+                assert pool.answer_context["claim_bundle_digest"] == selected.bundle_digest
+                assert pool.answer_intent["claim_generation"] == selected.generation
+                assert pool.trace.index("claim_readback") < pool.trace.index("context_intent")
+            finally:
+                await end_runtime_context(context)
+        assert current_scheduled_answer(pool) is None
+        assert selected.generation in pool.ended
+        parents[1]["exclusive_input"] = False
+        async with scheduled_answer_scope(pool, task, prompt):
+            assert not current_scheduled_answer(pool).exclusive
+            context = await begin_runtime_context(pool, spawner)
+            try:
+                capture_context_prompt(None, "synthetic fixed system")
+                async with pool.transaction():
+                    await bind_context_session(pool, pool, context[0].session, prompt)
+                await verify_context_session(pool, context[0].session)
+                assert pool.context["exclusive_input"] is False
+            finally:
+                await end_runtime_context(context)
+        assert current_scheduled_answer(pool) is None
+        pool.end_failure = RuntimeError("synthetic secondary receipt failure")
+        with pytest.raises(ValueError, match="synthetic primary failure"):
+            async with scheduled_answer_scope(pool, task, prompt):
+                raise ValueError("synthetic primary failure")
+        assert current_scheduled_answer(pool) is None
+        pool.end_failure = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            async with scheduled_answer_scope(pool, task, prompt):
+                raise ValueError("synthetic primary failure")
+        assert current_scheduled_answer(pool) is None
+        pool.end_failure = None
+    finally:
+        clear_writer(pool, runtime.delegation_writer)
+        _dispatchers.pop(pool, None)
+        _context_writers.pop(pool, None)
         runtime.close()

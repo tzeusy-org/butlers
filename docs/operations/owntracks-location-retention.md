@@ -704,3 +704,40 @@ requires refusal plus independent unchanged row, transition count and original
 body readbacks. The production prepared-output fence is unchanged. This is a
 positioned fixture correction; genuine current migrated execution remains
 required, and neither delivery nor all-holder closure follows from it.
+
+
+The answer/return continuation freezes `native_answer.v1` on the actual first-answer
+connection. It binds the full original ledger/question frame, sender/target/answering
+butlers, answer digest and immutable wake key, independently of mutable wake ACKs.
+Historical NULL bundles remain unknown. Constructor-owned `answer_challenge`,
+`answer_source` and `answer_delivery` metadata operations reuse the existing fixed
+registered control plane; they neither accept caller endpoints nor deliver copied
+answer bodies over a private side channel. The actual wake handler first commits and
+reads back its own attempt, verifies the source's immutable loan/current body, then
+reserves its exact receiving input before consuming the shared canonical ledger body.
+The actual task and full-prompt binding commit together on the owning connection.
+A footer match cannot replace full-prompt equality; unknown separate readback cannot
+return a successful task witness.
+
+Return scheduling captures every stored receiving binding, including multiple
+bindings for one deterministic task. The owning scheduler checks each source loan,
+freezes the complete parent set/count/classification/body/incarnation bundle, and
+separately reads it back before the actual runtime composes a prompt. The original
+pre-context claim and full composed context carry every returned parent into later
+native question/answer and Memory artifact births. Mixed returned input keeps the
+whole context nonexclusive. Processing-end and context-end receipts settle only
+those exact producer lifetimes. Current software controls exercise the real wake
+handler and scheduler/context entries with explicitly planted admission/owning
+rows, including full-body substitution, missing cohort, mixed parent, unknown ACK,
+secondary receipt failure and fresh cancellation. These are not online registered
+source enrollment or genuine SQL witnesses.
+
+This increment does not yet implement the terminal answer/return floor publisher,
+source-to-receiver reconciliation, core-only return context reduction or lawful
+mixed descendant disposal. Server, original tool/session, scheduled task and all
+further native/Memory/catalog descendants remain separate required holders; the
+existing raw-source frontier remains blocked when their receipts are absent.
+The new schema, actual registered route/deployment and independent process controls
+remain unproven until exact-head hosted/online evidence reaches them. Every original
+outcome and P5 obligation remains mandatory; source implementation and these scoped
+controls do not authorize live purge, native archive, protected delivery or closure.

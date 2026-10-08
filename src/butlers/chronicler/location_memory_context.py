@@ -64,16 +64,24 @@ async def begin_runtime_context(pool: Any, spawner: Any):
     if not registered_dispatcher(pool, spawner):
         raise PolicyUnavailableError("Native context constructor differs")
     from butlers.chronicler.location_delegation_processing import current_scheduled_question
+    from butlers.chronicler.location_return_processing import current_scheduled_answer
 
     scheduled = current_scheduled_question(pool)
+    returned = current_scheduled_answer(pool)
+    if scheduled is not None and returned is not None:
+        raise PolicyUnavailableError("Native scheduled input species differs")
     dispatch = _current_dispatch_input.get()
     session = dispatch.session_id if dispatch is not None and dispatch.active else uuid4()
     binding = _RuntimeContext(
         runtime,
         uuid4(),
         session,
-        (dispatch is not None and dispatch.active) or (scheduled is not None),
+        (dispatch is not None and dispatch.active)
+        or (scheduled is not None)
+        or (returned is not None),
     )
+    if returned is not None and not returned.exclusive:
+        binding.known_context = False
     if scheduled is not None and not scheduled.exclusive:
         binding.known_context = False
     from butlers.chronicler.location_catalog_copies import _server_copy_scope
@@ -99,6 +107,13 @@ async def begin_runtime_context(pool: Any, spawner: Any):
                     binding.generation,
                     scheduled.generation,
                 )
+            if returned is not None:
+                await conn.execute(
+                    "INSERT INTO location_runtime_context_answer_intents "
+                    "(input_generation,claim_generation) VALUES($1,$2)",
+                    binding.generation,
+                    returned.generation,
+                )
     if (
         await pool.fetchval(
             "SELECT receiving_session FROM location_runtime_context_intents "
@@ -118,6 +133,16 @@ async def begin_runtime_context(pool: Any, spawner: Any):
         != scheduled.generation
     ):
         raise PolicyUnavailableError("Committed question pre-context reservation is unknown")
+    if (
+        returned is not None
+        and await pool.fetchval(
+            "SELECT claim_generation FROM location_runtime_context_answer_intents "
+            "WHERE input_generation=$1",
+            binding.generation,
+        )
+        != returned.generation
+    ):
+        raise PolicyUnavailableError("Committed answer pre-context reservation is unknown")
     return binding, _current_runtime_context.set(binding)
 
 
@@ -201,6 +226,9 @@ async def bind_context_session(conn: Any, pool: Any, session: UUID, prompt: str)
     from butlers.chronicler.location_delegation_processing import bind_question_context
 
     await bind_question_context(conn, binding, prompt)
+    from butlers.chronicler.location_return_processing import bind_answer_context
+
+    await bind_answer_context(conn, binding, prompt)
     binding.admitted = True
 
 
@@ -235,6 +263,22 @@ async def verify_context_session(pool: Any, session: UUID) -> None:
         session,
     ):
         raise PolicyUnavailableError("Committed native question context is unknown")
+
+    from butlers.chronicler.location_return_processing import current_scheduled_answer
+
+    returned = current_scheduled_answer(pool)
+    if returned is not None and not await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_received_answer_contexts a "
+        "JOIN location_runtime_context_bindings b "
+        "USING(input_generation,receiving_session,bundle_digest) "
+        "WHERE a.input_generation=$1 AND a.claim_generation=$2 AND a.receiving_session=$3 "
+        "AND a.claim_bundle_digest=$4)",
+        binding.generation,
+        returned.generation,
+        session,
+        returned.bundle_digest,
+    ):
+        raise PolicyUnavailableError("Committed native answer context is unknown")
 
 
 async def end_runtime_context(handle: Any) -> None:
@@ -1035,6 +1079,8 @@ async def context_artifact_scope(pool: Any, conn: Any) -> _ArtifactWriter | None
         "OR (l.holder_id=b.receiving_session AND l.holder_kind='runtime_session')) "
         f"OR EXISTS(SELECT 1 FROM {schema}.location_received_delegation_contexts q "
         "WHERE q.input_generation=b.input_generation AND q.receiving_session=b.receiving_session) "
+        f"OR EXISTS(SELECT 1 FROM {schema}.location_received_answer_contexts a "
+        "WHERE a.input_generation=b.input_generation AND a.receiving_session=b.receiving_session) "
         + (
             "OR EXISTS(SELECT 1 FROM chronicler.location_native_copy_births n "
             "WHERE n.receiving_session=b.receiving_session)"

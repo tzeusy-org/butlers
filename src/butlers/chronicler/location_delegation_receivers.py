@@ -157,7 +157,15 @@ async def _load_source_question(writer: Any, conn: Any, ledger: UUID, receiver: 
     ):
         raise PolicyUnavailableError("Native question source is disposed")
     for parent in parents:
-        if parent["parent_kind"] == "catalog_loan":
+        if parent["parent_kind"] == "received_answer":
+            refused = await conn.fetchval(
+                "SELECT NOT EXISTS(SELECT 1 FROM location_received_answer_inputs "
+                "WHERE receiving_generation=$1 AND bundle_digest=$2) OR EXISTS("
+                "SELECT 1 FROM location_received_answer_floors WHERE receiving_generation=$1)",
+                parent["parent_generation"],
+                parent["parent_digest"],
+            )
+        elif parent["parent_kind"] == "catalog_loan":
             refused = await conn.fetchval(
                 "SELECT NOT EXISTS(SELECT 1 FROM location_catalog_copy_loans "
                 "WHERE loan_id=$1 AND body_digest=$2) OR EXISTS("
