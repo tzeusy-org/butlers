@@ -21,13 +21,26 @@ on:
         description: Prove the three sealed offline recipes without publishing or running the launcher
         type: boolean
         default: false
+      affected-calibration:
+        description: Measure actual affected scope without installing a profile
+        type: boolean
+        default: false
+      calibration-coverage:
+        description: Exact measurement instrumentation policy, 0 disabled or 1 enabled
+        type: choice
+        options: ["0", "1"]
+        default: "1"
+      calibration-test-paths:
+        description: Public existing test paths; cost/corpus authority is not supplied by this input
+        type: string
+        default: '["tests/testing/test_scoped_runner.py", "tests/testing/test_source_test_map.py", "tests/scripts/test_ci_test_plan.py"]'
 
 permissions:
   contents: read
 
 jobs:
   migration-chain-head:
-    if: github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'])
+    if: github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'] && !inputs['affected-calibration'])
     timeout-minutes: 14
     name: Migration chain head
     runs-on: ubuntu-latest
@@ -78,6 +91,20 @@ jobs:
         run: |
           if [ "${OTHER_BUILD_MODE}" = "true" ]; then
             echo "::error::manual build proof modes are mutually exclusive"
+            exit 2
+          fi
+      - name: Reject conflicting manual proof modes
+        env:
+          IMAGE_MODE: ${{ inputs['image-size-diagnostic'] }}
+          OFFLINE_MODE: ${{ inputs['offline-route-a-build-proof'] }}
+          CALIBRATION_MODE: ${{ inputs['affected-calibration'] }}
+        run: |
+          enabled=0
+          for mode in "$IMAGE_MODE" "$OFFLINE_MODE" "$CALIBRATION_MODE"; do
+            if [ "$mode" = "true" ]; then enabled=$((enabled + 1)); fi
+          done
+          if [ "$enabled" -ne 1 ]; then
+            echo "::error::manual proof modes are mutually exclusive"
             exit 2
           fi
       - uses: actions/checkout@v6
@@ -142,6 +169,20 @@ jobs:
             echo "::error::manual build proof modes are mutually exclusive"
             exit 2
           fi
+      - name: Reject conflicting manual proof modes
+        env:
+          IMAGE_MODE: ${{ inputs['image-size-diagnostic'] }}
+          OFFLINE_MODE: ${{ inputs['offline-route-a-build-proof'] }}
+          CALIBRATION_MODE: ${{ inputs['affected-calibration'] }}
+        run: |
+          enabled=0
+          for mode in "$IMAGE_MODE" "$OFFLINE_MODE" "$CALIBRATION_MODE"; do
+            if [ "$mode" = "true" ]; then enabled=$((enabled + 1)); fi
+          done
+          if [ "$enabled" -ne 1 ]; then
+            echo "::error::manual proof modes are mutually exclusive"
+            exit 2
+          fi
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -181,4 +222,80 @@ jobs:
           path: ${{ runner.temp }}/ci-image-diagnostic/image-size-receipt.json
           if-no-files-found: error
           retention-days: 14
+          overwrite: true
+
+  affected-calibration:
+    timeout-minutes: 37
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12.15"
+      CI_COST_RUNNER_LABEL: "ubuntu-latest"
+      CI_COST_EXPECTED_WORKERS: "3"
+      CI_COVERAGE: ${{ inputs['calibration-coverage'] }}
+    if: github.event_name == 'workflow_dispatch' && inputs['affected-calibration']
+    steps:
+      - name: Reject conflicting manual proof modes
+        env:
+          IMAGE_MODE: ${{ inputs['image-size-diagnostic'] }}
+          OFFLINE_MODE: ${{ inputs['offline-route-a-build-proof'] }}
+          CALIBRATION_MODE: ${{ inputs['affected-calibration'] }}
+        run: |
+          enabled=0
+          for mode in "$IMAGE_MODE" "$OFFLINE_MODE" "$CALIBRATION_MODE"; do
+            if [ "$mode" = "true" ]; then enabled=$((enabled + 1)); fi
+          done
+          if [ "$enabled" -ne 1 ]; then
+            echo "::error::manual proof modes are mutually exclusive"
+            exit 2
+          fi
+      - uses: actions/checkout@v6
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        timeout-minutes: 2
+        with:
+          python-version: "3.12.15"
+      - name: Install uv
+        timeout-minutes: 11
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 5); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then exit 1; fi
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Prepare ordinary frozen own-source environment
+        timeout-minutes: 11
+        run: python3 scripts/ci_environment.py prepare
+      - name: Measure actual affected command
+        timeout-minutes: 6
+        env:
+          TEST_PATHS_JSON: ${{ inputs['calibration-test-paths'] }}
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/scope-calibration
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: uv run --no-sync python scripts/ci_affected_measurement.py
+      - name: Sanitize ordinary test evidence
+        timeout-minutes: 2
+        if: always()
+        run: |
+          python3 scripts/summarize_junit_durations.py \
+            --input "${RUNNER_TEMP}/scope-calibration/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/scope-calibration/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/scope-calibration/top-durations.txt" --limit 25
+      - uses: actions/upload-artifact@v4
+        timeout-minutes: 2
+        if: always()
+        with:
+          name: affected-scope-calibration
+          path: |
+            ${{ runner.temp }}/scope-calibration/affected-observation.json
+            ${{ runner.temp }}/scope-calibration/junit.xml
+            ${{ runner.temp }}/scope-calibration/top-durations.txt
+          retention-days: 14
+          if-no-files-found: error
           overwrite: true

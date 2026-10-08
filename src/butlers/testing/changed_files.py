@@ -21,6 +21,7 @@ class ChangedFiles:
     base_ref: str = ""
     head_ref: str = ""
     sources: tuple[str, ...] = ()
+    ignored_residue: tuple[str, ...] = ()
 
 
 def _run_git(
@@ -43,10 +44,10 @@ def _run_git(
         text=False,
         cwd=repo_dir,
         check=False,
+        timeout=10,
     )
     if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"git {purpose} failed (exit {result.returncode}): {stderr}")
+        raise RuntimeError(f"git {purpose} unavailable (exit {result.returncode})")
     return [
         path.decode("utf-8", errors="surrogateescape")
         for path in result.stdout.split(b"\0")
@@ -126,8 +127,16 @@ def get_worktree_changed_files(
 
     files: set[str] = set()
     sources: list[str] = []
+    ignored: set[str] = set()
     for source, args, purpose in queries:
         result = _run_git(args, repo_dir=repo_dir, purpose=purpose)
+        if source == "untracked":
+            ignored.update(set(result) & {".beads.gate.lock", ".claude/settings.local.json"})
+            result = [
+                path
+                for path in result
+                if path not in {".beads.gate.lock", ".claude/settings.local.json"}
+            ]
         if result:
             files.update(result)
             sources.append(source)
@@ -137,4 +146,5 @@ def get_worktree_changed_files(
         base_ref=base,
         head_ref="HEAD",
         sources=tuple(sources),
+        ignored_residue=tuple(sorted(ignored)),
     )

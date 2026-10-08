@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -19,6 +21,11 @@ def _configured_testpaths() -> list[str]:
 
 def test_full_scope_matches_pytest_testpaths() -> None:
     assert FULL_SUITE == _configured_testpaths()
+    # REQ-pr-test-planning-004: a static target is not a deleted-test owner.
+    from butlers.testing.source_test_map import _PREFIX_MAP
+
+    root = Path(__file__).resolve().parents[2]
+    assert all((root / target).exists() for _, targets in _PREFIX_MAP for target in targets)
 
 
 @pytest.mark.parametrize(
@@ -62,8 +69,20 @@ def test_shared_migration_and_unknown_paths_escalate(changed_file: str) -> None:
     assert resolve_test_paths([changed_file]) == FULL_SUITE
 
 
-def test_known_documentation_only_change_does_not_invent_pytest_scope() -> None:
-    assert resolve_test_paths(["docs/testing/testing-strategy.md"]) == []
+def test_known_documentation_only_change_does_not_invent_pytest_scope(tmp_path: Path) -> None:
+    # An audited empty reader family is NONE; a repository with actual dynamic
+    # readers may not borrow that result merely because its input says docs.
+    from butlers.testing.resource_readers import DECLARATIONS, REGISTRY, discover
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests", "roster"]\n'
+    )
+    declarations = {"schema": "test-resource-declarations.v1", "dynamic": {}}
+    (tmp_path / DECLARATIONS).write_text(json.dumps(declarations))
+    (tmp_path / REGISTRY).write_text(json.dumps(discover(tmp_path, declarations)))
+    assert resolve_test_paths(["docs/testing/testing-strategy.md"], repo_dir=tmp_path) == []
 
 
 def test_fixture_asset_without_a_test_bearing_owner_escalates() -> None:

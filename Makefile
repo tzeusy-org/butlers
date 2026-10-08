@@ -227,7 +227,7 @@ check-duplicate-names:
 # PATH; everything else is a plain python3 script. The frontend-copy inventory
 # check regenerates the committed file and fails on any diff, exactly as CI
 # does, so run it on a clean worktree or expect the diff to be yours.
-check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links
+check-guards: check-resource-readers check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py
@@ -278,3 +278,7 @@ bump-version:
 # This triggers the release workflow in CI.
 release-tag:
 	@python scripts/release_tag.py
+
+.PHONY: check-resource-readers
+check-resource-readers:
+	uv run --no-sync python scripts/build_test_resource_map.py --check
