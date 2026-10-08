@@ -21,7 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from ci_partition import file_path, reconcile  # noqa: E402
 
-from butlers.testing.scope_cost import environment  # noqa: E402
+from butlers.testing.scope_cost import (  # noqa: E402
+    environment,
+    measurement_species,
+    runner_class,
+    whole_file_cost,
+)
 
 
 def number(value: object) -> float:
@@ -38,6 +43,55 @@ def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
     )
     runs, samples, setup, files, tracers = [], [], [], {}, set()
     observed_environment = None
+    classification = None
+    hardware_ledger: dict[str, list[dict]] = {}
+
+    def observe(receipt: dict, identity: dict, label: str) -> dict:
+        nonlocal classification
+        observed = receipt["cost_environment"]
+        actual_class = runner_class(observed)
+        if observed["configuration"] != environment(root)["configuration"] or (
+            classification is not None and actual_class != classification
+        ):
+            raise ValueError("heavy runtime/configuration incompatible")
+        if (
+            receipt.get("cost_context")
+            != hashlib.sha256(json.dumps(observed, sort_keys=True).encode()).hexdigest()
+        ):
+            raise ValueError("cost context incompatible")
+        species = measurement_species(receipt)
+        tracers.add(species)
+        classification = actual_class
+        model = observed["runtime"]["cpu_model_digest"]
+        row = {
+            "environment": observed,
+            "run": str(identity["run"]),
+            "attempt": str(identity["attempt"]),
+            "source": identity["head"],
+            "job": label,
+            "workers": len(receipt["effective_workers"]),
+            "instrumentation": species,
+        }
+        if (
+            not row["run"].isdecimal()
+            or not row["attempt"].isdecimal()
+            or not re.fullmatch(r"[0-9a-f]{40}", row["source"])
+        ):
+            raise ValueError("cost source/run/attempt incompatible")
+        hardware_ledger.setdefault(model, []).append(row)
+        return row
+
+    def measured_file(name: str, seconds: object, measurement: dict) -> None:
+        actual_sha = hashlib.sha256((root / name).read_bytes()).hexdigest()
+        sample = {
+            "seconds": number(seconds),
+            "model": measurement["environment"]["runtime"]["cpu_model_digest"],
+            "measurement": measurement,
+        }
+        row = files.setdefault(name, {"sha256": actual_sha, "seconds": 0.0, "observations": []})
+        row["observations"].append(sample)
+        row["seconds"] = whole_file_cost(row["observations"])
+
     for bundle in bundles:
         run = bundle["run"]
         if not isinstance(run, str) or not run.isdecimal() or run in runs:
@@ -53,14 +107,12 @@ def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
             not isinstance(paired, dict)
             or paired.get("configuration") != environment(root)["configuration"]
             or not isinstance(paired.get("runtime"), dict)
-            or set(paired["runtime"]) != set(environment(root)["runtime"])
             or affected.get("cost_context")
             != hashlib.sha256(json.dumps(paired, sort_keys=True).encode()).hexdigest()
         ):
             raise ValueError("cost context incompatible")
-        if observed_environment is not None and paired != observed_environment:
-            raise ValueError("cost runtime incompatible")
-        observed_environment = paired
+        if observed_environment is None:
+            observed_environment = paired
         if (
             affected.get("run") != bundle["affected_run"]
             or not str(bundle["affected_run"]).isdecimal()
@@ -145,25 +197,39 @@ def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
         # actual job setup plus pytest startup/finalization, not elapsed minus
         # parallel serial work (which could otherwise fabricate zero overhead).
         setup.append((job - step) + first + (step - last))
-        tracers.update(affected["actual_tracers"])
+        measurement = observe(
+            affected,
+            {
+                "run": affected["run"],
+                "attempt": affected["attempt"],
+                "head": affected_source,
+            },
+            "affected",
+        )
+        phase_files: dict[str, list[float]] = {}
+        for node, phases in affected["nodes"].items():
+            phase_files.setdefault(affected["node_files"][node], []).extend(
+                number(phase["duration_s"]) for phase in phases.values()
+            )
+        durations = {name: math.fsum(values) for name, values in phase_files.items()}
+        if affected.get("file_durations_s") != durations:
+            raise ValueError("affected file phase costs incompatible")
+        for name, seconds in durations.items():
+            measured_file(name, seconds, measurement)
         clocks = bundle["heavy_job_seconds"]
         if set(clocks) != set(bundle["receipts"]):
             raise ValueError("heavy job clocks incomplete")
         samples.append(max(number(v) for v in clocks.values()))
-        for receipt in bundle["receipts"].values():
+        for label, receipt in bundle["receipts"].items():
             identity = receipt["inventory_identity"]
-            if (
-                receipt.get("cost_environment") != paired
-                or receipt.get("cost_context") != affected["cost_context"]
-                or identity.get("python") != paired["runtime"]["python"]
-            ):
+            if identity.get("python") != receipt["cost_environment"]["runtime"]["python"]:
                 raise ValueError("heavy runtime/configuration incompatible")
             if str(identity["run"]) != run:
                 raise ValueError("heavy run incompatible")
             command = receipt["command"]
             if "-n" not in command or command[command.index("-n") + 1] != "auto":
                 raise ValueError("heavy worker policy incompatible")
-            tracers.update(receipt["actual_tracers"])
+            measurement = observe(receipt, identity, label)
             for name, seconds in receipt["file_durations_s"].items():
                 raw = subprocess.check_output(
                     ["git", "show", f"{identity['head']}:{name}"],
@@ -174,22 +240,20 @@ def build(bundles: list[dict], *, root: Path = ROOT) -> dict:
                 actual_sha = hashlib.sha256((root / name).read_bytes()).hexdigest()
                 if hashlib.sha256(raw).hexdigest() != actual_sha:
                     raise ValueError("heavy file bodies incompatible")
-                row = {
-                    "sha256": actual_sha,
-                    "seconds": number(seconds),
-                }
-                if name in files:
-                    row["seconds"] = max(row["seconds"], files[name]["seconds"])
-                files[name] = row
+                measured_file(name, seconds, measurement)
         runs.append(run)
-    if len(tracers) != 1 or not tracers <= {"CTracer", "SysMonitor"} or not files:
+    if len(tracers) != 1 or not tracers <= {"CTracer", "SysMonitor", "untraced"} or not files:
         raise ValueError("cost tracer/files incompatible")
     return {
-        "schema": "test-scope-cost.v1",
-        "context": hashlib.sha256(
-            json.dumps(observed_environment, sort_keys=True).encode()
-        ).hexdigest(),
+        "schema": "test-scope-cost.v2",
+        "context": hashlib.sha256(json.dumps(classification, sort_keys=True).encode()).hexdigest(),
         "environment": observed_environment,
+        "runner_class": classification,
+        "hardware_ledger": hardware_ledger,
+        "hardware_qualification": (
+            "finite empirical max over recorded known models; CPUs are not identical"
+        ),
+        "builder_environment": environment(root),
         "source_head": source,
         "reference": {
             "sample_count": len(runs),

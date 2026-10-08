@@ -90,3 +90,22 @@ Every species executes behavior or reads real produced output. No prose-mirror a
 SOURCE ladder: exact affected nodes `-n0` then complete `tests/testing/`, `tests/scripts/test_ci_test_plan.py`, actual declared contract/config/API/roster readers. Screen every scope for calls into real DB/container setup before local execution; use explicit DB-free lists. Dirty `make test-plan BASE=origin/main` records advice. For tooling/fixture topology run actual `uv run --no-sync pytest tests/ roster/ --collect-only -q -n0` with real own nonlinked venv/source import. Measure exact counts/delta, `make check-ci-test-shards`, budget and every `make check-guards` step; scoped Ruff includes changed roster/files, official native strict authoring/citations/overwrite plus baseline readback. No broad local default lane. Matching exact-head normal CI is supplementary and one protected merge_group executes every actual lane, preflight, guards, required frontend and advisory e2e as configured; after .6 actual adoption includes eleven backend carriers and opaque population equality. No .7 adoption of held runtime or assignment work.
 
 Current wrapper names are source-confirmed: `test_decide_mode_keeps_a_clean_scoped_plan_scoped`, `test_decide_mode_fails_closed_to_full_on_escalation_or_empty_plan`, `test_main_writes_full_mode_with_empty_test_paths_on_escalation`, and `test_scoped_roster_only_run_collects_roster_tests_that_import_tests`. A guessed selector is never a receipt.
+
+
+## P5 measurement-species followup (candidate only)
+
+Current ordinary PR full measurements have coverage disabled and distinct
+observed hosted CPU model digests. Explicit coverage policy and consistent
+actual worker diagnostics admit the genuine untraced species; omitted or
+unknown diagnostics never do. The v2 observed hosted class keys to complete
+source/configuration, ubuntu-latest policy, Python, CPU-count/affinity and actual
+workers/instrumentation. Every job/file retains its model and run/attempt/source
+in a separate ledger. Maximum observed serial phase costs plus actual affected
+setup/finalization form a finite empirical envelope, not a claim of identical
+CPUs or a guarantee for arbitrary hardware. Unknown model/policy/species/body
+remains FULL. Existing strict traced v1 comparison is preserved. No profile is
+installed here; current source/config changes require a fresh root-authenticated
+complete full/affected pair and review before adoption. The prior9e authentic
+reference is diagnostic only, with no restamping. All original seven outcomes,
+145 vectors, >=57 actualSCOPED, three actualmanifestSCOPED and natural cohorts
+remain mandatory. Explicitly no wall-clock gain is claimed.

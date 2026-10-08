@@ -644,13 +644,29 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     )
     for key in ("GITHUB_SHA", "GITHUB_REPOSITORY", "GITHUB_WORKFLOW", "GITHUB_EVENT_NAME"):
         monkeypatch.delenv(key, raising=False)
+    # Actual local pytest children, with a simulated hosted policy label only
+    # for software admission conformance; never authenticated hosted evidence.
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setenv("CI_COST_RUNNER_LABEL", "ubuntu-latest")
+    monkeypatch.setenv("ImageOS", "ubuntu24")
+    monkeypatch.setenv("ImageVersion", "20261001.1.0")
+    monkeypatch.setenv("CI_COST_EXPECTED_WORKERS", "1")
+    monkeypatch.setenv("CI_COVERAGE", "1")
+    monkeypatch.setenv("CI_COVERAGE_CORE", "ctrace")
     monkeypatch.setenv("GITHUB_RUN_ID", "41")
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
     inventory = partition.collect_inventory(root=mini)
     assignment = partition.partition(inventory, {}, root=mini)
     project = Path(__file__).resolve().parents[2]
 
-    def observed(label: str, files: list[str], metadata: dict, marker: str | None = None):
+    def observed(
+        label: str,
+        files: list[str],
+        metadata: dict,
+        marker: str | None = None,
+        *,
+        coverage: str = "1",
+    ):
         command = [
             sys.executable,
             "-m",
@@ -658,10 +674,11 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
             "-q",
             "-n",
             "auto",
-            "--cov=tests",
             "-p",
             "scripts.ci_shard_observer",
         ]
+        if coverage == "1":
+            command.append("--cov=tests")
         if marker is not None:
             command += ["-m", marker]
         command += ["--", *files]
@@ -670,6 +687,7 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
         env = {
             **os.environ,
             "PYTHONPATH": str(project),
+            "CI_COVERAGE": coverage,
             "CI_SHARD_STARTED": str(started),
             "CI_SHARD_RECEIPT": str(output),
             "CI_SHARD_CONTEXT": json.dumps({**metadata, "files": files, "command": command}),
@@ -679,7 +697,10 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
         receipt = json.loads(output.read_text())
         assert receipt["complete"] is True
         assert 0 < receipt["first_logical_test_s"] <= receipt["last_test_completed_s"]
-        assert receipt["actual_tracers"] == ["CTracer"]
+        if coverage == "1":
+            assert receipt["actual_tracers"] == ["CTracer"]
+        else:
+            assert receipt["actual_tracers"] == []
         return receipt, time.monotonic() - started
 
     receipts, clocks = {}, {}
@@ -726,6 +747,7 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
         "affected": affected,
         "affected_job_seconds": elapsed,
     }
+    (mini / "software-traced-bundle.json").write_text(json.dumps(bundle))
     candidate = build_test_scope_cost.build([bundle], root=mini)
     assert candidate["reference"]["sample_count"] == 1
     assert candidate["reference"]["affected_setup_seconds"] > 0
@@ -755,3 +777,171 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     del next(iter(missing_phase_clock["affected"]["nodes"].values()))["teardown"]["completed_s"]
     with pytest.raises(KeyError):
         build_test_scope_cost.build([missing_phase_clock], root=mini)
+
+    from butlers.testing.scope_cost import measurement_species
+
+    assert measurement_species(affected) == "CTracer"
+    untraced_receipts, untraced_clocks = {}, {}
+    for label, receipt in receipts.items():
+        untraced_receipts[label], untraced_clocks[label] = observed(
+            "untraced-" + label,
+            receipt["files"],
+            {
+                key: receipt[key]
+                for key in (
+                    "lane",
+                    "shard",
+                    "inventory_digest",
+                    "assignment_digest",
+                    "inventory_identity",
+                    "nonce",
+                )
+            },
+            partition.SELECTORS[receipt["lane"]],
+            coverage="0",
+        )
+    untraced_affected, untraced_elapsed = observed(
+        "untraced-affected",
+        files,
+        {
+            key: affected[key]
+            for key in (
+                "kind",
+                "run",
+                "attempt",
+                "nonce",
+                "source_head",
+                "worker_policy",
+                "file_hashes",
+            )
+        },
+        coverage="0",
+    )
+    untraced = {
+        **bundle,
+        "receipts": untraced_receipts,
+        "heavy_job_seconds": untraced_clocks,
+        "affected": untraced_affected,
+        "affected_job_seconds": untraced_elapsed,
+    }
+    # Retained in pytest's disposable miniature checkout for the separate old
+    # reader counterfactual; never an installable/host-authenticated profile.
+    (mini / "software-untraced-bundle.json").write_text(json.dumps(untraced))
+    candidate = build_test_scope_cost.build([untraced], root=mini)
+    assert candidate["reference"]["tracer"] == "untraced"
+    assert measurement_species(untraced_affected) == "untraced"
+    assert candidate["hardware_ledger"]
+    assert candidate["files"][files[0]]["observations"]
+    for name, row in candidate["files"].items():
+        serial_full = math.fsum(
+            receipt["file_durations_s"].get(name, 0.0) for receipt in untraced_receipts.values()
+        )
+        assert row["seconds"] >= serial_full
+
+    # These representation mutants are software controls, not observations of
+    # different real CPUs. Every actual job/file contribution remains explicit.
+    heterogeneous = copy.deepcopy(untraced)
+    changed_receipt = heterogeneous["receipts"]["unit-1"]
+    changed_receipt["cost_environment"]["runtime"]["cpu_model_digest"] = "a" * 64
+    changed_receipt["cost_context"] = hashlib.sha256(
+        json.dumps(changed_receipt["cost_environment"], sort_keys=True).encode()
+    ).hexdigest()
+    candidate = build_test_scope_cost.build([heterogeneous], root=mini)
+    assert "a" * 64 in candidate["hardware_ledger"]
+    assert candidate["hardware_ledger"]["a" * 64][0]["job"] == "unit-1"
+    assert candidate["builder_environment"]["runtime"]["coverage_policy"] == "1"
+    assert candidate["runner_class"]["runtime"]["coverage_policy"] == "0"
+    monkeypatch.setenv("CI_COVERAGE", "0")
+    # Planted magnitudes falsify partial-lane max accounting without claiming
+    # those synthetic numbers are observed timing. Both actual lane populations
+    # contributed to this same real miniature file.
+    from butlers.testing.scope_cost import whole_file_cost
+
+    mixed_name = next(name for name in candidate["files"] if name not in files)
+    planted = copy.deepcopy(candidate)
+    samples = planted["files"][mixed_name]["observations"]
+    assert len(samples) == 2
+    assert {sample["measurement"]["job"].split("-")[0] for sample in samples} == {
+        "unit",
+        "integration",
+    }
+    for sample in samples:
+        sample["seconds"] = 12.0
+    planted["files"][mixed_name]["seconds"] = whole_file_cost(samples)
+    planted["reference"]["affected_setup_seconds"] = 1.0
+    planted["reference"]["heavy_shard_seconds"] = [20.0]
+    _write(mini, PROFILE, json.dumps(planted))
+    assert predict(mini, [mixed_name])["reason"] == "COST_EXCEEDED"
+    old_partial_max = copy.deepcopy(planted)
+    old_partial_max["schema"] = "test-scope-cost.v1"
+    old_partial_max["context"] = context(mini)
+    old_partial_max["reference"]["tracer"] = "CTracer"
+    old_partial_max["files"][mixed_name]["seconds"] = 12.0
+    _write(mini, PROFILE, json.dumps(old_partial_max))
+    assert predict(mini, [mixed_name])["reason"] is None
+    overlapping = copy.deepcopy(planted)
+    overlapping["files"][mixed_name]["observations"].append(copy.deepcopy(samples[0]))
+    _write(mini, PROFILE, json.dumps(overlapping))
+    assert predict(mini, [mixed_name])["reason"] == "COST_UNKNOWN"
+    nonfinite = copy.deepcopy(planted)
+    for sample in nonfinite["files"][mixed_name]["observations"]:
+        sample["seconds"] = 1e308
+    _write(mini, PROFILE, json.dumps(nonfinite))
+    assert predict(mini, [mixed_name])["reason"] == "COST_UNKNOWN"
+    incomplete = copy.deepcopy(untraced)
+    del incomplete["receipts"]["integration-1"]
+    with pytest.raises(ValueError):
+        build_test_scope_cost.build([incomplete], root=mini)
+    _write(mini, PROFILE, json.dumps(candidate))
+    assert predict(mini, files)["prediction_state"] == "measured-compatible"
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "local")
+    assert predict(mini, files)["reason"] == "COST_UNKNOWN"
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    for policy, value in (
+        ("CI_COST_RUNNER_LABEL", "other"),
+        ("CI_COST_EXPECTED_WORKERS", "2"),
+        ("CI_COVERAGE", "1"),
+    ):
+        previous = os.environ[policy]
+        monkeypatch.setenv(policy, value)
+        assert predict(mini, files)["reason"] == "COST_UNKNOWN"
+        monkeypatch.setenv(policy, previous)
+    missing_model = copy.deepcopy(candidate)
+    del missing_model["hardware_ledger"][candidate["environment"]["runtime"]["cpu_model_digest"]]
+    (mini / PROFILE).write_text(json.dumps(missing_model))
+    assert predict(mini, files)["reason"] == "COST_UNKNOWN"
+    _write(mini, PROFILE, json.dumps(candidate))
+
+    for field in ("coverage_enabled", "collector_present", "tracer"):
+        missing = copy.deepcopy(untraced)
+        del missing["affected"]["worker_resources"]["gw0"][field]
+        with pytest.raises(ValueError, match="diagnostics"):
+            build_test_scope_cost.build([missing], root=mini)
+    for mutate in (
+        lambda b: b["affected"].pop("worker_diagnostics_consistent"),
+        lambda b: b["affected"]["worker_resources"].clear(),
+        lambda b: b["affected"]["worker_resources"]["gw0"].update(tracer="CTracer"),
+        lambda b: b["affected"]["worker_resources"]["gw0"].update(coverage_enabled=True),
+    ):
+        malformed = copy.deepcopy(untraced)
+        mutate(malformed)
+        with pytest.raises(ValueError, match="diagnostics|instrumentation|bodies"):
+            build_test_scope_cost.build([malformed], root=mini)
+    for field, value in (("cpu_affinity", 0), ("expected_workers", "2"), ("runner_label", None)):
+        malformed = copy.deepcopy(untraced)
+        malformed["affected"]["cost_environment"]["runtime"][field] = value
+        malformed["affected"]["cost_context"] = hashlib.sha256(
+            json.dumps(malformed["affected"]["cost_environment"], sort_keys=True).encode()
+        ).hexdigest()
+        with pytest.raises(ValueError, match="runtime/configuration|diagnostics"):
+            build_test_scope_cost.build([malformed], root=mini)
+    stale_attempt = copy.deepcopy(untraced)
+    stale_attempt["receipts"]["unit-1"]["inventory_identity"]["attempt"] = "99"
+    with pytest.raises(ValueError):
+        build_test_scope_cost.build([stale_attempt], root=mini)
+    mixed = copy.deepcopy(untraced)
+    mixed["receipts"]["unit-1"] = receipts["unit-1"]
+    with pytest.raises(ValueError, match="runtime/configuration"):
+        build_test_scope_cost.build([mixed], root=mini)
+    (mini / files[0]).write_text("def test_changed(): assert True\n")
+    assert predict(mini, files)["reason"] == "COST_UNKNOWN"

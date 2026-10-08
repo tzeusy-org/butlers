@@ -25,6 +25,11 @@ on:
         description: Measure actual affected scope without installing a profile
         type: boolean
         default: false
+      calibration-coverage:
+        description: Exact measurement instrumentation policy, 0 disabled or 1 enabled
+        type: choice
+        options: ["0", "1"]
+        default: "1"
       calibration-test-paths:
         description: Public existing test paths; cost/corpus authority is not supplied by this input
         type: string
@@ -216,6 +221,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: "3.12.15"
+      CI_COST_RUNNER_LABEL: "ubuntu-latest"
+      CI_COST_EXPECTED_WORKERS: "3"
+      CI_COVERAGE: ${{ inputs['calibration-coverage'] }}
     if: github.event_name == 'workflow_dispatch' && inputs['affected-calibration']
     steps:
       - name: Reject conflicting manual proof modes

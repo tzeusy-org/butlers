@@ -13,6 +13,11 @@ on:
 env:
   # Setup actions and uv/cache repair share the same full interpreter identity.
   UV_PYTHON: "3.12.15"
+  # Source-declared runner/measurement policy; actual per-job CPU models stay in receipts.
+  CI_COST_RUNNER_LABEL: "ubuntu-latest"
+  CI_COST_EXPECTED_WORKERS: "3"
+  # Route predicts the existing target policy without changing any job's coverage.
+  CI_COST_COVERAGE_POLICY: ${{ github.event_name == 'merge_group' && '1' || '0' }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

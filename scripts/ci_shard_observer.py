@@ -50,6 +50,7 @@ class Observer:
         self.workers: set[str] = set()
         self.resources: dict[str, dict] = {}
         self.tracers: set[str] = set()
+        self.worker_diagnostics_consistent = True
         self.phase_counts: Counter = Counter()
         self.context = json.loads(os.environ["CI_SHARD_CONTEXT"])
         self.nonce = self.context.get("nonce")
@@ -99,12 +100,23 @@ class Observer:
             "completed_s": offset,
         }
         self.workers.add(str(getattr(report, "worker_id", "controller")))
+        diagnostics = 0
         for name, value in report.user_properties:
             if name == "ci_runtime":
+                diagnostics += 1
                 runtime = json.loads(value)
-                self.resources[str(getattr(report, "worker_id", "controller"))] = runtime
+                worker = str(getattr(report, "worker_id", "controller"))
+                previous = self.resources.get(worker)
+                fields = ("tracer", "coverage_enabled", "collector_present")
+                if previous is not None and any(
+                    previous.get(key) != runtime.get(key) for key in fields
+                ):
+                    self.worker_diagnostics_consistent = False
+                self.resources[worker] = runtime
                 if runtime["tracer"] is not None:
                     self.tracers.add(runtime["tracer"])
+        if diagnostics != 1:
+            self.worker_diagnostics_consistent = False
         if report.when == "call" or (report.when == "setup" and not report.passed):
             if self.first_result is None:
                 self.first_result = offset
@@ -153,6 +165,7 @@ class Observer:
             "file_durations_s": durations,
             "effective_workers": sorted(self.workers),
             "worker_resources": self.resources,
+            "worker_diagnostics_consistent": self.worker_diagnostics_consistent,
             "actual_tracers": sorted(self.tracers),
             "first_result_s": self.first_result,
             "first_logical_test_s": self.first_logical_test,
@@ -193,6 +206,8 @@ def pytest_runtest_makereport(item: pytest.Item, call):
                     "max_rss": usage.ru_maxrss,
                     "rss_units": "KiB on Linux; bytes on macOS",
                     "tracer": collector.tracer_name() if collector is not None else None,
+                    "coverage_enabled": bool(cov is not None and getattr(cov, "_started", False)),
+                    "collector_present": collector is not None,
                 },
                 sort_keys=True,
             ),

@@ -42,6 +42,9 @@ def main() -> int:
     head = (
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, timeout=10).decode().strip()
     )
+    policy = os.environ.get("CI_COVERAGE", "1")
+    if policy not in {"0", "1"}:
+        raise ValueError("CI_COVERAGE must be exactly 0 or 1")
     command = [
         str(ROOT / ".venv/bin/python"),
         "-m",
@@ -53,11 +56,12 @@ def main() -> int:
         "auto",
         "--dist",
         "loadfile",
-        "--cov=src/butlers",
         "-p",
         "scripts.ci_shard_observer",
         "--junitxml=" + str(directory / "raw-junit.xml"),
     ]
+    if policy == "1":
+        command.append("--cov=src/butlers")
     env = os.environ.copy()
     env.update(
         CI_SHARD_CONTEXT=json.dumps(

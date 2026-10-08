@@ -64,6 +64,43 @@ retain them with independent identity checks. `build_test_scope_cost.py` accepts
 complete official full-population bundles and separately paired affected receipts,
 checks exact phase/node/provenance compatibility, source/configuration hashes,
 and recorded Python, runner, CPU model digest/count/affinity and tracer compatibility.
+
+The proposed v2 candidate distinguishes real instrumentation species. Exact
+coverage policy `0`, a complete diagnostic from every actual worker and phase,
+coverage disabled, no collector and explicit tracer `null` admit `untraced`.
+Policy `1` admits only a consistently active `CTracer` or `SysMonitor`. Missing,
+inconsistent or mixed diagnostics refuse; missing values never mean untraced.
+Ordinary PR coverage remains disabled and merge queue coverage remains enabled.
+The manual door defaults to its existing traced policy; `calibration-coverage=0`
+requests the genuinely untraced companion without changing any selected tests.
+
+The source-declared `ubuntu-latest` policy, actual hosted environment,
+Linux/x86_64, actual ImageOS/ImageVersion, exact Python, CPU count/affinity,
+configured and observed worker
+count and instrumentation form a measured runner class. Actual CPU model
+digests are retained separately for every contributing job and file, with
+source/run/attempt/species provenance. Distinct CPUs are not labelled identical.
+For a file present in both lane predicates, the v2 candidate first sums its
+complete full-run disjoint unit/integration serial phases; it never takes the
+maximum of those partial populations. It then takes the maximum complete
+whole-file sample across reference runs and affected measurements, plus affected
+setup/startup/finalization across this explicitly recorded finite model set.
+This is a conservative **empirical envelope**, not an absolute bound for any
+CPU or a stable p90. An unobserved model, missing policy, changed affinity,
+worker/instrumentation species, configuration or measured body refuses with
+`COST_UNKNOWN`. The real command's 300-second deadline remains the owning bound.
+A candidate built on a different local host retains both its own builder
+context and the actual observations; ordinary local replay cannot borrow a
+hosted class. Existing v1 traced profiles retain their stricter exact-context
+comparison. No v2 profile is installed by this SOURCE change.
+
+A fresh exact-source full/affected pair must emit these positive policy and
+worker fields. The authentic prior 9e reference predates them and stays an
+inadmission diagnosis, not a rewritten v2 measurement. Root independently
+checks the actual workflow runner label and official artifacts before reviewing
+a candidate. Environment labels or caller-supplied JSON are not authentication;
+only the independently retained hosted pair can supply actual measurement
+credit. Complete native, historical and natural thresholds remain unchanged.
 The observer records first actual logical logstart before setup and last actual
 phase completion; neither is an alias for first result or an estimated timestamp.
 A single complete independently verified compatible pair may establish an explicitly
