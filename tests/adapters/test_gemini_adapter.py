@@ -159,6 +159,79 @@ async def test_invoke():
     with patch(_EXEC, return_value=mock_proc), pytest.raises(TerminalResultError):
         await adapter.invoke(prompt="synthetic", system_prompt="", mcp_servers={}, env={})
 
+    # Pinned 0.46.0 emits these constructor names in terminal error.type.
+    # Synthetic adapter conformance, not a provider recording or auth decision.
+    for raw_type, expected in (
+        ("FatalTurnLimitedError", "max_turns"),
+        ("FatalAuthenticationError", "provider_auth"),
+    ):
+        payload["error"] = {"type": raw_type, "message": "synthetic-private-error-marker"}
+        mock_proc.communicate = AsyncMock(return_value=(json.dumps(payload).encode(), b""))
+        with patch(_EXEC, return_value=mock_proc), pytest.raises(TerminalResultError) as caught:
+            await adapter.invoke(prompt="synthetic", system_prompt="", mcp_servers={}, env={})
+        terminal = caught.value.served["executions"][0]
+        assert terminal["error"]["code"] == expected
+        assert terminal["completion_state"] == "error" and terminal["error"]["is_error"] is True
+        assert terminal["aggregate_usage"]["input_tokens"] == 5
+        assert terminal["aggregate_usage"]["cache_read_input_tokens"] == 100
+        assert raw_type not in json.dumps(caught.value.served)
+        assert "synthetic-private-error-marker" not in json.dumps(caught.value.served)
+
+    # Absent, unknown and malformed types remain the existing generic category.
+    # In particular, lists/dicts/bools never become dict keys or stored labels.
+    for raw_error in (
+        None,
+        True,
+        "synthetic-private-error-marker",
+        ["synthetic-private-error-marker"],
+        {},
+        {"type": "UnknownSyntheticType", "message": "synthetic-private-error-marker"},
+        {"type": None},
+        {"type": True},
+        {"type": 53},
+        {"type": []},
+        {"type": {}},
+    ):
+        payload["error"] = raw_error
+        mock_proc.communicate = AsyncMock(return_value=(json.dumps(payload).encode(), b""))
+        with patch(_EXEC, return_value=mock_proc), pytest.raises(TerminalResultError) as caught:
+            await adapter.invoke(prompt="synthetic", system_prompt="", mcp_servers={}, env={})
+        terminal = caught.value.served["executions"][0]
+        assert terminal["completion_state"] == "error"
+        assert terminal["error"]["code"] == "execution_error"
+        assert "UnknownSyntheticType" not in json.dumps(caught.value.served)
+        assert "synthetic-private-error-marker" not in json.dumps(caught.value.served)
+
+    # Informational warnings and even a typed error object do not override an
+    # explicit successful result. A later fatal terminal still dominates it.
+    payload["status"] = "success"
+    payload["error"] = {
+        "type": "FatalAuthenticationError",
+        "message": "synthetic-private-error-marker",
+    }
+    success = json.dumps(payload)
+    warning = json.dumps(
+        {"type": "error", "severity": "warning", "message": "synthetic-private-error-marker"}
+    )
+    mock_proc.communicate = AsyncMock(return_value=((warning + "\n" + success).encode(), b""))
+    with patch(_EXEC, return_value=mock_proc):
+        _, _, usage = await adapter.invoke(
+            prompt="synthetic", system_prompt="", mcp_servers={}, env={}
+        )
+    evidence = adapter.last_process_info["served"]
+    assert evidence["executions"][0]["completion_state"] == "success"
+    assert evidence["executions"][0]["error"]["code"] is None
+    assert usage["input_tokens"] == 5 and usage["cache_read_input_tokens"] == 100
+    assert "synthetic-private-error-marker" not in json.dumps(evidence)
+    payload["status"] = "error"
+    mock_proc.communicate = AsyncMock(
+        return_value=((success + "\n" + json.dumps(payload)).encode(), b"")
+    )
+    with patch(_EXEC, return_value=mock_proc), pytest.raises(TerminalResultError) as caught:
+        await adapter.invoke(prompt="synthetic", system_prompt="", mcp_servers={}, env={})
+    assert caught.value.served["executions"][0]["error"]["code"] == "provider_auth"
+    assert caught.value.served["executions"][0]["completion_state"] == "error"
+
 
 @pytest.mark.parametrize(
     "returncode,stderr,stdout,expected_fragment",

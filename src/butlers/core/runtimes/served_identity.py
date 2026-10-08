@@ -47,6 +47,12 @@ _SUBTYPES = {
     "error_max_structured_output_retries": "structured_output_retries",
     "success": None,
 }
+# Pinned Gemini CLI 0.46.0 emits these names through getErrorType() in a
+# terminal result. Unrecognized types retain the generic category, never text.
+_GEMINI_ERROR_TYPES = {
+    "FatalTurnLimitedError": "max_turns",
+    "FatalAuthenticationError": "provider_auth",
+}
 _STATES = {"observed", "partial", "unknown", "malformed", "truncated", "not_invoked"}
 _AUTHORITIES = {"provider_response", "cli_usage_breakdown", "configured_only", "unavailable"}
 _PROVENANCE = {"provider_response", "provider_or_request_fallback", "cli_reported_unproven"}
@@ -290,7 +296,14 @@ def stream_evidence(
             final["aggregate_usage"] = _gemini_buckets(stats)
             if obj.get("status") == "error":
                 final["completion_state"] = "error"
-                final["error"].update({"is_error": True, "code": "execution_error"})
+                raw_error = obj.get("error")
+                raw_type = raw_error.get("type") if isinstance(raw_error, dict) else None
+                code = (
+                    _GEMINI_ERROR_TYPES.get(raw_type, "execution_error")
+                    if isinstance(raw_type, str)
+                    else "execution_error"
+                )
+                final["error"].update({"is_error": True, "code": code})
         else:
             continue
         finals.append(final)
