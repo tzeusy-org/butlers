@@ -202,11 +202,7 @@ class CatalogLoanAdmission:
             await self.app(scope, receive, send)
             return
         headers = list(scope.get("headers", ()))
-        tokens = [
-            value.decode("ascii", "strict")
-            for name, value in headers
-            if name.lower() == _HEADER.lower().encode()
-        ]
+        tokens = [value for name, value in headers if name.lower() == _HEADER.lower().encode()]
         if not tokens:
             await self.app(scope, receive, send)
             return
@@ -226,6 +222,7 @@ class CatalogLoanAdmission:
         try:
             if len(tokens) != 1 or not 32 <= len(tokens[0]) <= 128:
                 raise ValueError
+            capability = tokens[0].decode("ascii", "strict")
             body = bytearray()
             async with asyncio.timeout(5):
                 for _ in range(128):
@@ -249,7 +246,7 @@ class CatalogLoanAdmission:
                 if params.get("name") == "location_catalog_loan_body":
                     if set(arguments) - {"loan_id", "trace_context"} or "loan_id" not in arguments:
                         raise ValueError
-                    admission = await runtime.admit_loan(UUID(arguments["loan_id"]), tokens[0])
+                    admission = await runtime.admit_loan(UUID(arguments["loan_id"]), capability)
                 elif params.get("name") == "route":
                     if (
                         set(arguments) != {"target_butler", "tool_name", "args"}
@@ -259,7 +256,7 @@ class CatalogLoanAdmission:
                     ):
                         raise ValueError
                     routed = await runtime.admit_route(
-                        UUID(arguments["args"]["loan_id"]), tokens[0]
+                        UUID(arguments["args"]["loan_id"]), capability
                     )
                 else:
                     raise ValueError

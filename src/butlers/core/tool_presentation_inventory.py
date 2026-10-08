@@ -232,6 +232,14 @@ TOOL_PRESENTATION_INVENTORY = (
         "memory_confirm memory_context memory_get memory_open_gaps memory_recall memory_search "
         "memory_store_episode memory_store_fact memory_store_rule",
     ),
+    *_declare(
+        "memory",
+        "direct",
+        "location_catalog_loan_body location_retention_prepare_copy location_retention_copy_status",
+        presentable=False,
+        posture="eager",
+        namespace="location_retention",
+    ),
     *_declare("memory", "feedback", "memory_forget memory_mark_harmful memory_mark_helpful"),
     *_declare(
         "memory",

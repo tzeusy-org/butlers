@@ -1851,7 +1851,7 @@ async def dispose_bound_native_copies(pool: asyncpg.Pool, decision_id: UUID) -> 
                     "SELECT h.* FROM location_native_cache_heads h WHERE EXISTS ("
                     "SELECT 1 FROM location_native_cache_inputs i WHERE i.cache_key=h.cache_key "
                     "AND i.cache_generation=h.cache_generation AND i.copy_generation=$1) "
-                    "ORDER BY h.cache_key FOR UPDATE",
+                    "ORDER BY h.cache_key FOR UPDATE OF h",
                     generation,
                 )
                 for head in caches:

@@ -401,3 +401,27 @@ None. The memory module is a leaf module with no dependencies on other modules.
 - [Module System](module-system.md)
 - [Knowledge Base](knowledge-base.md) -- entity data model and predicate vocabulary
 - [Approvals Module](approvals.md) -- approval gates for memory mutations
+
+
+### Native location catalog copy infrastructure
+
+Configured Memory modules register `location_catalog_loan_body(loan_id)`,
+`location_retention_prepare_copy(decision_id)` and
+`location_retention_copy_status(decision_id, receipt_id)` as non-presentable
+infrastructure in the canonical MCP catalog. Body delivery, prepare and status
+use Switchboard's registered owning route. A public UUID cannot mint a source,
+receiver or terminal receipt: the constructor-fixed outer admission verifies
+online source/receiver generation and body, strips the private ephemeral header
+before instrumentation and clears its private context in finally. Metadata-only
+fixed daemon control routes provide bounded challenge/prepare checks; they do
+not deliver the body, attest remote recipients or create a new credential.
+
+The source configured `chronicler_mem` writer captures native episodes and
+consolidation artifact generations and owns catalog reduction. Each consumer's
+existing configured domain writer owns its own immutable loan/lifetime/receipt
+ledger; it uses no source-private SQL. Public catalog selection and existing
+sensitivity ceilings stay intact. System-owned processing/runtime-context copies
+remain mandatory unfinished holders in the current checkpoint until their exact
+native input/admission/disposal path is installed and proved. No empty frontier
+or transient response completion substitutes for these descendants. See
+[OwnTracks retention](../operations/owntracks-location-retention.md).

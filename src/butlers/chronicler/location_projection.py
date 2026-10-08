@@ -13,12 +13,13 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import asyncpg
 
-from butlers.chronicler.adapters.base import AdapterResult
+if TYPE_CHECKING:
+    from butlers.chronicler.adapters.base import AdapterResult
 from butlers.chronicler.storage import get_checkpoint, mark_source_active, upsert_checkpoint
 from butlers.location_retention import ADAPTER_NAMES, content_digest, logical_digest
 
@@ -151,6 +152,8 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
     open carries remain pending for closure, without double-projecting their
     points. No existing episode or timestamp is accepted as coverage.
     """
+    from butlers.chronicler.adapters.base import AdapterResult
+
     if adapter.source_name not in ADAPTER_NAMES:
         raise ValueError("unregistered location adapter")
     adapter._llm_probe()

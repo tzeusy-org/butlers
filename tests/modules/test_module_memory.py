@@ -587,6 +587,10 @@ EXPECTED_TOOL_NAMES = {
     "memory_mark_helpful",
     "memory_mark_harmful",
     "memory_forget",
+    # Constructor-fixed infrastructure; public UUIDs remain locators only.
+    "location_catalog_loan_body",
+    "location_retention_prepare_copy",
+    "location_retention_copy_status",
     "memory_stats",
     "memory_context",
     "memory_run_consolidation",
@@ -1416,14 +1420,20 @@ class TestToolGroups:
         assert len(tools) == len(EXPECTED_TOOL_NAMES)
 
     async def test_core_only(self):
-        """groups=['core'] registers only the 9 core tools."""
+        """groups=['core'] preserves 9 business tools plus fixed infrastructure."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 9
+        infrastructure = {
+            "location_catalog_loan_body",
+            "location_retention_prepare_copy",
+            "location_retention_copy_status",
+        }
+        assert infrastructure <= tool_names
+        assert len(tool_names - infrastructure) == 9
         assert "memory_search" in tool_names
         assert "memory_store_fact" in tool_names
         assert "memory_context" in tool_names
@@ -1432,14 +1442,20 @@ class TestToolGroups:
         assert "memory_stats" not in tool_names
 
     async def test_core_plus_entity(self):
-        """groups=['core', 'entity'] registers 16 tools."""
+        """groups=['core', 'entity'] preserves 16 business tools and infrastructure."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core", "entity"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 16  # 9 core + 7 entity
+        infrastructure = {
+            "location_catalog_loan_body",
+            "location_retention_prepare_copy",
+            "location_retention_copy_status",
+        }
+        assert infrastructure <= tool_names
+        assert len(tool_names - infrastructure) == 16  # 9 core + 7 entity remain.
         assert "memory_entity_create" in tool_names
         assert "memory_catalog_search" in tool_names
         assert "memory_stats" not in tool_names  # admin
