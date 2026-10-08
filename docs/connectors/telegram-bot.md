@@ -31,7 +31,8 @@ Telegram updates are mapped to the `ingest.v1` envelope as follows:
 | `source.provider` | `telegram` |
 | `source.endpoint_identity` | Auto-resolved via `getMe()` (e.g., `telegram:bot:@mybot`) |
 | `event.external_event_id` | `update_id` |
-| `event.external_thread_id` | `chat.id` |
+| `event.external_conversation_id` | `telegram:<chat.id>`, plus `:topic:<message_thread_id>` when Telegram marks the message `is_topic_message` |
+| `event.reply_target_ref` | `<chat.id>:<message_id>` |
 | `event.observed_at` | Connector-observed timestamp (RFC 3339) |
 | `sender.identity` | `message.from.id` |
 | `payload.raw` | Full Telegram update JSON |
@@ -173,10 +174,11 @@ grep "endpoint_identity\|getMe" /var/log/butlers/telegram-bot-connector.log 2>/d
   `HTTP 409 Conflict` (another poller or a webhook) as recoverable: it
   records source status `conflict`, logs the parsed Telegram description at warning level, and
   returns `[]`.
-- `source_thread_identity` may be `<chat_id>` or `<chat_id>:<message_id>`; the pipeline's
-  `src/butlers/modules/pipeline.py::_load_realtime_history` groups Telegram history by numeric chat
-  id so reply-form identities do
-  not collapse history to one row.
+- `event.reply_target_ref` (and its request-context alias `source_thread_identity`) is the
+  per-message `<chat_id>:<message_id>` used for replies and reactions only. Conversation anchors,
+  provider-session resume, and `_load_realtime_history` key on `external_conversation_id`, so
+  consecutive messages in one chat share one anchor and one history. The shared derivation lives in
+  `src/butlers/conversation_identity.py`.
 - The bot and user-client connectors start from DB credentials when credential env vars are
   missing; only `SWITCHBOARD_MCP_URL` is a required non-credential env var, and endpoint identity is
   resolved from the Telegram API at startup.

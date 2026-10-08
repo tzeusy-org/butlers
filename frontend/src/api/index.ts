@@ -1287,6 +1287,7 @@ export type {
   BeadDetailMeta,
   BeadDetailResponse,
   DecisionBeadSummary,
+  DecisionIntentSummary,
   DecisionsListMeta,
   DecisionsListResponse,
 } from "./types.ts";

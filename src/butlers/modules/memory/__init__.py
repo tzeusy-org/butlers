@@ -402,15 +402,9 @@ class MemoryModule(Module):
         from butlers.modules.memory.tools import context as _context
         from butlers.modules.memory.tools._helpers import _search as _search_helper
 
-        # NOT `from butlers.modules.memory.search import search_catalog`: that
-        # static import would make search.py's pgvector operators reachable
-        # from EVERY memory-enabled butler's transitive import graph,
-        # including relationship's deterministic-Finder endpoint
-        # (roster/relationship/tests/test_finder_no_llm_transitive.py walks
-        # ALL imports -- even function-body ones -- of every transitively
-        # visited first-party module). Reuse ``tools._helpers``'s existing
-        # runtime (non-AST-visible) module loader instead -- ``context.py``
-        # already reaches ``search.py`` the same way, for the same reason.
+        # Canonical semantic search belongs to the Memory runtime. Deterministic
+        # API channel/attribution readers use their lightweight owning modules,
+        # so they do not pull this semantic runtime into the Finder import graph.
         _search_catalog = _search_helper.search_catalog
         from butlers.modules.memory.tools import writing as _writing
         from butlers.modules.memory.tools.management import memory_forget as _memory_forget
@@ -918,7 +912,7 @@ class MemoryModule(Module):
                     module._get_pool(),
                     content,
                     butler,
-                    embedding_engine=module._get_embedding_engine(),
+                    embedding_engine=await asyncio.to_thread(module._get_embedding_engine),
                     session_id=session_id,
                     importance=importance,
                     request_context=request_context,
@@ -1150,7 +1144,7 @@ class MemoryModule(Module):
             try:
                 return await _writing.memory_store_fact(
                     module._get_pool(),
-                    module._get_embedding_engine(),
+                    await asyncio.to_thread(module._get_embedding_engine),
                     subject,
                     predicate,
                     content,
@@ -1203,7 +1197,7 @@ class MemoryModule(Module):
             """Store a new behavioral rule as a candidate."""
             return await _writing.memory_store_rule(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 content,
                 scope=scope,
                 tags=tags,
@@ -1280,7 +1274,7 @@ class MemoryModule(Module):
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_search(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 query,
                 types=types,
                 scope=scope,
@@ -1322,7 +1316,7 @@ class MemoryModule(Module):
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_recall(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 topic,
                 scope=scope,
                 limit=limit,
@@ -1538,7 +1532,7 @@ class MemoryModule(Module):
                 module._get_pool(),
                 query,
                 scope=scope,
-                embedding_engine=module._get_embedding_engine(),
+                embedding_engine=await asyncio.to_thread(module._get_embedding_engine),
             )
 
         # --- Context tool ---
@@ -1600,7 +1594,7 @@ class MemoryModule(Module):
             catalog_read_policy = await module._catalog_read_policy()
             return await _context.memory_context(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 trigger_prompt,
                 butler,
                 token_budget=token_budget,
@@ -1737,7 +1731,7 @@ class MemoryModule(Module):
             """
             return await _consolidation.run_consolidation(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 enable_shared_catalog=module._config.enable_shared_catalog,
                 source_schema=effective_catalog_source_schema,
                 retry_failed=module._allows_failed_consolidation_retry(),
@@ -1916,7 +1910,7 @@ class MemoryModule(Module):
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_catalog_search(
                 module._get_pool(),
-                module._get_embedding_engine(),
+                await asyncio.to_thread(module._get_embedding_engine),
                 query,
                 memory_type=memory_type,
                 limit=limit,
@@ -2003,7 +1997,7 @@ class MemoryModule(Module):
                     module._get_pool(),
                     predicate,
                     value,
-                    embedding_engine=module._get_embedding_engine(),
+                    embedding_engine=await asyncio.to_thread(module._get_embedding_engine),
                     permanence=permanence,
                     importance=importance,
                     metadata=metadata,
@@ -2145,7 +2139,7 @@ class MemoryModule(Module):
             try:
                 result = await _reembedding.run(
                     module._get_pool(),
-                    module._get_embedding_engine(),
+                    await asyncio.to_thread(module._get_embedding_engine),
                     dry_run=dry_run,
                     tiers=tiers,
                     batch_size=batch_size,
@@ -2182,7 +2176,7 @@ class MemoryModule(Module):
                 - ``counts`` (dict): stale row count per tier
                 - ``total`` (int): sum across all tiers
             """
-            current_model = module._get_embedding_engine().model_name
+            current_model = (await asyncio.to_thread(module._get_embedding_engine)).model_name
             try:
                 tier_arg: str | None = None
                 if tiers is not None and len(tiers) == 1:

@@ -115,6 +115,7 @@ tests/contracts/test_cross_butler_briefing_exception.py
 tests/contracts/test_doctrine_drift.py
 tests/contracts/test_fact_extraction_skill_predicates.py
 tests/contracts/test_health_medication_travel_contract.py
+tests/contracts/test_import_budget.py
 tests/contracts/test_mcp_only_inter_butler.py
 tests/contracts/test_runtime_identity_contract.py
 tests/contracts/test_spotify_oauth_authority_spec.py

@@ -44,7 +44,8 @@ Polling mode is simpler to set up (no Pub/Sub topic or webhook endpoint required
 | `source.provider` | `gmail` |
 | `source.endpoint_identity` | Auto-resolved from account email (e.g., `gmail:user:alice@gmail.com`) |
 | `event.external_event_id` | Gmail message ID |
-| `event.external_thread_id` | Gmail `threadId` |
+| `event.external_conversation_id` | Gmail `threadId` |
+| `event.reply_target_ref` | Gmail `threadId` |
 | `event.observed_at` | Connector-observed timestamp (RFC 3339) |
 | `sender.identity` | Normalized sender address from `From` header |
 | `payload.raw` | Full Gmail API payload (or safe subset per policy) |

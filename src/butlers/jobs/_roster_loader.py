@@ -9,9 +9,9 @@ directory or ``sys.path`` configuration (e.g. inside Docker containers).
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import logging
-import sys
+import re
 from pathlib import Path
 from types import ModuleType
 
@@ -54,26 +54,14 @@ def load_roster_jobs(butler_name: str) -> ModuleType:
     ImportError
         If the module cannot be loaded.
     """
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", butler_name):
+        raise ValueError("Invalid roster job name")
     module_name = f"butlers.jobs._roster.{butler_name}_jobs"
 
-    # Return from cache if already loaded.
-    if module_name in _MODULE_CACHE:
-        return _MODULE_CACHE[module_name]
-    if module_name in sys.modules:
-        _MODULE_CACHE[module_name] = sys.modules[module_name]
-        return sys.modules[module_name]
-
     jobs_path = _roster_root() / butler_name / "jobs" / f"{butler_name}_jobs.py"
-    if not jobs_path.exists():
+    if not jobs_path.is_file():
         raise FileNotFoundError(f"Roster job module not found: {jobs_path}")
-
-    spec = importlib.util.spec_from_file_location(module_name, jobs_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot create module spec for {jobs_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    # The owning namespace finder uses Python's module lock and failed-load cleanup.
+    module = importlib.import_module(module_name)
     _MODULE_CACHE[module_name] = module
-    logger.debug("Loaded roster job module: %s from %s", module_name, jobs_path)
     return module

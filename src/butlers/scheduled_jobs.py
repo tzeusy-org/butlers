@@ -195,6 +195,21 @@ async def _run_switchboard_nightly_assurance_job(
     return await run_nightly_assurance(pool, job_args)
 
 
+async def _run_switchboard_decision_routing_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Offer open decision beads to the owner as one-tap Telegram prompts.
+
+    Delegates to ``butlers.jobs.decision_routing.run_decision_routing``
+    (bu-ckkpz.3, epic bu-ckkpz "Owner Decision Desk"). A no-op unless
+    ``BUTLERS_DECISION_ROUTING_ENABLED=1``.
+    """
+    from butlers.jobs.decision_routing import run_decision_routing
+
+    return await run_decision_routing(pool, job_args)
+
+
 def _build_switchboard_insight_notify_fn(
     pool: asyncpg.Pool,
 ) -> Any:
@@ -2221,6 +2236,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "decision_review_digest": _run_switchboard_decision_review_digest_job,
             "decision_escalation_check": _run_switchboard_decision_escalation_check_job,
             "nightly_assurance": _run_switchboard_nightly_assurance_job,
+            "decision_routing": _run_switchboard_decision_routing_job,
             "domain_event_reconciliation_sweep": (
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),

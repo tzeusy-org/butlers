@@ -30,6 +30,16 @@ Rules the models encode and connectors must respect:
 - **`event.external_event_id` is required** and must be the provider's native, stable event id.
   Placeholder values (`unknown`, `none`, …) are treated as missing and fall back to content-hash
   dedupe. `event.observed_at` must be an RFC 3339 string with a timezone.
+- **Conversation identity is split from reply targeting.** `event.external_conversation_id` is
+  the stable, channel-namespaced conversation key (for example `telegram:<chat_id>`, with a
+  `:topic:<topic_id>` suffix when Telegram marks the message `is_topic_message`,
+  `whatsapp:<chat_jid>`, or the Gmail `threadId`). Continuity consumers (conversation anchors,
+  provider-session resume, realtime history) key on it. `event.reply_target_ref` is the
+  provider-native per-message target used only for replies and reactions (for example
+  `<chat_id>:<message_id>`). Telegram bot ingress without both fields is rejected. A producer that
+  has not adopted the split still sends `event.external_thread_id`, which then serves as both its
+  conversation key and its reply target; a split field always wins over it
+  (`butlers.conversation_identity.event_conversation_identity`).
 - **`sender.identity` is provider-native** (user id, email address). The Switchboard resolves it
   to an entity (see [Identity Model](../concepts/identity-model.md)); connectors never resolve
   identity themselves.
@@ -54,7 +64,9 @@ at the URL in `SWITCHBOARD_MCP_URL` (for example `http://localhost:41100/sse`).
 The connector provides source, event, and sender facts only. The Switchboard assigns the
 canonical request context (`RouteRequestContextV1`) at ingest acceptance — including the
 `request_id` (UUIDv7) and `received_at` — and returns the `request_id` for lineage tracking.
-Lineage fields are immutable once assigned.
+Lineage fields are immutable once assigned. The request context carries
+`external_conversation_id` and `reply_target_ref` from the event; `source_thread_identity` is
+retained as the notify-facing name for the reply target and never carries the conversation key.
 
 ## Idempotency and Deduplication
 

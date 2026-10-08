@@ -68,6 +68,11 @@ def _dashboard_base_url(override: str | None = None) -> str:
     return value.rstrip("/")
 
 
+def dashboard_base_url(override: str | None = None) -> str:
+    """Public form of :func:`_dashboard_base_url` for other owner-facing links."""
+    return _dashboard_base_url(override)
+
+
 def _as_aware_datetime(value: Any, *, field_name: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"approval push action {field_name} must be timezone-aware datetime")

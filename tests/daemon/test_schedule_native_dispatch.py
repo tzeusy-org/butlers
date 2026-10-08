@@ -40,6 +40,7 @@ class TestNativeScheduleDispatch:
             "eligibility_sweep",
             "decision_review_digest",
             "decision_escalation_check",
+            "decision_routing",
         } <= set(switchboard_jobs)
         assert "nightly_assurance" in switchboard_jobs
         removed = {

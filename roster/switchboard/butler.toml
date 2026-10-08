@@ -162,6 +162,17 @@ cron = "17 * * * *"
 dispatch_mode = "job"
 job_name = "nightly_assurance"
 
+
+# Decision Desk routing (bu-ckkpz.3) -- offers open decision beads to the owner
+# as one-tap Telegram prompts through quiet hours, the context bus and a
+# 3-per-24h budget, at most once per bead. A no-op unless the deployment sets
+# BUTLERS_DECISION_ROUTING_ENABLED=1 (it sends real owner messages).
+[[butler.schedule]]
+name = "decision-routing"
+cron = "7,22,37,52 * * * *"
+dispatch_mode = "job"
+job_name = "decision_routing"
+
 # Domain-event-bus delivery reconciliation sweep (bu-1yw6d, PR #3585 review
 # follow-up) — re-drives pending/failed public.domain_event_deliveries rows
 # that a fresh publish's fan-out never resolved (crash after claim, or a

@@ -1,0 +1,18 @@
+# Import ownership and failure boundaries
+
+## Selected behavior
+`EmbeddingEngine` imports SentenceTransformer inside construction. Its default/configured model, dimension, normalize/encode/batch methods are preserved. `_helpers.EmbeddingEngine` remains the test construction seam. The existing per-model lock records an engine only after construction succeeds. Registered async tools acquire through `asyncio.to_thread`; cancellation stops the waiter without claiming a worker thread stopped or performing the subsequent domain write.
+
+Storage, search, helpers and search_vector use ordinary canonical imports. Python owns import locks, cycles and failed-load cleanup. Shared deterministic channel formatting/query and fact-attribution reads live in lightweight `butlers.entity_facts_channels` and `butlers.entity_fact_attribution`; old tool paths re-export the same functions. Unrelated mutation imports run in the actual API handlers. The Finder AST walker, full transitive traversal, visited-set assertions and injected banned controls stay unchanged.
+
+`butlers.roster_imports` installs a single lightweight finder from owning modules/jobs/api packages. Fixed grammar and checkout-root paths admit supported names. Module packages use their real `__path__`; jobs use canonical file specs. Direct API aliases share the owning loader's legacy router and local model objects. Explicit registry discovery imports every actual candidate and rejects import failures or distinct-name collisions; repeated scans skip only the identical class. Registry instances remain fresh. Direct router loading checks source path, serializes body execution and removes failed partial entries. Optional API bulk discovery preserves warnings/skips. Custom roots have distinct cache keys.
+
+Root conftest performs the package-source check before its first Butlers import and preserves canonical fixtures, fake/cache lifetimes, marker and DB/finalizer behavior. Consumers request actual roster bodies themselves. Explicit whole-contract inventory calls discovery and fails if it finds no roster coverage.
+
+## Evidence and limits
+Fresh own-source subprocesses enforce stack absence independently of parent fakes. The conftest cap is five seconds: max(5, ceil(2 * maximum of five measured after samples + 1)); the floor allows ordinary process scheduling variance. Each child has an independent forty-second timeout. The retained calibration records ten actual before/after elapsed/RSS samples, interpreter, lock hash and cache context. A sole bounded sleep falsifies timing while preserving stack absence; original eager embedding restoration falsifies absence. Original registry skip and async direct acquisition have separate causal controls. Restored positives follow each control.
+
+No pretrained weights are downloaded and no provider is called. Installed dependency first-use imports use a controlled constructor; fake numerical delegation is distinguished from real pretrained embedding quality. No wall-clock gain is claimed, so comparable five-before/five-after CI p50 is not asserted. Hosted owning SQL and the terminal protected union remain final-delivery evidence after this source preparation and native archive; local checks do not substitute for them.
+
+## Rollback and delivery
+Reverting the bounded source commit restores the former eager/discovery behavior without data changes. Only this change is synchronized and archived through normal validated CLI after source checks and carryover proof. Future exact-head normal CI, independent review and protected merge are mandatory before whole closure; they are not falsely checked source-preparation tasks or prerequisites to creating their own archived head.

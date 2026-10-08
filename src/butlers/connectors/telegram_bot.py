@@ -48,6 +48,10 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.conversation_identity import (
+    telegram_bot_message_identity,
+    telegram_bot_update_identity,
+)
 from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY,
@@ -55,6 +59,11 @@ from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_SECRET_KEY,
     parse_approval_callback_token,
     verify_approval_callback_token,
+)
+from butlers.core.decision_callbacks import (
+    DECISION_CALLBACK_PREFIX,
+    parse_decision_callback_token,
+    verify_decision_callback_token,
 )
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
@@ -110,6 +119,9 @@ _GAP_INTERVIEW_ANSWER_TOASTS: dict[str, str] = {
 
 _APPROVAL_CALLBACK_DECISION_ACTOR = "owner@telegram"
 _APPROVAL_CALLBACK_DECISION_HEADER = "X-Butlers-Decision-Actor"
+_DECISION_CALLBACK_RETRY_TOAST = (
+    "Couldn't record that right now. Please try again or use the dashboard."
+)
 _APPROVAL_CALLBACK_RESOLVED_TEXT = {
     "approved": "✅ Approved",
     "executed": "✅ Approved",
@@ -214,6 +226,14 @@ class HealthStatus(BaseModel):
     last_ingest_submit_at: str | None
     source_api_connectivity: Literal["connected", "disconnected", "unknown"]
     timestamp: str
+
+
+def _decision_recorded_text(intent: dict[str, Any]) -> str:
+    """The prompt's replacement text, stating the intent as the API returned it."""
+    option = intent.get("option", "")
+    if intent.get("status") == "applied":
+        return f"Decision recorded: {option}\nApplied to the tracker."
+    return f"Decision recorded: {option}\nPending update to the tracker."
 
 
 @dataclass
@@ -875,11 +895,14 @@ class TelegramBotConnector:
         """
         async with self._semaphore:
             update_id = str(update.get("update_id", "unknown"))
+            _conversation_id, _reply_target_ref = telegram_bot_update_identity(update)
             try:
                 # Approval callbacks are control-plane decisions, never
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
                 # path additive, then benignly acknowledge all other buttons.
                 if await self._maybe_handle_approval_callback(update):
+                    return
+                if await self._maybe_handle_decision_callback(update):
                     return
                 if await self._maybe_handle_gap_interview_callback(update):
                     return
@@ -919,7 +942,9 @@ class TelegramBotConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=update_id,
-                            external_thread_id=self._extract_chat_id(update),
+                            external_thread_id=None,
+                            external_conversation_id=_conversation_id,
+                            reply_target_ref=_reply_target_ref,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
                             # Filtered-content privacy tier (bu-glbjx): content
@@ -953,7 +978,9 @@ class TelegramBotConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=update_id,
-                            external_thread_id=self._extract_chat_id(update),
+                            external_thread_id=None,
+                            external_conversation_id=_conversation_id,
+                            reply_target_ref=_reply_target_ref,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
                             # Filtered-content privacy tier (bu-glbjx): content
@@ -989,7 +1016,9 @@ class TelegramBotConnector:
                         provider=self._config.provider,
                         endpoint_identity=self._config.endpoint_identity,
                         external_event_id=update_id,
-                        external_thread_id=self._extract_chat_id(update),
+                        external_thread_id=None,
+                        external_conversation_id=_conversation_id,
+                        reply_target_ref=_reply_target_ref,
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity="unknown",
                         raw=update,
@@ -1119,6 +1148,181 @@ class TelegramBotConnector:
 
         await self._edit_approval_callback_message(callback_query, resolved_status)
         return True
+
+    async def _maybe_handle_decision_callback(self, update: dict[str, Any]) -> bool:
+        """Record one signed Decision Desk choice (``dsk1``, bu-ckkpz.3).
+
+        Same order as approvals: owner-channel verification, then the HMAC
+        against the prompt row the dashboard API returns, then the
+        connector-scoped ``choose`` route. The tap only *records* an intent;
+        the toast and edited message say so, and the tracker is updated later
+        by the beads bridge. The callback is answered once the outcome is known,
+        so the toast is the truth; a retryable failure keeps the keyboard.
+        """
+        callback_query = update.get("callback_query")
+        if not isinstance(callback_query, dict):
+            return False
+        callback_data = callback_query.get("data")
+        if not isinstance(callback_data, str) or not callback_data.startswith(
+            f"{DECISION_CALLBACK_PREFIX}:"
+        ):
+            return False
+
+        callback_query_id = str(callback_query.get("id", ""))
+
+        async def answer(text: str) -> None:
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, text)
+
+        parsed = parse_decision_callback_token(callback_data)
+        if parsed is None:
+            logger.warning("Rejected malformed Telegram decision callback")
+            await answer("")
+            return True
+        if not await self._is_primary_owner_callback(callback_query):
+            logger.warning(
+                "Ignored Telegram decision callback from a non-owner or non-primary channel",
+                extra={"prompt_id": str(parsed.prompt_id)},
+            )
+            await answer("")
+            return True
+
+        secret = self._config.approval_callback_secret
+        prompt, transient = (
+            await self._fetch_decision_prompt(str(parsed.prompt_id)) if secret else (None, False)
+        )
+        if transient:
+            # Unverified yet, so nothing is recorded; the owner can tap again.
+            await answer(_DECISION_CALLBACK_RETRY_TOAST)
+            return True
+        created_at = self._approval_callback_requested_at(prompt)
+        options = prompt.get("options") if prompt is not None else None
+        if created_at is None or not isinstance(options, list) or not secret:
+            logger.warning("Rejected Telegram decision callback without verifiable prompt state")
+            await answer("")
+            return True
+        if (
+            verify_decision_callback_token(callback_data, created_at=created_at, secret=secret)
+            is None
+        ):
+            logger.warning("Rejected Telegram decision callback with an invalid HMAC")
+            await answer("")
+            return True
+
+        status_code, payload = await self._submit_decision_choice(
+            str(parsed.prompt_id), parsed.option_index
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if status_code == 200 and isinstance(data, dict):
+            meta = payload.get("meta") if isinstance(payload, dict) else None
+            created = isinstance(meta, dict) and meta.get("created") is True
+            await answer("Choice recorded." if created else "Already handled.")
+            await self._edit_decision_callback_message(
+                callback_query, _decision_recorded_text(data)
+            )
+        elif status_code in {409, 422}:
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            stale = detail in {"options_changed", "option_not_offered"} or (
+                detail == "structured_details_unavailable"
+            )
+            await answer("Options changed; open the dashboard." if stale else "Already handled.")
+            await self._edit_decision_callback_message(callback_query, None)
+        else:
+            # Nothing was recorded and the cause may be transient: keep the keyboard.
+            await answer(_DECISION_CALLBACK_RETRY_TOAST)
+        return True
+
+    async def _is_primary_owner_callback(self, callback_query: dict[str, Any]) -> bool:
+        sender = callback_query.get("from")
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        if self._db_pool is None or sender_id is None:
+            return False
+        owner_channel = await resolve_owner_channel_via_definer(
+            self._db_pool, "telegram_bot", str(sender_id)
+        )
+        return owner_channel is not None and owner_channel[1]
+
+    async def _fetch_decision_prompt(self, prompt_id: str) -> tuple[dict[str, Any] | None, bool]:
+        """Read the prompt snapshot for a ``dsk1`` token: ``(detail, transient failure)``.
+
+        A 4xx answer (no such prompt) is permanent; an unreachable API or a 5xx
+        may clear, so the caller tells the owner to retry instead.
+        """
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
+            return None, False
+        try:
+            response = await self._http_client.get(
+                f"{self._config.internal_api_url.rstrip('/')}/api/decisions/prompts/{prompt_id}",
+                headers={APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token},
+            )
+            if response.status_code >= 500:
+                return None, True
+            if response.status_code != 200:
+                return None, False
+            payload = response.json()
+        except Exception:  # noqa: BLE001 -- untrusted network boundary
+            logger.warning("Telegram decision callback prompt lookup failed", exc_info=True)
+            return None, True
+        detail = payload.get("data") if isinstance(payload, dict) else None
+        return (detail if isinstance(detail, dict) else None), False
+
+    async def _submit_decision_choice(
+        self, prompt_id: str, option_index: int
+    ) -> tuple[int | None, dict[str, Any] | None]:
+        """POST the choice; return ``(status, body)``, or ``(None, None)`` if unreachable."""
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
+            return None, None
+        try:
+            response = await self._http_client.post(
+                f"{self._config.internal_api_url.rstrip('/')}"
+                f"/api/decisions/prompts/{prompt_id}/choose",
+                json={"option_index": option_index},
+                headers={
+                    _APPROVAL_CALLBACK_DECISION_HEADER: _APPROVAL_CALLBACK_DECISION_ACTOR,
+                    APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
+                },
+            )
+        except Exception:  # noqa: BLE001 -- a callback must never crash polling
+            logger.warning("Telegram decision callback choose route failed", exc_info=True)
+            return None, None
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        return response.status_code, body if isinstance(body, dict) else None
+
+    async def _edit_decision_callback_message(
+        self, callback_query: dict[str, Any], text: str | None
+    ) -> None:
+        """Optionally replace the prompt text, and always remove its keyboard."""
+        message = callback_query.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if chat_id is None or not isinstance(message_id, int):
+            return
+        if text is not None:
+            try:
+                await edit_telegram_message_text(
+                    self._http_client,
+                    self._telegram_api_base,
+                    chat_id=str(chat_id),
+                    message_id=message_id,
+                    text=text,
+                )
+            except Exception:  # noqa: BLE001 -- the intent is already recorded
+                logger.warning("Failed to edit recorded Telegram decision prompt", exc_info=True)
+        try:
+            await remove_telegram_inline_keyboard(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001 -- the intent is already recorded
+            logger.warning("Failed to remove Telegram decision keyboard", exc_info=True)
 
     async def _maybe_ack_unhandled_callback(self, update: dict[str, Any]) -> bool:
         """Clear the Telegram spinner for foreign/unsupported button callbacks."""
@@ -1612,7 +1816,8 @@ class TelegramBotConnector:
         - source.provider: "telegram"
         - source.endpoint_identity: receiving bot identity
         - event.external_event_id: update_id
-        - event.external_thread_id: chat.id:message_id (fallback: chat.id)
+        - event.external_conversation_id: stable Telegram chat/topic identity
+        - event.reply_target_ref: chat.id:message_id
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: message.from.id
         - payload.raw: full Telegram update JSON
@@ -1650,11 +1855,7 @@ class TelegramBotConnector:
             sender_id = str(msg["from"].get("id", "unknown"))
 
         message_id = msg.get("message_id")
-
-        # Build thread identity as chat_id:message_id for reply targeting
-        thread_identity = (
-            f"{chat_id}:{message_id}" if chat_id and message_id is not None else chat_id
-        )
+        external_conversation_id, reply_target_ref = telegram_bot_message_identity(msg)
 
         # Canonical idempotency key: tg:<chat_id>:<message_id>
         # Uses chat_id + message_id (unique per chat) so that bot and user-client
@@ -1682,7 +1883,9 @@ class TelegramBotConnector:
                         provider=self._config.provider,
                         endpoint_identity=self._config.endpoint_identity,
                         external_event_id=update_id,
-                        external_thread_id=thread_identity,
+                        external_thread_id=None,
+                        external_conversation_id=external_conversation_id,
+                        reply_target_ref=reply_target_ref,
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity=sender_id,
                         raw={},
@@ -1708,7 +1911,8 @@ class TelegramBotConnector:
             },
             "event": {
                 "external_event_id": update_id,
-                "external_thread_id": thread_identity,
+                "external_conversation_id": external_conversation_id,
+                "reply_target_ref": reply_target_ref,
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {
@@ -1771,17 +1975,6 @@ class TelegramBotConnector:
     # -------------------------------------------------------------------------
     # Internal: FilteredEventBuffer helpers
     # -------------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_chat_id(update: dict[str, Any]) -> str | None:
-        """Extract chat ID string from a Telegram update, or None if absent."""
-        for msg_key in ("message", "edited_message", "channel_post"):
-            msg = update.get(msg_key)
-            if isinstance(msg, dict):
-                chat = msg.get("chat")
-                if isinstance(chat, dict) and "id" in chat:
-                    return str(chat["id"])
-        return None
 
     @staticmethod
     def _extract_sender_identity(update: dict[str, Any]) -> str:
