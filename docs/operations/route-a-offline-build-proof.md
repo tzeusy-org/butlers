@@ -21,8 +21,9 @@ the offline proof input is true.
 `scripts/prove_route_a_offline_builds.py` performs:
 
 1. Hosted-source, clean-checkout, ambient-input and current recipe validation.
-2. A real tiny OCI-cache build, then old variable-COPY refusal, valid alias
-   success and missing/invalid input or blank-stage failures with the same
+2. A real tiny OCI-cache build, then valid alias success as the environment/input
+   health prerequisite, old variable-COPY refusal and missing/invalid input or
+   blank-stage failures with the same
    immutable cache identity and `--network=none`.
 3. Online preparation of the existing application base, pinned Go input and
    Node/lock-version Playwright bases, and real Go/uv/npm dependency caches.
@@ -70,6 +71,15 @@ Actual manual run 37764265658 at source `31a5195` prepared and verified the tiny
 OCI input, then refused the first old-COPY control after exit 1 with an unknown
 failure class. Cleanup passed. The valid alias and all three historical/current
 recipes were unreached; this establishes no actual COPY cause or image success.
+
+Run 37766229982 at `7718fb8` also refused that control: stdout was empty,
+stderr was 689 bytes, all 13 initial indicators were false, and no public recipe
+coordinate matched. Its physical cause stays UNKNOWN. The next projection adds
+fixed CLI/exporter/network/named-context observations and membership in a finite
+public builder vocabulary, without token order or arbitrary strings. This is
+observation only: those observations cannot satisfy a negative class. The valid
+alias runs first to establish actual same-input health before attributing any
+old-COPY failure; it never replaces the old/malformed negatives or real recipes.
 
 The script has a 30-minute overall process deadline, finite per-command bounds
 and own-resource cleanup deadlines. The 45-minute manual job watchdog includes

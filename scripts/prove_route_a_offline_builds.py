@@ -38,6 +38,13 @@ RECIPES = {
     "browser": "frontend/Dockerfile.meeting-prep-browser",
 }
 DIAGNOSTIC_WINDOW_BYTES = 65536
+BUILDER_PUBLIC_VOCABULARY = frozenset(
+    "argument archive attestation build builder buildkit cache client container context copy "
+    "daemon digest directory docker driver error export exporter failed fetch file flag format "
+    "frontend image import input invalid layout list load local manifest media mode named network "
+    "none not oci option output parse platform provenance read reference resolve solve source "
+    "stage store support supported tar type unknown unsupported version worker".split()
+)
 
 
 class ProofRefusal(RuntimeError):
@@ -141,6 +148,32 @@ def closed_builder_diagnostic(stdout: bytes, stderr: bytes, recipe: Path | None 
             for p in ("cannot connect to the docker daemon", "failed to dial", "connection refused")
         ),
         "permission_denied": "permission denied" in text,
+        "client_option_refusal": "unknown flag" in text or "unknown option" in text,
+        "build_context_argument_refusal": any(
+            p in text
+            for p in (
+                "invalid context",
+                "invalid value for --build-context",
+                "failed to parse build context",
+            )
+        ),
+        "docker_exporter_mentioned": "docker exporter" in text or "type=docker" in text,
+        "manifest_list_export_refusal": any(
+            p in text
+            for p in (
+                "does not currently support exporting manifest lists",
+                "does not support exporting manifest lists",
+            )
+        ),
+        "unsupported_media_type": "unsupported media type" in text,
+        "network_mode_refusal": "network mode" in text
+        and ("not supported" in text or "unsupported" in text),
+        "named_context_mentioned": "named context" in text,
+        "frontend_capability_refusal": "not supported by this frontend" in text
+        or "unsupported frontend" in text,
+        "local_file_missing": "no such file or directory" in text,
+        "export_failure": "failed to export" in text,
+        "solve_failure": "failed to solve" in text,
     }
     result = {
         "schema": 1,
@@ -150,6 +183,11 @@ def closed_builder_diagnostic(stdout: bytes, stderr: bytes, recipe: Path | None 
         "complete_streams_examined": len(stdout) <= DIAGNOSTIC_WINDOW_BYTES
         and len(stderr) <= DIAGNOSTIC_WINDOW_BYTES,
         "indicators": indicators,
+        # Set membership only: no arbitrary tokens, values, order or paths.
+        "public_vocabulary_schema": "builder-public-vocabulary-v1",
+        "public_vocabulary_observed": sorted(
+            BUILDER_PUBLIC_VOCABULARY.intersection(re.findall(r"\b[a-z]+\b", text))
+        ),
         "recipe_line_numbers": [],
         "recipe_instructions": [],
     }
@@ -278,9 +316,12 @@ def run_proof(output: Path, source: str) -> int:
                 "frontend/.dockerignore",
             ]
         }
-        receipt["builder_version_sha256"] = hashlib.sha256(
-            required(["docker", "buildx", "version"], bound=10)
-        ).hexdigest()
+        version = required(["docker", "buildx", "version"], bound=10)
+        receipt["builder_version_sha256"] = hashlib.sha256(version).hexdigest()
+        parsed_version = re.search(
+            rb"\bgithub\.com/docker/buildx (v[0-9]+\.[0-9]+\.[0-9]+)(?=\s|$)", version
+        )
+        receipt["buildx_version"] = parsed_version[1].decode("ascii") if parsed_version else None
         required(
             ["docker", "buildx", "create", "--name", builder, "--driver", "docker-container"],
             bound=120,
@@ -342,8 +383,9 @@ def run_proof(output: Path, source: str) -> int:
                 "COPY --from=route-a-go-deps /proof-sentinel /proof-sentinel\n"
             )
             cases = [
-                ("old_variable_copy", old, control_args, False, "invalid_copy_or_image_reference"),
+                # Health is a prerequisite, not a replacement for any negative.
                 ("valid_alias", valid, control_args, True, "none"),
+                ("old_variable_copy", old, control_args, False, "invalid_copy_or_image_reference"),
                 (
                     "blank_stage",
                     valid.replace("AS route-a-go-deps", "AS "),

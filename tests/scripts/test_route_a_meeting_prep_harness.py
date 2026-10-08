@@ -267,6 +267,22 @@ def test_dependency_cache_contracts_bind_cache_images_to_the_current_locks(
     assert bounded["complete_streams_examined"] is False
     assert bounded["stdout_bytes"] == 70000
     assert bounded["indicators"]["invalid_reference_format"] is True
+    exporter = proof.closed_builder_diagnostic(
+        b"", b"docker exporter does not currently support exporting manifest lists private-sentinel"
+    )
+    assert exporter["indicators"]["manifest_list_export_refusal"] is True
+    assert set(exporter["public_vocabulary_observed"]) <= proof.BUILDER_PUBLIC_VOCABULARY
+    assert {"docker", "exporter", "manifest"} <= set(exporter["public_vocabulary_observed"])
+    assert "private-sentinel" not in json.dumps(exporter)
+    assert (
+        proof.closed_build_failure(b"docker exporter does not support exporting manifest lists")
+        == "unclassified_builder_failure"
+    )
+    capability = proof.closed_builder_diagnostic(
+        b"", b"network mode none not supported; unknown flag"
+    )
+    assert capability["indicators"]["network_mode_refusal"] is True
+    assert capability["indicators"]["client_option_refusal"] is True
     labels = contracts["ROUTE_A_NPM_CACHE_IMAGE"]
     config = json.dumps({"config": {"Labels": labels}}).encode()
     config_sha = hashlib.sha256(config).hexdigest()
