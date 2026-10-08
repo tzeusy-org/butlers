@@ -148,6 +148,40 @@ def test_unavailable_base_fails_closed_to_escalation(tmp_path: Path) -> None:
     assert plan.test_paths == FULL_SUITE
     assert "unable to compute worktree diff" in plan.reason
 
+    # P7's scratch corpus contains changed-file vectors, not historical refs.
+    # Replay the CURRENT planner without claiming a historical Git diff. The
+    # miniature cost profile is inner conformance, not measured scope evidence.
+    from replay_ci_planner import replay
+
+    row = {"id": "frozen-vector", "files": ["tests/api/test_existing.py"]}
+    current = replay([row], root=repo)
+    assert current["qualified_scoped"] == 1
+    assert current["replay_mode"] == "current-vectors"
+    assert current["records"][0]["historical_diff"] == "UNKNOWN"
+    assert current["records"][0]["decision"]["base_head"] == current["planner_head"]
+    malformed = replay([{**row, "mode": "not a planner mode"}], root=repo)
+    assert malformed["unknown"] == 1
+    assert malformed["qualified_scoped"] == 0
+    historical = replay([row], root=repo, mode="historical-diffs")
+    assert historical["qualified_scoped"] == 0
+    assert historical["unknown"] == 1
+    _write(repo, "docs/added.md", "actual changed resource")
+    _git(repo, "add", "docs/added.md")
+    _git(repo, "commit", "-qm", "actual historical diff control")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
+    actual = {
+        "id": "actual-diff",
+        "files": ["docs/added.md"],
+        "base": current["planner_head"],
+        "head": head,
+    }
+    verified = replay([actual], root=repo, mode="historical-diffs")
+    assert verified["records"][0]["historical_diff"] == "verified"
+    wrong = replay([{**actual, "files": row["files"]}], root=repo, mode="historical-diffs")
+    assert wrong["unknown"] == 1
+    assert wrong["records"][0]["historical_diff"] == "UNKNOWN"
+    assert "BASE_UNAVAILABLE" in wrong["records"][0]["decision"]["reason_codes"]
+
 
 def test_full_scope_uses_the_requested_worktree_testpaths(tmp_path: Path) -> None:
     repo, base = _repo(tmp_path)
@@ -258,7 +292,15 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
         "    assert Path('docs/contract.md').read_text() == 'healthy'\n",
     )
     _write(repo, "docs/contract.md", "healthy")
-    declarations = {"schema": "test-resource-declarations.v1", "dynamic": {reader: ["docs/**"]}}
+    declarations = {
+        "schema": "test-resource-declarations.v1",
+        "dynamic": {
+            reader: {
+                "patterns": ["docs/**"],
+                "body_sha256": {reader: hashlib.sha256((repo / reader).read_bytes()).hexdigest()},
+            }
+        },
+    }
     _write(repo, DECLARATIONS, json.dumps(declarations))
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "actual reader")
@@ -305,9 +347,13 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
         == "full"
     )
     _write(repo, REGISTRY, json.dumps(discover(repo, declarations)))
-    _write(repo, reader, (repo / reader).read_text() + "\n# changed reader\n")
+    original_reader = (repo / reader).read_text()
+    _write(repo, reader, original_reader + "\n# changed reader\n")
     stale = plan_worktree_tests(base, repo_dir=repo)
     assert stale.scope == "full" and "READER_REGISTRY_STALE" in stale.reason_codes
+    with pytest.raises(ValueError, match="READER_UNCLASSIFIED"):
+        discover(repo, declarations)
+    _write(repo, reader, original_reader)
     # A new undeclared dynamic reader is conservatively bound to every family.
     dynamic = "tests/api/test_dynamic.py"
     _write(repo, dynamic, "def read_unknown(path):\n    return path.read_text()\n")
@@ -415,6 +461,83 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
     assert subprocess.run(command + ["--check"], capture_output=True, timeout=30).returncode == 1
     assert subprocess.run(command, capture_output=True, timeout=30).returncode == 0
     assert subprocess.run(command + ["--check"], capture_output=True, timeout=30).returncode == 0
+
+    # A root helper's actual importers are smaller than its entire tests/ tree.
+    # Retain every unknown public IO family, but freeze the helper/caller bodies
+    # and independently check the actual importer frontier. This is not an
+    # empty-reader exemption or arbitrary dynamic-import completeness proof.
+    helper = "tests/resource_helper.py"
+    caller = "tests/api/test_helper_reader.py"
+    unrelated = "tests/e2e/test_unrelated.py"
+    _write(alias_repo, "tests/__init__.py", "")
+    _write(alias_repo, helper, "def read(path):\n    return path.read_text()\n")
+    _write(
+        alias_repo,
+        caller,
+        "from pathlib import Path\nfrom tests.resource_helper import read\n"
+        "def test_resource():\n    assert read(Path('docs/contract.md')) == 'healthy'\n",
+    )
+    _write(alias_repo, unrelated, "def test_unrelated():\n    assert 2 + 2 == 4\n")
+    _git(alias_repo, "add", ".")
+    helper_command = [sys.executable, "-m", "pytest", caller, "-q", "-n", "0"]
+    _write(alias_repo, "docs/contract.md", "healthy")
+    assert (
+        subprocess.run(helper_command, cwd=alias_repo, capture_output=True, timeout=30).returncode
+        == 0
+    )
+    _write(alias_repo, "docs/contract.md", "changed")
+    assert (
+        subprocess.run(helper_command, cwd=alias_repo, capture_output=True, timeout=30).returncode
+        == 1
+    )
+    ordinary = discover(alias_repo, declared)
+    assert unrelated in select("docs/contract.md", ordinary)
+    owned = {
+        **declared,
+        "helper_owners": {
+            helper: {
+                "caller_sources": [caller],
+                "body_sha256": {
+                    path: hashlib.sha256((alias_repo / path).read_bytes()).hexdigest()
+                    for path in (helper, caller)
+                },
+            }
+        },
+    }
+    refined = discover(alias_repo, owned)
+    assert caller in select("docs/contract.md", refined)
+    assert unrelated not in select("docs/contract.md", refined)
+    assert helper in refined["unresolved_dynamic_readers"]
+    _write(alias_repo, "tests/api/test_new_helper_reader.py", "from tests import resource_helper\n")
+    _git(alias_repo, "add", "tests/api/test_new_helper_reader.py")
+    with pytest.raises(ValueError, match="READER_UNCLASSIFIED"):
+        discover(alias_repo, owned)
+    (alias_repo / "tests/api/test_new_helper_reader.py").unlink()
+    _git(alias_repo, "rm", "--cached", "tests/api/test_new_helper_reader.py")
+    wrong_owner = copy.deepcopy(owned)
+    wrong_owner["helper_owners"][helper]["caller_sources"] = [unrelated]
+    with pytest.raises(ValueError, match="READER_UNCLASSIFIED"):
+        discover(alias_repo, wrong_owner)
+    _write(alias_repo, helper, "def read(path):\n    return path.read_bytes()\n")
+    with pytest.raises(ValueError, match="READER_UNCLASSIFIED"):
+        discover(alias_repo, owned)
+    # A narrowed dynamic declaration also freezes its actual input producer.
+    # A changed source cannot regenerate a fresh map under an old assertion.
+    narrowed = {
+        **declared,
+        "dynamic": {
+            escaped: {
+                "patterns": ["docs/**"],
+                "body_sha256": {
+                    escaped: hashlib.sha256((alias_repo / escaped).read_bytes()).hexdigest()
+                },
+            }
+        },
+    }
+    assert escaped in select("docs/contract.md", discover(alias_repo, narrowed))
+    _write(alias_repo, escaped, (alias_repo / escaped).read_text() + "\n# changed admitted body\n")
+    with pytest.raises(ValueError, match="READER_UNCLASSIFIED"):
+        discover(alias_repo, narrowed)
 
 
 def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(

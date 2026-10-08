@@ -1,8 +1,95 @@
 {
-  "schema": "test-resource-declarations.v1",
   "dynamic": {
-    "tests/contracts/test_client_openapi_contract.py": [
-      "frontend/**"
-    ]
-  }
+    "tests/contracts/test_client_openapi_contract.py": {
+      "body_sha256": {
+        "tests/contracts/test_client_openapi_contract.py": "99b61357c16eb6f0db7a09e3cd4e949dc6a813fe28661d930d0e410f6153b528"
+      },
+      "patterns": [
+        "frontend/**"
+      ],
+      "source_contract": "Actual fixed client.ts reader; complete source body freezes this reviewed dynamic family."
+    },
+    "tests/e2e/scoring.py": {
+      "body_sha256": {
+        "tests/e2e/conftest.py": "4fe82c0d1ad5a88f599bf3647256b62581974e78318efb851f190a5d6a9a7462",
+        "tests/e2e/reporting.py": "48c4562b9c81c8b6f7279865a70f82cf9dff8b02464cd8f59790900d16f8deef",
+        "tests/e2e/scoring.py": "da03734a6145d0f8bbf7276422dfe25af9fcc4ed76f8840c305682de0fa483fa"
+      },
+      "patterns": [],
+      "source_contract": "Actual scoring CostTracker and E2E fixture call load_pricing() without override; fixed pricing.toml default is already a shared FULL trigger. Complete owning bodies freeze this caller constraint; no generic pricing_path absence claim."
+    },
+    "tests/e2e/test_observability.py": {
+      "body_sha256": {
+        "tests/e2e/conftest.py": "4fe82c0d1ad5a88f599bf3647256b62581974e78318efb851f190a5d6a9a7462",
+        "tests/e2e/test_observability.py": "081c03186614cd1664d13b84c4069c516f135d69186f4506606ee74379c5b60d"
+      },
+      "patterns": [],
+      "source_contract": "Only file IO reads the e2e_log_path fixture: fixed .tmp/e2e-logs output, not a public input family. Actual entire consumer and fixture bodies frozen; literal public paths are still discovered."
+    },
+    "tests/e2e/test_security.py": {
+      "body_sha256": {
+        "tests/e2e/conftest.py": "4fe82c0d1ad5a88f599bf3647256b62581974e78318efb851f190a5d6a9a7462",
+        "tests/e2e/test_security.py": "272cfe66b5bdc0696c89f682134ce2b891bb2c6ac0313d073ebb9c7811de2a16"
+      },
+      "patterns": [],
+      "source_contract": "Only file IO reads the same fixed .tmp/e2e-logs output fixture. Privacy/log assertions unchanged and never executed here; complete consumer+fixture body bindings."
+    }
+  },
+  "helper_owners": {
+    "tests/bootstrap_prerequisite_helpers.py": {
+      "body_sha256": {
+        "tests/bootstrap_prerequisite_helpers.py": "04f4d7e67f1cdc9b15dca24e593480b9c9d2e04814c5047ecd116ffde4375ade",
+        "tests/config/test_restore_drill_executor_acl_integration.py": "de514d98a8c68e36ea895867199cd8e8efaa259943295e152f7052a8c7210eda",
+        "tests/config/test_runtime_config_policy_migration_integration.py": "0c904b84a61d6419f888a47e5309e00052739419edaac66f61b48fe88d09484c",
+        "tests/daemon/test_butler_migrations.py": "0cf957abf76eef25e8b5eae601934d1235eca1b2124a953669c78cb1d573c224"
+      },
+      "caller_sources": [
+        "tests/config/test_restore_drill_executor_acl_integration.py",
+        "tests/config/test_runtime_config_policy_migration_integration.py",
+        "tests/daemon/test_butler_migrations.py"
+      ],
+      "source_contract": "All unknown IO families retained. Select actual static/literal importers of this root helper rather than every tests/ descendant. Complete helper+caller bodies frozen; new static/literal importer or changed body refuses. Undeclared helpers retain parent fallback; arbitrary dynamic completeness remains separate historical audit."
+    },
+    "tests/fixtures/ci_shards/hand_manifest.py": {
+      "body_sha256": {
+        "tests/fixtures/ci_shards/hand_manifest.py": "5d6a170f982893878c164cc24f7dbb389ca065ffc53ce2a17bba3ab1df92469f",
+        "tests/scripts/test_check_ci_test_shards.py": "ec6ed315e178f8dc82cb79f7eef7bcebddc3fc61250aefbc60c301fd8b7f7565",
+        "tests/scripts/test_ci_partition.py": "775f0e2e7d1b6c4807791723134c7c3c8d0375503ad0985f435be5ad792b19a0"
+      },
+      "caller_sources": [
+        "tests/scripts/test_check_ci_test_shards.py",
+        "tests/scripts/test_ci_partition.py"
+      ],
+      "source_contract": "Immutable historical hand-manifest producer copied as a test fixture, not current production. Actual source-loading owning callers retain all conservative IO families; historical fixture body is unchanged. Complete current helper/caller bodies plus static/literal importer frontier bind allocation; no dead-code assumption."
+    },
+    "tests/relationship_authority_helpers.py": {
+      "body_sha256": {
+        "tests/integration/test_relationship_fact_content_authority.py": "853ba5a18bfedab36a8351e4bdc5821b6201d1fe4aed4eda12a2183e61f76122",
+        "tests/relationship_authority_helpers.py": "a30dae32ef85f1a517f692baddb2fc5982079978eace03a29e02ba71cd8050d3"
+      },
+      "caller_sources": [
+        "tests/integration/test_relationship_fact_content_authority.py"
+      ],
+      "source_contract": "All unknown IO families retained. Select actual static/literal importers of this root helper rather than every tests/ descendant. Complete helper+caller bodies frozen; new static/literal importer or changed body refuses. Undeclared helpers retain parent fallback; arbitrary dynamic completeness remains separate historical audit."
+    },
+    "tests/three_seams_helpers.py": {
+      "body_sha256": {
+        "roster/relationship/tests/test_entity_posture.py": "1b9bad82fe9cae32627268af9e3690538423c084c30042c3888470d150a18c6e",
+        "tests/connectors/test_filtered_event_buffer.py": "5806b98c15d7e37a1af0580b884f07e99c3fb6d1554e7b3f12f829405fe79e05",
+        "tests/contracts/test_ci_test_targets.py": "53ba43717ef50013b229f8a119c5cd3840e23fb70b84cf06b25483d444d3adc5",
+        "tests/core/test_provider_allowance.py": "66eb7581cd5d64488330f0be6f0470b315d4d32cfc960173b3719b925c65df93",
+        "tests/integration/test_filtered_event_buffer_jsonb_roundtrip.py": "ded278f9b2423ab5c16e20cacfbffd206f02287a5e28a400911c5516ab44be09",
+        "tests/three_seams_helpers.py": "f57b7889f0e5c8835eb2fe1b9c6761ae8c21aa5ccd615260c4d8900895f3f1a4"
+      },
+      "caller_sources": [
+        "roster/relationship/tests/test_entity_posture.py",
+        "tests/connectors/test_filtered_event_buffer.py",
+        "tests/contracts/test_ci_test_targets.py",
+        "tests/core/test_provider_allowance.py",
+        "tests/integration/test_filtered_event_buffer_jsonb_roundtrip.py"
+      ],
+      "source_contract": "All unknown IO families retained. Select actual static/literal importers of this root helper rather than every tests/ descendant. Complete helper+caller bodies frozen; new static/literal importer or changed body refuses. Undeclared helpers retain parent fallback; arbitrary dynamic completeness remains separate historical audit."
+    }
+  },
+  "schema": "test-resource-declarations.v1"
 }

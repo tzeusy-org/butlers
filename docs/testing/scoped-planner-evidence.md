@@ -11,7 +11,15 @@ importing tests. Literal candidates over-approximate readers. Unknown variable
 file readers conservatively select all public families unless an audited bounded
 source declaration refines them. The checked-in bodies and consumer paths are
 checked on every guard run. Changing a test without regeneration refuses the
-reader guard. Supported I/O imports and assignments retain aliases even when
+reader guard. Narrow dynamic declarations freeze the complete reader and actual
+input-producer bodies; changing those bodies also refuses regeneration until
+the source contract is reviewed. Root helper allocations freeze the actual
+static/literal importer frontier and caller bodies, while retaining every unknown
+public IO family. A new importer, wrong owner or changed body refuses; undeclared
+helpers keep their conservative parent scope. The fixed E2E log output fixture
+and default-only pricing callers have separate complete body-bound declarations;
+their public literal reads are still discovered and E2E selection still refuses
+affected admission. Supported I/O imports and assignments retain aliases even when
 passed to helpers; finite literal concatenation is folded without executing tests.
 Unknown paths reached through supported I/O retain conservative whole-family readers.
 Strings and this static analysis are not proof of arbitrary runtime
@@ -63,9 +71,16 @@ branches and cannot satisfy any historical or natural measurement requirement.
 The manual calibration cannot count as a natural PR. The 145 frozen records,
 at least 57 safe scopes, three genuine eligible historical manifest diffs, last 100 actual
 reader coverage, first 50 distribution, first 20 no-miss/fraction and ten actual
-compatible affected maxima remain separate mandatory outcomes. The replay tool
-keeps absent base/head evidence UNKNOWN and emits source decisions without running
-pytest. Explicitly no wall-clock gain is claimed.
+compatible affected maxima remain separate mandatory outcomes. The replay tool's
+default `--mode current-vectors` evaluates the frozen changed-file lists against
+the pinned, tracked-clean CURRENT planner checkout and its actual registry/profile.
+This is the scratch-corpus replay; unavailable historical refs remain UNKNOWN
+and it supplies no historical Git-diff or last-100 reader proof. The separate
+`--mode historical-diffs` requires available actual base/head commits and verifies
+the complete changed-file list against their Git diff. Missing refs or a different
+list remain UNKNOWN. Historical manifest admission requires that genuine diff;
+a current vector does not invent a historical manifest change. Both modes emit
+source decisions without running pytest. Explicitly no wall-clock gain is claimed.
 
 ## Rollback
 

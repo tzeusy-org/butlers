@@ -143,6 +143,52 @@ def has_io_reference(tree: ast.AST) -> bool:
     )
 
 
+def helper_callers(trees: dict[str, ast.AST], helper: str) -> list[str]:
+    """Conservative static/literal importer census for a declared helper.
+
+    Include literal nested source and file-loader references. This census is
+    not arbitrary dynamic-import proof; a declaration also freezes the actual
+    reviewed caller bodies, and undeclared helpers keep their parent fallback.
+    """
+    module = helper.removesuffix(".py").replace("/", ".")
+    short_module = Path(helper).stem
+    filename = Path(helper).name
+    callers = []
+    for name, tree in trees.items():
+        if name == helper:
+            continue
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                found |= any(alias.name in {module, short_module} for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                prefix = node.module or ""
+                if node.level:
+                    parents = name.removesuffix(".py").split("/")[: -node.level]
+                    prefix = ".".join([*parents, prefix]).rstrip(".")
+                found |= prefix in {module, short_module} or any(
+                    f"{prefix}.{alias.name}" == module for alias in node.names
+                )
+            else:
+                literal = literal_string(node)
+                if literal is not None:
+                    found |= module in literal or helper in literal or filename in literal
+        if found:
+            callers.append(name)
+    return sorted(callers)
+
+
+def _body_bindings(root: Path, witnesses: object, sources: list[str]) -> bool:
+    if not isinstance(witnesses, dict) or not witnesses:
+        return False
+    return all(
+        name in sources
+        and isinstance(value, str)
+        and hashlib.sha256((root / name).read_bytes()).hexdigest() == value
+        for name, value in witnesses.items()
+    )
+
+
 def discover(root: Path, declarations: dict) -> dict:
     if declarations.get("schema") != "test-resource-declarations.v1":
         raise ValueError("READER_UNCLASSIFIED")
@@ -152,12 +198,16 @@ def discover(root: Path, declarations: dict) -> dict:
     sources = tracked_sources(root)
     if any(name not in sources for name in dynamic):
         raise ValueError("READER_UNCLASSIFIED")
+    owners = declarations.get("helper_owners", {})
+    if not isinstance(owners, dict) or any(name not in sources for name in owners):
+        raise ValueError("READER_UNCLASSIFIED")
+    trees = {name: ast.parse((root / name).read_bytes()) for name in sources}
     bindings: dict[str, set[str]] = {}
     identities = {}
     unresolved = []
     for name in sources:
         raw = (root / name).read_bytes()
-        tree = ast.parse(raw)
+        tree = trees[name]
         # String references are conservative candidates, including docstrings.
         # A split root join is a whole-family candidate, not an exact filename.
         patterns = set()
@@ -170,7 +220,17 @@ def discover(root: Path, declarations: dict) -> dict:
                 patterns.add(value.rstrip("/") + "/**")
             if re.fullmatch(r"[A-Z][\w-]*\.md", value):
                 patterns.add(value)
-        declared = dynamic.get(name, [])
+        declaration = dynamic.get(name)
+        if declaration is not None:
+            if (
+                not isinstance(declaration, dict)
+                or not _body_bindings(root, declaration.get("body_sha256"), sources)
+                or name not in declaration["body_sha256"]
+            ):
+                raise ValueError("READER_UNCLASSIFIED")
+            declared = declaration.get("patterns")
+        else:
+            declared = []
         if not isinstance(declared, list) or any(
             not isinstance(p, str) or resource_family(p) is None for p in declared
         ):
@@ -189,7 +249,27 @@ def discover(root: Path, declarations: dict) -> dict:
         identities[name] = hashlib.sha256(raw).hexdigest()
         if not patterns:
             continue
-        selected = consumers(root, name)
+        if name in owners:
+            ownership = owners[name]
+            if (
+                not isinstance(ownership, dict)
+                or not _body_bindings(root, ownership.get("body_sha256"), sources)
+                or name not in ownership["body_sha256"]
+            ):
+                raise ValueError("READER_UNCLASSIFIED")
+            actual_callers = helper_callers(trees, name)
+            declared_callers = ownership.get("caller_sources")
+            if (
+                not actual_callers
+                or declared_callers != actual_callers
+                or any(caller not in ownership["body_sha256"] for caller in actual_callers)
+            ):
+                raise ValueError("READER_UNCLASSIFIED")
+            selected = sorted(
+                {target for caller in actual_callers for target in consumers(root, caller)}
+            )
+        else:
+            selected = consumers(root, name)
         for pattern in patterns:
             if not safe_path(pattern) or resource_family(pattern) is None:
                 raise ValueError("READER_UNCLASSIFIED")
