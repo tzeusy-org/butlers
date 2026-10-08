@@ -763,12 +763,14 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
             + """import json, os, subprocess, sys, time
 from pathlib import Path
 root = Path(__file__).resolve().parents[2]
+time.sleep(float(os.environ.get('VITEST_CONTROL_STARTUP_DELAY', '0')))
 shard = next((a for a in sys.argv if a.startswith('--shard=')), None)
 stage = ('collect-full' if shard is None else 'collect-shard-' + shard[8]) if sys.argv[1] == 'list' else 'execute'
 mode = os.environ.get('VITEST_CONTROL')
+(root / ('transport-ready-' + stage)).write_text('ready')
 if mode == 'descendant-stall' and stage == 'collect-full':
     ready_read, ready_write = os.pipe()
-    child = subprocess.Popen([sys.executable, '-c', "import os, signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[2]).write_text('ready'); os.write(int(sys.argv[1]), b'1'); time.sleep(1.5); Path(sys.argv[3]).write_text('late descendant output')", str(ready_write), str(root / 'descendant-ready'), str(root / 'descendant-late')], pass_fds=(ready_write,))
+    child = subprocess.Popen([sys.executable, '-c', "import os, signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[2]).write_text('ready'); os.write(int(sys.argv[1]), b'1'); time.sleep(3); Path(sys.argv[3]).write_text('late descendant output')", str(ready_write), str(root / 'descendant-ready'), str(root / 'descendant-late')], pass_fds=(ready_write,))
     os.close(ready_write)
     assert os.read(ready_read, 1) == b'1'
     os.close(ready_read)
@@ -796,12 +798,46 @@ else:
 
         def bounded_helper(command, **kwargs):
             if command[0] == str(helper):
-                kwargs["timeout"] = (
-                    0.8 if os.environ.get("VITEST_CONTROL") == "descendant-stall" else 0.2
+                # Leave a finite one-second useful-work startup margin. The old
+                # 0.2s bound could refuse an ordinary predecessor collection
+                # before the specifically positioned later stall was entered.
+                shard = next((arg for arg in command if arg.startswith("--shard=")), None)
+                stage = (
+                    ("collect-full" if shard is None else "collect-shard-" + shard[8])
+                    if command[1] == "list"
+                    else "execute"
                 )
+                ready = buildroot / "frontend" / ("transport-ready-" + stage)
+                ready.unlink(missing_ok=True)
+                kwargs["timeout"] = 2
+                try:
+                    return native_run(command, **kwargs)
+                finally:
+                    assert ready.is_file() and ready.read_text() == "ready", (
+                        "current helper entry unavailable"
+                    )
             return native_run(command, **kwargs)
 
         local.setattr(vitest, "run_process", bounded_helper)
+        local.setenv("VITEST_CONTROL_STARTUP_DELAY", "0.2")
+        # The actual PATH-selected Node probe is optional diagnostic metadata,
+        # not an identity or worker-admission substitute for the real collector.
+        observed = vitest.runtime_observation(buildroot)
+        assert observed is not None and observed["available_parallelism"] > 0
+        for raw in (
+            b"private control text",
+            b'{"node":"24.21.0","available_parallelism":true}',
+            b'{"node":"private control text","available_parallelism":4}',
+            b'{"node":"24.21.0","available_parallelism":0}',
+            b'{"node":"24.21.0","available_parallelism":4,"extra":"private control text"}',
+        ):
+            with monkeypatch.context() as diagnostic:
+                diagnostic.setattr(
+                    vitest,
+                    "run_process",
+                    lambda command, **kwargs: subprocess.CompletedProcess(command, 0, raw, b""),
+                )
+                assert vitest.runtime_observation(buildroot) is None
         for mode, stage, category in (
             ("collect-full", "collect-full", "timeout"),
             ("collect-shard-1", "collect-shard-1", "timeout"),
@@ -818,6 +854,7 @@ else:
             assert receipt["complete"] is False
             assert (receipt["stage"], receipt["failure_category"]) == (stage, category)
             assert receipt["identity"] == build.identity(buildroot)
+            assert receipt["runtime_observation"] == observed
             assert "private control text" not in receipt_text
             if category == "timeout":
                 assert receipt["process_cleanup"]["term_sent"] is True
@@ -835,7 +872,7 @@ else:
         assert receipt["process_cleanup"]["pipes_drained"] is True
         assert receipt["process_cleanup"]["child_reaped"] is True
         assert "private control text" not in receipt_text
-        time.sleep(1.5)
+        time.sleep(3)
         assert not (buildroot / "frontend/descendant-late").exists()
         local.delenv("VITEST_CONTROL")
         destination = tmp_path / "vitest-healthy"

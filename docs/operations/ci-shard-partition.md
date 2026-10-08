@@ -91,3 +91,7 @@ These controls do not establish a hosted full-population positive or the hosted
 timeout cause. Process cleanup and deterministic
 phase reconstruction do not establish that missing proof. Pool, worker settings,
 CLI collection, configuration, corpus and the 180/900-second limits are retained.
+An optional ten-second fixed Node probe records only the actual PATH-selected
+Node version and `availableParallelism()` count. Malformed/unavailable results
+are null (UNKNOWN). These observations neither establish configured worker
+counts nor admit items, change limits, select a pool or supply timing authority.

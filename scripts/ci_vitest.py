@@ -12,6 +12,7 @@ import collections
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -108,6 +109,41 @@ def key(file: str, title: str, root: Path) -> str:
     return hashlib.sha256(json.dumps([str(path.relative_to(root)), title]).encode()).hexdigest()
 
 
+def runtime_observation(root: Path) -> dict | None:
+    """Observe the CLI's PATH-selected Node without changing collection inputs.
+
+    This optional diagnostic never admits a population, selects workers or
+    changes a deadline. Missing/malformed observations are UNKNOWN. The fixed
+    program reads only public runtime version and available CPU count.
+    """
+    try:
+        result = run_process(
+            [
+                "node",
+                "-e",
+                "console.log(JSON.stringify({node:process.versions.node,"
+                "available_parallelism:require('node:os').availableParallelism()}))",
+            ],
+            cwd=root / "frontend",
+            env={**os.environ, "CI": "1"},
+            timeout=10,
+        )
+        value = json.loads(result.stdout)
+        if (
+            result.returncode != 0
+            or not isinstance(value, dict)
+            or set(value) != {"node", "available_parallelism"}
+            or not isinstance(value["node"], str)
+            or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value["node"]) is None
+            or type(value["available_parallelism"]) is not int
+            or not 1 <= value["available_parallelism"] <= 4096
+        ):
+            return None
+        return value
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        return None
+
+
 def collect(root: Path, shard: int | None) -> list[dict]:
     command = [
         str(root / "frontend/node_modules/.bin/vitest"),
@@ -155,6 +191,7 @@ def run(root: Path, shard: int, output: Path) -> int:
         if type(shard) is not int or shard not in (1, 2):
             raise ValueError("unknown Vitest shard")
         receipt["identity"] = identity(root)
+        receipt["runtime_observation"] = runtime_observation(root)
         stage = "collect-full"
         complete = collect(root, None)
         halves = {}
