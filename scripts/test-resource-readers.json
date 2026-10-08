@@ -1,6 +1,6 @@
 {
   "declarations_digest": "f941db6a57f07f5524be18ff01997d5e66e7c6528c49d0f34feb1753bce2c49f",
-  "digest": "4609aa54f4444a5815cf44a72ad57884170fc83da8ac4b9d0da8f25ca05d75d1",
+  "digest": "d9cd7ef0a511d8c11533e2892e9380a62ee8277bccf72528ae17994e2af06bf6",
   "families": [
     "docs/",
     "about/",
@@ -4583,7 +4583,7 @@
     "tests/modules/test_module_memory.py": "5ea78f0b5380802dbfd09bb60feae4d4c7e5f0a93297a92169411624c5cdc8fd",
     "tests/modules/test_module_metrics.py": "3e4571bbf6e5315113134fae8638d4ade3c65937e812aabf0f52762b928f4ffb",
     "tests/modules/test_module_owner_conditions_broker.py": "90d3bf6e1ceb98c433efa46fe4f274278cb31ed5b926b4194c35078ffb6f4082",
-    "tests/modules/test_module_pipeline.py": "1d2256735aa1df9d109bdc4fa34295a5b4c883e5fe4aea87a97d1213f154fce5",
+    "tests/modules/test_module_pipeline.py": "278a5d5f307116c2d7420959350c99d7dcedb8d0d04161b32b525277ebdc6b9d",
     "tests/modules/test_module_qa.py": "de49971f47d1cb941aa0068029620430730e17c3226ec9a64d34185acb60ad03",
     "tests/modules/test_module_registry.py": "d919432398b21b15e1c745634cfb035140dd5f444b6df42105948639b6cb0f2f",
     "tests/modules/test_module_self_healing.py": "cf0ed044d14e838cb6a4064077553d29233720a75e552f4ebdd08e7aaf29c926",
