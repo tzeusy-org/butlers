@@ -385,7 +385,7 @@
       "p95_s": null
     },
     {
-      "workflow": ".github/workflows/ci-scope-calibration.yml",
+      "workflow": ".github/workflows/migration-chain-main.yml",
       "job": "affected-calibration",
       "existing_timeout_minutes": null,
       "successful_sample_n": 0,
@@ -393,11 +393,26 @@
       "candidate_timeout_minutes": 37,
       "installed_timeout_minutes": 37,
       "state": "provisional; bounded calibration preparation/execution envelope, no healthy/p95 measurement",
-      "sample_source": "source:ci-scope-calibration step bounds + ci_environment640s + affected300s/kill/reap",
+      "sample_source": "source:migration-chain-main affected-calibration step bounds + ci_environment640s + affected300s/kill/reap",
       "review_uv_nominal_envelope_s": 640,
       "review_browser_hard_retry_interval_s": 0,
       "additional_provisional_cold_dependency_allowance_s": 0,
       "review_policy": "ceil((120 checkout +120 Python setup +640 UV5attempts/4sleep +640 frozen repair +360 owning command/cleanup +120 sanitize +120 upload)/60)=36min; installed37min retains60s job finalization/headroom. Individual step watchdogs sum36min. These are bounded provisional envelopes, not measured latency/p95 or hard target attainment."
+    },
+    {
+      "workflow": ".github/workflows/migration-chain-main.yml",
+      "job": "offline-route-a-build-proof",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 45,
+      "retry_extra_s": 0,
+      "state": "provisional exclusive manual proof bound; no healthy calibration or routine-lane timing claim",
+      "sample_source": "bu-8xyxp2 explicit finite protocol:1800s process deadline+2x75s cleanup+640s UV installer recovery+110s checkout/parser/evidence reserve=2700s; no measured p95",
+      "installed_timeout_minutes": 45,
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0
     }
   ],
   "tests": [
