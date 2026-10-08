@@ -228,30 +228,6 @@ def _requires_full_suite(path: str) -> bool:
     return False
 
 
-def _support_file_scope(
-    path: str,
-    *,
-    repo_dir: str | Path | None,
-    full_suite: list[str],
-) -> list[str]:
-    """Return a test-bearing owner for support code, or escalate safely.
-
-    Fixture assets can sit many directories below ``tests/`` without any
-    collectable test nearby.  Selecting that leaf (or its empty parent) gives a
-    green, zero-test run.  Cross-suite fixtures are especially ambiguous, so
-    they escalate instead of guessing which consumer owns them.
-    """
-
-    if path.startswith("tests/fixtures/"):
-        return full_suite
-
-    root = Path(repo_dir) if repo_dir is not None else Path(__file__).resolve().parents[3]
-    parent = Path(path).parent
-    if any((root / parent).glob("test_*.py")):
-        return [f"{parent.as_posix().rstrip('/')}/"]
-    return full_suite
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -322,17 +298,10 @@ def resolve_test_paths(
                 test_paths.add(f)
             else:
                 # Support modules and package markers are imported by real test
-                # files. Running the helper itself collects nothing, so select
-                # a test-bearing owner or escalate when that ownership is not
-                # mechanically knowable.
-                support_scope = _support_file_scope(
-                    f,
-                    repo_dir=repo_dir,
-                    full_suite=full_suite,
-                )
-                if support_scope == full_suite:
-                    return full_suite
-                test_paths.update(support_scope)
+                # files across directories and configured roots. Adjacent tests
+                # do not prove exclusive ownership; escalate instead of omitting
+                # an imported helper's consumers in another suite.
+                return full_suite
             continue
 
         if f == "roster/conftest.py":

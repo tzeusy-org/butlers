@@ -36,8 +36,6 @@ def test_full_scope_matches_pytest_testpaths() -> None:
         ("tests/api/conftest.py", ["tests/api/"]),
         ("roster/relationship/tests/conftest.py", ["roster/relationship/tests/"]),
         ("roster/conftest.py", ["roster/"]),
-        ("tests/modules/memory/_test_helpers.py", ["tests/modules/memory/"]),
-        ("roster/relationship/tests/evidence_schema.py", ["roster/relationship/tests/"]),
     ],
 )
 def test_direct_test_edits_remain_narrow(changed_file: str, expected: list[str]) -> None:
@@ -63,6 +61,8 @@ def test_direct_test_edits_remain_narrow(changed_file: str, expected: list[str])
         "src/butlers/testing/scoped_runner.py",
         "src/butlers/unknown_new_boundary.py",
         "unknown_root_tool.py",
+        "tests/modules/memory/_test_helpers.py",
+        "roster/relationship/tests/evidence_schema.py",
     ],
 )
 def test_shared_migration_and_unknown_paths_escalate(changed_file: str) -> None:
@@ -88,6 +88,10 @@ def test_known_documentation_only_change_does_not_invent_pytest_scope(tmp_path: 
 def test_fixture_asset_without_a_test_bearing_owner_escalates() -> None:
     fixture = "tests/fixtures/audit_result_guard/roster/switchboard/violating_audit_writer.py"
     assert resolve_test_paths([fixture]) == FULL_SUITE
+    # Actual shared helper consumer lives outside tests/, despite adjacent test files.
+    helper = "tests/three_seams_helpers.py"
+    assert resolve_test_paths([helper]) == FULL_SUITE
+    assert resolve_test_paths(["tests/__init__.py"]) == FULL_SUITE
 
 
 @pytest.mark.parametrize("changed_file", [".github/workflows/ci.yml", "./.github/workflows/ci.yml"])

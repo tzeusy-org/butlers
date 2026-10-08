@@ -28,6 +28,13 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
 ) -> None:
     """REQ-ci-shard-assurance-004: actual route reuses only a conservative clean plan."""
     assert ci_test_plan.decide_mode(_plan("scoped", ["tests/api/test_foo.py"])) == "scoped"
+    for paths in (
+        ["tests/api/"],
+        ["roster/relationship/tests/"],
+        ["./tests/api/test_foo.py"],
+        ["tests/e2e_extra/test_foo.py"],
+    ):
+        assert ci_test_plan.decide_mode(_plan("scoped", list(paths))) == "scoped"
     (tmp_path / "tests").mkdir()
     selected = tmp_path / "tests/test_selected.py"
     selected.write_text("def test_selected(): pass\n")
@@ -91,6 +98,21 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
 @pytest.mark.parametrize("scope", ["full", "none"])
 def test_decide_mode_fails_closed_to_full_on_escalation_or_empty_plan(scope: str) -> None:
     assert ci_test_plan.decide_mode(_plan(scope)) == "full"
+    # Selected scope, including a deleted-file ancestor, is the admission boundary.
+    for paths in (
+        ["tests/"],
+        ["tests"],
+        ["roster/"],
+        ["tests/e2e/"],
+        ["tests/e2e/test_foo.py"],
+        [],
+        ["unknown/test_foo.py"],
+        ["/tests/api/test_foo.py"],
+        ["tests/api/../e2e/test_foo.py"],
+        ["."],
+        ["tests_extra/test_foo.py"],
+    ):
+        assert ci_test_plan.decide_mode(_plan("scoped", list(paths))) == "full"
 
 
 def test_ci_fallback_allowlist_widens_the_library_default_with_tests_e2e() -> None:
@@ -136,6 +158,15 @@ def test_main_writes_full_mode_with_empty_test_paths_on_escalation(
 
     assert ci_test_plan.main(["--base", "origin/main"]) == 0
 
+    lines = output_file.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "mode=full"
+    assert json.loads(lines[1].removeprefix("test_paths=")) == []
+    assert "[CI DECISION] mode=full" in capsys.readouterr().out
+    output_file.unlink()
+    monkeypatch.setattr(
+        ci_test_plan, "plan_scoped_tests", lambda *_args, **_kwargs: _plan("scoped", ["tests/"])
+    )
+    assert ci_test_plan.main(["--base", "origin/main"]) == 0
     lines = output_file.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "mode=full"
     assert json.loads(lines[1].removeprefix("test_paths=")) == []

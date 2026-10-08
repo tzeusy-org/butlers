@@ -78,6 +78,13 @@ Push to main collects/budget-checks fresh inventory but skips heavy execution af
 validation. Docs-only skips remain explicit. The required `check` verifies exact event/mode
 pairings from prerequisite verdicts only, with no checkout, installation or report work.
 
+Test support modules and package markers with unproved import ownership escalate to every
+configured pytest root, including both `tests/` and `roster/`; adjacent test files cannot prove
+that a helper has no consumers elsewhere. CI validates the selected scope independently of the
+changed-file list. Empty, unsupported, outside-root or root-wide selections, and any selected
+ancestor or descendant of `tests/e2e/`, fall back to the complete matrix. Known small API scopes,
+direct test edits and pytest-governed nested conftest scopes remain eligible.
+
 Guards performs one actual installed `pytest tests/ roster/ --collect-only -q -n0 -m ""`
 collection. Exact inherited markers establish both populations; advisory weights never do.
 Both unchanged lane budgets consume this inventory. Deterministic LPT assigns whole files to

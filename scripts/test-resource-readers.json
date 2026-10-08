@@ -1,6 +1,6 @@
 {
-  "declarations_digest": "6427f32d53cf77c014c7aaa1d1caed5104111fda625ae771ded95901f7a5a382",
-  "digest": "89dfd9bb34ba25f6746e9058e807304c60495059dadf4529ce9b339393e1e295",
+  "declarations_digest": "5758681e71d14273e4460541b47bb59fc5431d147eb42a3fa1f8da5ac4a3f0f4",
+  "digest": "ad77a609d75007c90ea9d3f8151c18ef0b200ed164b344ffdac21f9cf1a64091",
   "families": [
     "docs/",
     "about/",
@@ -4631,7 +4631,7 @@
     "tests/scripts/test_check_test_budget.py": "32d1c49434d9545995264e2d209310d9ec698449a032905b8ee7f071d946930f",
     "tests/scripts/test_ci_branch_hygiene.py": "eca4e889fc8dbb7b12d5f0e36c6b6b2d3bd4b7b5e72e0213e19546aa65efff8c",
     "tests/scripts/test_ci_partition.py": "775f0e2e7d1b6c4807791723134c7c3c8d0375503ad0985f435be5ad792b19a0",
-    "tests/scripts/test_ci_test_plan.py": "8db76fd097f8a102c09c7a998aec4b47fb914d435469f7e729156535450804f0",
+    "tests/scripts/test_ci_test_plan.py": "49bc8daf69ee2d035a5c60a26806b182b6b0df4ea3060395864fca95ad1f420d",
     "tests/scripts/test_combine_review_comment_sources.py": "f0d694dcd228a6b49553c7aab44509a44f5dbd9d61d74a7c3fdd6879c06c3427",
     "tests/scripts/test_compose_dashboard_proxy_readiness.py": "c466ae191e9671cfbc13ffa47df9618e7b36da743989891d29608c123bf155db",
     "tests/scripts/test_compose_dashboard_url.py": "240ceacf5134d815783b86e06f8e2f4f1398369624dbd33e6cbba272be24d3cb",
@@ -4691,8 +4691,8 @@
     "tests/test_passive_interaction_sender_identity.py": "59e1c0e8c449e83e2d2e45e070e28476627535c42ec3d9b16d1b3c36f6eb6392",
     "tests/test_telegram_prefix_resolution.py": "f2eaa7d302f0e657f5e0981702818e0c322b9e14af76b654e3b86eaf3d35b543",
     "tests/testing/test_changed_files.py": "8f30ba9018d18a48c2765b5ff7603ad9f759faad2cd47bddc352223f0ec83c3b",
-    "tests/testing/test_scoped_runner.py": "9c715683bc5a540f506c821cb18403c1e8e432420a046b20659a2dd8a9ce7bbb",
-    "tests/testing/test_source_test_map.py": "1a1edf582264174cb016e05591cf25eba79e99f436d4247fcf2e66e057338288",
+    "tests/testing/test_scoped_runner.py": "ef7413d66ec7a49609ccdf1eb1f2ae26763bfb0247a1044769003d0925bcb009",
+    "tests/testing/test_source_test_map.py": "24c29739e87a6845d72fd2ed7b32f744a4b6545ff0344a3a8a436dae8c1e3305",
     "tests/three_seams_helpers.py": "f57b7889f0e5c8835eb2fe1b9c6761ae8c21aa5ccd615260c4d8900895f3f1a4",
     "tests/tools/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "tests/tools/test_attachments.py": "20dfab5069590a5955d2d4aee954a743a802d7c4fbb434c58992d253de46f006",
