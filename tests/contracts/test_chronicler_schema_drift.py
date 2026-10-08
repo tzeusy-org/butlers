@@ -205,6 +205,10 @@ async def _apply_inline_ddl(conn: asyncpg.Connection) -> None:
             active BOOLEAN NOT NULL DEFAULT false,
             inactive_reason TEXT,
             schema_version INTEGER NOT NULL DEFAULT 1,
+            raw_evidence_retention TEXT,
+            projected_evidence_retention TEXT,
+            allowed_spatial_precision_m INTEGER,
+            source_tombstone_behavior TEXT,
             registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )

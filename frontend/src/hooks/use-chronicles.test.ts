@@ -314,3 +314,56 @@ describe("getChroniclerDayClose client delegate", () => {
     expect(getChroniclerDayClose).toHaveBeenCalledWith(customParams);
   });
 });
+
+// @vitest-environment jsdom is required by the separate mounted map control;
+// this scoped QueryClient control exercises actual cancellation/reset state.
+describe("committed location privacy generation", () => {
+  it("fences late current/archive data, preserves unrelated cache and accepts fresh points", async () => {
+    // REQ-location-retention-007; actual QueryClient state, no server-disposal proof.
+    const { QueryClient } = await import("@tanstack/react-query");
+    const { reconcileLocationPrivacy, subscribeLocationPrivacy, getLocationPrivacySnapshot } = await import("./location-privacy");
+    const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const current = ["chronicles", "point-events", { day: "current" }];
+    const archive = ["chronicles", "point-events", { day: "archive" }];
+    const episode = ["chronicles", "episode", "expired"];
+    const sourceStatus = ["chronicles", "location-retention"];
+    cache.setQueryData(current, [{ lat: 1.31415926, id: "old-current" }]);
+    cache.setQueryData(archive, [{ lat: 2.71828182, id: "old-archive" }]);
+    cache.setQueryData(episode, { payload: { lat: 1.31415926 } });
+    cache.setQueryData(sourceStatus, { data: { privacy_revision: "1" } });
+    cache.setQueryData(["other-owner"], "independent");
+    let resolveOld!: (value: unknown) => void;
+    const old = cache.fetchQuery({
+      queryKey: current,
+      queryFn: () => new Promise((resolve) => { resolveOld = resolve; }),
+    }).catch(() => "cancelled");
+    const notifications: string[] = [];
+    const unsubscribe = subscribeLocationPrivacy(() => {
+      notifications.push(getLocationPrivacySnapshot().pending ? "pending" : "settled");
+    });
+    try {
+      await reconcileLocationPrivacy(cache, "1");
+      resolveOld([{ lat: 9.99999999, id: "late-old" }]);
+      await old;
+      expect(cache.getQueryData(current)).toBeUndefined();
+      expect(cache.getQueryData(archive)).toBeUndefined();
+      expect(cache.getQueryData(episode)).toBeUndefined();
+      expect(cache.getQueryData(sourceStatus)).toEqual({ data: { privacy_revision: "1" } });
+      expect(cache.getQueryData(["other-owner"])).toBe("independent");
+      expect(notifications).toEqual(["pending", "settled"]);
+      const fresh = [{ lat: 3.14159265, id: "fresh-allowed" }];
+      await cache.fetchQuery({ queryKey: current, queryFn: async () => fresh });
+      expect(cache.getQueryData(current)).toEqual(fresh);
+      await reconcileLocationPrivacy(cache, "0");
+      await reconcileLocationPrivacy(cache, "invalid");
+      await reconcileLocationPrivacy(cache, true);
+      expect(cache.getQueryData(current)).toEqual(fresh);
+      await reconcileLocationPrivacy(cache, "2");
+      expect(cache.getQueryData(current)).toBeUndefined();
+      expect(notifications).toEqual(["pending", "settled", "pending", "settled"]);
+    } finally {
+      unsubscribe();
+      cache.clear();
+    }
+  });
+});

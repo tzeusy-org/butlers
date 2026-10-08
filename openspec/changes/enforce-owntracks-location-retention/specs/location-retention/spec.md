@@ -134,6 +134,15 @@ Scope: v1-mandatory
 
 The system SHALL enforce P5 on every actual system-owned source-derived copy and monotone floor. It SHALL preserve unrelated audit/provider/user-authored scope and SHALL not claim completeness from ambiguous lineage.
 
+The cohort SHALL include source-owned server exports and stored/processing API, session, input-bundle, cache and prose copies. Native ASGI final-body send followed by delegate completion may settle only the actual source-owned response lifetime under its fixed producer and policy-first writer fences. A client ACK, principal string, remote browser claim or arbitrary user download SHALL NOT be terminal authority. Interrupted responses, missing source binding, unknown committed receipts and active source-owned holders SHALL remain held; source response completion SHALL NOT certify remote-recipient erasure.
+
+
+Configured Memory producers SHALL capture the actual accepted native episode and exact consolidation input bundle under the owning writer, preserve immutable parent generations, and bind derived facts/rules and shared-catalog generations to their actual persisted bodies. Existing catalog sensitivity and relevance selection SHALL remain; registry addresses, citations, nullable source_episode_id, row existence or caller headers SHALL NOT establish lineage or closure. Historic catalog generations and receiver loans SHALL remain in the native holder census even after a current head changes.
+
+Catalog body delivery and owning prepare/status SHALL use the actual registered Switchboard inter-butler route. The constructor-owned outer admission SHALL bind the exact target/tool/loan before instrumentation, verify the actual fixed source and online committed receiver generation/body/incarnation, strip the private ephemeral capability, and clear the private context in finally. Public loan/decision/receipt UUIDs SHALL be locators only, and generic requests SHALL preserve existing streaming behavior. Bounded duplicate-key, oversized, excessive-frame and interrupted controls SHALL refuse native admission. No new credential, principal, signer, grant, peer-private SQL or caller-asserted receiving authority SHALL be introduced.
+
+Native artifact/catalog reduction and disposal SHALL require complete exclusive captured input, exact current body digests, every historic receiver/source response disposition and separate owning committed readbacks. Unknown legacy catalog bodies, mixed bundles, active native session/context descendants and missing producer reservations SHALL remain visibly incomplete and preserve raw source and point evidence. A source server response disposition SHALL settle only that source-owned transient copy. Episode reference/lease/consolidation counters may advance without changing the frozen content digest only through the explicit lifecycle profile; content, metadata, vectors and authority fields SHALL remain bound, while active leases and every actual derived bundle/link endpoint SHALL independently block until their native committed disposition is proven.
+
 ID: REQ-location-retention-005
 Source: bu-s11n0s.7 original nonresurrection non-goal and S2; about/heart-and-soul/security.md Sensitive Data Categories; openspec/specs/connector-filtered-events/spec.md Full Payload Shape and Replay lineage and event payload age independently; proposed source-protocol P5
 Scope: v1-mandatory
@@ -197,6 +206,8 @@ Scope: v1-mandatory
 ### Requirement: Authoritative API Map and Owner Controls
 
 The system SHALL implement P7 using true server policy and source retention state. It SHALL not use a frontend TTL filter as evidence that upstream raw deletion occurred.
+
+Managed dashboard query/cache and MapLibre geometry SHALL independently fence stale or late responses and invalidate current and archived location views after genuine committed retention changes. Native server-response completion SHALL NOT substitute for these managed UI controls. Planted expired geometry and a retained fresh-point positive SHALL be exercised through the real browser/runtime path; a cosmetic plaque, client purge field, empty fixture or policy clock alone SHALL NOT prove this requirement.
 
 ID: REQ-location-retention-007
 Source: bu-s11n0s.7 original map outcome and S3; openspec/specs/dashboard-chronicles/spec.md Map Render Privacy Contract and Where-You-Went Map Trail; proposed source-protocol P7

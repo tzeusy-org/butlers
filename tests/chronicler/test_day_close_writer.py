@@ -1238,3 +1238,126 @@ async def test_build_day_close_completion_hooks_uses_owner_timezone(fake_pool, m
     assert mock_upsert.call_args.kwargs["start_at"] == datetime(
         2026, 6, 21, 0, 0, 0, tzinfo=ZoneInfo("Asia/Singapore")
     ).astimezone(UTC)
+
+
+async def test_native_cache_writer_binds_actual_input_and_receipts_exact_legacy_replacement():
+    """REQ-location-retention-005/006; same native writer software, no real SQL credit."""
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler import location_retention
+    from butlers.chronicler.location_projection import _digest_value
+    from butlers.core.spawner import SpawnerResult
+    from butlers.location_retention import content_digest
+
+    cache_key = "day_close:2026-04-24:tz:UTC"
+    session_id, birth = uuid4(), uuid4()
+    old = {"cache_key": cache_key, "prose": "Synthetic old private summary", "provenance_refs": []}
+    cache = dict(old)
+    observation = None
+    head = None
+    inputs = []
+    replacements = []
+    disposed = False
+    trace = []
+
+    class Conn:
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        async def fetchrow(self, query, *args):
+            if "location_retention_policy" in query:
+                trace.append("policy_lock")
+                return {"version": 1}
+            if "location_legacy_cache_observations" in query:
+                return observation
+            if "location_native_cache_heads" in query:
+                return head
+            if "tier2_cache" in query:
+                return cache
+            return None
+
+        async def fetchval(self, query, *args):
+            nonlocal observation
+            if "current_user" in query:
+                return "butler_chronicler_rw"
+            if "location_native_copy_dispositions" in query:
+                return disposed
+            if "INSERT INTO location_legacy_cache_observations" in query:
+                observation = {
+                    "cache_key": args[0],
+                    "body_digest": args[1],
+                    "observation_id": args[2],
+                }
+                trace.append("old_body_observed")
+                return args[2]
+            return None
+
+        async def fetch(self, query, *args):
+            assert "location_native_copy_births" in query and args == (session_id,)
+            return [{"copy_generation": birth}]
+
+        async def execute(self, query, *args):
+            nonlocal head
+            if "INSERT INTO tier2_cache" in query:
+                trace.append("cache_body_written")
+                cache["prose"], cache["provenance_refs"] = args[3], args[4]
+            elif "INSERT INTO location_native_cache_heads" in query:
+                trace.append("new_generation_bound")
+                head = {"cache_key": args[0], "cache_generation": args[1], "body_digest": args[2]}
+            elif "INSERT INTO location_native_cache_inputs" in query:
+                inputs.append(args)
+            elif "INSERT INTO location_legacy_cache_replacements" in query:
+                trace.append("local_replacement_receipt")
+                replacements.append(args)
+            return "INSERT 0 1"
+
+    conn = Conn()
+
+    class Pool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield conn
+
+    pool = Pool()
+    location_retention._copy_pools.add(
+        pool
+    )  # Test-only source registration, not runtime authority.
+    result = SpawnerResult(
+        success=True,
+        output="Day summary prose.",
+        session_id=session_id,
+        tool_calls=[_bundle_call("2026-04-24")],
+    )
+    try:
+        await write_day_close_cache(
+            pool,
+            task_name=DAY_CLOSE_TASK_NAME,
+            result=result,
+            run_at=datetime(2026, 4, 25, 1, 5, tzinfo=UTC),
+        )
+        assert cache["prose"] == result.output
+        assert "new_generation_bound" in trace and "local_replacement_receipt" in trace
+        assert trace.index("policy_lock") < trace.index("old_body_observed")
+        assert trace.index("old_body_observed") < trace.index("cache_body_written")
+        assert trace.index("cache_body_written") < trace.index("new_generation_bound")
+        assert trace.index("new_generation_bound") < trace.index("local_replacement_receipt")
+        assert inputs[0][2] == birth
+        assert observation["body_digest"] == content_digest({"cache": _digest_value(old)})
+        assert replacements[0][0] == observation["observation_id"]
+        assert replacements[0][2] == head["cache_generation"]
+        # A post-disposition candidate cannot refill this actual source-bound cache.
+        disposed = True
+        result.output = "Synthetic refill that must not persist"
+        previous = dict(cache)
+        trace.clear()
+        await write_day_close_cache(
+            pool,
+            task_name=DAY_CLOSE_TASK_NAME,
+            result=result,
+            run_at=datetime(2026, 4, 25, 1, 5, tzinfo=UTC),
+        )
+        assert cache == previous and "cache_body_written" not in trace
+    finally:
+        location_retention.unregister_native_copy_pool(pool)

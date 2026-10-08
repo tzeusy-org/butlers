@@ -318,110 +318,115 @@ async def run_consolidation(
                     butler_name=butler_name,
                 )
 
-                # 3. Spawn runtime instance with consolidate skill
-                logger.info(
-                    "Spawning consolidation session for %s/%s (%d episodes)",
-                    tenant_id,
-                    butler_name,
-                    len(episodes),
-                )
-                result = await cc_spawner.trigger(
-                    prompt=prompt,
-                    trigger_source="schedule:consolidation",
-                )
+                from butlers.chronicler.location_memory_derivation import native_consolidation_input
 
-                output_missing = result.output is None or not result.output.strip()
-                if not result.success or output_missing:
-                    if output_missing and result.success:
-                        failure_category = "runtime_no_output"
-                    else:
-                        failure_category = "runtime_unsuccessful"
-                    failure_message = _safe_failure_message(failure_category)
-                    error_msg = f"runtime session failed for {butler_name}: {failure_message}"
-                    logger.error("%s", error_msg)
-                    all_errors.append(error_msg)
-                    # The worker may transition only its own active lease.
-                    group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
-                    await _mark_group_failed(
-                        pool,
-                        group_episode_ids,
-                        failure_category,
-                        tenant_id=tenant_id,
-                        claim_token=worker,
+                async with native_consolidation_input(
+                    pool, cc_spawner, episodes, existing_facts, existing_rules, prompt
+                ):
+                    # 3. Spawn runtime instance with consolidate skill
+                    logger.info(
+                        "Spawning consolidation session for %s/%s (%d episodes)",
+                        tenant_id,
+                        butler_name,
+                        len(episodes),
                     )
-                    continue
+                    result = await cc_spawner.trigger(
+                        prompt=prompt,
+                        trigger_source="schedule:consolidation",
+                    )
 
-                # 4. Parse runtime output
-                parsed = parse_consolidation_output(result.output)
-                if parsed.parse_errors:
-                    logger.warning("Parse errors for %s: %s", butler_name, parsed.parse_errors)
-                    all_errors.extend(parsed.parse_errors)
+                    output_missing = result.output is None or not result.output.strip()
+                    if not result.success or output_missing:
+                        if output_missing and result.success:
+                            failure_category = "runtime_no_output"
+                        else:
+                            failure_category = "runtime_unsuccessful"
+                        failure_message = _safe_failure_message(failure_category)
+                        error_msg = f"runtime session failed for {butler_name}: {failure_message}"
+                        logger.error("%s", error_msg)
+                        all_errors.append(error_msg)
+                        # The worker may transition only its own active lease.
+                        group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
+                        await _mark_group_failed(
+                            pool,
+                            group_episode_ids,
+                            failure_category,
+                            tenant_id=tenant_id,
+                            claim_token=worker,
+                        )
+                        continue
 
-                # 5. Execute consolidation actions — thread tenant_id and a
-                #    per-group request_id through so derived knowledge is stored
-                #    under the correct tenant.
-                group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
-                group_request_id = str(uuid.uuid4())
-                exec_result = await execute_consolidation(
-                    pool=pool,
-                    embedding_engine=embedding_engine,
-                    parsed=parsed,
-                    source_episode_ids=group_episode_ids,
-                    butler_name=butler_name,
-                    tenant_id=tenant_id,
-                    request_id=group_request_id,
-                    enable_shared_catalog=enable_shared_catalog,
-                    source_schema=source_schema,
-                    claim_token=worker,
-                    lease_duration_seconds=LEASE_DURATION_SECONDS,
-                )
+                    # 4. Parse runtime output
+                    parsed = parse_consolidation_output(result.output)
+                    if parsed.parse_errors:
+                        logger.warning("Parse errors for %s: %s", butler_name, parsed.parse_errors)
+                        all_errors.extend(parsed.parse_errors)
 
-                # A lease can expire while the runtime is executing. Do not
-                # count a stale worker as successful or write a run audit row;
-                # its owner-fenced terminal write has already failed closed.
-                if exec_result["episodes_consolidated"] != len(group_episode_ids):
+                    # 5. Execute consolidation actions — thread tenant_id and a
+                    #    per-group request_id through so derived knowledge is stored
+                    #    under the correct tenant.
+                    group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
+                    group_request_id = str(uuid.uuid4())
+                    exec_result = await execute_consolidation(
+                        pool=pool,
+                        embedding_engine=embedding_engine,
+                        parsed=parsed,
+                        source_episode_ids=group_episode_ids,
+                        butler_name=butler_name,
+                        tenant_id=tenant_id,
+                        request_id=group_request_id,
+                        enable_shared_catalog=enable_shared_catalog,
+                        source_schema=source_schema,
+                        claim_token=worker,
+                        lease_duration_seconds=LEASE_DURATION_SECONDS,
+                    )
+
+                    # A lease can expire while the runtime is executing. Do not
+                    # count a stale worker as successful or write a run audit row;
+                    # its owner-fenced terminal write has already failed closed.
+                    if exec_result["episodes_consolidated"] != len(group_episode_ids):
+                        if exec_result["errors"]:
+                            all_errors.extend(exec_result["errors"])
+                        else:
+                            all_errors.append(
+                                "Consolidation lease was lost before episodes could be finalized"
+                            )
+                        continue
+
+                    # Aggregate stats
+                    total_facts_created += exec_result["facts_created"]
+                    total_facts_updated += exec_result["facts_updated"]
+                    total_rules_created += exec_result["rules_created"]
+                    total_confirmations += exec_result["confirmations_made"]
+                    total_episodes_consolidated += exec_result["episodes_consolidated"]
+                    groups_consolidated += 1
+
                     if exec_result["errors"]:
                         all_errors.extend(exec_result["errors"])
-                    else:
-                        all_errors.append(
-                            "Consolidation lease was lost before episodes could be finalized"
-                        )
-                    continue
 
-                # Aggregate stats
-                total_facts_created += exec_result["facts_created"]
-                total_facts_updated += exec_result["facts_updated"]
-                total_rules_created += exec_result["rules_created"]
-                total_confirmations += exec_result["confirmations_made"]
-                total_episodes_consolidated += exec_result["episodes_consolidated"]
-                groups_consolidated += 1
+                    # Persist one audit row per successful butler-group run so the
+                    # read-side stats endpoint can derive last_consolidation_at /
+                    # last_consolidation_facts_produced. Best-effort: a logging
+                    # failure must never mask a successful consolidation.
+                    await _record_consolidation_run(
+                        pool,
+                        butler=butler_name,
+                        episodes_processed=exec_result["episodes_consolidated"],
+                        facts_produced=exec_result["facts_created"],
+                        facts_updated=exec_result["facts_updated"],
+                        rules_created=exec_result["rules_created"],
+                        confirmations_made=exec_result["confirmations_made"],
+                        errors=len(exec_result["errors"]),
+                    )
 
-                if exec_result["errors"]:
-                    all_errors.extend(exec_result["errors"])
-
-                # Persist one audit row per successful butler-group run so the
-                # read-side stats endpoint can derive last_consolidation_at /
-                # last_consolidation_facts_produced. Best-effort: a logging
-                # failure must never mask a successful consolidation.
-                await _record_consolidation_run(
-                    pool,
-                    butler=butler_name,
-                    episodes_processed=exec_result["episodes_consolidated"],
-                    facts_produced=exec_result["facts_created"],
-                    facts_updated=exec_result["facts_updated"],
-                    rules_created=exec_result["rules_created"],
-                    confirmations_made=exec_result["confirmations_made"],
-                    errors=len(exec_result["errors"]),
-                )
-
-                logger.info(
-                    "Consolidated %s/%s: %d facts, %d rules, %d episodes",
-                    tenant_id,
-                    butler_name,
-                    exec_result["facts_created"] + exec_result["facts_updated"],
-                    exec_result["rules_created"],
-                    exec_result["episodes_consolidated"],
-                )
+                    logger.info(
+                        "Consolidated %s/%s: %d facts, %d rules, %d episodes",
+                        tenant_id,
+                        butler_name,
+                        exec_result["facts_created"] + exec_result["facts_updated"],
+                        exec_result["rules_created"],
+                        exec_result["episodes_consolidated"],
+                    )
 
             except Exception as exc:
                 error_msg = f"Failed to consolidate {butler_name}"

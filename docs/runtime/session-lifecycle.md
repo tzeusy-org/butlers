@@ -8,7 +8,19 @@
 
 ![Session Lifecycle](./session-lifecycle-flow.svg)
 
-A session represents one ephemeral LLM CLI invocation. The session log (`src/butlers/core/sessions.py`) is an append-only record: sessions are created when a trigger fires and completed when the runtime instance returns. After creation, the only permitted mutation is `session_complete()`, which fills in result fields and sets `completed_at`. This strict contract ensures that the session table is a reliable audit trail of all LLM activity.
+A session represents one ephemeral LLM CLI invocation. The session log (`src/butlers/core/sessions.py`) is an append-only record: sessions are created when a trigger fires and completed when the runtime instance returns. After creation, the ordinary runtime lifecycle mutation is `session_complete()`, which fills in result fields and sets `completed_at`. This strict contract ensures that the session table is a reliable audit trail of all LLM activity.
+
+OwnTracks retention has one source-owned privacy disposition exception. The exact
+Chronicler pool may redact a settled successful session's derived result/tool trace
+and process diagnostic bytes only after private registered input lineage binds the
+complete selected old cohort. It preserves session identity, prompts, creation and
+completion times, success, usage and process outcome metadata. Active, failed,
+unbound, mixed or changed holders remain held. Its immutable disposition receipt
+and separate committed readback are required; ordinary callers cannot request this
+mutation. Completion/process-log writers on that exact configured pool take the
+same policy-first lock and cannot refill disposed bytes. A later failed completion
+keeps its failure outcome with a closed privacy reason. This exception supplies
+one owning holder disposition, never proof that every location copy is closed.
 
 ## Session Creation
 
@@ -119,3 +131,18 @@ curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.to
 - [Tool Call Capture](tool-call-capture.md) --- how tool call records are collected for the `tool_calls` field
 - [Model Routing](model-routing.md) --- how the `model`, `complexity`, and `resolution_source` fields are populated
 - [Scheduler Execution](scheduler-execution.md) --- how `schedule:<name>` trigger sources originate
+
+
+### Native location catalog copy lifetime
+
+The configured Memory module's constructor installs a fixed native catalog outer
+admission around the runtime guard, before instrumentation. Loan bodies use the
+Switchboard route and the actual owning source tool; online receiver generation,
+body and daemon-incarnation readbacks precede admission. Public loan/session
+locators, caller-private headers and FactWriteContext do not authenticate or
+dispose a copy. The private capability is stripped and the context cleared in
+finally. Native final-body delivery plus delegate completion settles only the
+server response lifetime. Runtime-context/processing descendants require their
+own installed input reservation and durable disposal; those remaining paths are
+not completed by the transient response receipt. Generic MCP streaming remains
+unchanged. See [OwnTracks retention](../operations/owntracks-location-retention.md).

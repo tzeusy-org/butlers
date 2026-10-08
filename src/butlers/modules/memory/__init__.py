@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 import asyncpg
 from pydantic import BaseModel, BeforeValidator, Field
@@ -306,6 +307,8 @@ class MemoryModule(Module):
         self._maintenance_runtime: Any = None
         self._maintenance_runtime_owner: str | None = None
         self._entity_rebind_tasks: list[asyncio.Task[None]] = []
+        self._location_catalog_runtime: Any = None
+        self._location_domain_identity: tuple[str, str] | None = None
 
     @property
     def name(self) -> str:
@@ -334,6 +337,41 @@ class MemoryModule(Module):
     def migration_revisions(self) -> str | None:
         return "memory"
 
+    def wire_runtime(self, spawner: Any, repo_root: Any, *, switchboard_client: Any = None) -> None:
+        """Install only this module's actual configured owning catalog runtime."""
+        from butlers.chronicler.location_catalog_copies import CatalogCopyRuntime
+
+        if self._location_catalog_runtime is not None:
+            self._location_catalog_runtime.close()
+        if spawner._pool is not self._db.pool or self._location_domain_identity is None:
+            raise RuntimeError("Native catalog runtime constructor differs")
+        self._location_catalog_runtime = CatalogCopyRuntime(
+            domain=self._db.pool,
+            memory=self._get_pool(),
+            name=spawner._config.name,
+            registry=switchboard_client,
+            identity=self._location_domain_identity,
+        )
+
+    def location_retention_admission(self, app: Any) -> Any:
+        from butlers.chronicler.location_catalog_copies import CatalogLoanAdmission
+
+        return CatalogLoanAdmission(app, lambda: self._location_catalog_runtime)
+
+    def location_retention_route(self) -> Any:
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+
+        from butlers.chronicler.location_catalog_copies import _PATH
+
+        async def control(request: Any) -> Any:
+            runtime = self._location_catalog_runtime
+            if runtime is None:
+                return JSONResponse({"status": "unavailable"}, status_code=503)
+            return await runtime.control(request)
+
+        return Route(_PATH, control, methods=["POST"])
+
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
     ) -> None:
@@ -344,6 +382,17 @@ class MemoryModule(Module):
 
         # Bind the dedicated memory-schema pool (no-op unless memory_schema set).
         await self._ensure_memory_schema_pool()
+        if getattr(self._db, "schema", None) == "chronicler":
+            from butlers.chronicler.location_memory_copies import register_memory_receiver
+
+            await register_memory_receiver(self._db.pool, self._get_pool())
+
+        if isinstance(getattr(db, "pool", None), asyncpg.Pool):
+            async with db.pool.acquire() as conn:
+                self._location_domain_identity = (
+                    await conn.fetchval("SELECT current_schema()"),
+                    await conn.fetchval("SELECT current_user"),
+                )
 
         # Register LISTEN before draining the durable ledger. Events committed
         # during replay are then queued rather than lost at the startup boundary.
@@ -464,13 +513,24 @@ class MemoryModule(Module):
             # trigger-time context and scheduled consolidation, must use the
             # module-owned pool so a configured private memory schema remains
             # isolated from the butler's domain tables.
-            await _writing.memory_store_episode(
-                module._get_pool(),
-                session_output,
-                butler_name,
-                session_id=str(session_id) if session_id is not None else None,
-                routing_context=routing_context,
-            )
+            from butlers.chronicler.location_memory_copies import capture_memory_episode
+
+            # This private registered runtime supplies its actual own pools.
+            # MCP session_id arguments cannot install this producer binding.
+            from butlers.chronicler.location_retention import native_copy_pool
+
+            if native_copy_pool(_pool) and _pool is not module._db.pool:
+                raise RuntimeError("Memory session runtime domain differs")
+            async with capture_memory_episode(
+                _pool, module._get_pool(), session_id, session_output
+            ):
+                await _writing.memory_store_episode(
+                    module._get_pool(),
+                    session_output,
+                    butler_name,
+                    session_id=str(session_id) if session_id is not None else None,
+                    routing_context=routing_context,
+                )
             return True
 
         async def _record_gap_hook(**gap: Any) -> dict[str, Any]:
@@ -641,6 +701,13 @@ class MemoryModule(Module):
             )
         self._session_runtime = None
         self._session_runtime_owner = None
+        from butlers.chronicler.location_memory_copies import unregister_memory_receiver
+
+        if self._db is not None and self._memory_db is not None:
+            unregister_memory_receiver(self._db.pool, self._memory_db.pool)
+        if self._location_catalog_runtime is not None:
+            self._location_catalog_runtime.close()
+            self._location_catalog_runtime = None
 
         if self._maintenance_runtime_owner is not None and self._maintenance_runtime is not None:
             unregister_memory_maintenance_runtime(
@@ -1434,6 +1501,38 @@ class MemoryModule(Module):
                 memory_type,
                 memory_id,
             )
+
+        @mcp.tool()
+        async def location_catalog_loan_body(loan_id: UUID) -> dict[str, Any]:
+            """Read a stored native catalog loan admitted by the private outer guard.
+
+            A loan UUID alone never permits delivery. Constructor-fixed source
+            and online registered receiver binding precede instrumentation.
+            """
+            if self._location_catalog_runtime is None:
+                raise RuntimeError("Native catalog runtime is unavailable")
+            return await self._location_catalog_runtime.loan_body(loan_id)
+
+        @mcp.tool()
+        async def location_retention_prepare_copy(decision_id: UUID) -> dict[str, Any]:
+            """Prepare only a stored source plan's actual owning catalog copies.
+
+            The UUID is a locator. Current registered source/receiver and native
+            finished lifetime readbacks decide disposition; no caller verdict,
+            timestamp, principal, source body or callback can qualify a copy.
+            """
+            if self._location_catalog_runtime is None:
+                raise RuntimeError("Native catalog runtime is unavailable")
+            return await self._location_catalog_runtime.prepare_copy(decision_id)
+
+        @mcp.tool()
+        async def location_retention_copy_status(
+            decision_id: UUID, receipt_id: UUID
+        ) -> dict[str, Any]:
+            """Read this actual owning writer's immutable stored copy receipt."""
+            if self._location_catalog_runtime is None:
+                raise RuntimeError("Native catalog runtime is unavailable")
+            return await self._location_catalog_runtime.copy_status(decision_id, receipt_id)
 
         # Relationship's deterministic episodic-fact curator parks this
         # command directly.  Keep the registered handler available on its

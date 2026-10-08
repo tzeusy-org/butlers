@@ -166,7 +166,9 @@ async def semantic_search(
     """
     params.append(limit)
 
-    rows = await pool.fetch(sql, *params)
+    from butlers.chronicler.location_memory_copies import capture_memory_rows
+
+    rows = await capture_memory_rows(pool, table, sql, tuple(params))
     return [dict(r) for r in rows]
 
 
@@ -266,7 +268,9 @@ async def keyword_search(
     """
     params.append(limit)
 
-    rows = await pool.fetch(sql, *params)
+    from butlers.chronicler.location_memory_copies import capture_memory_rows
+
+    rows = await capture_memory_rows(pool, table, sql, tuple(params))
     return [dict(r) for r in rows]
 
 
@@ -1043,7 +1047,9 @@ async def _catalog_semantic_search(
         ORDER BY embedding <=> $1
         LIMIT ${limit_idx}
     """
-    rows = await pool.fetch(sql, *params)
+    from butlers.chronicler.location_catalog_copies import native_catalog_rows
+
+    rows = await native_catalog_rows(pool, sql, *params)
     return [dict(r) for r in rows]
 
 
@@ -1087,7 +1093,9 @@ async def _catalog_keyword_search(
         ORDER BY rank DESC
         LIMIT ${limit_idx}
     """
-    rows = await pool.fetch(sql, *params)
+    from butlers.chronicler.location_catalog_copies import native_catalog_rows
+
+    rows = await native_catalog_rows(pool, sql, *params)
     return [dict(r) for r in rows]
 
 

@@ -581,6 +581,16 @@ class ButlerDaemon:
             route_preflight=self._build_route_preflight(),
             fact_source_registry=getattr(self, "_fact_source_registry", None),
             fact_receiver_registry=self._fact_receiver_registry,
+            location_retention_adapters=[
+                mod.location_retention_admission
+                for mod in self._active_modules
+                if callable(getattr(mod, "location_retention_admission", None))
+            ],
+            location_retention_routes=[
+                mod.location_retention_route()
+                for mod in self._active_modules
+                if callable(getattr(mod, "location_retention_route", None))
+            ],
         )
         config = uvicorn.Config(
             app,
@@ -712,6 +722,8 @@ class ButlerDaemon:
         route_preflight: Any | None = None,
         fact_source_registry: Any | None = None,
         fact_receiver_registry: Any | None = None,
+        location_retention_routes: list[Any] | None = None,
+        location_retention_adapters: list[Any] | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -803,12 +815,23 @@ class ButlerDaemon:
             if not cls._attach_route_via_public_api(streamable_app, receiver_route):
                 streamable_app.routes.append(receiver_route)
 
+        for location_route in location_retention_routes or ():
+            if not cls._attach_route_via_public_api(streamable_app, location_route):
+                streamable_app.routes.append(location_route)
+
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,
             butler_name=butler_name,
             approval_push_runtime=approval_push_runtime,
         )
-        return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
+        for adapter in location_retention_adapters or ():
+            guarded_app = adapter(guarded_app)
+
+        from butlers.chronicler.location_catalog_copies import CatalogServerCopyLifetime
+
+        return CatalogServerCopyLifetime(
+            _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
+        )
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.
@@ -2030,7 +2053,7 @@ class ButlerDaemon:
             try:
                 client = self.switchboard_client
                 if (
-                    mod.name == "self_healing"
+                    mod.name in {"self_healing", "memory"}
                     and self.config is not None
                     and self.config.name == "switchboard"
                     and client is None

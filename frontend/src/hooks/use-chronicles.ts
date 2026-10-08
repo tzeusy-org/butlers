@@ -18,6 +18,9 @@
  * Tombstone defaults: include_tombstoned defaults to false in all hooks.
  */
 
+import { useEffect } from "react";
+import { reconcileLocationPrivacy } from "./location-privacy";
+
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -525,12 +528,18 @@ export function useDeleteChroniclesRoutine() {
 
 
 export function useLocationRetention() {
-  return useQuery({
+  const cache = useQueryClient();
+  const result = useQuery({
     queryKey: [...chroniclesKeys.all, "location-retention"],
     queryFn: ({ signal }) => getLocationRetention(signal),
     refetchInterval: CHRONICLES_POLL_DEFAULT_MS,
     staleTime: 0,
   });
+  const revision = result.data?.data.privacy_revision;
+  useEffect(() => {
+    void reconcileLocationPrivacy(cache, revision);
+  }, [cache, revision]);
+  return result;
 }
 
 export function useUpdateLocationRetention() {

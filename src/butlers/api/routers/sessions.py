@@ -76,6 +76,7 @@ from butlers.api.read_models.sessions_v1 import (
     query_session_trigger_breakdown_fan_out,
     row_to_summary,
 )
+from butlers.chronicler.location_retention import PolicyUnavailableError
 from butlers.core.pricing import PricingConfig, estimate_session_cost
 from butlers.core.sessions import friction_summary as _friction_summary
 from butlers.core.sessions import sessions_summary as _sessions_summary
@@ -355,7 +356,7 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
         )
 
     try:
-        plog_row = await pool.fetchrow(
+        log_query = (
             """
             SELECT pid, exit_code, command, stderr, runtime_type,
                    retry_attempted, retry_succeeded, result_source, attempt_count,
@@ -363,10 +364,20 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
             FROM session_process_logs
             WHERE session_id = $1 AND expires_at >= now()
             """,
-            session_id,
         )
+        from butlers.chronicler.location_session_exports import capture_session_rows
+
+        if detail.butler == "chronicler":
+            captured = await capture_session_rows(
+                pool, log_query, (session_id,), session_id=session_id
+            )
+            plog_row = captured[0] if captured else None
+        else:
+            plog_row = await pool.fetchrow(log_query, session_id)
         if plog_row is not None:
             detail.process_log = ProcessLog(**dict(plog_row))
+    except PolicyUnavailableError:
+        raise HTTPException(status_code=503, detail="Owning session export is unavailable")
     except Exception:
         logger.debug("Could not fetch process log for session %s", session_id, exc_info=True)
 
@@ -867,7 +878,12 @@ async def list_butler_sessions(
     )
     args.extend([offset, limit])
 
-    rows = await pool.fetch(data_sql, *args)
+    if name == "chronicler":
+        from butlers.chronicler.location_session_exports import capture_session_rows
+
+        rows = await capture_session_rows(pool, data_sql, tuple(args))
+    else:
+        rows = await pool.fetch(data_sql, *args)
 
     sessions = [_dto_to_summary(row_to_summary(row, butler=name), pricing) for row in rows]
 

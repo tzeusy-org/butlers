@@ -103,6 +103,32 @@ async def forget_skipped_source(pool: asyncpg.Pool, decision_id: UUID) -> dict:
         async with conn.transaction():
             await conn.execute("SET LOCAL lock_timeout='2s'")
             await conn.execute("SET LOCAL statement_timeout='5s'")
+            # A genuine earlier disposition can outlive the inbox partition.
+            # Resume only its full immutable plan/floor binding; absence of an
+            # original row alone never becomes a successful empty disposition.
+            confirmed = await conn.fetchrow(
+                "SELECT * FROM location_retention_copy_receipts WHERE decision_id=$1",
+                decision_id,
+            )
+            if confirmed is not None:
+                floors = await conn.fetch(
+                    "SELECT request_id,logical_source_digest FROM location_retention_source_floors "
+                    "WHERE decision_id=$1 ORDER BY request_id",
+                    decision_id,
+                )
+                if (
+                    confirmed["manifest_digest"] != manifest
+                    or confirmed["forgotten_count"] != len(rows)
+                    or confirmed["source_kind"] != "switchboard_skipped"
+                    or {floor["request_id"]: floor["logical_source_digest"] for floor in floors}
+                    != {
+                        row.accepted_request_id: bytes.fromhex(row.logical_source_digest)
+                        for row in rows
+                    }
+                    or len(floors) != len(rows)
+                ):
+                    raise CopyFloorUnavailable("copy_receipt_mismatch")
+                return {**dict(confirmed), "manifest_digest": confirmed["manifest_digest"].hex()}
             # Match the canonical ingest dedup mutex. Lookup is source-owned;
             # the request id is not accepted as content or origin authority.
             source_rows = []
@@ -119,6 +145,17 @@ async def forget_skipped_source(pool: asyncpg.Pool, decision_id: UUID) -> dict:
                 source_rows.append((key, frozen))
             for key in sorted({key for key, _ in source_rows}):
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", key)
+            # Census all actual rows for these canonical keys while holding
+            # the same producer mutex. An alias/replay/error row is a real
+            # source copy, not covered by the selected accepted request alone.
+            canonical = await conn.fetch(
+                "SELECT id FROM switchboard.message_inbox "
+                "WHERE request_context->>'dedupe_key'=ANY($1::text[]) "
+                "ORDER BY id,received_at FOR UPDATE",
+                sorted({key for key, _ in source_rows}),
+            )
+            if {row["id"] for row in canonical} != {row.accepted_request_id for row in rows}:
+                raise CopyFloorUnavailable("source_copy_cohort_pending")
             prior = await conn.fetchrow(
                 "SELECT * FROM location_retention_copy_receipts WHERE decision_id=$1",
                 decision_id,

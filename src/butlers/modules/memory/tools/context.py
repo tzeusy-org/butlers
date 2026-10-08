@@ -170,7 +170,9 @@ async def _fetch_recent_episodes(
         LIMIT ${len(params)}
     """
     try:
-        rows = await pool.fetch(sql, *params)
+        from butlers.chronicler.location_memory_copies import capture_memory_rows
+
+        rows = await capture_memory_rows(pool, "episodes", sql, tuple(params))
         return [dict(r) for r in rows]
     except Exception:
         logger.debug("Recent episodes query failed", exc_info=True)

@@ -7,6 +7,8 @@ identity credential and does not certify other adapters or foreign copies.
 
 from __future__ import annotations
 
+import logging
+import re
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -30,6 +32,9 @@ class _Witness:
     evaluated: set[UUID] = field(default_factory=set)
     closed_outputs: set[UUID] = field(default_factory=set)
     closed_raw_ids: set[UUID] = field(default_factory=set)
+
+
+logger = logging.getLogger(__name__)
 
 
 _current: ContextVar[_Witness | None] = ContextVar("location_native_projection", default=None)
@@ -149,6 +154,7 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
     if adapter.source_name not in ADAPTER_NAMES:
         raise ValueError("unregistered location adapter")
     adapter._llm_probe()
+    stage = "policy_lock"
     try:
         async with chronicler_pool.acquire() as conn:
             async with conn.transaction():
@@ -157,6 +163,7 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                 )
                 if policy is None or type(policy["version"]) is not int or policy["version"] <= 0:
                     raise RuntimeError("location policy unavailable")
+                stage = "adapter_locks"
                 for name in ADAPTER_NAMES:
                     await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", name)
                 reachable = await conn.fetchval(
@@ -178,6 +185,7 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                         skipped=True,
                         skipped_reason="source_unavailable",
                     )
+                stage = "source_selection"
                 config = adapter.retention_mapping_revision()
                 await conn.execute(
                     """INSERT INTO location_projection_heads(adapter_name,mapping_revision)
@@ -241,6 +249,7 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                 token = _current.set(witness)
                 try:
                     bound = ProjectionConnection(conn, rows)
+                    stage = "native_projection"
                     result = await adapter.project(
                         bound,
                         chronicler_pool=bound,
@@ -260,6 +269,7 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                     return result
                 if result.error:
                     raise RuntimeError("native location projection did not complete")
+                stage = "coverage_commit"
                 batch_id = uuid4()
                 for row in rows:
                     # Legacy evaluation must not starve later arrivals. Store an
@@ -341,6 +351,7 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                             output_kind,
                             output_id,
                         )
+                stage = "carry_closure"
                 closed_identities = set()
                 for output_id in sorted(witness.closed_outputs, key=str):
                     closed_rows = await conn.fetch(
@@ -408,6 +419,7 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                         config,
                         revision,
                     )
+                stage = "checkpoint_commit"
                 if replay:
                     await conn.execute(
                         """UPDATE location_projection_heads SET replay_pending=$2,
@@ -436,7 +448,17 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                     rows_projected=result.rows_projected,
                 )
                 return result
-    except Exception:
+    except Exception as exc:
+        # Only predetermined stage and validated SQLSTATE: never exception
+        # text, source/SSID/coordinates, SQL arguments, IDs or provider strings.
+        state = getattr(exc, "sqlstate", None)
+        state = (
+            state if isinstance(state, str) and re.fullmatch(r"[A-Z0-9]{5}", state) else "unknown"
+        )
+        category = "postgres" if isinstance(exc, asyncpg.PostgresError) else "native"
+        logger.warning(
+            "Location projection failure stage=%s category=%s sqlstate=%s", stage, category, state
+        )
         # Outside the failed transaction, and with a closed reason only. If this
         # second write also fails it propagates; no fabricated successful state.
         warnings = []

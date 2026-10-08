@@ -162,6 +162,10 @@ class DatabaseManager:
             schema=db_schema,
         )
         self._pools[butler_name] = pool
+        if butler_name == "chronicler":
+            from butlers.chronicler.location_retention import register_api_copy_pool
+
+            register_api_copy_pool(pool)
         self._butler_schemas[butler_name] = local_schema
         self._butler_memory_schema_overrides[butler_name] = local_memory_schema
         if modules is not None:

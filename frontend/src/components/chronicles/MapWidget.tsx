@@ -11,10 +11,14 @@
 //   <MapWidget points={[]} />   {/* renders empty state */}
 // ---------------------------------------------------------------------------
 
-import { Component, lazy, Suspense, type ReactNode } from "react"
+import { Component, lazy, Suspense, useSyncExternalStore, type ReactNode } from "react"
 
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
+
+import {
+  getLocationPrivacySnapshot, getLocationPrivacyServerSnapshot, subscribeLocationPrivacy,
+} from "@/hooks/location-privacy";
 
 import type { MapWidgetInnerProps } from "./MapWidgetInner"
 
@@ -120,10 +124,14 @@ export type { MapWidgetInnerProps as MapWidgetProps }
  *   playhead). The inner component handles marker creation and cleanup.
  */
 export function MapWidget(props: MapWidgetInnerProps) {
+  const privacy = useSyncExternalStore(
+    subscribeLocationPrivacy, getLocationPrivacySnapshot, getLocationPrivacyServerSnapshot,
+  );
+  if (privacy.pending) return <MapLoadingSkeleton height={props.height} />;
   return (
     <MapErrorBoundary height={props.height}>
       <Suspense fallback={<MapLoadingSkeleton height={props.height} />}>
-        <MapWidgetInner {...props} />
+        <MapWidgetInner key={privacy.generation} {...props} />
       </Suspense>
     </MapErrorBoundary>
   )

@@ -479,30 +479,32 @@ async def _upsert_catalog(
     # write.  Without the savepoint, catching the error at the caller leaves
     # the outer transaction aborted and can incorrectly roll back the artifact
     # plus its durable provenance links.
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                sql,
-                source_schema,
-                source_table,
-                source_id,
-                source_butler,
-                tenant_id,
-                entity_id,
-                summary,
-                str(embedding),
-                search_text,
-                memory_type,
-                title,
-                predicate,
-                scope,
-                valid_at,
-                confidence,
-                importance,
-                retention_class,
-                sensitivity,
-                object_entity_id,
-            )
+    from butlers.chronicler.location_catalog_copies import bind_catalog, catalog_writer
+
+    async with catalog_writer(pool) as conn:
+        await conn.execute(
+            sql,
+            source_schema,
+            source_table,
+            source_id,
+            source_butler,
+            tenant_id,
+            entity_id,
+            summary,
+            str(embedding),
+            search_text,
+            memory_type,
+            title,
+            predicate,
+            scope,
+            valid_at,
+            confidence,
+            importance,
+            retention_class,
+            sensitivity,
+            object_entity_id,
+        )
+        await bind_catalog(conn, pool, source_schema, source_table, source_id)
 
 
 async def _mark_catalog_stale(
@@ -1083,7 +1085,12 @@ async def store_episode(
     ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
     expires_at = datetime.now(UTC) + timedelta(days=ttl_days)
     meta = metadata or {}
-    async with pool.acquire() as conn:
+    from butlers.chronicler.location_memory_copies import (
+        bind_memory_episode,
+        memory_episode_writer,
+    )
+
+    async with memory_episode_writer(pool) as conn:
         existing_episode_id = None
         if session_id is not None:
             existing_episode_id = await _find_existing_session_episode_id(
@@ -1109,6 +1116,7 @@ async def store_episode(
                 embedding_model_version=embedding_engine.model_name,
                 authority=authority,
             )
+            await bind_memory_episode(conn, existing_episode_id)
             return existing_episode_id
 
         episode_id = uuid.uuid4()
@@ -1130,6 +1138,7 @@ async def store_episode(
             embedding_model_version=embedding_engine.model_name,
             authority=authority,
         )
+        await bind_memory_episode(conn, episode_id)
         return episode_id
 
 
@@ -1458,6 +1467,9 @@ async def _insert_fact_record(
         authority.authority if authority else None,
         authority.entity_id if authority else None,
     )
+    from butlers.chronicler.location_memory_derivation import bind_artifact
+
+    await bind_artifact(conn, "facts", fact_id)
 
 
 async def store_fact(
@@ -1595,7 +1607,9 @@ async def store_fact(
     # supersession to public.memory_catalog (mark those entries stale).
     superseded_ids: list[uuid.UUID] = []
 
-    async with pool.acquire() as conn:
+    from butlers.chronicler.location_memory_derivation import derivation_writer
+
+    async with derivation_writer(pool) as conn:
         async with conn.transaction():
             source_butler, source_episode_id = await _resolve_write_provenance_with_conn(
                 conn,
@@ -2349,7 +2363,11 @@ async def store_rule(
                 $15, $16, $17)
     """
 
-    await pool.execute(
+    from butlers.chronicler.location_memory_derivation import execute_rule_insert
+
+    await execute_rule_insert(
+        pool,
+        rule_id,
         sql,
         rule_id,
         content,
@@ -2596,20 +2614,20 @@ async def get_memory(
 
     # Filter within the same UPDATE that bumps reference metadata: a denied UUID
     # must not leak its existence or mutate its row before returning None.
-    row = await pool.fetchrow(
+    from butlers.chronicler.location_memory_copies import capture_memory_row
+
+    row = await capture_memory_row(
+        pool,
+        table,
         f"UPDATE {table} "
         f"SET reference_count = reference_count + 1, last_referenced_at = now() "
         f"WHERE id = $1 "
         f"  AND COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2) "
         f"RETURNING *",
-        memory_id,
-        list(allowed_sensitivities),
+        (memory_id, list(allowed_sensitivities)),
     )
 
-    if row is None:
-        return None
-
-    return dict(row)
+    return dict(row) if row is not None else None
 
 
 # ---------------------------------------------------------------------------

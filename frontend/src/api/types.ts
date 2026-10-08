@@ -10529,6 +10529,8 @@ export interface CandidateIdentityFact extends ContactFact {
 
 /** Authoritative policy plus latest measured retention attempt, never a UI TTL. */
 export interface LocationRetentionStatus {
+  /** Count of immutable committed coarsening/disposal transitions; never a deadline. */
+  privacy_revision?: string;
   days: number;
   version: number;
   updated_at: string;

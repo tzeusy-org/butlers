@@ -398,8 +398,16 @@ never erase floors to repair a revision. Actual migration/role controls must
 execute before reporting installed authority or recovery proof.
 
 Empty core264 rollback retains inert own ledgers. Its installer accepts only the
-exact own table columns/constraints and current owning identity before
+exact own table columns/constraints and the established same-schema core
+writer owner before
 converging functions/triggers; populated history still requires roll-forward.
 Chronicler privacy preparation preserves every contributor's original output
 generation and records monotone previous-to-reduced transitions in the same
 transaction, including contributors outside the current bounded plan.
+
+Retained core264 local ledgers use their same-schema core foundation `state`
+table's established migration-writer owner as the catalog identity anchor. A
+managed replay's invoking bootstrap login need not be that owner. Only newly
+created ledgers receive that existing owner; retained wrong-owner/kind/shape
+relations fail closed. Replay does not transfer existing objects, grant role
+membership, erase floors, or bypass populated-history refusal.

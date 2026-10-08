@@ -92,7 +92,12 @@ def _memory_pools(db: DatabaseManager) -> list[tuple[str, object]]:
     pools: list[tuple[str, object]] = []
     for name in _memory_pool_names(db):
         try:
-            pools.append((name, db.pool(name)))
+            pool = db.pool(name)
+            from butlers.chronicler.location_retention import _api_copy_pools
+
+            if name == "chronicler" and pool in _api_copy_pools:
+                pool = _NativeMemoryReadPool(pool, _memory_relation(db, name, "episodes"))
+            pools.append((name, pool))
         except KeyError:
             continue
     return pools
@@ -224,6 +229,30 @@ def _is_missing_memory_schema_error(
     )
 
 
+class _NativeMemoryReadPool:
+    """Read-only source adapter for the fixed actual Chronicler API pool."""
+
+    def __init__(self, pool, relation: str) -> None:
+        self.pool = pool
+        self.relation = relation
+
+    async def fetch(self, query, *args):
+        from butlers.chronicler.location_memory_copies import capture_memory_rows
+
+        if f"FROM {self.relation}" in query:
+            return await capture_memory_rows(self.pool, "episodes", query, args)
+        return await self.pool.fetch(query, *args)
+
+    async def fetchrow(self, query, *args):
+        if f"FROM {self.relation}" in query:
+            rows = await self.fetch(query, *args)
+            return rows[0] if rows else None
+        return await self.pool.fetchrow(query, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.pool, name)
+
+
 async def _fan_out_memory_queries(
     db: DatabaseManager,
     *,
@@ -264,6 +293,10 @@ async def _fan_out_memory_queries(
 
     async def _run(name: str, pool: object) -> object | None:
         try:
+            from butlers.chronicler.location_retention import _api_copy_pools
+
+            if name == "chronicler" and pool in _api_copy_pools:
+                pool = _NativeMemoryReadPool(pool, _memory_relation(db, name, "episodes"))
             return await query_fn(name, pool)
         except Exception as exc:
             if not _is_missing_memory_schema_error(

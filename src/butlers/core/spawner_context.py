@@ -282,6 +282,9 @@ def compose_effective_system_prompt_receipt(
         context_preamble=context_preamble,
         blind_spot_preamble=blind_spot_preamble,
     )
+    from butlers.chronicler.location_memory_derivation import capture_composed_prompt
+
+    capture_composed_prompt(memory_context, prompt)
     encoded = prompt.encode("utf-8")
     provenance = (
         *(_source_receipt(source, content, status) for source, status, content in base_sources),

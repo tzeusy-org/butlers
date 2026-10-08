@@ -69,7 +69,10 @@ from butlers.chronicler.location_retention import (
     PolicyConflictError,
     PolicyUnavailableError,
     PolicyUpdate,
+    capture_api_cache_export,
+    capture_api_read,
     read_policy,
+    register_api_copy_pool,
     retention_status,
     set_policy,
 )
@@ -179,7 +182,9 @@ def _get_day_close_dispatch_fn() -> DayCloseDispatchCallable | None:
 
 def _pool(db: DatabaseManager):
     try:
-        return db.pool(BUTLER_DB)
+        pool = db.pool(BUTLER_DB)
+        register_api_copy_pool(pool)
+        return pool
     except KeyError:
         raise HTTPException(
             status_code=503,
@@ -197,9 +202,14 @@ async def get_location_retention(
     try:
         policy = await read_policy(pool)
         status = await retention_status(pool)
+        privacy_revision = await pool.fetchval(
+            "SELECT count(*) FROM location_projection_privacy_transitions"
+        )
+        if type(privacy_revision) is not int or privacy_revision < 0:
+            raise PolicyUnavailableError("Committed privacy revision is unknown")
     except (PolicyUnavailableError, asyncpg.PostgresError):
         raise HTTPException(status_code=503, detail="Location retention is unavailable") from None
-    return ApiResponse(data={**policy, **status})
+    return ApiResponse(data={**policy, **status, "privacy_revision": str(privacy_revision)})
 
 
 @router.put("/location-retention", response_model=ApiResponse[dict[str, Any]])
@@ -370,14 +380,18 @@ async def list_events(
 
     args.append(limit)
     args.append(offset)
-    rows = await pool.fetch(
-        f"""
-        SELECT * FROM v_point_events_corrected{where}
-        ORDER BY occurred_at DESC
-        LIMIT ${len(args) - 1} OFFSET ${len(args)}
-        """,
-        *args,
-    )
+
+    async def native_reader(conn):
+        return await conn.fetch(
+            f"""
+            SELECT * FROM v_point_events_corrected{where}
+            ORDER BY occurred_at DESC
+            LIMIT ${len(args) - 1} OFFSET ${len(args)}
+            """,
+            *args,
+        )
+
+    rows = await capture_api_read(pool, "point_event", native_reader)
 
     data = [_row_to_point_event(r) for r in rows]
     return PaginatedResponse[ChroniclerPointEvent](
@@ -461,14 +475,18 @@ async def list_episodes(
 
         args.append(limit)
         args.append(offset)
-        rows = await pool.fetch(
-            f"""
-            SELECT * FROM v_episodes_corrected{where}
-            ORDER BY start_at DESC
-            LIMIT ${len(args) - 1} OFFSET ${len(args)}
-            """,
-            *args,
-        )
+
+        async def native_reader(conn):
+            return await conn.fetch(
+                f"""
+                SELECT * FROM v_episodes_corrected{where}
+                ORDER BY start_at DESC
+                LIMIT ${len(args) - 1} OFFSET ${len(args)}
+                """,
+                *args,
+            )
+
+        rows = await capture_api_read(pool, "episode", native_reader)
 
         data = [_row_to_episode(r) for r in rows]
         return PaginatedResponse[ChroniclerEpisode](
@@ -488,10 +506,15 @@ async def get_episode(
 ) -> ChroniclerEpisode:
     pool = _pool(db)
     clause = "" if include_tombstoned else "AND tombstone_at IS NULL"
-    row = await pool.fetchrow(
-        f"SELECT * FROM v_episodes_corrected WHERE id = $1 {clause}",
-        episode_id,
-    )
+
+    async def native_reader(conn):
+        row = await conn.fetchrow(
+            f"SELECT * FROM v_episodes_corrected WHERE id = $1 {clause}", episode_id
+        )
+        return [] if row is None else [row]
+
+    rows = await capture_api_read(pool, "episode", native_reader)
+    row = rows[0] if rows else None
     if row is None:
         raise HTTPException(status_code=404, detail="Episode not found")
     return _row_to_episode(row)
@@ -517,16 +540,19 @@ async def list_episode_events(
     if not exists:
         raise HTTPException(status_code=404, detail="Episode not found")
 
-    rows = await pool.fetch(
-        """
-        SELECT v.*
-        FROM episode_event_links l
-        JOIN v_point_events_corrected v ON v.id = l.event_id
-        WHERE l.episode_id = $1
-        ORDER BY v.occurred_at ASC
-        """,
-        episode_id,
-    )
+    async def native_reader(conn):
+        return await conn.fetch(
+            """
+            SELECT v.*
+            FROM episode_event_links l
+            JOIN v_point_events_corrected v ON v.id = l.event_id
+            WHERE l.episode_id = $1
+            ORDER BY v.occurred_at ASC
+            """,
+            episode_id,
+        )
+
+    rows = await capture_api_read(pool, "point_event", native_reader)
     return [_row_to_point_event(r) for r in rows]
 
 
@@ -793,10 +819,15 @@ async def _explain_episode_inner(
     now = datetime.now(UTC)
 
     # ── Fetch episode (404 if not found) ──────────────────────────────────────
-    episode_row = await pool.fetchrow(
-        "SELECT * FROM v_episodes_corrected WHERE id = $1 AND tombstone_at IS NULL",
-        episode_id,
-    )
+    async def initial_episode(conn):
+        row = await conn.fetchrow(
+            "SELECT * FROM v_episodes_corrected WHERE id = $1 AND tombstone_at IS NULL",
+            episode_id,
+        )
+        return [] if row is None else [row]
+
+    initial_episodes = await capture_api_read(pool, "episode", initial_episode)
+    episode_row = initial_episodes[0] if initial_episodes else None
     if episode_row is None:
         span.set_attribute("chronicler.episodes.explain.outcome", "not_found")
         raise HTTPException(status_code=404, detail="Episode not found")
@@ -870,16 +901,19 @@ async def _explain_episode_inner(
         )
 
     # ── Bundle construction (token-bounded) ───────────────────────────────────
-    event_rows = await pool.fetch(
-        """
+    async def initial_events(conn):
+        return await conn.fetch(
+            """
         SELECT v.*
         FROM episode_event_links l
         JOIN v_point_events_corrected v ON v.id = l.event_id
         WHERE l.episode_id = $1
         ORDER BY v.occurred_at ASC
         """,
-        episode_id,
-    )
+            episode_id,
+        )
+
+    event_rows = await capture_api_read(pool, "point_event", initial_events)
 
     override_rows = await pool.fetch(
         """
@@ -890,6 +924,32 @@ async def _explain_episode_inner(
         episode_id,
     )
 
+    async def native_episode(conn):
+        if conn is pool:
+            return [episode_row]
+        row = await conn.fetchrow(
+            "SELECT * FROM v_episodes_corrected WHERE id=$1 AND tombstone_at IS NULL",
+            episode_id,
+        )
+        return [] if row is None else [row]
+
+    async def native_events(conn):
+        if conn is pool:
+            return event_rows
+        return await conn.fetch(
+            "SELECT v.* FROM episode_event_links l "
+            "JOIN v_point_events_corrected v ON v.id=l.event_id "
+            "WHERE l.episode_id=$1 ORDER BY v.occurred_at ASC",
+            episode_id,
+        )
+
+    captured_episodes = await capture_api_read(pool, "episode", native_episode)
+    if not captured_episodes:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    episode_row = captured_episodes[0]
+    if episode_row["canonical_privacy"] in ("sensitive", "restricted"):
+        raise HTTPException(status_code=403, detail="Episode is excluded from explanation")
+    event_rows = await capture_api_read(pool, "point_event", native_events)
     bundle = _build_episode_bundle(episode_row, event_rows, override_rows)
     span.set_attribute("chronicler.episodes.explain.bundle_chars", len(bundle))
 
@@ -904,9 +964,13 @@ async def _explain_episode_inner(
     )
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
-    result = await dispatch_fn(
+    from butlers.chronicler.location_input_binding import dispatch_with_native_input
+
+    result = await dispatch_with_native_input(
+        pool,
+        dispatch_fn,
         prompt=prompt,
-        trigger_source=f"api:episode_explain:{episode_id}",
+        source=f"api:episode_explain:{episode_id}",
     )
 
     # ── Write result to tier2_cache ───────────────────────────────────────────
@@ -925,14 +989,27 @@ async def _explain_episode_inner(
 
     if prose:
         try:
-            await upsert_tier2_cache(
+            from butlers.chronicler.location_input_binding import write_bound_dispatch_cache
+
+            native_written = await write_bound_dispatch_cache(
                 pool,
+                dispatch_fn,
+                result,
                 cache_key=cache_key,
                 start_at=ep_start,
                 end_at=ep_end,
                 prose=prose,
                 provenance_refs=[episode_row["source_ref"]],
             )
+            if not native_written:
+                await upsert_tier2_cache(
+                    pool,
+                    cache_key=cache_key,
+                    start_at=ep_start,
+                    end_at=ep_end,
+                    prose=prose,
+                    provenance_refs=[episode_row["source_ref"]],
+                )
         except Exception:
             logger.exception("explain_episode: failed to write tier2_cache[%s]", cache_key)
 
@@ -2679,16 +2756,20 @@ async def get_day_close_cache(
 
         # ── Step 1: fetch the cache row ──────────────────────────────────────
         t0 = time.perf_counter()
-        cache_row = await pool.fetchrow(
-            """
-            SELECT cache_key, start_at, end_at, cache_built_at, prose, provenance_refs,
-                   date_label, invalid_reason
-            FROM tier2_cache
-            WHERE cache_key = $1
-              AND superseded_at IS NULL
-            """,
-            cache_key,
-        )
+
+        async def native_cache(conn):
+            return await conn.fetchrow(
+                """
+                SELECT cache_key, start_at, end_at, cache_built_at, prose, provenance_refs,
+                       date_label, invalid_reason
+                FROM tier2_cache
+                WHERE cache_key = $1
+                  AND superseded_at IS NULL
+                """,
+                cache_key,
+            )
+
+        cache_row = await capture_api_cache_export(pool, cache_key, native_cache)
 
         if cache_row is None:
             span.set_attribute("chronicler.day_close.cache_state", "miss")
@@ -3238,8 +3319,12 @@ async def _voice_paragraph_from_cache(
     caller must produce a templated fallback.
     """
     cache_key = day_close_cache_key(target, tz_name)
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
+
+    async def native_cache(conn):
+        if conn is pool:
+            async with pool.acquire() as acquired:
+                return await native_cache(acquired)
+        return await conn.fetchrow(
             """
             SELECT prose, cache_built_at, start_at, end_at, date_label, invalid_reason
             FROM tier2_cache
@@ -3248,6 +3333,8 @@ async def _voice_paragraph_from_cache(
             """,
             cache_key,
         )
+
+    row = await capture_api_cache_export(pool, cache_key, native_cache)
     if row is None:
         return None, "templated"
     expected_start_at, expected_end_at = day_window_utc(target, tz_name)
@@ -3443,17 +3530,20 @@ async def get_evidence_chain(
     if ep_row is None:
         raise HTTPException(status_code=404, detail="Episode not found")
 
-    link_rows = await pool.fetch(
-        """
-        SELECT v.id, v.source_name, v.event_type, v.occurred_at, v.title,
-               v.privacy, l.relation
-        FROM episode_event_links l
-        JOIN v_point_events_corrected v ON v.id = l.event_id
-        WHERE l.episode_id = $1
-        ORDER BY v.occurred_at ASC, v.id ASC
-        """,
-        episode_id,
-    )
+    async def native_links(conn):
+        return await conn.fetch(
+            """
+            SELECT v.id, v.source_name, v.event_type, v.occurred_at, v.title,
+                   v.privacy, l.relation
+            FROM episode_event_links l
+            JOIN v_point_events_corrected v ON v.id = l.event_id
+            WHERE l.episode_id = $1
+            ORDER BY v.occurred_at ASC, v.id ASC
+            """,
+            episode_id,
+        )
+
+    link_rows = await capture_api_read(pool, "point_event", native_links)
 
     links = [
         EvidenceChainLink(

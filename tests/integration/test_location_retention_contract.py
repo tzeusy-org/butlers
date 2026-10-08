@@ -80,6 +80,95 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
                 )
                 == 2
             )
+        # Actual retained identity reads under the existing owning runtime
+        # role, distinct from the migration creator. Catalog names/IDs never
+        # enter diagnostics. Deliberate hostile mutations roll back; this is
+        # not a fixture patch to conceal a failed migration.
+        import importlib.util
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        import sqlalchemy as sa
+
+        source = Path(__file__).resolve().parents[2] / (
+            "alembic/versions/core/core_264_owntracks_retention_lineage.py"
+        )
+        spec = importlib.util.spec_from_file_location("_retention_identity_control", source)
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        engine = sa.create_engine(migrated_db_url)
+        try:
+            with engine.connect() as catalog:
+                catalog.execute(sa.text("SET search_path TO chronicler,public"))
+                catalog.commit()
+                migration.op = SimpleNamespace(get_bind=lambda: catalog)
+                with catalog.begin():
+                    catalog.execute(sa.text("SET LOCAL ROLE butler_chronicler_rw"))
+                    migration._validate_local_tables("chronicler")
+                    facts = catalog.execute(
+                        sa.text("""
+                        SELECT jsonb_build_object(
+                          'regular_table',c.relkind='r',
+                          'canonical_owner',c.relowner=s.relowner,
+                          'current_owner',pg_get_userbyid(c.relowner)=current_user,
+                          'session_is_current',session_user=current_user,
+                          'can_set_canonical_owner',pg_has_role(current_user,s.relowner,'SET'))
+                        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                        JOIN pg_class s ON s.relnamespace=n.oid AND s.relname='state'
+                        WHERE n.nspname='chronicler'
+                          AND c.relname='location_retention_copy_receipts'
+                    """)
+                    ).scalar_one()
+                    assert facts["regular_table"] and facts["canonical_owner"]
+                    assert facts["current_owner"] is False
+                    print(
+                        "RETENTION_MANAGED_OWNER " + __import__("json").dumps(facts, sort_keys=True)
+                    )
+                for statements, reason in (
+                    (
+                        [
+                            "ALTER TABLE location_retention_copy_receipts OWNER TO butler_chronicler_rw"
+                        ],
+                        "identity differs",
+                    ),
+                    (
+                        [
+                            "ALTER TABLE location_retention_copy_receipts RENAME TO retained_real_copy",
+                            "CREATE VIEW location_retention_copy_receipts AS SELECT * FROM retained_real_copy",
+                        ],
+                        "identity differs",
+                    ),
+                    (
+                        ["ALTER TABLE location_retention_copy_receipts ADD COLUMN unrelated TEXT"],
+                        "shape differs",
+                    ),
+                    (
+                        [
+                            "ALTER TABLE location_retention_copy_receipts DROP CONSTRAINT "
+                            "location_retention_copy_receipts_forgotten_count_check"
+                        ],
+                        "shape differs",
+                    ),
+                ):
+                    transaction = catalog.begin()
+                    try:
+                        for statement in statements:
+                            catalog.execute(sa.text(statement))
+                        with pytest.raises(RuntimeError, match=reason):
+                            migration._validate_local_tables("chronicler")
+                    finally:
+                        transaction.rollback()
+                    with catalog.begin():
+                        migration._validate_local_tables("chronicler")
+        finally:
+            engine.dispose()
+        # The native separate pool observes the committed original relations.
+        assert await pool.fetchval(
+            "SELECT c.relkind='r' AND c.relowner=s.relowner "
+            "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "JOIN pg_class s ON s.relnamespace=n.oid AND s.relname='state' "
+            "WHERE n.nspname='chronicler' AND c.relname='location_retention_copy_receipts'"
+        )
         await seed_source_registry(pool)
         policy = await read_policy(pool)
         assert policy["days"] == 30 and policy["version"] == 1
@@ -297,5 +386,101 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
                 cohort = await _output_generation_cohort(connection, [target["id"]], [])
                 assert cohort and all(row["original_output_revision"] is not None for row in cohort)
         assert await ready_batches(pool) == []  # Unknown foreign frontier cannot earn READY.
+
+        # Genuine migrated engine/role positive, distinct from online source
+        # authentication: the existing fixture's accepted IDs and the planted
+        # remote observation below are explicitly synthetic. They do not prove
+        # a registered source accepted/disposed this report, nor full delivery.
+        from butlers.chronicler.location_retention import (
+            dispose_ready_point_evidence,
+            issue_ready_grant,
+            seal_native_frontier,
+        )
+        from roster.chronicler.modules import ChroniclerModule
+
+        async def owning_connection(connection):
+            await register_jsonb_codec(connection)
+            await connection.execute("SET ROLE butler_chronicler_rw")
+
+        owning = await asyncpg.create_pool(
+            migrated_db_url,
+            min_size=1,
+            max_size=2,
+            init=owning_connection,
+            server_settings={"search_path": "chronicler,public"},
+        )
+        module = ChroniclerModule()
+        await module.on_startup(None, SimpleNamespace(schema="chronicler", pool=owning))
+        try:
+            assert await owning.fetchval("SELECT current_user") == "butler_chronicler_rw"
+            # Missing remote closure actually preserves planted source and
+            # point bodies, beside the closed-cohort engine positive below.
+            before_points = await pool.fetchval("SELECT count(*) FROM point_events")
+            assert await seal_native_frontier(owning, decision) is None
+            assert await dispose_ready_point_evidence(owning, decision) is None
+            assert await pool.fetchval("SELECT count(*) FROM point_events") == before_points
+            assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 304
+            selected = await pool.fetch(
+                "SELECT DISTINCT output_id FROM location_retention_plan_outputs "
+                "WHERE decision_id=$1 AND output_kind='point_event'",
+                decision,
+            )
+            assert selected  # Positive target is genuinely present before DELETE.
+            receipt = uuid4()
+            await pool.execute(
+                "INSERT INTO location_retention_holder_receipts "
+                "(decision_id,owning_butler,holder_kind,holder_generation,source_digest,receipt_id) "
+                "SELECT decision_id,'switchboard','switchboard_skipped',decision_id,"
+                "manifest_digest,$2 FROM location_retention_plans WHERE decision_id=$1",
+                decision,
+                receipt,
+            )
+            frontier = await seal_native_frontier(owning, decision)
+            assert frontier is not None
+            assert (
+                await pool.fetchval(
+                    "SELECT frontier_generation FROM location_retention_frontiers WHERE decision_id=$1",
+                    decision,
+                )
+                == frontier
+            )
+            disposed = await dispose_ready_point_evidence(owning, decision)
+            assert disposed is not None
+            assert (
+                await pool.fetchval(
+                    "SELECT receipt_id FROM location_retention_disposal_receipts WHERE decision_id=$1",
+                    decision,
+                )
+                == disposed
+            )
+            assert await pool.fetchval("SELECT count(*) FROM point_events") == before_points - len(
+                selected
+            )
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM point_events WHERE id=ANY($1::uuid[])",
+                    [row["output_id"] for row in selected],
+                )
+                == 0
+            )
+            assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 304
+            assert await pool.fetchval(
+                "SELECT count(*) FROM location_evidence_tombstones WHERE decision_id=$1",
+                decision,
+            ) == len(selected)
+            grant = await issue_ready_grant(owning, decision, disposed)
+            assert (
+                await pool.fetchval(
+                    "SELECT grant_id FROM location_retention_grants WHERE decision_id=$1",
+                    decision,
+                )
+                == grant
+            )
+            # No connector DELETE was executed by this owning engine. Raw
+            # workers and online source/MCP admission require their own proof.
+            assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 304
+        finally:
+            await module.on_shutdown()
+            await owning.close()
     finally:
         await pool.close()

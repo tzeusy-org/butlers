@@ -25,6 +25,49 @@ _RECEIPTS = (
 )
 
 
+def _create_local_tables(schema: str, statement: str) -> None:
+    """New own ledgers share the established core writer's owner.
+
+    The core foundation state table predates this feature in this exact schema.
+    Current invocation identity is not a retained object's permanent owner.
+    Never transfer an existing relation or grant membership to make it fit.
+    """
+    bind = op.get_bind()
+    owner = bind.execute(
+        sa.text("""
+        SELECT pg_catalog.pg_get_userbyid(s.relowner)
+        FROM pg_catalog.pg_class s JOIN pg_catalog.pg_namespace n ON n.oid=s.relnamespace
+        WHERE n.nspname=:schema AND s.relname='state' AND s.relkind='r'
+    """),
+        {"schema": schema},
+    ).scalar_one()
+    present = set(
+        bind.execute(
+            sa.text("""
+        SELECT c.relname FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=:schema AND c.relname IN
+          ('location_retention_copy_receipts','location_retention_source_floors',
+           'location_catalog_copy_loans','location_catalog_copy_dispositions',
+           'location_catalog_copy_lifetimes','location_catalog_copy_finished')
+    """),
+            {"schema": schema},
+        ).scalars()
+    )
+    op.execute(statement)
+    quote = bind.dialect.identifier_preparer.quote
+    for table in (
+        "location_retention_copy_receipts",
+        "location_retention_source_floors",
+        "location_catalog_copy_loans",
+        "location_catalog_copy_dispositions",
+        "location_catalog_copy_lifetimes",
+        "location_catalog_copy_finished",
+    ):
+        if table not in present:
+            op.execute(f"ALTER TABLE {quote(schema)}.{quote(table)} OWNER TO {quote(owner)}")
+
+
 def _validate_local_tables(schema: str) -> None:
     expected = {
         "location_retention_copy_receipts": [
@@ -42,6 +85,38 @@ def _validate_local_tables(schema: str) -> None:
             ("logical_source_digest", "bytea", True),
         ],
     }
+    expected.update(
+        {
+            "location_catalog_copy_loans": [
+                ("loan_id", "uuid", True),
+                ("source_generation", "uuid", True),
+                ("catalog_id", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("receiving_incarnation", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_catalog_copy_lifetimes": [
+                ("loan_id", "uuid", True),
+                ("holder_kind", "text", True),
+                ("holder_id", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_catalog_copy_finished": [
+                ("loan_id", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_catalog_copy_dispositions": [
+                ("loan_id", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+        }
+    )
     expected_constraints = {
         "location_retention_copy_receipts": {
             "PRIMARY KEY (decision_id)",
@@ -57,18 +132,61 @@ def _validate_local_tables(schema: str) -> None:
             "FOREIGN KEY (decision_id) REFERENCES location_retention_copy_receipts(decision_id)",
         },
     }
+    expected_constraints.update(
+        {
+            "location_catalog_copy_loans": {
+                "PRIMARY KEY (loan_id)",
+                "CHECK ((octet_length(body_digest) = 32))",
+            },
+            "location_catalog_copy_lifetimes": {
+                "PRIMARY KEY (loan_id)",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "FOREIGN KEY (loan_id) REFERENCES location_catalog_copy_loans(loan_id)",
+                "CHECK ((holder_kind = ANY (ARRAY['server_response'::text, "
+                "'runtime_session'::text, 'unbound_processing'::text])))",
+            },
+            "location_catalog_copy_finished": {
+                "PRIMARY KEY (loan_id)",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (loan_id) REFERENCES location_catalog_copy_lifetimes(loan_id)",
+            },
+            "location_catalog_copy_dispositions": {
+                "PRIMARY KEY (loan_id)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (loan_id) REFERENCES location_catalog_copy_loans(loan_id)",
+            },
+        }
+    )
     bind = op.get_bind()
     for table, shape in expected.items():
         relation = bind.execute(
             sa.text("""
-            SELECT c.oid,c.relkind,pg_catalog.pg_get_userbyid(c.relowner)=current_user
+            SELECT c.oid,c.relkind,
+              c.relowner=s.relowner AND s.relkind='r',
+              pg_catalog.pg_get_userbyid(c.relowner)=current_user,
+              current_user=session_user,
+              pg_catalog.pg_has_role(current_user,s.relowner,'SET')
             FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+            JOIN pg_catalog.pg_class s ON s.relnamespace=n.oid AND s.relname='state'
             WHERE n.nspname=:schema AND c.relname=:table
         """),
             {"schema": schema, "table": table},
         ).one()
         if relation[1] != "r" or not relation[2]:
-            raise RuntimeError("Location retention local table identity differs")
+            # Fixed booleans only: no role names, OIDs, schema/raw source values.
+            predicates = (
+                relation[1] == "r",
+                relation[2],
+                relation[3],
+                relation[4],
+                relation[5],
+            )
+            raise RuntimeError(
+                "Location retention local table identity differs; "
+                + ",".join(str(value is True).lower() for value in predicates)
+            )
         actual = [
             tuple(row)
             for row in bind.execute(
@@ -175,7 +293,9 @@ def upgrade() -> None:
     """)
     # Per-owning-schema ledger: source-holder actions never write through a
     # peer role. Core replay also covers Switchboard-only and legacy public DBs.
-    op.execute("""
+    _create_local_tables(
+        schema,
+        """
         CREATE TABLE IF NOT EXISTS location_retention_copy_receipts (
           decision_id UUID PRIMARY KEY,
           manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
@@ -184,13 +304,43 @@ def upgrade() -> None:
           forgotten_count INTEGER NOT NULL CHECK(forgotten_count>0),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        CREATE TABLE IF NOT EXISTS location_catalog_copy_loans (
+          loan_id UUID PRIMARY KEY,
+          source_generation UUID NOT NULL,
+          catalog_id UUID NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receiving_incarnation UUID NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_catalog_copy_lifetimes (
+          loan_id UUID PRIMARY KEY REFERENCES location_catalog_copy_loans(loan_id),
+          holder_kind TEXT NOT NULL CHECK(holder_kind IN (
+            'server_response','runtime_session','unbound_processing')),
+          holder_id UUID NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_catalog_copy_finished (
+          loan_id UUID PRIMARY KEY REFERENCES location_catalog_copy_lifetimes(loan_id),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_catalog_copy_dispositions (
+          loan_id UUID PRIMARY KEY REFERENCES location_catalog_copy_loans(loan_id),
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE IF NOT EXISTS location_retention_source_floors (
           dedupe_digest BYTEA PRIMARY KEY CHECK(octet_length(dedupe_digest)=32),
           request_id UUID NOT NULL,
           decision_id UUID NOT NULL REFERENCES location_retention_copy_receipts(decision_id),
           logical_source_digest BYTEA NOT NULL CHECK(octet_length(logical_source_digest)=32)
         );
-    """)
+    """,
+    )
     _validate_local_tables(schema)
     op.execute(f"""
         CREATE OR REPLACE FUNCTION {quoted_schema}.preserve_location_copy_history()
@@ -208,6 +358,18 @@ def upgrade() -> None:
           ON location_retention_source_floors FOR EACH ROW
           EXECUTE FUNCTION {quoted_schema}.preserve_location_copy_history();
     """)
+    for table in (
+        "location_catalog_copy_loans",
+        "location_catalog_copy_dispositions",
+        "location_catalog_copy_lifetimes",
+        "location_catalog_copy_finished",
+    ):
+        op.execute(f"""
+            DROP TRIGGER IF EXISTS preserve_location_copy_history ON {table};
+            CREATE TRIGGER preserve_location_copy_history BEFORE UPDATE OR DELETE
+            ON {table} FOR EACH ROW
+            EXECUTE FUNCTION {quoted_schema}.preserve_location_copy_history();
+        """)
     for table in _RECEIPTS:
         op.execute(f"""
             DROP TRIGGER IF EXISTS preserve_retention_history ON connectors.{table};
@@ -238,7 +400,8 @@ def downgrade() -> None:
              OR EXISTS(SELECT 1 FROM connectors.owntracks_retention_batches)
              OR EXISTS(SELECT 1 FROM connectors.owntracks_points
                        WHERE accepted_request_id IS NOT NULL)
-             OR EXISTS(SELECT 1 FROM location_retention_copy_receipts) THEN
+             OR EXISTS(SELECT 1 FROM location_retention_copy_receipts)
+             OR EXISTS(SELECT 1 FROM location_catalog_copy_loans) THEN
             RAISE EXCEPTION 'retention history exists; roll forward instead of erasing floors';
           END IF;
         END $$;

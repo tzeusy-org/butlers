@@ -53,38 +53,62 @@ async def write(
     if stderr and len(stderr) > max_stderr:
         stderr = stderr[:max_stderr] + "\n... [trimmed]"
 
-    await pool.execute(
-        """
-        INSERT INTO session_process_logs
-            (session_id, pid, exit_code, command, stderr, runtime_type,
-             retry_attempted, retry_succeeded, result_source, attempt_count,
-             expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                now() + make_interval(days => $11))
-        ON CONFLICT (session_id) DO UPDATE SET
-            pid              = EXCLUDED.pid,
-            exit_code        = EXCLUDED.exit_code,
-            command          = EXCLUDED.command,
-            stderr           = EXCLUDED.stderr,
-            runtime_type     = EXCLUDED.runtime_type,
-            retry_attempted  = EXCLUDED.retry_attempted,
-            retry_succeeded  = EXCLUDED.retry_succeeded,
-            result_source    = EXCLUDED.result_source,
-            attempt_count    = EXCLUDED.attempt_count,
-            expires_at       = EXCLUDED.expires_at
-        """,
-        session_id,
-        pid,
-        exit_code,
-        command,
-        stderr,
-        runtime_type,
-        retry_attempted,
-        retry_succeeded,
-        result_source,
-        attempt_count,
-        ttl_days,
+    from butlers.chronicler.location_retention import (
+        lock_native_session_completion,
+        native_copy_pool,
     )
+
+    async def persist(writer, *, forgotten=False, input_bound=False):
+        nonlocal command, stderr
+        if forgotten:
+            if input_bound:
+                command = "[Location-derived diagnostic forgotten]"
+            stderr = None
+        await writer.execute(
+            """
+            INSERT INTO session_process_logs
+                (session_id, pid, exit_code, command, stderr, runtime_type,
+                 retry_attempted, retry_succeeded, result_source, attempt_count,
+                 expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    now() + make_interval(days => $11))
+            ON CONFLICT (session_id) DO UPDATE SET
+                pid              = EXCLUDED.pid,
+                exit_code        = EXCLUDED.exit_code,
+                command          = EXCLUDED.command,
+                stderr           = EXCLUDED.stderr,
+                runtime_type     = EXCLUDED.runtime_type,
+                retry_attempted  = EXCLUDED.retry_attempted,
+                retry_succeeded  = EXCLUDED.retry_succeeded,
+                result_source    = EXCLUDED.result_source,
+                attempt_count    = EXCLUDED.attempt_count,
+                expires_at       = EXCLUDED.expires_at
+            """,
+            session_id,
+            pid,
+            exit_code,
+            command,
+            stderr,
+            runtime_type,
+            retry_attempted,
+            retry_succeeded,
+            result_source,
+            attempt_count,
+            ttl_days,
+        )
+
+    if native_copy_pool(pool):
+        async with pool.acquire() as writer:
+            async with writer.transaction():
+                forgotten = await lock_native_session_completion(writer, session_id)
+                input_bound = forgotten and await writer.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_native_dispatch_sessions "
+                    "WHERE receiving_session=$1)",
+                    session_id,
+                )
+                await persist(writer, forgotten=forgotten, input_bound=input_bound)
+    else:
+        await persist(pool)
     logger.debug("Process log written for session %s (pid=%s, exit=%s)", session_id, pid, exit_code)
 
 

@@ -205,6 +205,7 @@ class _McpRuntimeSessionGuard:
                 binding = None
             else:
                 self._admitted_sessions[mcp_session] = binding.runtime_session
+        copy_token = fact_authority._current_copy_invocation.set(binding)
         report_token = fact_authority._current_report.set(
             binding.report
             if binding is not None
@@ -245,6 +246,7 @@ class _McpRuntimeSessionGuard:
         try:
             await self._app(scope, receive, _send_with_session_capture)
         finally:
+            fact_authority._current_copy_invocation.reset(copy_token)
             fact_authority._incoming_receipt.reset(receipt_token)
             fact_authority._pipeline_source.reset(pipeline_token)
             fact_authority._incoming_source.reset(source_token)

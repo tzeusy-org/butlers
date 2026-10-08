@@ -367,7 +367,12 @@ async def execute_consolidation(
         # fallback cannot leave PostgreSQL's outer transaction aborted.
         episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
         try:
-            async with pool.acquire() as connection:
+            from butlers.chronicler.location_memory_derivation import (
+                derivation_writer,
+                finalize_derivation_artifacts,
+            )
+
+            async with derivation_writer(pool) as connection:
                 async with connection.transaction():
                     if not await _lock_and_renew_claim_for_persistence(
                         connection,
@@ -376,7 +381,7 @@ async def execute_consolidation(
                         lease_duration_seconds=lease_duration_seconds,
                     ):
                         return _lost_claim_result()
-                    return await execute_consolidation(
+                    result = await execute_consolidation(
                         pool=_ConnectionBackedPool(connection),
                         embedding_engine=embedding_engine,
                         parsed=parsed,
@@ -393,6 +398,9 @@ async def execute_consolidation(
                         _claim_persistence_fenced=True,
                         _episode_ttl_days=episode_ttl_days,
                     )
+                    if result["episodes_consolidated"] == len(source_episode_ids):
+                        await finalize_derivation_artifacts(connection)
+                    return result
         except _TerminalConsolidationPersistenceError:
             # The exception must leave the outer transaction before returning:
             # catching it inside any nested savepoint could commit artifacts or

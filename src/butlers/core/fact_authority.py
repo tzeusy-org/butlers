@@ -549,6 +549,11 @@ class _Invocation:
 _source_registry: FactSourceContextRegistry | None = None
 _invocations: dict[str, _Invocation] = {}
 _incarnation = secrets.token_urlsafe(24)
+# This private binding records a receiving copy holder only. It grants no
+# custody privilege or fact authority; query/session locators never fill it.
+_current_copy_invocation: contextvars.ContextVar[_Invocation | None] = contextvars.ContextVar(
+    "registered_copy_invocation", default=None
+)
 _current_report: contextvars.ContextVar[FactWriteContext | None] = contextvars.ContextVar(
     "admitted_fact_report", default=None
 )

@@ -57,10 +57,11 @@ def upgrade() -> None:
           source_revision BIGINT NOT NULL,
           adapter_name TEXT NOT NULL,
           mapping_revision BYTEA NOT NULL,
+          phase TEXT NOT NULL DEFAULT 'coarsen' CHECK(phase IN ('coarsen','dispose')),
           previous_revision BYTEA NOT NULL CHECK(octet_length(previous_revision)=32),
           reduced_revision BYTEA NOT NULL CHECK(octet_length(reduced_revision)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-          PRIMARY KEY(decision_id,raw_id,source_revision,adapter_name,mapping_revision),
+          PRIMARY KEY(decision_id,raw_id,source_revision,adapter_name,mapping_revision,phase),
           FOREIGN KEY(raw_id,source_revision,adapter_name,mapping_revision)
             REFERENCES location_projection_coverage(raw_id,source_revision,adapter_name,mapping_revision)
         );
@@ -160,6 +161,213 @@ def upgrade() -> None:
           observed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           PRIMARY KEY(decision_id,owning_butler,holder_kind,holder_generation)
         );
+        CREATE TABLE location_native_copy_births (
+          copy_generation UUID NOT NULL,
+          output_kind TEXT NOT NULL CHECK(output_kind IN ('point_event','episode')),
+          output_id UUID NOT NULL,
+          input_digest BYTEA NOT NULL CHECK(octet_length(input_digest)=32),
+          lineage_known BOOLEAN NOT NULL,
+          receiving_session UUID,
+          receiving_server_request UUID,
+          exclusive_input BOOLEAN NOT NULL,
+          producer_kind TEXT NOT NULL CHECK(producer_kind IN ('native_mcp','api_export','native_dispatch','native_memory')),
+          produced_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          PRIMARY KEY(copy_generation,output_kind,output_id)
+        );
+        -- Native producer-owned frontier, never an empty/absent success.
+        -- Enrollment and fixed owning readback transport must be installed
+        -- before any row can qualify; receipt IDs are bindings, not authority.
+        CREATE TABLE location_native_dispatch_inputs (
+          origin_kind TEXT NOT NULL DEFAULT 'api_export'
+            CHECK(origin_kind IN ('api_export','native_memory')),
+          input_generation UUID PRIMARY KEY,
+          server_request UUID NOT NULL,
+          prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          parent_count INTEGER NOT NULL CHECK(parent_count>0),
+          captured_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_dispatch_parents (
+          input_generation UUID NOT NULL REFERENCES location_native_dispatch_inputs(input_generation),
+          copy_generation UUID NOT NULL,
+          input_digest BYTEA NOT NULL CHECK(octet_length(input_digest)=32),
+          PRIMARY KEY(input_generation,copy_generation)
+        );
+        CREATE TABLE location_native_dispatch_reservations (
+          input_generation UUID PRIMARY KEY REFERENCES location_native_dispatch_inputs(input_generation),
+          receiving_session UUID NOT NULL UNIQUE,
+          prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_dispatch_sessions (
+          input_generation UUID PRIMARY KEY REFERENCES location_native_dispatch_inputs(input_generation),
+          receiving_session UUID NOT NULL UNIQUE,
+          prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_copy_dispositions (
+          copy_generation UUID PRIMARY KEY,
+          receipt_id UUID NOT NULL UNIQUE,
+          input_digest BYTEA NOT NULL CHECK(octet_length(input_digest)=32),
+          receiving_session UUID NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_memory_reservations (
+          reservation_id UUID PRIMARY KEY,
+          receiving_session UUID NOT NULL,
+          content_digest BYTEA NOT NULL CHECK(octet_length(content_digest)=32),
+          memory_schema TEXT NOT NULL, writer_role TEXT NOT NULL,
+          parent_count INTEGER NOT NULL CHECK(parent_count>0),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_memory_parents (
+          reservation_id UUID NOT NULL REFERENCES location_native_memory_reservations,
+          copy_generation UUID NOT NULL, input_digest BYTEA NOT NULL,
+          PRIMARY KEY(reservation_id,copy_generation)
+        );
+        CREATE TABLE location_native_memory_commits (
+          reservation_id UUID PRIMARY KEY REFERENCES location_native_memory_reservations,
+          episode_id UUID NOT NULL, body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_memory_dispositions (
+          reservation_id UUID PRIMARY KEY REFERENCES location_native_memory_reservations,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_cache_inputs (
+          cache_key TEXT NOT NULL,
+          copy_generation UUID NOT NULL,
+          cache_generation UUID NOT NULL,
+          PRIMARY KEY(cache_key,cache_generation,copy_generation)
+        );
+        CREATE TABLE location_native_cache_heads (
+          cache_key TEXT PRIMARY KEY,
+          cache_generation UUID NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32)
+        );
+        CREATE TABLE location_legacy_cache_observations (
+          cache_key TEXT NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          observation_id UUID NOT NULL UNIQUE,
+          observed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          PRIMARY KEY(cache_key,body_digest)
+        );
+        CREATE TABLE location_native_cache_exports (
+          copy_generation UUID PRIMARY KEY,
+          cache_key TEXT NOT NULL,
+          cache_generation UUID,
+          receiving_server_request UUID,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          produced_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_api_dispositions (
+          copy_generation UUID PRIMARY KEY,
+          server_request UUID NOT NULL,
+          producer_kind TEXT NOT NULL CHECK(producer_kind IN ('native_read','cache')),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_legacy_cache_replacements (
+          observation_id UUID PRIMARY KEY REFERENCES location_legacy_cache_observations(observation_id),
+          receipt_id UUID NOT NULL UNIQUE,
+          replacement_generation UUID NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_memory_bundles (
+          input_generation UUID PRIMARY KEY REFERENCES location_native_dispatch_inputs(input_generation),
+          bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          exclusive_input BOOLEAN NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_memory_bundle_episodes (
+          input_generation UUID NOT NULL REFERENCES location_native_memory_bundles(input_generation),
+          episode_id UUID NOT NULL,
+          PRIMARY KEY(input_generation,episode_id)
+        );
+        CREATE TABLE location_native_memory_runtime_receipts (
+          input_generation UUID PRIMARY KEY REFERENCES location_native_memory_bundles(input_generation),
+          receiving_session UUID NOT NULL UNIQUE,
+          system_digest BYTEA NOT NULL CHECK(octet_length(system_digest)=32),
+          memory_context_present BOOLEAN NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_memory_artifact_dispositions (
+          artifact_generation UUID PRIMARY KEY,
+          decision_id UUID NOT NULL REFERENCES location_retention_plans(decision_id),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_memory_artifacts (
+          artifact_generation UUID PRIMARY KEY,
+          input_generation UUID NOT NULL REFERENCES location_native_memory_bundles(input_generation),
+          memory_table TEXT NOT NULL CHECK(memory_table IN ('facts','rules')),
+          artifact_id UUID NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          UNIQUE(memory_table,artifact_id)
+        );
+        ALTER TABLE location_native_memory_artifact_dispositions ADD CONSTRAINT
+          location_native_memory_artifact_dispositions_generation_fkey
+          FOREIGN KEY(artifact_generation) REFERENCES location_native_memory_artifacts(artifact_generation);
+        CREATE TABLE location_native_catalog_generations (
+          source_generation UUID PRIMARY KEY,
+          catalog_id UUID NOT NULL,
+          artifact_generation UUID NOT NULL REFERENCES location_native_memory_artifacts(artifact_generation),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_catalog_heads (
+          catalog_id UUID PRIMARY KEY,
+          source_generation UUID NOT NULL REFERENCES location_native_catalog_generations(source_generation)
+        );
+        CREATE TABLE location_native_catalog_loans (
+          loan_id UUID PRIMARY KEY,
+          source_generation UUID NOT NULL REFERENCES location_native_catalog_generations(source_generation),
+          receiver_name TEXT NOT NULL,
+          receiving_incarnation UUID NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_catalog_server_dispositions (
+          loan_id UUID PRIMARY KEY REFERENCES location_native_catalog_loans(loan_id),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          server_request UUID NOT NULL,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_native_catalog_dispositions (
+          source_generation UUID PRIMARY KEY REFERENCES location_native_catalog_generations(source_generation),
+          decision_id UUID NOT NULL REFERENCES location_retention_plans(decision_id),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_retention_frontiers (
+          decision_id UUID PRIMARY KEY REFERENCES location_retention_plans(decision_id),
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          frontier_generation UUID NOT NULL,
+          producer_contract INTEGER NOT NULL CHECK(producer_contract=1),
+          expected_count INTEGER NOT NULL CHECK(expected_count>0),
+          sealed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE location_retention_frontier_holders (
+          decision_id UUID NOT NULL REFERENCES location_retention_frontiers(decision_id),
+          owning_butler TEXT NOT NULL,
+          holder_kind TEXT NOT NULL,
+          holder_generation UUID NOT NULL,
+          source_digest BYTEA NOT NULL CHECK(octet_length(source_digest)=32),
+          PRIMARY KEY(decision_id,owning_butler,holder_kind,holder_generation)
+        );
+        CREATE TABLE location_retention_disposal_receipts (
+          decision_id UUID PRIMARY KEY REFERENCES location_retention_plans(decision_id),
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          frontier_generation UUID NOT NULL,
+          receipt_id UUID NOT NULL UNIQUE,
+          removed_event_count INTEGER NOT NULL CHECK(removed_event_count>=0),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE location_evidence_tombstones (
           event_id UUID PRIMARY KEY,
           raw_id UUID NOT NULL,
@@ -247,6 +455,33 @@ def upgrade() -> None:
         "location_retention_plan_rows",
         "location_retention_plan_outputs",
         "location_retention_holder_receipts",
+        "location_retention_frontier_holders",
+        "location_retention_frontiers",
+        "location_native_copy_births",
+        "location_native_copy_dispositions",
+        "location_native_dispatch_inputs",
+        "location_native_dispatch_parents",
+        "location_native_dispatch_sessions",
+        "location_native_dispatch_reservations",
+        "location_native_cache_inputs",
+        "location_legacy_cache_observations",
+        "location_native_cache_exports",
+        "location_native_catalog_generations",
+        "location_native_catalog_loans",
+        "location_native_catalog_dispositions",
+        "location_native_catalog_server_dispositions",
+        "location_native_memory_bundles",
+        "location_native_memory_bundle_episodes",
+        "location_native_memory_artifacts",
+        "location_native_memory_runtime_receipts",
+        "location_native_memory_artifact_dispositions",
+        "location_native_memory_reservations",
+        "location_native_memory_parents",
+        "location_native_memory_commits",
+        "location_native_memory_dispositions",
+        "location_native_api_dispositions",
+        "location_legacy_cache_replacements",
+        "location_retention_disposal_receipts",
         "location_evidence_tombstones",
         "location_expired_evidence_links",
         "location_retention_local_receipts",
@@ -266,13 +501,40 @@ def downgrade() -> None:
         DO $$ BEGIN
           IF EXISTS(SELECT 1 FROM location_retention_plans)
              OR EXISTS(SELECT 1 FROM location_evidence_tombstones)
-             OR EXISTS(SELECT 1 FROM location_summary_floors) THEN
+             OR EXISTS(SELECT 1 FROM location_summary_floors)
+             OR EXISTS(SELECT 1 FROM location_native_copy_births)
+             OR EXISTS(SELECT 1 FROM location_native_copy_dispositions)
+             OR EXISTS(SELECT 1 FROM location_native_cache_inputs)
+             OR EXISTS(SELECT 1 FROM location_legacy_cache_observations)
+             OR EXISTS(SELECT 1 FROM location_native_memory_reservations)
+             OR EXISTS(SELECT 1 FROM location_native_memory_bundles)
+             OR EXISTS(SELECT 1 FROM location_native_catalog_generations)
+             OR EXISTS(SELECT 1 FROM location_native_cache_exports)
+             OR EXISTS(SELECT 1 FROM location_native_api_dispositions)
+             OR EXISTS(SELECT 1 FROM location_native_dispatch_inputs) THEN
             RAISE EXCEPTION 'retention decisions exist; roll forward instead of erasing floors';
           END IF;
         END $$;
         DROP TABLE location_summary_floors,location_retention_local_receipts,
           location_expired_evidence_links,location_evidence_tombstones,
-          location_retention_holder_receipts,location_retention_grants,
+          location_retention_holder_receipts,location_retention_frontier_holders,
+          location_retention_disposal_receipts,location_retention_frontiers,
+          location_native_catalog_server_dispositions,
+          location_native_catalog_dispositions,location_native_catalog_loans,
+          location_native_catalog_heads,location_native_catalog_generations,
+          location_native_memory_artifact_dispositions,location_native_memory_artifacts,
+          location_native_memory_runtime_receipts,location_native_memory_bundle_episodes,
+          location_native_memory_bundles,
+          location_native_copy_births,location_native_copy_dispositions,
+          location_native_dispatch_sessions,location_native_dispatch_reservations,
+          location_native_dispatch_parents,
+          location_native_dispatch_inputs,
+          location_native_cache_inputs,location_native_cache_heads,location_retention_grants,
+          location_legacy_cache_replacements,location_legacy_cache_observations,
+          location_native_memory_dispositions,location_native_memory_commits,
+          location_native_memory_parents,location_native_memory_reservations,
+          location_native_cache_exports,
+          location_native_api_dispositions,
           location_retention_plan_outputs,location_retention_plan_rows,
           location_retention_plans,location_retention_runs,
           location_projection_outputs,location_projection_privacy_transitions,

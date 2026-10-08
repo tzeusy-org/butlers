@@ -246,6 +246,8 @@ async def test_native_retention_failure_has_separate_completion_and_count_only_c
     async def reconcile(pool, **kwargs):
         calls.append(kwargs)
 
+    monkeypatch.setattr(retention, "reconcile_raw_batches", AsyncMock())
+    monkeypatch.setattr(retention, "classify_legacy_caches", AsyncMock())
     monkeypatch.setattr(retention, "start_attempt", start)
     monkeypatch.setattr(retention, "prepare_batch", prepare)
     monkeypatch.setattr(retention, "fail_attempt", complete)
@@ -264,6 +266,16 @@ async def test_native_retention_failure_has_separate_completion_and_count_only_c
     calls.clear()
     await retention.publish_conditions(object(), {"status": "unknown"})
     assert calls[0]["snapshot_complete"] is False
+    calls.clear()
+    await retention.publish_conditions(object(), {"status": "pending", "blocked_count": 0})
+    assert calls[0]["snapshot_complete"] is False
+    assert calls[1]["observations"][0].metadata == {"status": "pending"}
+    calls.clear()
+    await retention.publish_conditions(
+        object(),
+        {"status": "complete", "blocked_count": 0, "unknown_count": 0, "holder_pending_count": 0},
+    )
+    assert calls[0]["snapshot_complete"] is True and calls[0]["observations"] == []
 
 
 def test_source_copy_readback_binds_exact_committed_holder_and_refuses_partial_ack():
@@ -298,7 +310,7 @@ def test_source_copy_readback_binds_exact_committed_holder_and_refuses_partial_a
         source_copy_receipt({"success": True}, decision, manifest, 2)
 
 
-async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monkeypatch):
+async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monkeypatch, caplog):
     """REQ-location-retention-002; never lose an open carry and invent coverage."""
     from butlers.chronicler import location_projection, storage
 
@@ -361,6 +373,23 @@ async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monk
     assert successful.error is None and not successful.skipped
     assert active.await_args.kwargs["active"] is True
     assert checkpoint.await_args.kwargs["success"] is True
+
+    # Failure diagnostics never publish source/SSID/error strings and never
+    # convert the original failed projection into success. Fixed SQLSTATE is
+    # diagnosis only, not proof that real PostgreSQL executed this software.
+    import asyncpg
+
+    caplog.clear()
+    conn.fetchrow.side_effect = asyncpg.UndefinedColumnError("synthetic-private-ssid-coordinate")
+    failure = await location_projection.run_projection(adapter, chronicler_pool=pool)
+    assert failure.error == "location_projection_failed"
+    assert "stage=policy_lock category=postgres sqlstate=42703" in caplog.text
+    assert "synthetic-private" not in caplog.text
+    assert checkpoint.await_args.kwargs["success"] is False
+    conn.fetchrow.side_effect = lambda query, *args: (
+        {"version": 1} if "location_retention_policy" in query else None
+    )
+    assert (await location_projection.run_projection(adapter, chronicler_pool=pool)).error is None
 
     # Original generation must match before the legitimate privacy transition.
     from uuid import uuid4
@@ -430,3 +459,980 @@ async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monk
     reader.fetch.side_effect = RuntimeError("installed schema changed")
     with pytest.raises(RuntimeError, match="installed schema changed"):
         await expired_evidence_links(reader, raw_id)
+
+
+async def test_native_inline_fixture_uses_complete_owning_retention_dependencies():
+    """REQ-location-retention-008: source producer parity, not real SQL proof."""
+    import runpy
+    from contextlib import asynccontextmanager
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    statements = []
+
+    class Capture:
+        async def execute(self, statement):
+            statements.append(str(statement))
+
+        async def fetchval(self, statement):
+            assert statement == "SELECT current_schema()"
+            return "chronicler"
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield self
+
+    # Invoke both actual fixture producers. Their own SQL bodies and migration
+    # registrations must agree; no canned SQL result asserts a DB outcome.
+    for path, function in (
+        ("tests/contracts/test_chronicler_schema_drift.py", "_apply_inline_ddl"),
+        ("roster/chronicler/tests/test_storage_integration.py", "_apply_chronicler_schema"),
+    ):
+        statements.clear()
+        producer = runpy.run_path(str(root / path))[function]
+        await producer(Capture())
+        emitted = "\n".join(statements)
+        assert all(
+            field in emitted
+            for field in (
+                "raw_evidence_retention",
+                "projected_evidence_retention",
+                "allowed_spatial_precision_m",
+                "source_tombstone_behavior",
+            )
+        )
+        if function == "_apply_chronicler_schema":
+            assert all(
+                "CREATE TABLE " + table in emitted
+                for table in (
+                    "location_retention_policy",
+                    "location_summary_floors",
+                    "location_evidence_tombstones",
+                    "location_retention_plans",
+                )
+            )
+            assert "Location retention history is permanent" in emitted
+            assert "Location retention decision is immutable" in emitted
+
+
+async def test_native_mcp_input_birth_precedes_emission_and_unknown_commit_refuses(monkeypatch):
+    """REQ-location-retention-005/006; actual producer/guard software, not SQL/MCP transport."""
+    from contextlib import asynccontextmanager
+    from dataclasses import dataclass
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler import location_retention, storage
+    from butlers.core import fact_authority
+    from butlers.guards import _McpRuntimeSessionGuard
+    from roster.chronicler.modules import ChroniclerModule
+
+    @dataclass
+    class NativeRow:
+        id: object
+        source_name: str
+        occurred_at: datetime
+        title: str = "Synthetic private location"
+
+    row = NativeRow(uuid4(), "owntracks.points", datetime(2026, 1, 5, tzinfo=UTC))
+    native_id = row.id
+    birth_args = []
+    trace = []
+    unknown = False
+
+    class Conn:
+        @asynccontextmanager
+        async def transaction(self):
+            trace.append("own_transaction")
+            yield
+            trace.append("own_commit")
+
+        async def fetchrow(self, query, *args):
+            return {
+                "days": 30,
+                "version": 1,
+                "spatial_scheme_version": 1,
+                "updated_at": row.occurred_at,
+            }
+
+        async def fetch(self, query, *args):
+            return [{"output_id": native_id}] if native_id in args[1] else []
+
+        async def fetchval(self, query, *args):
+            if "current_user" in query:
+                return "butler_chronicler_rw"
+            if "location_retention_frontiers" in query:
+                return False
+            trace.append("committed_readback")
+            return 0 if unknown else sum(birth[0] == args[0] for birth in birth_args)
+
+        async def execute(self, query, *args):
+            if "INSERT INTO location_native_copy_births" in query:
+                birth_args.append(args)
+                trace.append("native_input_birth")
+
+    conn = Conn()
+
+    class Pool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield conn
+
+    pool = Pool()
+
+    async def native_reader(actual_conn, **kwargs):
+        assert actual_conn in (pool, conn)
+        return [row]
+
+    monkeypatch.setattr(storage, "list_point_events", native_reader)
+
+    class MCP:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self, *args, **kwargs):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+
+            return register
+
+    mcp = MCP()
+    location_retention._copy_pools.add(pool)  # Software fixed-constructor registry double.
+    await ChroniclerModule().register_tools(mcp, None, SimpleNamespace(pool=pool), "chronicler")
+    session_id = uuid4()
+    invocation = await fact_authority.register_invocation(
+        "chronicler", str(session_id), source_endpoint=None, routed=False
+    )
+    responses = []
+
+    async def app(scope, receive, send):
+        result = await mcp.tools["chronicler_list_events"]()
+        # Positioned against a producer bypass: raw response alone is not a birth.
+        assert birth_args and trace.index("own_commit") < trace.index("committed_readback")
+        assert birth_args[-1][5] == session_id
+        assert birth_args[-1][4] is True and birth_args[-1][6] is True
+        responses.append(result)
+
+    guard = _McpRuntimeSessionGuard(app, butler_name="chronicler")
+    scope = {
+        "type": "http",
+        "query_string": b"runtime_session_id=caller-forged",
+        "headers": [(fact_authority.INVOCATION_HEADER.lower().encode(), invocation.encode())],
+    }
+    try:
+        await guard(scope, None, None)
+        assert responses[0]["data"][0]["id"] == row.id
+        assert fact_authority._current_copy_invocation.get() is None
+        unknown = True
+        with pytest.raises(location_retention.PolicyUnavailableError, match="birth is unknown"):
+            await guard(scope, None, None)
+        assert len(responses) == 1
+        assert fact_authority._current_copy_invocation.get() is None
+        unknown = False
+        birth_args.clear()
+        trace.clear()
+        await guard(scope, None, None)
+        assert len(responses) == 2
+        # A caller query can locate diagnostics but never a receiving holder.
+        await location_retention.capture_native_read(pool, "point_event", native_reader)
+        assert birth_args[-1][5] is None
+        # Ordinary non-location inputs retain the existing reader path.
+        row.source_name = "calendar.events"
+        row.id = uuid4()  # A genuinely unrelated ID, not relabelled stored source lineage.
+        birth_args.clear()
+        assert await location_retention.capture_native_read(pool, "point_event", native_reader) == [
+            row
+        ]
+        assert birth_args == []
+    finally:
+        fact_authority.settle_invocation(invocation)
+        location_retention._copy_pools.discard(pool)
+
+
+async def test_raw_reconciliation_binds_full_source_receipt_and_resumes_same_unknown_ids():
+    """REQ-location-retention-006; source/commit wiring only, not real PostgreSQL evidence."""
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler.location_retention import PolicyUnavailableError, reconcile_raw_batches
+
+    plan = {
+        "decision_id": uuid4(),
+        "batch_id": uuid4(),
+        "grant_id": uuid4(),
+        "run_id": uuid4(),
+        "manifest_digest": b"m" * 32,
+        "policy_version": 1,
+        "cutoff": datetime(2026, 1, 5, tzinfo=UTC),
+        "state": "ready",
+    }
+    expected = {"raw_id": uuid4(), "source_revision": 1, "logical_source_digest": b"s" * 32}
+    header = {**plan, "deleted_count": 1, "already_forgotten_count": 0}
+    source_rows = [{**expected, "disposition": "deleted"}]
+    trace = []
+
+    class Conn:
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+            trace.append("own_commit")
+
+        async def fetchrow(self, query, *args):
+            if "connectors.owntracks_retention_batches" in query:
+                trace.append("source_header_read")
+                return header
+            if "location_retention_policy" in query:
+                return {"version": 1}
+            return plan
+
+        async def fetch(self, query, *args):
+            if "connectors.owntracks_retention_batch_rows" in query:
+                trace.append("source_detail_read")
+                return source_rows
+            return [expected]
+
+        async def fetchval(self, query, *args):
+            if "current_user" in query:
+                return "butler_chronicler_rw"
+            if "location_retention_frontiers" in query:
+                return False
+            trace.append("own_committed_readback")
+            return plan["state"]
+
+        async def execute(self, query, *args):
+            if "SET state='raw_unknown'" in query:
+                plan["state"] = "raw_unknown"
+            elif "SET state='complete'" in query:
+                plan["state"] = "complete"
+            elif "deleted_count" in query:
+                assert (
+                    "sum(b.deleted_count)" in query
+                )  # Replay must not increment a cached ACK count.
+
+    class Pool:
+        async def fetch(self, query, *args):
+            return [dict(plan)] if plan["state"] != "complete" else []
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield Conn()
+
+    pool = Pool()
+    frozen_ids = (plan["decision_id"], plan["batch_id"], plan["grant_id"])
+    header = None
+    source_rows = []
+    await reconcile_raw_batches(pool)
+    assert plan["state"] == "raw_unknown"
+    assert (plan["decision_id"], plan["batch_id"], plan["grant_id"]) == frozen_ids
+    header = {**plan, "deleted_count": 1, "already_forgotten_count": 0}
+    source_rows = [{**expected, "disposition": "deleted"}]
+    for field, bad in (
+        ("grant_id", uuid4()),
+        ("manifest_digest", b"x" * 32),
+        ("deleted_count", 0),
+        ("cutoff", plan["cutoff"] + timedelta(seconds=1)),
+    ):
+        original = header[field]
+        header[field] = bad
+        with pytest.raises(PolicyUnavailableError, match="receipt differs|disposition differs"):
+            await reconcile_raw_batches(pool)
+        assert plan["state"] == "raw_unknown"
+        header[field] = original
+    source_rows[0]["raw_id"] = uuid4()
+    with pytest.raises(PolicyUnavailableError, match="disposition differs"):
+        await reconcile_raw_batches(pool)
+    source_rows[0]["raw_id"] = expected["raw_id"]
+    trace.clear()
+    await reconcile_raw_batches(pool)
+    assert plan["state"] == "complete"
+    assert trace == [
+        "source_header_read",
+        "source_detail_read",
+        "own_commit",
+        "own_committed_readback",
+    ]
+    await reconcile_raw_batches(pool)
+    assert (plan["decision_id"], plan["batch_id"], plan["grant_id"]) == frozen_ids
+
+
+async def test_native_frontier_requires_planted_current_holder_and_committed_inventory():
+    """REQ-location-retention-003/005; inventory engine software, NOT source/SQL proof."""
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler import location_retention as service
+
+    decision, copy = uuid4(), uuid4()
+    manifest, digest = b"m" * 32, b"c" * 32
+
+    class Pool:
+        def __init__(self):
+            self.role = "butler_chronicler_rw"
+            self.trace = []
+            self.legacy = False
+            self.changed = False
+            self.catalog_unknown = False
+            self.catalog_pending = False
+            self.artifact_pending = False
+            self.catalog = []
+            self.unknown_commit = False
+            self.frontier = None
+            self.expected = []
+            self.raw = ["planted-exact-raw"]
+            self.points = ["planted-point-body"]
+            self.holders = {
+                "switchboard_skipped": {
+                    "owning_butler": "switchboard",
+                    "holder_kind": "switchboard_skipped",
+                    "holder_generation": decision,
+                    "source_digest": manifest,
+                    "receipt_id": uuid4(),
+                },
+                "api_server": {
+                    "owning_butler": "chronicler",
+                    "holder_kind": "api_server",
+                    "holder_generation": copy,
+                    "source_digest": digest,
+                    "receipt_id": uuid4(),
+                },
+            }
+            self.local = {"manifest_digest": manifest, "receipt_id": uuid4()}
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.trace.append("begin")
+            prior, expected = self.frontier, list(self.expected)
+            try:
+                yield
+            except BaseException:
+                self.frontier, self.expected = prior, expected
+                self.trace.append("rollback")
+                raise
+            else:
+                self.trace.append("commit")
+
+        async def fetchrow(self, query, *args):
+            if "location_retention_policy" in query:
+                self.trace.append("policy")
+                return {"version": 1}
+            if "location_retention_plans" in query:
+                return {
+                    "decision_id": decision,
+                    "state": "holder_pending",
+                    "manifest_digest": manifest,
+                }
+            if "location_retention_frontiers" in query:
+                return self.frontier
+            if "location_retention_local_receipts" in query:
+                return self.local
+            if "location_retention_holder_receipts" in query:
+                key = "switchboard_skipped" if len(args) == 1 else args[1]
+                if "projection_prepare" in query:
+                    key = "projection_prepare"
+                return self.holders.get(key)
+            raise AssertionError(query)
+
+        async def fetch(self, query, *args):
+            if "WITH artifacts AS" in query:
+                return self.catalog
+            if "FROM location_native_cache_heads" in query:
+                return []
+            if "FROM location_native_copy_births" in query:
+                return [
+                    {"copy_generation": copy, "input_digest": digest, "producer_kind": "api_export"}
+                ]
+            if "FROM location_retention_frontier_holders" in query:
+                return [
+                    dict(row, receipt_id=self.holders[row["holder_kind"]]["receipt_id"])
+                    for row in self.expected
+                ]
+            raise AssertionError(query)
+
+        async def fetchval(self, query, *args):
+            if "current_user" in query:
+                return self.role
+            if "FROM public.memory_catalog" in query:
+                return self.catalog_unknown
+            if "FROM location_native_catalog_generations" in query:
+                return self.catalog_pending
+            if "FROM location_native_memory_artifacts" in query:
+                return self.artifact_pending
+            if "FROM location_native_memory_parents" in query:
+                return False
+            if "FROM sessions" in query or "FROM tier2_cache" in query:
+                return self.legacy
+            if "FROM location_native_copy_births" in query:
+                return self.changed
+            if "FROM location_legacy_cache_observations" in query:
+                return self.legacy
+            if "frontier_generation FROM" in query:
+                self.trace.append("committed_readback")
+                return None if self.unknown_commit else self.frontier["frontier_generation"]
+            raise AssertionError(query)
+
+        async def execute(self, query, *args):
+            if "INSERT INTO location_retention_holder_receipts" in query:
+                if "'projection_prepare'" not in query:
+                    self.holders[args[2]] = {
+                        "owning_butler": args[1],
+                        "holder_kind": args[2],
+                        "holder_generation": args[3],
+                        "source_digest": args[4],
+                        "receipt_id": args[5],
+                    }
+                    return
+                self.holders["projection_prepare"] = {
+                    "owning_butler": "chronicler",
+                    "holder_kind": "projection_prepare",
+                    "holder_generation": decision,
+                    "source_digest": manifest,
+                    "receipt_id": args[2],
+                }
+            if "INSERT INTO location_retention_frontiers " in query:
+                self.trace.append("seal")
+                self.frontier = {
+                    "manifest_digest": args[1],
+                    "frontier_generation": args[2],
+                    "producer_contract": 1,
+                    "expected_count": args[3],
+                }
+            if "INSERT INTO location_retention_frontier_holders" in query:
+                self.expected.append(
+                    {
+                        "owning_butler": args[1],
+                        "holder_kind": args[2],
+                        "holder_generation": args[3],
+                        "source_digest": args[4],
+                    }
+                )
+            assert "DELETE FROM" not in query
+
+    pool = Pool()
+    service._copy_pools.add(pool)  # A software registry double, not enrollment evidence.
+    try:
+        missing = pool.holders.pop("api_server")
+        assert await service.seal_native_frontier(pool, decision) is None
+        assert pool.frontier is None and pool.raw and pool.points
+        pool.holders["api_server"] = missing
+        pool.legacy = True
+        assert await service.seal_native_frontier(pool, decision) is None
+        assert pool.frontier is None and pool.raw and pool.points
+        pool.legacy = False
+        pool.changed = True
+        with pytest.raises(service.PolicyUnavailableError, match="inventory is incomplete"):
+            await service.seal_native_frontier(pool, decision)
+        assert pool.frontier is None and pool.raw and pool.points
+        pool.changed = False
+        for flag in ("catalog_unknown", "catalog_pending", "artifact_pending"):
+            setattr(pool, flag, True)
+            with pytest.raises(service.PolicyUnavailableError, match="inventory is incomplete"):
+                await service.seal_native_frontier(pool, decision)
+            assert pool.frontier is None and pool.raw and pool.points
+            setattr(pool, flag, False)
+        pool.catalog = [
+            {
+                "owning_butler": "chronicler",
+                "holder_kind": "memory_artifact",
+                "holder_generation": uuid4(),
+                "source_digest": b"a" * 32,
+                "receipt_id": None,
+            }
+        ]
+        assert await service.seal_native_frontier(pool, decision) is None
+        assert pool.frontier is None and pool.raw and pool.points
+        pool.catalog[0]["receipt_id"] = uuid4()
+        pool.trace.clear()
+        sealed = await service.seal_native_frontier(pool, decision)
+        assert sealed == pool.frontier["frontier_generation"]
+        assert len(pool.expected) == 4 and {h["holder_kind"] for h in pool.expected} == {
+            "switchboard_skipped",
+            "api_server",
+            "projection_prepare",
+            "memory_artifact",
+        }
+        assert pool.trace.index("policy") < pool.trace.index("seal") < pool.trace.index("commit")
+        assert pool.trace.index("commit") < pool.trace.index("committed_readback")
+        assert pool.raw == ["planted-exact-raw"] and pool.points == ["planted-point-body"]
+        # This frontier producer itself has no deletion side effect. The real
+        # role/point/raw action and separate readbacks are distinct controls.
+        # A genuinely later loan cannot be hidden by the committed old seal.
+        pool.catalog.append(
+            {
+                "owning_butler": "finance",
+                "holder_kind": "catalog_consumer",
+                "holder_generation": uuid4(),
+                "source_digest": b"l" * 32,
+                "receipt_id": uuid4(),
+            }
+        )
+        assert await service.seal_native_frontier(pool, decision) is None
+        pool.catalog.pop()
+        pool.changed = True
+        assert await service.seal_native_frontier(pool, decision) is None
+        pool.role = "other_role"
+        with pytest.raises(service.PolicyUnavailableError, match="identity differs"):
+            await service.seal_native_frontier(pool, decision)
+    finally:
+        service._copy_pools.discard(pool)
+
+
+async def test_native_session_api_export_binds_actual_parents_and_refuses_unknown_commit():
+    """REQ-location-retention-005; planted native body, software-only SQL double."""
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler import location_retention
+    from butlers.chronicler.location_export_lifetime import (
+        _current_location_export,
+        _LocationExportScope,
+    )
+    from butlers.chronicler.location_session_exports import capture_session_rows
+
+    class Pool:
+        def __init__(self):
+            self.trace = []
+            self.births = []
+            self.closed = False
+            self.unknown = False
+            self.native = True
+            self.row = {"id": uuid4(), "result": "planted-owning-native-result"}
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.trace.append("begin")
+            yield
+            self.trace.append("commit")
+
+        async def execute(self, query, *args):
+            if "INSERT INTO location_native_copy_births" in query:
+                self.births.append(args)
+            else:
+                self.trace.append("policy_lock")
+
+        async def fetchrow(self, query, *args):
+            assert "location_retention_policy" in query
+            return {"version": 1}
+
+        async def fetchval(self, query, *args):
+            if "current_schema" in query:
+                return "chronicler"
+            if "location_retention_plans" in query:
+                return self.closed
+            self.trace.append("readback")
+            return 0 if self.unknown else 1
+
+        async def fetch(self, query, *args):
+            if "location_native_copy_births" in query:
+                return (
+                    [{"output_kind": "point_event", "output_id": self.row["id"], "known": True}]
+                    if self.native
+                    else []
+                )
+            self.trace.append("body_read")
+            return [self.row]
+
+    pool = Pool()
+    export = _LocationExportScope()
+    token = _current_location_export.set(export)
+    location_retention._api_copy_pools.add(pool)
+    try:
+        rows = await capture_session_rows(pool, "SELECT id,result FROM sessions", ())
+        assert rows[0]["result"] == "planted-owning-native-result"
+        assert len(pool.births) == len(export.copies) == 1
+        assert pool.trace.index("policy_lock") < pool.trace.index("body_read")
+        assert pool.trace.index("commit") < pool.trace.index("readback")
+        assert pool.births[0][-1] == export.request_id
+        pool.unknown = True
+        with pytest.raises(location_retention.PolicyUnavailableError, match="birth is unknown"):
+            await capture_session_rows(pool, "SELECT id,result FROM sessions", ())
+        assert len(export.copies) == 1
+        pool.unknown = False
+        pool.closed = True
+        with pytest.raises(location_retention.PolicyUnavailableError, match="fenced"):
+            await capture_session_rows(pool, "SELECT id,result FROM sessions", ())
+        pool.closed = False
+        pool.native = False
+        before = len(pool.births)
+        assert await capture_session_rows(pool, "SELECT id,result FROM sessions", ()) == [pool.row]
+        assert len(pool.births) == before  # Legacy row existence never mints lineage.
+        export.active = False
+        with pytest.raises(location_retention.PolicyUnavailableError, match="lifetime"):
+            await capture_session_rows(pool, "SELECT id,result FROM sessions", ())
+    finally:
+        location_retention._api_copy_pools.discard(pool)
+        _current_location_export.reset(token)
+
+
+async def test_native_memory_writer_reserves_before_embedding_and_commits_exact_body(monkeypatch):
+    """REQ-location-retention-005; real storage writer, software-only SQL profile.
+
+    Constructor registry and authority stamping are doubles. This proves the
+    producer/writer causal wiring only, never PostgreSQL, role or admission.
+    """
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler import location_memory_copies as copies
+    from butlers.chronicler import location_retention
+    from butlers.modules.memory import storage
+
+    source, parent = uuid4(), uuid4()
+    content = "planted-native-session-summary"
+
+    class Pool:
+        def __init__(self):
+            self.trace = []
+            self.reservations = {}
+            self.parents = []
+            self.episodes = {}
+            self.bindings = {}
+            self.unknown = False
+            self.disposed = False
+            self.source_content = content
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.trace.append("begin")
+            yield
+            self.trace.append("commit")
+
+        async def fetch(self, query, *args):
+            if "location_native_copy_births" in query:
+                return [{"copy_generation": parent, "input_digest": b"p" * 32}]
+            raise AssertionError(query)
+
+        async def fetchrow(self, query, *args):
+            if "location_retention_policy" in query:
+                self.trace.append("policy")
+                return {"version": 1}
+            if "FROM chronicler.sessions" in query:
+                return {
+                    "result": self.source_content,
+                    "completed_at": datetime.now(UTC),
+                    "success": True,
+                }
+            if "SELECT id FROM episodes" in query:
+                return None
+            if "SELECT * FROM episodes" in query:
+                return self.episodes.get(args[0])
+            raise AssertionError(query)
+
+        async def fetchval(self, query, *args):
+            if "current_schema" in query:
+                return "chronicler_mem"
+            if "current_user" in query:
+                return "existing-memory-owner"
+            if "location_native_copy_dispositions" in query:
+                return self.disposed
+            if "location_native_memory_parents" in query:
+                self.trace.append("reservation_readback")
+                return 0 if self.unknown else len(self.parents)
+            if "location_native_memory_commits" in query:
+                self.trace.append("body_readback")
+                return None if self.unknown else self.bindings[args[0]][1]
+            raise AssertionError(query)
+
+        async def execute(self, query, *args):
+            if "INSERT INTO chronicler.location_native_memory_reservations" in query:
+                self.trace.append("reservation")
+                self.reservations[args[0]] = args
+            elif "INSERT INTO chronicler.location_native_memory_parents" in query:
+                self.parents.append(args)
+            elif "INSERT INTO episodes" in query:
+                self.trace.append("body_insert")
+                self.episodes[args[0]] = {"id": args[0], "session_id": args[2], "content": args[3]}
+            elif "INSERT INTO chronicler.location_native_memory_commits" in query:
+                self.trace.append("body_binding")
+                self.bindings[args[0]] = args
+            else:
+                assert "pg_advisory_xact_lock" in query
+
+    pool = Pool()
+    location_retention._copy_pools.add(pool)
+    copies._receivers[pool] = (pool, "chronicler_mem", "existing-memory-owner")
+
+    async def authority(*args, **kwargs):
+        return SimpleNamespace(authority="owner", entity_id=None)
+
+    async def ttl(*args, **kwargs):
+        return 7
+
+    monkeypatch.setattr(storage, "_stamp_authority", authority)
+    monkeypatch.setattr(storage, "_lookup_episode_ttl_days", ttl)
+
+    class Engine:
+        model_name = "software-vector-double"
+
+        def embed(self, actual_content):
+            assert actual_content == content
+            assert pool.trace.index("commit") < pool.trace.index("reservation_readback")
+            pool.trace.append("embedding")
+            return [0.1, 0.2]
+
+    try:
+        async with copies.capture_memory_episode(pool, pool, source, content):
+            episode = await storage.store_episode(
+                pool, content, "chronicler", Engine(), session_id=source
+            )
+        assert pool.bindings and pool.episodes[episode]["content"] == content
+        original = dict(pool.episodes[episode])
+        frozen = copies.episode_body_digest(original)
+        advanced = {
+            **original,
+            "reference_count": 19,
+            "consolidated": True,
+            "consolidation_status": "consolidated",
+            "leased_until": None,
+        }
+        assert copies.episode_body_digest(advanced) == frozen
+        assert (
+            copies.episode_body_digest({**advanced, "content": "different-location-body"}) != frozen
+        )
+        assert copies.episode_body_digest({**advanced, "metadata": {"location": [1, 2]}}) != frozen
+        assert (
+            copies.episode_body_digest({**advanced, "content_authority": "third_party"}) != frozen
+        )
+        assert pool.trace.index("reservation_readback") < pool.trace.index("embedding")
+        assert pool.trace.index("policy", pool.trace.index("embedding")) < pool.trace.index(
+            "body_insert"
+        )
+        assert (
+            pool.trace.index("body_insert")
+            < pool.trace.index("body_binding")
+            < pool.trace.index("body_readback")
+        )
+        assert copies._current_memory_copy.get() is None
+        pool.source_content = "different-current-source-result"
+        before = len(pool.episodes)
+        with pytest.raises(location_retention.PolicyUnavailableError, match="source output"):
+            async with copies.capture_memory_episode(pool, pool, source, content):
+                raise AssertionError("A changed source must refuse before embedding")
+        assert len(pool.episodes) == before
+        pool.source_content = content
+        pool.disposed = True
+        with pytest.raises(location_retention.PolicyUnavailableError, match="disposed"):
+            async with copies.capture_memory_episode(pool, pool, source, content):
+                raise AssertionError("A disposed source must refuse before embedding")
+        pool.disposed = False
+        pool.unknown = True
+        with pytest.raises(
+            location_retention.PolicyUnavailableError, match="reservation is unknown"
+        ):
+            async with copies.capture_memory_episode(pool, pool, source, content):
+                raise AssertionError("An unobserved reservation must refuse before embedding")
+        assert copies._current_memory_copy.get() is None
+    finally:
+        copies._receivers.pop(pool, None)
+        location_retention._copy_pools.discard(pool)
+
+
+@pytest.mark.asyncio
+async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is_bounded():
+    """REQ-location-retention-005/006; software transport/control positioning, not SQL proof."""
+    import json
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler import location_catalog_copies as copies
+
+    loan = uuid4()
+    runtime = SimpleNamespace()
+    admissions = []
+    observed = []
+    cell = None
+
+    async def admit(selected, capability):
+        nonlocal cell
+        assert selected == loan
+        assert capability == "native-private-capability-0123456789"
+        admissions.append(selected)
+        cell = copies._AdmittedLoan(runtime, capability, selected, {})
+        return cell
+
+    runtime.admit_loan = admit
+
+    async def delegate(scope, receive, send):
+        messages = []
+        while True:
+            message = await receive()
+            messages.append(message)
+            if not message.get("more_body", False):
+                break
+        observed.append((scope, messages, copies._admitted_loan.get()))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ordinary", "more_body": False})
+
+    app = copies.CatalogLoanAdmission(delegate, lambda: runtime)
+
+    async def request(raw, headers=None, frames=None):
+        sent = []
+        chunks = iter(frames or [{"type": "http.request", "body": raw, "more_body": False}])
+
+        async def receive():
+            return next(chunks)
+
+        async def send(message):
+            sent.append(message)
+
+        await app(
+            {"type": "http", "method": "POST", "path": "/mcp", "headers": headers or []},
+            receive,
+            send,
+        )
+        return sent
+
+    # Genuine generic-positive streaming is untouched, including a body beyond
+    # the reserved native profile. It receives no private authority cell.
+    generic = b"g" * 300000
+    assert (await request(generic))[0]["status"] == 200
+    assert observed[-1][1][0]["body"] == generic and observed[-1][2] is None
+    headers = [(copies._HEADER.lower().encode(), b"native-private-capability-0123456789")]
+    packet = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "location_catalog_loan_body", "arguments": {"loan_id": str(loan)}},
+        }
+    ).encode()
+    assert (await request(packet, headers))[0]["status"] == 200
+    assert admissions == [loan]
+    assert observed[-1][2] is cell
+    assert observed[-1][1][0]["body"] == packet
+    assert all(
+        name.lower() != copies._HEADER.lower().encode() for name, _ in observed[-1][0]["headers"]
+    )
+    assert not cell.active and copies._admitted_loan.get() is None
+
+    # Position duplicate-key rejection before the delegate, not at a later
+    # FunctionTool which would already have observed/normalized the request.
+    before = len(observed)
+    duplicate = packet.replace(b'"loan_id":', b'"loan_id":"forged", "loan_id":')
+    assert (await request(duplicate, headers))[0]["status"] == 503
+    assert len(observed) == before and admissions == [loan]
+    assert (await request(packet, headers + headers))[0]["status"] == 503
+    assert (await request(b"x" * 262145, headers))[0]["status"] == 503
+    empty_frames = [{"type": "http.request", "body": b"", "more_body": True}] * 129
+    assert (await request(b"", headers, empty_frames))[0]["status"] == 503
+    assert len(observed) == before
+
+    # Actual Switchboard outer admission is distinct from source admission.
+    # The fake online verifier is scoped software evidence only; the declared
+    # registered daemon/network and real-role controls are not inferred here.
+    forwarded = []
+
+    async def admit_route(selected, capability):
+        assert selected == loan
+        if capability != "native-private-capability-0123456789":
+            raise copies.PolicyUnavailableError("Online receiver differs")
+        return copies._AdmittedRoute(capability, selected)
+
+    async def router_delegate(scope, receive, send):
+        message = await receive()
+        request = json.loads(message["body"])
+        args = request["params"]["arguments"]
+        forwarded.append(
+            copies.catalog_transport_headers(
+                args["target_butler"], args["tool_name"], {**args["args"], "trace_context": {}}
+            )
+        )
+        with pytest.raises(copies.PolicyUnavailableError, match="operation differs"):
+            copies.catalog_transport_headers("finance", args["tool_name"], args["args"])
+        with pytest.raises(copies.PolicyUnavailableError, match="operation differs"):
+            copies.catalog_transport_headers(
+                "chronicler", args["tool_name"], {"loan_id": str(uuid4())}
+            )
+        assert copies._admitted_loan.get() is None
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"route", "more_body": False})
+
+    runtime.admit_route = admit_route
+    app = copies.CatalogLoanAdmission(router_delegate, lambda: runtime)
+    routed = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "route",
+                "arguments": {
+                    "target_butler": "chronicler",
+                    "tool_name": "location_catalog_loan_body",
+                    "args": {"loan_id": str(loan)},
+                },
+            },
+        }
+    ).encode()
+    assert (await request(routed, headers))[0]["status"] == 200
+    assert forwarded == [{copies._HEADER: "native-private-capability-0123456789"}]
+    assert copies._admitted_route.get() is None
+    assert (
+        copies.catalog_transport_headers(
+            "chronicler", "location_catalog_loan_body", {"loan_id": str(loan)}
+        )
+        == {}
+    )
+    assert (await request(routed.replace(b'"chronicler"', b'"finance"'), headers))[0][
+        "status"
+    ] == 503
+    assert (
+        await request(
+            routed, [(copies._HEADER.lower().encode(), b"caller-forged-header-012345678901234567")]
+        )
+    )[0]["status"] == 503
+    assert len(forwarded) == 1
+
+    # UUID-only direct invocation cannot borrow the native cell after return.
+    with pytest.raises(copies.PolicyUnavailableError, match="admission"):
+        await copies.CatalogCopyRuntime.loan_body(runtime, loan)
+
+    finished = []
+
+    async def finish(selected, digest, owning_request):
+        finished.append((selected, digest, owning_request))
+
+    receiver = SimpleNamespace(finish_server_copy=finish)
+
+    async def copying_delegate(scope, receive, send):
+        state = copies._server_copy_scope.get()
+        state.loans.append((receiver, loan, b"d" * 32, False))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"copy", "more_body": False})
+        if scope.get("interrupted"):
+            raise RuntimeError("interrupted after send")
+
+    lifecycle = copies.CatalogServerCopyLifetime(copying_delegate)
+
+    async def no_receive():
+        return {"type": "http.disconnect"}
+
+    async def delivered(message):
+        pass
+
+    await lifecycle({"type": "http"}, no_receive, delivered)
+    assert len(finished) == 1 and finished[0][:2] == (loan, b"d" * 32)
+    assert copies._server_copy_scope.get() is None
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await lifecycle({"type": "http", "interrupted": True}, no_receive, delivered)
+    assert len(finished) == 1  # Last body alone cannot close a live/failed delegate.
