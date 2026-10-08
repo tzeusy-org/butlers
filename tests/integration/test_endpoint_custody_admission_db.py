@@ -7,6 +7,8 @@ complete command/source behavior, which require additional positioned controls.
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import uuid
 from contextlib import AsyncExitStack
@@ -92,6 +94,108 @@ def _profile(actor: str) -> CustodyProfile:
         (actor,),
         digest({"actor": actor, "purpose": "owning-writer-control"}),
     )
+
+
+def _observe_first_anchor_renew(monkeypatch, admin, database):
+    """Observe the original first call without changing its closed outcome.
+
+    No error text, query arguments, identities or connection strings are emitted.
+    Catalog reads use only the existing disposable test bootstrap connection;
+    they confer no production permission and never retry or replace renewal.
+    """
+    original = asyncpg.Connection.fetchval
+    observed = False
+
+    async def fetchval(connection, statement, *values, **kwargs):
+        nonlocal observed
+        if statement != "SELECT public.custody_anchor_renew()" or observed:
+            return await original(connection, statement, *values, **kwargs)
+        observed = True
+        facts = {"snapshot_available": False}
+        try:
+            own = await original(
+                connection,
+                "SELECT jsonb_build_object('physical_backend',pg_backend_pid()=$1,"
+                "'effective_role',current_user=$2,'database',current_database()=$3)",
+                connection.get_server_pid(),
+                database.role,
+                database.db_name,
+            )
+            enrolled = await original(
+                admin,
+                """
+                SELECT jsonb_build_object(
+                    'enrolled',count(p.process_id)=1,
+                    'backend_birth',bool_and(p.anchor_backend_start=a.backend_start),
+                    'database_binding',bool_and(p.database_oid=a.datid),
+                    'login_binding',bool_and(p.login_oid=a.usesysid),
+                    'role_binding',bool_and(p.role_oid=r.oid),
+                    'control_epoch',bool_and(p.control_epoch=c.control_epoch),
+                    'restore_epoch',bool_and(p.restore_epoch=c.restore_epoch),
+                    'lease_current',bool_and(p.lease_expires_at>clock_timestamp()),
+                    'not_revoked',bool_and(p.revoked_at IS NULL),
+                    'control_ready',bool_and(c.admission_state='ready'))
+                FROM custody_admission.processes p
+                JOIN pg_stat_activity a ON a.pid=p.anchor_pid
+                JOIN custody_admission.control c ON c.singleton
+                JOIN pg_roles r ON r.rolname=$2
+                WHERE p.anchor_pid=$1
+                """,
+                connection.get_server_pid(),
+                database.role,
+            )
+            keys = (
+                "physical_backend",
+                "effective_role",
+                "database",
+                "enrolled",
+                "backend_birth",
+                "database_binding",
+                "login_binding",
+                "role_binding",
+                "control_epoch",
+                "restore_epoch",
+                "lease_current",
+                "not_revoked",
+                "control_ready",
+            )
+            combined = own | enrolled
+            facts = {key: combined[key] if type(combined[key]) is bool else None for key in keys}
+            facts["snapshot_available"] = True
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, KeyError, TypeError):
+            # A missing diagnostic snapshot remains unknown. The original
+            # renewal still runs once and its actual error remains authoritative.
+            pass
+        try:
+            return await original(connection, statement, *values, **kwargs)
+        except asyncpg.PostgresError as exc:
+            allowed = {
+                "InsufficientPrivilegeError",
+                "UndefinedColumnError",
+                "UndefinedTableError",
+                "UndefinedFunctionError",
+                "AmbiguousColumnError",
+                "DatatypeMismatchError",
+                "InvalidTextRepresentationError",
+                "SerializationError",
+                "InternalServerError",
+                "ObjectNotInPrerequisiteStateError",
+                "CheckViolationError",
+            }
+            state = exc.sqlstate
+            report = facts | {
+                "sqlstate": state
+                if isinstance(state, str) and re.fullmatch(r"[A-Z0-9]{5}", state)
+                else "unknown",
+                "error_class": type(exc).__name__
+                if type(exc).__name__ in allowed
+                else "PostgresError",
+                "result_category": "original_anchor_renew_failed",
+            }
+            print("CUSTODY_FIRST_ANCHOR_RENEW " + json.dumps(report, sort_keys=True))
+            raise
+
+    monkeypatch.setattr(asyncpg.Connection, "fetchval", fetchval)
 
 
 async def test_installed_schema_real_roles_and_same_acquired_writer(
@@ -308,7 +412,9 @@ async def test_installed_schema_real_roles_and_same_acquired_writer(
         await database.connect()
         stack.push_async_callback(database.close)
         runtime = CustodyRuntime(database, _profile("relationship"))
-        admission = await runtime.start()
+        with monkeypatch.context() as first_renew_observer:
+            _observe_first_anchor_renew(first_renew_observer, admin, database)
+            admission = await runtime.start()
         stack.push_async_callback(runtime.stop)
         # An actually enrolled allocation is evidence: rollback cannot erase or
         # reopen it. The failed savepoint leaves the committed enrollment intact.

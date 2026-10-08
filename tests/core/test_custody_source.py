@@ -395,6 +395,52 @@ def test_fixed_installed_function_manifest_refuses_drift():
             verify_installed_functions(changed)
     verify_installed_functions(proof)  # Refusing drift preserves the exact positive.
 
+    # The restore observer compares exact typed signatures, not names. Exercise
+    # its actual assignment with the PG17 comma-space rendering and wrong
+    # type/count controls without claiming a catalog or restore execution.
+    import ast
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    restore = root / "tests/scripts/test_pg_restore_definer_ownership.py"
+    assignment = next(
+        item
+        for item in ast.walk(ast.parse(restore.read_text()))
+        if isinstance(item, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "actual_source" for target in item.targets
+        )
+    )
+    declared = re.search(
+        r'^BACKUP_CUSTODY_SIGNATURES="([^"]+)"$',
+        (root / "deploy/backup/pg_dump.sh").read_text(),
+        re.M,
+    )[1].split()
+    assert len(declared) == 15
+    rendered = [signature.replace(",", ", ") for signature in declared]
+    assert set(rendered) != set(declared)  # Old representation predicate is RED.
+
+    def observe(signatures):
+        scope = {
+            "re": re,
+            "source_db_url": None,
+            "custody_catalog_sql": None,
+            "_query": lambda *_: signatures,
+        }
+        exec(compile(ast.Module(body=[assignment], type_ignores=[]), str(restore), "exec"), scope)
+        return scope["actual_source"]
+
+    actual = observe(rendered)
+    assert len(actual) == 15 and set(actual) == set(declared)
+    for wrong in (
+        rendered[:-1],
+        rendered + ["public.custody_unexpected(integer)"],
+        [signature.replace("jsonb", "text") for signature in rendered],
+    ):
+        actual = observe(wrong)
+        assert len(actual) != 15 or set(actual) != set(declared)
+
 
 def test_explicit_lock_parser_only_selects_closed_hold_requests():
     """REQ-endpoint-custody-holds-003: text grammar, no accepted SQL proof."""
@@ -1489,3 +1535,109 @@ async def test_registered_mcp_tool_guard_orders_verification_commit_and_clears_c
             admission.current_verified_writer()
         with pytest.raises(CustodyError, match="refused"):
             admitted_apply(admission, wire)
+
+
+async def test_first_anchor_observer_preserves_transport_and_bounds_failure(monkeypatch, capsys):
+    """REQ-endpoint-custody-holds-002: diagnostics confer no admission or SQL proof."""
+    import ast
+    import re
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import asyncpg
+
+    # Execute the actual test-owned observer, without importing its Docker
+    # fixture module or substituting the production admission implementation.
+    root = Path(__file__).resolve().parents[2]
+    source = root / "tests/integration/test_endpoint_custody_admission_db.py"
+    node = next(
+        item
+        for item in ast.parse(source.read_text()).body
+        if isinstance(item, ast.FunctionDef) and item.name == "_observe_first_anchor_renew"
+    )
+    namespace = {"asyncpg": asyncpg, "json": json, "re": re}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
+    observe = namespace[node.name]
+    anchor, admin = object(), object()
+    calls = []
+    original_error = asyncpg.UndefinedColumnError("synthetic-private-identity-and-secret")
+    outcome = {"lease_seconds": 30}
+    witness = {
+        key: True
+        for key in (
+            "enrolled",
+            "backend_birth",
+            "database_binding",
+            "login_binding",
+            "role_binding",
+            "control_epoch",
+            "restore_epoch",
+            "lease_current",
+            "not_revoked",
+            "control_ready",
+        )
+    }
+    fail = False
+    snapshot_fail = False
+
+    class Connection:
+        @staticmethod
+        def get_server_pid():
+            return 123
+
+        async def fetchval(self, statement, *values, **kwargs):
+            calls.append((self, statement, values))
+            if statement == "SELECT public.custody_anchor_renew()":
+                if fail:
+                    raise original_error
+                return outcome
+            if snapshot_fail:
+                raise asyncpg.InsufficientPrivilegeError("synthetic-snapshot-secret")
+            if self is admin:
+                return witness
+            return {"physical_backend": True, "effective_role": True, "database": True}
+
+    anchor = Connection()
+    with monkeypatch.context() as patch:
+        patch.setattr(asyncpg, "Connection", Connection)
+        observe(patch, admin, SimpleNamespace(role="synthetic-role", db_name="synthetic-db"))
+        assert await anchor.fetchval("SELECT public.custody_anchor_renew()") is outcome
+        assert await anchor.fetchval("SELECT unrelated()") == {
+            "physical_backend": True,
+            "effective_role": True,
+            "database": True,
+        }
+        assert capsys.readouterr().out == ""
+    for snapshot_fail in (False, True):
+        fail = True
+        calls.clear()
+        with monkeypatch.context() as patch:
+            patch.setattr(asyncpg, "Connection", Connection)
+            observe(patch, admin, SimpleNamespace(role="synthetic-role", db_name="synthetic-db"))
+            with pytest.raises(asyncpg.UndefinedColumnError) as caught:
+                await anchor.fetchval("SELECT public.custody_anchor_renew()")
+            assert caught.value is original_error
+            emitted = capsys.readouterr().out
+            report = json.loads(emitted.split(" ", 1)[1])
+            assert report["sqlstate"] == "42703"
+            assert report["error_class"] == "UndefinedColumnError"
+            assert report["snapshot_available"] is not snapshot_fail
+            assert report["result_category"] == "original_anchor_renew_failed"
+            assert "synthetic" not in emitted and "123" not in emitted
+            assert all(
+                type(value) is bool or value is None
+                for key, value in report.items()
+                if key not in {"sqlstate", "error_class", "result_category"}
+            )
+            assert (
+                sum(
+                    statement == "SELECT public.custody_anchor_renew()" for _, statement, _ in calls
+                )
+                == 1
+            )
+            # A second renewal is passed through with no second diagnostic or
+            # snapshot. The first failure is never retried by the observer.
+            with pytest.raises(asyncpg.UndefinedColumnError) as caught:
+                await anchor.fetchval("SELECT public.custody_anchor_renew()")
+            assert caught.value is original_error
+            assert capsys.readouterr().out == ""

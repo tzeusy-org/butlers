@@ -566,7 +566,11 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
        WHERE n.nspname='public' AND left(p.proname,8)='custody_'
        ORDER BY 1
     """
-    actual_source = _query(source_db_url, custody_catalog_sql)
+    # oidvectortypes renders comma-space; compare the same exact typed
+    # signatures as the compact fixed backup selector, without widening names.
+    actual_source = [
+        re.sub(r"\s+", "", signature) for signature in _query(source_db_url, custody_catalog_sql)
+    ]
     assert len(actual_source) == 15 and set(actual_source) == set(declared)
     artifact_sql = gzip.decompress(backup_artifact.read_bytes()).decode()
     assert not re.search(r"FUNCTION public\.custody_[a-z_]+\(", artifact_sql)
