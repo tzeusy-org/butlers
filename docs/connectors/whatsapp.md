@@ -395,7 +395,7 @@ send_enabled = true   # CAUTION: carries ban risk — review section 3 above
 RuntimeError: whatsapp-bridge binary not found. Rebuild the application image (which includes the Go bridge) or install manually.
 ```
 
-Rebuild the image with the WhatsApp extra:
+Rebuild the application image with its included Go WhatsApp bridge:
 
 ```bash
 docker compose build connector-whatsapp-user

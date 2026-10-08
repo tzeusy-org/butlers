@@ -2,7 +2,7 @@
 
 - [x] 1.1 Refresh canonical fields, twelve source objects, active/public full hunks and free IDs; freeze exact corpus and source evidence.
 - [x] 1.2 Implement compatible duration evidence, stable loadfile scheduling and actual phase observers; preserve all watchdogs and finalizers.
-- [ ] 1.3 Retire the twelve orphan CI services and injected URLs; prove genuine provisioned PG17 target, ordinary roles and separate committed readback.
+- [x] 1.3 Retire the twelve orphan CI services and injected URLs; prove genuine provisioned PG17 target, ordinary roles and separate committed readback.
 - [x] 1.4 Preserve protected canonical embedding, loaders, on-demand roster, Finder, fake/cache and first-use behavior with current owning controls.
 - [ ] 1.5 Implement frozen CPU lock, exact proven packaging retirements and actual installed tensor/embedding/vector/image witnesses.
 - [x] 1.6 Implement exact-compatible advisory venv/bytecode cache with frozen editable repair, cold/warm/corrupt/foreign own-source controls.
@@ -16,4 +16,4 @@ Administrative native adoption (not a self-dependent prearchive checkbox): norma
 
 Mandatory final closure record: fresh final-head normal hosted, independent HIGH and protected full union; actual ten merge-group observations per original slice and all hard timing/install/identity/assurance/completeness outcomes. These are not presumed complete before their own archive. Only AC5 statement route is supplied; all independent runtime/delivery outcomes are currently UNMET; no slice is deferred. Record selected no-wall-clock-gain statement without deleting other mandatory targets.
 
-Current SOURCE checkpoint: genuine SQL/image tasks1.3/1.5 and hosted portion2.1 are pending; native archive has NOT RUN. The authored PG17 survivor is collected, not locally executed. Synthetic real worker/tracer runs prove mechanism conformance only. No future closure task is checked.
+Current SOURCE checkpoint: root independently verified normal37747389876 at exact16d8 with all11 official artifacts green and the genuine PG17 lifecycle node PASS5.271s. Its bootstrap, ordinary-role/vector/commit and separate-readback assertions reached; local SQL remains NOT RUN. Image task1.5 and current new-head hosted portion2.1 remain pending. The isolated manual image diagnostic is prepared, not executed. Native archive has NOT RUN. Synthetic real worker/tracer runs prove mechanism conformance only. No future closure task is checked.

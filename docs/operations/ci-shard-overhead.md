@@ -103,3 +103,36 @@ both image before/after, full hosted identity/coverage, ten-run hard targets and
 independent/protected evidence cannot be replaced by software fixtures or source
 presence. Source preparation, normal own validated sync/archive, exact final
 normal/nonself/protected gates and elapsed observations have separate receipts.
+
+## Hosted image preparation
+
+The existing Migration Chain Integrity workflow has an optional boolean
+`image-size-diagnostic` dispatch input, default false. Push and ordinary manual
+migration checks retain their original job/command. An explicit true dispatch
+runs only the bounded diagnostic job at the exact dispatched SHA, comparing the
+fixed original e7b7812a3fa65c80f3f070d38ee43f7fa6474881 checkout with that SHA.
+Root dispatches it after source review. It never pushes an image, uses registry
+credentials, runs a full pytest suite, changes a deployment or invokes a model
+provider. The original 25 caps remain; its separate provisional 60-minute cap
+covers the existing two 640-second installer envelopes, a 1800-second diagnostic
+and 520 seconds of checkout/cleanup/upload reserve. No healthy p95 is claimed.
+
+The diagnostic builds both real normal and Route A application Dockerfiles,
+records actual Docker image bytes and source stamps, and runs CPU tensor,
+CUDA/NVIDIA negatives, the actual embedding engine with an explicitly synthetic
+offline model fixture, Go bridge help and the PostgreSQL client. The real vector
+server/runtime-role/commit proof stays in its genuine hosted DB node; client
+presence and an offline model fixture cannot replace that proof or trained-model
+execution. Both image builds and all runtime witnesses must actually succeed.
+
+Route A cache preparation uses the owning launcher's exact lock/Go hashes and
+cache labels. Actual Docker-save config/layers are converted into local OCI
+layouts; original diff IDs, actual engine config ID and cache labels are checked,
+and named contexts use immutable manifest digests. The unchanged Route A app
+recipe builds with network disabled and preloaded inputs. These OCI build
+receipts do **not** establish the separate launcher's RepoDigest admission,
+seven-service/browser lifecycle or its database/teardown proof. That launcher
+and its assertions remain unchanged. Build failures, missing inputs, identity
+mismatch or cleanup failure produce categorical failure/partial receipts, not
+mock build credit. No raw build/runtime errors, environment or provider text is
+exported. Only the diagnostic's own disposable tags/builder are removed.

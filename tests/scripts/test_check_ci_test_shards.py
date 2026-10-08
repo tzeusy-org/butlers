@@ -330,6 +330,21 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
                 coverages.append(json.loads((evidence / "coverage.json").read_text()))
         assert all(comparison.compare(snapshots[0], value)["eligible"] for value in snapshots)
         assert all(comparison.compare_coverage(coverages[0], value) for value in coverages)
+        # Complete flags cannot replace actual provenance/population/phase evidence.
+        assert comparison.compare({"complete": True}, {"complete": True})["eligible"] is False
+        for invalid in (
+            {},
+            {"nodes": {}},
+            {"source": None},
+            {"collected_at": "2000-01-01T00:00:00+00:00"},
+            {"selected_count": 0},
+            {"manifest_digest": None},
+            {"effective_workers": []},
+            {"actual_tracers": ["malformed"]},
+            {"nodes": {next(iter(snapshots[0]["nodes"])): {}}},
+        ):
+            value = {} if not invalid else {**snapshots[0], **invalid}
+            assert comparison.compare(value, value)["eligible"] is False
         changed = copy.deepcopy(snapshots[0])
         changed["nodes"][next(iter(changed["nodes"]))]["call"]["outcome"] = "failed"
         assert comparison.compare(snapshots[0], changed)["eligible"] is False

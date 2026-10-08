@@ -917,6 +917,31 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
                 f"{row['job']} watchdog excludes its recorded healthy whole-job envelope "
                 "and full setup/recovery headroom"
             )
+    migration_workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/migration-chain-main.yml").read_text()
+    )
+    assert migration_workflow["permissions"] == {"contents": "read"}
+    # PyYAML's YAML1.1 interprets the GitHub `on` key as True.
+    events = migration_workflow[True]
+    assert events["workflow_dispatch"]["inputs"]["image-size-diagnostic"]["default"] is False
+    ordinary = migration_workflow["jobs"]["migration-chain-head"]
+    assert (
+        ordinary["if"]
+        == "github.event_name != 'workflow_dispatch' || !inputs['image-size-diagnostic']"
+    )
+    assert ordinary["timeout-minutes"] == 14
+    diagnostic = migration_workflow["jobs"]["image-size-diagnostic"]
+    assert (
+        diagnostic["if"]
+        == "github.event_name == 'workflow_dispatch' && inputs['image-size-diagnostic']"
+    )
+    assert diagnostic["timeout-minutes"] == 60
+    assert diagnostic["steps"][0]["with"]["ref"] == "${{ github.sha }}"
+    assert diagnostic["steps"][1]["with"]["ref"] == "e7b7812a3fa65c80f3f070d38ee43f7fa6474881"
+    assert all(step["with"]["persist-credentials"] is False for step in diagnostic["steps"][:2])
+    diagnostic_shell = "\n".join(step.get("run", "") for step in diagnostic["steps"])
+    assert "ci_image_size_diagnostic.py" in diagnostic_shell
+    assert "pytest" not in diagnostic_shell and "docker push" not in diagnostic_shell
     nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
         "faketime-matrix"
     ]

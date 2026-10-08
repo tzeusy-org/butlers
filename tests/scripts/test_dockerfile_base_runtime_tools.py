@@ -57,7 +57,7 @@ def _base_input_fingerprint(inputs: tuple[str, ...], *, cwd: Path, env: dict[str
     return result.stdout.strip()
 
 
-def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
+def test_base_image_installs_uv_git_and_gh_for_qa_runtime(tmp_path: Path) -> None:
     text = _dockerfile_base_text()
     assert "git" in text
     assert "python -m pip install --no-cache-dir uv" in text
@@ -87,6 +87,64 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
     assert torch.version.cuda is None
     assert not torch.cuda.is_available()
     assert int(torch.tensor([2, 3], device="cpu").sum()) == 5
+
+    # Actual local archive conformance, not a mocked application-image build.
+    import hashlib
+    import importlib.util
+    import io
+    import json
+    import tarfile
+
+    spec = importlib.util.spec_from_file_location(
+        "image_diagnostic", Path("scripts/ci_image_size_diagnostic.py")
+    )
+    diagnostic = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(diagnostic)
+    layer_archive = io.BytesIO()
+    with tarfile.open(fileobj=layer_archive, mode="w") as output:
+        member = tarfile.TarInfo("probe")
+        member.size = len(b"fixture")
+        output.addfile(member, io.BytesIO(b"fixture"))
+    layer = layer_archive.getvalue()
+    labels = {"org.butlers.route-a.cache-kind": "uv-cache"}
+    config = json.dumps(
+        {
+            "config": {"Labels": labels},
+            "rootfs": {"diff_ids": ["sha256:" + hashlib.sha256(layer).hexdigest()]},
+        }
+    ).encode()
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as output:
+        for name, body in (
+            ("layer/layer.tar", layer),
+            ("config.json", config),
+            (
+                "manifest.json",
+                json.dumps([{"Config": "config.json", "Layers": ["layer/layer.tar"]}]).encode(),
+            ),
+        ):
+            member = tarfile.TarInfo(name)
+            member.size = len(body)
+            output.addfile(member, io.BytesIO(body))
+    encoded = archive.getvalue()
+    uri = diagnostic.write_oci_layout(io.BytesIO(encoded), tmp_path / "positive", labels)
+    assert "@sha256:" in uri
+    index = json.loads((tmp_path / "positive/index.json").read_text())
+    digest = index["manifests"][0]["digest"].split(":")[1]
+    sealed = (tmp_path / "positive/blobs/sha256" / digest).read_bytes()
+    assert hashlib.sha256(sealed).hexdigest() == digest
+    assert json.loads(sealed)["config"]["digest"] == "sha256:" + hashlib.sha256(config).hexdigest()
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="label_mismatch"):
+        diagnostic.write_oci_layout(
+            io.BytesIO(encoded), tmp_path / "wrong-label", {next(iter(labels)): "go-modules"}
+        )
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="content_mismatch"):
+        diagnostic.write_oci_layout(
+            io.BytesIO(encoded.replace(b"fixture", b"mutated", 1)), tmp_path / "wrong-layer", labels
+        )
+    # The diagnostic refuses local Docker execution before its first build.
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="hosted_exact_source"):
+        diagnostic.run_diagnostic(Path.cwd(), Path.cwd(), tmp_path / "no-local-docker", "not-a-sha")
 
 
 def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> None:
