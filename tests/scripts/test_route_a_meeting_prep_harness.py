@@ -238,6 +238,35 @@ def test_dependency_cache_contracts_bind_cache_images_to_the_current_locks(
     )
     monkeypatch.setitem(sys.modules, "run_meeting_prep_route_a_evidence", launcher)
     proof = _load("route_a_build_proof", "scripts/prove_route_a_offline_builds.py")
+    # Closed diagnostic software controls, never actual builder evidence.
+    recipe = tmp_path / "public-control.Dockerfile"
+    recipe.write_text("FROM scratch\n\nCOPY sentinel /sentinel\n")
+    failure = (
+        b'Dockerfile:3\nfailed to parse stage name "${CACHE}": invalid reference format\n'
+        b"synthetic-private-output-must-not-leave-the-process\n"
+    )
+    for stdout, stderr in ((failure, b""), (b"", failure)):
+        assert proof.closed_build_failure(stderr, stdout) == "invalid_copy_or_image_reference"
+        capsule = proof.closed_builder_diagnostic(stdout, stderr, recipe)
+        assert capsule["indicators"]["invalid_reference_format"] is True
+        assert capsule["indicators"]["stage_name_parse_failure"] is True
+        assert capsule["recipe_line_numbers"] == [3]
+        assert capsule["recipe_instructions"] == ["COPY"]
+        assert "synthetic-private-output" not in json.dumps(capsule)
+        assert "${CACHE}" not in json.dumps(capsule)
+    unrelated = (
+        b"Dockerfile:2\nDockerfile:999\nfailed to resolve source metadata: permission denied"
+    )
+    assert proof.closed_build_failure(unrelated) == "unclassified_builder_failure"
+    capsule = proof.closed_builder_diagnostic(b"", unrelated, recipe)
+    assert capsule["recipe_line_numbers"] == [2]
+    assert capsule["recipe_instructions"] == ["OTHER"]
+    assert capsule["indicators"]["source_metadata_resolution_failure"] is True
+    assert capsule["indicators"]["permission_denied"] is True
+    bounded = proof.closed_builder_diagnostic(b"x" * 70000, failure, recipe)
+    assert bounded["complete_streams_examined"] is False
+    assert bounded["stdout_bytes"] == 70000
+    assert bounded["indicators"]["invalid_reference_format"] is True
     labels = contracts["ROUTE_A_NPM_CACHE_IMAGE"]
     config = json.dumps({"config": {"Labels": labels}}).encode()
     config_sha = hashlib.sha256(config).hexdigest()

@@ -37,6 +37,7 @@ RECIPES = {
     "frontend": "frontend/Dockerfile.meeting-prep-evidence",
     "browser": "frontend/Dockerfile.meeting-prep-browser",
 }
+DIAGNOSTIC_WINDOW_BYTES = 65536
 
 
 class ProofRefusal(RuntimeError):
@@ -92,14 +93,84 @@ def seal_oci(archive: Path, destination: Path, expected_labels: dict[str, str]) 
     }
 
 
-def closed_build_failure(stderr: bytes) -> str:
+def _diagnostic_text(stdout: bytes, stderr: bytes) -> str:
+    """Inspect bounded stream windows without returning any original bytes."""
+    half = DIAGNOSTIC_WINDOW_BYTES // 2
+    windows = [
+        stream if len(stream) <= 2 * half else stream[:half] + b"\n" + stream[-half:]
+        for stream in (stdout, stderr)
+    ]
+    return b"\n".join(windows).decode("utf-8", errors="replace").lower()
+
+
+def closed_build_failure(stderr: bytes, stdout: bytes = b"") -> str:
     """Match only fixed builder classes; arbitrary bytes never enter a receipt."""
-    text = stderr.decode("utf-8", errors="replace").lower()
+    text = _diagnostic_text(stdout, stderr)
     if any(p in text for p in ("invalid reference format", "invalid from flag value")):
         return "invalid_copy_or_image_reference"
     if any(p in text for p in ("base name", "blank", "requires either one or three arguments")):
         return "invalid_or_missing_stage_input"
     return "unclassified_builder_failure"
+
+
+def closed_builder_diagnostic(stdout: bytes, stderr: bytes, recipe: Path | None = None) -> dict:
+    """Export fixed observations and positions within the known public recipe.
+
+    Phrase observations do not establish an underlying builder cause. Unknown
+    failures stay unknown, and no context/registry phrase satisfies a COPY red.
+    """
+    text = _diagnostic_text(stdout, stderr)
+    indicators = {
+        "invalid_reference_format": "invalid reference format" in text,
+        "invalid_from_flag": "invalid from flag value" in text,
+        "stage_name_parse_failure": "failed to parse stage name" in text,
+        "repository_requires_lowercase": bool(
+            re.search(r"repository name[^\n]*must be lowercase", text)
+        ),
+        "blank_base_name": "base name" in text and "blank" in text,
+        "stage_argument_arity": "requires either one or three arguments" in text,
+        "dockerfile_parse_failure": "dockerfile parse error" in text,
+        "oci_layout_mentioned": "oci-layout" in text or "oci layout" in text,
+        "source_metadata_resolution_failure": "failed to resolve source metadata" in text,
+        "dockerfile_read_failure": "failed to read dockerfile" in text,
+        "blob_not_found": bool(
+            re.search(r"(?:blob|digest)[^\n]*(?:not found|does not exist)", text)
+        ),
+        "builder_connection_failure": any(
+            p in text
+            for p in ("cannot connect to the docker daemon", "failed to dial", "connection refused")
+        ),
+        "permission_denied": "permission denied" in text,
+    }
+    result = {
+        "schema": 1,
+        "stdout_bytes": len(stdout),
+        "stderr_bytes": len(stderr),
+        "window_bytes_per_stream": DIAGNOSTIC_WINDOW_BYTES,
+        "complete_streams_examined": len(stdout) <= DIAGNOSTIC_WINDOW_BYTES
+        and len(stderr) <= DIAGNOSTIC_WINDOW_BYTES,
+        "indicators": indicators,
+        "recipe_line_numbers": [],
+        "recipe_instructions": [],
+    }
+    if recipe is not None:
+        lines = recipe.read_text().splitlines()
+        names = "(?:dockerfile|" + re.escape(recipe.name.lower()) + ")"
+        positions = sorted(
+            {
+                int(value)
+                for value in re.findall(r"(?m)^\s*" + names + r":([0-9]+)(?::|\s*$)", text)
+                if 1 <= int(value) <= len(lines)
+            }
+        )
+        known = {"ARG", "FROM", "COPY", "RUN", "ENV", "WORKDIR", "ENTRYPOINT", "CMD", "LABEL"}
+        result["recipe_sha256"] = digest(recipe)
+        result["recipe_line_numbers"] = positions
+        for position in positions:
+            parts = lines[position - 1].split(maxsplit=1)
+            word = parts[0] if parts else ""
+            result["recipe_instructions"].append(word if word in known else "OTHER")
+    return result
 
 
 def run_proof(output: Path, source: str) -> int:
@@ -153,7 +224,11 @@ def run_proof(output: Path, source: str) -> int:
         done = execute(args, **kwargs)
         if done.returncode:
             receipt["failed_exit"] = done.returncode
-            receipt["failure_kind"] = closed_build_failure(done.stderr)
+            receipt["failure_kind"] = closed_build_failure(done.stderr, done.stdout)
+            recipe = Path(args[args.index("-f") + 1]) if "buildx" in args and "-f" in args else None
+            receipt["builder_diagnostic"] = closed_builder_diagnostic(
+                done.stdout, done.stderr, recipe
+            )
             raise ProofRefusal("required_build_step_failed")
         return done.stdout
 
@@ -165,7 +240,8 @@ def run_proof(output: Path, source: str) -> int:
             "--builder",
             builder,
             "--provenance=false",
-            "--progress=quiet",
+            # Plain diagnostics are captured in memory, never printed/retained.
+            "--progress=plain",
             "-f",
             str(recipe),
             *args,
@@ -266,10 +342,22 @@ def run_proof(output: Path, source: str) -> int:
                 "COPY --from=route-a-go-deps /proof-sentinel /proof-sentinel\n"
             )
             cases = [
-                ("old_variable_copy", old, control_args, False),
-                ("valid_alias", valid, control_args, True),
-                ("blank_stage", valid.replace("AS route-a-go-deps", "AS "), control_args, False),
-                ("missing_input", valid, [*control_args[:4], *control_args[6:]], False),
+                ("old_variable_copy", old, control_args, False, "invalid_copy_or_image_reference"),
+                ("valid_alias", valid, control_args, True, "none"),
+                (
+                    "blank_stage",
+                    valid.replace("AS route-a-go-deps", "AS "),
+                    control_args,
+                    False,
+                    "invalid_or_missing_stage_input",
+                ),
+                (
+                    "missing_input",
+                    valid,
+                    [*control_args[:4], *control_args[6:]],
+                    False,
+                    "invalid_or_missing_stage_input",
+                ),
                 (
                     "invalid_input",
                     valid,
@@ -280,9 +368,10 @@ def run_proof(output: Path, source: str) -> int:
                         for v in control_args
                     ],
                     False,
+                    "invalid_copy_or_image_reference",
                 ),
             ]
-            for name, text, args, positive in cases:
+            for name, text, args, positive, expected_failure in cases:
                 stage = "control_" + name
                 recipe = work / (name + ".Dockerfile")
                 recipe.write_text(text)
@@ -292,7 +381,11 @@ def run_proof(output: Path, source: str) -> int:
                 )
                 if done.returncode == 0:
                     tags.append(tag)
-                kind = "none" if done.returncode == 0 else closed_build_failure(done.stderr)
+                kind = (
+                    "none"
+                    if done.returncode == 0
+                    else closed_build_failure(done.stderr, done.stdout)
+                )
                 receipt["controls"].append(
                     {
                         "name": name,
@@ -300,13 +393,15 @@ def run_proof(output: Path, source: str) -> int:
                         "exit": done.returncode,
                         "expected_positive": positive,
                         "failure_kind": kind,
+                        "expected_failure_kind": expected_failure,
+                        "builder_diagnostic": closed_builder_diagnostic(
+                            done.stdout, done.stderr, recipe
+                        ),
                         "input_digest": sealed["control"][1]["manifest_digest"],
                         "network": "none",
                     }
                 )
-                if (done.returncode == 0) != positive or (
-                    not positive and kind == "unclassified_builder_failure"
-                ):
+                if (done.returncode == 0) != positive or kind != expected_failure:
                     raise ProofRefusal("control_not_positioned")
                 if positive:
                     required(["docker", "image", "inspect", "--format", "{{.Id}}", tag], bound=10)
@@ -420,13 +515,16 @@ def run_proof(output: Path, source: str) -> int:
                 done = execute(
                     build(historical / relative, context, args, output_args=[]), bound=90
                 )
-                kind = closed_build_failure(done.stderr)
+                kind = closed_build_failure(done.stderr, done.stdout)
                 receipt["controls"].append(
                     {
                         "name": "immutable_old_" + name,
                         "exit": done.returncode,
                         "recipe_sha256": history["recipes"][relative],
                         "failure_kind": kind,
+                        "builder_diagnostic": closed_builder_diagnostic(
+                            done.stdout, done.stderr, historical / relative
+                        ),
                         "same_sealed_input_digests": receipt["same_controlled_inputs"],
                         "network": "none",
                         "expected_positive": False,

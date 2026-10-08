@@ -56,6 +56,21 @@ current/historical recipe hashes, same sealed input digests, expected controls,
 three image results and cleanup. Unreached images are absent, not successful.
 Source/static or mocked controls cannot stand in for these actual builds.
 
+Plain BuildKit progress is captured in memory to make failures observable.
+The closed projection examines at most 64 KiB from each output stream, retaining
+only fixed phrase indicators, byte counts and in-range line/instruction positions
+within the known public recipe. Truncated diagnostics are explicit. Phrase
+observations are not an underlying-cause diagnosis; unknown/context/registry
+failures cannot satisfy the old-COPY negative. Each negative must match its own
+expected reference or missing-stage class, and the valid-alias companion must
+still build with the same input. No raw output, error arguments or child paths
+are printed or uploaded.
+
+Actual manual run 37764265658 at source `31a5195` prepared and verified the tiny
+OCI input, then refused the first old-COPY control after exit 1 with an unknown
+failure class. Cleanup passed. The valid alias and all three historical/current
+recipes were unreached; this establishes no actual COPY cause or image success.
+
 The script has a 30-minute overall process deadline, finite per-command bounds
 and own-resource cleanup deadlines. The 45-minute manual job watchdog includes
 the complete 640-second UV installer retry interval, 150 seconds cleanup and
