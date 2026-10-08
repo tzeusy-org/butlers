@@ -19,7 +19,15 @@ import tempfile
 import time
 from pathlib import Path
 
-from ci_partition import checkout_identity, digest, file_path, read_json
+from ci_partition import (
+    HEX,
+    checkout_identity,
+    digest,
+    exact_json,
+    file_path,
+    read_json,
+    require_receipt_types,
+)
 from ci_route import admitted_paths
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -98,7 +106,19 @@ def collect(paths, *, root, nonce, deadline):
 
 def verify(reference, receipt, *, identity, paths, nonce, command):
     """Independent strict identity/start/phase verifier; no duration tolerance."""
-    if reference.get("identity") != identity or reference.get("nonce") != nonce:
+    require_receipt_types(receipt)
+    if (
+        type(reference) is not dict
+        or not exact_json(reference.get("identity"), identity)
+        or type(nonce) is not str
+        or not HEX.fullmatch(nonce)
+        or not exact_json(reference.get("nonce"), nonce)
+        or type(reference.get("pytest_version")) is not str
+        or not reference["pytest_version"]
+        or type(reference.get("actual_selector")) is not dict
+        or type(reference["actual_selector"].get("markexpr")) is not str
+        or not exact_json(reference["actual_selector"].get("args"), paths)
+    ):
         raise ValueError("selected reference source or invocation mismatch")
     nodes = reference["nodes"]
     if (
@@ -131,7 +151,7 @@ def verify(reference, receipt, *, identity, paths, nonce, command):
         "node_files": nodes,
         "logical_starts": {node: 1 for node in nodes},
     }
-    if any(receipt.get(key) != value for key, value in expected.items()):
+    if any(not exact_json(receipt.get(key), value) for key, value in expected.items()):
         raise ValueError("selected execution provenance or multiplicity mismatch")
     if reference["actual_selector"]["args"] != paths or set(receipt["nodes"]) != set(nodes):
         raise ValueError("selected actual identity mismatch")

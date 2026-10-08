@@ -34,6 +34,55 @@ def digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def exact_json(value: object, expected: object) -> bool:
+    """JSON representation equality: boolean/count coercions are never authority."""
+    if type(value) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return value.keys() == expected.keys() and all(
+            isinstance(key, str) and exact_json(value[key], item) for key, item in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(value) == len(expected) and all(
+            exact_json(item, other) for item, other in zip(value, expected, strict=True)
+        )
+    if isinstance(expected, float):
+        return math.isfinite(value) and math.isfinite(expected) and value == expected
+    return type(expected) in (str, bool, int, type(None)) and value == expected
+
+
+def require_receipt_types(receipt: dict) -> None:
+    """Shared scoped/matrix admission; never normalize malformed wire values."""
+    if (
+        type(receipt) is not dict
+        or type(receipt.get("complete")) is not bool
+        or type(receipt.get("pytest_exit")) is not int
+        or receipt["pytest_exit"] < 0
+        or type(receipt.get("selected_count")) is not int
+        or receipt["selected_count"] < 1
+        or type(receipt.get("logical_starts")) is not dict
+        or any(
+            type(node) is not str or not HEX.fullmatch(node) or type(count) is not int or count < 1
+            for node, count in receipt["logical_starts"].items()
+        )
+        or ("schema" in receipt and not exact_json(receipt["schema"], 1))
+        or ("shard" in receipt and (type(receipt["shard"]) is not int or receipt["shard"] < 1))
+    ):
+        raise ValueError("execution verdict/count/start representation malformed")
+    if type(receipt.get("nodes")) is not dict or type(receipt.get("node_files")) is not dict:
+        raise ValueError("execution item binding representation malformed")
+    if "test_step_elapsed_s" in receipt:
+        value = receipt["test_step_elapsed_s"]
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError("execution elapsed timer malformed")
+    aggregate = receipt.get("file_durations_s")
+    if type(aggregate) is not dict or any(
+        type(value) not in (int, float) or not math.isfinite(value) or value < 0
+        for value in aggregate.values()
+    ):
+        raise ValueError("execution aggregate timer malformed")
+
+
 def unique_object(pairs):
     result = {}
     for key, value in pairs:
@@ -114,7 +163,7 @@ def body_digest(data: dict) -> str:
 def validate_inventory(data: dict, *, root: Path, current: bool = True) -> None:
     if data.get("schema") != "ci-inventory.v1" or data.get("digest") != body_digest(data):
         raise ValueError("inventory schema or body digest mismatch")
-    if current and data.get("identity") != checkout_identity(root):
+    if current and not exact_json(data.get("identity"), checkout_identity(root)):
         raise ValueError("inventory source/config/attempt mismatch")
     if not isinstance(data.get("nonce"), str) or not HEX.fullmatch(data["nonce"]):
         raise ValueError("inventory nonce missing")
@@ -273,7 +322,7 @@ def validate_assignment(
     ):
         raise ValueError("assignment schema/body mismatch")
     if any(
-        assignment.get(key) != expected
+        not exact_json(assignment.get(key), expected)
         for key, expected in (
             ("inventory_digest", data["digest"]),
             ("identity", data["identity"]),
@@ -281,11 +330,13 @@ def validate_assignment(
         )
     ):
         raise ValueError("assignment does not bind current inventory")
+    if type(assignment.get("weights_degraded")) is not bool:
+        raise ValueError("assignment degradation representation malformed")
     if set(assignment["shards"]) != set(DIMENSIONS):
         raise ValueError("assignment lane mismatch")
     for lane, count in DIMENSIONS.items():
         bins = assignment["shards"][lane]
-        if [item["index"] for item in bins] != list(range(1, count + 1)):
+        if not exact_json([item["index"] for item in bins], list(range(1, count + 1))):
             raise ValueError("assignment indexes mismatch")
         names = [name for item in bins for name in item["files"]]
         if len(names) != len(set(names)) or set(names) != set(data["lanes"][lane]):
@@ -322,12 +373,13 @@ def reconcile(
     for lane, count in DIMENSIONS.items():
         for index in range(1, count + 1):
             receipt = receipts[f"{lane}-{index}"]
+            require_receipt_types(receipt)
             files = assigned_files(
                 data, assignment, lane=lane, index=index, root=root, current=current
             )
             nodes = {node for name in files for node in data["lanes"][lane][name]}
             if any(
-                receipt.get(key) != value
+                not exact_json(receipt.get(key), value)
                 for key, value in (
                     ("inventory_digest", data["digest"]),
                     ("assignment_digest", assignment["digest"]),
@@ -346,9 +398,9 @@ def reconcile(
                 or receipt["selected_node_digest"] != digest(sorted(nodes))
             ):
                 raise ValueError("child differs from complete actual inventory identities")
-            if receipt.get("logical_starts") != {node: 1 for node in nodes} or seen.intersection(
-                nodes
-            ):
+            if not exact_json(
+                receipt.get("logical_starts"), {node: 1 for node in nodes}
+            ) or seen.intersection(nodes):
                 raise ValueError("duplicate or absent logical execution")
             if receipt["node_files"] != {
                 node: name for name in files for node in data["lanes"][lane][name]

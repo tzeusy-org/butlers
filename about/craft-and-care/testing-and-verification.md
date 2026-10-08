@@ -94,6 +94,10 @@ reference, execution and independently verified proof carriers; required check a
 its explicit successful verifier output. Each subprocess belongs to the same finite affected
 job envelope and cleans up only its own process group. No cached inventory or full-lane evidence
 is borrowed to certify a scoped execution.
+Completion/exit/count/start fields require their exact JSON boolean or integer representations.
+A boolean is never an integer count/exit, and an equal floating-point number is never a count.
+Both scoped and full-matrix consumers reject malformed representations without coercion;
+finite nonnegative integer or floating-point phase timers remain valid numeric durations.
 
 Guards performs one actual installed `pytest tests/ roster/ --collect-only -q -n0 -m ""`
 collection. Exact inherited markers establish both populations; advisory weights never do.

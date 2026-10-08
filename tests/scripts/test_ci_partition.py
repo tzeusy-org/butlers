@@ -197,6 +197,17 @@ def test_reconciliation_requires_complete_node_identity(
         {"nodes": {}},
         {"inventory_identity": {}},
         {"actual_selector": {}},
+        {"complete": 1},
+        {"pytest_exit": False},
+        {"pytest_exit": 0.0},
+        {"selected_count": float(len(reference["nodes"]))},
+        {"selected_count": True},
+        {"logical_starts": {key: True for key in reference["nodes"]}},
+        {"logical_starts": {key: 1.0 for key in reference["nodes"]}},
+        {"schema": True},
+        {"schema": 1.0},
+        {"test_step_elapsed_s": False},
+        {"file_durations_s": {path: False for path in observed["file_durations_s"]}},
     ):
         with pytest.raises(ValueError):
             affected.verify(reference, {**observed, **corrupt}, **arguments)
@@ -318,6 +329,35 @@ def test_reconciliation_requires_complete_node_identity(
     # Synthetic protocol fixtures never claim actual execution provenance.
     assert partition.reconcile(data, assignment, receipts, root=tmp_path)["complete"]
     first = next(iter(receipts))
+    for field, malformed in (
+        ("complete", 1),
+        ("pytest_exit", False),
+        ("pytest_exit", 0.0),
+        ("selected_count", float(receipts[first]["selected_count"])),
+        ("selected_count", True),
+        ("logical_starts", {node: True for node in receipts[first]["nodes"]}),
+        ("logical_starts", {node: 1.0 for node in receipts[first]["nodes"]}),
+        ("shard", float(receipts[first]["shard"])),
+        ("schema", True),
+        ("schema", 1.0),
+        ("test_step_elapsed_s", False),
+    ):
+        malformed_receipts = copy.deepcopy(receipts)
+        malformed_receipts[first][field] = malformed
+        with pytest.raises(ValueError):
+            partition.reconcile(data, assignment, malformed_receipts, root=tmp_path)
+    for field, malformed in (("weights_degraded", 1),):
+        malformed_assignment = copy.deepcopy(assignment)
+        malformed_assignment[field] = malformed
+        malformed_assignment["digest"] = partition.body_digest(malformed_assignment)
+        with pytest.raises(ValueError):
+            partition.validate_assignment(data, malformed_assignment, root=tmp_path)
+    malformed_assignment = copy.deepcopy(assignment)
+    malformed_assignment["shards"]["unit"][0]["index"] = 1.0
+    malformed_assignment["digest"] = partition.body_digest(malformed_assignment)
+    with pytest.raises(ValueError):
+        partition.validate_assignment(data, malformed_assignment, root=tmp_path)
+    assert partition.reconcile(data, assignment, receipts, root=tmp_path)["complete"] is True
     # Synthetic raw timers pin deterministic wire reconstruction, not hosted
     # execution. JSON sorts node/phase keys and must not change exact totals.
     timed = copy.deepcopy(receipts)
