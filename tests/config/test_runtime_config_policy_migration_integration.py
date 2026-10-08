@@ -466,15 +466,19 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
     failed_predicate: str,
 ) -> None:
     """Every core_198 refusal fails before core_231 can commit."""
+    from unittest.mock import patch
+
     from sqlalchemy import create_engine, text
 
     from alembic import command
+    from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_database
     from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
     from butlers.testing.migration import (
         create_migration_db,
         migration_bootstrap_db_url,
         migration_db_name,
     )
+    from tests.bootstrap_prerequisite_helpers import _readback
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
@@ -484,6 +488,13 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
 
     admin_engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
+        with create_engine(db_url).begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO public.state(key,value) VALUES "
+                    "('bootstrap_prerequisite_sentinel','{\"protected_rollback\":true}'::jsonb)"
+                )
+            )
         with admin_engine.connect() as conn:
             # Project the state core_199's protected downgrade deliberately
             # requires an operator to establish before crossing core_198, then
@@ -520,8 +531,21 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
                     )
                 )
 
-        with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
-            command.downgrade(bootstrap_config, "core_197")
+        before_refusal = _readback(db_url)
+        if failed_predicate == "acl":
+            # Distinct actual early-boundary refusal, never credited as old preflight.
+            with pytest.raises(BootstrapPrerequisiteError):
+                command.downgrade(bootstrap_config, "core_197")
+            assert _readback(db_url) == before_refusal
+        else:
+            # Durable history affects protected rollback, not catalog provenance.
+            check_bootstrap_database(bootstrap_url)
+        # Neutralize ONLY the newly added outer check in this disposable test.
+        # The immutable state-specific protected guard and all old readbacks stay.
+        with patch("butlers.bootstrap_prerequisite.check_bootstrap_connection", return_value=None):
+            with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
+                command.downgrade(bootstrap_config, "core_197")
+        assert _readback(db_url) == before_refusal
 
         with create_engine(db_url).connect() as conn:
             assert conn.execute(
@@ -548,6 +572,11 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
             else:
                 conn.execute(text("TRUNCATE public.runtime_attention_outbox"))
 
+        # Restore a genuine good-profile positive before permitted managed rollback.
+        check_bootstrap_database(db_url)
+        restored = _readback(db_url)
+        assert restored["row"] == before_refusal["row"]
+
         # A bounded rollback never crosses core_198 and remains reversible.
         command.downgrade(bootstrap_config, "core@-1")
         command.upgrade(bootstrap_config, "core@head")
@@ -555,6 +584,8 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
             assert conn.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one() == get_chain_head("core")
+        assert _readback(db_url)["row"] == before_refusal["row"]
+        check_bootstrap_database(db_url)
     finally:
         admin_engine.dispose()
 

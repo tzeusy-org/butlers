@@ -45,6 +45,15 @@ connection credentials. Offline SQL generation cannot attest a target database.
 Fresh installer-ready and correctly finalized protected states are both supported.
 After finalization consumes one-shot installer privileges, repeat migrations,
 second-schema replay and mixed-chain tracking do not demand those grants back.
+The stable prerequisite profile excludes the ordinary Relationship SELECT default
+on Switchboard: immutable `core_001` revokes cross-schema defaults during bounded
+replay and `core_077` repairs this one. Requiring it before that continuation would
+prevent the repair itself. This exclusion grants no runtime access and does not
+waive required own-schema/base ACLs or protected authority. Its absence is not a
+bootstrap failure, nor proof of working Relationship reads: actual default-ACL
+and effective `SET ROLE` readback separately witness the repair. No revision or
+completion marker supplies bootstrap provenance.
+
 The applied `core_196`, `core_197` and `core_198` point-of-use guards remain
 independent. Existing managed privileged downgrade authorization and its data
 constraints remain; catalog admission grants no downgrade authority to a normal

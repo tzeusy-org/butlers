@@ -90,6 +90,23 @@ def _readback(url: str) -> dict:
                 """)
                     )
                 ),
+                "relation_acl": tuple(
+                    connection.execute(
+                        text(
+                            "SELECT n.nspname, c.relname, c.relacl::text FROM pg_catalog.pg_class AS c "
+                            "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+                            "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' ORDER BY 1,2"
+                        )
+                    )
+                ),
+                "default_acl": tuple(
+                    connection.execute(
+                        text(
+                            "SELECT defaclrole, defaclnamespace, defaclobjtype, defaclacl::text "
+                            "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
+                        )
+                    )
+                ),
                 "schemas": tuple(
                     connection.execute(
                         text(

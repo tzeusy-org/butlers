@@ -473,8 +473,76 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         db_url, chains=["switchboard"], target_schema="switchboard"
     )
 
+    from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_database
+
+    def relationship_read_default() -> bool:
+        with create_engine(db_url).connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl AS d "
+                    "JOIN pg_catalog.pg_namespace AS n ON n.oid = d.defaclnamespace "
+                    "CROSS JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) AS a "
+                    "WHERE d.defaclrole = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user) "
+                    "AND n.nspname = 'switchboard' AND d.defaclobjtype = 'r' "
+                    "AND a.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'butler_relationship_rw') "
+                    "AND a.privilege_type = 'SELECT')"
+                )
+            ).scalar_one()
+
+    # Genuine checked-init -> immutable bounded replay -> second schema -> repair.
+    assert relationship_read_default() is True
     command.upgrade(relationship_core, "core_076")
+    assert relationship_read_default() is False
+    check_bootstrap_database(db_url)
+    # Losing an ordinary cross-schema read must not waive a required own ACL.
+    # These are the disposable normal creator's existing default-ACL privileges.
+    profile_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with profile_engine.connect() as connection:
+            connection.execute(
+                text(
+                    "ALTER DEFAULT PRIVILEGES IN SCHEMA relationship "
+                    "REVOKE INSERT ON TABLES FROM butler_relationship_rw"
+                )
+            )
+        try:
+            with profile_engine.connect() as connection:
+                before = tuple(
+                    connection.execute(
+                        text(
+                            "SELECT defaclrole, defaclnamespace, defaclobjtype, defaclacl::text "
+                            "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
+                        )
+                    )
+                )
+            with pytest.raises(BootstrapPrerequisiteError):
+                check_bootstrap_database(db_url)
+            with profile_engine.connect() as connection:
+                assert (
+                    tuple(
+                        connection.execute(
+                            text(
+                                "SELECT defaclrole, defaclnamespace, defaclobjtype, defaclacl::text "
+                                "FROM pg_catalog.pg_default_acl ORDER BY 1,2,3"
+                            )
+                        )
+                    )
+                    == before
+                )
+        finally:
+            with profile_engine.connect() as connection:
+                connection.execute(
+                    text(
+                        "ALTER DEFAULT PRIVILEGES IN SCHEMA relationship "
+                        "GRANT INSERT ON TABLES TO butler_relationship_rw"
+                    )
+                )
+    finally:
+        profile_engine.dispose()
+    check_bootstrap_database(db_url)
     command.upgrade(switchboard_core, "core_076")
+    assert relationship_read_default() is False
+    check_bootstrap_database(db_url)
     command.upgrade(switchboard_chain, "switchboard@head")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
@@ -519,6 +587,21 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         scalar=True,
     )
     assert count == 1
+    assert relationship_read_default() is True
+    check_bootstrap_database(db_url)
+    command.upgrade(relationship_core, "core@head")
+    command.upgrade(switchboard_core, "core@head")
+    check_bootstrap_database(db_url)
+    assert relationship_read_default() is True
+    assert (
+        _execute_as_role(
+            db_url,
+            RUNTIME_ROLES["relationship"],
+            "SELECT COUNT(*) FROM switchboard.message_inbox",
+            scalar=True,
+        )
+        == 1
+    )
 
 
 def test_switchboard_runtime_role_can_ensure_message_inbox_partitions(postgres_container):

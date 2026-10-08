@@ -447,6 +447,62 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
     assert historical["get_chain_head"]("core") == __import__(
         "butlers.migrations", fromlist=["get_chain_head"]
     ).get_chain_head("core")
+    # The actual immutable generators own the transient cross-schema read ACL;
+    # it cannot be a stable prerequisite for reaching its ordinary repair.
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[2]
+    commands = []
+    for filename, function, args in (
+        (
+            "core_001_foundation.py",
+            "_apply_default_privileges",
+            ("relationship", "butler_relationship_rw"),
+        ),
+        ("core_077_relationship_switchboard_read_grants.py", "upgrade", ()),
+    ):
+        source = root / "alembic" / "versions" / "core" / filename
+        spec = importlib.util.spec_from_file_location("actual_acl_" + source.stem, source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(
+            module,
+            "_execute_best_effort",
+            side_effect=lambda statement, **_kwargs: commands.append(statement),
+        ):
+            getattr(module, function)(*args)
+    assert (
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA "switchboard" REVOKE ALL ON TABLES FROM "butler_relationship_rw"'
+        in commands
+    )
+    assert (
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA "switchboard" GRANT SELECT ON TABLES TO "butler_relationship_rw"'
+        in commands
+    )
+    assert (
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA "relationship" GRANT SELECT, INSERT, UPDATE, DELETE, TRIGGER, REFERENCES ON TABLES TO "butler_relationship_rw"'
+        in commands
+    )
+    profile = prerequisite._default_profile()
+    assert {
+        "role": "butler_relationship_rw",
+        "schema": "switchboard",
+        "kind": "r",
+        "privilege": "SELECT",
+    } not in profile
+    assert {
+        "role": "butler_relationship_rw",
+        "schema": "relationship",
+        "kind": "r",
+        "privilege": "INSERT",
+    } in profile
+    assert {
+        "role": "butler_general_rw",
+        "schema": "general",
+        "kind": "r",
+        "privilege": "INSERT",
+    } in profile
+
     accepted = Connection()
     prerequisite.check_bootstrap_connection(accepted)
     assert len(accepted.calls) == 12

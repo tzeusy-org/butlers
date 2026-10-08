@@ -303,8 +303,10 @@ def _default_profile() -> list[dict[str, str]]:
         if schema != "connectors":
             scopes.append((schema, "r", ("TRIGGER", "REFERENCES")))
             scopes.append(("connectors", "r", ("SELECT",)))
-            if schema == "relationship":
-                scopes.append(("switchboard", "r", ("SELECT",)))
+            # core_001 removes this ordinary cross-schema read default and
+            # core_077 restores it. It is not stable bootstrap authority:
+            # admission must permit the normal caller to reach that repair.
+            # Own-schema/base ACLs and trusted private interfaces remain required.
         else:
             scopes += [
                 ("switchboard", "r", ("SELECT", "INSERT", "UPDATE", "DELETE")),
