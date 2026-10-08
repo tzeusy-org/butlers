@@ -234,9 +234,14 @@ class CatalogLoanAdmission:
                     message = await receive()
                     if message.get("type") != "http.request":
                         raise ValueError
-                    body.extend(message.get("body", b""))
-                    if len(body) > 262144:
+                    chunk = message.get("body", b"")
+                    # Bound the owned buffer before copying the received
+                    # chunk; checking afterwards transiently allocates the
+                    # entire oversized private request. Generic requests keep
+                    # their existing untouched streaming contract above.
+                    if not isinstance(chunk, bytes) or len(chunk) > 262144 - len(body):
                         raise ValueError
+                    body.extend(chunk)
                     if not message.get("more_body", False):
                         break
                 else:

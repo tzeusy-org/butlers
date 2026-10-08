@@ -1752,6 +1752,45 @@ async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is
     )
     assert not cell.active and copies._admitted_loan.get() is None
 
+    # Measure the actual private buffer's copied size, rather than merely
+    # asserting a 503 that also passed when rejection came after allocation.
+    # Builtin instrumentation is available in both old and current source;
+    # it injects no admitted context or verifier decision.
+    peaks = []
+
+    class RecordingBuffer(bytearray):
+        def extend(self, chunk):
+            super().extend(chunk)
+            peaks.append(len(self))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(copies, "bytearray", RecordingBuffer, raising=False)
+        before = len(observed)
+        assert (await request(b"x" * 262145, headers))[0]["status"] == 503
+        assert len(observed) == before
+        assert max(peaks, default=0) <= 262144
+        peaks.clear()
+        assert (
+            await request(
+                b"",
+                headers,
+                frames=[
+                    {"type": "http.request", "body": b"x" * 262140, "more_body": True},
+                    {"type": "http.request", "body": b"y" * 5, "more_body": False},
+                ],
+            )
+        )[0]["status"] == 503
+        assert max(peaks) <= 262144 and len(observed) == before
+        peaks.clear()
+        assert (await request(packet, headers))[0]["status"] == 200
+        assert peaks == [len(packet)] and observed[-1][2] is cell
+        assert not cell.active and copies._admitted_loan.get() is None
+    # Restore this case's admission-count checkpoint after proving its valid
+    # companion; the original malformed-request cases below retain their
+    # original independent admission assertions.
+    assert admissions == [loan, loan]
+    admissions.pop()
+
     # Position duplicate-key rejection before the delegate, not at a later
     # FunctionTool which would already have observed/normalized the request.
     before = len(observed)

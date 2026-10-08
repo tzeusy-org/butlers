@@ -508,19 +508,35 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
         # Current generation integrity remains a real predicate. Plant a
         # semantic tamper before preparing a new genuinely closed source group.
         target = await pool.fetchrow(
-            "SELECT id,payload FROM episodes WHERE source_name='owntracks.points' "
+            "SELECT e.id,e.payload FROM episodes e WHERE e.source_name='owntracks.points' "
             "AND EXISTS(SELECT 1 FROM location_projection_outputs o "
-            "WHERE o.output_id=episodes.id AND o.raw_id=ANY($1::uuid[])) LIMIT 1",
+            "JOIN location_projection_coverage c "
+            "USING(raw_id,source_revision,adapter_name,mapping_revision) "
+            "JOIN location_projection_privacy_transitions t "
+            "USING(raw_id,source_revision,adapter_name,mapping_revision) "
+            "WHERE o.output_kind='episode' AND o.output_id=e.id "
+            "AND o.raw_id=ANY($1::uuid[]) AND c.disposition='complete' "
+            "AND t.phase='coarsen' AND t.decision_id=ANY($2::uuid[])) "
+            "ORDER BY e.id LIMIT 1",
             more_ids,
+            [first, second],
         )
+        assert target is not None
+        from butlers.chronicler.location_retention import _output_generation_cohort
+
+        # The healthy complete source must actually reach the generation
+        # predicate before corruption; an open/no-contributor selection is
+        # not a tamper control, even if a later generic refusal were added.
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                healthy_cohort = await _output_generation_cohort(connection, [target["id"]], [])
+                assert healthy_cohort
         original_payload = target["payload"]
         await pool.execute(
             "UPDATE episodes SET payload=payload || $2::jsonb WHERE id=$1",
             target["id"],
             {"unrelated_tamper": True},
         )
-        from butlers.chronicler.location_retention import _output_generation_cohort
-
         async with pool.acquire() as connection:
             async with connection.transaction():
                 with pytest.raises(PolicyUnavailableError, match="generation changed"):
@@ -534,6 +550,7 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
             async with connection.transaction():
                 cohort = await _output_generation_cohort(connection, [target["id"]], [])
                 assert cohort and all(row["original_output_revision"] is not None for row in cohort)
+                assert cohort == healthy_cohort
         assert await ready_batches(pool) == []  # Unknown foreign frontier cannot earn READY.
 
         # Genuine migrated engine/role positive, distinct from online source

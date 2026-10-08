@@ -355,6 +355,23 @@ negative remain in the same real-role species before and after production
 bootstrap replay. The prior ecb3 hosted refusal genuinely failed with DID NOT
 RAISE; this correction still needs its exact-head hosted survivor.
 
+At 85b7 the same hosted owning test passed the tombstone/raw/receipt role
+controls before and after bootstrap replay, then failed the later payload
+generation-refusal control. That control now selects a genuinely complete
+contributor with a committed first/second coarsening transition and requires
+a healthy nonempty cohort before planting the tamper. The original corruption
+refusal and exact restored-cohort positive remain. An unpositioned previous
+candidate is still an inference, not a proved physical cause; connector DELETE
+and later full-holder controls were not reached in that failed test.
+
+Private catalog admission checks received byte type and remaining capacity
+before extending its bounded buffer. Oversized single or accumulated chunks
+never transiently exceed that owned limit; generic streaming and valid private
+admission keep their existing behavior. A positioned old after-copy check
+still returned 503 but allocated262145 bytes against the262144 limit. Actual
+buffer instrumentation catches that RED; restored overflow refusals and a
+valid companion pass. This software control is not online or SQL proof.
+
 Native consolidation now rereads every actual full canonical episode/fact/rule
 under the policy-first writer before prompt admission. All producer-owned body
 and exclusive parent witnesses enter the complete immutable bundle; valid
