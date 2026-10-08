@@ -342,6 +342,80 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
     assert guard_command() == 0
     assert guard_command("--check") == 0
 
+    # Actual alias/finite-expression consumer: the old source visited its body
+    # yet omitted the real edge. No canned row or estimated cost proves this.
+    alias_repo = tmp_path / "alias-reader"
+    alias_repo.mkdir()
+    _git(alias_repo, "init", "-q")
+    alias = "tests/test_alias_reader.py"
+    _write(
+        alias_repo,
+        alias,
+        "from builtins import open as read_resource\n"
+        "def test_resource():\n"
+        "    path = 'doc' + 's/contract.md'\n"
+        "    with read_resource(path) as stream:\n"
+        "        assert stream.read() == 'healthy'\n",
+    )
+    _write(alias_repo, "docs/contract.md", "healthy")
+    _write(alias_repo, "pyproject.toml", '[tool.pytest.ini_options]\ntestpaths=["tests"]\n')
+    _write(
+        alias_repo,
+        DECLARATIONS,
+        json.dumps({"schema": "test-resource-declarations.v1", "dynamic": {}}),
+    )
+    _git(alias_repo, "add", ".")
+    child_command = [sys.executable, "-m", "pytest", alias, "-q", "-n", "0"]
+    assert (
+        subprocess.run(child_command, cwd=alias_repo, capture_output=True, timeout=30).returncode
+        == 0
+    )
+    _write(alias_repo, "docs/contract.md", "changed")
+    assert (
+        subprocess.run(child_command, cwd=alias_repo, capture_output=True, timeout=30).returncode
+        == 1
+    )
+    from butlers.testing.resource_readers import select
+
+    declared = json.loads((alias_repo / DECLARATIONS).read_text())
+    actual = discover(alias_repo, declared)
+    assert alias in select("docs/contract.md", actual)
+    # No whole literal path and no .read() spelling: iteration consumes the
+    # stream through an imported/assigned alias. The alias fallback itself must
+    # retain this consumer, independent of finite-string discovery above.
+    escaped = "tests/test_escaped_reader.py"
+    _write(
+        alias_repo,
+        escaped,
+        "from builtins import open as imported_read\n"
+        "reader = imported_read\n"
+        "def test_resource():\n"
+        "    path = ''.join(['do', 'cs/contract.md'])\n"
+        "    with reader(path) as stream:\n"
+        "        assert ''.join(stream) == 'healthy'\n",
+    )
+    _git(alias_repo, "add", escaped)
+    _write(alias_repo, "docs/contract.md", "healthy")
+    escaped_command = [sys.executable, "-m", "pytest", escaped, "-q", "-n", "0"]
+    assert (
+        subprocess.run(escaped_command, cwd=alias_repo, capture_output=True, timeout=30).returncode
+        == 0
+    )
+    _write(alias_repo, "docs/contract.md", "changed")
+    assert (
+        subprocess.run(escaped_command, cwd=alias_repo, capture_output=True, timeout=30).returncode
+        == 1
+    )
+    actual = discover(alias_repo, declared)
+    assert escaped in select("docs/contract.md", actual)
+    # The actual existing guard refuses the stale/missing alias edge rather
+    # than authorizing no-reader. Regenerate that real bound edge for positive.
+    _write(alias_repo, REGISTRY, json.dumps({}))
+    command = [sys.executable, str(guard), "--root", str(alias_repo)]
+    assert subprocess.run(command + ["--check"], capture_output=True, timeout=30).returncode == 1
+    assert subprocess.run(command, capture_output=True, timeout=30).returncode == 0
+    assert subprocess.run(command + ["--check"], capture_output=True, timeout=30).returncode == 0
+
 
 def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

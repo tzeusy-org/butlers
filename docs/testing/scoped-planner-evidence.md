@@ -11,7 +11,10 @@ importing tests. Literal candidates over-approximate readers. Unknown variable
 file readers conservatively select all public families unless an audited bounded
 source declaration refines them. The checked-in bodies and consumer paths are
 checked on every guard run. Changing a test without regeneration refuses the
-reader guard. Strings and this static analysis are not proof of arbitrary runtime
+reader guard. Supported I/O imports and assignments retain aliases even when
+passed to helpers; finite literal concatenation is folded without executing tests.
+Unknown paths reached through supported I/O retain conservative whole-family readers.
+Strings and this static analysis are not proof of arbitrary runtime
 completeness: historical actual-reader auditing remains mandatory.
 
 Missing static targets select FULL. Direct deleted test files may use their

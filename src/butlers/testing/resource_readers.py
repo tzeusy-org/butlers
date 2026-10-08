@@ -73,6 +73,76 @@ def consumers(root: Path, source: str) -> list[str]:
     raise ValueError("READER_UNCLASSIFIED")
 
 
+IO_OPERATIONS = {
+    "read_text",
+    "read_bytes",
+    "open",
+    "glob",
+    "rglob",
+    "iterdir",
+    "get_data",
+    "read",
+    "readline",
+    "readlines",
+}
+
+
+def literal_string(node: ast.AST) -> str | None:
+    """Fold only finite literal strings; never evaluate a test expression."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = literal_string(node.left), literal_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = [
+            literal_string(v.value) if isinstance(v, ast.FormattedValue) else literal_string(v)
+            for v in node.values
+        ]
+        if all(p is not None for p in parts):
+            return "".join(parts)
+    return None
+
+
+def has_io_reference(tree: ast.AST) -> bool:
+    """Track supported I/O names and aliases conservatively, including escapes.
+
+    Passing open to partial/a helper or returning an alias cannot prove absence
+    of I/O merely because its eventual call uses a different spelling.
+    """
+    aliases = {"open"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            aliases.update(a.asname or a.name for a in node.names if a.name in IO_OPERATIONS)
+    changed = True
+    while changed:
+        before = len(aliases)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            io = (isinstance(value, ast.Name) and value.id in aliases) or (
+                isinstance(value, ast.Attribute) and value.attr in IO_OPERATIONS
+            )
+            if io:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                aliases.update(t.id for t in targets if isinstance(t, ast.Name))
+        changed = before != len(aliases)
+    return any(
+        (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in aliases)
+        or (isinstance(n, ast.Attribute) and n.attr in IO_OPERATIONS)
+        or (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "getattr"
+            and len(n.args) >= 2
+            and literal_string(n.args[1]) in IO_OPERATIONS
+        )
+        for n in ast.walk(tree)
+    )
+
+
 def discover(root: Path, declarations: dict) -> dict:
     if declarations.get("schema") != "test-resource-declarations.v1":
         raise ValueError("READER_UNCLASSIFIED")
@@ -92,13 +162,14 @@ def discover(root: Path, declarations: dict) -> dict:
         # A split root join is a whole-family candidate, not an exact filename.
         patterns = set()
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            value = literal_string(node)
+            if value is None:
                 continue
-            patterns.update(match.group().rstrip("./") for match in REFERENCE.finditer(node.value))
-            if node.value.rstrip("/") in {f.rstrip("/") for f in FAMILIES}:
-                patterns.add(node.value.rstrip("/") + "/**")
-            if re.fullmatch(r"[A-Z][\w-]*\.md", node.value):
-                patterns.add(node.value)
+            patterns.update(match.group().rstrip("./") for match in REFERENCE.finditer(value))
+            if value.rstrip("/") in {f.rstrip("/") for f in FAMILIES}:
+                patterns.add(value.rstrip("/") + "/**")
+            if re.fullmatch(r"[A-Z][\w-]*\.md", value):
+                patterns.add(value)
         declared = dynamic.get(name, [])
         if not isinstance(declared, list) or any(
             not isinstance(p, str) or resource_family(p) is None for p in declared
@@ -109,20 +180,7 @@ def discover(root: Path, declarations: dict) -> dict:
         # its root in this file. Never let absence of a literal prove absence of
         # a reader. Explicit, body-bound declarations may narrow this conservative
         # whole-family fallback; tests are never imported to discover it.
-        reads = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and (
-                (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr
-                    in {"read_text", "read_bytes", "open", "glob", "rglob", "iterdir", "get_data"}
-                )
-                or (isinstance(node.func, ast.Name) and node.func.id == "open")
-            )
-        ]
-        if reads and name not in dynamic:
+        if has_io_reference(tree) and name not in dynamic:
             patterns.update(family + "**" for family in FAMILIES)
             patterns.add("*.md")
             unresolved.append(name)
