@@ -3130,12 +3130,18 @@ def test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled() ->
     docker = _require_docker()
     image = _require_exact_sandbox_image(docker)
 
+    # Only the explicit branch-diagnostic workflow supplies this test-harness
+    # discriminator. Normal/scheduled proofs retain the unchanged baseline.
+    diagnostic_mode = os.environ.get("BUTLERS_NIGHTLY_DUMPABILITY_DIAGNOSTIC", "baseline")
+    assert diagnostic_mode in {"baseline", "reset-to-one"}
+    diagnostic_arguments = ["--env", f"BUTLERS_NIGHTLY_DUMPABILITY_DIAGNOSTIC={diagnostic_mode}"]
     seccomp_profile = _REPO_ROOT / "deploy" / "seccomp" / "dashboard-runtime-cli-sandbox.json"
     completed = subprocess.run(
         [
             docker,
             "run",
             "--rm",
+            *diagnostic_arguments,
             "--security-opt",
             "apparmor=unconfined",
             "--security-opt",

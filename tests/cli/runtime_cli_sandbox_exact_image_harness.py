@@ -59,9 +59,18 @@ def _diagnostic_preexec(identity, diagnostic_fd: int):
     are exported: only fixed booleans, with unavailable represented as null.
     """
     original = _outer_identity_preexec(identity)
+    mode = os.environ.get("BUTLERS_NIGHTLY_DUMPABILITY_DIAGNOSTIC", "baseline")
+    if mode not in {"baseline", "reset-to-one"}:
+        raise ValueError("invalid-closed-diagnostic-mode")
 
     def setup():
         original()
+        # Diagnostic-only controlled intervention after the original identity
+        # setup. It does not change launch arguments, namespace gates, UID/GID,
+        # supplementary groups, no_new_privs or any production function.
+        if mode == "reset-to-one":
+            if ctypes.CDLL(None).prctl(4, 1, 0, 0, 0) != 0:
+                raise RuntimeError("diagnostic-dumpability-reset-refused")
         result = {
             "dumpable": None,
             "proc_owned_by_euid": None,
@@ -69,7 +78,7 @@ def _diagnostic_preexec(identity, diagnostic_fd: int):
             "apparmor_unconfined": None,
         }
         dumpable = ctypes.CDLL(None).prctl(3, 0, 0, 0, 0)  # PR_GET_DUMPABLE, no mutation
-        if dumpable in {0, 1}:
+        if dumpable in {0, 1, 2}:
             result["dumpable"] = dumpable == 1
         try:
             result["proc_owned_by_euid"] = os.stat("/proc/self/uid_map").st_uid == os.geteuid()
