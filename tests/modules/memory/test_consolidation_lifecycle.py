@@ -1367,6 +1367,40 @@ async def _assert_native_memory_mutation_chain(pool, domain):
                             "WHERE input_generation=$1",
                             captured["input_generation"],
                         )
+            # Exercise the original legitimate mixed writer BEFORE the
+            # delegation helper prepares this source generation for disposal.
+            # Detach only this fixture's private MCP token; real configured
+            # API writer/role/lineage and business transaction remain enforced.
+            paused_tool = _current_tool_copy.set(None)
+            try:
+                # A real mixed annotation is recorded but never made source-exclusive.
+                async with memory_mutation_transaction(pool, "facts", artifact) as writer:
+                    await writer.execute(
+                        "UPDATE facts SET metadata=$2::jsonb WHERE id=$1",
+                        artifact,
+                        {"independent_annotation": "preserve this unrelated owner annotation"},
+                    )
+                async with pool.acquire() as readback:
+                    row = await readback.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
+                    assert not await current_artifact_body_matches(readback, row, original)
+                    assert (
+                        await readback.fetchval(
+                            "SELECT lifecycle_only FROM chronicler.location_native_memory_mutations "
+                            "WHERE artifact_generation=$1 ORDER BY revision DESC LIMIT 1",
+                            generation,
+                        )
+                        is False
+                    )
+                    assert (
+                        await readback.fetchval(
+                            "SELECT body_digest FROM chronicler.location_native_memory_artifacts "
+                            "WHERE artifact_generation=$1",
+                            generation,
+                        )
+                        == frozen
+                    )
+            finally:
+                _current_tool_copy.reset(paused_tool)
             await _assert_two_parent_native_mutation_inputs(pool, domain, runtime, session_id)
             await _assert_native_delegation_writer(domain, runtime, session_id)
         finally:
@@ -1380,26 +1414,40 @@ async def _assert_native_memory_mutation_chain(pool, domain):
             else:
                 _context_writers[domain] = prior_writer
 
-        # A real mixed annotation is recorded but never made source-exclusive.
-        async with memory_mutation_transaction(pool, "facts", artifact) as writer:
-            await writer.execute(
-                "UPDATE facts SET metadata=$2::jsonb WHERE id=$1",
-                artifact,
-                {"independent_annotation": "preserve this unrelated owner annotation"},
+        # The helper has now genuinely prepared this immutable source.
+        # This is a separate refusal, not permission to annotate through a
+        # prepared-generation fence or to remove its stored plan output.
+        async with pool.acquire() as observed:
+            before_prepared = dict(
+                await observed.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
             )
-        async with pool.acquire() as readback:
-            row = await readback.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
-            assert not await current_artifact_body_matches(readback, row, original)
+            before_versions = await observed.fetchval(
+                "SELECT count(*) FROM chronicler.location_native_memory_mutations "
+                "WHERE artifact_generation=$1",
+                generation,
+            )
+        with pytest.raises(PolicyUnavailableError, match="source generation is prepared"):
+            async with memory_mutation_transaction(pool, "facts", artifact) as writer:
+                await writer.execute(
+                    "UPDATE facts SET metadata=$2::jsonb WHERE id=$1",
+                    artifact,
+                    {"independent_annotation": "must not overwrite behind prepared floor"},
+                )
+        async with pool.acquire() as observed:
             assert (
-                await readback.fetchval(
-                    "SELECT lifecycle_only FROM chronicler.location_native_memory_mutations "
-                    "WHERE artifact_generation=$1 ORDER BY revision DESC LIMIT 1",
+                dict(await observed.fetchrow("SELECT * FROM facts WHERE id=$1", artifact))
+                == before_prepared
+            )
+            assert (
+                await observed.fetchval(
+                    "SELECT count(*) FROM chronicler.location_native_memory_mutations "
+                    "WHERE artifact_generation=$1",
                     generation,
                 )
-                is False
+                == before_versions
             )
             assert (
-                await readback.fetchval(
+                await observed.fetchval(
                     "SELECT body_digest FROM chronicler.location_native_memory_artifacts "
                     "WHERE artifact_generation=$1",
                     generation,

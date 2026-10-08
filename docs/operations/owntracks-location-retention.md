@@ -693,3 +693,14 @@ The terminal context carrier now adds nullable reduced-system/provenance digests
 The exact 4628 hosted Memory failure was the source-defined RuntimeError `Native answer source producer is unavailable` at the new late-answer fixture, not a SQL privilege/type failure. The continuation preserves configured eligible answers' private-producer requirement. Only an actual policy-first owning transaction that locks the canonical status/assigned target and observes definitive rejection or its immutable source-question disposition returns the existing None result without any copied-text read, business mutation or answer birth. No registry is removed or authority inferred from a caller actor. A routed eligible row without a source still refuses; a late source-floor replay preserves the original canonical sentinel. Current controls must reach those source predicates; successor hosted SQL remains separate from this correction.
 
 The exact 0ff2 hosted configured-Memory disposal case reached AmbiguousColumnError after the earlier late-answer correction. Its tool-loan query joined the input and lifetime on explicit columns, then used USING against their duplicate left-side loan/digest names. The successor qualifies the loan against the original tool input ID and digest, retaining the same lifetime, holder and owning role predicates. This source correction has scoped software evidence; genuine migrated execution remains a separate exact-head hosted requirement. Current return-admission work is still unfinished and is not credited by this repair.
+
+The dated `1aba03e02` hosted run reached the later mixed-mutation fixture after
+configured Memory disposal; the authenticated failure was the existing
+`PolicyUnavailableError` for a prepared native source generation. The owning
+fixture now exercises its unchanged legitimate mixed annotation and frozen
+body-chain assertions before its delegation helper prepares that generation.
+It separately attempts the same configured writer after preparation and
+requires refusal plus independent unchanged row, transition count and original
+body readbacks. The production prepared-output fence is unchanged. This is a
+positioned fixture correction; genuine current migrated execution remains
+required, and neither delivery nor all-holder closure follows from it.
