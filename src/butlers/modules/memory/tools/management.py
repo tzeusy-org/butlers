@@ -78,17 +78,20 @@ async def memory_reclassify(
 
     fact_id = uuid.UUID(memory_id)
     decay_rate = _storage.validate_permanence(permanence_target)
-    row = await pool.fetchrow(
-        """
-        UPDATE facts
-        SET permanence = $2, decay_rate = $3
-        WHERE id = $1 AND validity = 'active'
-        RETURNING id, permanence, decay_rate
-        """,
-        fact_id,
-        permanence_target,
-        decay_rate,
-    )
+    from butlers.chronicler.location_memory_copies import memory_mutation_writer
+
+    async with memory_mutation_writer(pool, "facts", fact_id) as writer:
+        row = await writer.fetchrow(
+            """
+            UPDATE facts
+            SET permanence = $2, decay_rate = $3
+            WHERE id = $1 AND validity = 'active'
+            RETURNING id, permanence, decay_rate
+            """,
+            fact_id,
+            permanence_target,
+            decay_rate,
+        )
     if row is None:
         raise ValueError(f"Active fact {fact_id} no longer exists; it was not reclassified")
 

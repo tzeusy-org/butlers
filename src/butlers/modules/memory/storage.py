@@ -2821,32 +2821,30 @@ async def _forget_plain(
     retracted/forgotten.
     """
     table = _memory_relation(memory_type, memory_schema)
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+    from butlers.chronicler.location_memory_mutations import memory_mutation_transaction
 
-            await fence_memory_mutation(
-                pool, conn, _TYPE_TABLE[memory_type], memory_id, memory_schema=memory_schema
+    async with memory_mutation_transaction(
+        pool, _TYPE_TABLE[memory_type], memory_id, memory_schema=memory_schema
+    ) as conn:
+        if memory_type == "fact":
+            result = await conn.execute(
+                f"UPDATE {table} SET validity = 'retracted' WHERE id = $1",
+                memory_id,
             )
-            if memory_type == "fact":
-                result = await conn.execute(
-                    f"UPDATE {table} SET validity = 'retracted' WHERE id = $1",
-                    memory_id,
-                )
-            elif memory_type == "episode":
-                result = await conn.execute(
-                    f"UPDATE {table} SET expires_at = now() WHERE id = $1",
-                    memory_id,
-                )
-            else:  # rule
-                result = await conn.execute(
-                    f"UPDATE {table} SET metadata = metadata || "
-                    "'{\"forgotten\": true}'::jsonb WHERE id = $1",
-                    memory_id,
-                )
-            found = result.endswith("1")
-            if found and memory_type in ("fact", "rule"):
-                await _cascade_catalog_disownment(conn, _TYPE_TABLE[memory_type], [memory_id])
+        elif memory_type == "episode":
+            result = await conn.execute(
+                f"UPDATE {table} SET expires_at = now() WHERE id = $1",
+                memory_id,
+            )
+        else:  # rule
+            result = await conn.execute(
+                f"UPDATE {table} SET metadata = metadata || "
+                "'{\"forgotten\": true}'::jsonb WHERE id = $1",
+                memory_id,
+            )
+        found = result.endswith("1")
+        if found and memory_type in ("fact", "rule"):
+            await _cascade_catalog_disownment(conn, _TYPE_TABLE[memory_type], [memory_id])
     return found
 
 
@@ -2873,67 +2871,65 @@ async def _forget_with_correction_provenance(
         provenance_patch["correction_reason"] = correction_reason
 
     table = _memory_relation(memory_type, memory_schema)
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+    from butlers.chronicler.location_memory_mutations import memory_mutation_transaction
 
-            await fence_memory_mutation(
-                pool, conn, _TYPE_TABLE[memory_type], memory_id, memory_schema=memory_schema
+    async with memory_mutation_transaction(
+        pool, _TYPE_TABLE[memory_type], memory_id, memory_schema=memory_schema
+    ) as conn:
+        if memory_type == "fact":
+            result = await conn.execute(
+                f"UPDATE {table} "
+                "SET validity = 'retracted', "
+                "    metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
+                "WHERE id = $1",
+                memory_id,
+                provenance_patch,
             )
-            if memory_type == "fact":
-                result = await conn.execute(
-                    f"UPDATE {table} "
-                    "SET validity = 'retracted', "
-                    "    metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
-                    "WHERE id = $1",
-                    memory_id,
-                    provenance_patch,
-                )
-            elif memory_type == "episode":
-                result = await conn.execute(
-                    f"UPDATE {table} "
-                    "SET expires_at = now(), "
-                    "    metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
-                    "WHERE id = $1",
-                    memory_id,
-                    provenance_patch,
-                )
-            else:  # rule
-                result = await conn.execute(
-                    f"UPDATE {table} "
-                    "SET metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
-                    "WHERE id = $1",
-                    memory_id,
-                    {"forgotten": True, **provenance_patch},
-                )
+        elif memory_type == "episode":
+            result = await conn.execute(
+                f"UPDATE {table} "
+                "SET expires_at = now(), "
+                "    metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
+                "WHERE id = $1",
+                memory_id,
+                provenance_patch,
+            )
+        else:  # rule
+            result = await conn.execute(
+                f"UPDATE {table} "
+                "SET metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
+                "WHERE id = $1",
+                memory_id,
+                {"forgotten": True, **provenance_patch},
+            )
 
-            found = result.endswith("1")
+        found = result.endswith("1")
 
-            if found:
-                # Insert correction-driven retraction event for audit linkage.
-                event_payload = {
-                    "memory_id": str(memory_id),
-                    "memory_type": memory_type,
-                    "correction_id": correction_id,
-                }
-                if correction_reason is not None:
-                    event_payload["correction_reason"] = correction_reason
+        if found:
+            # Insert correction-driven retraction event for audit linkage.
+            event_payload = {
+                "memory_id": str(memory_id),
+                "memory_type": memory_type,
+                "correction_id": correction_id,
+            }
+            if correction_reason is not None:
+                event_payload["correction_reason"] = correction_reason
 
-                await conn.execute(
-                    """
-                    INSERT INTO memory_events
-                        (event_type, actor, memory_type, memory_id, payload)
-                    VALUES
-                        ('correction_driven_retraction', 'correction_system',
-                         $1, $2, $3)
-                    """,
-                    memory_type,
-                    memory_id,
-                    event_payload,
-                )
+            await conn.execute(
+                """
+                INSERT INTO memory_events
+                    (event_type, actor, memory_type, memory_id, payload)
+                VALUES
+                    ('correction_driven_retraction', 'correction_system',
+                     $1, $2, $3)
+                """,
+                memory_type,
+                memory_id,
+                event_payload,
+            )
 
-                if memory_type in ("fact", "rule"):
-                    await _cascade_catalog_disownment(conn, _TYPE_TABLE[memory_type], [memory_id])
+            if memory_type in ("fact", "rule"):
+                await _cascade_catalog_disownment(conn, _TYPE_TABLE[memory_type], [memory_id])
 
     return found
 
@@ -3050,46 +3046,44 @@ async def retry_dead_letter_episode(
     if row["consolidation_status"] != "dead_letter":
         raise EpisodeNotDeadLetterError(row["consolidation_status"])
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+    from butlers.chronicler.location_memory_mutations import memory_mutation_transaction
 
-            await fence_memory_mutation(
-                pool, conn, "episodes", episode_id, memory_schema=memory_schema
-            )
-            updated = await conn.fetchrow(
-                f"""
-                UPDATE {table}
-                SET consolidation_status        = 'pending',
-                    consolidation_attempts      = 0,
-                    dead_letter_reason          = NULL,
-                    last_consolidation_error    = NULL,
-                    next_consolidation_retry_at = NULL,
-                    leased_until                = NULL,
-                    leased_by                   = NULL
-                WHERE id = $1 AND consolidation_status = 'dead_letter'
-                RETURNING id, butler, session_id, content, importance, reference_count,
-                          consolidated, consolidation_status, created_at,
-                          last_referenced_at, expires_at, metadata
-                """,
-                episode_id,
-            )
-            if updated is None:
-                # Raced with a concurrent transition between the pre-check and
-                # this guarded UPDATE — report the current terminal reality.
-                raise EpisodeNotDeadLetterError("dead_letter")
+    async with memory_mutation_transaction(
+        pool, "episodes", episode_id, memory_schema=memory_schema
+    ) as conn:
+        updated = await conn.fetchrow(
+            f"""
+            UPDATE {table}
+            SET consolidation_status        = 'pending',
+                consolidation_attempts      = 0,
+                dead_letter_reason          = NULL,
+                last_consolidation_error    = NULL,
+                next_consolidation_retry_at = NULL,
+                leased_until                = NULL,
+                leased_by                   = NULL
+            WHERE id = $1 AND consolidation_status = 'dead_letter'
+            RETURNING id, butler, session_id, content, importance, reference_count,
+                      consolidated, consolidation_status, created_at,
+                      last_referenced_at, expires_at, metadata
+            """,
+            episode_id,
+        )
+        if updated is None:
+            # Raced with a concurrent transition between the pre-check and
+            # this guarded UPDATE — report the current terminal reality.
+            raise EpisodeNotDeadLetterError("dead_letter")
 
-            await conn.execute(
-                """
-                INSERT INTO memory_events
-                    (event_type, actor, memory_type, memory_id, payload)
-                VALUES
-                    ('episode_consolidation_retry_requested', 'dashboard_api',
-                     'episode', $1, $2)
-                """,
-                episode_id,
-                {"outcome": "reset_to_pending"},
-            )
+        await conn.execute(
+            """
+            INSERT INTO memory_events
+                (event_type, actor, memory_type, memory_id, payload)
+            VALUES
+                ('episode_consolidation_retry_requested', 'dashboard_api',
+                 'episode', $1, $2)
+            """,
+            episode_id,
+            {"outcome": "reset_to_pending"},
+        )
 
     return dict(updated)
 
@@ -3128,18 +3122,18 @@ async def retire_rule(
         True if the rule was found and updated, False if not found.
     """
     table = _memory_relation("rule", memory_schema)
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+    from butlers.chronicler.location_memory_mutations import memory_mutation_transaction
 
-            await fence_memory_mutation(pool, conn, "rules", rule_id, memory_schema=memory_schema)
-            result = await conn.execute(
-                f"UPDATE {table} SET retired_at = COALESCE(retired_at, now()) WHERE id = $1",
-                rule_id,
-            )
-            found = result.endswith("1")
-            if found:
-                await _cascade_catalog_disownment(conn, "rules", [rule_id])
+    async with memory_mutation_transaction(
+        pool, "rules", rule_id, memory_schema=memory_schema
+    ) as conn:
+        result = await conn.execute(
+            f"UPDATE {table} SET retired_at = COALESCE(retired_at, now()) WHERE id = $1",
+            rule_id,
+        )
+        found = result.endswith("1")
+        if found:
+            await _cascade_catalog_disownment(conn, "rules", [rule_id])
     return found
 
 
@@ -3170,81 +3164,82 @@ async def endorse_rule(
         RuleNotEndorsableError: the rule is retired or forgotten.
     """
     table = _memory_relation("rule", memory_schema)
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+    from butlers.chronicler.location_memory_mutations import memory_mutation_transaction
 
-            await fence_memory_mutation(pool, conn, "rules", rule_id, memory_schema=memory_schema)
-            row = await conn.fetchrow(
-                f"SELECT id, content_authority, endorsed_at, endorsed_by, retired_at,"
-                f" COALESCE((metadata->>'forgotten')::boolean, false) AS forgotten,"
-                f" tenant_id, sensitivity"
-                f" FROM {table} WHERE id = $1 FOR UPDATE",
-                rule_id,
-            )
-            if row is None:
-                return None
-            receipt: dict[str, Any] = {
-                "rule_id": rule_id,
+    async with memory_mutation_transaction(
+        pool, "rules", rule_id, memory_schema=memory_schema
+    ) as conn:
+        row = await conn.fetchrow(
+            f"SELECT id, content_authority, endorsed_at, endorsed_by, retired_at,"
+            f" COALESCE((metadata->>'forgotten')::boolean, false) AS forgotten,"
+            f" tenant_id, sensitivity"
+            f" FROM {table} WHERE id = $1 FOR UPDATE",
+            rule_id,
+        )
+        if row is None:
+            return None
+        receipt: dict[str, Any] = {
+            "rule_id": rule_id,
+            "content_authority": row["content_authority"],
+            "endorsed_at": row["endorsed_at"],
+            "endorsed_by": row["endorsed_by"],
+            "changed": False,
+        }
+        if row["endorsed_at"] is not None or is_owner_class(row["content_authority"]):
+            return receipt
+        if row["retired_at"] is not None or row["forgotten"]:
+            raise RuleNotEndorsableError("retired or forgotten rules cannot be endorsed")
+
+        endorsed = await conn.fetchrow(
+            f"UPDATE {table} SET endorsed_at = now(), endorsed_by = $2"
+            f" WHERE id = $1 RETURNING endorsed_at",
+            rule_id,
+            endorsed_by,
+        )
+        receipt.update(endorsed_at=endorsed["endorsed_at"], endorsed_by=endorsed_by)
+        receipt["changed"] = True
+
+        await conn.execute(
+            """
+            INSERT INTO memory_events
+                (event_type, actor, tenant_id, memory_type, memory_id, payload)
+            VALUES ('rule_endorsed', 'owner', $1, 'rule', $2, $3)
+            """,
+            row["tenant_id"],
+            rule_id,
+            {
+                "endorsed_by": str(endorsed_by) if endorsed_by else None,
                 "content_authority": row["content_authority"],
-                "endorsed_at": row["endorsed_at"],
-                "endorsed_by": row["endorsed_by"],
-                "changed": False,
-            }
-            if row["endorsed_at"] is not None or is_owner_class(row["content_authority"]):
-                return receipt
-            if row["retired_at"] is not None or row["forgotten"]:
-                raise RuleNotEndorsableError("retired or forgotten rules cannot be endorsed")
+            },
+        )
 
-            endorsed = await conn.fetchrow(
-                f"UPDATE {table} SET endorsed_at = now(), endorsed_by = $2"
-                f" WHERE id = $1 RETURNING endorsed_at",
-                rule_id,
-                endorsed_by,
-            )
-            receipt.update(endorsed_at=endorsed["endorsed_at"], endorsed_by=endorsed_by)
-            receipt["changed"] = True
-
+        if await conn.fetchval(
+            "SELECT to_regclass('public.memory_catalog')"
+        ) is not None and not _is_catalog_write_excluded(row["sensitivity"]):
+            source_schema = memory_schema or await conn.fetchval("SELECT current_schema()")
             await conn.execute(
-                """
-                INSERT INTO memory_events
-                    (event_type, actor, tenant_id, memory_type, memory_id, payload)
-                VALUES ('rule_endorsed', 'owner', $1, 'rule', $2, $3)
-                """,
-                row["tenant_id"],
-                rule_id,
-                {
-                    "endorsed_by": str(endorsed_by) if endorsed_by else None,
-                    "content_authority": row["content_authority"],
-                },
-            )
-
-            if await conn.fetchval(
-                "SELECT to_regclass('public.memory_catalog')"
-            ) is not None and not _is_catalog_write_excluded(row["sensitivity"]):
-                source_schema = memory_schema or await conn.fetchval("SELECT current_schema()")
-                await conn.execute(
-                    f"""
-                    INSERT INTO public.memory_catalog (
-                        source_schema, source_table, source_id, source_butler, tenant_id,
-                        entity_id, summary, embedding, search_vector, memory_type,
-                        title, scope, confidence, retention_class, sensitivity, updated_at
-                    )
-                    SELECT $1::text, 'rules', r.id, r.source_butler, r.tenant_id, NULL, r.content,
-                           r.embedding, r.search_vector, 'rule', LEFT(r.content, 100),
-                           r.scope, r.confidence, r.retention_class, r.sensitivity, now()
-                    FROM {table} r WHERE r.id = $2
-                    ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
-                        summary = EXCLUDED.summary,
-                        embedding = EXCLUDED.embedding,
-                        search_vector = EXCLUDED.search_vector,
-                        confidence = EXCLUDED.confidence,
-                        invalid_at = NULL,
-                        updated_at = now()
-                    """,
-                    source_schema,
-                    rule_id,
+                f"""
+                INSERT INTO public.memory_catalog (
+                    source_schema, source_table, source_id, source_butler, tenant_id,
+                    entity_id, summary, embedding, search_vector, memory_type,
+                    title, scope, confidence, retention_class, sensitivity, updated_at
                 )
+                SELECT $1::text, 'rules', r.id, r.source_butler, r.tenant_id,
+                       NULL, r.content,
+                       r.embedding, r.search_vector, 'rule', LEFT(r.content, 100),
+                       r.scope, r.confidence, r.retention_class, r.sensitivity, now()
+                FROM {table} r WHERE r.id = $2
+                ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
+                    summary = EXCLUDED.summary,
+                    embedding = EXCLUDED.embedding,
+                    search_vector = EXCLUDED.search_vector,
+                    confidence = EXCLUDED.confidence,
+                    invalid_at = NULL,
+                    updated_at = now()
+                """,
+                source_schema,
+                rule_id,
+            )
     return receipt
 
 
@@ -3284,66 +3279,61 @@ async def mark_helpful(
     Returns:
         Updated rule as dict, or None if rule not found.
     """
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+    from butlers.chronicler.location_memory_mutations import memory_mutation_transaction
 
-            await fence_memory_mutation(pool, conn, "rules", rule_id)
-            # Increment counts and update timestamp in one atomic UPDATE
-            conditions = [
-                "id = $1",
-                "(metadata->>'forgotten')::boolean IS NOT TRUE",
-                "retired_at IS NULL",
-            ]
-            params: list[Any] = [rule_id]
-            if allowed_sensitivities is not None:
-                params.append(list(allowed_sensitivities))
-                conditions.append(
-                    f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)"
-                )
-            row = await conn.fetchrow(
-                "UPDATE rules "
-                "SET applied_count = applied_count + 1, "
-                "    success_count = success_count + 1, "
-                "    last_applied_at = now() "
-                f"WHERE {' AND '.join(conditions)} "
-                "RETURNING *",
-                *params,
-            )
-            if row is None:
-                return None
+    async with memory_mutation_transaction(pool, "rules", rule_id) as conn:
+        conditions = [
+            "id = $1",
+            "(metadata->>'forgotten')::boolean IS NOT TRUE",
+            "retired_at IS NULL",
+        ]
+        params: list[Any] = [rule_id]
+        if allowed_sensitivities is not None:
+            params.append(list(allowed_sensitivities))
+            conditions.append(f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)")
+        row = await conn.fetchrow(
+            "UPDATE rules "
+            "SET applied_count = applied_count + 1, "
+            "    success_count = success_count + 1, "
+            "    last_applied_at = now() "
+            f"WHERE {' AND '.join(conditions)} "
+            "RETURNING *",
+            *params,
+        )
+        if row is None:
+            return None
 
-            row = dict(row)
+        row = dict(row)
 
-            # Recalculate effectiveness
-            applied = row["applied_count"]
-            success = row["success_count"]
-            effectiveness = success / applied if applied > 0 else 0.0
+        # Recalculate effectiveness
+        applied = row["applied_count"]
+        success = row["success_count"]
+        effectiveness = success / applied if applied > 0 else 0.0
 
-            # Evaluate maturity promotion
-            current_maturity = row["maturity"]
-            new_maturity = current_maturity
+        # Evaluate maturity promotion
+        current_maturity = row["maturity"]
+        new_maturity = current_maturity
 
-            if current_maturity == "candidate":
-                if success >= 5 and effectiveness >= 0.6:
-                    new_maturity = "established"
-            elif current_maturity == "established":
-                age_days = (datetime.now(UTC) - row["created_at"]).days
-                if success >= 15 and effectiveness >= 0.8 and age_days >= 30:
-                    new_maturity = "proven"
+        if current_maturity == "candidate":
+            if success >= 5 and effectiveness >= 0.6:
+                new_maturity = "established"
+        elif current_maturity == "established":
+            age_days = (datetime.now(UTC) - row["created_at"]).days
+            if success >= 15 and effectiveness >= 0.8 and age_days >= 30:
+                new_maturity = "proven"
 
-            # Persist effectiveness score and (possibly promoted) maturity
-            await conn.execute(
-                "UPDATE rules SET effectiveness_score = $1, maturity = $2 WHERE id = $3",
-                effectiveness,
-                new_maturity,
-                rule_id,
-            )
+        # Persist effectiveness score and (possibly promoted) maturity
+        await conn.execute(
+            "UPDATE rules SET effectiveness_score = $1, maturity = $2 WHERE id = $3",
+            effectiveness,
+            new_maturity,
+            rule_id,
+        )
 
-            row["effectiveness_score"] = effectiveness
-            row["maturity"] = new_maturity
+        row["effectiveness_score"] = effectiveness
+        row["maturity"] = new_maturity
 
-            return row
+        return row
 
 
 # Rule feedback — mark_harmful
@@ -3386,81 +3376,74 @@ async def mark_harmful(
     Returns:
         Updated rule as dict, or None if rule not found.
     """
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+    from butlers.chronicler.location_memory_mutations import memory_mutation_transaction
 
-            await fence_memory_mutation(pool, conn, "rules", rule_id)
-            # Increment counts
-            conditions = [
-                "id = $1",
-                "(metadata->>'forgotten')::boolean IS NOT TRUE",
-                "retired_at IS NULL",
-            ]
-            params: list[Any] = [rule_id]
-            if allowed_sensitivities is not None:
-                params.append(list(allowed_sensitivities))
-                conditions.append(
-                    f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)"
-                )
-            row = await conn.fetchrow(
-                "UPDATE rules "
-                "SET applied_count = applied_count + 1, "
-                "    harmful_count = harmful_count + 1, "
-                "    last_applied_at = now() "
-                f"WHERE {' AND '.join(conditions)} "
-                "RETURNING *",
-                *params,
-            )
-            if row is None:
-                return None
+    async with memory_mutation_transaction(pool, "rules", rule_id) as conn:
+        conditions = [
+            "id = $1",
+            "(metadata->>'forgotten')::boolean IS NOT TRUE",
+            "retired_at IS NULL",
+        ]
+        params: list[Any] = [rule_id]
+        if allowed_sensitivities is not None:
+            params.append(list(allowed_sensitivities))
+            conditions.append(f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)")
+        row = await conn.fetchrow(
+            "UPDATE rules "
+            "SET applied_count = applied_count + 1, "
+            "    harmful_count = harmful_count + 1, "
+            "    last_applied_at = now() "
+            f"WHERE {' AND '.join(conditions)} "
+            "RETURNING *",
+            *params,
+        )
+        if row is None:
+            return None
 
-            row = dict(row)
+        row = dict(row)
 
-            # Recalculate effectiveness with 4x harmful penalty
-            success = row["success_count"]
-            harmful = row["harmful_count"]
-            effectiveness = success / (success + 4 * harmful + 0.01)
+        # Recalculate effectiveness with 4x harmful penalty
+        success = row["success_count"]
+        harmful = row["harmful_count"]
+        effectiveness = success / (success + 4 * harmful + 0.01)
 
-            # Evaluate demotion
-            current_maturity = row["maturity"]
-            new_maturity = current_maturity
+        # Evaluate demotion
+        current_maturity = row["maturity"]
+        new_maturity = current_maturity
 
-            if current_maturity == "established" and effectiveness < 0.6:
-                new_maturity = "candidate"
-            elif current_maturity == "proven" and effectiveness < 0.8:
-                new_maturity = "established"
+        if current_maturity == "established" and effectiveness < 0.6:
+            new_maturity = "candidate"
+        elif current_maturity == "proven" and effectiveness < 0.8:
+            new_maturity = "established"
 
-            # Update metadata with reason if provided
-            metadata = row.get("metadata", {})
-            if isinstance(metadata, str):
-                metadata = json.loads(metadata)
+        # Update metadata with reason if provided
+        metadata = row.get("metadata", {})
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
 
-            if reason:
-                reasons = metadata.get("harmful_reasons", [])
-                reasons.append(reason)
-                metadata["harmful_reasons"] = reasons
+        if reason:
+            reasons = metadata.get("harmful_reasons", [])
+            reasons.append(reason)
+            metadata["harmful_reasons"] = reasons
 
-            # Check for anti-pattern inversion trigger
-            if harmful >= 3 and effectiveness < 0.3:
-                metadata["needs_inversion"] = True
+        # Check for anti-pattern inversion trigger
+        if harmful >= 3 and effectiveness < 0.3:
+            metadata["needs_inversion"] = True
 
-            # Persist changes
-            await conn.execute(
-                "UPDATE rules "
-                "SET effectiveness_score = $1, maturity = $2, metadata = $3 "
-                "WHERE id = $4",
-                effectiveness,
-                new_maturity,
-                metadata,
-                rule_id,
-            )
+        # Persist changes
+        await conn.execute(
+            "UPDATE rules SET effectiveness_score = $1, maturity = $2, metadata = $3 WHERE id = $4",
+            effectiveness,
+            new_maturity,
+            metadata,
+            rule_id,
+        )
 
-            row["effectiveness_score"] = effectiveness
-            row["maturity"] = new_maturity
-            row["metadata"] = metadata
+        row["effectiveness_score"] = effectiveness
+        row["maturity"] = new_maturity
+        row["metadata"] = metadata
 
-            return row
+        return row
 
 
 # ---------------------------------------------------------------------------

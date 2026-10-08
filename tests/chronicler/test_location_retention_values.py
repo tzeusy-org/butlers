@@ -1471,6 +1471,7 @@ async def test_native_memory_writer_reserves_before_embedding_and_commits_exact_
 
     await _assert_native_episode_tool_reads()
     await _assert_native_artifact_invocation_lifetime()
+    await _assert_native_memory_mutation_versions()
 
 
 async def _assert_native_episode_tool_reads():
@@ -1512,6 +1513,12 @@ async def _assert_native_episode_tool_reads():
             self.trace.append("commit")
 
         async def fetchrow(self, sql, *args):
+            if "FROM chronicler.location_native_memory_artifacts" in sql:
+                return (
+                    self.artifact
+                    if self.artifact and "artifact_generation" in self.artifact
+                    else None
+                )
             if "SELECT consolidation_status" in sql:
                 return {"consolidation_status": "dead_letter"}
             if "SELECT validity" in sql:
@@ -2786,3 +2793,236 @@ async def test_unconfigured_reader_preserves_ordinary_rows_and_closed_diagnostic
     ):
         assert closed_failure(exc) == expected
         assert sentinel not in repr(closed_failure(exc))
+
+
+async def _assert_native_memory_mutation_versions():
+    """Actual native confirm writer and complete-chain consumers; SQL doubles only."""
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from uuid import uuid4
+
+    from butlers.chronicler import location_memory_copies as copies
+    from butlers.chronicler.location_memory_mutations import (
+        current_artifact_body_matches,
+        memory_mutation_transaction,
+    )
+    from butlers.chronicler.location_projection import _digest_value
+    from butlers.modules.memory.storage import confirm_memory
+
+    class Writer:
+        def __init__(self):
+            self.row = {
+                "id": uuid4(),
+                "content": "native source body",
+                "validity": "active",
+                "last_confirmed_at": None,
+                "reference_count": 0,
+                "metadata": {},
+            }
+            self.original = {
+                "artifact_generation": uuid4(),
+                "artifact_id": self.row["id"],
+                "memory_table": "facts",
+                "body_digest": content_digest({"memory_artifact": _digest_value(self.row)}),
+                "content_digest": copies.artifact_content_digest("facts", self.row),
+            }
+            self.transitions = []
+            self.trace = []
+            self.prepared = False
+            self.unknown = False
+            self.fail_insert = False
+            self.serial = 0
+            self.independent = False
+            self.schema = "chronicler_mem"
+            self.role = "configured_native_writer_double"
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            saved = deepcopy((self.row, self.transitions))
+            schema = self.schema
+            self.trace.append("begin")
+            try:
+                yield
+            except BaseException:
+                self.row, self.transitions = saved
+                self.trace.append("rollback")
+                raise
+            else:
+                self.trace.append("commit")
+            finally:
+                self.schema = schema  # SET LOCAL never changes the pool view.
+
+        async def fetchrow(self, sql, *args):
+            if "FROM public.memory_catalog" in sql:
+                return None
+            if "location_retention_policy" in sql:
+                self.trace.append("policy")
+                return {"version": 1}
+            if "location_native_memory_artifacts" in sql:
+                self.trace.append("birth_lock")
+                return None if self.independent else self.original
+            self.trace.append("canonical_lock")
+            return deepcopy(self.row)
+
+        async def fetch(self, sql, *args):
+            assert "location_native_memory_mutations" in sql
+            return deepcopy(self.transitions)
+
+        async def fetchval(self, sql, *args):
+            if "current_schema" in sql:
+                return self.schema
+            if "current_user" in sql:
+                return self.role
+            if "location_retention_plan_outputs" in sql:
+                return self.prepared
+            if "FROM public.memory_catalog" in sql:
+                return False
+            assert "after_digest" in sql and "mutation_generation=$1" in sql
+            self.trace.append("readback")
+            found = [t for t in self.transitions if t["mutation_generation"] == args[0]]
+            return None if self.unknown or not found else found[0]["after_digest"]
+
+        async def execute(self, sql, *args):
+            if sql.startswith("SET LOCAL search_path"):
+                self.schema = "chronicler_mem"
+                self.trace.append("fixed_memory_view")
+                return "SET"
+            if "pg_advisory_xact_lock" in sql:
+                return "SELECT 1"
+            if "INSERT INTO chronicler.location_native_memory_mutations" in sql:
+                self.trace.append("transition")
+                if self.fail_insert:
+                    raise RuntimeError("fixed transition-write failure double")
+                self.transitions.append(
+                    dict(
+                        zip(
+                            (
+                                "mutation_generation",
+                                "artifact_generation",
+                                "revision",
+                                "previous_generation",
+                                "before_digest",
+                                "after_digest",
+                                "lifecycle_only",
+                            ),
+                            args,
+                            strict=True,
+                        )
+                    )
+                )
+                return "INSERT 0 1"
+            assert "SET last_confirmed_at" in sql
+            self.trace.append("business")
+            self.serial += 1
+            self.row["last_confirmed_at"] = self.serial
+            return "UPDATE 1"
+
+    domain, writer = object(), Writer()
+    copies._receivers[domain] = (writer, "chronicler_mem", "configured_native_writer_double")
+    original = deepcopy(writer.original)
+    try:
+        assert await confirm_memory(writer, "fact", writer.row["id"])
+        assert writer.trace.index("policy") < writer.trace.index("canonical_lock")
+        assert writer.trace.index("business") < writer.trace.index("transition")
+        assert writer.trace.index("transition") < writer.trace.index("commit")
+        assert writer.trace.index("commit") < writer.trace.index("readback")
+        assert writer.original == original  # Original body and lineage remain frozen.
+        assert writer.transitions[0]["before_digest"] == original["content_digest"]
+        assert await current_artifact_body_matches(writer, writer.row, original)
+        first = deepcopy(writer.transitions[0])
+        assert await confirm_memory(writer, "fact", writer.row["id"])
+        assert writer.transitions[0] == first
+        assert writer.transitions[1]["revision"] == 2
+        assert writer.transitions[1]["previous_generation"] == first["mutation_generation"]
+        assert writer.transitions[1]["before_digest"] == first["after_digest"]
+        assert await current_artifact_body_matches(writer, writer.row, original)
+        healthy = deepcopy(writer.transitions)
+        for index, key, value in (
+            (1, "revision", 3),
+            (1, "previous_generation", uuid4()),
+            (1, "before_digest", b"z" * 32),
+            (1, "artifact_generation", uuid4()),
+            (1, "lifecycle_only", False),
+            (1, "after_digest", b"z" * 32),
+        ):
+            writer.transitions = deepcopy(healthy)
+            writer.transitions[index][key] = value
+            assert not await current_artifact_body_matches(writer, writer.row, original)
+        writer.transitions = deepcopy(healthy)
+        assert await current_artifact_body_matches(writer, writer.row, original)
+        writer.row["content"] = "unregistered changed body"
+        assert not await current_artifact_body_matches(writer, writer.row, original)
+        with pytest.raises(copies.PolicyUnavailableError, match="body witness differs"):
+            await confirm_memory(writer, "fact", writer.row["id"])
+        writer.row["content"] = "native source body"
+        legacy = {**original, "content_digest": None}
+        assert not await current_artifact_body_matches(writer, writer.row, legacy)
+        writer.fail_insert = True
+        before = deepcopy((writer.row, writer.transitions))
+        with pytest.raises(RuntimeError, match="transition-write"):
+            await confirm_memory(writer, "fact", writer.row["id"])
+        assert (writer.row, writer.transitions) == before
+        writer.fail_insert = False
+        writer.unknown = True
+        with pytest.raises(copies.PolicyUnavailableError, match="witness is unknown"):
+            await confirm_memory(writer, "fact", writer.row["id"])
+        assert writer.trace[-1] == "readback"
+        assert len(writer.transitions) == len(healthy) + 1  # Commit is not falsely rolled back.
+        writer.unknown = False
+        assert await current_artifact_body_matches(writer, writer.row, original)
+        writer.prepared = True
+        count = len(writer.transitions)
+        with pytest.raises(copies.PolicyUnavailableError, match="prepared"):
+            await confirm_memory(writer, "fact", writer.row["id"])
+        assert len(writer.transitions) == count
+        writer.prepared = False
+        async with memory_mutation_transaction(writer, "facts", writer.row["id"]) as actual:
+            assert actual is writer
+            writer.row["metadata"] = {"independent_annotation": "preserve this unrelated prose"}
+        assert writer.transitions[-1]["lifecycle_only"] is False
+        assert not await current_artifact_body_matches(writer, writer.row, original)
+        # A later closed lifecycle change cannot clear an earlier mixed edit.
+        assert await confirm_memory(writer, "fact", writer.row["id"])
+        assert writer.transitions[-1]["lifecycle_only"] is False
+        assert not await current_artifact_body_matches(writer, writer.row, original)
+        writer.independent = True
+        before = len(writer.transitions)
+        assert await confirm_memory(writer, "fact", writer.row["id"])
+        assert len(writer.transitions) == before  # No fabricated native ancestry.
+    finally:
+        copies._receivers.pop(domain)
+
+    from butlers.chronicler.location_copy_pools import _api_copy_pools
+    from butlers.chronicler.location_memory_mutations import _api_writers
+
+    api = Writer()
+    api.schema = "chronicler"
+    _api_copy_pools.add(api)
+    try:
+        with pytest.raises(copies.PolicyUnavailableError, match="not enrolled"):
+            await confirm_memory(api, "fact", api.row["id"], memory_schema="chronicler_mem")
+        assert "business" not in api.trace
+        # Private fixed enrollment fixture; this is no real-role/constructor proof.
+        _api_writers[api] = ("chronicler", "chronicler_mem", api.role)
+        assert await confirm_memory(api, "fact", api.row["id"], memory_schema="chronicler_mem")
+        assert api.schema == "chronicler" and len(api.transitions) == 1
+        assert api.trace.index("fixed_memory_view") < api.trace.index("policy")
+        assert api.trace.index("commit") < api.trace.index("readback")
+        assert await current_artifact_body_matches(api, api.row, api.original)
+        api.role = "changed_identity"
+        count = len(api.transitions)
+        with pytest.raises(copies.PolicyUnavailableError, match="identity differs"):
+            await confirm_memory(api, "fact", api.row["id"], memory_schema="chronicler_mem")
+        assert len(api.transitions) == count
+        api.role = "configured_native_writer_double"
+        with pytest.raises(copies.PolicyUnavailableError, match="schema differs"):
+            await confirm_memory(api, "fact", api.row["id"], memory_schema="another_schema")
+        assert len(api.transitions) == count
+    finally:
+        _api_writers.pop(api, None)
+        _api_copy_pools.discard(api)

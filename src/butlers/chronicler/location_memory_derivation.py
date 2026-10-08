@@ -83,9 +83,9 @@ async def _captured_bundle_parents(conn: Any, episodes, facts, rules):
     Every parent is retained, even when one selected row makes the bundle mixed.
     """
     from butlers.chronicler.location_memory_copies import (
-        artifact_body_matches,
         episode_body_digest,
     )
+    from butlers.chronicler.location_memory_mutations import current_artifact_body_matches
 
     parents = {}
     exclusive = True
@@ -110,7 +110,7 @@ async def _captured_bundle_parents(conn: Any, episodes, facts, rules):
                     "SELECT b.copy_generation,b.input_digest,"
                     "(b.lineage_known AND m.exclusive_input) AS lineage_known,"
                     "(b.exclusive_input AND m.exclusive_input) AS exclusive_input,"
-                    "a.body_digest,a.content_digest,a.memory_table "
+                    "a.body_digest,a.content_digest,a.memory_table,a.artifact_generation "
                     "FROM chronicler.location_native_memory_artifacts a "
                     "JOIN chronicler.location_native_memory_bundles m USING(input_generation) "
                     "JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
@@ -128,7 +128,7 @@ async def _captured_bundle_parents(conn: Any, episodes, facts, rules):
                     and (
                         episode_body_digest(actual) == witness["body_digest"]
                         if table == "episodes"
-                        else artifact_body_matches(actual, witness)
+                        else await current_artifact_body_matches(conn, actual, witness)
                     )
                 )
                 key = (witness["copy_generation"], witness["input_digest"])

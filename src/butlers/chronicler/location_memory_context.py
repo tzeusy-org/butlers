@@ -522,7 +522,9 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                 canonical = await conn.fetchrow(
                     f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", identifier
                 )
-                from butlers.chronicler.location_memory_copies import artifact_body_matches
+                from butlers.chronicler.location_memory_mutations import (
+                    current_artifact_body_matches,
+                )
 
                 if (
                     canonical is None
@@ -543,7 +545,16 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                 ):
                     already_disposed.add(artifact["artifact_generation"])
                     continue
-                if not artifact_body_matches(canonical, artifact) or await conn.fetchval(
+                from butlers.chronicler.location_memory_copies import artifact_body_matches
+
+                # Other receivers use only their own frozen local witness;
+                # this is never permission to query Chronicle's private chain.
+                body_matches = (
+                    await current_artifact_body_matches(conn, canonical, artifact)
+                    if runtime.name == "chronicler"
+                    else artifact_body_matches(canonical, artifact)
+                )
+                if not body_matches or await conn.fetchval(
                     f"SELECT EXISTS(SELECT 1 FROM {schema}.location_runtime_context_artifacts "
                     "WHERE memory_table=$1 AND artifact_id=$2 AND input_generation<>$3) "
                     "OR EXISTS(SELECT 1 FROM public.memory_catalog WHERE source_schema=$4 "

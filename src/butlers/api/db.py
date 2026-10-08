@@ -166,6 +166,16 @@ class DatabaseManager:
             from butlers.chronicler.location_copy_pools import register_api_copy_pool
 
             register_api_copy_pool(pool)
+            from butlers.chronicler.location_copy_pools import register_api_memory_writer
+
+            # Canonical TOML-derived schemas and this actual pool enroll only
+            # the existing API writer, never an ingress/runtime principal.
+            try:
+                await register_api_memory_writer(
+                    pool, local_schema, local_memory_schema or local_schema
+                )
+            except Exception:
+                logger.warning("Native API Memory writer registration unavailable")
         self._butler_schemas[butler_name] = local_schema
         self._butler_memory_schema_overrides[butler_name] = local_memory_schema
         if modules is not None:

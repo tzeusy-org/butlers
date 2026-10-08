@@ -430,3 +430,39 @@ The native processing-ended receipt attests only that Python processing scope,
 not runtime/session/catalog or persisted descendant disposal. Paired old
 secondary-error replacement RED and restored primary/cancellation/metadata
 success controls run in the same existing software species.
+
+
+The actual configured Memory writer now appends immutable digest-only body
+transitions for native facts/rules in the same policy-first business transaction.
+Each transition freezes its original artifact generation, contiguous revision,
+previous transition and exact before/after content digests. Original bodies and
+parent bundles remain frozen. Actual native reads, consolidation, catalog source
+checks and disposal verify the complete chain, including every mixed predecessor.
+Only fixed lifecycle effects retain exclusivity; freeform body/authority,
+endorsement and independent metadata edits retain their mixed history. That
+means this lifecycle verifier cannot close them; their lawful source-copy
+reduction/disposition and independent-content preservation remain mandatory.
+It is not a permanent hold substitute for implementing that terminal path. Legacy NULL
+content witnesses are never filled from the changed current row. Idempotent
+content does not create a version. The exact transition is read back from a
+separate acquisition after COMMIT before returning the business result; failure
+reports unknown rather than pretending rollback of an already committed write.
+
+The fixed DatabaseManager constructor can enroll its actual existing Chronicler
+API writer with the TOML-derived own Memory schema and frozen current role/domain.
+The transaction-local Memory view reverts on COMMIT/rollback. This enrollment
+creates no role, grant, receiving incarnation, source loan or runtime authority.
+Ordinary unconfigured pools retain their existing behavior. The existing real
+migrated Memory claim species now carries a separate configured-schema chain,
+immutability and rollback control with explicitly planted original lineage;
+it is locally UNRUN and does not prove remote ingress or runtime-role isolation.
+The fixed API constructor and all mutation/tool descendants still require their
+actual hosted/online witnesses; the body chain alone does not complete runtime
+holder disposal or whole erasure.
+
+At exact a3f8 normal CI all eleven official sanitized JUnit artifacts had zero
+failures/errors. The owning migrated-role contract passed in17.110s, including
+finite-lease rollback, raw DELETE, complete same-batch header/member readback and
+separate Chronicler reconciliation. Its remote frontier and accepted-source IDs
+are planted SQL-engine controls. Actual registered all-holder admission, managed
+browser invalidation and protected whole delivery remain distinct and UNMET.

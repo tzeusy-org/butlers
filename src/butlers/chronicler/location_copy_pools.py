@@ -44,3 +44,33 @@ def unregister_native_copy_pool(pool: Any) -> None:
     if isinstance(pool, asyncpg.Pool) and not pool.is_closing():
         return
     _copy_pools.discard(pool)
+
+
+# Fixed DatabaseManager enrollment is writer-only. It cannot enroll a runtime,
+# receiving invocation, source loan or remote consumer.
+_api_writers: dict[Any, tuple[str, str, str]] = {}
+
+
+async def register_api_memory_writer(
+    pool: Any, domain_schema: str | None, memory_schema: str | None
+):
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+
+    if not isinstance(pool, asyncpg.Pool):
+        return  # Unconfigured doubles establish no real writer authority.
+    if domain_schema != "chronicler" or memory_schema != "chronicler_mem" or pool.is_closing():
+        raise PolicyUnavailableError("Native API Memory configuration is unavailable")
+    from butlers.db import schema_search_path
+
+    schema_search_path(memory_schema)  # Exact constructor-owned identifier validation.
+    async with pool.acquire() as conn:
+        schema, role = (
+            await conn.fetchval("SELECT current_schema()"),
+            await conn.fetchval("SELECT current_user"),
+        )
+        if schema != domain_schema or not isinstance(role, str):
+            raise PolicyUnavailableError("Native API Memory writer identity differs")
+    for old in tuple(_api_writers):
+        if isinstance(old, asyncpg.Pool) and old.is_closing():
+            _api_writers.pop(old)
+    _api_writers[pool] = (domain_schema, memory_schema, role)

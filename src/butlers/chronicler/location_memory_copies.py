@@ -453,14 +453,14 @@ async def fence_memory_mutation(
     Ordinary unconfigured Memory keeps its established behavior. This grants
     no lineage to the mutation or terminal authority to its returned fields.
     """
-    owners = [cell for cell in _receivers.values() if cell[0] is pool]
-    if not owners:
+    from butlers.chronicler.location_memory_mutations import enter_mutation_owner
+
+    owner = await enter_mutation_owner(pool, conn, memory_schema)
+    if owner is None:
         return
-    if len(owners) != 1 or table not in {"episodes", "facts", "rules"}:
+    if table not in {"episodes", "facts", "rules"}:
         raise PolicyUnavailableError("Native mutation owning writer differs")
-    _, schema, role = owners[0]
-    if memory_schema is not None and memory_schema != schema:
-        raise PolicyUnavailableError("Native mutation owning schema differs")
+    schema, role = owner
     await _lock(conn, schema, role)  # Policy precedes the actual canonical row.
     await conn.fetchrow(f"SELECT id FROM {table} WHERE id=$1 FOR UPDATE", identifier)
     if table == "episodes":
@@ -490,13 +490,20 @@ async def memory_mutation_writer(
     pool: Any, table: str, identifier: UUID, *, memory_schema: str | None = None
 ):
     """Single-update helper retains unconfigured pool call compatibility."""
-    if not any(cell[0] is pool for cell in _receivers.values()):
+    from butlers.chronicler.location_copy_pools import _api_copy_pools
+    from butlers.chronicler.location_memory_mutations import (
+        memory_mutation_transaction,
+        mutation_owner,
+    )
+
+    if mutation_owner(pool) is None and pool not in _api_copy_pools:
         yield pool
         return
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await fence_memory_mutation(pool, conn, table, identifier, memory_schema=memory_schema)
-            yield conn
+
+    async with memory_mutation_transaction(
+        pool, table, identifier, memory_schema=memory_schema
+    ) as conn:
+        yield conn
 
 
 async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> list[Any]:
@@ -594,7 +601,7 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                         "SELECT DISTINCT b.output_kind,b.output_id,"
                         "(b.lineage_known AND m.exclusive_input) AS lineage_known,"
                         "(b.exclusive_input AND m.exclusive_input) AS exclusive_input,"
-                        "a.body_digest,a.content_digest,a.memory_table "
+                        "a.body_digest,a.content_digest,a.memory_table,a.artifact_generation "
                         "FROM chronicler.location_native_memory_artifacts a "
                         "JOIN chronicler.location_native_memory_bundles m USING(input_generation) "
                         "JOIN chronicler.location_native_dispatch_parents p "
@@ -609,12 +616,17 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                 if not parents:
                     mixed_inputs = True
                     continue
-                unchanged = selected_matches and all(
-                    parent["body_digest"] == episode_body_digest(canonical)
-                    if table == "episodes"
-                    else artifact_body_matches(canonical, parent)
-                    for parent in parents
+                from butlers.chronicler.location_memory_mutations import (
+                    current_artifact_body_matches,
                 )
+
+                unchanged = selected_matches
+                for parent in parents:
+                    unchanged &= (
+                        parent["body_digest"] == episode_body_digest(canonical)
+                        if table == "episodes"
+                        else await current_artifact_body_matches(conn, canonical, parent)
+                    )
                 if await conn.fetchval(
                     "SELECT EXISTS(SELECT 1 FROM chronicler.location_retention_plans p "
                     "JOIN chronicler.location_retention_plan_outputs o USING(decision_id) "

@@ -731,7 +731,9 @@ class CatalogCopyRuntime:
                     artifact["input_generation"],
                 ):
                     raise PolicyUnavailableError("Native catalog input has been fenced")
-                from butlers.chronicler.location_memory_copies import artifact_body_matches
+                from butlers.chronicler.location_memory_mutations import (
+                    current_artifact_body_matches,
+                )
 
                 # The catalog is a discovery projection, never proof that its
                 # canonical source is unchanged. Use the fixed owning writer.
@@ -741,7 +743,7 @@ class CatalogCopyRuntime:
                 canonical = await conn.fetchrow(
                     f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", artifact["artifact_id"]
                 )
-                if not artifact_body_matches(canonical, artifact):
+                if not await current_artifact_body_matches(conn, canonical, artifact):
                     raise PolicyUnavailableError("Native catalog canonical body changed")
                 if phase == "prepare":
                     loan = uuid4()
@@ -1407,7 +1409,8 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
     stored discovery body/vector/ref; it does not need a new DELETE grant.
     Mixed inputs, unrelated canonical versions and unclosed loan holders stay.
     """
-    from butlers.chronicler.location_memory_copies import _lock, _receivers, artifact_body_matches
+    from butlers.chronicler.location_memory_copies import _lock, _receivers
+    from butlers.chronicler.location_memory_mutations import current_artifact_body_matches
 
     configured = _receivers.get(domain)
     if configured is None:
@@ -1492,7 +1495,7 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
                 canonical = await conn.fetchrow(
                     f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", artifact["artifact_id"]
                 )
-                if not artifact_body_matches(canonical, artifact):
+                if not await current_artifact_body_matches(conn, canonical, artifact):
                     continue
                 if await conn.fetchval(
                     "SELECT EXISTS(SELECT 1 FROM memory_links WHERE source_id=$1 OR target_id=$1) "

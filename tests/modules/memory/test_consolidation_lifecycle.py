@@ -506,6 +506,7 @@ async def test_private_memory_claim_path_does_not_retry_failed_episodes(
         assert pending_after["consolidation_status"] == "consolidated"
         assert pending_after["consolidated"] is True
         assert dict(await _episode_lifecycle(pool, failed_due)) == failed_before
+        await _assert_native_memory_mutation_chain(pool, domain)
     finally:
         await module.on_shutdown()
 
@@ -1063,3 +1064,149 @@ async def test_replaced_claim_cannot_persist_artifacts_or_terminal_lifecycle(
         assert episode["consolidated"] is False
         assert episode["leased_by"] is not None
         assert episode["leased_until"] > datetime.now(UTC)
+
+
+async def _assert_native_memory_mutation_chain(pool, domain):
+    """Migrated SAME-writer evolution; planted lineage, not real ingress authority.
+
+    Reuses the actual configured native Memory startup and the two real schema
+    pools. It does not grant roles, copy DDL or claim these fixture births came
+    from a registered remote source. Runtime-role isolation remains the other
+    explicit owning species.
+    """
+    from butlers.chronicler.location_memory_copies import artifact_content_digest
+    from butlers.chronicler.location_memory_mutations import (
+        _api_writers,
+        current_artifact_body_matches,
+        memory_mutation_transaction,
+        register_api_memory_writer,
+    )
+    from butlers.chronicler.location_projection import _digest_value
+    from butlers.chronicler.location_retention import PolicyUnavailableError
+    from butlers.location_retention import content_digest
+    from butlers.modules.memory.storage import confirm_memory
+
+    artifact, generation, input_generation = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO facts(id,subject,predicate,content) VALUES($1,'native','location','bound body')",
+                artifact,
+            )
+            canonical = await conn.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
+            frozen = content_digest({"memory_artifact": _digest_value(dict(canonical))})
+            await conn.execute(
+                "INSERT INTO chronicler.location_native_dispatch_inputs "
+                "(input_generation,server_request,prompt_digest,parent_count,origin_kind) "
+                "VALUES($1,$2,$3,1,'native_memory')",
+                input_generation,
+                uuid.uuid4(),
+                b"p" * 32,
+            )
+            await conn.execute(
+                "INSERT INTO chronicler.location_native_memory_bundles "
+                "(input_generation,bundle_digest,exclusive_input) VALUES($1,$2,true)",
+                input_generation,
+                b"b" * 32,
+            )
+            await conn.execute(
+                "INSERT INTO chronicler.location_native_memory_artifacts "
+                "(artifact_generation,input_generation,memory_table,artifact_id,body_digest,content_digest) "
+                "VALUES($1,$2,'facts',$3,$4,$5)",
+                generation,
+                input_generation,
+                artifact,
+                frozen,
+                artifact_content_digest("facts", canonical),
+            )
+    assert await confirm_memory(pool, "fact", artifact)
+    async with pool.acquire() as readback:
+        original = await readback.fetchrow(
+            "SELECT * FROM chronicler.location_native_memory_artifacts WHERE artifact_generation=$1",
+            generation,
+        )
+        transitions = await readback.fetch(
+            "SELECT * FROM chronicler.location_native_memory_mutations "
+            "WHERE artifact_generation=$1 ORDER BY revision",
+            generation,
+        )
+        row = await readback.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
+        assert original["body_digest"] == frozen
+        assert len(transitions) == 1 and transitions[0]["revision"] == 1
+        assert transitions[0]["before_digest"] == original["content_digest"]
+        assert transitions[0]["after_digest"] == artifact_content_digest("facts", row)
+        assert await current_artifact_body_matches(readback, row, original)
+        with pytest.raises(asyncpg.RaiseError, match="history is permanent"):
+            async with readback.transaction():
+                await readback.execute(
+                    "UPDATE chronicler.location_native_memory_mutations "
+                    "SET after_digest=$2 WHERE artifact_generation=$1",
+                    generation,
+                    b"z" * 32,
+                )
+    # Actual write rollback cannot leak either the canonical change or a new
+    # immutable version; verify from another acquired connection afterward.
+    with pytest.raises(RuntimeError, match="planted business rollback"):
+        async with memory_mutation_transaction(pool, "facts", artifact) as writer:
+            await writer.execute("UPDATE facts SET validity='retracted' WHERE id=$1", artifact)
+            raise RuntimeError("planted business rollback")
+    assert await pool.fetchval("SELECT validity FROM facts WHERE id=$1", artifact) == "active"
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM chronicler.location_native_memory_mutations WHERE artifact_generation=$1",
+            generation,
+        )
+        == 1
+    )
+    # Fixed private API enrollment is a configured writer test, not a receiving
+    # incarnation or an accepted-source authority claim.
+    try:
+        with pytest.raises(PolicyUnavailableError, match="configuration is unavailable"):
+            await register_api_memory_writer(domain, "chronicler", "relationship")
+        assert domain not in _api_writers
+        await register_api_memory_writer(domain, "chronicler", "chronicler_mem")
+        role = await domain.fetchval("SELECT current_user")
+        assert await confirm_memory(domain, "fact", artifact, memory_schema="chronicler_mem")
+        assert await domain.fetchval("SELECT current_schema()") == "chronicler"
+        assert await domain.fetchval("SELECT current_user") == role
+        with pytest.raises(PolicyUnavailableError, match="schema differs"):
+            await confirm_memory(domain, "fact", artifact, memory_schema="relationship")
+        async with pool.acquire() as readback:
+            row = await readback.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
+            versions = await readback.fetch(
+                "SELECT * FROM chronicler.location_native_memory_mutations "
+                "WHERE artifact_generation=$1 ORDER BY revision",
+                generation,
+            )
+            assert len(versions) == 2
+            assert versions[1]["previous_generation"] == versions[0]["mutation_generation"]
+            assert versions[1]["before_digest"] == versions[0]["after_digest"]
+            assert await current_artifact_body_matches(readback, row, original)
+        # A real mixed annotation is recorded but never made source-exclusive.
+        async with memory_mutation_transaction(pool, "facts", artifact) as writer:
+            await writer.execute(
+                "UPDATE facts SET metadata=$2::jsonb WHERE id=$1",
+                artifact,
+                {"independent_annotation": "preserve this unrelated owner annotation"},
+            )
+        async with pool.acquire() as readback:
+            row = await readback.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
+            assert not await current_artifact_body_matches(readback, row, original)
+            assert (
+                await readback.fetchval(
+                    "SELECT lifecycle_only FROM chronicler.location_native_memory_mutations "
+                    "WHERE artifact_generation=$1 ORDER BY revision DESC LIMIT 1",
+                    generation,
+                )
+                is False
+            )
+            assert (
+                await readback.fetchval(
+                    "SELECT body_digest FROM chronicler.location_native_memory_artifacts "
+                    "WHERE artifact_generation=$1",
+                    generation,
+                )
+                == frozen
+            )
+    finally:
+        _api_writers.pop(domain, None)
