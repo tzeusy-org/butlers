@@ -2926,6 +2926,7 @@ async def _assert_native_memory_mutation_versions():
                 }
             ]
             self.declared_parent_count = 1
+            self.dependency_present = True
             self.intent_present = True
             self.input_unknown = False
             self.trace = []
@@ -2999,6 +3000,8 @@ async def _assert_native_memory_mutation_versions():
             return deepcopy(self.transitions)
 
         async def fetchval(self, sql, *args):
+            if "pg_catalog.pg_constraint" in sql:
+                return self.dependency_present
             if "location_runtime_tool_intents" in sql:
                 self.trace.append("intent_read")
                 return self.intent_present
@@ -3203,6 +3206,12 @@ async def _assert_native_memory_mutation_versions():
         assert native.original == frozen and tool.read_observed and not tool.mixed_inputs
         assert native.mutation_inputs[0]["tool_generation"] == tool.generation
         assert native.mutation_inputs[0]["artifact_generation"] == frozen["artifact_generation"]
+        native.dependency_present = False
+        fixed_before = deepcopy((native.row, native.transitions, native.input_births))
+        with pytest.raises(copies.PolicyUnavailableError, match="installed tool dependency"):
+            await confirm_memory(native, "fact", native.row["id"])
+        assert (native.row, native.transitions, native.input_births) == fixed_before
+        native.dependency_present = True
         native.intent_present = False
         before = deepcopy((native.row, native.transitions, native.input_births))
         with pytest.raises(copies.PolicyUnavailableError, match="reservation is unavailable"):

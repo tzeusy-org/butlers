@@ -11,6 +11,7 @@ unknown; this migration does not certify projection or delete any evidence.
 import sqlalchemy as sa
 
 from alembic import op
+from butlers.location_retention_schema import tool_input_dependency_sql
 
 revision = "core_264"
 down_revision = "core_265"
@@ -652,6 +653,8 @@ def upgrade() -> None:
               END IF;
             END $$;
         """)
+
+    op.execute(tool_input_dependency_sql(schema))
 
 
 def downgrade() -> None:

@@ -7,6 +7,7 @@ Revises: chronicler_026
 import sqlalchemy as sa
 
 from alembic import op
+from butlers.location_retention_schema import tool_input_dependency_sql
 
 revision = "chronicler_027"
 down_revision = "chronicler_026"
@@ -345,7 +346,7 @@ def upgrade() -> None:
         );
         CREATE TABLE location_native_memory_mutation_inputs (
           input_generation UUID PRIMARY KEY,
-          tool_generation UUID NOT NULL REFERENCES location_runtime_tool_intents(tool_generation),
+          tool_generation UUID NOT NULL,
           artifact_generation UUID NOT NULL REFERENCES location_native_memory_artifacts(artifact_generation),
           before_digest BYTEA NOT NULL CHECK(octet_length(before_digest)=32),
           after_digest BYTEA NOT NULL CHECK(octet_length(after_digest)=32),
@@ -539,6 +540,8 @@ def upgrade() -> None:
               ON {table} FOR EACH ROW
               EXECUTE FUNCTION {quoted_schema}.preserve_location_history();
         """)
+
+    op.execute(tool_input_dependency_sql(schema))
 
 
 def downgrade() -> None:

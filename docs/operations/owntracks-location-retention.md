@@ -510,3 +510,20 @@ fails to raise, while the corrected full two-parent companion passes. The same
 existing migrated SQL species retains its original one-parent positive and adds
 separate planted missing/digest/extra/full-two-parent controls. That new SQL is
 locally unrun and needs its exact current hosted witness.
+
+
+Standalone Chronicle storage can precede runtime-core installation. Its new
+mutation-input table therefore does not assume the runtime tool-intent parent
+already exists. The actual Chronicle and core264 migration phases use one fixed
+own-schema dependency installer: when both actual tables exist it adds or checks
+the exact validated nondeferrable FK, refusing a differing constraint. Existing
+history is not rewritten or cleared. Core264 downgrade retains its additive
+runtime tables and populated-history refusal; no dependency is removed by this
+correction. A native mutation producer checks that exact installed FK before
+reading its registered intent or creating an input. Runtime tools cannot provision
+it. Ordinary standalone views remain available without granting native input
+admission. The real migrated species positions a missing-FK refusal beside the
+trusted installer restoration and the existing actual writer positives; new SQL
+remains unrun locally until the exact hosted receipt. Exact f4cb official evidence
+was0FAIL20setupERROR, with source-bound UndefinedTableError for the absent parent;
+its extended Memory and engine nodes were unreached, not positive evidence.

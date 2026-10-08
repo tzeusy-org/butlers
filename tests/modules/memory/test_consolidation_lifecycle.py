@@ -1236,6 +1236,29 @@ async def _assert_native_memory_mutation_chain(pool, domain):
         tool = _ToolCopy(runtime, tool_generation, session_id, "memory_confirm", "memory")
         token = _current_tool_copy.set(tool)
         try:
+            # Trusted disposable DDL positions the missing-installed-dependency
+            # refusal; the runtime producer itself must not install/repair it.
+            from butlers.location_retention_schema import tool_input_dependency_sql
+
+            await domain.execute(
+                "ALTER TABLE location_native_memory_mutation_inputs DROP CONSTRAINT "
+                "location_native_memory_mutation_inputs_tool_generation_fkey"
+            )
+            with pytest.raises(PolicyUnavailableError, match="installed tool dependency"):
+                await confirm_memory(pool, "fact", artifact)
+            assert not await domain.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_memory_mutation_inputs "
+                "WHERE tool_generation=$1)",
+                tool_generation,
+            )
+            await domain.execute(tool_input_dependency_sql("chronicler"))
+            assert await domain.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint WHERE "
+                "conrelid='chronicler.location_native_memory_mutation_inputs'::pg_catalog.regclass "
+                "AND confrelid='chronicler.location_runtime_tool_intents'::pg_catalog.regclass "
+                "AND conname='location_native_memory_mutation_inputs_tool_generation_fkey' "
+                "AND contype='f' AND convalidated)"
+            )
             with pytest.raises(RuntimeError, match="planted input rollback"):
                 async with memory_mutation_transaction(pool, "facts", artifact) as writer:
                     await writer.execute(

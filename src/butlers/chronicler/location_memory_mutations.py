@@ -170,6 +170,16 @@ async def reserve_mutation_tool_input(
     if runtime.name != "chronicler" or tool.module != "memory" or tool.name not in _MUTATION_TOOLS:
         raise PolicyUnavailableError("Native mutation tool producer differs")
     if not await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c "
+        "WHERE c.conrelid='chronicler.location_native_memory_mutation_inputs'::pg_catalog.regclass "
+        "AND c.confrelid='chronicler.location_runtime_tool_intents'::pg_catalog.regclass "
+        "AND c.conname='location_native_memory_mutation_inputs_tool_generation_fkey' "
+        "AND c.contype='f' AND c.conkey=ARRAY[2]::SMALLINT[] AND c.confkey=ARRAY[1]::SMALLINT[] "
+        "AND c.convalidated AND NOT c.condeferrable AND NOT c.condeferred "
+        "AND c.confupdtype='a' AND c.confdeltype='a' AND c.confmatchtype='s')"
+    ):
+        raise PolicyUnavailableError("Native mutation installed tool dependency differs")
+    if not await conn.fetchval(
         "SELECT EXISTS(SELECT 1 FROM chronicler.location_runtime_tool_intents "
         "WHERE tool_generation=$1 AND receiving_session=$2 AND tool_name=$3 "
         "AND module_name='memory')",
