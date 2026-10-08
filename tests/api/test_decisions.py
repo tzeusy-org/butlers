@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -290,3 +291,125 @@ async def test_list_decisions_not_escalated_under_48h_threshold(app, tmp_path):
     row = resp.json()["data"][0]
     assert row["escalated"] is False
     assert row["escalated_blocked_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Recorded intents (bu-ckkpz.3) -- best-effort, never degrading the digest
+# ---------------------------------------------------------------------------
+
+
+def _intent_row(bead_id: str, **overrides):
+    from butlers.core.decision_desk import DecisionIntent
+
+    fields = {
+        "id": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        "bead_id": bead_id,
+        "option": "Keep paused",
+        "source": "telegram",
+        "actor": "owner@telegram",
+        "prompt_id": None,
+        "status": "failed",
+        "attempts": 1,
+        "failure_reason": "bead_not_open",
+        "last_error": None,
+        "created_at": _NOW,
+        "claimed_at": _NOW,
+        "finished_at": _NOW,
+        "updated_at": _NOW,
+        **overrides,
+    }
+    return DecisionIntent(**fields)
+
+
+class _SwitchboardOnly:
+    def pool(self, butler_name: str):
+        assert butler_name == "switchboard"
+        return object()
+
+
+async def test_list_decisions_attaches_recorded_intents(app, tmp_path):
+    from butlers.api.routers import decisions as decisions_router
+
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(export, [_decision("bu-a"), _decision("bu-b", created_days_ago=2)])
+    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+    latest = AsyncMock(return_value={"bu-a": _intent_row("bu-a")})
+
+    with patch.object(decisions_router, "latest_intents", latest):
+        resp = await _get_decisions(app, export)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "sources_degraded" not in body["meta"]
+    assert latest.await_args.args[1] == ["bu-a", "bu-b"]
+    first, second = body["data"]
+    assert first["intent"]["status"] == "failed"
+    assert first["intent"]["failure_reason"] == "bead_not_open"
+    assert first["intent"]["option"] == "Keep paused"
+    assert second["intent"] is None
+
+
+async def test_list_decisions_degrades_only_the_intent_field(app, tmp_path):
+    from butlers.api.routers import decisions as decisions_router
+
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(export, [_decision("bu-a")])
+    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+
+    with patch.object(
+        decisions_router, "latest_intents", AsyncMock(side_effect=OSError("db down"))
+    ):
+        resp = await _get_decisions(app, export)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["decisions_available"] is True
+    assert body["meta"]["sources_degraded"] == ["decision_intents"]
+    assert [row["id"] for row in body["data"]] == ["bu-a"]
+    assert body["data"][0]["intent"] is None
+
+
+@pytest.mark.parametrize(
+    ("reason", "kind", "status"),
+    [
+        ("decisions_unavailable", "unavailable", 503),
+        ("option_not_offered", "invalid", 422),
+        ("intent_conflict:applied", "conflict", 409),
+    ],
+)
+async def test_record_intent_maps_refusals_to_status_codes(app, reason, kind, status):
+    from butlers.api.routers import decisions as decisions_router
+    from butlers.core.decision_desk import DecisionIntentError
+
+    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+    refusal = AsyncMock(side_effect=DecisionIntentError(reason, kind=kind))
+    with (
+        patch.object(decisions_router, "record_decision_intent", refusal),
+        patch.object(decisions_router, "compute_decision_digest"),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/decisions/bu-a/intent", json={"option": "Hold"})
+
+    assert resp.status_code == status
+    assert resp.json()["detail"] == reason
+    assert refusal.await_args.kwargs["source"] == "dashboard"
+    assert refusal.await_args.kwargs["actor"] == "owner@dashboard"
+
+
+async def test_record_intent_without_switchboard_db_is_503(app):
+    from butlers.api.routers import decisions as decisions_router
+
+    class _NoSwitchboard:
+        def pool(self, butler_name: str):
+            raise KeyError(butler_name)
+
+    app.dependency_overrides[decisions_router._get_db_manager] = _NoSwitchboard
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/decisions/bu-a/intent", json={"option": "Hold"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "decision_intents_unavailable"

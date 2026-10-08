@@ -31,3 +31,15 @@ dashboardAuth:
 
 commonEnv:
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
+  # Decision Desk prompts send real Telegram messages to the owner; stays off
+  # until the owner consents to live prompts (bu-ckkpz.3).
+  BUTLERS_DECISION_ROUTING_ENABLED: "0"
+
+# Tracker bridge enabled by owner ruling 2026-10-08 (bu-sng0tu). Host, CIDR and
+# image repository come from scripts/k8s/site-helm-args.sh.
+beadsExport:
+  enabled: true
+  schedule: "*/5 * * * *"
+  credentialBwsKeys:
+    user: BUTLERS_RUNTIME_BEADS_DOLT_USER
+    password: BUTLERS_RUNTIME_BEADS_DOLT_PASSWORD

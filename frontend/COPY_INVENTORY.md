@@ -505,6 +505,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/DecisionsPage.tsx`
 
+- Choice:
 - Open Bead detail
 - Created:
 - Due:
@@ -517,6 +518,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - No decisions waiting.
 - Decision context for {}
 - Decision options
+- Recorded choices
 - Open decisions
 
 ## `frontend/src/pages/EducationPage.tsx`
@@ -4851,4 +4853,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3859*
+*Total strings: 3861*

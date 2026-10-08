@@ -23,7 +23,11 @@ import DecisionsPage from "@/pages/DecisionsPage";
 vi.mock("@/hooks/use-decisions", () => ({ useDecisions: vi.fn() }));
 
 import { useDecisions } from "@/hooks/use-decisions";
-import type { DecisionBeadSummary, DecisionsListResponse } from "@/api/index.ts";
+import type {
+  DecisionBeadSummary,
+  DecisionIntentSummary,
+  DecisionsListResponse,
+} from "@/api/index.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -262,6 +266,87 @@ describe("DecisionsPage -- structured decision context", () => {
     expect(html).toContain('href="/beads/bu-decision"');
     expect(html).toContain('href="/beads/bu-blocker"');
     expect(html).not.toContain("https://");
+  });
+});
+
+function intent(overrides: Partial<DecisionIntentSummary> = {}): DecisionIntentSummary {
+  return {
+    id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    bead_id: "bu-choice",
+    option: "Keep paused",
+    status: "pending",
+    source: "telegram",
+    created_at: "2026-10-08T12:00:00Z",
+    failure_reason: null,
+    last_error: null,
+    ...overrides,
+  };
+}
+
+describe("DecisionsPage -- recorded intent state (bu-ckkpz.3)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function renderWithIntent(recorded: DecisionIntentSummary | null): string {
+    mockDecisions([
+      decision({
+        id: "bu-choice",
+        options: ["Keep paused", "Resume safely"],
+        default: "Keep paused",
+        structured_details_available: true,
+        intent: recorded,
+      }),
+    ]);
+    return renderPage("/decisions?bead=bu-choice");
+  }
+
+  it("states a pending intent as recorded and awaiting the tracker", () => {
+    const html = renderWithIntent(intent());
+    expect(html).toContain('data-status="pending"');
+    expect(html).toContain("Recorded: Keep paused. Awaiting application to the tracker.");
+    expect(html).not.toContain("did not complete");
+    expect(html).not.toContain("Applied:");
+  });
+
+  it("names an incomplete last attempt on a pending intent", () => {
+    const html = renderWithIntent(intent({ last_error: "tracker_unavailable" }));
+    expect(html).toContain("The last attempt did not complete (tracker unavailable).");
+  });
+
+  it("reads an applying intent the same as pending", () => {
+    const html = renderWithIntent(intent({ status: "applying" }));
+    expect(html).toContain("Awaiting application to the tracker.");
+  });
+
+  it("states an applied intent as applied", () => {
+    const html = renderWithIntent(intent({ status: "applied" }));
+    expect(html).toContain("Applied: Keep paused.");
+  });
+
+  it("states a failed intent with its categorical reason", () => {
+    const html = renderWithIntent(intent({ status: "failed", failure_reason: "bead_not_open" }));
+    expect(html).toContain("Applying Keep paused failed: bead not open.");
+  });
+
+  it("renders a decision without an intent exactly as before, with no mutation control", () => {
+    const html = renderWithIntent(null);
+    expect(html).not.toContain('data-testid="decision-intent-status"');
+    const withIntent = renderWithIntent(intent());
+    for (const page of [html, withIntent]) {
+      expect(page).not.toMatch(/<button[^>]*>[^<]*(Choose|Apply|Retry|Approve|Close)/);
+    }
+  });
+
+  it("names unreadable intent state instead of implying no choice was recorded", () => {
+    mockDecisions([decision({ id: "bu-choice" })], {
+      decisions_available: true,
+      sources_degraded: ["decision_intents"],
+    });
+    const html = renderPage();
+    expect(html).toContain('data-testid="decisions-intents-degraded"');
+    expect(html).toContain("Recorded choices");
+    expect(html).toContain("DECISION REQUIRED (owner): connector identity");
   });
 });
 

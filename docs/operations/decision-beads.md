@@ -53,6 +53,15 @@ escalation cron. It classifies open, non-epic decision beads by the `decision` l
 digest runs the strict lint against the mounted `issues.export.jsonl`, sending a low-priority nudge
 when it finds unmigrated beads.
 
+The Decision Desk records the owner's answer (`bu-ckkpz.3`). A choice made through
+`POST /api/decisions/{bead_id}/intent` or a Telegram decision prompt (`jobs/decision_routing`, off
+unless `BUTLERS_DECISION_ROUTING_ENABLED=1`) is stored in `switchboard.decision_intents`. It must
+name one of the bead's current `metadata.decision.options` exactly. The beads CronJob then closes
+the bead with `bd`, with the reason `Decision: <option> (decision-intent <id>, via <source>)` and
+actor `butlers-decision-desk`. An intent whose bead was closed, relabelled or re-optioned first
+fails with a categorical reason and leaves the bead alone; see
+[Kubernetes deployment](kubernetes-deployment.md#beads-export).
+
 ## Related Pages
 
 - [Operations index](index.md)

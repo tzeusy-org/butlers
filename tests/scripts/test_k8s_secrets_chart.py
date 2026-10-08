@@ -16,13 +16,21 @@ _SCRIPT = _REPO_ROOT / "scripts" / "k8s" / "bootstrap-secrets.sh"
 _FIXTURE_VALUE = "fixture-secret-value-d41d8cd9"
 
 needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
+# What scripts/k8s/site-helm-args.sh supplies: dev enables the beads bridge, which needs them.
+_SITE = [
+    "--set", "beadsExport.imageRepository=registry.invalid/butlers-beads",
+    "--set", "beadsExport.doltHost=dolt.invalid",
+    "--set", "beadsExport.doltEgressCidr=192.0.2.1/32",
+]  # fmt: skip
+# Dev's beads bridge syncs its own tracker credential (bu-ckkpz.3).
+_BRIDGE_STORES = {"dev": 1, "prod": 0}
 
 
 def _render(env: str, *extra: str) -> list[dict]:
     result = subprocess.run(
         ["helm", "template", "butlers", str(_CHART), "-f", str(_CHART / "values.yaml"),
          "-f", str(_CHART / f"values.{env}.yaml"), "--set", "image.tag=t",
-         "--set", "frontendImage.tag=t", *extra],
+         "--set", "frontendImage.tag=t", *_SITE, *extra],
         capture_output=True, text=True, check=True,
     )  # fmt: skip
     return [d for d in yaml.safe_load_all(result.stdout) if d]
@@ -42,9 +50,9 @@ def test_source_bws_adds_exactly_the_two_listed_externalsecrets(env: str) -> Non
     local = _render(env, "--set", "localSecrets.source=local")
     bws = _render(env, "--set", "localSecrets.source=bws")
 
-    assert len(_external_secrets(local)) == 1
+    assert len(_external_secrets(local)) == 1 + _BRIDGE_STORES[env]
     stores = _external_secrets(bws)
-    assert len(stores) == 3
+    assert len(stores) == 3 + _BRIDGE_STORES[env]
     assert {d["metadata"]["name"] for d in bws if d["kind"] == "ExternalSecret"} == set(stores)
 
     probe = stores["butlers-runtime-probe-control"]["spec"]
@@ -91,7 +99,7 @@ def test_source_bws_leaves_every_workload_manifest_unchanged(env: str) -> None:
 @needs_helm
 def test_dev_reads_every_secret_from_bws_under_the_butlers_runtime_prefix() -> None:
     stores = _external_secrets(_render("dev"))
-    assert len(stores) == 3
+    assert len(stores) == 3 + _BRIDGE_STORES["dev"]
     remote_keys = [e["remoteRef"]["key"] for d in stores.values() for e in d["spec"]["data"]]
     assert remote_keys
     assert all(k.startswith("BUTLERS_RUNTIME_") for k in remote_keys), remote_keys

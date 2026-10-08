@@ -1,11 +1,13 @@
-"""Helm render and exporter-script guard for the beads export bridge (bu-viat6h.1)."""
+"""Helm render and script guard for the beads tracker bridge (bu-viat6h.1, bu-ckkpz.3)."""
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,10 +16,16 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHART = _REPO_ROOT / "deploy" / "helm" / "butlers"
 _SCRIPT = _CHART / "files" / "beads_export.sh"
+_CYCLE = _CHART / "files" / "beads_cycle.sh"
+# What scripts/k8s/site-helm-args.sh supplies on a real deploy.
+_SITE = [
+    "--set", "beadsExport.imageRepository=registry.invalid/butlers-beads",
+    "--set", "beadsExport.doltHost=dolt.invalid",
+    "--set", "beadsExport.doltEgressCidr=192.0.2.1/32",
+]  # fmt: skip
 _ENABLE = [
     "--set", "beadsExport.enabled=true",
-    "--set", "beadsExport.image=registry.invalid/bd:test",
-    "--set", "beadsExport.doltHost=dolt.invalid",
+    *_SITE,
     "--set", "beadsExport.credentialSecretName=beads-export-dolt",
 ]  # fmt: skip
 
@@ -47,7 +55,7 @@ def _pod_spec(doc: dict) -> dict:
 @needs_helm
 @pytest.mark.parametrize("env", ["dev", "prod"])
 def test_disabled_renders_no_beads_export_and_no_bead_mounts(env: str) -> None:
-    docs = _render(env)
+    docs = _render(env, "--set", "beadsExport.enabled=false")
     names = _by_kind_name(docs)
     assert ("CronJob", "butlers-beads-export") not in names
     assert ("PersistentVolumeClaim", "butlers-beads-export") not in names
@@ -59,8 +67,11 @@ def test_disabled_renders_no_beads_export_and_no_bead_mounts(env: str) -> None:
             for c in spec["containers"]
             for m in c.get("volumeMounts", [])
         )
-    # The explicit default is the same render as omitting the flag.
-    assert _render(env, "--set", "beadsExport.enabled=false") == docs
+    assert ("NetworkPolicy", "butlers-tracker-egress") not in names
+    assert ("ExternalSecret", "butlers-beads-dolt") not in names
+    if env == "prod":
+        # Prod's default is off: the explicit flag renders the same as omitting it.
+        assert _render(env) == docs
 
 
 @needs_helm
@@ -98,10 +109,76 @@ def test_enabled_keeps_dolt_credential_and_host_paths_out_of_runtime_pods(env: s
 
 
 @needs_helm
-def test_enabled_requires_image_host_and_secret() -> None:
+@pytest.mark.parametrize("missing", range(3))
+def test_enabled_requires_every_site_value(missing: int) -> None:
+    site = [
+        arg for i, pair in enumerate(zip(_SITE[::2], _SITE[1::2])) if i != missing for arg in pair
+    ]
     with pytest.raises(subprocess.CalledProcessError) as exc:
-        _render("dev", "--set", "beadsExport.enabled=true")
+        _render("dev", *site)
     assert "beadsExport." in exc.value.stderr
+
+
+@needs_helm
+def test_dev_enables_the_bridge_with_its_own_credential_secret() -> None:
+    names = _by_kind_name(_render("dev", *_SITE))
+    cron = names[("CronJob", "butlers-beads-export")]
+    assert cron["spec"]["schedule"] == "*/5 * * * *"
+    (container,) = _pod_spec(cron)["containers"]
+    assert container["image"] == "registry.invalid/butlers-beads:t"
+    env = {e["name"]: e for e in container["env"]}
+    assert env["APPLY_DECISIONS"]["value"] == "1"
+    assert env["BD_ACTOR"]["value"] == "butlers-decision-desk"
+    assert env["BEADS_DOLT_SERVER_HOST"]["value"] == "dolt.invalid"
+    for key in ("BEADS_DOLT_SERVER_USER", "BEADS_DOLT_PASSWORD"):
+        assert env[key]["valueFrom"]["secretKeyRef"]["name"] == "butlers-beads-dolt"
+    # The applier reaches the intent store with the runtime's existing credential.
+    assert env["POSTGRES_USER"]["valueFrom"]["secretKeyRef"]["name"] == "butlers-bws"
+
+    secret = names[("ExternalSecret", "butlers-beads-dolt")]
+    assert secret["spec"]["target"]["name"] == "butlers-beads-dolt"
+    assert {d["secretKey"]: d["remoteRef"]["key"] for d in secret["spec"]["data"]} == {
+        "BEADS_DOLT_SERVER_USER": "BUTLERS_RUNTIME_BEADS_DOLT_USER",
+        "BEADS_DOLT_PASSWORD": "BUTLERS_RUNTIME_BEADS_DOLT_PASSWORD",
+    }
+    bws = names[("ExternalSecret", "butlers-bws")]
+    assert "DOLT" not in yaml.safe_dump(bws)
+
+    # Routing stays off on dev until the owner consents to live prompts.
+    up_env = {
+        e["name"]: e.get("value")
+        for c in _pod_spec(names[("Deployment", "butlers-up")])["containers"]
+        for e in c.get("env", [])
+    }
+    assert up_env["BUTLERS_DECISION_ROUTING_ENABLED"] == "0"
+
+
+@needs_helm
+def test_tracker_egress_policy_covers_every_pod_but_the_bridge() -> None:
+    names = _by_kind_name(_render("dev", *_SITE))
+    policy = names[("NetworkPolicy", "butlers-tracker-egress")]["spec"]
+    assert policy["podSelector"] == {
+        "matchExpressions": [
+            {
+                "key": "app.kubernetes.io/component",
+                "operator": "NotIn",
+                "values": ["beads-export"],
+            }
+        ]
+    }
+    assert policy["policyTypes"] == ["Egress"]
+    assert policy["egress"] == [
+        {"to": [{"namespaceSelector": {}}]},
+        {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["192.0.2.1/32"]}}]},
+    ]
+    template = names[("CronJob", "butlers-beads-export")]["spec"]["jobTemplate"]["spec"]
+    assert template["template"]["metadata"]["labels"]["app.kubernetes.io/component"] == (
+        "beads-export"
+    )
+    for kind, name in names:
+        if kind == "Deployment":
+            labels = names[(kind, name)]["spec"]["template"]["metadata"]["labels"]
+            assert labels.get("app.kubernetes.io/component") != "beads-export", name
 
 
 def _run_exporter(tmp_path: Path, stub_body: str) -> subprocess.CompletedProcess[str]:
@@ -143,3 +220,50 @@ def test_exporter_failure_keeps_previous_file_byte_identical(
     assert result.returncode != 0
     assert final.read_bytes() == b'{"id":"old"}\n'
     assert [p.name for p in export_dir.iterdir()] == ["issues.export.jsonl"]
+
+
+def _run_cycle(tmp_path: Path, *, applier_rc: int, export_rc: int, **env: str):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "beads_decision_applier.py").write_text(
+        f"import os, sys\nopen(os.environ['TRACE'], 'a').write('apply\\n')\nsys.exit({applier_rc})\n"
+    )
+    (scripts / "beads_export.sh").write_text(
+        f'cat "$BEADS_DIR/metadata.json" >> "$TRACE"\necho export >> "$TRACE"\nexit {export_rc}\n'
+    )
+    trace = tmp_path / "trace"
+    result = subprocess.run(
+        ["sh", str(_CYCLE)],
+        env={**os.environ, "BEADS_SCRIPT_DIR": str(scripts), "BEADS_WORKSPACE": str(tmp_path / "ws"),
+             "TRACE": str(trace), "PYTHON": sys.executable, **env},
+        capture_output=True, text=True,
+    )  # fmt: skip
+    return result, trace.read_text().splitlines()
+
+
+def test_cycle_applies_then_exports_from_a_scratch_workspace(tmp_path: Path) -> None:
+    result, trace = _run_cycle(tmp_path, applier_rc=0, export_rc=0, BEADS_DOLT_DATABASE="beads")
+    assert result.returncode == 0, result.stderr
+    assert trace[0] == "apply"
+    assert json.loads(trace[1]) == {
+        "database": "dolt",
+        "backend": "dolt",
+        "dolt_mode": "server",
+        "dolt_database": "beads",
+    }
+    assert trace[2] == "export"
+
+
+@pytest.mark.parametrize(("applier_rc", "export_rc"), [(1, 0), (0, 1), (1, 1)])
+def test_cycle_always_exports_and_fails_if_either_step_failed(
+    tmp_path: Path, applier_rc: int, export_rc: int
+) -> None:
+    result, trace = _run_cycle(tmp_path, applier_rc=applier_rc, export_rc=export_rc)
+    assert result.returncode == 1
+    assert trace[0] == "apply" and trace[-1] == "export"
+
+
+def test_cycle_can_skip_the_applier(tmp_path: Path) -> None:
+    result, trace = _run_cycle(tmp_path, applier_rc=1, export_rc=0, APPLY_DECISIONS="0")
+    assert result.returncode == 0
+    assert "apply" not in trace
