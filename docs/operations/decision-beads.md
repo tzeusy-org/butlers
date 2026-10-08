@@ -49,9 +49,9 @@ reports clean. The strict mode (`--check-unlabeled-markers`) closes that gap.
 ## Consumer
 
 `src/butlers/jobs/decision_review.py` runs the weekly decision-review digest and the P1/deploy
-escalation cron. It classifies open, non-epic decision beads by the `decision` label alone, and its
-digest runs the strict lint against the mounted `issues.export.jsonl`, sending a low-priority nudge
-when it finds unmigrated beads.
+escalation cron (both no-ops when `BUTLERS_DECISION_REVIEW_ENABLED=0`). It classifies open,
+non-epic decision beads by the `decision` label alone, and its digest runs the strict lint against
+the mounted `issues.export.jsonl`, sending a low-priority nudge when it finds unmigrated beads.
 
 The Decision Desk records the owner's answer (`bu-ckkpz.3`). A choice made through
 `POST /api/decisions/{bead_id}/intent` or a Telegram decision prompt (`jobs/decision_routing`, off

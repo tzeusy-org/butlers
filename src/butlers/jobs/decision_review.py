@@ -98,6 +98,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -120,6 +121,10 @@ from butlers.credential_store import resolve_owner_telegram_recipient
 logger = logging.getLogger(__name__)
 
 _ACTOR = "decision_review"
+
+# Both jobs message the owner. A deployment can switch them off without
+# touching the export or the dashboard read path, which never run through here.
+REVIEW_ENABLED_ENV = "BUTLERS_DECISION_REVIEW_ENABLED"
 _ESCALATED_ACTION = "decision_escalation_notified"
 _ESCALATION_THRESHOLD = timedelta(hours=48)
 
@@ -729,6 +734,11 @@ async def _deliver(
     return "delivered"
 
 
+def review_enabled() -> bool:
+    """On unless the deployment sets :data:`REVIEW_ENABLED_ENV` to ``0``."""
+    return os.environ.get(REVIEW_ENABLED_ENV, "").strip() != "0"
+
+
 # ---------------------------------------------------------------------------
 # Schedule job entry points (registered under "switchboard" in
 # butlers.scheduled_jobs; wired via roster/switchboard/butler.toml)
@@ -755,6 +765,8 @@ async def run_decision_review_digest(
     to the same fixed reference the export mtime is stamped to.
     """
     del job_args
+    if not review_enabled():
+        return {"enabled": False}
     digest = compute_decision_digest(now=_now)
 
     if not digest.available:
@@ -854,6 +866,8 @@ async def run_decision_escalation_check(
     to the same fixed reference the export mtime is stamped to.
     """
     del job_args
+    if not review_enabled():
+        return {"enabled": False}
     digest = compute_decision_digest(now=_now)
 
     if not digest.available:

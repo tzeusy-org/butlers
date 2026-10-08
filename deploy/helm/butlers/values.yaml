@@ -275,6 +275,7 @@ beadsExport:
   schedule: "*/15 * * * *"
   # The bridge image (Dockerfile.beads, built by scripts/k8s/build-push.sh).
   # Renders as <imageRepository>:<image.tag>; `image` overrides the whole ref.
+  # Empty derives <registry>/butlers-beads from image.repository (<registry>/butlers-app).
   imageRepository: ""
   image: ""
   # Site-specific; scripts/k8s/site-helm-args.sh sets both from BEADS_DOLT_SERVER_HOST.

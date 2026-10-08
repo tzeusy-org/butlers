@@ -101,8 +101,20 @@ the BWS key names. `scripts/k8s/site-helm-args.sh` supplies the site-specific va
 than shipping without the egress boundary. `scripts/k8s/build-push.sh` builds
 `butlers-beads:<sha>` beside the app image.
 
-Decision prompts over Telegram (`jobs/decision_routing`) stay off until the owner consents:
-`commonEnv.BUTLERS_DECISION_ROUTING_ENABLED` is `"0"` on dev.
+Owner-facing Telegram jobs stay off on dev until the owner consents. The export, `/api/decisions`
+and the beads tiles do not depend on either flag.
+
+| Flag (`commonEnv`) | Jobs | Unset | Dev |
+| --- | --- | --- | --- |
+| `BUTLERS_DECISION_ROUTING_ENABLED` | `decision_routing` one-tap prompts | off (needs `"1"`) | `"0"` |
+| `BUTLERS_DECISION_REVIEW_ENABLED` | `decision_review_digest`, `decision_escalation_check` | on (`"0"` opts out) | `"0"` |
+
+`beadsExport.imageRepository` may be left empty when `image.repository` is
+`<registry>/butlers-app`; the chart derives `<registry>/butlers-beads`. An upgrade with
+`--reset-then-reuse-values` replays the release's previous user values, so pass
+`-f values.dev.yaml` again to pick up changed dev values, and supply `beadsExport.doltHost` and
+`beadsExport.doltEgressCidrs` (from `scripts/k8s/site-helm-args.sh`) on the first upgrade that
+enables the bridge.
 
 Storage: the export PVC is `ReadWriteOnce`, written by the CronJob and read by two runtime pods.
 That only works with single-node k3s scheduling. Before going multi-node, require co-scheduling of
