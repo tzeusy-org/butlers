@@ -1124,6 +1124,7 @@ jobs:
 
   coverage:
     timeout-minutes: 16
+    runs-on: ubuntu-latest
     # Visible reporting only; required check/guards/frontend never await it.
     # always() avoids skip propagation from the shards' intentionally skipped plan.
     needs: [check-unit, check-integration]

@@ -524,6 +524,8 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     """REQ-ci-shard-assurance-007: actual frontend fan-in and build binding controls."""
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
+    # A structurally passing topology is unusable if GitHub cannot admit a job.
+    assert all(job.get("runs-on") for job in jobs.values() if "steps" in job)
     preflight = jobs["check-preflight"]
     unit_jobs = [
         json.loads(json.dumps(jobs["check-unit"]).replace("${{ matrix.shard }}", str(index)))
