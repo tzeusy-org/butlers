@@ -108,6 +108,7 @@ def test_package_from_another_checkout_is_rejected(root_conftest: ModuleType) ->
 
 def test_stale_copy_inside_the_checkout_but_outside_src_is_rejected(
     root_conftest: ModuleType,
+    tmp_path: Path,
 ) -> None:
     """Being *somewhere* in the tree is not the invariant; being this tree's src/ is.
 
@@ -119,6 +120,64 @@ def test_stale_copy_inside_the_checkout_but_outside_src_is_rejected(
         [Path("/repo/.venv/lib/python3.12/site-packages/butlers/__init__.py")],
     )
     assert message is not None
+
+    # REQ-testing-048: an advisory real environment cannot keep another
+    # checkout's editable path after a cache hit. No mocked UV/import success.
+    import json
+    import shutil
+
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import ci_environment
+
+    source = tmp_path / "src/butlers"
+    source.mkdir(parents=True)
+    (source / "__init__.py").write_text("CACHE_CONTROL = True\n")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="butlers"\nversion="0.0.0"\nrequires-python=">=3.12"\n'
+        '[build-system]\nrequires=["hatchling"]\nbuild-backend="hatchling.build"\n'
+    )
+    (tmp_path / "scripts").mkdir()
+    shutil.copyfile(REPO_ROOT / "scripts/ci_environment.py", tmp_path / "scripts/ci_environment.py")
+    subprocess.run(
+        ["uv", "lock", "--offline"], cwd=tmp_path, check=True, capture_output=True, timeout=30
+    )
+    cold = ci_environment.prepare(tmp_path)
+    assert cold["cache"] == "miss" and cold["own_source"] == "passed"
+    warm = ci_environment.prepare(tmp_path)
+    assert warm["cache"] == "hit" and warm["compatibility"] == cold["compatibility"]
+    foreign = tmp_path / "other-src/butlers"
+    foreign.mkdir(parents=True)
+    (foreign / "__init__.py").write_text("FOREIGN = True\n")
+    pth = next((tmp_path / ".venv").glob("lib/python*/site-packages/*butlers.pth"))
+    pth.write_text(str(foreign.parent) + "\n")
+    with pytest.raises(subprocess.CalledProcessError):
+        ci_environment.validate_source(tmp_path)
+    assert ci_environment.prepare(tmp_path)["cache"] == "hit"
+    ci_environment.validate_source(tmp_path)
+    (tmp_path / ".venv/ci-environment.json").write_text("not-json")
+    assert ci_environment.prepare(tmp_path)["cache"] == "invalid"
+    receipt = json.loads((tmp_path / ".venv/ci-environment.json").read_text())
+    assert receipt == ci_environment.compatibility(tmp_path)
+    project = tmp_path / "pyproject.toml"
+    prior_project = project.read_text()
+    prior_lock = (tmp_path / "uv.lock").read_bytes()
+    project.write_text(prior_project.replace('version="0.0.0"', 'version="0.0.1"'))
+    with pytest.raises(subprocess.CalledProcessError):
+        ci_environment.prepare(tmp_path)
+    assert (tmp_path / "uv.lock").read_bytes() == prior_lock
+    project.write_text(prior_project)
+    assert ci_environment.prepare(tmp_path)["own_source"] == "passed"
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    for name in ("pyproject.toml", "uv.lock"):
+        shutil.copyfile(tmp_path / name, linked / name)
+    (linked / "scripts").mkdir()
+    shutil.copyfile(tmp_path / "scripts/ci_environment.py", linked / "scripts/ci_environment.py")
+    (linked / ".venv").symlink_to(tmp_path / ".venv", target_is_directory=True)
+    with pytest.raises(ValueError, match="owned real directory"):
+        ci_environment.prepare(linked)
+    assert (linked / ".venv").is_symlink()
+    ci_environment.validate_source(tmp_path)
 
 
 def test_absent_package_is_left_to_the_import_error(root_conftest: ModuleType) -> None:

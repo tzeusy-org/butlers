@@ -532,7 +532,8 @@ class BridgeSubprocessManager:
         binary_path = shutil.which(self._config.binary)
         if binary_path is None:
             raise RuntimeError(
-                "whatsapp-bridge binary not found. Build with EXTRAS=whatsapp or install manually."
+                "whatsapp-bridge binary not found. "
+                "Rebuild the application image or install manually."
             )
 
         cmd = [binary_path, *self._config.args]

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -201,6 +205,8 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
     assert "--ignore=tests/e2e" in command
     assert command[command.index("-n") + 1] == "3"
     assert command[command.index("--dist") + 1] == "loadfile"
+    # REQ-testing-046: final worker collection ordering reaches the loadfile scheduler.
+    assert "--no-loadscope-reorder" in command
     assert "--cov=src/butlers" in command
     assert f"--junitxml={evidence_dir / 'raw-junit.xml'}" in command
     assert captured["kwargs"]["env"]["COVERAGE_FILE"] == str(coverage_file)
@@ -286,6 +292,302 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
                     "coverage_json": (evidence / "coverage.json").exists(),
                 }
             )
+        # REQ-testing-049: same real corpus independently varies workers and tracer. These are
+        # conformance runs, not full-shard A/B measurements or a gain claim.
+        import ci_shard_comparison as comparison
+
+        snapshots = []
+        coverages = []
+        (tmp_path / "conftest.py").write_text(
+            "def pytest_xdist_auto_num_workers(config): return 3\n"
+        )
+        for workers in ("3", "4", "auto"):
+            for core in ("ctrace", "sysmon"):
+                real.setenv("CI_UNIT_WORKERS", workers)
+                real.setenv("CI_COVERAGE_CORE", core)
+                real.setenv("CI_COVERAGE", "1")
+                evidence = tmp_path / f"experiment-{workers}-{core}"
+                assert (
+                    shards.run_shard(
+                        lane="unit",
+                        shard=1,
+                        repo_root=tmp_path,
+                        coverage_file=evidence / "coverage.data",
+                        evidence_dir=evidence,
+                    )
+                    == 0
+                )
+                snapshot = json.loads((evidence / "shard-observation.json").read_text())
+                assert snapshot["complete"] is True
+                assert snapshot["selected_count"] == 1
+                assert snapshot["actual_tracers"] == [
+                    "SysMonitor" if core == "sysmon" else "CTracer"
+                ]
+                assert snapshot["worker_resources"]
+                assert snapshot["first_result_s"] is not None
+                assert snapshot["last_five_percent_s"] is not None
+                snapshots.append(snapshot)
+                coverages.append(json.loads((evidence / "coverage.json").read_text()))
+        assert all(comparison.compare(snapshots[0], value)["eligible"] for value in snapshots)
+        assert all(comparison.compare_coverage(coverages[0], value) for value in coverages)
+        # Complete flags cannot replace actual provenance/population/phase evidence.
+        assert comparison.compare({"complete": True}, {"complete": True})["eligible"] is False
+        for invalid in (
+            {},
+            {"nodes": {}},
+            {"source": None},
+            {"collected_at": "2000-01-01T00:00:00+00:00"},
+            {"selected_count": 0},
+            {"manifest_digest": None},
+            {"effective_workers": []},
+            {"actual_tracers": ["malformed"]},
+            {"nodes": {next(iter(snapshots[0]["nodes"])): {}}},
+        ):
+            value = {} if not invalid else {**snapshots[0], **invalid}
+            assert comparison.compare(value, value)["eligible"] is False
+        changed = copy.deepcopy(snapshots[0])
+        changed["nodes"][next(iter(changed["nodes"]))]["call"]["outcome"] = "failed"
+        assert comparison.compare(snapshots[0], changed)["eligible"] is False
+        changed = copy.deepcopy(coverages[0])
+        changed["files"]["src/butlers/planted.py"] = {}
+        assert not comparison.compare_coverage(coverages[0], changed)
+
+        for value in ("", "2", "5", " AUTO"):
+            real.setenv("CI_UNIT_WORKERS", value)
+            with pytest.raises(ValueError, match="CI_UNIT_WORKERS"):
+                shards.unit_workers("unit")
+        real.setenv("CI_UNIT_WORKERS", "3")
+        real.setenv("CI_COVERAGE_CORE", "unknown")
+        with pytest.raises(ValueError, match="CI_COVERAGE_CORE"):
+            shards.coverage_core()
+        real.setenv("CI_COVERAGE_CORE", "sysmon")
+        import coverage.collector
+
+        with real.context() as forced:
+            forced.setattr(coverage.collector.Collector, "tracer_name", lambda self: "CTracer")
+            with pytest.raises(ValueError, match="not installed"):
+                shards.coverage_core()
+        real.setenv("CI_COVERAGE_CORE", "ctrace")
+
+        # A real one-worker loadfile control isolates scheduler reorder from
+        # execution races. Default reorder visits the larger module first;
+        # disabling it executes the supplied duration order without splitting.
+        (tmp_path / "tests/test_a.py").write_text(
+            "def test_a(): pass\ndef test_b(): pass\ndef test_c(): pass\n"
+        )
+        (tmp_path / "tests/test_b.py").write_text("def test_example(): pass\n")
+        _write_manifest(tmp_path, "unit", 1, "tests/test_a.py\ntests/test_b.py\n")
+        context = shards.timing_context(
+            files=["tests/test_a.py", "tests/test_b.py"], repo_root=tmp_path, lane="unit", shard=1
+        )
+        selected = shards._collect_node_ids(
+            paths=["tests/test_a.py", "tests/test_b.py"],
+            marker=UNIT_MARKER,
+            ignore_e2e=True,
+            repo_root=tmp_path,
+        )
+        receipt = tmp_path / "input-timings.json"
+        record = {
+            **context,
+            "source": "a" * 40,
+            "run": "123",
+            "attempt": "1",
+            "complete": True,
+            "collected_at": datetime.now(UTC).isoformat(),
+            "file_durations_s": {"tests/test_a.py": 1, "tests/test_b.py": 10},
+            "selected_count": len(selected),
+            "selected_node_digest": shards._digest(sorted(shards._digest(n) for n in selected)),
+            "pytest_exit": 0,
+            "node_files": {shards._digest(n): n.split("::", 1)[0] for n in selected},
+            "nodes": {
+                shards._digest(n): {
+                    "setup": {"outcome": "passed", "duration_s": 0, "completed_s": 0},
+                    "call": {
+                        "outcome": "passed",
+                        "duration_s": 10 if "test_b.py" in n else 1 / 3,
+                        "completed_s": 1,
+                    },
+                    "teardown": {"outcome": "passed", "duration_s": 0, "completed_s": 2},
+                }
+                for n in selected
+            },
+        }
+        receipt.write_text(json.dumps(record))
+        files, status = shards.duration_order(
+            ["tests/test_a.py", "tests/test_b.py"],
+            context=context,
+            receipt=receipt,
+            repo_root=tmp_path,
+        )
+        assert status == "compatible" and files == ["tests/test_b.py", "tests/test_a.py"]
+        for mutation in (
+            {"complete": False},
+            {"selected_count": 0},
+            {"lane": "integration"},
+            {"collected_at": "2000-01-01T00:00:00+00:00"},
+            {"nodes": {}},
+            {"pytest_exit": 1},
+            {"source": None},
+            {"file_durations_s": {"tests/test_a.py": float("nan"), "tests/test_b.py": 10}},
+            {"file_durations_s": {"tests/test_a.py": -1, "tests/test_b.py": 10}},
+        ):
+            receipt.write_text(json.dumps({**record, **mutation}))
+            assert shards.duration_order(
+                ["tests/test_a.py", "tests/test_b.py"],
+                context=context,
+                receipt=receipt,
+                repo_root=tmp_path,
+            ) == (["tests/test_a.py", "tests/test_b.py"], "unknown:invalid")
+        for disable in (False, True):
+            output = tmp_path / f"scheduler-{disable}.xml"
+            args = [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-n",
+                "1",
+                "--dist",
+                "loadfile",
+                f"--junitxml={output}",
+            ]
+            if disable:
+                args += ["--no-loadscope-reorder"]
+            result = subprocess_run(
+                args + files, cwd=tmp_path, env=os.environ.copy(), capture_output=True, timeout=60
+            )
+            assert result.returncode == 0
+            cases = ET.parse(output).getroot().findall(".//testcase")
+            assert len(cases) == 4
+            assert cases[0].attrib["classname"].endswith("test_b" if disable else "test_a")
+
+        # pytest 9.1's node-scoped conftest registration loses a package's
+        # fixtures when explicit argv leaves and re-enters that package.
+        # Preserve the same fixture, files, parameters and marker selection:
+        # lexical collection must restore lookup BEFORE the final worker hook
+        # applies the interleaved advisory execution schedule.
+        package = tmp_path / "tests/fixture_pkg"
+        package.mkdir()
+        (tmp_path / "tests/__init__.py").touch()
+        (package / "__init__.py").touch()
+        (package / "conftest.py").write_text(
+            "import pytest\n@pytest.fixture\ndef widget(): return 7\n"
+        )
+        body = (
+            "import pytest\npytestmark = pytest.mark.unit\n"
+            "@pytest.mark.parametrize('part', ['one', 'two'])\n"
+            "def test_widget(widget, part): assert widget == 7\n"
+            "@pytest.mark.integration\ndef test_not_selected(): assert False\n"
+        )
+        (package / "test_a.py").write_text(body)
+        (package / "test_b.py").write_text(body)
+        (tmp_path / "tests/test_top.py").write_text("def test_top(): pass\n")
+        interleaved = [
+            "tests/fixture_pkg/test_a.py",
+            "tests/test_top.py",
+            "tests/fixture_pkg/test_b.py",
+        ]
+        _write_manifest(tmp_path, "unit", 1, "\n".join(sorted(interleaved)) + "\n")
+        old_xml = tmp_path / "interleaved-old.xml"
+        old = subprocess_run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-n",
+                "0",
+                "-m",
+                UNIT_MARKER,
+                "--import-mode=importlib",
+                f"--junitxml={old_xml}",
+                *interleaved,
+            ],
+            cwd=tmp_path,
+            env=os.environ.copy(),
+            capture_output=True,
+            timeout=60,
+        )
+        old_cases = ET.parse(old_xml).getroot().findall(".//testcase")
+        assert old.returncode == 1
+        assert sum(case.find("error") is not None for case in old_cases) == 2
+        assert b"fixture 'widget' not found" in old.stdout
+        assert sum(case.find("error") is None for case in old_cases) == 3
+
+        real.setattr(shards, "duration_order", lambda files, **kwargs: (interleaved, "compatible"))
+        real.setenv("CI_COVERAGE", "0")
+        real.setenv("CI_SHARD_TIMINGS", str(receipt))
+        for workers in ("1", "3"):
+            # Keep production's supported worker choices; one worker is solely
+            # an execution-order discriminator for this miniature corpus.
+            real.setattr(shards, "unit_workers", lambda lane, value=workers: value)
+            evidence = tmp_path / f"fixture-order-{workers}"
+            assert (
+                shards.run_shard(
+                    lane="unit",
+                    shard=1,
+                    repo_root=tmp_path,
+                    coverage_file=None,
+                    evidence_dir=evidence,
+                )
+                == 0
+            )
+            snapshot = json.loads((evidence / "shard-observation.json").read_text())
+            assert snapshot["complete"] is True
+            assert snapshot["selected_count"] == 5
+            assert snapshot["collection_order"] == "lexical"
+            assert snapshot["files"] == interleaved
+            assert snapshot["ordering"] == "compatible"
+            assert snapshot["effective_workers"] == [f"gw{i}" for i in range(int(workers))]
+            cases = ET.parse(evidence / "raw-junit.xml").getroot().findall(".//testcase")
+            assert len(cases) == 5
+            assert all(case.find("error") is None for case in cases)
+            if workers == "1":
+                assert [case.attrib["classname"] for case in cases] == [
+                    "tests.fixture_pkg.test_a",
+                    "tests.fixture_pkg.test_a",
+                    "tests.test_top",
+                    "tests.fixture_pkg.test_b",
+                    "tests.fixture_pkg.test_b",
+                ]
+                assert [case.attrib["name"] for case in cases] == [
+                    "test_widget[one]",
+                    "test_widget[two]",
+                    "test_top",
+                    "test_widget[one]",
+                    "test_widget[two]",
+                ]
+
+        # The worker hook refuses a schedule that cannot account for the
+        # unchanged collection, rather than discarding unexpected items.
+        for bad_files in (interleaved[:-1], interleaved + [interleaved[0]], "not-a-list"):
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(Path(shards.__file__).parent),
+                "CI_SHARD_CONTEXT": json.dumps({"files": bad_files}),
+            }
+            result = subprocess_run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "-n",
+                    "0",
+                    "-m",
+                    UNIT_MARKER,
+                    "-p",
+                    "ci_shard_observer",
+                    *sorted(interleaved),
+                ],
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                timeout=60,
+            )
+            assert result.returncode == 4
+            assert b"CI shard file schedule" in result.stderr
+
         (tmp_path / "coverage-mode-controls.json").write_text(json.dumps(receipts, indent=2))
         print(f"coverage mode receipt: {tmp_path / 'coverage-mode-controls.json'}")
 

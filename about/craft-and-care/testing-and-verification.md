@@ -160,3 +160,16 @@ Read `AGENTS.md` before broad verification in these areas:
 
 Do not mislabel a known baseline flake as a product regression without checking
 the repo notes first.
+
+## CI fixed-overhead observations
+
+The unchanged ten-shard runner records private hashed selected identities and
+real phase/worker/tracer observations. Advisory duration ordering never changes
+membership; unavailable or incompatible timings fall back lexically with
+UNKNOWN. Environment caches always run frozen editable repair and verify the
+current checkout's real venv/import. Experimental unit workers and coverage
+cores preserve ordinary defaults until complete comparable evidence selects a
+change. See [CI shard overhead](../../docs/operations/ci-shard-overhead.md) for
+exact receipt meanings, twelve-job service retirement, CPU dependencies and
+rollback. These mechanisms do not establish the staged five-minute goal or
+replace the terminal hosted gate, original hard targets or ten-run observations.

@@ -599,7 +599,7 @@ docker builder prune --keep-storage=20g -f 2>/dev/null || true
 
 # ── Build shared app image (used by all services) ────────────────────
 # All services reference butlers-app:${BUTLERS_APP_TAG:-latest} — includes
-# Go whatsapp-bridge binary and whatsapp extra (just qrcode). One image
+# Go whatsapp-bridge binary and the frozen CPU dependency set. One image
 # for everything.
 #
 # Override BUTLERS_APP_TAG to pin to a specific build (e.g. a git SHA):

@@ -49,20 +49,16 @@ RUN if echo "$EXTRAS" | grep -q "live-listener"; then \
 # 1. Dependency manifests (changes less often than source)
 COPY pyproject.toml uv.lock ./
 
-# 2. Install production dependencies only (always include whatsapp extra — just
-#    qrcode). Keeping src/ out of this layer means a source-only commit reuses
-#    the multi-GB dependency layer instead of rebuilding, pushing and pulling it.
-#    UV_TORCH_BACKEND=cpu: use CPU-only PyTorch wheels — avoids pulling
-#    NVIDIA CUDA packages that can't install in slim containers.
-ENV UV_TORCH_BACKEND=cpu
+# 2. Frozen production dependencies use the explicit CPU source in pyproject.
+#    Keep source out of this layer so source-only edits reuse installed wheels.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra whatsapp \
+    uv sync --frozen --no-dev --no-install-project \
       ${EXTRAS:+--extra "$EXTRAS"}
 
 # 3. Source code, then install the local package itself (fast).
 COPY src/ src/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra whatsapp ${EXTRAS:+--extra "$EXTRAS"}
+    uv sync --frozen --no-dev ${EXTRAS:+--extra "$EXTRAS"}
 
 # 4. Supporting files (alembic, scripts — change rarely)
 COPY alembic/alembic.ini alembic.ini
