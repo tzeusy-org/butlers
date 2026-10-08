@@ -37,7 +37,23 @@ def upgrade() -> None:
               CHECK (receipt_sha256 IS NULL OR receipt_sha256 ~ '^[a-f0-9]{64}$');
           END IF;
         END $$;
-        CREATE TABLE IF NOT EXISTS public.model_served_usage (
+    """)
+    # A managed downgrade/re-upgrade may run under the bootstrap identity,
+    # while the established attempt table stays owned by the normal migration
+    # identity. Create its evidence child as that same actual owner so its
+    # existing per-creator default ACLs apply; do not introduce a grant profile
+    # or leave ordinary writers unable to see the recreated table.
+    op.execute("""
+        DO $$
+        DECLARE
+          calling_role TEXT := current_user;
+          parent_owner TEXT;
+        BEGIN
+          SELECT pg_catalog.pg_get_userbyid(relowner) INTO STRICT parent_owner
+            FROM pg_catalog.pg_class
+            WHERE oid='public.model_dispatch_attempts'::regclass;
+          EXECUTE pg_catalog.format('SET LOCAL ROLE %I', parent_owner);
+          CREATE TABLE IF NOT EXISTS public.model_served_usage (
           attempt_id BIGINT NOT NULL REFERENCES public.model_dispatch_attempts(id)
             ON DELETE CASCADE,
           execution_index SMALLINT NOT NULL CHECK(execution_index BETWEEN 0 AND 7),
@@ -61,7 +77,9 @@ def upgrade() -> None:
           recorded_at TIMESTAMPTZ NOT NULL,
           PRIMARY KEY(attempt_id,execution_index,model_ordinal),
           UNIQUE(attempt_id,execution_index,model_id)
-        );
+          );
+          EXECUTE pg_catalog.format('SET LOCAL ROLE %I', calling_role);
+        END $$;
     """)
 
 

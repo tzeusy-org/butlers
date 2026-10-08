@@ -1344,6 +1344,19 @@ def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
         row["current_equals_session_user"] and row["schema_usage"] and row["effective_select"]
         for row in serving_catalog["fresh"].values()
     ), f"Fresh ordinary-login effective-privilege positives: {serving_catalog!r}"
+    assert all(
+        row["owner_equals_parent"]
+        and row["owner_equals_current_user"]
+        and row["current_is_owner_member"]
+        and row["current_inherits_owner"]
+        and row["owner_defaults_present"]
+        and row["visible_columns_complete"]
+        and all(
+            row[f"effective_{privilege}"] for privilege in ("select", "insert", "update", "delete")
+        )
+        for path in serving_catalog.values()
+        for row in path.values()
+    ), f"Fresh and managed ordinary-login owner/default-ACL/DML positives: {serving_catalog!r}"
 
     round_trip_tables = _get_table_columns_sql(db_url)
     fresh_tables = _get_table_columns_sql(fresh_db_url)

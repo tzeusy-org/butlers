@@ -30,6 +30,7 @@ tests — against a real, fully-migrated Postgres instance (testcontainers):
 from __future__ import annotations
 
 import shutil
+import sys
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -39,6 +40,7 @@ import pytest
 
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity, record_token_usage, resolve_model
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -56,7 +58,9 @@ def migrated_db_url(postgres_container) -> str:
 
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
     # Historical partitions so an out-of-band insert never hits "no partition found".
     await p.execute("""
         DO $$
@@ -104,6 +108,7 @@ async def test_seeded_api_catalog_rows_win_cheap_and_specialty_tiers(pool: async
 
 async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
     pool: asyncpg.Pool,
+    migrated_db_url: str,
 ) -> None:
     """DiscretionDispatcher.call(identity=...) round-trips through a real INSERT."""
     dispatcher = DiscretionDispatcher(pool=pool)
@@ -120,6 +125,48 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
         ),
         last_process_info=None,
     )
+
+    # Preserve a causal control for the old fixture: it omitted the production
+    # JSONB codec, although serving/resolution evidence is a dict. Capture only
+    # the first fixed exception category/SQLSTATE, never its message or binds.
+    failures = []
+
+    def capture_first_recorder_failure(*_args, **_kwargs):
+        exc = sys.exc_info()[1]
+        if not failures:
+            failures.append(
+                {
+                    "argument_codec_refusal": isinstance(exc, asyncpg.DataError),
+                    "sqlstate_is_data_exception": getattr(exc, "sqlstate", None) == "22000",
+                }
+            )
+
+    unconfigured = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
+    try:
+        old_fixture_dispatcher = DiscretionDispatcher(pool=unconfigured)
+        with (
+            patch.object(
+                old_fixture_dispatcher, "_get_or_create_adapter", return_value=fake_adapter
+            ),
+            patch.object(
+                old_fixture_dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)
+            ),
+            patch(
+                "butlers.core.dispatch_outcomes.logger.warning",
+                side_effect=capture_first_recorder_failure,
+            ),
+        ):
+            old_result = await old_fixture_dispatcher.call("hi", identity="tg:555")
+        assert old_result == "FORWARD: looks real"
+        assert failures == [{"argument_codec_refusal": True, "sqlstate_is_data_exception": True}]
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.token_usage_ledger WHERE butler_name='tg:555'"
+            )
+            == 0
+        )
+    finally:
+        await unconfigured.close()
 
     with (
         patch.object(dispatcher, "_get_or_create_adapter", return_value=fake_adapter),
