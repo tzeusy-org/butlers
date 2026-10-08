@@ -401,25 +401,12 @@ def plan(state: dict[str, Any], git: Git, store: Path, now: datetime) -> dict[st
             )
         else:
             excluded.append({**row, "classification": category})
-    active_refs = {f"refs/heads/{x['name']}" for x in state["prs"] if x["state"] == "open"} | {
-        f"refs/heads/{x}" for x in state["held_refs"]
-    }
-    active_refs |= {f"refs/heads/{x['branch']}" for x in state["worktrees"] if x["branch"]}
     main = [
         x
         for x in state["caches"]
         if x["ref"] == "refs/heads/main" and x["key"].startswith("node-cache-")
     ]
-    cache_rows = [
-        x
-        for x in state["caches"]
-        if x["key"].startswith("node-cache-")
-        and x["ref"].startswith("refs/heads/")
-        and x["ref"] != "refs/heads/main"
-        and x["ref"] not in active_refs
-    ]
-    if not state["custody_complete"]:
-        cache_rows = []
+    cache_rows = plan_cache_candidates(state, {x["name"] for x in branches})
     value = {
         "version": 1,
         "repository": REPOSITORY,
@@ -581,11 +568,21 @@ def cache_identity(row: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(row[k] for k in ("id", "ref", "key", "version", "size_in_bytes"))
 
 
-def plan_cache_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
+def plan_cache_candidates(
+    state: dict[str, Any], retirable: set[str] | None = None
+) -> list[dict[str, Any]]:
     active = {f"refs/heads/{x['name']}" for x in state["prs"] if x["state"] == "open"} | {
         f"refs/heads/{x}" for x in state["held_refs"]
     }
     active |= {f"refs/heads/{x['branch']}" for x in state["worktrees"] if x["branch"]}
+    # During planning only exact recovered retirement candidates may bypass
+    # present-ref preservation. During apply no present ref bypasses it: its
+    # approved branch retirement must already be confirmed before cache IO.
+    active |= {
+        f"refs/heads/{x['name']}"
+        for x in state["branches"]
+        if x["name"] not in (retirable or set())
+    }
     return [
         x
         for x in state["caches"]

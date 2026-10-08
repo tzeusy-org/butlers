@@ -292,6 +292,10 @@ def test_cache_survivors_pagination_and_both_observation_windows(tmp_path, monke
     """REQ-testing-042 and REQ-testing-045: synthetic provider conformance cannot credit live caches/windows."""
     git, _, _ = make_repository(tmp_path / "checkout")
     now = datetime.now(UTC)
+    # A real existing remote ref with no reconciled PR/history is uncertain,
+    # even when no open PR or worker currently advertises it.
+    unknown_sha = git.heads()["agent/merged"]
+    git_at(git.root.parent / "origin.git", "update-ref", "refs/heads/agent/unresolved", unknown_sha)
     state = state_for(git, now)
 
     def cache(key, ref, id):
@@ -309,10 +313,16 @@ def test_cache_survivors_pagination_and_both_observation_windows(tmp_path, monke
     removable = cache("node-cache-npm", "refs/heads/agent/retired", 2)
     browser = cache("playwright-Chromium", "refs/heads/agent/retired", 3)
     active = cache("node-cache-npm", "refs/heads/agent/merged", 4)
-    state["caches"] = [main, removable, browser, active]
+    uncertain = cache("node-cache-npm", "refs/heads/agent/unresolved", 5)
+    state["caches"] = [main, removable, browser, active, uncertain]
     state["held_refs"] = ["agent/merged"]
     planned = hygiene.plan(state, git, tmp_path / "independent", now)
     assert planned["caches"] == [removable] and planned["main_caches"] == [main]
+    reviewed_state = copy.deepcopy(state)
+    reviewed_state["held_refs"] = []
+    reviewed = hygiene.plan(reviewed_state, git, tmp_path / "reviewed-recovery", now)
+    assert reviewed["caches"] == [removable, active] and uncertain not in reviewed["caches"]
+    assert hygiene.plan_cache_candidates(reviewed_state) == [removable]
     state["custody_complete"] = False
     assert hygiene.plan_cache_candidates(state) == []
     state["custody_complete"] = True
@@ -337,7 +347,9 @@ def test_cache_survivors_pagination_and_both_observation_windows(tmp_path, monke
         planned, approval, git, api, tmp_path / "custody", tmp_path / "positive-receipts", now
     )
     assert positive["main_cache_survivor"] and positive["cache_under10GB"]
-    assert state["caches"] == [main, browser, active] and positive["cache_hit"] == "NOT_OBSERVED"
+    assert state["caches"] == [main, browser, active, uncertain]
+    assert git.heads()["agent/unresolved"] == unknown_sha
+    assert positive["cache_hit"] == "NOT_OBSERVED"
 
     class RunApi:
         truncate = False
