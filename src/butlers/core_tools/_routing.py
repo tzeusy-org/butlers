@@ -54,7 +54,11 @@ from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.identity import resolve_owner_channel_via_definer
-from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
+from butlers.tools.switchboard.routing.contracts import (
+    OWNER_CONTROL_INTENTS,
+    parse_notify_request,
+    parse_route_envelope,
+)
 from butlers.tools.switchboard.routing.transport import (
     POLICY_DENIED,
     PROVIDER_REJECTED,
@@ -636,6 +640,41 @@ def _approval_request_reply_markup(actions: Any) -> dict[str, Any]:
         keyboard.append(decision_buttons)
     keyboard.append([{"text": "Open dashboard", "url": open_dashboard.dashboard_url}])
     return {"inline_keyboard": keyboard}
+
+
+def _decision_request_reply_markup(actions: Any) -> dict[str, Any]:
+    """One button row per offered option, then the dashboard link (bu-ckkpz.3)."""
+    keyboard: list[list[dict[str, str]]] = []
+    dashboard_url: str | None = None
+    for action in actions:
+        if action.verb == "choose":
+            if action.callback_token is None or action.label is None:
+                raise ValueError("decision_request choose action is missing token or label.")
+            keyboard.append([{"text": action.label, "callback_data": action.callback_token}])
+        elif action.verb == "open_dashboard":
+            dashboard_url = action.dashboard_url
+    if not keyboard or dashboard_url is None:
+        raise ValueError("decision_request actions need choices and open_dashboard.")
+    keyboard.append([{"text": "Open dashboard", "url": dashboard_url}])
+    return {"inline_keyboard": keyboard}
+
+
+def _owner_control_plain_text(intent: str, message: str, actions: Any) -> str:
+    """Text for a channel without inline buttons: a decision prompt carries its link.
+
+    The decision template names options for buttons, so without them the owner
+    needs the dashboard URL to answer; approval messages already embed theirs.
+    """
+    if intent != "decision_request":
+        return message
+    url = next((a.dashboard_url for a in actions if a.verb == "open_dashboard"), None)
+    return f"{message}\n\nDecide in the dashboard: {url}" if url else message
+
+
+def _owner_control_reply_markup(intent: str, actions: Any) -> dict[str, Any]:
+    if intent == "decision_request":
+        return _decision_request_reply_markup(actions)
+    return _approval_request_reply_markup(actions)
 
 
 def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -1627,25 +1666,24 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         approval_recipient: str | None = None
 
         try:
-            # approval_request is a daemon-owned control-plane envelope.  Its
-            # recipient must resolve to the owner before any transport module
-            # is touched; ordinary recipient gates deliberately do not park or
-            # recurse this already-pending decision notification.
-            if intent == "approval_request":
+            # approval_request and decision_request are daemon-owned
+            # control-plane envelopes.  Their recipient must resolve to the owner
+            # before any transport module is touched; ordinary recipient gates
+            # deliberately do not park or recurse this already-pending decision
+            # notification.
+            if intent in OWNER_CONTROL_INTENTS:
                 approval_recipient = notify_request.delivery.recipient
                 if not approval_recipient:
-                    raise ValueError("approval_request requires an explicit recipient.")
+                    raise ValueError(f"{intent} requires an explicit recipient.")
                 approval_pool = daemon.db.pool if daemon.db is not None else None
                 if approval_pool is None:
                     raise ValueError(
-                        "approval_request owner validation requires an initialized database pool."
+                        f"{intent} owner validation requires an initialized database pool."
                     )
                 try:
                     owner_channel_type = ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES[channel]
                 except KeyError as exc:
-                    raise ValueError(
-                        f"approval_request uses unsupported channel: {channel}"
-                    ) from exc
+                    raise ValueError(f"{intent} uses unsupported channel: {channel}") from exc
                 owner_channel = await resolve_owner_channel_via_definer(
                     approval_pool,
                     owner_channel_type,
@@ -1653,7 +1691,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 )
                 if owner_channel is None:
                     raise ValueError(
-                        "approval_request recipient does not resolve to a verified owner channel."
+                        f"{intent} recipient does not resolve to a verified owner channel."
                     )
 
             delivery_command = await _build_routed_delivery_command(
@@ -1743,13 +1781,15 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     if delivery_command is None:
                         raise RuntimeError("Telegram delivery command was not materialized.")
                     adapter_result = await delivery_command.execute()
-                elif intent == "approval_request":
+                elif intent in OWNER_CONTROL_INTENTS:
                     if approval_recipient is None:
-                        raise ValueError("approval_request owner recipient was not resolved.")
+                        raise ValueError(f"{intent} owner recipient was not resolved.")
                     adapter_result = await telegram_module._send_message(
                         approval_recipient,
                         rendered_text,
-                        reply_markup=_approval_request_reply_markup(notify_request.actions or ()),
+                        reply_markup=_owner_control_reply_markup(
+                            intent, notify_request.actions or ()
+                        ),
                     )
                 elif intent == "react":
                     thread_identity = (
@@ -1830,9 +1870,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"(action_id={decision.action_id})."
                             )
 
-                raw_subject = notify_request.delivery.subject or (
-                    "Approval requested" if intent == "approval_request" else "Notification"
-                )
+                raw_subject = notify_request.delivery.subject or {
+                    "approval_request": "Approval requested",
+                    "decision_request": "Decision requested",
+                }.get(intent, "Notification")
                 normalized_subject = (
                     raw_subject
                     if notify_prefix.lower() in raw_subject.lower()
@@ -1842,7 +1883,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     if delivery_command is None:
                         raise RuntimeError("Email delivery command was not materialized.")
                     adapter_result = await delivery_command.execute()
-                elif intent == "approval_request":
+                elif intent in OWNER_CONTROL_INTENTS:
                     if not approval_recipient:
                         raise ValueError(
                             "notify_request.delivery.recipient is required for owner delivery."
@@ -1850,7 +1891,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     adapter_result = await email_module._send_email(
                         approval_recipient,
                         normalized_subject,
-                        message_text,
+                        _owner_control_plain_text(
+                            intent, message_text, notify_request.actions or ()
+                        ),
                     )
                 else:
                     raise ValueError(f"Unsupported email intent: {intent}")
@@ -1868,7 +1911,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     if delivery_command is None:
                         raise RuntimeError("WhatsApp delivery command was not materialized.")
                     adapter_result = await delivery_command.execute()
-                elif intent == "approval_request":
+                elif intent in OWNER_CONTROL_INTENTS:
                     if not approval_recipient:
                         raise ValueError(
                             "notify_request.delivery.recipient is required for "
@@ -1879,7 +1922,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         raise RuntimeError("WhatsApp module does not expose _send_message method.")
                     adapter_result = await send_tool(
                         recipient=approval_recipient,
-                        text=rendered_text,
+                        text=_owner_control_plain_text(
+                            intent, rendered_text, notify_request.actions or ()
+                        ),
                     )
                 else:
                     raise ValueError(f"Unsupported whatsapp intent: {intent}")
@@ -2009,7 +2054,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             if intent == "react" and notify_context:
                 _tid = notify_context.source_thread_identity or ""
                 _effective_target = _tid.partition(":")[0] or None
-            elif intent == "approval_request":
+            elif intent in OWNER_CONTROL_INTENTS:
                 _effective_target = approval_recipient
             else:
                 _effective_target = notify_request.delivery.recipient

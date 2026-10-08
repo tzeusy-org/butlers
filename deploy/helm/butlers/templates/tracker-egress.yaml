@@ -1,0 +1,37 @@
+{{- if .Values.beadsExport.denyTrackerEgress }}
+{{- if not .Values.beadsExport.doltEgressCidrs }}
+{{- fail "beadsExport.doltEgressCidrs is required when beadsExport.denyTrackerEgress (scripts/k8s/site-helm-args.sh resolves it)" }}
+{{- end }}
+# Every pod in the namespace except the beads bridge keeps its egress, except to
+# the tracker (REQ-beads-projection-007). The tracker's root account has no
+# password, so this policy, not the credential, is what confines tracker access
+# to the bridge. It is independent of beadsExport.enabled, so rolling the bridge
+# back does not reopen the tracker to every pod.
+#
+# Precondition: pods are IPv4-only (k3s single-stack), so the tracker's tailnet
+# IPv6 address is unroutable from them and every IPv4 address it resolves to is
+# listed in doltEgressCidrs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-tracker-egress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: [beads-export]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.beadsExport.doltEgressCidrs }}
+              - {{ . }}
+              {{- end }}
+{{- end }}

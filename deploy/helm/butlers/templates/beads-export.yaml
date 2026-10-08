@@ -1,8 +1,14 @@
 {{- if .Values.beadsExport.enabled }}
-# Management workload that derives the runtime's beads export file from the
-# Dolt tracker (docs/architecture/beads-runtime-data-bridge.md). It is the only
-# pod that holds the Dolt endpoint and credential; dashboard-api and butlers-up
-# mount just the resulting PVC, read-only.
+{{- $bx := .Values.beadsExport }}
+{{- $secret := $bx.credentialSecretName | default (printf "%s-beads-dolt" .Release.Name) }}
+# Management workload bridging the Dolt tracker and the runtime
+# (docs/architecture/beads-runtime-data-bridge.md; OpenSpec change
+# owner-decision-desk-write-bridge, bu-ckkpz.3). Each run applies the
+# Decision Desk intents recorded in Postgres with `bd`, then derives the export
+# file. It is the only pod that holds the Dolt endpoint and credential, and the
+# tracker-egress NetworkPolicy (tracker-egress.yaml) denies every other pod in
+# the namespace a route to the tracker. dashboard-api and butlers-up mount just the resulting
+# PVC, read-only.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -16,17 +22,32 @@ spec:
   storageClassName: {{ .Values.storage.storageClassName }}
   resources:
     requests:
-      storage: {{ .Values.beadsExport.size }}
+      storage: {{ $bx.size }}
+{{- if not $bx.credentialSecretName }}
 ---
-apiVersion: v1
-kind: ConfigMap
+# Synced on its own, never into the shared <release>-bws Secret runtime pods read.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
 metadata:
-  name: {{ .Release.Name }}-beads-export-script
+  name: {{ $secret }}
   labels:
     {{- include "butlers.labels" . | nindent 4 }}
-data:
-  beads_export.sh: |-
-{{ .Files.Get "files/beads_export.sh" | indent 4 }}
+spec:
+  refreshInterval: {{ .Values.externalSecrets.refreshInterval }}
+  secretStoreRef:
+    name: {{ .Values.externalSecrets.storeRef }}
+    kind: ClusterSecretStore
+  target:
+    name: {{ $secret }}
+    creationPolicy: Owner
+  data:
+    - secretKey: {{ $bx.credentialKeys.user }}
+      remoteRef:
+        key: {{ required "beadsExport.credentialBwsKeys.user is required unless beadsExport.credentialSecretName is set" $bx.credentialBwsKeys.user | quote }}
+    - secretKey: {{ $bx.credentialKeys.password }}
+      remoteRef:
+        key: {{ required "beadsExport.credentialBwsKeys.password is required unless beadsExport.credentialSecretName is set" $bx.credentialBwsKeys.password | quote }}
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -35,7 +56,7 @@ metadata:
   labels:
     {{- include "butlers.labels" . | nindent 4 }}
 spec:
-  schedule: {{ .Values.beadsExport.schedule | quote }}
+  schedule: {{ $bx.schedule | quote }}
   suspend: {{ $.Values.suspend }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
@@ -43,36 +64,41 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
+      activeDeadlineSeconds: {{ $bx.activeDeadlineSeconds }}
       template:
         metadata:
           labels:
             {{- include "butlers.selector" (dict "root" . "component" "beads-export") | nindent 12 }}
         spec:
           restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
           containers:
             - name: export
-              image: {{ required "beadsExport.image is required when beadsExport.enabled" .Values.beadsExport.image }}
-              command: ["sh", "/scripts/beads_export.sh"]
+              image: {{ $bx.image | default (printf "%s:%s" (required "beadsExport.imageRepository or beadsExport.image is required when beadsExport.enabled" $bx.imageRepository) (required "image.tag is required (git SHA)" .Values.image.tag)) }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
               env:
                 - {name: EXPORT_DIR, value: /export}
-                - {name: BEADS_DOLT_SERVER_HOST, value: {{ required "beadsExport.doltHost is required when beadsExport.enabled" .Values.beadsExport.doltHost | quote }}}
-                - {name: BEADS_DOLT_SERVER_PORT, value: {{ .Values.beadsExport.doltPort | quote }}}
-                - {name: BEADS_DOLT_DATABASE, value: {{ .Values.beadsExport.doltDatabase | quote }}}
+                - {name: APPLY_DECISIONS, value: {{ ternary "1" "0" $bx.applyDecisions | quote }}}
+                - {name: BD_ACTOR, value: {{ $bx.actor | quote }}}
+                - {name: BEADS_DOLT_SERVER_HOST, value: {{ required "beadsExport.doltHost is required when beadsExport.enabled" $bx.doltHost | quote }}}
+                - {name: BEADS_DOLT_SERVER_PORT, value: {{ $bx.doltPort | quote }}}
+                - {name: BEADS_DOLT_DATABASE, value: {{ $bx.doltDatabase | quote }}}
                 - name: BEADS_DOLT_SERVER_USER
                   valueFrom:
-                    secretKeyRef: {name: {{ required "beadsExport.credentialSecretName is required when beadsExport.enabled" .Values.beadsExport.credentialSecretName }}, key: {{ .Values.beadsExport.credentialKeys.user }}}
+                    secretKeyRef: {name: {{ $secret }}, key: {{ $bx.credentialKeys.user }}}
                 - name: BEADS_DOLT_PASSWORD
                   valueFrom:
-                    secretKeyRef: {name: {{ .Values.beadsExport.credentialSecretName }}, key: {{ .Values.beadsExport.credentialKeys.password }}}
+                    secretKeyRef: {name: {{ $secret }}, key: {{ $bx.credentialKeys.password }}}
+                {{- include "butlers.postgresEnv" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.beadsExport.resources | nindent 16 }}
+                {{- toYaml $bx.resources | nindent 16 }}
               volumeMounts:
-                - {name: script, mountPath: /scripts}
                 - {name: export, mountPath: /export}
           volumes:
-            - name: script
-              configMap:
-                name: {{ .Release.Name }}-beads-export-script
             - name: export
               persistentVolumeClaim:
                 claimName: {{ .Release.Name }}-beads-export

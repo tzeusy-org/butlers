@@ -313,6 +313,25 @@ real role/network topology:
 - Source freshness, warning, hard-unavailable, lint, and shadow-parity status
   surfaced with stable identifiers and no sensitive/raw payload logging.
 
+## Amendment (2026-10-08): Development Tracker Write Bridge
+
+The owner ruling of 2026-10-08 (`bu-sng0tu`) admits a tracker credential and
+tracker reachability in the `butlers-dev` namespace, confined to one management
+workload. This amendment records that interim bridge; it does not replace the
+projection above, authorize production, or change the runtime's own boundary.
+
+- The chart's beads CronJob is that workload. It alone holds the Dolt endpoint
+  and a dedicated, least-privilege credential, and a namespace NetworkPolicy
+  denies every other pod a route to the tracker (`REQ-beads-projection-007`).
+- It gains one write duty: applying owner decision intents. Normal runtime
+  workloads still never run `bd` or reach Dolt; they record each choice in
+  `switchboard.decision_intents`, and the CronJob closes the decision bead at
+  most once per intent before refreshing the JSONL export
+  (`REQ-owner-decision-desk-001` and `-002`, OpenSpec change
+  `owner-decision-desk-write-bridge`).
+- When the projection in this RFC activates, the intent store stays the
+  runtime's write interface; only the applier's host moves.
+
 ## Rejected Alternatives
 
 **Direct runtime `bd`/Dolt access.** Rejected because it exposes tracker

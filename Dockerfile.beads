@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+
+# Beads tracker bridge image for the beads CronJob (deploy/helm/butlers,
+# beadsExport). Each run applies recorded Decision Desk intents with `bd`, then
+# refreshes the export the runtime reads (bu-ckkpz.3, OpenSpec change
+# owner-decision-desk-write-bridge). It is the only image that ever holds the
+# tracker credential, and it carries no Butlers package code.
+#
+# Every input is pinned. Bumping `bd` is a reviewed change to the URL and
+# checksum together; 1.3.1 is the version the agent fleet runs against the
+# tracker (schema stamp 1.0.4, 66 migrations) without migrating it.
+#
+#   docker build -f Dockerfile.beads -t butlers-beads .
+
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+
+ADD --checksum=sha256:3219443a9734b89b93fb16ee8d65844759fa1b3cd3cf139c606b7353cfb0715c \
+    https://github.com/gastownhall/beads/releases/download/v1.3.1/beads_1.3.1_linux_amd64.tar.gz \
+    /tmp/bd.tar.gz
+# asyncpg matches uv.lock; the wheel is fetched by checksum, never resolved.
+ADD --checksum=sha256:aad7a33913fb8bcb5454313377cc330fbb19a0cd5faa7272407d8a0c4257b671 \
+    https://files.pythonhosted.org/packages/8c/d1/a867c2150f9c6e7af6462637f613ba67f78a314b00db220cd26ff559d532/asyncpg-0.31.0-cp312-cp312-manylinux_2_28_x86_64.whl \
+    /tmp/wheels/asyncpg-0.31.0-cp312-cp312-manylinux_2_28_x86_64.whl
+
+RUN tar -xzf /tmp/bd.tar.gz -C /usr/local/bin bd \
+    && rm /tmp/bd.tar.gz \
+    && bd version \
+    && pip install --no-cache-dir --no-index --no-deps /tmp/wheels/*.whl \
+    && rm -rf /tmp/wheels
+
+COPY scripts/beads_decision_applier.py \
+     deploy/helm/butlers/files/beads_cycle.sh \
+     deploy/helm/butlers/files/beads_export.sh \
+     /opt/beads/
+
+# bd keeps per-user state under $HOME; the pod has no writable home otherwise.
+ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1
+USER 65532:65532
+ENTRYPOINT ["sh", "/opt/beads/beads_cycle.sh"]

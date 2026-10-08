@@ -60,7 +60,7 @@ SourceProvider = Literal[
     "activitywatch",
 ]
 NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
-NotifyIntent = Literal["send", "reply", "react", "insight", "approval_request"]
+NotifyIntent = Literal["send", "reply", "react", "insight", "approval_request", "decision_request"]
 PolicyTier = Literal["default", "interactive", "passive", "high_priority"]
 IngestionTier = Literal["full", "metadata"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
@@ -642,7 +642,11 @@ class NotifyDeliveryV1(BaseModel):
         return value
 
 
-ApprovalActionVerb = Literal["approve", "reject", "open_dashboard"]
+ApprovalActionVerb = Literal["approve", "reject", "choose", "open_dashboard"]
+# Owner control-plane intents that carry signed one-tap ``actions``.
+OWNER_CONTROL_INTENTS: frozenset[str] = frozenset({"approval_request", "decision_request"})
+MAX_DECISION_CHOICES = 16
+MAX_ACTION_LABEL_CHARS = 64
 ApprovalRecoveryOperation = Literal["handoff", "reconcile"]
 ApprovalRecoverySubjectKind = Literal["action", "cohort"]
 ApprovalRecoveryPresentationMode = Literal["single", "burst_digest"]
@@ -694,9 +698,31 @@ class ApprovalRequestActionV1(BaseModel):
     verb: ApprovalActionVerb
     callback_token: NonEmptyStr | None = None
     dashboard_url: NonEmptyStr
+    # Button text for a ``choose`` action (``decision_request``, bu-ckkpz.3).
+    label: NonEmptyStr | None = None
 
     @model_validator(mode="after")
     def _validate_signed_decision_actions(self) -> ApprovalRequestActionV1:
+        if self.verb == "choose":
+            if self.callback_token is None or self.label is None:
+                raise PydanticCustomError(
+                    "decision_choice_incomplete",
+                    "decision-request choose action requires callback_token and label.",
+                    {},
+                )
+            if len(self.label) > MAX_ACTION_LABEL_CHARS:
+                raise PydanticCustomError(
+                    "decision_choice_label_too_long",
+                    "decision-request choose label exceeds {limit} characters.",
+                    {"limit": MAX_ACTION_LABEL_CHARS},
+                )
+            return self
+        if self.label is not None:
+            raise PydanticCustomError(
+                "action_label_unexpected",
+                "label is only valid on a decision-request choose action.",
+                {},
+            )
         if self.verb in ("approve", "reject") and self.callback_token is None:
             raise PydanticCustomError(
                 "approval_callback_token_required",
@@ -813,11 +839,13 @@ class NotifyRequestV1(BaseModel):
         requires an explicit target and action affordances so that a request
         can never degrade into an unaddressed, non-interactive owner page.
         """
+        if self.delivery.intent == "decision_request":
+            return self._validate_decision_request()
         if self.delivery.intent != "approval_request":
             if self.actions is not None:
                 raise PydanticCustomError(
                     "approval_actions_unexpected",
-                    "actions are only valid for approval_request intent.",
+                    "actions are only valid for approval_request and decision_request intents.",
                     {},
                 )
             if self.recovery is not None:
@@ -862,6 +890,12 @@ class NotifyRequestV1(BaseModel):
                 {},
             )
         verbs = [action.verb for action in self.actions]
+        if "choose" in verbs:
+            raise PydanticCustomError(
+                "approval_action_verb_unexpected",
+                "approval_request actions may not include choose.",
+                {},
+            )
         if len(set(verbs)) != len(verbs):
             raise PydanticCustomError(
                 "approval_action_verbs_unique",
@@ -873,6 +907,46 @@ class NotifyRequestV1(BaseModel):
                 "approval_dashboard_action_required",
                 "approval_request actions must include open_dashboard.",
                 {},
+            )
+        return self
+
+    def _validate_decision_request(self) -> NotifyRequestV1:
+        """Owner Decision Desk prompt (bu-ckkpz.3): signed choices plus a dashboard link.
+
+        Same owner-addressed, never-unaddressed shape as ``approval_request``,
+        with one ``choose`` affordance per offered option instead of
+        approve/reject. It is never a recovery envelope.
+        """
+        if self.recovery is not None:
+            raise PydanticCustomError(
+                "approval_recovery_intent_required",
+                "recovery is only valid for approval_request intent.",
+                {},
+            )
+        if not self.delivery.message.strip():
+            raise PydanticCustomError(
+                "message_required",
+                "delivery.message must be non-empty for decision_request intent.",
+                {},
+            )
+        if self.delivery.recipient is None:
+            raise PydanticCustomError(
+                "decision_recipient_required",
+                "decision_request intent requires delivery.recipient.",
+                {},
+            )
+        verbs = [action.verb for action in self.actions or ()]
+        choices = verbs.count("choose")
+        if (
+            not 1 <= choices <= MAX_DECISION_CHOICES
+            or verbs.count("open_dashboard") != 1
+            or choices + 1 != len(verbs)
+        ):
+            raise PydanticCustomError(
+                "decision_actions_invalid",
+                "decision_request actions must be 1-{limit} choose actions and one "
+                "open_dashboard action.",
+                {"limit": MAX_DECISION_CHOICES},
             )
         return self
 
