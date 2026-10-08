@@ -7,5 +7,10 @@
 - [x] S5: Implement static/build guards + Vitest2 required fan-in + genuine dist browser reuse; full frontend order and tamper/absence controls.
 - [ ] V: Run scoped ladder, dirty planner, full tests/roster collection, budgets/shards/guards, named strict native authoring/citations and preserving scratch archive rehearsal.
 - [ ] C: Observe authorized missing/duplicate file scratch-PR, same-count wrong-parameter, failed-child, event matrix, coverage corruption and frontend failures with real red/healthy companions; root handles actual hosted dispatch.
-- [ ] N: Serialize .1/.2/.3/.4/.5 current public whole native/source union and foreign task hashes; normal own native sync/archive only after implementation evidence and independent disposition, never archive foreign work.
-- [ ] L: Complete root exact-head normal and protected full gate, actual ten MG route/guards/spread/five-minute metrics and five named before/afterp50s or explicit no-gain disposition; do not await future samples in a worker lane.
+- [x] N: Verify the integrated public9ff/overhead7b3e full native/source union and complete foreign task hashes before adoption; preserve every foreign task and baseline body. Actual own sync/archive remains the separate mandatory administrative record below, filled only after its normal validated operation.
+
+## Mandatory administrative and delivery records
+
+Actual own normal validated sync/archive and readback: NOT RUN. Perform only after implementation evidence, the independent disposition and root completion-scope review; never archive foreign work. Record the real operation and resulting full body/task parity after success.
+
+L original complete delivery obligation: complete root exact-head normal and protected full gate, actual ten MG route/guards/spread/five-minute metrics and five named before/after p50s or the explicit no-gain disposition; do not await future samples in a worker lane. These obligations are NOT RUN and remain mandatory after candidate preparation. They are not prearchive checkboxes that would require the archive's future protected tree to have passed before it exists. Only the explicit no-gain literal alternative is MET.
