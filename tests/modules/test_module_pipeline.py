@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.util._once import Once
 
+from butlers.core import fact_authority
 from butlers.modules.pipeline import (
     MessagePipeline,
     PipelineConfig,
@@ -139,7 +141,24 @@ async def test_decomposition_loader_failure_log_is_content_blind(
     assert failure_record.failure_class == "RuntimeError"
 
 
-async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutral_labels():
+@pytest.fixture
+def unregistered_identity_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[], AbstractContextManager[None]]:
+    """Own the unregistered mock scenario without discarding a prior live issuer."""
+
+    @contextmanager
+    def scenario() -> Iterator[None]:
+        with monkeypatch.context() as scope:
+            scope.setattr(fact_authority, "_source_registry", None)
+            yield
+
+    return scenario
+
+
+async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutral_labels(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+):
     """REQ-switchboard-identity-002: batch speakers reuse authoritative resolutions."""
     known_entity = uuid4()
     unknown_entity = uuid4()
@@ -190,11 +209,15 @@ async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutra
     pipeline = MessagePipeline(MagicMock(), AsyncMock(), source_butler="switchboard")
     pipeline._assert_sender_channel_fact = AsyncMock()  # type: ignore[method-assign]
 
-    with patch.object(
-        identity_inject,
-        "resolve_sender_identities",
-        resolver,
-        create=True,
+    prior_registry = fact_authority.source_registry()
+    with (
+        unregistered_identity_source(),
+        patch.object(
+            identity_inject,
+            "resolve_sender_identities",
+            resolver,
+            create=True,
+        ),
     ):
         enriched, resolutions = await pipeline._resolve_decomp_speakers(
             source_channel="whatsapp_user_client",
@@ -221,6 +244,42 @@ async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutra
         channel_type="whatsapp_jid",
         channel_value="222@lid",
     )
+    assert fact_authority.source_registry() is prior_registry
+
+    # A configured issuer must still supply its actual owning resolver methods.
+    # This registration is test-owned; retain whatever issuer the process held.
+    with patch.object(fact_authority, "_source_registry", prior_registry):
+        issuer = fact_authority.FactSourceContextRegistry(MagicMock())
+        fact_authority.register_source_registry(issuer)
+        resolver.reset_mock()
+        with patch.object(identity_inject, "resolve_sender_identities", resolver):
+            registered_messages, registered_resolutions = await pipeline._resolve_decomp_speakers(
+                source_channel="whatsapp_user_client",
+                messages=messages,
+            )
+        assert registered_messages == enriched
+        assert registered_resolutions is resolutions
+        resolver.assert_awaited_once_with(
+            pipeline._pool,
+            "whatsapp_user_client",
+            ["111@s.whatsapp.net", "222@lid", "111@s.whatsapp.net", "222@lid"],
+            notify_owner_fn=None,
+            resolver=issuer.resolve_identity,
+            bulk_resolver=issuer.resolve_identities,
+        )
+
+        # Both legitimate entry states survive normal and exceptional teardown.
+        for entry_registry in (None, issuer):
+            with patch.object(fact_authority, "_source_registry", entry_registry):
+                with unregistered_identity_source():
+                    assert fact_authority.source_registry() is None
+                assert fact_authority.source_registry() is entry_registry
+                with pytest.raises(RuntimeError, match="scenario failed"):
+                    with unregistered_identity_source():
+                        assert fact_authority.source_registry() is None
+                        raise RuntimeError("scenario failed")
+                assert fact_authority.source_registry() is entry_registry
+    assert fact_authority.source_registry() is prior_registry
 
 
 async def test_batch_unknown_reservation_failure_preserves_other_speaker_anchor(
