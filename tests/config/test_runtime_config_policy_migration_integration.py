@@ -492,7 +492,7 @@ def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
             connection.execute(
                 text(
                     "INSERT INTO public.state(key,value) VALUES "
-                    "('bootstrap_prerequisite_sentinel','{\"protected_rollback\":true}'::jsonb)"
+                    "('bootstrap_prerequisite_sentinel','{\"protected_rollback\": true}'::jsonb)"
                 )
             )
         with admin_engine.connect() as conn:

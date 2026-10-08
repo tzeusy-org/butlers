@@ -205,7 +205,7 @@ def exercise_historical_bootstrap(postgres_container, tmp_path: Path, prepare, b
             connection.execute(
                 text(
                     "INSERT INTO public.state(key, value) VALUES "
-                    "('bootstrap_prerequisite_sentinel', '{\"preserved\":true}'::jsonb)"
+                    "('bootstrap_prerequisite_sentinel', '{\"preserved\": true}'::jsonb)"
                 )
             )
         before = _readback(normal_url)

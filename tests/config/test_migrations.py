@@ -578,6 +578,32 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         )
 
     relationship_core = _build_alembic_config(db_url, chains=["core"], target_schema="relationship")
+    # pinned-revision: both genuine schema histories must finish core_083's
+    # shared contact_info ALTER before the first core_115 retires that table.
+    command.upgrade(relationship_core, "core_114")
+    command.upgrade(switchboard_core, "core_114")
+    staged_engine = create_engine(db_url)
+    try:
+        with staged_engine.connect() as connection:
+            for schema in ("relationship", "switchboard"):
+                # pinned-revision: prove the shared-table pre-retirement staging point.
+                assert (
+                    connection.execute(
+                        text(
+                            f"SELECT version_num FROM {schema}.alembic_version "
+                            "WHERE version_num = 'core_114'"
+                        )
+                    ).scalar_one()
+                    == "core_114"
+                )
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.contact_info') IS NOT NULL")
+                ).scalar_one()
+                is True
+            )
+    finally:
+        staged_engine.dispose()
     command.upgrade(relationship_core, "core@head")
 
     count = _execute_as_role(
@@ -590,6 +616,7 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
     assert relationship_read_default() is True
     check_bootstrap_database(db_url)
     command.upgrade(relationship_core, "core@head")
+    command.upgrade(switchboard_core, "core@head")
     command.upgrade(switchboard_core, "core@head")
     check_bootstrap_database(db_url)
     assert relationship_read_default() is True
