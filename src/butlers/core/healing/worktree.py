@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -116,23 +118,71 @@ def _worktree_path(repo_root: Path, branch_name: str) -> Path:
     return repo_root / _WORKTREE_BASE / branch_name
 
 
+# Each ordinary native Git communication has a finite bound while custody is held.
+_GIT_COMMAND_TIMEOUT_SECONDS = 60.0
+
+
 async def _run_git(
     *args: str,
     cwd: Path,
     capture_stderr: bool = True,
 ) -> tuple[int, str, str]:
-    """Run a git command and return (returncode, stdout, stderr)."""
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE if capture_stderr else asyncio.subprocess.DEVNULL,
+    """Run bounded Git; stop and reap an interrupted child before custody releases."""
+    # Shield creation so cancellation cannot lose the actual child handle.
+    spawn = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE if capture_stderr else asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
     )
-    stdout_bytes, stderr_bytes = await proc.communicate()
-    stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
-    stderr = stderr_bytes.decode("utf-8", errors="replace").strip() if capture_stderr else ""
-    return proc.returncode or 0, stdout, stderr
+    proc = None
+    completed = False
+    interrupted = False
+    try:
+        proc = await asyncio.shield(spawn)
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), _GIT_COMMAND_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            return 124, "", "Git command timed out"
+        completed = True
+        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip() if capture_stderr else ""
+        return proc.returncode or 0, stdout, stderr
+    finally:
+        # Even repeated cancellation must finish creation/cleanup before the
+        # surrounding branch_exclusion can release its cooperating-writer lock.
+        while not spawn.done():
+            try:
+                await asyncio.shield(spawn)
+            except asyncio.CancelledError:
+                interrupted = True
+            except Exception:
+                break  # Preserve the original spawn error or cancellation.
+        if proc is None and not spawn.cancelled():
+            try:
+                proc = spawn.result()
+            except Exception:
+                pass  # Preserve the original spawn exception/cancellation.
+        if proc is not None and not completed:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            reap = asyncio.create_task(proc.wait())
+            while not reap.done():
+                try:
+                    await asyncio.shield(reap)
+                except asyncio.CancelledError:
+                    interrupted = True
+            reap.result()
+        if interrupted:
+            raise asyncio.CancelledError
 
 
 async def _list_worktree_branches(repo_root: Path) -> list[str]:

@@ -108,7 +108,12 @@ producer creation or retirement. Release is in `finally` on success and failure.
 Do not nest it or acquire it around a native operation that already acquires it
 internally. Initial QA read-only fetch may precede acquisition; branch/worktree
 creation is fenced. Native busy custody refuses creation or defers best-effort
-cleanup. This is cooperation by the existing trusted actors, not isolation from
+cleanup. Each native Git command has a 60-second communication bound; timeout
+returns the ordinary nonzero tuple/caller failure path. Timeout or cancellation
+stops the actual process group and reaps the owned child before releasing the
+custody lock, including cancellation during creation. This is ordinary process
+lifecycle handling under the existing trusted-host premise, not kernel or
+malicious-hook isolation. This is cooperation by the existing trusted actors, not isolation from
 a compromised same-identity host or an uncooperative remote actor. Before every
 mutation the operator refreshes provider/custody/worktree state. The remote
 expected-SHA lease independently refuses a changed remote head; it does not make

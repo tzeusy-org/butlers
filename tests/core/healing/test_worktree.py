@@ -19,7 +19,10 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import sys
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -185,6 +188,64 @@ class TestCreateHealingWorktree:
         with patch("butlers.core.healing.worktree._run_git", side_effect=git_lock):
             with pytest.raises(WorktreeCreationError):
                 await create_healing_worktree(tmp_path, "email", fp)
+
+        # REQ-testing-041: a cancelled/timed-out native child cannot keep
+        # mutating after the shared custody exclusion is released. These are
+        # real helper processes, not a mocked communicate()/wait() lifetime.
+        from butlers.core.git_custody import branch_exclusion
+        from butlers.core.healing import worktree as native
+
+        spawn = asyncio.create_subprocess_exec
+        for mode in ("cancel", "timeout"):
+            ready = asyncio.Event()
+            children = []
+            groups = []
+
+            async def helper_git(executable, *args, **kwargs):
+                assert executable == "git"
+                script = "import sys,time; print('READY',flush=True); " + (
+                    "print('released'); print('companion',file=sys.stderr)"
+                    if args[0] == "released-control"
+                    else "time.sleep(30)"
+                )
+                child = await spawn(sys.executable, "-u", "-c", script, **kwargs)
+                children.append(child)
+                assert await asyncio.wait_for(child.stdout.readline(), 5) == b"READY\n"
+                groups.append(os.getpgid(child.pid))
+                ready.set()
+                return child
+
+            try:
+                with (
+                    patch(
+                        "butlers.core.healing.worktree.asyncio.create_subprocess_exec", helper_git
+                    ),
+                    patch(
+                        "butlers.core.healing.worktree._GIT_COMMAND_TIMEOUT_SECONDS",
+                        0.2,
+                        create=True,
+                    ),
+                ):
+                    operation = asyncio.create_task(create_healing_worktree(tmp_path, "email", fp))
+                    await asyncio.wait_for(ready.wait(), 5)
+                    if mode == "cancel":
+                        operation.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            await asyncio.wait_for(operation, 2)
+                    else:
+                        with pytest.raises(WorktreeCreationError, match="timed out"):
+                            await asyncio.wait_for(operation, 2)
+                    assert children[0].returncode is not None
+                    assert groups[0] == children[0].pid
+                    with branch_exclusion(tmp_path):
+                        rc, out, err = await native._run_git("released-control", cwd=tmp_path)
+                    assert (rc, out, err) == (0, "released", "companion")
+            finally:
+                # A causal old-source red must not leave its real child alive.
+                for child in children:
+                    if child.returncode is None:
+                        child.kill()
+                    await child.wait()
 
 
 # ---------------------------------------------------------------------------
