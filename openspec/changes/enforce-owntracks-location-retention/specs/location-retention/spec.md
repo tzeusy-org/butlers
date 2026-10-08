@@ -241,6 +241,8 @@ Source answer reduction MUST require every actual current loan observed, the ori
 
 The actual scheduled retention entry MUST invoke stored answer owners selected from original native question loans, including its own answer owner, over the registered source close/status tools. A metadata wake is no terminal receipt or full source completion. Recursive answered questions, mixed/borrowed/routed descendants, restart and actual online all-holder/managed-browser proof remain mandatory until their own lawful full closure.
 
+The source question ledger's own terminal receipt MUST freeze the full reduced question/reference digest, including all preserved catalog and metadata fields, in the SAME business transaction. The constructor-owned registered source-question status reader MUST compare that snapshot, original private generation/body/plan and every original selected parent from a separate locked committed acquisition. A reduced string/status alone, changed preserved metadata/catalog fields or another source's receipt is insufficient. Prototype NULL reduced profiles remain unknown with no current-row backfill. This question-child receipt closes neither a receiving generation nor source runtime/answer descendants. Answered-question reconciliation MUST preserve the original question/answer relation through the actual corresponding owning readers and immutable observations before its separate lawful reduction; the unanswered profile cannot be used as an answered or mixed-copy substitute.
+
 #### Scenario: Actual accepting and receiving holders
 
 - **WHEN** a full or metadata OwnTracks envelope is genuinely accepted and routed

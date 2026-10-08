@@ -808,3 +808,23 @@ new controls remain unrun locally and await their exact hosted source head.
 Recursive answered-question and lawful mixed/routed copies, full restart and
 real registered all-holder/browser/protected outcomes remain mandatory; this
 source increment does not label them delivered or permanently substitute hold.
+
+
+The source question child now freezes a full reduced question/reference digest
+beside its immutable original body and generation receipt. That snapshot covers
+preserved catalog and metadata fields too; changing them cannot be hidden by a
+generic reduced question string or terminal status. The registered
+`location_retention_source_question_status` reader resolves only own stored
+receipts through its actual constructor, then checks the full reduced profile,
+original plan/body and every original selected parent under own locks. Separate
+committed readback is required on every replay. Old NULL reduced profiles stay
+unknown; no current-row backfill is authorized.
+
+Its current implemented profile is the original unanswered source child. It
+neither certifies receiver/runtime/answer copies nor permits an answered or
+mixed ledger to enter that profile. The original answered-question scope still
+requires full cross-owner answer/question observations and its own lawful
+reducer, together with recursive context/borrowed/routed closure. The existing
+owning migrated species adds preserved-metadata tamper/refusal/restoration and
+source-reader readback to its original producer/receiver/rollback assertions;
+those new controls remain unrun locally until exact hosted evidence.

@@ -321,6 +321,19 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         return await question_receiver_status(receiving_runtime(), decision_id, receipt_id)
 
     @_core_tool("delegation")
+    async def location_retention_source_question_status(
+        decision_id: UUID, receipt_id: UUID
+    ) -> dict:
+        """Read only this question owner's original and complete reduced ledger profile.
+
+        A locator supplies no source/plan/actor or receiving completion. The
+        live owning constructor and immutable body/ancestry readback are required.
+        """
+        from butlers.chronicler.location_delegation_disposal import source_question_status
+
+        return await source_question_status(receiving_runtime(), decision_id, receipt_id)
+
+    @_core_tool("delegation")
     async def location_retention_answer_plan(decision_id: UUID) -> dict:
         """Read this answer owner's complete cohort for the fixed source decision.
 

@@ -2085,6 +2085,7 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
         _REDUCED_QUESTION,
         dispose_source_questions,
     )
+    from butlers.chronicler.location_policy import PolicyUnavailableError
     from butlers.chronicler.location_tool_copies import (
         _current_tool_copy,
         _ToolCopy,
@@ -2220,6 +2221,24 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
             "SELECT EXISTS(SELECT 1 FROM location_runtime_context_dispositions WHERE input_generation=$1)",
             context,
         )
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_delegation_disposal import source_question_status
+
+    assert receipt["reduced_question_digest"] == question_digest(dict(row))
+    status = await source_question_status(runtime, decision, receipt["receipt_id"])
+    assert status["body_digest"] == header["body_digest"].hex()
+    assert status["question_generation"] == str(header["question_generation"])
+    await domain.execute(
+        "UPDATE public.delegation_ledger SET metadata=$2::jsonb WHERE id=$1",
+        ledger,
+        {"copied": "Synthetic planted exact source"},
+    )
+    with pytest.raises(PolicyUnavailableError, match="source question is unknown"):
+        await source_question_status(runtime, decision, receipt["receipt_id"])
+    await domain.execute(
+        "UPDATE public.delegation_ledger SET metadata=$2::jsonb WHERE id=$1", ledger, {}
+    )
+    assert await source_question_status(runtime, decision, receipt["receipt_id"]) == status
     await mark_dispatch_outcome(domain, ledger, status="routed")
     ordinary = _current_tool_copy.set(None)
     try:

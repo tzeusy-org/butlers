@@ -363,6 +363,7 @@ def _validate_local_tables(schema: str) -> None:
                 ("body_digest", "bytea", True),
                 ("receipt_id", "uuid", True),
                 ("committed_at", "timestamp with time zone", True),
+                ("reduced_question_digest", "bytea", False),
             ],
             "location_native_delegation_answers": [
                 ("answer_generation", "uuid", True),
@@ -746,6 +747,7 @@ def _validate_local_tables(schema: str) -> None:
                 "CHECK ((octet_length(body_digest) = 32))",
                 "FOREIGN KEY (question_generation) REFERENCES "
                 "location_native_delegation_inputs(question_generation)",
+                "CHECK ((octet_length(reduced_question_digest) = 32))",
             },
             "location_native_delegation_answers": {
                 "CHECK (((bundle_digest IS NULL) OR (octet_length(bundle_digest) = 32)))",
@@ -1412,6 +1414,10 @@ def upgrade() -> None:
           receipt_id UUID NOT NULL UNIQUE,
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        ALTER TABLE location_native_delegation_dispositions
+          ADD COLUMN IF NOT EXISTS reduced_question_digest BYTEA
+            CHECK(octet_length(reduced_question_digest)=32);
+
         CREATE TABLE IF NOT EXISTS location_catalog_copy_finished (
           loan_id UUID PRIMARY KEY REFERENCES location_catalog_copy_lifetimes(loan_id),
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),

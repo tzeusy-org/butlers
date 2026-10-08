@@ -403,6 +403,7 @@ class TestButlerStartupIntegration:
             "location_retention_answer_status",
             "location_retention_prepare_questions",
             "location_retention_question_status",
+            "location_retention_source_question_status",
         }
         assert retention_tools <= set(registered_tools)
         assert all(registered_tools.count(name) == 1 for name in retention_tools)

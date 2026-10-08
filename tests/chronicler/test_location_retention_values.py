@@ -3121,6 +3121,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_native_answer_context_values()
     await _assert_metadata_wake_tool_values()
     await _assert_native_answer_source_values()
+    await _assert_source_question_profile_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
 
@@ -5777,3 +5778,151 @@ async def _assert_native_answer_source_values():
     pool.unknown = False
     await reconcile_answer_receivers(runtime, plan)
     assert pool.observed["receiver_receipt"] == receipt
+
+
+async def _assert_source_question_profile_values():
+    """Full own reduced-question profile plus ancestry; software SQL double only."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_delegation_disposal import (
+        _REDUCED_QUESTION,
+        _REDUCED_REASON,
+        source_question_status,
+    )
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+
+    decision, receipt, generation, ledger, parent, output = [uuid4() for _ in range(6)]
+    canonical = dict(
+        id=ledger,
+        asking_butler="chronicler",
+        question=_REDUCED_QUESTION,
+        target_butler="relationship",
+        catalog_match_id=None,
+        catalog_score=None,
+        metadata={},
+        status="failed",
+        reason=_REDUCED_REASON,
+        wake_state="not_applicable",
+        **{
+            key: None
+            for key in (
+                "answer",
+                "answer_digest",
+                "answered_at",
+                "answering_butler",
+                "wake_key",
+                "wake_task_id",
+                "wake_task_name",
+                "wake_updated_at",
+            )
+        },
+    )
+    terminal = dict(
+        question_generation=generation,
+        ledger_id=ledger,
+        decision_id=decision,
+        receipt_id=receipt,
+        body_digest=b"q" * 32,
+        original_digest=b"q" * 32,
+        manifest_digest=b"m" * 32,
+        plan_manifest=b"m" * 32,
+        reduced_question_digest=question_digest(canonical),
+    )
+    header = dict(
+        question_generation=generation,
+        ledger_id=ledger,
+        body_digest=b"q" * 32,
+        parent_count=1,
+        exclusive_input=True,
+    )
+    parents = [dict(parent_kind="native_copy", parent_generation=parent, parent_digest=b"p" * 32)]
+
+    class Pool:
+        def __init__(self):
+            self.tx = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            assert not self.tx
+            self.tx = True
+            try:
+                yield
+            finally:
+                self.tx = False
+
+        async def fetchrow(self, sql, *args):
+            assert self.tx
+            if "FROM location_native_delegation_dispositions" in sql:
+                assert args in ((decision, receipt), (generation,))
+                return terminal
+            assert "FROM public.delegation_ledger" in sql and args == (ledger,)
+            return canonical
+
+        async def fetchval(self, sql, *args):
+            assert self.tx and "FROM location_native_delegation_dispositions" in sql
+            return True
+
+        async def fetch(self, sql, *args):
+            assert self.tx
+            if "FROM location_retention_plan_outputs" in sql:
+                return [dict(output_kind="point_event", output_id=output)]
+            if "FROM location_native_delegation_inputs" in sql:
+                return [header] if args == (None,) else []
+            if "FROM location_native_delegation_parents" in sql:
+                assert args == (generation,)
+                return parents
+            if "FROM location_native_copy_births" in sql:
+                return [
+                    dict(
+                        output_kind="point_event",
+                        output_id=output,
+                        input_digest=b"p" * 32,
+                        lineage_known=True,
+                        exclusive_input=True,
+                    )
+                ]
+            assert "FROM location_native_delegation_loans" in sql
+            return []
+
+    pool = Pool()
+
+    async def lock(conn):
+        assert conn is pool and pool.tx
+
+    runtime = SimpleNamespace(active=True, name="chronicler", domain=pool, lock_domain=lock)
+    first = await source_question_status(runtime, decision, receipt)
+    assert first["receipt_id"] == str(receipt) and first["body_digest"] == ("71" * 32)
+    assert first["reduced_question_digest"] == terminal["reduced_question_digest"].hex()
+    for key, value in (
+        ("metadata", {"copied": "planted source"}),
+        ("catalog_score", 0.5),
+        ("status", "routed"),
+        ("reason", "other"),
+        ("question", "changed"),
+        ("answer", "raw answer"),
+    ):
+        original = canonical[key]
+        canonical[key] = value
+        with pytest.raises(PolicyUnavailableError, match="source question is unknown"):
+            await source_question_status(runtime, decision, receipt)
+        canonical[key] = original
+    original = terminal["reduced_question_digest"]
+    terminal["reduced_question_digest"] = None
+    with pytest.raises(PolicyUnavailableError, match="receipt is unavailable"):
+        await source_question_status(runtime, decision, receipt)
+    terminal["reduced_question_digest"] = original
+    parent_row = parents.pop()
+    with pytest.raises(PolicyUnavailableError, match="ancestry is unknown"):
+        await source_question_status(runtime, decision, receipt)
+    parents.append(parent_row)
+    assert await source_question_status(runtime, decision, receipt) == first
+    runtime.name = "other"
+    with pytest.raises(PolicyUnavailableError, match="constructor differs"):
+        await source_question_status(runtime, decision, receipt)

@@ -90,6 +90,20 @@ async def source_question_cohort(conn: Any, decision: UUID) -> list[dict]:
                 decision,
                 header["body_digest"],
             )
+            if disposed:
+                receipt = await conn.fetchrow(
+                    "SELECT * FROM location_native_delegation_dispositions "
+                    "WHERE question_generation=$1",
+                    header["question_generation"],
+                )
+                if (
+                    canonical is None
+                    or receipt is None
+                    or receipt["reduced_question_digest"] is None
+                    or question_digest(dict(canonical)) != receipt["reduced_question_digest"]
+                    or canonical["asking_butler"] != "chronicler"
+                ):
+                    raise PolicyUnavailableError("Native reduced source question body changed")
             if not disposed and (
                 canonical is None
                 or question_digest(dict(canonical)) != header["body_digest"]
@@ -645,13 +659,14 @@ async def dispose_source_questions(domain: Any, decision: UUID) -> None:
                 )
                 await conn.execute(
                     "INSERT INTO location_native_delegation_dispositions "
-                    "(question_generation,decision_id,manifest_digest,body_digest,receipt_id) "
-                    "VALUES($1,$2,$3,$4,$5)",
+                    "(question_generation,decision_id,manifest_digest,body_digest,receipt_id,"
+                    "reduced_question_digest) VALUES($1,$2,$3,$4,$5,$6)",
                     generation,
                     decision,
                     plan["manifest_digest"],
                     digest,
                     receipt,
+                    question_digest({**dict(canonical), "question": _REDUCED_QUESTION}),
                 )
     # Observe the actual outer commit. An immutable receipt with a changed
     # public body is not success; retries reuse the same generation and receipt.
@@ -672,5 +687,68 @@ async def dispose_source_questions(domain: Any, decision: UUID) -> None:
                 or canonical["status"] != "failed"
                 or canonical["reason"] != _REDUCED_REASON
                 or not unanswered_source_question(canonical)
+                or row["reduced_question_digest"] is None
+                or question_digest(dict(canonical)) != row["reduced_question_digest"]
             ):
                 raise PolicyUnavailableError("Committed native source reduction is unknown")
+
+
+async def source_question_status(runtime: Any, decision: UUID, receipt: UUID) -> dict:
+    """Actual question owner's original reference plus full reduced profile.
+
+    Locators select only own immutable receipts under the live constructor.
+    This is a ledger child receipt, not a receiving/context/answer disposition.
+    Prototype NULL reduced profiles stay unknown and are never backfilled.
+    """
+    if not runtime.active or runtime.name != "chronicler":
+        raise PolicyUnavailableError("Native source question constructor differs")
+    async with runtime.domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            row = await conn.fetchrow(
+                "SELECT d.*,q.ledger_id,q.body_digest AS original_digest,"
+                "p.manifest_digest AS plan_manifest "
+                "FROM location_native_delegation_dispositions d "
+                "JOIN location_native_delegation_inputs q USING(question_generation) "
+                "JOIN location_retention_plans p USING(decision_id) "
+                "WHERE d.decision_id=$1 AND d.receipt_id=$2",
+                decision,
+                receipt,
+            )
+            if row is None or (
+                row["body_digest"] != row["original_digest"]
+                or row["manifest_digest"] != row["plan_manifest"]
+                or row["reduced_question_digest"] is None
+            ):
+                raise PolicyUnavailableError("Native source question receipt is unavailable")
+            canonical = await conn.fetchrow(
+                "SELECT * FROM public.delegation_ledger WHERE id=$1 "
+                "FOR UPDATE OF delegation_ledger",
+                row["ledger_id"],
+            )
+            if (
+                canonical is None
+                or canonical["question"] != _REDUCED_QUESTION
+                or canonical["status"] != "failed"
+                or canonical["reason"] != _REDUCED_REASON
+                or not unanswered_source_question(canonical)
+                or question_digest(dict(canonical)) != row["reduced_question_digest"]
+            ):
+                raise PolicyUnavailableError("Committed native source question is unknown")
+            selected = [
+                q
+                for q in await source_question_cohort(conn, decision)
+                if q["question_generation"] == str(row["question_generation"])
+            ]
+            if len(selected) != 1 or selected[0]["complete_input"] is not True:
+                raise PolicyUnavailableError("Native source question ancestry is unknown")
+    return {
+        "source_name": runtime.name,
+        "decision_id": str(decision),
+        "manifest_digest": row["manifest_digest"].hex(),
+        "receipt_id": str(receipt),
+        "ledger_id": str(row["ledger_id"]),
+        "question_generation": str(row["question_generation"]),
+        "body_digest": row["body_digest"].hex(),
+        "reduced_question_digest": row["reduced_question_digest"].hex(),
+    }
