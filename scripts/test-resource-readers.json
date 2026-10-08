@@ -1,6 +1,6 @@
 {
   "declarations_digest": "1089fb415a0c653d2e18dca2f04c9bf5aee885c004c1da9b61a268041ebf9c78",
-  "digest": "38e531d734454a63914470f658422f2c972d284cb24a91f939b9c03f927af2fc",
+  "digest": "0ab9559c8966d6139a569d77148ece64300839f2aa33d497d22d6fe4071c544e",
   "families": [
     "docs/",
     "about/",
@@ -4580,7 +4580,7 @@
     "tests/modules/test_module_memory.py": "5ea78f0b5380802dbfd09bb60feae4d4c7e5f0a93297a92169411624c5cdc8fd",
     "tests/modules/test_module_metrics.py": "3e4571bbf6e5315113134fae8638d4ade3c65937e812aabf0f52762b928f4ffb",
     "tests/modules/test_module_owner_conditions_broker.py": "90d3bf6e1ceb98c433efa46fe4f274278cb31ed5b926b4194c35078ffb6f4082",
-    "tests/modules/test_module_pipeline.py": "56ad27affb3cc1beb54a44ab5cda1dda7bd48ed6ef0aabedcfb7de3dd2d89f50",
+    "tests/modules/test_module_pipeline.py": "d9ac5fbf86334619dc98241a61fb528679bab01627787a5b1fa4e490e96b51e2",
     "tests/modules/test_module_qa.py": "de49971f47d1cb941aa0068029620430730e17c3226ec9a64d34185acb60ad03",
     "tests/modules/test_module_registry.py": "d919432398b21b15e1c745634cfb035140dd5f444b6df42105948639b6cb0f2f",
     "tests/modules/test_module_self_healing.py": "cf0ed044d14e838cb6a4064077553d29233720a75e552f4ebdd08e7aaf29c926",
@@ -4642,7 +4642,7 @@
     "tests/scripts/test_dockerfile_base_runtime_tools.py": "ccd7eb98a6644488de0c5e0774d043818e1cf75cf8c7e757e5279ab4154dbb11",
     "tests/scripts/test_extract_frontend_copy.py": "e2bc6045f26a4d791c3e3217855c93e1db82be98f0d952f34e61e77a3ac0c3cd",
     "tests/scripts/test_generate_runtime_cli_sandbox_manifest.py": "530a32a56943e11ef097c46478eb83b53499da4023ed400a08e9d2a5c6c0a25f",
-    "tests/scripts/test_k8s_beads_export_chart.py": "d645fc11c8ce2f236212a5835b1b7f5277bfaf09fffa17aa3851dd80baf91570",
+    "tests/scripts/test_k8s_beads_export_chart.py": "0244aab6c35a8eed4311dafe272cf9eedb3daff0c1fd8210a177d54e7ed55a3b",
     "tests/scripts/test_k8s_deploy_dev_script.py": "777ada0011156df97a735b5ac41b9368a2251bfc9a5f3727cfe36990ab94ff3e",
     "tests/scripts/test_k8s_secrets_chart.py": "59e0bd3a8bf4d06301539d0d1345e8913c06c53327e59be355ecb718a9e2984f",
     "tests/scripts/test_lint_decision_beads.py": "d487b3f4a763590922bd6a91e74103cd22e57f89b60d598ea0fddf79fbf11070",
