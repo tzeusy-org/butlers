@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import resource
 import time
 from collections import Counter
@@ -22,6 +23,15 @@ def digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def node_digest(node_id: str, nonce: str | None = None) -> str:
+    """One identity implementation for fresh collection and actual execution.
+
+    Nonces minimize cross-run linkability; public salts are not authority and
+    cannot prevent guessing low-entropy raw parameter values.
+    """
+    return digest([nonce, node_id]) if nonce is not None else digest(node_id)
+
+
 class Observer:
     def __init__(self, config: pytest.Config) -> None:
         self.config = config
@@ -29,18 +39,24 @@ class Observer:
         self.collections: list[list[str]] = []
         self.phases: dict[str, dict[str, dict]] = {}
         self.files: dict[str, str] = {}
+        self.classes: dict[str, str] = {}
         self.completed: list[float] = []
         self.first_result: float | None = None
         self.workers: set[str] = set()
         self.resources: dict[str, dict] = {}
         self.tracers: set[str] = set()
         self.phase_counts: Counter = Counter()
-        self.allowed_files = set(json.loads(os.environ["CI_SHARD_CONTEXT"])["files"])
+        self.context = json.loads(os.environ["CI_SHARD_CONTEXT"])
+        self.nonce = self.context.get("nonce")
+        self.allowed_files = set(self.context["files"])
+        self.logical_starts: Counter = Counter()
         self.unexpected_file = False
 
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         if not hasattr(self.config, "workerinput") and not self.config.getoption("numprocesses"):
-            self.collections.append([digest(item.nodeid) for item in session.items])
+            self.collections.append(
+                [node_digest(item.nodeid, self.nonce) for item in session.items]
+            )
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_testnodeready(self, node) -> None:
@@ -48,13 +64,25 @@ class Observer:
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_xdist_node_collection_finished(self, node, ids: list[str]) -> None:
-        self.collections.append([digest(item) for item in ids])
+        self.collections.append([node_digest(item, self.nonce) for item in ids])
+
+    def pytest_runtest_logstart(self, nodeid, location) -> None:
+        self.logical_starts[node_digest(nodeid, self.nonce)] += 1
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        key = digest(report.nodeid)
+        key = node_digest(report.nodeid, self.nonce)
         name = report.nodeid.split("::", 1)[0]
         self.unexpected_file |= name not in self.allowed_files
         self.files[key] = name if name in self.allowed_files else "unknown"
+        components = report.nodeid.split("::")
+        classname = name.removesuffix(".py").replace("/", ".")
+        if len(components) > 2:
+            classname += "." + (
+                components[1]
+                if re.fullmatch(r"[A-Za-z_]\w*", components[1])
+                else digest(components[1])
+            )
+        self.classes[key] = classname
         offset = time.monotonic() - self.started
         self.phase_counts[(key, report.when)] += 1
         self.phases.setdefault(key, {})[report.when] = {
@@ -85,6 +113,7 @@ class Observer:
             and set(self.phases) == set(selected)
             and all("teardown" in phases for phases in self.phases.values())
             and all(count == 1 for count in self.phase_counts.values())
+            and self.logical_starts == Counter({node: 1 for node in selected})
             and not self.unexpected_file
         )
         durations: dict[str, float] = {}
@@ -97,7 +126,7 @@ class Observer:
         tail_start = ordered[max(0, int(count * 0.95) - 1)] if complete else None
         finish = time.monotonic() - self.started
         receipt = {
-            **json.loads(os.environ["CI_SHARD_CONTEXT"]),
+            **self.context,
             "schema": 1,
             "complete": complete,
             "pytest_exit": int(exitstatus),
@@ -105,7 +134,9 @@ class Observer:
             "selected_count": count,
             "selected_node_digest": digest(sorted(selected)),
             "nodes": self.phases,
+            "logical_starts": dict(self.logical_starts),
             "node_files": self.files,
+            "node_classes": self.classes,
             "file_durations_s": durations,
             "effective_workers": sorted(self.workers),
             "worker_resources": self.resources,

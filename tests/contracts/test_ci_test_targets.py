@@ -131,37 +131,41 @@ def _run_fan_in(
 def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shard(
     tmp_path: Path,
 ) -> None:
-    """REQ-testing-035: actual verdict consumer, not a reimplementation of it."""
+    """REQ-testing-035 / REQ-ci-shard-assurance-004: actual event verdict consumer."""
     jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
     gate = next(step for step in jobs["check"]["steps"] if step.get("id") == "gate")
     heavy = {name for name in jobs if name.startswith(("check-unit-", "check-integration-"))}
     full = {
         name: {"result": "success", "outputs": {}} for name in {*jobs["check"]["needs"], "guards"}
     }
-    full["changes"]["outputs"] = {"backend": "true", "frontend": "false"}
-    full["plan"]["outputs"] = {"mode": "full", "test_paths": "[]"}
+    full["route"]["outputs"] = {
+        "backend": "true",
+        "frontend": "false",
+        "mode": "full",
+        "test_paths": "[]",
+        "inventory": "true",
+    }
     full["check-affected"]["result"] = "skipped"
+    heavy = {"check-unit", "check-integration"}
     contexts = [("full", "pull_request", "refs/pull/1/merge", full, True)]
     scoped = copy.deepcopy(full)
     for name in heavy:
         scoped[name]["result"] = "skipped"
-    scoped["plan"]["outputs"] = {
-        "mode": "scoped",
-        "test_paths": '["tests/contracts/test_ci_test_targets.py"]',
-    }
+    scoped["route"]["outputs"].update(
+        mode="scoped", inventory="false", test_paths='["tests/contracts/test_ci_test_targets.py"]'
+    )
     scoped["check-affected"]["result"] = "success"
     contexts.append(("scoped", "pull_request", "refs/pull/1/merge", scoped, False))
     docs = copy.deepcopy(scoped)
-    docs["changes"]["outputs"] = {"backend": "false", "frontend": "false"}
-    for name in ("plan", "check-preflight", "check-affected"):
+    docs["route"]["outputs"].update(backend="false", mode="docs", test_paths="[]")
+    for name in ("check-preflight", "check-affected"):
         docs[name] = {"result": "skipped", "outputs": {}}
     contexts.append(("docs", "pull_request", "refs/pull/1/merge", docs, False))
     push = copy.deepcopy(docs)
-    push["changes"]["outputs"] = {"backend": "true", "frontend": "true"}
+    push["route"]["outputs"].update(backend="true", frontend="true", mode="push", inventory="true")
     contexts.append(("push", "push", "refs/heads/main", push, False))
     merge_group = copy.deepcopy(full)
-    merge_group["plan"] = {"result": "skipped", "outputs": {}}
-    merge_group["changes"]["outputs"]["frontend"] = "true"
+    merge_group["route"]["outputs"]["frontend"] = "true"
     contexts.append(
         ("merge_group", "merge_group", "refs/heads/gh-readonly-queue/main/x", merge_group, True)
     )
@@ -176,7 +180,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             failures.append(f"{label}: exit={result.returncode}, expected_success={expected}")
         if expected:
             ran = event == "merge_group" or (
-                event == "pull_request" and needs["plan"]["outputs"].get("mode") == "full"
+                event == "pull_request" and needs["route"]["outputs"].get("mode") == "full"
             )
             assert f"shards_ran={str(ran).lower()}\n" == output, label
 
@@ -201,7 +205,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             changed["new-needed-job"] = {"result": result, "outputs": {}}
             check(f"{mode}/added/{result}", changed, event, ref, result == "success")
     for mode, event, ref, needs, _ in contexts:
-        for name in ("changes", "guards", "plan", "check-preflight", "check-affected", *heavy):
+        for name in ("route", "guards", "check-preflight", "check-affected", *heavy):
             changed = copy.deepcopy(needs)
             changed[name]["result"] = "skipped" if needs[name]["result"] == "success" else "success"
             check(f"{mode}/{name}/wrong-pairing", changed, event, ref, False)
@@ -213,7 +217,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         {"backend": "false", "frontend": False},
     ):
         changed = copy.deepcopy(full)
-        changed["changes"]["outputs"] = output
+        changed["route"]["outputs"] = output
         check(
             f"invalid-classification/{output}", changed, "pull_request", "refs/pull/1/merge", False
         )
@@ -226,13 +230,13 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         {"mode": "scoped", "test_paths": '["../outside.py"]'},
     ):
         changed = copy.deepcopy(full)
-        changed["plan"]["outputs"] = output
+        changed["route"]["outputs"] = output
         check(f"invalid-plan/{output}", changed, "pull_request", "refs/pull/1/merge", False)
     check("non-main-push", push, "push", "refs/heads/other", False)
     check("unknown-event", full, "workflow_dispatch", "refs/heads/main", False)
     for malformed in ([], None, {}, "not-an-object"):
         check(f"invalid-needs/{malformed!r}", malformed, "merge_group", "refs/heads/main", False)
-    for raw in ("{", json.dumps(full)[:-1] + ', "changes": {}}'):
+    for raw in ("{", json.dumps(full)[:-1] + ', "route": {}}'):
         result, output = _run_fan_in(
             gate=gate,
             needs=full,
@@ -251,7 +255,8 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         (
             "preflight",
             gate["run"].replace(
-                "invalid = []", 'needs["check-preflight"]["result"] = "success"\ninvalid = []'
+                "needs = json.loads(os.environ['NEEDS_JSON'])",
+                "needs = json.loads(os.environ['NEEDS_JSON'])\nneeds['check-preflight']['result']='success'",
             ),
             "check-preflight",
             "failure",
@@ -259,26 +264,25 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         (
             "guards",
             gate["run"].replace(
-                "invalid = []", 'needs["guards"]["result"] = "success"\ninvalid = []'
+                "needs = json.loads(os.environ['NEEDS_JSON'])",
+                "needs = json.loads(os.environ['NEEDS_JSON'])\nneeds['guards']['result']='success'",
             ),
             "guards",
             "failure",
         ),
         (
             "default-skip",
-            gate["run"].replace(
-                'expected.get(name, "success")', 'expected.get(name, job["result"])'
-            ),
+            gate["run"].replace('results.get(name, "success")', 'results.get(name, job["result"])'),
             "new-needed-job",
             "skipped",
         ),
         (
             "partial-heavy",
             gate["run"].replace(
-                'if job["result"] != expected.get(name, "success")',
-                'if name not in heavy and job["result"] != expected.get(name, "success")',
+                'job["result"] == results.get(name, "success")',
+                'name == "check-unit" or job["result"] == results.get(name, "success")',
             ),
-            sorted(heavy)[0],
+            "check-unit",
             "skipped",
         ),
     ]
@@ -315,7 +319,7 @@ def test_smoke_ci_spec_matches_the_preflight_topology() -> None:
 def _integration_cleanup_script(shard: int) -> str:
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     return _workflow_step(
-        job=workflow["jobs"][f"check-integration-{shard}"],
+        job=workflow["jobs"]["check-integration"],
         name="Free disk space before testcontainers",
     )["run"]
 
@@ -363,7 +367,7 @@ def _run_cleanup_script(
 def test_ci_cleanup_skips_reclamation_when_each_runner_has_safe_free_space(
     tmp_path: Path,
 ) -> None:
-    for shard in range(1, 6):
+    for shard in range(1, 7):
         result, sentinel = _run_cleanup_script(
             tmp_path=tmp_path / f"shard-{shard}",
             shard=shard,
@@ -375,7 +379,7 @@ def test_ci_cleanup_skips_reclamation_when_each_runner_has_safe_free_space(
 
 
 def test_ci_cleanup_reclaims_when_each_runner_is_below_the_safe_floor(tmp_path: Path) -> None:
-    for shard in range(1, 6):
+    for shard in range(1, 7):
         result, sentinel = _run_cleanup_script(
             tmp_path=tmp_path / f"shard-{shard}",
             shard=shard,
@@ -514,12 +518,21 @@ if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
                     os.kill(pid, 9)
 
 
-def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_path: Path) -> None:
+def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-ci-shard-assurance-007: actual frontend fan-in and build binding controls."""
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
     preflight = jobs["check-preflight"]
-    unit_jobs = [jobs[f"check-unit-{index}"] for index in range(1, 6)]
-    integration_jobs = [jobs[f"check-integration-{index}"] for index in range(1, 6)]
+    unit_jobs = [
+        json.loads(json.dumps(jobs["check-unit"]).replace("${{ matrix.shard }}", str(index)))
+        for index in jobs["check-unit"]["strategy"]["matrix"]["shard"]
+    ]
+    integration_jobs = [
+        json.loads(json.dumps(jobs["check-integration"]).replace("${{ matrix.shard }}", str(index)))
+        for index in jobs["check-integration"]["strategy"]["matrix"]["shard"]
+    ]
     check_job = jobs["check"]
     coverage_job = jobs["coverage"]
 
@@ -529,17 +542,17 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
 
     # `changes` classifies the PR diff fail-closed; `guards` runs every
     # static guard script in one job with nothing upstream of it.
-    changes = jobs["changes"]
+    changes = jobs["route"]
     assert "needs" not in changes and "if" not in changes
-    assert set(changes["outputs"]) == {"backend", "frontend"}
+    assert set(changes["outputs"]) == {"backend", "frontend", "mode", "test_paths", "inventory"}
     path_filter = _workflow_step(job=changes, name="Filter changed paths")
     assert path_filter["uses"].startswith("dorny/paths-filter@")
     assert path_filter["if"] == "github.event_name == 'pull_request'"
     assert path_filter["with"]["list-files"] == "json"
-    classify = _workflow_step(job=changes, name="Classify the diff (fail closed)")
+    classify = _workflow_step(job=changes, name="Classify and conservatively plan with stdlib only")
     assert classify["id"] == "classify"
     guards = jobs["guards"]
-    assert "needs" not in guards and "if" not in guards
+    assert guards["needs"] == ["route"] and "if" not in guards
     guard_outcomes = _workflow_step(job=guards, name="Fail if any guard failed")["env"][
         "GUARD_OUTCOMES"
     ]
@@ -625,108 +638,124 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
     ):
         assert command in dry_run
 
-    # Preflight and the shards depend only on the path classification: they
-    # still overlap with each other to protect the budget, and they run on
-    # every merge_group and on backend-touching pull requests only.
-    backend_condition = (
-        "github.event_name == 'merge_group' || "
-        "(github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')"
-    )
-    assert preflight["needs"] == ["changes"]
-    assert preflight["if"] == backend_condition
-
-    # The ten shards additionally depend on the affected-test planner
-    # (bu-v28ho): on a pull_request they only run when the plan did not
-    # select a scoped mode -- a scoped plan means `check-affected` is that
-    # shard's evidence instead. merge_group is unaffected: `plan` never runs
-    # there, so `needs.plan.outputs.mode` is empty and the OR's first branch
-    # (always true for merge_group) still wins -- PROVIDED the job's `if:`
-    # actually gets evaluated. `plan` is a conditionally-skipped dependency,
-    # and GitHub Actions auto-skips a job whose `needs` include a
-    # skipped/failed job UNLESS its own `if:` starts with `always()`; without
-    # that, this shard's `if:` above would never be reached on merge_group
-    # (where `plan` is always skipped) and the job would silently skip
-    # instead of running -- exactly the incident this assertion guards
-    # against (bu-v28ho merge_group eviction, 2026-09-04).
-    shard_condition = (
-        "always() && needs.changes.result == 'success' && "
-        "(github.event_name == 'merge_group' || "
-        "(github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' "
-        "&& needs.plan.outputs.mode != 'scoped'))"
-    )
+    # Reconciliation is after both matrix aggregates; all eleven exact child
+    # receipts are checked independently before a full result is admitted.
+    assert preflight["needs"] == ["route", "guards", "check-unit", "check-integration"]
+    assert preflight["if"].startswith("always()")
+    assert "mode == 'full'" in preflight["if"] and "mode == 'scoped'" in preflight["if"]
     for job in [*unit_jobs, *integration_jobs]:
-        assert job["needs"] == ["changes", "plan"]
-        assert job["if"] == shard_condition
-
-    plan_job = jobs["plan"]
-    assert plan_job["needs"] == ["changes"]
-    assert plan_job["if"] == (
-        "github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true'"
+        assert job["needs"] == ["route", "guards"]
+        assert job["if"] == "needs.route.outputs.mode == 'full' && needs.guards.result == 'success'"
+        assert job["strategy"]["fail-fast"] is False
+    assert len(unit_jobs) == 5 and len(integration_jobs) == 6
+    assert "plan" not in jobs and "changes" not in jobs
+    route_command = _workflow_step(
+        job=changes, name="Classify and conservatively plan with stdlib only"
     )
-    assert set(plan_job["outputs"]) == {"mode", "test_paths"}
-
+    assert route_command["run"] == "python3 scripts/ci_route.py"
+    assert not any("uv" in step.get("run", "") for step in changes["steps"])
     check_affected = jobs["check-affected"]
-    assert check_affected["needs"] == ["changes", "plan"]
-    assert check_affected["if"] == (
-        "always() && needs.changes.result == 'success' && "
-        "github.event_name == 'pull_request' && needs.plan.outputs.mode == 'scoped'"
+    assert check_affected["needs"] == ["route", "guards"]
+    assert "mode == 'scoped'" in check_affected["if"]
+    assert jobs["frontend-e2e"]["needs"] == ["route", "guards"]
+    assert jobs["frontend"]["needs"] == ["route", "guards", "frontend-vitest"]
+    assert jobs["frontend"]["if"] == "always()"
+    assert jobs["frontend-vitest"]["strategy"]["matrix"]["shard"] == [1, 2]
+    frontend_gate = jobs["frontend"]["steps"][0]
+    fe_needs = {name: {"result": "success", "outputs": {}} for name in jobs["frontend"]["needs"]}
+    fe_needs["route"]["outputs"] = {"frontend": "true"}
+    for failed in (None, "guards", "frontend-vitest", "route"):
+        actual = copy.deepcopy(fe_needs)
+        if failed:
+            actual[failed]["result"] = "failure"
+        result = subprocess.run(
+            ["bash", "-e", "-c", frontend_gate["run"]],
+            env={**os.environ, "NEEDS_JSON": json.dumps(actual)},
+            capture_output=True,
+            timeout=10,
+        )
+        assert (result.returncode == 0) == (failed is None)
+    for flag, child, accepted in (
+        ("false", "skipped", True),
+        ("true", "skipped", False),
+        ("false", "success", False),
+        ("unknown", "success", False),
+    ):
+        actual = copy.deepcopy(fe_needs)
+        actual["route"]["outputs"]["frontend"] = flag
+        actual["frontend-vitest"]["result"] = child
+        result = subprocess.run(
+            ["bash", "-e", "-c", frontend_gate["run"]],
+            env={**os.environ, "NEEDS_JSON": json.dumps(actual)},
+            capture_output=True,
+            timeout=10,
+        )
+        assert (result.returncode == 0) == accepted
+    # Synthetic dist bytes exercise actual seal/consume/tamper protocol only,
+    # never claim an actual compiler/browser or hosted upload.
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import ci_frontend_evidence as build
+
+    buildroot = tmp_path / "build-control"
+    (buildroot / "frontend/dist").mkdir(parents=True)
+    (buildroot / "frontend/dist/index.html").write_text("planted compiler-output stand-in")
+    (buildroot / "frontend/package-lock.json").write_text("{}")
+    subprocess.run(["git", "init", "-q", str(buildroot)], check=True)
+    subprocess.run(["git", "-C", str(buildroot), "add", "frontend/package-lock.json"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(buildroot),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
     )
-
-    # Regression guard (bu-v28ho): every job that lists `plan` as a
-    # dependency must opt out of GitHub Actions' implicit
-    # skip-if-a-needed-job-was-skipped-or-failed behavior with `always()` at
-    # the front of its `if:`. A job that adds `plan` to `needs` later without
-    # this prefix will silently never run whenever `plan` is skipped (every
-    # merge_group event, every docs-only or non-backend pull_request).
-    for job_name, job in jobs.items():
-        if "plan" in job.get("needs", []):
-            condition = job["if"].removeprefix("${{").strip()
-            assert condition.startswith("always()"), (
-                f"{job_name}: needs `plan` but its `if:` does not start with always(), "
-                "so it will silently skip whenever `plan` is skipped (e.g. every "
-                "merge_group event)"
-            )
-
-    frontend_condition = (
-        "github.event_name == 'merge_group' || github.event_name == 'push' || "
-        "(github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')"
-    )
-    for name in ("frontend", "frontend-e2e"):
-        assert jobs[name]["needs"] == ["changes"]
-        assert jobs[name]["if"] == frontend_condition
-
+    with monkeypatch.context() as local:
+        for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+            local.delenv(name, raising=False)
+        artifact = tmp_path / "build-artifact"
+        build.seal(buildroot, artifact)
+        shutil.rmtree(buildroot / "frontend/dist")
+        payload = (artifact / "dist/index.html").read_text()
+        (artifact / "dist/index.html").write_text("wrong current bytes")
+        with pytest.raises(ValueError, match="content differs"):
+            build.consume(buildroot, artifact)
+        assert not (buildroot / "frontend/dist").exists()
+        (artifact / "dist/index.html").write_text(payload)
+        local.setenv("GITHUB_RUN_ATTEMPT", "wrong-attempt")
+        with pytest.raises(ValueError, match="source/attempt"):
+            build.consume(buildroot, artifact)
+        local.delenv("GITHUB_RUN_ATTEMPT")
+        build.consume(buildroot, artifact)
+        assert (buildroot / "frontend/dist/index.html").read_text() == payload
     assert check_job["needs"] == [
-        "changes",
+        "route",
         "guards",
-        "plan",
         "check-preflight",
-        "check-unit-1",
-        "check-unit-2",
-        "check-unit-3",
-        "check-unit-4",
-        "check-unit-5",
-        "check-integration-1",
-        "check-integration-2",
-        "check-integration-3",
-        "check-integration-4",
-        "check-integration-5",
+        "check-unit",
+        "check-integration",
         "check-affected",
     ]
-    assert check_job["if"] == "${{ always() }}"
+    assert check_job["if"] == "always()"
     assert "cancelled" not in check_job["if"]
-
+    assert all("uses" not in step for step in check_job["steps"])
+    assert not any(
+        "uv" in step.get("run", "") or "checkout" in str(step) for step in check_job["steps"]
+    )
     for step_name in (
         "Install dependencies",
-        "Verify CI test shard manifests",
         "Smoke tests (fast gate + release evidence)",
+        "Reconcile eleven logical execution populations and derive smoke evidence",
     ):
         _workflow_step(job=preflight, name=step_name)
-    assert (
-        "check_ci_test_shards.py"
-        in _workflow_step(job=preflight, name="Verify CI test shard manifests")["run"]
-    )
     assert "check_integration_coverage.py" not in str(preflight)
-
     # REQ-testing-047 / REQ-testing-050: twelve former orphan-service sites retain their
     # genuine provisioned PG17 fixtures; a CI ambient URL is no authority.
     for job in [preflight, *unit_jobs, *integration_jobs, jobs["check-affected"]]:
@@ -742,7 +771,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
     expected_coverage_artifacts: list[tuple[str, str, str, str]] = []
     for index, job in enumerate(unit_jobs, start=1):
         run_step = _workflow_step(job=job, name=f"Unit tests (shard {index})")
-        assert run_step["run"] == (
+        assert run_step["run"].startswith(
             f"uv run python scripts/check_ci_test_shards.py run --lane unit --shard {index}"
         )
         assert run_step["env"]["COVERAGE_FILE"].endswith(f"coverage-unit-{index}.data")
@@ -770,7 +799,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
         ):
             assert fragment in cleanup["run"]
         run_step = _workflow_step(job=job, name=f"Integration tests (shard {index})")
-        assert run_step["run"] == (
+        assert run_step["run"].startswith(
             f"uv run python scripts/check_ci_test_shards.py run --lane integration --shard {index}"
         )
         assert run_step["env"]["COVERAGE_FILE"].endswith(f"coverage-integration-{index}.data")
@@ -826,7 +855,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
 
     gate = _workflow_step(
         job=check_job,
-        name="Require preflight and every test shard to pass (or be skipped by the path filter)",
+        name="Fail closed from prerequisite verdicts only",
     )
     assert gate["id"] == "gate"
     assert gate["env"] == {
@@ -835,26 +864,18 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
         "NEEDS_JSON": "${{ toJSON(needs) }}",
     }
     assert check_job["steps"] == [gate]
-    expected_shards = [
-        f"check-{lane}-{index}" for lane in ("unit", "integration") for index in range(1, 6)
-    ]
+    expected_shards = ["check-unit", "check-integration"]
     assert coverage_job["needs"] == expected_shards
     assert coverage_job["if"] == (
-        "${{ always() && github.event_name == 'merge_group' && "
-        + " && ".join(f"needs.{name}.result == 'success'" for name in expected_shards)
-        + " }}"
+        "github.event_name == 'merge_group' && needs.check-unit.result == 'success' && needs.check-integration.result == 'success'"
     )
-    for job in [*unit_jobs, *integration_jobs]:
-        assert job["env"]["CI_COVERAGE"] == (
-            "${{ github.event_name == 'merge_group' && '1' || '0' }}"
-        )
     assert "coverage" not in check_job["needs"]
 
     combine = _workflow_step(
         job=coverage_job, name="Combine coverage from all independent test shards"
     )
     assert "coverage combine --data-file=" in combine["run"]
-    for prefix, count in (("UNIT", 5), ("INTEGRATION", 5)):
+    for prefix, count in (("UNIT", 5), ("INTEGRATION", 6)):
         for index in range(1, count + 1):
             assert f"{prefix}_{index}_COVERAGE" in combine["run"]
     assert "scripts/check_ci_coverage.py" in combine["run"]
@@ -1049,14 +1070,26 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
     tests = checkout / "tests/test_example.py"
     tests.parent.mkdir()
     tests.write_text("def test_example(): pass\n")
-    manifests = checkout / ".github/ci-test-shards"
-    manifests.mkdir(parents=True)
-    specs = [(lane, index) for lane in ("unit", "integration") for index in range(1, 6)]
-    for lane, index in specs:
-        (manifests / f"{lane}-{index}.txt").write_text("tests/test_example.py\n")
+    (checkout / "roster").mkdir()
+    (checkout / "pyproject.toml").write_text('[tool.pytest.ini_options]\nmarkers=["integration"]\n')
+    for index in range(6):
+        (checkout / f"tests/test_seed_{index}.py").write_text(
+            "import pytest\ndef test_unit(): pass\n@pytest.mark.integration\ndef test_integration(): pass\n"
+        )
+    specs = [
+        (lane, index)
+        for lane, count in (("unit", 5), ("integration", 6))
+        for index in range(1, count + 1)
+    ]
     scripts = checkout / "scripts"
     scripts.mkdir()
-    for filename in ("check_ci_coverage.py", "check_ci_test_shards.py"):
+    for filename in (
+        "check_ci_coverage.py",
+        "check_ci_test_shards.py",
+        "ci_partition.py",
+        "ci_inventory_collector.py",
+        "ci_shard_observer.py",
+    ):
         shutil.copyfile(REPO_ROOT / "scripts" / filename, scripts / filename)
     subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
     subprocess.run(["git", "add", "."], cwd=checkout, check=True)
@@ -1082,6 +1115,14 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
         "GITHUB_EVENT_NAME": "merge_group",
     }.items():
         monkeypatch.setenv(name, value)
+    from ci_partition import assigned_files, collect_inventory, partition
+
+    inventory = collect_inventory(root=checkout)
+    assignment = partition(inventory, {}, root=checkout)
+    inventory_dir = tmp_path / "runner/ci-inventory"
+    inventory_dir.mkdir(parents=True)
+    (inventory_dir / "inventory.json").write_text(json.dumps(inventory))
+    (inventory_dir / "assignment.json").write_text(json.dumps(assignment))
     inputs = tmp_path / "runner/ci-coverage"
     population: dict[Path, bytes] = {}
     for lane, index in specs:
@@ -1099,7 +1140,8 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             repo_root=checkout,
             lane=lane,
             shard=index,
-            test_files=["tests/test_example.py"],
+            test_files=assigned_files(inventory, assignment, lane=lane, index=index, root=checkout),
+            assignment_digest=assignment["digest"],
         )
         population[data] = data.read_bytes()
         metadata = data.with_suffix(".data.metadata.json")
@@ -1154,7 +1196,8 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             repo_root=checkout,
             lane="unit",
             shard=1,
-            test_files=["tests/test_example.py"],
+            test_files=assigned_files(inventory, assignment, lane="unit", index=1, root=checkout),
+            assignment_digest=assignment["digest"],
         )
 
     def run(label: str, body: str, expected: int) -> None:
