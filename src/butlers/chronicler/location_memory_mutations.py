@@ -139,6 +139,118 @@ async def current_artifact_body_matches(conn: Any, row: Any, witness: Any) -> bo
     )
 
 
+_MUTATION_TOOLS = frozenset(
+    {
+        "memory_confirm",
+        "memory_forget",
+        "memory_mark_helpful",
+        "memory_mark_harmful",
+        "memory_reclassify",
+    }
+)
+
+
+async def reserve_mutation_tool_input(
+    pool: Any, conn: Any, witness: Any, before: Any, exclusive: bool
+):
+    """Actual registered tool + actual native row, before business processing.
+
+    These births describe the native server tool's selected canonical input,
+    not another runtime's authority or a model-reported source/result ID.
+    """
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_projection import _digest_value
+    from butlers.chronicler.location_tool_copies import current_tool_copy
+    from butlers.location_retention import content_digest
+
+    runtime = _runtimes.get(pool)
+    tool = current_tool_copy(runtime) if runtime is not None else None
+    if tool is None:
+        return None  # A fixed API writer does not enroll a receiving runtime.
+    if runtime.name != "chronicler" or tool.module != "memory" or tool.name not in _MUTATION_TOOLS:
+        raise PolicyUnavailableError("Native mutation tool producer differs")
+    if not await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM chronicler.location_runtime_tool_intents "
+        "WHERE tool_generation=$1 AND receiving_session=$2 AND tool_name=$3 "
+        "AND module_name='memory')",
+        tool.generation,
+        tool.session,
+        tool.name,
+    ):
+        raise PolicyUnavailableError("Native mutation tool reservation is unavailable")
+    parents = await conn.fetch(
+        "SELECT DISTINCT b.output_kind,b.output_id,b.lineage_known,b.exclusive_input,"
+        "m.exclusive_input "
+        "AS bundle_exclusive FROM chronicler.location_native_memory_artifacts a "
+        "JOIN chronicler.location_native_memory_bundles m USING(input_generation) "
+        "JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
+        "JOIN chronicler.location_native_copy_births b USING(copy_generation,input_digest) "
+        "WHERE a.artifact_generation=$1 ORDER BY b.output_kind,b.output_id",
+        witness["artifact_generation"],
+    )
+    if not parents:
+        raise PolicyUnavailableError("Native mutation complete input ancestry is unavailable")
+    digest = content_digest({"native_mutation_input": _digest_value(dict(before))})
+    generation = uuid4()
+    outputs = {}
+    for parent in parents:
+        key = (parent["output_kind"], parent["output_id"])
+        outputs[key] = outputs.get(key, True) and (
+            exclusive
+            and parent["lineage_known"] is True
+            and parent["exclusive_input"] is True
+            and parent["bundle_exclusive"] is True
+        )
+    for (kind, identifier), known in outputs.items():
+        await conn.execute(
+            "INSERT INTO chronicler.location_native_copy_births "
+            "(copy_generation,output_kind,output_id,input_digest,lineage_known,receiving_session,"
+            "exclusive_input,producer_kind) VALUES($1,$2,$3,$4,$5,$6,$5,'native_mcp')",
+            generation,
+            kind,
+            identifier,
+            digest,
+            known,
+            tool.session,
+        )
+    return tool, generation, digest, len(outputs), all(outputs.values())
+
+
+async def finish_mutation_tool_input(conn: Any, cell: Any, witness: Any, after: Any, closed: bool):
+    if cell is None:
+        return None
+    from butlers.chronicler.location_memory_copies import artifact_content_digest
+    from butlers.chronicler.location_tool_copies import current_tool_copy
+
+    tool, generation, digest, count, known = cell
+    if current_tool_copy(tool.runtime) is not tool:
+        raise PolicyUnavailableError("Native mutation tool lifetime ended")
+    known &= closed
+    await conn.execute(
+        "INSERT INTO chronicler.location_native_memory_mutation_inputs "
+        "(input_generation,tool_generation,artifact_generation,before_digest,after_digest,"
+        "parent_count,lifecycle_only) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        generation,
+        tool.generation,
+        witness["artifact_generation"],
+        digest,
+        artifact_content_digest(witness["memory_table"], after),
+        count,
+        known,
+    )
+    # The committed readback below precedes returning the handler's result;
+    # finish_tool_copy then freezes the actual one-to-one result fingerprint.
+    tool.read_observed = True
+    tool.mixed_inputs |= not known
+    return {
+        "kind": "input",
+        "generation": generation,
+        "tool": tool.generation,
+        "digest": digest,
+        "parents": count,
+    }
+
+
 @asynccontextmanager
 async def tracked_memory_mutation(
     pool: Any, conn: Any, table: str, identifier: Any, *, memory_schema: str | None = None
@@ -174,13 +286,18 @@ async def tracked_memory_mutation(
     if before is None or prior is None or artifact_content_digest(table, before) != prior:
         raise PolicyUnavailableError("Native mutation original body witness differs")
     before = dict(before)
+    input_cell = await reserve_mutation_tool_input(pool, conn, witness, before, exclusive)
     yield recorded
     after = await conn.fetchrow(f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", identifier)
     if after is None:
         raise PolicyUnavailableError("Native mutation cannot erase its body witness")
     digest = artifact_content_digest(table, after)
+    closed = exclusive and lifecycle_only(table, before, dict(after))
+    input_readback = await finish_mutation_tool_input(conn, input_cell, witness, after, closed)
+    if input_readback is not None:
+        recorded.append(input_readback)
     if digest == prior:
-        return  # Idempotence/read-reference changes do not create versions.
+        return  # Idempotence/read-reference changes do not create body versions.
     mutation = uuid4()
     await conn.execute(
         "INSERT INTO chronicler.location_native_memory_mutations "
@@ -192,7 +309,7 @@ async def tracked_memory_mutation(
         transitions[-1]["mutation_generation"] if transitions else None,
         prior,
         digest,
-        exclusive and lifecycle_only(table, before, dict(after)),
+        closed,
     )
     # The actual enrolled writer captures the SAME-transaction catalog
     # projection; old source generations and their loans are never replaced.
@@ -224,7 +341,14 @@ async def tracked_memory_mutation(
             catalog["id"],
             source,
         )
-    recorded.append((mutation, witness["artifact_generation"], digest))
+    recorded.append(
+        {
+            "kind": "mutation",
+            "generation": mutation,
+            "artifact": witness["artifact_generation"],
+            "digest": digest,
+        }
+    )
 
 
 @asynccontextmanager
@@ -246,14 +370,35 @@ async def memory_mutation_transaction(
                 yield conn
     if recorded:
         async with pool.acquire() as committed:
-            for mutation, artifact, digest in recorded:
-                if (
+            for item in recorded:
+                if item["kind"] == "input":
+                    observed = await committed.fetchrow(
+                        "SELECT before_digest,parent_count "
+                        "FROM chronicler.location_native_memory_mutation_inputs "
+                        "WHERE input_generation=$1 AND tool_generation=$2",
+                        item["generation"],
+                        item["tool"],
+                    )
+                    count = await committed.fetchval(
+                        "SELECT count(*) FROM chronicler.location_native_copy_births "
+                        "WHERE copy_generation=$1 AND input_digest=$2",
+                        item["generation"],
+                        item["digest"],
+                    )
+                    if (
+                        observed is None
+                        or observed["before_digest"] != item["digest"]
+                        or observed["parent_count"] != item["parents"]
+                        or count != item["parents"]
+                    ):
+                        raise PolicyUnavailableError("Committed native mutation input is unknown")
+                elif (
                     await committed.fetchval(
                         "SELECT after_digest FROM chronicler.location_native_memory_mutations "
                         "WHERE mutation_generation=$1 AND artifact_generation=$2",
-                        mutation,
-                        artifact,
+                        item["generation"],
+                        item["artifact"],
                     )
-                    != digest
+                    != item["digest"]
                 ):
                     raise PolicyUnavailableError("Committed native mutation witness is unknown")

@@ -512,7 +512,50 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
 
             if tool_witnesses and not matched_tool_records(session["tool_calls"], tool_witnesses):
                 return False
-            if not captured_artifact_calls(session["tool_calls"], artifacts, tool_witnesses):
+            mutation_inputs = []
+            if runtime.name == "chronicler":
+                mutation_inputs = await conn.fetch(
+                    "SELECT i.*,a.body_digest AS original_digest "
+                    "FROM chronicler.location_native_memory_mutation_inputs i "
+                    "JOIN chronicler.location_native_memory_artifacts a USING(artifact_generation) "
+                    "JOIN chronicler.location_runtime_tool_intents t USING(tool_generation) "
+                    "WHERE t.receiving_session=$1 ORDER BY i.tool_generation,i.artifact_generation",
+                    frozen["receiving_session"],
+                )
+                for item in mutation_inputs:
+                    if item["lifecycle_only"] is not True or not await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM "
+                        "chronicler.location_native_memory_artifact_dispositions "
+                        "WHERE artifact_generation=$1 AND body_digest=$2 AND decision_id=$3)",
+                        item["artifact_generation"],
+                        item["original_digest"],
+                        UUID(plan["decision_id"]),
+                    ):
+                        return False
+                    # Every actual selected local parent must be a closed,
+                    # current-plan copy; another artifact's receipt cannot
+                    # substitute for this mutation's own input generation.
+                    if (
+                        await conn.fetchval(
+                            "SELECT count(*)=$5 AND bool_and(b.input_digest=$2 "
+                            "AND b.receiving_session=$3 AND b.lineage_known AND b.exclusive_input "
+                            "AND EXISTS(SELECT 1 FROM chronicler.location_retention_plan_outputs p "
+                            "WHERE p.decision_id=$4 AND p.output_kind=b.output_kind "
+                            "AND p.output_id=b.output_id)) "
+                            "FROM chronicler.location_native_copy_births b "
+                            "WHERE b.copy_generation=$1",
+                            item["input_generation"],
+                            item["before_digest"],
+                            frozen["receiving_session"],
+                            UUID(plan["decision_id"]),
+                            item["parent_count"],
+                        )
+                        is not True
+                    ):
+                        return False
+            if not captured_artifact_calls(
+                session["tool_calls"], artifacts, tool_witnesses, mutation_inputs
+            ):
                 return False  # Unknown/routed mutations retain their input and copy holders.
             already_disposed = set()
             for artifact in artifacts:
@@ -653,7 +696,9 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
     return True
 
 
-def captured_artifact_calls(calls: Any, artifacts: list[Any], witnesses: list[Any] = ()) -> bool:
+def captured_artifact_calls(
+    calls: Any, artifacts: list[Any], witnesses: list[Any] = (), mutation_inputs: list[Any] = ()
+) -> bool:
     """Recorded outputs can select only SAME-writer captured artifact IDs.
 
     This admits no authority or source lineage from the record. Every selected
@@ -667,13 +712,15 @@ def captured_artifact_calls(calls: Any, artifacts: list[Any], witnesses: list[An
         return False
     owned = {(row["memory_table"], str(row["artifact_id"])) for row in artifacts}
     names = {"memory_store_fact": "facts", "memory_store_rule": "rules"}
+    from butlers.chronicler.location_memory_mutations import _MUTATION_TOOLS
     from butlers.chronicler.location_tool_copies import (
         NATIVE_MEMORY_READ_TOOLS,
         matched_tool_records,
     )
 
     if any(
-        isinstance(call, dict) and call.get("name") in NATIVE_MEMORY_READ_TOOLS for call in calls
+        isinstance(call, dict) and call.get("name") in (NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS)
+        for call in calls
     ):
         try:
             if not matched_tool_records(calls, witnesses):
@@ -694,6 +741,23 @@ def captured_artifact_calls(calls: Any, artifacts: list[Any], witnesses: list[An
                 return False
             # The caller also requires full one-to-one input/result matching.
             # One exclusive call cannot bless another same-name mixed call.
+            continue
+        if call.get("name") in _MUTATION_TOOLS:
+            applicable = [row for row in witnesses if row["tool_name"] == call["name"]]
+            if not applicable or any(
+                row["module_name"] != "memory"
+                or row["outcome"] != "success"
+                or row["exclusive_inputs"] is not True
+                or not any(
+                    item["tool_generation"] == row["tool_generation"]
+                    and item["lifecycle_only"] is True
+                    for item in mutation_inputs
+                )
+                for row in applicable
+            ):
+                return False
+            # The owning caller separately verifies every applicable input
+            # and exact artifact disposition, not just these record selectors.
             continue
         result = call.get("result")
         table = names.get(call.get("name"))
@@ -927,6 +991,7 @@ async def capture_context_catalog_source(
     )
     if frozen is None or frozen["exclusive_input"] is not True:
         return False
+    from butlers.chronicler.location_memory_mutations import _MUTATION_TOOLS
     from butlers.chronicler.location_tool_copies import NATIVE_MEMORY_READ_TOOLS, current_tool_copy
 
     current_tool = current_tool_copy(binding.runtime)
@@ -946,14 +1011,43 @@ async def capture_context_catalog_source(
         if (
             tool["module_name"] != "memory"
             or tool["tool_name"]
-            not in ({"memory_store_fact", "memory_store_rule"} | NATIVE_MEMORY_READ_TOOLS)
+            not in (
+                {"memory_store_fact", "memory_store_rule"}
+                | NATIVE_MEMORY_READ_TOOLS
+                | _MUTATION_TOOLS
+            )
             or (not active_write and tool["outcome"] != "success")
             or (
-                tool["tool_name"] in NATIVE_MEMORY_READ_TOOLS
+                tool["tool_name"] in (NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS)
                 and tool["exclusive_inputs"] is not True
             )
         ):
             return False
+        if tool["tool_name"] in _MUTATION_TOOLS:
+            # A later output inherits the mutation's own full selected input,
+            # not the mutation tool name or an unrelated earlier read's loan.
+            selected_inputs = await conn.fetch(
+                "SELECT * FROM chronicler.location_native_memory_mutation_inputs "
+                "WHERE tool_generation=$1 ORDER BY artifact_generation",
+                tool["tool_generation"],
+            )
+            if not selected_inputs:
+                return False
+            for selected in selected_inputs:
+                if (
+                    selected["lifecycle_only"] is not True
+                    or await conn.fetchval(
+                        "SELECT count(*)=$4 AND bool_and(input_digest=$2 "
+                        "AND receiving_session=$3 AND lineage_known AND exclusive_input) "
+                        "FROM chronicler.location_native_copy_births WHERE copy_generation=$1",
+                        selected["input_generation"],
+                        selected["before_digest"],
+                        frozen["receiving_session"],
+                        selected["parent_count"],
+                    )
+                    is not True
+                ):
+                    return False
     loans = await conn.fetch(
         "SELECT l.* FROM chronicler.location_catalog_copy_loans l "
         "JOIN chronicler.location_catalog_copy_lifetimes h USING(loan_id,body_digest) "

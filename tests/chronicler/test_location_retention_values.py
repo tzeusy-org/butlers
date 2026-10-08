@@ -2374,6 +2374,9 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
         artifacts = []
         tool_witnesses = []
         tool_loans = []
+        mutation_inputs = []
+        mutation_disposed = False
+        mutation_parents_closed = False
         artifact_row = None
         descendant = False
         deleted = False
@@ -2399,6 +2402,14 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             return frozen if "context_bindings" in sql else session
 
         async def fetch(self, sql, *args):
+            if "location_native_memory_mutation_inputs" in sql:
+                return [
+                    row
+                    for row in self.mutation_inputs
+                    if not args
+                    or "WHERE tool_generation=$1" not in sql
+                    or row["tool_generation"] == args[0]
+                ]
             if "location_native_catalog_generations" in sql:
                 return []  # No planted owning source; never fabricate a catalog parent.
             if "location_runtime_tool_inputs" in sql:
@@ -2421,6 +2432,10 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             return [loan]
 
         async def fetchval(self, sql, *args):
+            if "location_native_memory_artifact_dispositions" in sql:
+                return self.mutation_disposed
+            if "SELECT count(*)=$5 AND bool_and" in sql or "SELECT count(*)=$4 AND bool_and" in sql:
+                return self.mutation_parents_closed
             if "DELETE FROM rules" in sql:
                 self.deleted = True
                 self.writes.append((sql, args))
@@ -2560,6 +2575,73 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     assert matched_tool_records([read_call, read_call], [two_witnesses[0], two_witnesses[0]])
     assert captured_artifact_calls([read_call, read_call], [], [two_witnesses[0], two_witnesses[0]])
 
+    # Actual successful mutating calls require their own immutable input and
+    # exact source-artifact disposition; another read witness supplies none.
+    mutation_call = {
+        **read_call,
+        "name": "memory_confirm",
+        "input_fingerprint": "d" * 64,
+        "result": {"confirmed": True},
+    }
+    mutation_witness = {
+        **pool.tool_witnesses[1],
+        "tool_name": "memory_confirm",
+        "tool_generation": uuid4(),
+        "input_digest": bytes.fromhex("d" * 64),
+        "result_digest": bytes.fromhex(fingerprint_tool_call_payload(mutation_call["result"])),
+    }
+    mutation_input = {
+        "tool_generation": mutation_witness["tool_generation"],
+        "lifecycle_only": True,
+        "artifact_generation": uuid4(),
+        "input_generation": uuid4(),
+        "before_digest": b"u" * 32,
+        "original_digest": b"o" * 32,
+        "parent_count": 2,
+    }
+    assert not captured_artifact_calls([mutation_call], [], [mutation_witness])
+    assert captured_artifact_calls([mutation_call], [], [mutation_witness], [mutation_input])
+    foreign = {**mutation_input, "tool_generation": uuid4()}
+    assert not captured_artifact_calls([mutation_call], [], [mutation_witness], [foreign])
+    mixed = {**mutation_input, "lifecycle_only": False}
+    assert not captured_artifact_calls([mutation_call], [], [mutation_witness], [mixed])
+    other_call = {**mutation_call, "input_fingerprint": "e" * 64}
+    other_witness = {
+        **mutation_witness,
+        "tool_generation": uuid4(),
+        "input_digest": bytes.fromhex("e" * 64),
+    }
+    other_input = {**mutation_input, "tool_generation": other_witness["tool_generation"]}
+    assert not captured_artifact_calls(
+        [mutation_call, other_call], [], [mutation_witness, other_witness], [mutation_input]
+    )
+    assert captured_artifact_calls(
+        [mutation_call, other_call],
+        [],
+        [mutation_witness, other_witness],
+        [mutation_input, other_input],
+    )
+    other_witness["exclusive_inputs"] = False
+    assert not captured_artifact_calls(
+        [mutation_call, other_call],
+        [],
+        [mutation_witness, other_witness],
+        [mutation_input, other_input],
+    )
+    assert not captured_artifact_calls([mutation_call, mutation_call], [], [mutation_witness])
+    session["tool_calls"].append(mutation_call)
+    pool.tool_witnesses.append(mutation_witness)
+    pool.mutation_inputs = [mutation_input]
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    assert not pool.deleted  # Artifact receipt required despite successful tool outcome.
+    pool.mutation_disposed = True
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    assert not pool.deleted  # Missing/mixed/extra/unselected parent still holds raw input.
+    pool.mutation_parents_closed = True
+    mutation_input["lifecycle_only"] = False
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    mutation_input["lifecycle_only"] = True
+
     pool.tool_loans = [{**loan, "loan_id": uuid4()}]
     assert await dispose_runtime_context(runtime, generation, plan) is False
     assert not pool.deleted  # Unselected late input preserves the entire context.
@@ -2604,6 +2686,10 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     native_pool.tool_witnesses = [
         {**row, "tool_generation": uuid4()} for row in pool.tool_witnesses
     ]
+    native_pool.mutation_inputs = [
+        {**mutation_input, "tool_generation": native_pool.tool_witnesses[2]["tool_generation"]}
+    ]
+    native_pool.mutation_parents_closed = True
     native_pool.tool_witnesses.append(
         {
             "tool_generation": active_tool,
@@ -2725,6 +2811,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     assert update[2] == base
     assert update[3] == [{"source": "base", "sha": "retained"}]
     assert any("location_catalog_copy_finished" in sql for sql, _ in pool.writes)
+    await _assert_closed_native_mutation_copy_disposal()
 
 
 @pytest.mark.asyncio
@@ -2827,6 +2914,19 @@ async def _assert_native_memory_mutation_versions():
                 "content_digest": copies.artifact_content_digest("facts", self.row),
             }
             self.transitions = []
+            self.input_births = []
+            self.mutation_inputs = []
+            self.parents = [
+                {
+                    "output_kind": "point_event",
+                    "output_id": uuid4(),
+                    "lineage_known": True,
+                    "exclusive_input": True,
+                    "bundle_exclusive": True,
+                }
+            ]
+            self.intent_present = True
+            self.input_unknown = False
             self.trace = []
             self.prepared = False
             self.unknown = False
@@ -2843,13 +2943,13 @@ async def _assert_native_memory_mutation_versions():
 
         @asynccontextmanager
         async def transaction(self):
-            saved = deepcopy((self.row, self.transitions))
+            saved = deepcopy((self.row, self.transitions, self.input_births, self.mutation_inputs))
             schema = self.schema
             self.trace.append("begin")
             try:
                 yield
             except BaseException:
-                self.row, self.transitions = saved
+                self.row, self.transitions, self.input_births, self.mutation_inputs = saved
                 self.trace.append("rollback")
                 raise
             else:
@@ -2858,6 +2958,14 @@ async def _assert_native_memory_mutation_versions():
                 self.schema = schema  # SET LOCAL never changes the pool view.
 
         async def fetchrow(self, sql, *args):
+            if "location_native_memory_mutation_inputs" in sql:
+                self.trace.append("input_readback")
+                found = [
+                    x
+                    for x in self.mutation_inputs
+                    if x["input_generation"] == args[0] and x["tool_generation"] == args[1]
+                ]
+                return None if self.input_unknown or not found else found[0]
             if "FROM public.memory_catalog" in sql:
                 return None
             if "location_retention_policy" in sql:
@@ -2870,10 +2978,18 @@ async def _assert_native_memory_mutation_versions():
             return deepcopy(self.row)
 
         async def fetch(self, sql, *args):
+            if "SELECT DISTINCT b.output_kind" in sql:
+                self.trace.append("parent_read")
+                return deepcopy(self.parents)
             assert "location_native_memory_mutations" in sql
             return deepcopy(self.transitions)
 
         async def fetchval(self, sql, *args):
+            if "location_runtime_tool_intents" in sql:
+                self.trace.append("intent_read")
+                return self.intent_present
+            if "count(*) FROM chronicler.location_native_copy_births" in sql:
+                return sum(x[0] == args[0] and x[3] == args[1] for x in self.input_births)
             if "current_schema" in sql:
                 return self.schema
             if "current_user" in sql:
@@ -2894,6 +3010,30 @@ async def _assert_native_memory_mutation_versions():
                 return "SET"
             if "pg_advisory_xact_lock" in sql:
                 return "SELECT 1"
+            if "INSERT INTO chronicler.location_native_copy_births" in sql:
+                self.trace.append("input_birth")
+                self.input_births.append(args)
+                return "INSERT 0 1"
+            if "INSERT INTO chronicler.location_native_memory_mutation_inputs" in sql:
+                self.trace.append("input_commit")
+                self.mutation_inputs.append(
+                    dict(
+                        zip(
+                            (
+                                "input_generation",
+                                "tool_generation",
+                                "artifact_generation",
+                                "before_digest",
+                                "after_digest",
+                                "parent_count",
+                                "lifecycle_only",
+                            ),
+                            args,
+                            strict=True,
+                        )
+                    )
+                )
+                return "INSERT 0 1"
             if "INSERT INTO chronicler.location_native_memory_mutations" in sql:
                 self.trace.append("transition")
                 if self.fail_insert:
@@ -2997,6 +3137,59 @@ async def _assert_native_memory_mutation_versions():
     finally:
         copies._receivers.pop(domain)
 
+    from types import SimpleNamespace
+
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
+
+    native = Writer()
+    runtime = SimpleNamespace(name="chronicler", active=True)
+    tool = _ToolCopy(runtime, uuid4(), uuid4(), "memory_confirm", "memory")
+    token = _current_tool_copy.set(tool)
+    _runtimes[native] = runtime
+    copies._receivers[domain] = (native, "chronicler_mem", native.role)
+    try:
+        frozen = deepcopy(native.original)
+        assert await confirm_memory(native, "fact", native.row["id"])
+        assert len(native.input_births) == len(native.mutation_inputs) == 1
+        assert native.trace.index("input_birth") < native.trace.index("business")
+        assert native.trace.index("business") < native.trace.index("input_commit")
+        assert native.trace.index("commit") < native.trace.index("input_readback")
+        assert native.original == frozen and tool.read_observed and not tool.mixed_inputs
+        assert native.mutation_inputs[0]["tool_generation"] == tool.generation
+        assert native.mutation_inputs[0]["artifact_generation"] == frozen["artifact_generation"]
+        native.intent_present = False
+        before = deepcopy((native.row, native.transitions, native.input_births))
+        with pytest.raises(copies.PolicyUnavailableError, match="reservation is unavailable"):
+            await confirm_memory(native, "fact", native.row["id"])
+        assert (native.row, native.transitions, native.input_births) == before
+        native.intent_present = True
+        parents = native.parents
+        native.parents = []
+        with pytest.raises(copies.PolicyUnavailableError, match="complete input ancestry"):
+            await confirm_memory(native, "fact", native.row["id"])
+        assert (native.row, native.transitions, native.input_births) == before
+        native.parents = parents
+        tool.generation = uuid4()  # A separate actual tool reservation per execution.
+        native.input_unknown = True
+        with pytest.raises(copies.PolicyUnavailableError, match="input is unknown"):
+            await confirm_memory(native, "fact", native.row["id"])
+        assert len(native.mutation_inputs) == 2  # COMMIT cannot be falsely rolled back.
+        native.input_unknown = False
+        tool.generation = uuid4()
+        native.parents.append({**parents[0], "output_id": uuid4(), "lineage_known": False})
+        assert await confirm_memory(native, "fact", native.row["id"])
+        assert native.mutation_inputs[-1]["parent_count"] == 2
+        assert native.mutation_inputs[-1]["lifecycle_only"] is False
+        assert tool.mixed_inputs and len(native.input_births) == 4  # ALL parents, no omission.
+        tool.active = False
+        with pytest.raises(copies.PolicyUnavailableError, match="lifetime differs"):
+            await confirm_memory(native, "fact", native.row["id"])
+    finally:
+        _current_tool_copy.reset(token)
+        _runtimes.pop(native)
+        copies._receivers.pop(domain)
+
     from butlers.chronicler.location_copy_pools import _api_copy_pools
     from butlers.chronicler.location_memory_mutations import _api_writers
 
@@ -3026,3 +3219,122 @@ async def _assert_native_memory_mutation_versions():
     finally:
         _api_writers.pop(api, None)
         _api_copy_pools.discard(api)
+
+
+async def _assert_closed_native_mutation_copy_disposal():
+    """Actual native disposer; faithful SQL selectors doubled, no SQL/role credit."""
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler.location_retention import (
+        PolicyUnavailableError,
+        dispose_bound_native_copies,
+    )
+
+    decision, generation, session_id = uuid4(), uuid4(), uuid4()
+    digest, manifest = b"i" * 32, b"m" * 32
+
+    class Owner:
+        def __init__(self):
+            self.receipt = None
+            self.closed = False
+            self.pending = False
+            self.unknown = False
+            self.writes = []
+            self.session = {
+                "completed_at": datetime.now(UTC),
+                "success": True,
+                "error": None,
+                "prompt": "original input body",
+                "result": "original output body",
+                "tool_calls": [],
+                "effective_system_prompt": "independent base sentinel",
+            }
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        async def fetchrow(self, sql, *args):
+            if "location_retention_policy" in sql:
+                return {"version": 1}
+            if "location_retention_plans" in sql:
+                return {"state": "holder_pending", "manifest_digest": manifest}
+            if "location_native_copy_dispositions" in sql:
+                return (
+                    None
+                    if self.receipt is None
+                    else {
+                        "receipt_id": self.receipt,
+                        "input_digest": digest,
+                        "receiving_session": session_id,
+                    }
+                )
+            assert "FROM sessions" in sql
+            return self.session
+
+        async def fetch(self, sql, *args):
+            if "SELECT DISTINCT b.copy_generation" in sql:
+                return [{"copy_generation": generation}]
+            if "FROM location_native_copy_births" in sql:
+                return [
+                    {
+                        "lineage_known": True,
+                        "exclusive_input": True,
+                        "selected": True,
+                        "receiving_session": session_id,
+                        "input_digest": digest,
+                        "producer_kind": "native_mcp",
+                    }
+                ]
+            assert "location_native_cache_heads" in sql
+            return []
+
+        async def fetchval(self, sql, *args):
+            if "current_user" in sql:
+                return "butler_chronicler_rw"
+            if "JOIN location_runtime_context_dispositions d USING(input_generation)" in sql:
+                assert args == (session_id, decision, manifest)
+                return self.closed
+            if "location_runtime_context_intents i" in sql:
+                return self.pending
+            if sql.startswith("SELECT count(*)"):
+                return 0 if self.unknown else int(self.receipt is not None)
+            assert sql.startswith("SELECT EXISTS")
+            return False
+
+        async def execute(self, sql, *args):
+            self.writes.append((sql, args))
+            if "INSERT INTO location_native_copy_dispositions " in sql:
+                self.receipt = args[1]
+
+    owner = Owner()
+    await dispose_bound_native_copies(owner, decision)
+    assert owner.receipt is None and not any("UPDATE sessions" in q for q, _ in owner.writes)
+    owner.session.update(prompt="[Location input forgotten]", result="[Location output forgotten]")
+    await dispose_bound_native_copies(owner, decision)
+    assert owner.receipt is None  # A forged placeholder is not a durable own disposition.
+    owner.closed = True
+    owner.pending = True
+    await dispose_bound_native_copies(owner, decision)
+    assert owner.receipt is None  # ALL receiving inputs must be disposed under this plan.
+    owner.pending = False
+    owner.session["result"] = "changed late output"
+    await dispose_bound_native_copies(owner, decision)
+    assert owner.receipt is None
+    owner.session["result"] = "[Location output forgotten]"
+    await dispose_bound_native_copies(owner, decision)
+    assert owner.receipt is not None
+    assert owner.session["effective_system_prompt"] == "independent base sentinel"
+    assert not any("DELETE FROM" in q for q, _ in owner.writes)
+    original_receipt = owner.receipt
+    await dispose_bound_native_copies(owner, decision)
+    assert owner.receipt == original_receipt  # Same generation resumes its exact receipt.
+    owner.unknown = True
+    with pytest.raises(PolicyUnavailableError, match="disposition is unknown"):
+        await dispose_bound_native_copies(owner, decision)
+    assert owner.receipt == original_receipt  # Unknown readback cannot invent rollback/replacement.

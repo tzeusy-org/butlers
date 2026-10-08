@@ -1109,6 +1109,22 @@ async def _assert_native_memory_mutation_chain(pool, domain):
                 input_generation,
                 b"b" * 32,
             )
+            parent = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO chronicler.location_native_copy_births "
+                "(copy_generation,output_kind,output_id,input_digest,lineage_known,exclusive_input,"
+                "producer_kind) VALUES($1,'point_event',$2,$3,true,true,'native_memory')",
+                parent,
+                uuid.uuid4(),
+                b"n" * 32,
+            )
+            await conn.execute(
+                "INSERT INTO chronicler.location_native_dispatch_parents "
+                "(input_generation,copy_generation,input_digest) VALUES($1,$2,$3)",
+                input_generation,
+                parent,
+                b"n" * 32,
+            )
             await conn.execute(
                 "INSERT INTO chronicler.location_native_memory_artifacts "
                 "(artifact_generation,input_generation,memory_table,artifact_id,body_digest,content_digest) "
@@ -1182,6 +1198,109 @@ async def _assert_native_memory_mutation_chain(pool, domain):
             assert versions[1]["previous_generation"] == versions[0]["mutation_generation"]
             assert versions[1]["before_digest"] == versions[0]["after_digest"]
             assert await current_artifact_body_matches(readback, row, original)
+        # New native mutation-input SQL is a planted private receiving binding,
+        # not proof that a remote invocation/guard authenticated this fixture.
+        from butlers.chronicler.location_catalog_copies import CatalogCopyRuntime, _runtimes
+        from butlers.chronicler.location_memory_context import _context_writers
+        from butlers.chronicler.location_tool_copies import (
+            _current_tool_copy,
+            _ToolCopy,
+            finish_tool_copy,
+        )
+
+        session_id, tool_generation = uuid.uuid4(), uuid.uuid4()
+        await domain.execute(
+            "INSERT INTO sessions(id,prompt,trigger_source,request_id) VALUES($1,$2,$3,$4)",
+            session_id,
+            "planted receiving input",
+            "test:native_mutation",
+            str(uuid.uuid4()),
+        )
+        await domain.execute(
+            "INSERT INTO location_runtime_tool_intents "
+            "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+            "VALUES($1,$2,'memory_confirm','memory',$3)",
+            tool_generation,
+            session_id,
+            b"t" * 32,
+        )
+        prior_runtime, prior_writer = _runtimes.get(pool), _context_writers.get(domain)
+        runtime = CatalogCopyRuntime(
+            domain=domain,
+            memory=pool,
+            name="chronicler",
+            registry=object(),
+            identity=("chronicler", await domain.fetchval("SELECT current_user")),
+            memory_identity=("chronicler_mem", await pool.fetchval("SELECT current_user")),
+        )
+        tool = _ToolCopy(runtime, tool_generation, session_id, "memory_confirm", "memory")
+        token = _current_tool_copy.set(tool)
+        try:
+            with pytest.raises(RuntimeError, match="planted input rollback"):
+                async with memory_mutation_transaction(pool, "facts", artifact) as writer:
+                    await writer.execute(
+                        "UPDATE facts SET validity='retracted' WHERE id=$1", artifact
+                    )
+                    raise RuntimeError("planted input rollback")
+            assert (
+                await pool.fetchval("SELECT validity FROM facts WHERE id=$1", artifact) == "active"
+            )
+            assert not await domain.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_memory_mutation_inputs "
+                "WHERE tool_generation=$1)",
+                tool_generation,
+            )
+            assert not await domain.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_copy_births "
+                "WHERE receiving_session=$1)",
+                session_id,
+            )
+            assert await confirm_memory(pool, "fact", artifact)
+            await finish_tool_copy((tool, token), {"confirmed": True})
+            async with domain.acquire() as observed:
+                captured = await observed.fetchrow(
+                    "SELECT * FROM location_native_memory_mutation_inputs "
+                    "WHERE tool_generation=$1 AND artifact_generation=$2",
+                    tool_generation,
+                    generation,
+                )
+                assert captured is not None and captured["lifecycle_only"] is True
+                assert captured["parent_count"] == 1
+                assert (
+                    await observed.fetchval(
+                        "SELECT count(*) FROM location_native_copy_births WHERE copy_generation=$1 "
+                        "AND receiving_session=$2 AND input_digest=$3 AND lineage_known AND exclusive_input",
+                        captured["input_generation"],
+                        session_id,
+                        captured["before_digest"],
+                    )
+                    == 1
+                )
+                assert (
+                    await observed.fetchval(
+                        "SELECT exclusive_inputs FROM location_runtime_tool_results WHERE tool_generation=$1",
+                        tool_generation,
+                    )
+                    is True
+                )
+                with pytest.raises(asyncpg.RaiseError, match="history is permanent"):
+                    async with observed.transaction():
+                        await observed.execute(
+                            "UPDATE location_native_memory_mutation_inputs SET lifecycle_only=false "
+                            "WHERE input_generation=$1",
+                            captured["input_generation"],
+                        )
+        finally:
+            if _current_tool_copy.get() is tool:
+                _current_tool_copy.reset(token)
+            runtime.close()
+            if prior_runtime is not None:
+                _runtimes[pool] = prior_runtime
+            if prior_writer is None:
+                _context_writers.pop(domain, None)
+            else:
+                _context_writers[domain] = prior_writer
+
         # A real mixed annotation is recorded but never made source-exclusive.
         async with memory_mutation_transaction(pool, "facts", artifact) as writer:
             await writer.execute(

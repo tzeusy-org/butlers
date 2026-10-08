@@ -1855,6 +1855,21 @@ async def dispose_bound_native_copies(pool: asyncpg.Pool, decision_id: UUID) -> 
                 ):
                     continue  # Preserve frozen full session body until its own context closes.
                 calls = session["tool_calls"]
+                closed_context = (
+                    session["prompt"] == "[Location input forgotten]"
+                    and session["result"] == "[Location output forgotten]"
+                    and calls == []
+                    and await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_runtime_context_bindings b "
+                        "JOIN location_runtime_context_dispositions d USING(input_generation) "
+                        "WHERE b.receiving_session=$1 AND d.decision_id=$2 "
+                        "AND d.manifest_digest=$3)",
+                        session_id,
+                        decision_id,
+                        plan["manifest_digest"],
+                    )
+                    is True
+                )
                 allowed = {
                     "chronicler_list_events",
                     "chronicler_list_episodes",
@@ -1866,6 +1881,7 @@ async def dispose_bound_native_copies(pool: asyncpg.Pool, decision_id: UUID) -> 
                     or (
                         not calls
                         and births[0]["producer_kind"] not in {"native_dispatch", "native_memory"}
+                        and not closed_context
                     )
                     or any(
                         not isinstance(call, dict) or call.get("name") not in allowed

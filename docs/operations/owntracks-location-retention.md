@@ -466,3 +466,34 @@ finite-lease rollback, raw DELETE, complete same-batch header/member readback an
 separate Chronicler reconciliation. Its remote frontier and accepted-source IDs
 are planted SQL-engine controls. Actual registered all-holder admission, managed
 browser invalidation and protected whole delivery remain distinct and UNMET.
+
+
+Native mutation input and terminal continuation records a separate digest-only
+input generation for each actual registered tool and locked artifact before the
+business write. The SAME transaction captures all original parents and the
+actual before/after body; a separate acquisition reads that immutable input and
+all parent births after COMMIT before the handler result returns. API writer
+registration does not supply a receiving tool or create these input births.
+A genuinely separate execution gets its own tool generation; ACK loss does not
+refresh the old artifact or rewrite the original report.
+
+The receiving runtime requires every applicable successful mutating call's
+one-to-one full input/result witness, its exact immutable artifact-input link,
+and that artifact's own terminal receipt under the same plan. Every input parent
+must be selected, exclusive, unchanged and present in the exact count; missing,
+extra, mixed or unrelated parents retain the context. Later own native artifacts
+inherit actual completed mutation inputs as well as the original context and
+late read loans. Only a fully reduced stored receiving body together with its
+same-plan full context disposition permits the native local-copy receipt handoff.
+An empty tool record or forged placeholder is insufficient. Independent base
+instructions remain unchanged. These source mechanisms do not close unresolved
+freeform/mixed changes or delegated/routed copies by themselves.
+
+Dated d96e normal37777726662 has genuine official all11 JUnit0FAIL0ERROR:
+the existing migrated Memory claim/mutation species passed8.922s and the complete
+retention engine species passed22.361s. Those planted input/source fixtures prove
+their SQL engine and writer compatibility, not real registered all-holder ingress,
+managed browser invalidation or protected whole delivery. The new mutation-input
+and terminal continuation requires its own exact-head hosted evidence. Full
+mixed/borrowed/routed/delegated descendant closure remains mandatory SOURCE and
+proof work; no permanent refusal substitutes for lawful own-copy reduction.

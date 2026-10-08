@@ -343,6 +343,17 @@ def upgrade() -> None:
           UNIQUE(artifact_generation,revision),
           CHECK((revision=1)=(previous_generation IS NULL))
         );
+        CREATE TABLE location_native_memory_mutation_inputs (
+          input_generation UUID PRIMARY KEY,
+          tool_generation UUID NOT NULL REFERENCES location_runtime_tool_intents(tool_generation),
+          artifact_generation UUID NOT NULL REFERENCES location_native_memory_artifacts(artifact_generation),
+          before_digest BYTEA NOT NULL CHECK(octet_length(before_digest)=32),
+          after_digest BYTEA NOT NULL CHECK(octet_length(after_digest)=32),
+          parent_count INTEGER NOT NULL CHECK(parent_count>0),
+          lifecycle_only BOOLEAN NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          UNIQUE(tool_generation,artifact_generation)
+        );
         CREATE TABLE location_native_catalog_generations (
           source_generation UUID PRIMARY KEY,
           catalog_id UUID NOT NULL,
@@ -508,6 +519,7 @@ def upgrade() -> None:
         "location_native_memory_bundle_episodes",
         "location_native_memory_artifacts",
         "location_native_memory_mutations",
+        "location_native_memory_mutation_inputs",
         "location_native_memory_runtime_receipts",
         "location_native_memory_artifact_dispositions",
         "location_native_memory_reservations",
@@ -558,7 +570,8 @@ def downgrade() -> None:
           location_native_catalog_server_dispositions,
           location_native_catalog_dispositions,location_native_catalog_loans,
           location_native_catalog_heads,location_native_catalog_generations,
-          location_native_memory_artifact_dispositions,location_native_memory_mutations,
+          location_native_memory_artifact_dispositions,location_native_memory_mutation_inputs,
+          location_native_memory_mutations,
           location_native_memory_artifacts,
           location_native_memory_runtime_receipts,location_native_memory_bundle_episodes,
           location_native_memory_bundles,
