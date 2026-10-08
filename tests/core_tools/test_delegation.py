@@ -246,7 +246,14 @@ class TestDelegateReceive:
         monkeypatch.setattr(
             _delegation,
             "get_delegation",
-            AsyncMock(return_value={"target_butler": "relationship", "status": "pending"}),
+            AsyncMock(
+                return_value={
+                    "target_butler": "relationship",
+                    "status": "pending",
+                    "question": "Who is Alice's employer?",
+                    "asking_butler": "finance",
+                }
+            ),
         )
         schedule_mock = AsyncMock(return_value=uuid.uuid4())
         monkeypatch.setattr(_delegation, "_schedule_create", schedule_mock)
@@ -262,6 +269,21 @@ class TestDelegateReceive:
         _pool, task_name, cron, prompt = schedule_mock.await_args.args
         assert task_name == "delegate-answer-ledger-8"
         assert cron is not None
+        before = schedule_mock.await_count
+        for question, actor in [
+            ("substituted body", "finance"),
+            ("Who is Alice's employer?", "forged"),
+        ]:
+            refused = await registered["delegate_receive"](
+                ledger_id="ledger-8",
+                question=question,
+                asking_butler=actor,
+            )
+            assert (
+                refused["status"] == "error"
+                and refused["error"] == "Delegated question body differs."
+            )
+        assert schedule_mock.await_count == before
         assert "ledger-8" in prompt
         assert "delegate_answer" in prompt
 

@@ -51,7 +51,8 @@ def _create_local_tables(schema: str, statement: str) -> None:
           ('location_retention_copy_receipts','location_retention_source_floors',
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
-           'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results')
+           'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_native_delegation_inputs',
+           'location_native_delegation_parents','location_native_delegation_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -75,6 +76,9 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_runtime_tool_intents",
         "location_runtime_tool_inputs",
         "location_runtime_tool_results",
+        "location_native_delegation_inputs",
+        "location_native_delegation_parents",
+        "location_native_delegation_dispositions",
     ):
         if table not in present:
             op.execute(f"ALTER TABLE {quote(schema)}.{quote(table)} OWNER TO {quote(owner)}")
@@ -209,6 +213,35 @@ def _validate_local_tables(schema: str) -> None:
             ],
         }
     )
+    expected.update(
+        {
+            "location_native_delegation_inputs": [
+                ("question_generation", "uuid", True),
+                ("ledger_id", "uuid", True),
+                ("receiving_session", "uuid", True),
+                ("tool_generation", "uuid", True),
+                ("context_generation", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("parent_count", "integer", True),
+                ("exclusive_input", "boolean", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_native_delegation_dispositions": [
+                ("question_generation", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("body_digest", "bytea", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_native_delegation_parents": [
+                ("question_generation", "uuid", True),
+                ("parent_kind", "text", True),
+                ("parent_generation", "uuid", True),
+                ("parent_digest", "bytea", True),
+            ],
+        }
+    )
     expected_constraints = {
         "location_retention_copy_receipts": {
             "PRIMARY KEY (decision_id)",
@@ -328,6 +361,35 @@ def _validate_local_tables(schema: str) -> None:
                 "PRIMARY KEY (input_generation)",
                 "CHECK ((octet_length(manifest_digest) = 32))",
                 "UNIQUE (receipt_id)",
+            },
+        }
+    )
+    expected_constraints.update(
+        {
+            "location_native_delegation_inputs": {
+                "PRIMARY KEY (question_generation)",
+                "UNIQUE (ledger_id)",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "CHECK ((parent_count >= 0))",
+                "FOREIGN KEY (tool_generation) REFERENCES "
+                "location_runtime_tool_intents(tool_generation)",
+                "FOREIGN KEY (context_generation) REFERENCES "
+                "location_runtime_context_bindings(input_generation)",
+            },
+            "location_native_delegation_dispositions": {
+                "PRIMARY KEY (question_generation)",
+                "UNIQUE (receipt_id)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "FOREIGN KEY (question_generation) REFERENCES "
+                "location_native_delegation_inputs(question_generation)",
+            },
+            "location_native_delegation_parents": {
+                "PRIMARY KEY (question_generation, parent_kind, parent_generation)",
+                "CHECK ((octet_length(parent_digest) = 32))",
+                "CHECK ((parent_kind = ANY (ARRAY['native_copy'::text, 'catalog_loan'::text])))",
+                "FOREIGN KEY (question_generation) REFERENCES "
+                "location_native_delegation_inputs(question_generation)",
             },
         }
     )
@@ -567,6 +629,33 @@ def upgrade() -> None:
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           CHECK((outcome='success')=(result_digest IS NOT NULL))
         );
+        CREATE TABLE IF NOT EXISTS location_native_delegation_inputs (
+          question_generation UUID PRIMARY KEY,
+          ledger_id UUID NOT NULL UNIQUE,
+          receiving_session UUID NOT NULL,
+          tool_generation UUID NOT NULL REFERENCES location_runtime_tool_intents(tool_generation),
+          context_generation UUID NOT NULL
+            REFERENCES location_runtime_context_bindings(input_generation),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          parent_count INTEGER NOT NULL CHECK(parent_count>=0),
+          exclusive_input BOOLEAN NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_native_delegation_parents (
+          question_generation UUID NOT NULL REFERENCES location_native_delegation_inputs,
+          parent_kind TEXT NOT NULL CHECK(parent_kind IN ('native_copy','catalog_loan')),
+          parent_generation UUID NOT NULL,
+          parent_digest BYTEA NOT NULL CHECK(octet_length(parent_digest)=32),
+          PRIMARY KEY(question_generation,parent_kind,parent_generation)
+        );
+        CREATE TABLE IF NOT EXISTS location_native_delegation_dispositions (
+          question_generation UUID PRIMARY KEY REFERENCES location_native_delegation_inputs,
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE IF NOT EXISTS location_catalog_copy_finished (
           loan_id UUID PRIMARY KEY REFERENCES location_catalog_copy_lifetimes(loan_id),
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
@@ -620,6 +709,9 @@ def upgrade() -> None:
         "location_runtime_tool_intents",
         "location_runtime_tool_inputs",
         "location_runtime_tool_results",
+        "location_native_delegation_inputs",
+        "location_native_delegation_parents",
+        "location_native_delegation_dispositions",
     ):
         op.execute(f"""
             DROP TRIGGER IF EXISTS preserve_location_copy_history ON {table};
@@ -670,7 +762,8 @@ def downgrade() -> None:
              OR EXISTS(SELECT 1 FROM location_retention_copy_receipts)
              OR EXISTS(SELECT 1 FROM location_catalog_copy_loans)
              OR EXISTS(SELECT 1 FROM location_runtime_context_intents)
-             OR EXISTS(SELECT 1 FROM location_runtime_tool_intents) THEN
+             OR EXISTS(SELECT 1 FROM location_runtime_tool_intents)
+             OR EXISTS(SELECT 1 FROM location_native_delegation_inputs) THEN
             RAISE EXCEPTION 'retention history exists; roll forward instead of erasing floors';
           END IF;
         END $$;

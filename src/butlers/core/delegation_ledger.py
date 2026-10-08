@@ -124,6 +124,42 @@ async def record_ask(
             f"record_ask: status must be one of {sorted(_INITIAL_STATUSES)}, got {status!r}"
         )
 
+    from butlers.core.delegation_source import capture_ask
+
+    fields = {
+        "asking_butler": asking_butler,
+        "question": question,
+        "target_butler": target_butler,
+        "catalog_match_id": uuid.UUID(str(catalog_match_id))
+        if catalog_match_id is not None
+        else None,
+        "catalog_score": catalog_score,
+        "status": status,
+        "reason": reason,
+        "metadata": metadata,
+    }
+
+    async def native_write(conn: Any, identifier: uuid.UUID):
+        return await conn.fetchval(
+            "INSERT INTO public.delegation_ledger "
+            "(id,asking_butler,question,target_butler,catalog_match_id,"
+            "catalog_score,status,reason,metadata) "
+            "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING id",
+            identifier,
+            asking_butler,
+            question,
+            target_butler,
+            fields["catalog_match_id"],
+            catalog_score,
+            status,
+            reason,
+            metadata,
+        )
+
+    native = await capture_ask(pool, fields, native_write)
+    if native is not None:
+        return native
+
     row_id = await pool.fetchval(
         """
         INSERT INTO public.delegation_ledger

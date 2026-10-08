@@ -1040,7 +1040,10 @@ async def _all_committed_holders(conn: asyncpg.Connection, plan: Any) -> Any | N
         catalog_frontier_closed,
         catalog_holder_inventory,
     )
+    from butlers.chronicler.location_delegation_copies import delegation_frontier_closed
 
+    if not await delegation_frontier_closed(conn, plan["decision_id"]):
+        return None
     if not await catalog_frontier_closed(conn, plan["decision_id"]):
         return None
     holders = await conn.fetch(
@@ -2264,6 +2267,10 @@ async def seal_native_frontier(pool: asyncpg.Pool, decision_id: UUID) -> UUID | 
                 "SELECT 1 FROM location_legacy_cache_replacements r "
                 "WHERE r.observation_id=o.observation_id))"
             ):
+                return None
+            from butlers.chronicler.location_delegation_copies import delegation_frontier_closed
+
+            if not await delegation_frontier_closed(conn, decision_id):
                 return None
             copies = await conn.fetch(
                 "SELECT DISTINCT b.copy_generation,b.input_digest,b.producer_kind "

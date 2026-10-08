@@ -322,12 +322,19 @@ class CatalogCopyRuntime:
         self.incarnation = uuid4()
         self.pending: dict[str, _Pending] = {}
         self.active = True
-        _runtimes[memory] = self
+        from butlers.chronicler.location_delegation_copies import NativeDelegationWriter
         from butlers.chronicler.location_memory_context import register_context_writer
+        from butlers.core.delegation_source import register_writer
 
+        self.delegation_writer = NativeDelegationWriter(self)
+        register_writer(self.domain, self.delegation_writer)
+        _runtimes[memory] = self
         register_context_writer(self)
 
     def close(self) -> None:
+        from butlers.core.delegation_source import clear_writer
+
+        clear_writer(self.domain, self.delegation_writer)
         self.active = False
         self.pending.clear()
         if _runtimes.get(self.memory) is self:
@@ -1043,6 +1050,20 @@ class CatalogCopyRuntime:
                         or str(current["source_generation"]) != source["source_generation"]
                         or current["body_digest"].hex() != source["body_digest"]
                         or str(current["receiving_incarnation"]) != source["receiving_incarnation"]
+                    ):
+                        continue
+                    if await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_native_delegation_inputs q "
+                        "JOIN location_native_delegation_parents p USING(question_generation) "
+                        "WHERE p.parent_kind='catalog_loan' AND p.parent_generation=$1 "
+                        "AND p.parent_digest=$2 AND NOT EXISTS("
+                        "SELECT 1 FROM location_native_delegation_dispositions d "
+                        "WHERE d.question_generation=q.question_generation AND d.decision_id=$3 "
+                        "AND d.manifest_digest=$4 AND d.body_digest=q.body_digest))",
+                        loan,
+                        current["body_digest"],
+                        decision,
+                        manifest,
                     ):
                         continue
                     prior = await conn.fetchrow(

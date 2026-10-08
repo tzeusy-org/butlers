@@ -1359,6 +1359,7 @@ async def _assert_native_memory_mutation_chain(pool, domain):
                             captured["input_generation"],
                         )
             await _assert_two_parent_native_mutation_inputs(pool, domain, runtime, session_id)
+            await _assert_native_delegation_writer(domain, runtime, session_id)
         finally:
             if _current_tool_copy.get() is tool:
                 _current_tool_copy.reset(token)
@@ -1540,3 +1541,126 @@ async def _assert_two_parent_native_mutation_inputs(pool, domain, runtime, sessi
         finally:
             if _current_tool_copy.get() is binding:
                 _current_tool_copy.reset(token)
+
+
+async def _assert_native_delegation_writer(domain, runtime, session_id):
+    """Real owning transactions/readback; private invocation is planted, not online proof."""
+    import hashlib
+
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
+    from butlers.core.delegation_ledger import record_ask
+
+    context, tool_generation = uuid.uuid4(), uuid.uuid4()
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "UPDATE sessions SET effective_system_prompt='synthetic frozen system' WHERE id=$1",
+                session_id,
+            )
+            session = await conn.fetchrow("SELECT * FROM sessions WHERE id=$1", session_id)
+            await conn.execute(
+                "INSERT INTO location_runtime_context_intents(input_generation,receiving_session) "
+                "VALUES($1,$2)",
+                context,
+                session_id,
+            )
+            await conn.execute(
+                "INSERT INTO location_runtime_context_bindings "
+                "(input_generation,receiving_session,bundle_digest,context_digest,system_digest,"
+                "prompt_digest,exclusive_input,context_bytes) VALUES($1,$2,$3,$3,$4,$5,true,0)",
+                context,
+                session_id,
+                b"c" * 32,
+                hashlib.sha256(session["effective_system_prompt"].encode()).digest(),
+                hashlib.sha256(session["prompt"].encode()).digest(),
+            )
+            await conn.execute(
+                "INSERT INTO location_runtime_tool_intents "
+                "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+                "VALUES($1,$2,'delegate_ask','core',$3)",
+                tool_generation,
+                session_id,
+                b"d" * 32,
+            )
+    tool = _ToolCopy(runtime, tool_generation, session_id, "delegate_ask", "core")
+    token = _current_tool_copy.set(tool)
+    try:
+        fields = dict(
+            asking_butler="chronicler",
+            question="synthetic native location question",
+            target_butler="relationship",
+            catalog_match_id=None,
+            catalog_score=None,
+            metadata={"synthetic": "actual JSON object"},
+        )
+        identifier = uuid.UUID(await record_ask(domain, status="pending", **fields))
+        async with domain.acquire() as observed:
+            birth = await observed.fetchrow(
+                "SELECT * FROM location_native_delegation_inputs WHERE ledger_id=$1",
+                identifier,
+            )
+            canonical = await observed.fetchrow(
+                "SELECT * FROM public.delegation_ledger WHERE id=$1", identifier
+            )
+            parents = await observed.fetch(
+                "SELECT * FROM location_native_delegation_parents WHERE question_generation=$1",
+                birth["question_generation"],
+            )
+            assert birth["context_generation"] == context
+            assert birth["tool_generation"] == tool_generation
+            assert (
+                birth["body_digest"] == question_digest(fields) == question_digest(dict(canonical))
+            )
+            assert isinstance(canonical["metadata"], dict)
+            assert birth["parent_count"] == len(parents) > 0
+            assert all(row["parent_kind"] == "native_copy" for row in parents)
+            for row in parents:
+                assert await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_native_copy_births "
+                    "WHERE copy_generation=$1 AND input_digest=$2 AND receiving_session=$3)",
+                    row["parent_generation"],
+                    row["parent_digest"],
+                    session_id,
+                )
+            with pytest.raises(asyncpg.RaiseError, match="history is permanent"):
+                async with observed.transaction():
+                    await observed.execute(
+                        "UPDATE location_native_delegation_inputs SET body_digest=$2 WHERE ledger_id=$1",
+                        identifier,
+                        b"x" * 32,
+                    )
+        before = await domain.fetchval("SELECT count(*) FROM location_native_delegation_inputs")
+        # Refusal occurs before a new ledger body when the actual tool intent differs.
+        tool.generation = uuid.uuid4()
+        with pytest.raises(PolicyUnavailableError, match="binding is unavailable"):
+            await record_ask(domain, status="pending", **fields)
+        tool.generation = tool_generation
+        assert (
+            await domain.fetchval("SELECT count(*) FROM location_native_delegation_inputs")
+            == before
+        )
+
+        async def rollback(conn, selected):
+            await conn.execute(
+                "INSERT INTO public.delegation_ledger(id,asking_butler,question,status) "
+                "VALUES($1,'chronicler','synthetic rollback','pending')",
+                selected,
+            )
+            raise RuntimeError("planted delegated business rollback")
+
+        with pytest.raises(RuntimeError, match="delegated business rollback"):
+            await runtime.delegation_writer.capture_ask(fields, rollback)
+        async with domain.acquire() as observed:
+            assert (
+                await observed.fetchval("SELECT count(*) FROM location_native_delegation_inputs")
+                == before
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM public.delegation_ledger "
+                "WHERE question='synthetic rollback')"
+            )
+    finally:
+        _current_tool_copy.reset(token)

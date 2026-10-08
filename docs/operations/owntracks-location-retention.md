@@ -546,3 +546,40 @@ constraints refuse before any input/business write. Existing migrated controls
 plant the extra dependency and a differing deferrability profile, prove installer
 and native refusal, then restore the exact-one source installation and read it
 back separately. Those new controls are hosted-only, not locally executed SQL.
+
+
+### Native delegated-question source birth (active source continuation)
+
+The configured owning CatalogCopyRuntime registers a private ledger writer on
+its actual domain pool. An active registered `core.delegate_ask` tool selects
+that writer and its real receiving session; caller actor/session/ledger fields
+cannot enroll it or switch to an unrelated pool/Connection. Ordinary callers
+without an active native producer retain the existing Pool/Connection behavior.
+The owning writer locks policy before reading the actual context and every own
+native/catalog parent, refuses disposed or prepared inputs, and captures the
+full frozen question frame plus its immutable complete parent set before the
+public ledger insert in the SAME transaction. A separate committed acquisition
+reads header, canonical question and every parent before dispatch can proceed.
+Rollback removes both births and ledger body. Unknown acknowledgement preserves
+the committed copy and refuses dispatch; it never fabricates rollback.
+
+The body profile binds asking/target butlers, exact question, catalog match and
+score, and metadata. Mutable status/reason are business outcomes and do not
+replace that original body. Mixed/unknown parent flags remain nonexclusive.
+Actual delegate_receive additionally compares question/asking with the canonical
+ledger before scheduling; this is necessary integrity, **not** receiving-source
+authority. Native question history remains in the all-holder frontier after its
+source session ends. A terminal public status, cleared question or vanished
+parent cannot stand in for the exact question/body/decision/manifest terminal
+receipt. Borrowed catalog loans cannot be closed while their question descendants
+remain unresolved.
+
+This checkpoint installs the actual source producer and required census only.
+Fixed-source/receiver online challenge, pre-prompt scheduled input binding,
+answer/wake/resuming copies and lawful mixed-copy terminal reconciliation are
+still required implementation work. No terminal receipt producer is credited by
+its table or by these source births. The existing migrated Memory node is extended
+with actual same-writer ledger, immutable history and rollback/readback controls;
+its private invocation is planted engine lineage, not an online source proof.
+All original outcomes and browser/registered all-closed deletion requirements
+remain mandatory and unmet. No new runtime role, grant or peer-private SQL is used.

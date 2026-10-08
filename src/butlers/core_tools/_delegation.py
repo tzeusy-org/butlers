@@ -393,6 +393,12 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             # double-schedule an answering task for the same ledger row.
             return {"status": f"already_{row['status']}", "ledger_id": ledger_id}
 
+        # The public ledger is an integrity selector, never receiving-copy
+        # authority. Still, it must not schedule caller-substituted bytes in
+        # place of the actual admitted question. Native source/receiver
+        # reservation remains a separate owning boundary.
+        if row.get("question") != question or row.get("asking_butler") != asking_butler:
+            return {"status": "error", "error": "Delegated question body differs."}
         now = datetime.now(UTC)
         target_time = now + timedelta(minutes=1)
         cron = f"{target_time.minute} {target_time.hour} {target_time.day} {target_time.month} *"

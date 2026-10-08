@@ -1055,6 +1055,8 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
         async def fetchval(self, query, *args):
             if "current_user" in query:
                 return self.role
+            if "FROM location_native_delegation_inputs" in query:
+                return self.question_pending
             if "FROM public.memory_catalog" in query:
                 return self.catalog_unknown
             if "FROM location_native_catalog_generations" in query:
@@ -1112,6 +1114,7 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
             assert "DELETE FROM" not in query
 
     pool = Pool()
+    pool.question_pending = False
     service._copy_pools.add(pool)  # A software registry double, not enrollment evidence.
     try:
         missing = pool.holders.pop("api_server")
@@ -1145,6 +1148,10 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
         assert await service.seal_native_frontier(pool, decision) is None
         assert pool.frontier is None and pool.raw and pool.points
         pool.catalog[0]["receipt_id"] = uuid4()
+        pool.question_pending = True  # Actual outstanding question holder, not a terminal status.
+        assert await service.seal_native_frontier(pool, decision) is None
+        assert pool.frontier is None and pool.raw and pool.points
+        pool.question_pending = False
         pool.trace.clear()
         sealed = await service.seal_native_frontier(pool, decision)
         assert sealed == pool.frontier["frontier_generation"]
@@ -1159,6 +1166,9 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
         assert pool.raw == ["planted-exact-raw"] and pool.points == ["planted-point-body"]
         # This frontier producer itself has no deletion side effect. The real
         # role/point/raw action and separate readbacks are distinct controls.
+        pool.question_pending = True
+        assert await service.seal_native_frontier(pool, decision) is None
+        pool.question_pending = False
         # A genuinely later loan cannot be hidden by the committed old seal.
         pool.catalog.append(
             {

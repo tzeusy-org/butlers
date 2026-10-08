@@ -71,6 +71,7 @@ class TestRecordAsk:
         assert params[1] == "Who is Alice's employer?"
         assert params[2] == "relationship"
         assert params[5] == "pending"
+        await _assert_native_delegated_question_birth()
 
     async def test_unroutable_insert_allows_null_target(self):
         pool = AsyncMock()
@@ -560,3 +561,238 @@ class TestResolveTargetViaCatalog:
         monkeypatch.setattr(delegation_ledger, "search_memory_catalog", AsyncMock(return_value=[]))
         target, match_id, score = await resolve_target_via_catalog(AsyncMock(), "question")
         assert (target, match_id, score) == (None, None, None)
+
+
+async def _assert_native_delegated_question_birth():
+    """Actual ledger writer/adapter; planted private lifetime and SQL doubles only."""
+    import hashlib
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from butlers.chronicler.location_delegation_copies import NativeDelegationWriter
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
+    from butlers.core.delegation_source import clear_writer, register_writer
+
+    trace = []
+
+    class Pool:
+        def __init__(self):
+            self.headers, self.parents, self.ledger = {}, [], {}
+            self.source_parent = uuid.uuid4()
+            self.context = {
+                "input_generation": uuid.uuid4(),
+                "exclusive_input": True,
+                "prompt_digest": hashlib.sha256(b"frozen prompt").digest(),
+                "system_digest": hashlib.sha256(b"frozen system").digest(),
+            }
+            self.composed_changed = False
+            self.intent = True
+            self.fenced = False
+            self.dispatch = []
+            self.unknown = False
+            self.fail_business = False
+            self.acquired = 0
+            self.in_transaction = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.acquired += 1
+            trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            previous = deepcopy((self.headers, self.parents, self.ledger))
+            self.in_transaction = True
+            trace.append("begin")
+            try:
+                yield
+            except BaseException:
+                self.headers, self.parents, self.ledger = previous
+                trace.append("rollback")
+                raise
+            else:
+                trace.append("commit")
+            finally:
+                self.in_transaction = False
+
+        async def execute(self, sql, *args):
+            if "location_native_delegation_inputs" in sql:
+                assert self.in_transaction
+                trace.append("birth")
+                self.headers[args[0]] = dict(
+                    zip(
+                        (
+                            "question_generation",
+                            "ledger_id",
+                            "receiving_session",
+                            "tool_generation",
+                            "context_generation",
+                            "body_digest",
+                            "parent_count",
+                            "exclusive_input",
+                        ),
+                        args,
+                    )
+                )
+            elif "location_native_delegation_parents" in sql:
+                trace.append("parent")
+                self.parents.append(
+                    dict(
+                        zip(
+                            (
+                                "question_generation",
+                                "parent_kind",
+                                "parent_generation",
+                                "parent_digest",
+                            ),
+                            args,
+                        )
+                    )
+                )
+            else:
+                raise AssertionError("unexpected source write")
+
+        async def fetchval(self, sql, *args):
+            if "location_runtime_tool_intents" in sql:
+                return self.intent
+            if "location_runtime_context_dispositions" in sql:
+                return False
+            if "location_native_copy_dispositions" in sql:
+                return self.fenced
+            if "public.delegation_ledger" in sql:
+                trace.append("business")
+                if self.fail_business:
+                    raise RuntimeError("planted business rollback")
+                explicit = "(id," in sql
+                identifier, values = (args[0], args[1:]) if explicit else (uuid.uuid4(), args)
+                self.ledger[identifier] = dict(
+                    zip(
+                        (
+                            "asking_butler",
+                            "question",
+                            "target_butler",
+                            "catalog_match_id",
+                            "catalog_score",
+                            "status",
+                            "reason",
+                            "metadata",
+                        ),
+                        values,
+                    )
+                )
+                return identifier
+            raise AssertionError("unexpected source lookup")
+
+        async def fetchrow(self, sql, *args):
+            if "FROM sessions" in sql:
+                return {
+                    "prompt": "changed" if self.composed_changed else "frozen prompt",
+                    "effective_system_prompt": "frozen system",
+                }
+            if "location_runtime_context_bindings" in sql:
+                return self.context
+            if "location_native_delegation_inputs" in sql:
+                assert not self.in_transaction
+                trace.append("readback")
+                return None if self.unknown else self.headers.get(args[0])
+            if "public.delegation_ledger" in sql:
+                return self.ledger.get(args[0])
+            raise AssertionError("unexpected source row")
+
+        async def fetch(self, sql, *args):
+            if "location_native_dispatch_sessions" in sql:
+                return self.dispatch
+            if "location_catalog_copy_loans" in sql:
+                return []
+            if "location_native_copy_births" in sql:
+                return [
+                    {
+                        "copy_generation": self.source_parent,
+                        "input_digest": b"p" * 32,
+                        "lineage_known": True,
+                        "exclusive_input": True,
+                    }
+                ]
+            if "location_native_delegation_parents" in sql:
+                return [p for p in self.parents if p["question_generation"] == args[0]]
+            raise AssertionError("unexpected source bundle")
+
+    pool = Pool()
+
+    async def lock_domain(conn):
+        assert conn is pool and conn.in_transaction
+        trace.append("policy-first")
+
+    runtime = SimpleNamespace(domain=pool, active=True, name="chronicler", lock_domain=lock_domain)
+    writer = NativeDelegationWriter(runtime)
+    register_writer(pool, writer)
+    tool = _ToolCopy(runtime, uuid.uuid4(), uuid.uuid4(), "delegate_ask", "core")
+    token = _current_tool_copy.set(tool)
+
+    async def record(actual=pool, actor="chronicler"):
+        return await record_ask(
+            actual,
+            asking_butler=actor,
+            question="synthetic source-derived delegated question",
+            status="pending",
+            target_butler="relationship",
+            metadata={"synthetic": "fixed metadata"},
+        )
+
+    try:
+        identifier = uuid.UUID(await record())
+        assert identifier in pool.ledger and len(pool.headers) == len(pool.parents) == 1
+        header = next(iter(pool.headers.values()))
+        assert header["ledger_id"] == identifier and header["tool_generation"] == tool.generation
+        assert header["receiving_session"] == tool.session and header["parent_count"] == 1
+        assert pool.parents[0]["parent_generation"] == pool.source_parent
+        assert trace.index("policy-first") < trace.index("birth") < trace.index("business")
+        assert trace.index("business") < trace.index("commit") < trace.index("readback")
+        assert pool.acquired == 2  # The receipt is read separately after domain COMMIT.
+        committed = deepcopy((pool.headers, pool.parents, pool.ledger))
+        with pytest.raises(PolicyUnavailableError, match="producer differs"):
+            await record(actor="caller-forged")
+        with pytest.raises(RuntimeError, match="owning writer differs"):
+            await record(object())
+        pool.intent = False
+        with pytest.raises(PolicyUnavailableError, match="binding is unavailable"):
+            await record()
+        pool.intent = True
+        pool.composed_changed = True
+        with pytest.raises(PolicyUnavailableError, match="composed input changed"):
+            await record()
+        pool.composed_changed = False
+        pool.fenced = True
+        with pytest.raises(PolicyUnavailableError, match="input is fenced"):
+            await record()
+        pool.fenced = False
+        pool.dispatch = [
+            {
+                "parent_count": 2,
+                "copy_generation": pool.source_parent,
+                "input_digest": b"p" * 32,
+                "output_id": uuid.uuid4(),
+                "birth_digest": b"p" * 32,
+            }
+        ]
+        with pytest.raises(PolicyUnavailableError, match="complete input ancestry differs"):
+            await record()
+        pool.dispatch = []
+        assert (pool.headers, pool.parents, pool.ledger) == committed
+        pool.fail_business = True
+        with pytest.raises(RuntimeError, match="business rollback"):
+            await record()
+        assert (pool.headers, pool.parents, pool.ledger) == committed
+        pool.fail_business = False
+        pool.unknown = True
+        with pytest.raises(PolicyUnavailableError, match="birth is unknown"):
+            await record()
+        assert len(pool.headers) == len(pool.ledger) == 2  # Unknown ACK cannot fake rollback.
+        pool.unknown = False
+        assert uuid.UUID(await record()) in pool.ledger
+    finally:
+        _current_tool_copy.reset(token)
+        clear_writer(pool, writer)
