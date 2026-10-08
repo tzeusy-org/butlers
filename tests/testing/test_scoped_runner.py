@@ -15,6 +15,7 @@ from butlers.testing.scoped_runner import (
     plan_worktree_tests,
 )
 from butlers.testing.source_test_map import FULL_SUITE
+from scripts import ci_test_plan
 
 pytestmark = pytest.mark.unit
 
@@ -74,6 +75,19 @@ def test_deleted_test_file_widens_to_existing_parent_for_collection(tmp_path: Pa
     assert plan.test_paths == ["tests/api/"]
     assert "Deleted test path" in plan.reason
 
+    _write(repo, "tests/test_root.py", "def test_root():\n    assert True\n")
+    _write(repo, "tests/e2e/test_unsupported.py", "def test_e2e():\n    assert True\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "root test and unsupported descendant")
+    deleted_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (repo / "tests/test_root.py").unlink()
+    widened = plan_worktree_tests(deleted_base, repo_dir=repo)
+    assert widened.changed_files == ["tests/test_root.py"]
+    assert widened.test_paths == ["tests/"]
+    assert ci_test_plan.decide_mode(widened) == "full"
+
 
 def test_renamed_test_deduplicates_the_parent_scope_and_collects(tmp_path: Path) -> None:
     repo, base = _repo(tmp_path)
@@ -102,6 +116,23 @@ def test_makefile_change_escalates_instead_of_claiming_no_tests(tmp_path: Path) 
     assert plan.scope == "full"
     assert plan.test_paths == FULL_SUITE
     assert "Escalate" in plan.reason
+    # Real Git change discovery must not infer ownership from adjacent tests.
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "shared-infrastructure baseline")
+    helper_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _write(repo, "tests/test_local.py", "def test_local():\n    assert True\n")
+    _write(repo, "tests/three_seams_helpers.py", "def shared():\n    return 1\n")
+    _write(
+        repo,
+        "roster/health/tests/test_existing.py",
+        "from tests.three_seams_helpers import shared\ndef test_existing():\n    assert shared() == 1\n",
+    )
+    helper_plan = plan_worktree_tests(helper_base, repo_dir=repo)
+    assert helper_plan.scope == "full"
+    assert helper_plan.test_paths == FULL_SUITE
+    assert "tests/three_seams_helpers.py" in helper_plan.changed_files
 
 
 def test_unavailable_base_fails_closed_to_escalation(tmp_path: Path) -> None:

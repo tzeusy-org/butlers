@@ -27,7 +27,7 @@ import argparse
 import json
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -37,6 +37,7 @@ from butlers.testing.scoped_runner import (  # noqa: E402
     ScopedTestPlan,
     plan_scoped_tests,
 )
+from butlers.testing.source_test_map import configured_testpaths  # noqa: E402
 
 # tests/e2e/ requires an authenticated CLI runtime and the `claude` binary,
 # neither of which this fast lane's Postgres-only runner provisions. The
@@ -48,7 +49,25 @@ CI_FALLBACK_ALLOWLIST: tuple[str, ...] = FULL_SUITE_FALLBACK_ALLOWLIST + ("tests
 
 def decide_mode(plan: ScopedTestPlan) -> str:
     """Map a plan to the CI lane decision. Anything but a clean scope fails closed to `full`."""
-    return "scoped" if plan.scope == "scoped" else "full"
+    if plan.scope != "scoped" or not plan.test_paths:
+        return "full"
+
+    roots = [PurePosixPath(root) for root in configured_testpaths(REPO_ROOT)]
+    e2e = PurePosixPath("tests/e2e")
+    for selector in plan.test_paths:
+        if not isinstance(selector, str) or not selector:
+            return "full"
+        path = PurePosixPath(selector)
+        if path.is_absolute() or ".." in path.parts:
+            return "full"
+        # A configured root is a broad suite, not an admitted affected scope.
+        if not any(root in path.parents for root in roots):
+            return "full"
+        # Validate the selected paths, not just changed-file prefixes: deleted
+        # tests can widen to an ancestor that also includes this unsupported lane.
+        if path == e2e or e2e in path.parents or path in e2e.parents:
+            return "full"
+    return "scoped"
 
 
 def write_github_output(*, mode: str, test_paths: list[str]) -> None:
