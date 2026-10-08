@@ -51,8 +51,8 @@ def _create_local_tables(schema: str, statement: str) -> None:
           ('location_retention_copy_receipts','location_retention_source_floors',
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
-           'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_native_delegation_inputs',
-           'location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
+           'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_ordinary_delegation_inputs','location_native_delegation_inputs',
+           'location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -76,7 +76,11 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_runtime_tool_intents",
         "location_runtime_tool_inputs",
         "location_runtime_tool_results",
+        "location_ordinary_delegation_inputs",
         "location_native_delegation_inputs",
+        "location_native_delegation_answer_parents",
+        "location_native_delegation_answer_dispositions",
+        "location_native_delegation_answers",
         "location_native_delegation_parents",
         "location_native_delegation_dispositions",
         "location_runtime_context_question_intents",
@@ -223,6 +227,14 @@ def _validate_local_tables(schema: str) -> None:
     )
     expected.update(
         {
+            "location_ordinary_delegation_inputs": [
+                ("source_generation", "uuid", True),
+                ("ledger_id", "uuid", True),
+                ("producer_kind", "text", True),
+                ("render_date", "date", True),
+                ("body_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
             "location_native_delegation_inputs": [
                 ("question_generation", "uuid", True),
                 ("ledger_id", "uuid", True),
@@ -300,6 +312,31 @@ def _validate_local_tables(schema: str) -> None:
             ],
             "location_native_delegation_dispositions": [
                 ("question_generation", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("body_digest", "bytea", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_native_delegation_answers": [
+                ("answer_generation", "uuid", True),
+                ("ledger_id", "uuid", True),
+                ("receiving_session", "uuid", True),
+                ("tool_generation", "uuid", True),
+                ("context_generation", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("parent_count", "integer", True),
+                ("exclusive_input", "boolean", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_native_delegation_answer_parents": [
+                ("answer_generation", "uuid", True),
+                ("parent_kind", "text", True),
+                ("parent_generation", "uuid", True),
+                ("parent_digest", "bytea", True),
+            ],
+            "location_native_delegation_answer_dispositions": [
+                ("answer_generation", "uuid", True),
                 ("decision_id", "uuid", True),
                 ("manifest_digest", "bytea", True),
                 ("body_digest", "bytea", True),
@@ -438,6 +475,12 @@ def _validate_local_tables(schema: str) -> None:
     )
     expected_constraints.update(
         {
+            "location_ordinary_delegation_inputs": {
+                "PRIMARY KEY (source_generation)",
+                "UNIQUE (ledger_id)",
+                "CHECK ((producer_kind = 'birthday_gift_budget_ask'::text))",
+                "CHECK ((octet_length(body_digest) = 32))",
+            },
             "location_native_delegation_inputs": {
                 "PRIMARY KEY (question_generation)",
                 "UNIQUE (ledger_id)",
@@ -517,6 +560,32 @@ def _validate_local_tables(schema: str) -> None:
                 "CHECK ((octet_length(body_digest) = 32))",
                 "FOREIGN KEY (question_generation) REFERENCES "
                 "location_native_delegation_inputs(question_generation)",
+            },
+            "location_native_delegation_answers": {
+                "PRIMARY KEY (answer_generation)",
+                "UNIQUE (ledger_id)",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "CHECK ((parent_count >= 0))",
+                "FOREIGN KEY (tool_generation) REFERENCES "
+                "location_runtime_tool_intents(tool_generation)",
+                "FOREIGN KEY (context_generation) REFERENCES "
+                "location_runtime_context_bindings(input_generation)",
+            },
+            "location_native_delegation_answer_parents": {
+                "PRIMARY KEY (answer_generation, parent_kind, parent_generation)",
+                "CHECK ((octet_length(parent_digest) = 32))",
+                "CHECK ((parent_kind = ANY (ARRAY['native_copy'::text, 'catalog_loan'::text, "
+                "'received_question'::text])))",
+                "FOREIGN KEY (answer_generation) REFERENCES "
+                "location_native_delegation_answers(answer_generation)",
+            },
+            "location_native_delegation_answer_dispositions": {
+                "PRIMARY KEY (answer_generation)",
+                "UNIQUE (receipt_id)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "FOREIGN KEY (answer_generation) REFERENCES "
+                "location_native_delegation_answers(answer_generation)",
             },
             "location_native_delegation_parents": {
                 "PRIMARY KEY (question_generation, parent_kind, parent_generation)",
@@ -764,6 +833,42 @@ def upgrade() -> None:
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           CHECK((outcome='success')=(result_digest IS NOT NULL))
         );
+        CREATE TABLE IF NOT EXISTS location_native_delegation_answers (
+          answer_generation UUID PRIMARY KEY,
+          ledger_id UUID NOT NULL UNIQUE,
+          receiving_session UUID NOT NULL,
+          tool_generation UUID NOT NULL REFERENCES location_runtime_tool_intents(tool_generation),
+          context_generation UUID NOT NULL
+            REFERENCES location_runtime_context_bindings(input_generation),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          parent_count INTEGER NOT NULL CHECK(parent_count>=0),
+          exclusive_input BOOLEAN NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_native_delegation_answer_parents (
+          answer_generation UUID NOT NULL REFERENCES location_native_delegation_answers,
+          parent_kind TEXT NOT NULL
+            CHECK(parent_kind IN ('native_copy','catalog_loan','received_question')),
+          parent_generation UUID NOT NULL,
+          parent_digest BYTEA NOT NULL CHECK(octet_length(parent_digest)=32),
+          PRIMARY KEY(answer_generation,parent_kind,parent_generation)
+        );
+        CREATE TABLE IF NOT EXISTS location_native_delegation_answer_dispositions (
+          answer_generation UUID PRIMARY KEY REFERENCES location_native_delegation_answers,
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_ordinary_delegation_inputs (
+          source_generation UUID PRIMARY KEY,
+          ledger_id UUID NOT NULL UNIQUE,
+          producer_kind TEXT NOT NULL CHECK(producer_kind='birthday_gift_budget_ask'),
+          render_date DATE NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE IF NOT EXISTS location_native_delegation_inputs (
           question_generation UUID PRIMARY KEY,
           ledger_id UUID NOT NULL UNIQUE,
@@ -912,7 +1017,11 @@ def upgrade() -> None:
         "location_runtime_tool_intents",
         "location_runtime_tool_inputs",
         "location_runtime_tool_results",
+        "location_ordinary_delegation_inputs",
         "location_native_delegation_inputs",
+        "location_native_delegation_answer_parents",
+        "location_native_delegation_answer_dispositions",
+        "location_native_delegation_answers",
         "location_native_delegation_parents",
         "location_native_delegation_dispositions",
         "location_runtime_context_question_intents",

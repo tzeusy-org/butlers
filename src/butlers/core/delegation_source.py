@@ -26,6 +26,8 @@ def clear_writer(pool: Any, writer: Any) -> None:
 async def capture_ask(pool: Any, fields: dict, write: Any) -> str | None:
     selected = [writer for writer in _writers.values() if writer.capture_active()]
     if not selected:
+        if pool in _writers:
+            raise RuntimeError("Native delegation source producer is unavailable")
         return None
     if len(selected) != 1 or _writers.get(pool) is not selected[0]:
         # An active native producer cannot switch to a caller's Connection or
@@ -62,3 +64,16 @@ async def dispatch_scheduled_question(
 
     async with scheduled_question_scope(pool, task, prompt):
         return await dispatch(**kwargs)
+
+
+async def capture_answer(pool: Any, ledger: Any, answering: str, answer: str, write: Any):
+    selected = [writer for writer in _writers.values() if writer.capture_active()]
+    if not selected:
+        if pool in _writers:
+            raise RuntimeError("Native answer source producer is unavailable")
+        return await write(pool)  # Explicit ordinary unconfigured writer contract.
+    if len(selected) != 1 or _writers.get(pool) is not selected[0]:
+        raise RuntimeError("Native answer owning writer differs")
+    from butlers.chronicler.location_delegation_answers import capture_answer as capture
+
+    return await capture(selected[0], ledger, answering, answer, write)

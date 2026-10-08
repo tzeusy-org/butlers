@@ -191,6 +191,32 @@ async def dispatch_delegated_ask(
         metadata=metadata,
     )
 
+    return await route_recorded_delegated_ask(
+        pool,
+        switchboard_client,
+        ledger_id=ledger_id,
+        asking_butler=asking_butler,
+        target_butler=target_butler,
+        question=question,
+    )
+
+
+async def route_recorded_delegated_ask(
+    pool: Any,
+    switchboard_client: Any,
+    *,
+    ledger_id: str,
+    asking_butler: str,
+    target_butler: str,
+    question: str,
+) -> dict:
+    """Route an already committed owning birth through the existing transport.
+
+    The native deterministic producer verifies its private birth separately
+    before entering here. This helper supplies no classification or authority.
+    Generic Pool/Connection callers keep the original dispatch contract.
+    """
+
     async def _fail(error_text: str, *, retryable: bool = False) -> dict:
         try:
             await mark_dispatch_outcome(pool, ledger_id, status="failed", reason=error_text)

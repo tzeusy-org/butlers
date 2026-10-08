@@ -1684,13 +1684,22 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
                     row["parent_digest"],
                     session_id,
                 )
-            with pytest.raises(asyncpg.RaiseError, match="history is permanent"):
+            # Core-owned header uses the permanent source-floor trigger.
+            # The old Chronicle mutation trigger has a different fixed label.
+            with pytest.raises(asyncpg.RaiseError, match="Location source floors are permanent"):
                 async with observed.transaction():
                     await observed.execute(
                         "UPDATE location_native_delegation_inputs SET body_digest=$2 WHERE ledger_id=$1",
                         identifier,
                         b"x" * 32,
                     )
+            assert (
+                await observed.fetchval(
+                    "SELECT body_digest FROM location_native_delegation_inputs WHERE ledger_id=$1",
+                    identifier,
+                )
+                == birth["body_digest"]
+            )
         before = await domain.fetchval("SELECT count(*) FROM location_native_delegation_inputs")
         # Refusal occurs before a new ledger body when the actual tool intent differs.
         tool.generation = uuid.uuid4()
@@ -1721,6 +1730,84 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
                 "SELECT EXISTS(SELECT 1 FROM public.delegation_ledger "
                 "WHERE question='synthetic rollback')"
             )
+        # First-answer body, wake identity and complete own input birth use
+        # the actual registered connection; duplicates cannot replace history.
+        from butlers.core.delegation_ledger import record_answer
+
+        answer_tool, answer_ledger = uuid.uuid4(), uuid.uuid4()
+        async with domain.acquire() as conn:
+            async with conn.transaction():
+                await runtime.lock_domain(conn)
+                await conn.execute(
+                    "INSERT INTO location_runtime_tool_intents "
+                    "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+                    "VALUES($1,$2,'delegate_answer','core',$3)",
+                    answer_tool,
+                    session_id,
+                    b"a" * 32,
+                )
+                await conn.execute(
+                    "INSERT INTO public.delegation_ledger "
+                    "(id,asking_butler,question,target_butler,status) "
+                    "VALUES($1,'relationship','synthetic independent answer input','chronicler','routed')",
+                    answer_ledger,
+                )
+        tool.name, tool.generation = "delegate_answer", answer_tool
+        result = await record_answer(
+            domain, answer_ledger, answering_butler="chronicler", answer="synthetic native answer"
+        )
+        async with domain.acquire() as observed:
+            answer_birth = await observed.fetchrow(
+                "SELECT * FROM location_native_delegation_answers WHERE ledger_id=$1", answer_ledger
+            )
+            answer_parents = await observed.fetch(
+                "SELECT * FROM location_native_delegation_answer_parents WHERE answer_generation=$1",
+                answer_birth["answer_generation"],
+            )
+            stored_answer = await observed.fetchrow(
+                "SELECT * FROM public.delegation_ledger WHERE id=$1", answer_ledger
+            )
+            assert result["wake_key"] == stored_answer["wake_key"]
+            assert stored_answer["answer_digest"] == answer_birth["body_digest"].hex()
+            assert answer_birth["tool_generation"] == answer_tool
+            assert answer_birth["context_generation"] == context
+            assert answer_birth["parent_count"] == len(answer_parents) > 0
+            assert {
+                (row["parent_kind"], row["parent_generation"], row["parent_digest"])
+                for row in answer_parents
+            } == expected_native
+            with pytest.raises(asyncpg.RaiseError, match="Location source floors are permanent"):
+                async with observed.transaction():
+                    await observed.execute(
+                        "UPDATE location_native_delegation_answers SET body_digest=$2 WHERE ledger_id=$1",
+                        answer_ledger,
+                        b"x" * 32,
+                    )
+        assert (
+            await record_answer(
+                domain,
+                answer_ledger,
+                answering_butler="chronicler",
+                answer="synthetic native answer",
+            )
+            is None
+        )
+        async with domain.acquire() as observed:
+            assert (
+                await observed.fetchval(
+                    "SELECT body_digest FROM location_native_delegation_answers WHERE ledger_id=$1",
+                    answer_ledger,
+                )
+                == answer_birth["body_digest"]
+            )
+            assert (
+                await observed.fetchval(
+                    "SELECT count(*) FROM location_native_delegation_answers WHERE ledger_id=$1",
+                    answer_ledger,
+                )
+                == 1
+            )
+        tool.name, tool.generation = "delegate_ask", tool_generation
         # The core-only constructor must use this actual owning domain pool,
         # independently of the optional Memory runtime. This is migrated
         # constructor/identity proof, not online receiver/terminal evidence.

@@ -639,3 +639,40 @@ proof; question/answer/wake/restart and lawful mixed terminal disposal remain
 required unfinished SOURCE, not completed retention. The prior 3ead hosted
 parent/session assertion remains unresolved. Boolean-only diagnostics preserve
 the original assertion and expose no UUID, digest, body, SQL argument or row.
+
+
+### Configured ordinary questions and native answers
+
+The installed core-only receiver cannot classify a question from missing native
+history or a caller's ordinary label. The actual Relationship birthday job now
+renders only its fixed prose and server-selected future date, writes that
+private source generation and public ledger under the same policy-first/date
+dedup transaction, and separately reads both back after COMMIT before the
+existing Switchboard route. The source validates the persisted renderer/date/
+body against canonical data and challenges the actual constructor pending
+receiver. That receiver rechecks its own live request/tool and canonical body
+after the exchange. Missing, changed and mixed source evidence refuses; this
+positive classification does not attest any location-derived descendant.
+Legacy unconfigured Pool/Connection calls retain their original contract.
+
+The first accepted native answer now freezes the complete answering tool input
+on the actual atomic answer/wake writer. The same owning input reconstruction
+covers original dispatch parents, frozen context loans, later selected tool
+loans and inherited receiving-question inputs for both question and answer
+births. Answer/body/parent history is immutable. Duplicate/unaccepted writes
+leave it unchanged; rollback and unknown separate readback remain distinct.
+The native point and catalog-loan censuses include these answer generations;
+answer terminal reconciliation, wake/receiving descendants and lawful mixed
+copy disposal remain mandatory unfinished source work rather than completion
+inferred from a birth or public terminal ledger status.
+
+Exact c288 hosted evidence supersedes the prior parent-failure location guess:
+the current Memory node reached the permanent core-header trigger and failed
+its fixture's Chronicle-specific message expectation. The fixture now expects
+the actual fixed core message and separately reads the unchanged digest. The
+trigger and UPDATE remain. Its hidden-argument software fixture now enrolls
+and restores the actual constructor writer registry instead of only the old
+Memory-runtime map; original fingerprints, privacy, ordering and refusal
+assertions remain. These corrections and the new first-answer/ordinary schema
+controls require fresh exact-head hosted SQL and registered transport evidence;
+software doubles do not establish those outcomes.

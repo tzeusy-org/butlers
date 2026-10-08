@@ -654,8 +654,17 @@ async def _relationship_finance_birthday_gift_ask(
 
         origin_key = _delegation_gift_ask_origin_key(target_date_str)
 
+        from butlers.core.delegation_source import _writers
+
+        writer = _writers.get(pool)
+        if writer is not None:
+            from butlers.chronicler.location_ordinary_delegation import require_job_writer
+
+            require_job_writer(writer)
         async with pool.acquire() as conn:
             async with conn.transaction():
+                if writer is not None:
+                    await writer.runtime.lock_domain(conn)
                 # Serialize concurrent job runs for this target date so the
                 # existing-row check below is atomic with the dispatch's
                 # ledger writes (bu-27dxl.5.4 AC2).
@@ -682,18 +691,37 @@ async def _relationship_finance_birthday_gift_ask(
                     f"days ({target_date_str}). What is the household's typical gift or "
                     "discretionary-budget guidance for a birthday like this?"
                 )
-                result = await dispatch_delegated_ask(
-                    conn,
-                    get_current_switchboard_client(),
-                    asking_butler="relationship",
-                    target_butler=DELEGATION_GIFT_ASK_TARGET_BUTLER,
-                    question=question,
-                    metadata={
-                        "origin_key": origin_key,
-                        "seed": "birthday_gift_budget_ask",
-                        "target_date": target_date_str,
-                    },
-                )
+                if writer is not None:
+                    from butlers.chronicler.location_ordinary_delegation import record_birthday_ask
+
+                    ledger_id = await record_birthday_ask(writer, conn, target_date)
+                else:
+                    result = await dispatch_delegated_ask(
+                        conn,
+                        get_current_switchboard_client(),
+                        asking_butler="relationship",
+                        target_butler=DELEGATION_GIFT_ASK_TARGET_BUTLER,
+                        question=question,
+                        metadata={
+                            "origin_key": origin_key,
+                            "seed": "birthday_gift_budget_ask",
+                            "target_date": target_date_str,
+                        },
+                    )
+
+        if writer is not None:
+            from butlers.chronicler.location_ordinary_delegation import committed_birthday_ask
+            from butlers.core_tools._delegation import route_recorded_delegated_ask
+
+            canonical = await committed_birthday_ask(writer, ledger_id)
+            result = await route_recorded_delegated_ask(
+                pool,
+                get_current_switchboard_client(),
+                ledger_id=ledger_id,
+                asking_butler=canonical["asking_butler"],
+                target_butler=canonical["target_butler"],
+                question=canonical["question"],
+            )
 
         result["target_date"] = target_date_str
         return result

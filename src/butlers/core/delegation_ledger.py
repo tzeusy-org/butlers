@@ -251,32 +251,38 @@ async def record_answer(
     """
     answer_digest = compute_answer_digest(answer)
     wake_key = compute_wake_key(ledger_id, answer_digest)
-    row = await pool.fetchrow(
-        """
-        UPDATE public.delegation_ledger
-        SET status = 'answered',
-            answer = $3,
-            answered_at = now(),
-            answering_butler = $2,
-            answer_digest = $4,
-            wake_key = $5,
-            wake_state = 'callback_pending'
-        WHERE id = $1
-          AND status = 'routed'
-          AND target_butler = $2
-        RETURNING id, asking_butler, question, target_butler, catalog_match_id,
-                  catalog_score, status, reason, answer, answered_at,
-                  answering_butler, asked_at, metadata,
-                  answer_digest, wake_key, wake_state,
-                  wake_task_id, wake_task_name, wake_updated_at
-        """,
-        uuid.UUID(str(ledger_id)),
-        answering_butler,
-        answer,
-        answer_digest,
-        wake_key,
-    )
-    return _row_to_dict(row) if row is not None else None
+
+    async def write(conn):
+        row = await conn.fetchrow(
+            """
+            UPDATE public.delegation_ledger
+            SET status = 'answered',
+                answer = $3,
+                answered_at = now(),
+                answering_butler = $2,
+                answer_digest = $4,
+                wake_key = $5,
+                wake_state = 'callback_pending'
+            WHERE id = $1
+              AND status = 'routed'
+              AND target_butler = $2
+            RETURNING id, asking_butler, question, target_butler, catalog_match_id,
+                      catalog_score, status, reason, answer, answered_at,
+                      answering_butler, asked_at, metadata,
+                      answer_digest, wake_key, wake_state,
+                      wake_task_id, wake_task_name, wake_updated_at
+            """,
+            uuid.UUID(str(ledger_id)),
+            answering_butler,
+            answer,
+            answer_digest,
+            wake_key,
+        )
+        return _row_to_dict(row) if row is not None else None
+
+    from butlers.core.delegation_source import capture_answer
+
+    return await capture_answer(pool, uuid.UUID(str(ledger_id)), answering_butler, answer, write)
 
 
 @dataclass(frozen=True)

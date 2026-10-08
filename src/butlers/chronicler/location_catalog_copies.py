@@ -1043,6 +1043,12 @@ class CatalogCopyRuntime:
                         or str(current["receiving_incarnation"]) != source["receiving_incarnation"]
                     ):
                         continue
+                    from butlers.chronicler.location_delegation_answers import loan_answers_closed
+
+                    if not await loan_answers_closed(
+                        conn, loan, current["body_digest"], decision, manifest
+                    ):
+                        continue
                     if await conn.fetchval(
                         "SELECT EXISTS(SELECT 1 FROM location_native_delegation_inputs q "
                         "JOIN location_native_delegation_parents p USING(question_generation) "

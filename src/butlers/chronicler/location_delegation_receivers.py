@@ -129,6 +129,10 @@ async def _load_source_question(writer: Any, conn: Any, ledger: UUID, receiver: 
         "SELECT * FROM public.delegation_ledger WHERE id=$1 FOR UPDATE",
         ledger,
     )
+    if source is None and canonical is not None and canonical["target_butler"] == receiver:
+        from butlers.chronicler.location_ordinary_delegation import load_ordinary_question
+
+        return await load_ordinary_question(writer, conn, canonical)
     if (
         source is None
         or canonical is None
@@ -223,6 +227,17 @@ async def prepare_question_source(writer: Any, token: str, body: dict) -> dict:
             current = await _load_source_question(writer, conn, ledger, receiver)
             if current["question_generation"] != source["question_generation"]:
                 raise PolicyUnavailableError("Native question source generation differs")
+            if source.get("classification") == "ordinary":
+                if current.get("classification") != "ordinary":
+                    raise PolicyUnavailableError("Ordinary question classification changed")
+                return {
+                    **witness,
+                    "source_incarnation": str(runtime.incarnation),
+                    "question_generation": str(source["question_generation"]),
+                    "parent_count": 0,
+                    "exclusive_input": False,
+                    "classification": "ordinary",
+                }
             await conn.execute(
                 "INSERT INTO location_native_delegation_loans "
                 "(loan_id,question_generation,receiver_name,receiving_incarnation,"
@@ -323,7 +338,7 @@ async def verify_question_delivery(writer: Any, token: str, body: dict) -> dict:
     }
 
 
-async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQuestion:
+async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQuestion | None:
     from butlers.chronicler.location_tool_copies import current_tool_copy
 
     runtime = writer.runtime
@@ -382,6 +397,35 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
             or type(prepared.get("exclusive_input")) is not bool
         ):
             raise PolicyUnavailableError("Native prepared question input differs")
+        if prepared.get("classification") == "ordinary":
+            # Positive fixed-source classification arrived through this
+            # receiver's actual pending challenge, not a caller label or the
+            # absence of native ancestry. Recheck the real lifetime/body
+            # after the online exchange before ordinary schedule admission.
+            if prepared["parent_count"] != 0 or prepared["exclusive_input"] is not False:
+                raise PolicyUnavailableError("Ordinary question input classification differs")
+            UUID(prepared["source_incarnation"])
+            UUID(prepared["question_generation"])
+            async with runtime.domain.acquire() as conn:
+                async with conn.transaction():
+                    await runtime.lock_domain(conn)
+                    current = await conn.fetchrow(
+                        "SELECT * FROM public.delegation_ledger WHERE id=$1 FOR UPDATE",
+                        ledger,
+                    )
+                    if (
+                        pending.deadline <= time.monotonic()
+                        or not runtime.active
+                        or (tool is not None and not tool.active)
+                        or (server is not None and not server.active)
+                        or current is None
+                        or question_digest(dict(current)) != digest
+                        or current["status"] != "pending"
+                        or current["target_butler"] != runtime.name
+                        or current["asking_butler"] != source
+                    ):
+                        raise PolicyUnavailableError("Ordinary receiving question changed")
+            return None
         pending.question = UUID(prepared["question_generation"])
         pending.loan = UUID(prepared["loan_id"])
         pending.source_incarnation = UUID(prepared["source_incarnation"])

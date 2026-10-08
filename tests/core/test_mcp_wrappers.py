@@ -49,9 +49,9 @@ async def test_tool_call_capture_fingerprints_hidden_arguments() -> None:
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from butlers.chronicler.location_catalog_copies import _runtimes
     from butlers.chronicler.location_tool_copies import _current_tool_copy, matched_tool_records
     from butlers.core.copy_lifetime import _current_copy_invocation
+    from butlers.core.delegation_source import _writers
     from butlers.core.fact_authority import _Invocation, _invocations
     from butlers.core.tool_call_capture import fingerprint_tool_call_payload
 
@@ -98,7 +98,8 @@ async def test_tool_call_capture_fingerprints_hidden_arguments() -> None:
     runtime = SimpleNamespace(
         domain=pool, active=True, name="relationship", lock_domain=lock_domain
     )
-    _runtimes[pool] = runtime
+    prior_writer = _writers.get(pool)
+    _writers[pool] = SimpleNamespace(runtime=runtime)
     import time
 
     invocation = _Invocation("relationship", str(uuid4()), None, None, time.monotonic() + 60)
@@ -170,7 +171,10 @@ async def test_tool_call_capture_fingerprints_hidden_arguments() -> None:
     finally:
         _current_copy_invocation.reset(token)
         _invocations.pop("native-tool-unit", None)
-        _runtimes.pop(pool)
+        if prior_writer is None:
+            _writers.pop(pool, None)
+        else:
+            _writers[pool] = prior_writer
 
 
 async def test_span_wrapper_captures_day_close_date_and_timezone_binding() -> None:

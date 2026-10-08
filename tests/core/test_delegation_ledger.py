@@ -581,6 +581,7 @@ async def _assert_native_delegated_question_birth():
     class Pool:
         def __init__(self):
             self.headers, self.parents, self.ledger = {}, [], {}
+            self.answers, self.answer_parents = {}, []
             self.source_parent = uuid.uuid4()
             self.context = {
                 "input_generation": uuid.uuid4(),
@@ -623,13 +624,17 @@ async def _assert_native_delegated_question_birth():
 
         @asynccontextmanager
         async def transaction(self):
-            previous = deepcopy((self.headers, self.parents, self.ledger))
+            previous = deepcopy(
+                (self.headers, self.parents, self.ledger, self.answers, self.answer_parents)
+            )
             self.in_transaction = True
             trace.append("begin")
             try:
                 yield
             except BaseException:
-                self.headers, self.parents, self.ledger = previous
+                self.headers, self.parents, self.ledger, self.answers, self.answer_parents = (
+                    previous
+                )
                 trace.append("rollback")
                 raise
             else:
@@ -638,7 +643,38 @@ async def _assert_native_delegated_question_birth():
                 self.in_transaction = False
 
         async def execute(self, sql, *args):
-            if "location_native_delegation_inputs" in sql:
+            if "INSERT INTO location_native_delegation_answer_parents" in sql:
+                self.answer_parents.append(
+                    dict(
+                        zip(
+                            (
+                                "answer_generation",
+                                "parent_kind",
+                                "parent_generation",
+                                "parent_digest",
+                            ),
+                            args,
+                        )
+                    )
+                )
+            elif "INSERT INTO location_native_delegation_answers" in sql:
+                trace.append("answer_birth")
+                self.answers[args[0]] = dict(
+                    zip(
+                        (
+                            "answer_generation",
+                            "ledger_id",
+                            "receiving_session",
+                            "tool_generation",
+                            "context_generation",
+                            "body_digest",
+                            "parent_count",
+                            "exclusive_input",
+                        ),
+                        args,
+                    )
+                )
+            elif "location_native_delegation_inputs" in sql:
                 assert self.in_transaction
                 trace.append("birth")
                 self.headers[args[0]] = dict(
@@ -708,6 +744,28 @@ async def _assert_native_delegated_question_birth():
             raise AssertionError("unexpected source lookup")
 
         async def fetchrow(self, sql, *args):
+            if "UPDATE public.delegation_ledger" in sql:
+                assert self.in_transaction
+                trace.append("answer_business")
+                row = self.ledger.get(args[0])
+                if row is None or row["status"] != "routed" or row["target_butler"] != args[1]:
+                    return None
+                row.update(
+                    id=args[0],
+                    status="answered",
+                    answering_butler=args[1],
+                    answer=args[2],
+                    answer_digest=args[3],
+                    wake_key=args[4],
+                    wake_state="callback_pending",
+                )
+                if self.fail_business:
+                    raise RuntimeError("planted answer rollback")
+                return row.copy()
+            if "FROM location_native_delegation_answers" in sql:
+                assert not self.in_transaction
+                trace.append("answer_readback")
+                return None if self.unknown else self.answers.get(args[0])
             if "FROM sessions" in sql:
                 return {
                     "prompt": "changed" if self.composed_changed else "frozen prompt",
@@ -724,6 +782,8 @@ async def _assert_native_delegated_question_birth():
             raise AssertionError("unexpected source row")
 
         async def fetch(self, sql, *args):
+            if "FROM location_native_delegation_answer_parents" in sql:
+                return [p for p in self.answer_parents if p["answer_generation"] == args[0]]
             if "location_native_dispatch_sessions" in sql:
                 return self.dispatch
             if "FROM location_runtime_context_question_intents" in sql:
@@ -893,6 +953,61 @@ async def _assert_native_delegated_question_birth():
         pool.inherited = [inherited]
         await record()
         assert next(reversed(pool.headers.values()))["parent_count"] == 2
+        pool.inherited = []
+        tool.name = "delegate_answer"
+        answer_ledger = uuid.uuid4()
+        pool.ledger[answer_ledger] = {"status": "routed", "target_butler": "chronicler"}
+        trace.clear()
+        answer = await record_answer(
+            pool, answer_ledger, answering_butler="chronicler", answer="synthetic answer"
+        )
+        assert answer["answer"] == "synthetic answer" and answer["wake_state"] == "callback_pending"
+        birth = next(iter(pool.answers.values()))
+        assert birth["body_digest"].hex() == answer["answer_digest"]
+        assert birth["context_generation"] == pool.context["input_generation"]
+        assert birth["parent_count"] == len(pool.answer_parents) == 1
+        assert (
+            trace.index("policy-first")
+            < trace.index("answer_business")
+            < trace.index("answer_birth")
+        )
+        assert trace.index("answer_birth") < trace.index("commit") < trace.index("answer_readback")
+        before = deepcopy((pool.answers, pool.answer_parents))
+        assert (
+            await record_answer(
+                pool, answer_ledger, answering_butler="chronicler", answer="synthetic answer"
+            )
+            is None
+        )
+        assert (pool.answers, pool.answer_parents) == before
+        with pytest.raises(PolicyUnavailableError, match="source producer differs"):
+            await record_answer(
+                pool, answer_ledger, answering_butler="caller-forged", answer="synthetic"
+            )
+        for failure in ("input", "rollback", "readback"):
+            selected = uuid.uuid4()
+            pool.ledger[selected] = {"status": "routed", "target_butler": "chronicler"}
+            pool.intent = failure != "input"
+            pool.fail_business = failure == "rollback"
+            pool.unknown = failure == "readback"
+            error, label = (
+                (RuntimeError, "answer rollback")
+                if failure == "rollback"
+                else (
+                    PolicyUnavailableError,
+                    "binding is unavailable" if failure == "input" else "birth is unknown",
+                )
+            )
+            with pytest.raises(error, match=label):
+                await record_answer(
+                    pool, selected, answering_butler="chronicler", answer="new answer"
+                )
+            if failure == "readback":
+                assert pool.ledger[selected]["status"] == "answered"
+            else:
+                assert pool.ledger[selected]["status"] == "routed"
+                assert (pool.answers, pool.answer_parents) == before
+        pool.intent, pool.fail_business, pool.unknown = True, False, False
     finally:
         _current_tool_copy.reset(token)
         clear_writer(pool, writer)

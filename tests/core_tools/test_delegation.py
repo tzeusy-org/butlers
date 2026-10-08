@@ -690,6 +690,8 @@ async def _assert_native_received_question_schedule(monkeypatch):
             self.transaction_active = False
             self.fenced = False
             self.unknown = False
+            self.native_missing = False
+            self.ordinary = None
 
         @asynccontextmanager
         async def acquire(self):
@@ -734,7 +736,11 @@ async def _assert_native_received_question_schedule(monkeypatch):
                 return {"prompt": self.tasks[args[0]]} if args[0] in self.tasks else None
             if "FROM public.delegation_ledger" in sql:
                 return canonical.copy()
+            if "FROM location_ordinary_delegation_inputs" in sql:
+                return self.ordinary
             if "FROM location_native_delegation_inputs" in sql:
+                if self.native_missing:
+                    return None
                 return dict(
                     ledger_id=ledger,
                     question_generation=question,
@@ -759,6 +765,8 @@ async def _assert_native_received_question_schedule(monkeypatch):
             ]
 
         async def fetchval(self, sql, *args):
+            if "EXISTS(SELECT 1 FROM location_native_delegation_inputs" in sql:
+                return not self.native_missing
             if "location_runtime_context_question_intents" in sql:
                 return self.question_intents.get(args[0])
             if "location_received_delegation_claims_ended" in sql:
@@ -873,7 +881,7 @@ async def _assert_native_received_question_schedule(monkeypatch):
             trace.append(pool.name + ":policy")
 
         async def endpoint(selected):
-            assert selected in {"chronicler", "relationship"}
+            assert selected in {"chronicler", "relationship", "finance"}
             return "fixed:" + selected
 
         return SimpleNamespace(
@@ -895,11 +903,11 @@ async def _assert_native_received_question_schedule(monkeypatch):
     )
 
     async def source_exchange(endpoint, token, body):
-        assert endpoint == "fixed:relationship"
+        assert endpoint == "fixed:" + receiver_runtime.name
         return await question_challenge(receiver_writer, token, body)
 
     async def receiver_exchange(endpoint, token, body):
-        assert endpoint == "fixed:chronicler"
+        assert endpoint == "fixed:" + source_runtime.name
         if body["op"] == "question_delivery":
             return await verify_question_delivery(source_writer, token, body)
         return await prepare_question_source(source_writer, token, body)
@@ -912,6 +920,9 @@ async def _assert_native_received_question_schedule(monkeypatch):
     monkeypatch.setattr(_delegation, "get_delegation", AsyncMock(return_value=canonical))
 
     async def create(conn, name, cron, prompt, **kwargs):
+        if not conn.transaction_active:
+            async with conn.transaction():
+                return await create(conn, name, cron, prompt, **kwargs)
         assert conn is receiver_pool and conn.transaction_active
         trace.append("receiver:schedule-write")
         task = uuid.uuid4()
@@ -922,7 +933,9 @@ async def _assert_native_received_question_schedule(monkeypatch):
 
     async def receive():
         return await registered["delegate_receive"](
-            ledger_id=str(ledger), question=canonical["question"], asking_butler="chronicler"
+            ledger_id=str(ledger),
+            question=canonical["question"],
+            asking_butler=canonical["asking_butler"],
         )
 
     try:
@@ -1089,6 +1102,68 @@ async def _assert_native_received_question_schedule(monkeypatch):
                 assert len(receiver_pool.inputs) == before
             finally:
                 _server_copy_scope.reset(fake_token)
+        finally:
+            _current_tool_copy.reset(cli_token)
+        # Installed constructor ordinary ingress requires a positive fixed
+        # source-owned job birth. Neither missing native data nor a caller's
+        # ordinary label can manufacture that classification.
+        from datetime import date
+
+        from butlers.chronicler.location_ordinary_delegation import birthday_fields
+
+        source_runtime.name, receiver_runtime.name = "relationship", "finance"
+        canonical.clear()
+        canonical.update(birthday_fields(date(2026, 4, 1)), id=ledger, status="pending")
+        body_digest = question_digest(canonical)
+        source_pool.native_missing = True
+        source_pool.ordinary = {
+            "source_generation": uuid.uuid4(),
+            "ledger_id": ledger,
+            "render_date": date(2026, 4, 1),
+            "producer_kind": "birthday_gift_budget_ask",
+            "body_digest": body_digest,
+        }
+        registered = _register(butler_name="finance", pool=receiver_pool)
+        # Reuse the actual registered infrastructure request lifetime; no
+        # receiving CLI ContextVar is invented for a deterministic job.
+        cli_token = _current_tool_copy.set(None)
+        before_inputs, before_loans = len(receiver_pool.inputs), len(source_pool.loans)
+        try:
+
+            async def ordinary_handler(scope, request, send):
+                result = await receive()
+                assert result["status"] == "scheduled"
+                await send({"type": "http.response.start", "status": 200, "headers": []})
+                await send({"type": "http.response.body", "body": b"synthetic receipt"})
+
+            app = CatalogServerCopyLifetime(ordinary_handler, butler_name="finance")
+            await app({"type": "http"}, AsyncMock(), AsyncMock())
+            assert len(receiver_pool.inputs) == before_inputs
+            assert len(source_pool.loans) == before_loans
+            assert not receiver_writer.pending
+            # These failures pass through the same real pending/source
+            # challenge path, not a fabricated ordinary verdict response.
+            for mode in ("missing", "body", "mixed"):
+                original = source_pool.ordinary.copy()
+                if mode == "missing":
+                    source_pool.ordinary = None
+                elif mode == "body":
+                    source_pool.ordinary["body_digest"] = b"x" * 32
+                else:
+                    source_pool.native_missing = False
+
+                async def refused_handler(scope, request, send):
+                    assert (await receive())["status"] == "error"
+                    await send({"type": "http.response.body", "body": b""})
+
+                await CatalogServerCopyLifetime(refused_handler, butler_name="finance")(
+                    {"type": "http"}, AsyncMock(), AsyncMock()
+                )
+                source_pool.ordinary = original
+                source_pool.native_missing = True
+                assert len(receiver_pool.inputs) == before_inputs
+                assert len(source_pool.loans) == before_loans
+            await app({"type": "http"}, AsyncMock(), AsyncMock())
         finally:
             _current_tool_copy.reset(cli_token)
     finally:
