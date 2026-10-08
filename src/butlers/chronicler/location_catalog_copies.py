@@ -58,6 +58,7 @@ class _ServerCopyScope:
     contexts: list[tuple[Any, UUID]] = field(default_factory=list)
     target: str | None = None
     questions: list[tuple[Any, UUID, bytes]] = field(default_factory=list)
+    answers: list[tuple[Any, UUID]] = field(default_factory=list)
 
 
 _server_copy_scope: ContextVar[_ServerCopyScope | None] = ContextVar(
@@ -104,6 +105,10 @@ class CatalogServerCopyLifetime:
 
                 for runtime, generation, digest in copies.questions:
                     await finish_received_server(runtime, generation, digest, copies.request)
+                from butlers.chronicler.location_delegation_returns import finish_answer_server
+
+                for runtime, generation in copies.answers:
+                    await finish_answer_server(runtime, generation, copies.request)
                 from butlers.chronicler.location_memory_context import finish_context_server
 
                 for runtime, generation in copies.contexts:
@@ -135,9 +140,9 @@ async def _request_json(request: Any) -> dict:
     async with asyncio.timeout(5):
         async for chunk in request.stream():
             frames += 1
-            body.extend(chunk)
-            if frames > 128 or len(body) > 8192:
+            if frames > 128 or len(chunk) > 8192 - len(body):
                 raise ValueError("Oversized control body")
+            body.extend(chunk)
     value = json.loads(body, object_pairs_hook=_unique_object)
     if not isinstance(value, dict):
         raise ValueError("Control object required")

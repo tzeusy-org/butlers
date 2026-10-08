@@ -413,7 +413,12 @@ async def finish_context_server(runtime: Any, generation: UUID, request: UUID) -
 
 
 async def dispose_runtime_context(
-    runtime: Any, input_generation: UUID, plan: dict, *, question_binding: dict | None = None
+    runtime: Any,
+    input_generation: UUID,
+    plan: dict,
+    *,
+    question_binding: dict | None = None,
+    answer_binding: dict | None = None,
 ) -> bool:
     """Complete own transaction followed by independent immutable-body readback.
 
@@ -421,7 +426,11 @@ async def dispose_runtime_context(
     witnesses remain unavailable rather than being refilled from a current row.
     """
     completed = await _dispose_runtime_context_once(
-        runtime, input_generation, plan, question_binding=question_binding
+        runtime,
+        input_generation,
+        plan,
+        question_binding=question_binding,
+        answer_binding=answer_binding,
     )
     if not completed:
         return False
@@ -473,7 +482,12 @@ async def dispose_runtime_context(
 
 
 async def _dispose_runtime_context_once(
-    runtime: Any, input_generation: UUID, plan: dict, *, question_binding: dict | None = None
+    runtime: Any,
+    input_generation: UUID,
+    plan: dict,
+    *,
+    question_binding: dict | None = None,
+    answer_binding: dict | None = None,
 ) -> bool:
     """Own exact unchanged closed input, session and native episodes atomically.
 
@@ -598,7 +612,16 @@ async def _dispose_runtime_context_once(
             # A native generated prompt has real own-domain parent births.
             # Its entire prompt ancestry must be selected, including newer
             # local inputs; a catalog loan alone cannot authorize that prompt.
-            if question_binding is not None:
+            if question_binding is not None and answer_binding is not None:
+                raise PolicyUnavailableError("Native composed input species differs")
+            if answer_binding is not None:
+                from butlers.chronicler.location_answer_disposal import closed_answer_context_input
+
+                if not await closed_answer_context_input(
+                    conn, schema, runtime, frozen, input_generation, answer_binding
+                ):
+                    return False
+            elif question_binding is not None:
                 from butlers.chronicler.location_delegation_contexts import (
                     closed_question_context_input,
                 )

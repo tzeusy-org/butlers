@@ -52,7 +52,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
            'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_ordinary_delegation_inputs','location_native_delegation_inputs',
-           'location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
+           'location_received_answer_dispositions','location_received_answer_qualifications','location_received_answer_server_finished','location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -78,6 +78,9 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_runtime_tool_results",
         "location_ordinary_delegation_inputs",
         "location_native_delegation_inputs",
+        "location_received_answer_dispositions",
+        "location_received_answer_qualifications",
+        "location_received_answer_server_finished",
         "location_received_answer_claims",
         "location_received_answer_claim_parents",
         "location_received_answer_claims_ended",
@@ -380,6 +383,7 @@ def _validate_local_tables(schema: str) -> None:
                 ("receiving_incarnation", "uuid", True),
                 ("bundle_digest", "bytea", True),
                 ("committed_at", "timestamp with time zone", True),
+                ("source_incarnation", "uuid", False),
             ],
             "location_received_answer_attempts": [
                 ("receiving_generation", "uuid", True),
@@ -390,6 +394,24 @@ def _validate_local_tables(schema: str) -> None:
                 ("receiving_session", "uuid", False),
                 ("tool_generation", "uuid", False),
                 ("server_request", "uuid", False),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_qualifications": [
+                ("receiving_generation", "uuid", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_dispositions": [
+                ("receiving_generation", "uuid", True),
+                ("receipt_id", "uuid", True),
+                ("task_id", "uuid", False),
+                ("reduced_prompt_digest", "bytea", False),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_answer_server_finished": [
+                ("receiving_generation", "uuid", True),
+                ("server_request", "uuid", True),
+                ("receipt_id", "uuid", True),
                 ("committed_at", "timestamp with time zone", True),
             ],
             "location_received_answer_claims": [
@@ -436,6 +458,12 @@ def _validate_local_tables(schema: str) -> None:
                 ("decision_id", "uuid", True),
                 ("manifest_digest", "bytea", True),
                 ("bundle_digest", "bytea", True),
+                ("source_name", "text", True),
+                ("answer_generation", "uuid", True),
+                ("ledger_id", "uuid", True),
+                ("loan_id", "uuid", True),
+                ("source_incarnation", "uuid", True),
+                ("receiving_incarnation", "uuid", True),
                 ("committed_at", "timestamp with time zone", True),
             ],
             "location_received_answer_inputs": [
@@ -732,6 +760,27 @@ def _validate_local_tables(schema: str) -> None:
                 "CHECK (((server_request IS NOT NULL) OR ((receiving_session IS NOT NULL) "
                 "AND (tool_generation IS NOT NULL))))",
             },
+            "location_received_answer_qualifications": {
+                "PRIMARY KEY (receiving_generation)",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_answer_floors(receiving_generation)",
+            },
+            "location_received_answer_dispositions": {
+                "PRIMARY KEY (receiving_generation)",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_answer_qualifications(receiving_generation)",
+                "FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)",
+                "CHECK (((task_id IS NULL) = (reduced_prompt_digest IS NULL)))",
+                "CHECK ((octet_length(reduced_prompt_digest) = 32))",
+            },
+            "location_received_answer_server_finished": {
+                "PRIMARY KEY (receiving_generation)",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_answer_attempts(receiving_generation)",
+            },
             "location_received_answer_claims": {
                 "PRIMARY KEY (claim_generation)",
                 "FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)",
@@ -782,7 +831,7 @@ def _validate_local_tables(schema: str) -> None:
                 "CHECK ((octet_length(manifest_digest) = 32))",
                 "CHECK ((octet_length(bundle_digest) = 32))",
                 "FOREIGN KEY (receiving_generation) REFERENCES "
-                "location_received_answer_inputs(receiving_generation)",
+                "location_received_answer_attempts(receiving_generation)",
             },
             "location_received_answer_inputs": {
                 "CHECK ((parent_count >= 0))",
@@ -1100,6 +1149,8 @@ def upgrade() -> None:
           bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        ALTER TABLE location_native_answer_loans
+          ADD COLUMN IF NOT EXISTS source_incarnation UUID;
         CREATE TABLE IF NOT EXISTS location_received_answer_attempts (
           receiving_generation UUID PRIMARY KEY,
           ledger_id UUID NOT NULL,
@@ -1112,6 +1163,12 @@ def upgrade() -> None:
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           CHECK(server_request IS NOT NULL OR
             (receiving_session IS NOT NULL AND tool_generation IS NOT NULL))
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_server_finished (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_attempts,
+          server_request UUID NOT NULL,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
         CREATE TABLE IF NOT EXISTS location_received_answer_inputs (
           receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_attempts,
@@ -1131,11 +1188,30 @@ def upgrade() -> None:
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
         CREATE TABLE IF NOT EXISTS location_received_answer_floors (
-          receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_inputs,
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_attempts,
           decision_id UUID NOT NULL,
           manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
           bundle_digest BYTEA NOT NULL CHECK(octet_length(bundle_digest)=32),
+          source_name TEXT NOT NULL,
+          answer_generation UUID NOT NULL,
+          ledger_id UUID NOT NULL,
+          loan_id UUID NOT NULL,
+          source_incarnation UUID NOT NULL,
+          receiving_incarnation UUID NOT NULL,
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_qualifications (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_floors,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_answer_dispositions (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_answer_qualifications,
+          receipt_id UUID NOT NULL UNIQUE,
+          task_id UUID REFERENCES scheduled_tasks(id),
+          reduced_prompt_digest BYTEA CHECK(octet_length(reduced_prompt_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          CHECK((task_id IS NULL)=(reduced_prompt_digest IS NULL))
         );
         CREATE TABLE IF NOT EXISTS location_received_answer_claims (
           claim_generation UUID PRIMARY KEY,
@@ -1359,6 +1435,9 @@ def upgrade() -> None:
         "location_runtime_tool_results",
         "location_ordinary_delegation_inputs",
         "location_native_delegation_inputs",
+        "location_received_answer_dispositions",
+        "location_received_answer_qualifications",
+        "location_received_answer_server_finished",
         "location_received_answer_claims",
         "location_received_answer_claim_parents",
         "location_received_answer_claims_ended",

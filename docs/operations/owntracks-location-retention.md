@@ -732,9 +732,28 @@ rows, including full-body substitution, missing cohort, mixed parent, unknown AC
 secondary receipt failure and fresh cancellation. These are not online registered
 source enrollment or genuine SQL witnesses.
 
-This increment does not yet implement the terminal answer/return floor publisher,
-source-to-receiver reconciliation, core-only return context reduction or lawful
-mixed descendant disposal. Server, original tool/session, scheduled task and all
+The following receiving increment now installs fixed registered answer plan,
+prepare and status readers. The owning source reconstructs every original parent,
+full canonical bundle and loan/source incarnation through Switchboard. Receiver
+preparation freezes the complete immutable source/loan/ledger/bundle/decision and
+both-incarnation floor before further sensitive input or scheduling. An immutable
+qualification can commit later for the same binding after sibling closure becomes
+known; it is not a terminal receipt. The actual ASGI finalizer separately closes
+only its exact committed server attempt. A receiving Tool/context and every
+reserved processing/context descendant still need independent owning completion.
+An unchanged stored return task is reduced and disabled with the owning disposition;
+separate full floor/receipt/task readback gates success and replay reuses the receipt.
+Core-only and configured Memory return context paths compare all original claim
+parents, qualified floors and full composed bundle. The core-only profile preserves
+independent instructions/provenance, and the configured Memory profile reuses its
+own complete descendant engine. Missing or mixed siblings keep the whole context.
+No peer SQL, caller source verdict, new role or service credential is introduced.
+New strict software controls plant closed, interrupted, changed-task, missing-sibling,
+unknown-readback and replay cases. The existing migrated Memory group now includes
+owning floor/server/task/rollback/history controls; it remains UNRUN locally and
+requires exact-head hosted evidence. This increment does not yet connect the source
+answer reducer/reconciliation to all receiving observations or finish lawful mixed
+and Tool/runtime descendant closure. Server, original tool/session, scheduled task and all
 further native/Memory/catalog descendants remain separate required holders; the
 existing raw-source frontier remains blocked when their receipts are absent.
 The new schema, actual registered route/deployment and independent process controls

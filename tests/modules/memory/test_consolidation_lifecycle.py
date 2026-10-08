@@ -1861,6 +1861,7 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
         from butlers.chronicler.location_delegation_copies import delegation_frontier_closed
 
         await _assert_source_question_disposal(domain, runtime, session_id, context)
+        await _assert_received_answer_disposal(domain, runtime)
         unrelated_case = uuid.uuid4()
         assert await delegation_frontier_closed(domain, unrelated_case)
         # Purge predicate must not erase a declared cohort by joining only
@@ -2435,3 +2436,132 @@ async def _assert_core_question_context_disposal(domain, runtime, binding, task,
             )
             == receipt
         )
+
+
+async def _assert_received_answer_disposal(domain, runtime):
+    """Existing migrated real-role species; planted source plan is NOT online authority."""
+    import hashlib
+
+    from butlers.chronicler.location_answer_disposal import (
+        _REDUCED_RETURN,
+        _close_answer_receiver,
+        answer_receiver_status,
+    )
+    from butlers.chronicler.location_delegation_returns import finish_answer_server
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.core.scheduler import schedule_create
+
+    generation, ledger, loan, server, decision, answer, source_inc = [
+        uuid.uuid4() for _ in range(7)
+    ]
+    binding = dict(
+        receiving_generation=generation,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        bundle_digest=b"b" * 32,
+        source_name="relationship",
+        answer_generation=answer,
+        ledger_id=ledger,
+        loan_id=loan,
+        source_incarnation=source_inc,
+        receiving_incarnation=runtime.incarnation,
+    )
+    prompt = "synthetic full native answer return"
+    task = await schedule_create(domain, "planted-answer-" + str(generation), "0 0 * * *", prompt)
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_received_answer_attempts "
+                "(receiving_generation,ledger_id,source_name,wake_key,receiving_incarnation,server_request) "
+                "VALUES($1,$2,'relationship','synthetic wake',$3,$4)",
+                generation,
+                ledger,
+                runtime.incarnation,
+                server,
+            )
+            await conn.execute(
+                "INSERT INTO location_received_answer_inputs "
+                "(receiving_generation,source_name,answer_generation,loan_id,bundle_digest,"
+                "source_incarnation,parent_count,exclusive_input) "
+                "VALUES($1,'relationship',$2,$3,$4,$5,2,true)",
+                generation,
+                answer,
+                loan,
+                b"b" * 32,
+                source_inc,
+            )
+            await conn.execute(
+                "INSERT INTO location_received_answer_schedules "
+                "(receiving_generation,task_id,prompt_digest) VALUES($1,$2,$3)",
+                generation,
+                task,
+                hashlib.sha256(prompt.encode()).digest(),
+            )
+    assert await _close_answer_receiver(runtime, binding, complete=True) is None
+    async with domain.acquire() as observed:
+        floor = await observed.fetchrow(
+            "SELECT * FROM location_received_answer_floors WHERE receiving_generation=$1",
+            generation,
+        )
+        assert all(floor[key] == value for key, value in binding.items())
+        assert (
+            await observed.fetchval("SELECT prompt FROM scheduled_tasks WHERE id=$1", task)
+            == prompt
+        )
+        assert not await observed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_answer_dispositions WHERE receiving_generation=$1)",
+            generation,
+        )
+    with pytest.raises(RuntimeError, match="synthetic outer disposal rollback"):
+        async with domain.acquire() as conn:
+            async with conn.transaction():
+                await runtime.lock_domain(conn)
+                await conn.execute(
+                    "INSERT INTO location_received_answer_server_finished "
+                    "(receiving_generation,server_request,receipt_id) VALUES($1,$2,$3)",
+                    generation,
+                    server,
+                    uuid.uuid4(),
+                )
+                raise RuntimeError("synthetic outer disposal rollback")
+    assert await _close_answer_receiver(runtime, binding, complete=True) is None
+    await finish_answer_server(runtime, generation, server)
+    # A changed task cannot be silently reduced. Its original digest and all
+    # immutable floor fields survive the refusal/rollback.
+    await domain.execute("UPDATE scheduled_tasks SET prompt=$2 WHERE id=$1", task, "changed return")
+    with pytest.raises(PolicyUnavailableError, match="return task changed"):
+        await _close_answer_receiver(runtime, binding, complete=True)
+    assert (
+        await domain.fetchval("SELECT prompt FROM scheduled_tasks WHERE id=$1", task)
+        == "changed return"
+    )
+    assert not await domain.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_received_answer_dispositions WHERE receiving_generation=$1)",
+        generation,
+    )
+    await domain.execute("UPDATE scheduled_tasks SET prompt=$2 WHERE id=$1", task, prompt)
+    receipt = await _close_answer_receiver(runtime, binding, complete=True)
+    assert receipt is not None
+    observed = await answer_receiver_status(runtime, decision, receipt)
+    assert observed["receipt_id"] == str(receipt)
+    assert observed["bundle_digest"] == binding["bundle_digest"].hex()
+    assert observed["loan_id"] == str(loan)
+    async with domain.acquire() as committed:
+        reduced = await committed.fetchrow(
+            "SELECT prompt,enabled FROM scheduled_tasks WHERE id=$1", task
+        )
+        assert reduced["prompt"] == _REDUCED_RETURN and reduced["enabled"] is False
+    assert await _close_answer_receiver(runtime, binding, complete=True) == receipt
+    with pytest.raises(PolicyUnavailableError, match="receiving floor differs"):
+        await _close_answer_receiver(runtime, binding | {"loan_id": uuid.uuid4()}, complete=True)
+    assert (await answer_receiver_status(runtime, decision, receipt))["receipt_id"] == str(receipt)
+    with pytest.raises(asyncpg.RaiseError, match="Location source floors are permanent"):
+        async with domain.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE location_received_answer_dispositions SET receipt_id=$2 WHERE receiving_generation=$1",
+                    generation,
+                    uuid.uuid4(),
+                )
+    assert (await answer_receiver_status(runtime, decision, receipt))["receipt_id"] == str(receipt)

@@ -396,6 +396,9 @@ class TestButlerStartupIntegration:
         # Exercise the actual daemon dispatcher rather than comparing it with
         # another mutable production catalog.
         retention_tools = {
+            "location_retention_answer_plan",
+            "location_retention_prepare_answer",
+            "location_retention_answer_status",
             "location_retention_prepare_questions",
             "location_retention_question_status",
         }

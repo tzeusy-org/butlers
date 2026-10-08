@@ -16,7 +16,17 @@ from butlers.location_retention import content_digest
 
 
 async def dispose_core_question_contexts(runtime: Any, binding: dict) -> None:
-    """Exact owning question-only profile; Memory/Tool descendants stay separate.
+    await _dispose_core_delegated_contexts(runtime, binding)
+
+
+async def dispose_core_answer_contexts(runtime: Any, binding: dict) -> None:
+    await _dispose_core_delegated_contexts(runtime, binding, answer=True)
+
+
+async def _dispose_core_delegated_contexts(
+    runtime: Any, binding: dict, *, answer: bool = False
+) -> None:
+    """Exact owning delegated-prompt profile; Memory/Tool descendants stay separate.
 
     Preparation has already committed the permanent input floor. No context
     receipt is produced for missing intents, unfinished processing, additional
@@ -36,44 +46,59 @@ async def dispose_core_question_contexts(runtime: Any, binding: dict) -> None:
         or not runtime.active
     ):
         return  # Actual Memory constructors require their configured owning writer.
+    floor_table = (
+        "location_received_answer_floors" if answer else "location_received_delegation_floors"
+    )
+    input_table = (
+        "location_received_answer_inputs" if answer else "location_received_delegation_inputs"
+    )
+    input_keys = (
+        ("source_name", "answer_generation", "loan_id", "bundle_digest", "source_incarnation")
+        if answer
+        else (
+            "ledger_id",
+            "source_name",
+            "question_generation",
+            "loan_id",
+            "body_digest",
+            "receiving_incarnation",
+        )
+    )
     committed_receipts = []
     async with runtime.domain.acquire() as conn:
         async with conn.transaction():
             await runtime.lock_domain(conn)
             floor = await conn.fetchrow(
-                "SELECT * FROM location_received_delegation_floors "
-                "WHERE receiving_generation=$1 FOR UPDATE",
+                f"SELECT * FROM {floor_table} WHERE receiving_generation=$1 FOR UPDATE",
                 binding["receiving_generation"],
             )
             if floor is None or any(floor[key] != value for key, value in binding.items()):
                 raise PolicyUnavailableError("Native context receiving floor differs")
             admitted = await conn.fetchrow(
-                "SELECT * FROM location_received_delegation_inputs WHERE receiving_generation=$1",
+                f"SELECT * FROM {input_table} WHERE receiving_generation=$1",
                 binding["receiving_generation"],
             )
             if (
                 admitted is None
-                or any(
-                    admitted[key] != binding[key]
-                    for key in (
-                        "ledger_id",
-                        "source_name",
-                        "question_generation",
-                        "loan_id",
-                        "body_digest",
-                        "receiving_incarnation",
-                    )
-                )
+                or any(admitted[key] != binding[key] for key in input_keys)
                 or admitted["exclusive_input"] is not True
                 or admitted["parent_count"] < 1
             ):
                 return
-            contexts = await conn.fetch(
-                "SELECT i.input_generation FROM location_runtime_context_question_intents i "
-                "JOIN location_received_delegation_claims c USING(claim_generation) "
-                "WHERE c.receiving_generation=$1 ORDER BY i.input_generation",
-                binding["receiving_generation"],
-            )
+            if answer:
+                contexts = await conn.fetch(
+                    "SELECT i.input_generation FROM location_runtime_context_answer_intents i "
+                    "JOIN location_received_answer_claim_parents p USING(claim_generation) "
+                    "WHERE p.receiving_generation=$1 ORDER BY i.input_generation",
+                    binding["receiving_generation"],
+                )
+            else:
+                contexts = await conn.fetch(
+                    "SELECT i.input_generation FROM location_runtime_context_question_intents i "
+                    "JOIN location_received_delegation_claims c USING(claim_generation) "
+                    "WHERE c.receiving_generation=$1 ORDER BY i.input_generation",
+                    binding["receiving_generation"],
+                )
             for selected in contexts:
                 generation = selected["input_generation"]
                 previous = await conn.fetchrow(
@@ -110,31 +135,43 @@ async def dispose_core_question_contexts(runtime: Any, binding: dict) -> None:
                     frozen["server_request"],
                 ):
                     continue
-                captured = await conn.fetch(
-                    "SELECT b.*,c.receiving_generation,c.prompt_digest,c.exclusive_input,"
-                    "c.receiving_incarnation,i.claim_generation AS reserved_claim,"
-                    "e.receipt_id AS ended_receipt "
-                    "FROM location_received_delegation_contexts b "
-                    "JOIN location_received_delegation_claims c USING(claim_generation) "
-                    "LEFT JOIN location_runtime_context_question_intents i "
-                    "ON i.input_generation=b.input_generation "
-                    "LEFT JOIN location_received_delegation_claims_ended e "
-                    "ON e.claim_generation=b.claim_generation "
-                    "WHERE b.input_generation=$1",
-                    generation,
-                )
-                if (
-                    len(captured) != 1
-                    or captured[0]["reserved_claim"] != captured[0]["claim_generation"]
-                    or captured[0]["receiving_generation"] != binding["receiving_generation"]
-                    or captured[0]["receiving_session"] != frozen["receiving_session"]
-                    or captured[0]["bundle_digest"] != frozen["bundle_digest"]
-                    or captured[0]["prompt_digest"] != frozen["prompt_digest"]
-                    or captured[0]["exclusive_input"] is not True
-                    or captured[0]["receiving_incarnation"] != runtime.incarnation
-                    or captured[0]["ended_receipt"] is None
-                ):
-                    continue
+                if answer:
+                    from butlers.chronicler.location_answer_disposal import (
+                        closed_answer_context_input,
+                    )
+                    from butlers.chronicler.location_memory_context import _own_schema
+
+                    schema = _own_schema(runtime)
+                    if not await closed_answer_context_input(
+                        conn, schema, runtime, frozen, generation, binding
+                    ):
+                        continue
+                else:
+                    captured = await conn.fetch(
+                        "SELECT b.*,c.receiving_generation,c.prompt_digest,c.exclusive_input,"
+                        "c.receiving_incarnation,i.claim_generation AS reserved_claim,"
+                        "e.receipt_id AS ended_receipt "
+                        "FROM location_received_delegation_contexts b "
+                        "JOIN location_received_delegation_claims c USING(claim_generation) "
+                        "LEFT JOIN location_runtime_context_question_intents i "
+                        "ON i.input_generation=b.input_generation "
+                        "LEFT JOIN location_received_delegation_claims_ended e "
+                        "ON e.claim_generation=b.claim_generation "
+                        "WHERE b.input_generation=$1",
+                        generation,
+                    )
+                    if (
+                        len(captured) != 1
+                        or captured[0]["reserved_claim"] != captured[0]["claim_generation"]
+                        or captured[0]["receiving_generation"] != binding["receiving_generation"]
+                        or captured[0]["receiving_session"] != frozen["receiving_session"]
+                        or captured[0]["bundle_digest"] != frozen["bundle_digest"]
+                        or captured[0]["prompt_digest"] != frozen["prompt_digest"]
+                        or captured[0]["exclusive_input"] is not True
+                        or captured[0]["receiving_incarnation"] != runtime.incarnation
+                        or captured[0]["ended_receipt"] is None
+                    ):
+                        continue
                 # Complete question-only profile, not an absence-only shortcut.
                 # Every additional actual input or descendant retains this copy.
                 if await conn.fetchval(

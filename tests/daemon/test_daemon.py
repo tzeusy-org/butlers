@@ -568,7 +568,13 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
     # A domain butler receives its actual group-gated surface, not a parallel
     # hand-maintained catalog.  The dispatcher inventory test owns exhaustive
     # coverage; this startup test protects the daemon integration seam.
-    retention_tools = {"location_retention_prepare_questions", "location_retention_question_status"}
+    retention_tools = {
+        "location_retention_prepare_questions",
+        "location_retention_question_status",
+        "location_retention_answer_plan",
+        "location_retention_prepare_answer",
+        "location_retention_answer_status",
+    }
     assert retention_tools <= set(registered_tools)
     assert all(registered_tools.count(name) == 1 for name in retention_tools)
     # Keep the complete old surface predicate unchanged; the additive

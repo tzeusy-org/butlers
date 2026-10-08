@@ -3115,6 +3115,10 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     assert await dispose_runtime_context(runtime, generation, plan)
     await _assert_core_question_context_values()
     await _assert_native_answer_challenge_values()
+    await _assert_native_answer_server_values()
+    await _assert_native_answer_cohort_values()
+    await _assert_native_answer_receiver_values()
+    await _assert_native_answer_context_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
 
@@ -4129,6 +4133,21 @@ async def _assert_native_answer_challenge_values():
     ).status_code == 503
     duplicate = json.dumps(body).encode()[:-1] + b',"source":"caller-forged"}'
     assert (await actual_control(duplicate)).status_code == 503
+    from butlers.chronicler import location_catalog_copies
+
+    copied = []
+
+    class TrackedBuffer(bytearray):
+        def extend(self, body):
+            copied.append(len(body))
+            super().extend(body)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(location_catalog_copies, "bytearray", TrackedBuffer, raising=False)
+        assert (await actual_control(b"x" * 8193)).status_code == 503
+        assert copied == []  # Refuse the chunk before allocating a second copy.
+        assert (await actual_control(json.dumps(body).encode())).status_code == 200
+        assert copied == [len(json.dumps(body).encode()), 0]
     runtime.close()
     assert not runtime.delegation_writer.answer_pending
 
@@ -4735,3 +4754,621 @@ async def _assert_native_return_processing_values():
         _dispatchers.pop(pool, None)
         _context_writers.pop(pool, None)
         runtime.close()
+
+
+async def _assert_native_answer_server_values():
+    """Actual ASGI finalizer + own committed receipt; software rows, not SQL proof."""
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler.location_catalog_copies import (
+        CatalogServerCopyLifetime,
+        _server_copy_scope,
+        _server_copy_scopes,
+    )
+    from butlers.chronicler.location_delegation_returns import finish_answer_server
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+
+    class Pool:
+        in_transaction = False
+        role = "fixed_role"
+        unknown = False
+        attempts = {}
+        receipts = {}
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.in_transaction = True
+            try:
+                yield
+            finally:
+                self.in_transaction = False
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "relationship"
+            if sql == "SELECT current_user":
+                return self.role
+            assert "FROM location_received_answer_attempts" in sql and self.in_transaction
+            return self.attempts.get(args[0]) == args[1:]
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction
+            if "pg_advisory_xact_lock" in sql:
+                return
+            assert "INSERT INTO location_received_answer_server_finished" in sql
+            self.receipts.setdefault(
+                args[0],
+                dict(receiving_generation=args[0], server_request=args[1], receipt_id=args[2]),
+            )
+
+        async def fetchrow(self, sql, *args):
+            assert "FROM location_received_answer_server_finished" in sql
+            if self.unknown and not self.in_transaction:
+                return None
+            return self.receipts.get(args[0])
+
+    pool = Pool()
+    runtime = NativeDelegationRuntime(
+        domain=pool, name="relationship", registry=object(), identity=("relationship", "fixed_role")
+    )
+    generation = uuid4()
+    interrupted = False
+    received = []
+    sent = []
+
+    async def app(scope, receive, send):
+        actual = _server_copy_scope.get()
+        assert actual is not None and _server_copy_scopes[actual.request] is actual
+        assert actual.target == runtime.name
+        # Planted own attempt models the actual committed admission writer.
+        pool.attempts[generation] = (actual.request, runtime.incarnation)
+        actual.answers.append((runtime, generation))
+        received.append(actual.request)
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": interrupted})
+        if interrupted:
+            raise ValueError("synthetic interrupted answer response")
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = CatalogServerCopyLifetime(app, butler_name=runtime.name)
+    scope = dict(type="http", method="POST", path="/sse", headers=[])
+    try:
+        interrupted = True
+        with pytest.raises(ValueError, match="interrupted answer response"):
+            await middleware(scope, receive, send)
+        assert generation in pool.attempts and generation not in pool.receipts
+        assert _server_copy_scope.get() is None and received[-1] not in _server_copy_scopes
+        generation = uuid4()
+        interrupted = False
+        await middleware(scope, receive, send)
+        assert generation in pool.receipts
+        assert pool.receipts[generation]["server_request"] == received[-1]
+        receipt = pool.receipts[generation]["receipt_id"]
+        await finish_answer_server(runtime, generation, received[-1])
+        assert pool.receipts[generation]["receipt_id"] == receipt
+        with pytest.raises(PolicyUnavailableError, match="attempt differs"):
+            await finish_answer_server(runtime, generation, uuid4())
+        assert pool.receipts[generation]["receipt_id"] == receipt
+        pool.unknown = True
+        with pytest.raises(PolicyUnavailableError, match="lifetime is unknown"):
+            await finish_answer_server(runtime, generation, received[-1])
+        assert pool.receipts[generation]["receipt_id"] == receipt
+        pool.unknown = False
+        pool.role = "wrong_role"
+        with pytest.raises(PolicyUnavailableError, match="owning writer differs"):
+            await finish_answer_server(runtime, generation, received[-1])
+        assert pool.receipts[generation]["receipt_id"] == receipt
+        assert _server_copy_scope.get() is None and received[-1] not in _server_copy_scopes
+    finally:
+        runtime.close()
+
+
+async def _assert_native_answer_cohort_values():
+    """Complete owning selector with planted inputs; SQL selection remains unproved."""
+    import hashlib
+    from copy import deepcopy
+    from uuid import uuid4
+
+    from butlers.chronicler.location_answer_disposal import source_answer_cohort
+    from butlers.chronicler.location_delegation_answers import answer_bundle_digest
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.core.delegation_ledger import compute_answer_digest, compute_wake_key
+
+    ledger, generation, decision, session, context, tool = [uuid4() for _ in range(6)]
+    canonical = dict(
+        id=ledger,
+        asking_butler="relationship",
+        target_butler="chronicler",
+        answering_butler="chronicler",
+        question="Synthetic immutable source question",
+        answer="Synthetic immutable source answer",
+        metadata={},
+        catalog_match_id=None,
+        catalog_score=None,
+        status="answered",
+    )
+    canonical["answer_digest"] = compute_answer_digest(canonical["answer"])
+    canonical["wake_key"] = compute_wake_key(ledger, canonical["answer_digest"])
+    header = dict(
+        answer_generation=generation,
+        ledger_id=ledger,
+        parent_count=2,
+        exclusive_input=True,
+        body_digest=hashlib.sha256(canonical["answer"].encode()).digest(),
+        bundle_digest=answer_bundle_digest(canonical),
+        receiving_session=session,
+        context_generation=context,
+        tool_generation=tool,
+    )
+    parents = [
+        dict(parent_kind="native_copy", parent_generation=uuid4(), parent_digest=b"p" * 32)
+        for _ in range(2)
+    ]
+    births = {
+        parent["parent_generation"]: [
+            dict(input_digest=b"p" * 32, lineage_known=True, exclusive_input=True, selected=True)
+        ]
+        for parent in parents
+    }
+    plan = dict(decision_id=str(decision), manifest_digest="ab" * 32, catalog_loans=[])
+
+    class Pool:
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "chronicler"
+            assert sql == "SELECT current_user"
+            return "fixed_role"
+
+        async def execute(self, sql, *args):
+            assert "pg_advisory_xact_lock" in sql
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_retention_policy" in sql:
+                return {"version": 1}
+            assert "FROM public.delegation_ledger" in sql and args == (ledger,)
+            return canonical
+
+        async def fetch(self, sql, *args):
+            if "FROM location_native_delegation_answers" in sql:
+                return [header] if args == (None,) else []
+            if "FROM location_native_delegation_answer_parents" in sql:
+                assert args == (generation,)
+                return parents
+            if "FROM location_native_copy_births" in sql:
+                assert args[1] == decision
+                return births.get(args[0], [])
+            assert "FROM location_native_answer_loans" in sql and args == (generation,)
+            return []
+
+    pool = Pool()
+    runtime = NativeDelegationRuntime(
+        domain=pool, name="chronicler", registry=object(), identity=("chronicler", "fixed_role")
+    )
+    try:
+        full = await source_answer_cohort(runtime, pool, plan)
+        assert len(full) == 1 and full[0]["complete_input"] is True
+        assert (
+            full[0]["parent_count"] == 2
+            and full[0]["bundle_digest"] == header["bundle_digest"].hex()
+        )
+        selected = parents.pop()
+        incomplete = await source_answer_cohort(runtime, pool, plan)
+        assert len(incomplete) == 1 and incomplete[0]["complete_input"] is False
+        assert incomplete[0]["parent_count"] == 2  # Original count never shrinks.
+        parents.append(selected)
+        original = deepcopy(births[selected["parent_generation"]])
+        births[selected["parent_generation"]][0]["input_digest"] = b"x" * 32
+        assert (await source_answer_cohort(runtime, pool, plan))[0]["complete_input"] is False
+        births[selected["parent_generation"]] = original
+        parents.append(
+            dict(parent_kind="native_copy", parent_generation=uuid4(), parent_digest=b"p" * 32)
+        )
+        assert (await source_answer_cohort(runtime, pool, plan))[0]["complete_input"] is False
+        parents.pop()
+        parents.append(dict(parents[0]))
+        with pytest.raises(PolicyUnavailableError, match="parent set differs"):
+            await source_answer_cohort(runtime, pool, plan)
+        parents.pop()
+        original_question = canonical["question"]
+        canonical["question"] += " unrelated substitution"
+        with pytest.raises(PolicyUnavailableError, match="answer body changed"):
+            await source_answer_cohort(runtime, pool, plan)
+        canonical["question"] = original_question
+        assert await source_answer_cohort(runtime, pool, plan) == full
+        saved_parents, parents = parents, []
+        header["parent_count"] = 0
+        unknown = await source_answer_cohort(runtime, pool, plan)
+        assert len(unknown) == 1 and unknown[0]["complete_input"] is False
+        parents = saved_parents
+        header["parent_count"] = 2
+        assert await source_answer_cohort(runtime, pool, plan) == full
+    finally:
+        runtime.close()
+
+
+async def _assert_native_answer_receiver_values():
+    """Positioned exact floor/task/receipt controls; software SQL double only."""
+    import hashlib
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler import location_answer_disposal as disposal
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+
+    incarnation, decision, ledger, generation, loan, source_incarnation = [
+        uuid4() for _ in range(6)
+    ]
+    plan = dict(
+        decision_id=str(decision),
+        manifest_digest=(b"m" * 32).hex(),
+        source_name="relationship",
+        source_incarnation=str(source_incarnation),
+    )
+    answer = dict(
+        answer_generation=str(uuid4()),
+        ledger_id=str(ledger),
+        source_name="relationship",
+        bundle_digest=(b"b" * 32).hex(),
+        complete_input=True,
+    )
+    selected = dict(
+        loan_id=str(loan),
+        receiving_generation=str(generation),
+        receiver_name="chronicler",
+        receiving_incarnation=str(incarnation),
+        source_incarnation=str(source_incarnation),
+        bundle_digest=answer["bundle_digest"],
+    )
+    runtime = SimpleNamespace(
+        name="chronicler",
+        incarnation=incarnation,
+        active=True,
+        delegation_writer=SimpleNamespace(receiving_answers={}, answer_pending={}),
+    )
+    binding = disposal._answer_floor_binding(runtime, plan, answer, selected)
+    for changed in (
+        {**selected, "source_incarnation": str(uuid4())},
+        {**selected, "receiving_incarnation": str(uuid4())},
+        {**selected, "bundle_digest": (b"x" * 32).hex()},
+        {**selected, "receiver_name": "finance"},
+    ):
+        with pytest.raises(PolicyUnavailableError, match="floor cohort differs"):
+            disposal._answer_floor_binding(runtime, plan, answer, changed)
+    assert binding["loan_id"] == loan
+    prompt, task = "full synthetic original return", uuid4()
+
+    class Pool:
+        in_transaction = False
+        floors = {}
+        dispositions = {}
+        finished = False
+        unresolved = False
+        tool_finished = False
+        unknown = False
+        sibling_qualified = True
+        attempt = dict(
+            source_name="relationship",
+            ledger_id=ledger,
+            receiving_incarnation=incarnation,
+            server_request=uuid4(),
+            tool_generation=None,
+            receiving_session=None,
+        )
+        schedule = dict(
+            task_id=task,
+            prompt=prompt,
+            enabled=True,
+            prompt_digest=hashlib.sha256(prompt.encode()).digest(),
+        )
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.in_transaction = True
+            # Model rollback for the tested floor/task/receipt failure paths.
+            before = (dict(self.floors), dict(self.dispositions), dict(self.schedule))
+            try:
+                yield
+            except BaseException:
+                self.floors, self.dispositions, self.schedule = before
+                raise
+            finally:
+                self.in_transaction = False
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction
+            if "INSERT INTO location_received_answer_floors" in sql:
+                self.floors.setdefault(args[0], dict(zip(disposal._FLOOR_KEYS, args, strict=True)))
+            elif "INSERT INTO location_received_answer_qualifications" in sql:
+                assert args[0] == generation and args[0] in self.floors
+            elif "UPDATE scheduled_tasks" in sql:
+                assert args[0] == task
+                self.schedule.update(prompt=args[1], enabled=False)
+            elif "INSERT INTO location_received_answer_dispositions" in sql:
+                self.dispositions[args[0]] = dict(
+                    receipt_id=args[1], task_id=args[2], reduced_prompt_digest=args[3]
+                )
+            else:
+                raise AssertionError("Unexpected answer disposal write")
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_received_answer_attempts" in sql:
+                return dict(self.attempt)
+            if "FROM location_received_answer_inputs" in sql:
+                return {
+                    key: binding[key]
+                    for key in (
+                        "source_name",
+                        "answer_generation",
+                        "loan_id",
+                        "bundle_digest",
+                        "source_incarnation",
+                    )
+                } | dict(parent_count=2, exclusive_input=True)
+            if "FROM location_received_answer_schedules" in sql:
+                return dict(self.schedule)
+            if "JOIN location_received_answer_dispositions" in sql:
+                assert self.in_transaction
+                if self.unknown:
+                    return None
+                return (
+                    self.floors.get(generation, {})
+                    | self.dispositions.get(generation, {})
+                    | {"prompt": self.schedule["prompt"], "enabled": self.schedule["enabled"]}
+                )
+            if "FROM location_received_answer_floors" in sql:
+                return self.floors.get(args[0])
+            raise AssertionError("Unexpected answer disposal read")
+
+        async def fetch(self, sql, *args):
+            assert "FROM location_received_answer_schedules" in sql
+            row = {
+                key: binding[key]
+                for key in (
+                    "receiving_generation",
+                    "source_name",
+                    "answer_generation",
+                    "loan_id",
+                    "bundle_digest",
+                    "source_incarnation",
+                    "receiving_incarnation",
+                    "ledger_id",
+                    "decision_id",
+                    "manifest_digest",
+                )
+            }
+            row.update(
+                declared_receiving=generation,
+                prompt_digest=self.schedule["prompt_digest"],
+                exclusive_input=True,
+                parent_count=2,
+                qualified=self.sibling_qualified,
+                floor_digest=binding["bundle_digest"],
+                floor_loan=binding["loan_id"],
+                floor_answer=binding["answer_generation"],
+                floor_source=binding["source_name"],
+                floor_source_incarnation=binding["source_incarnation"],
+                floor_incarnation=incarnation,
+                floor_ledger=ledger,
+            )
+            return [row]
+
+        async def fetchval(self, sql, *args):
+            if "SELECT receipt_id FROM location_received_answer_dispositions" in sql:
+                return self.dispositions.get(args[0], {}).get("receipt_id")
+            if "SELECT EXISTS(SELECT 1 FROM location_received_answer_dispositions" in sql:
+                return bool(self.dispositions)
+            if "FROM location_received_answer_server_finished" in sql:
+                return self.finished
+            if "FROM location_runtime_tool_intents" in sql:
+                return self.tool_finished
+            if "FROM location_received_answer_claim_parents" in sql:
+                return self.unresolved
+            if "FROM scheduled_tasks" in sql:
+                return self.schedule["prompt"] == args[1] and not self.schedule["enabled"]
+            raise AssertionError("Unexpected answer disposal condition")
+
+    pool = Pool()
+    runtime.domain = pool
+
+    async def lock(conn):
+        assert conn is pool and conn.in_transaction
+
+    runtime.lock_domain = lock
+    assert await disposal._close_answer_receiver(runtime, binding, complete=True) is None
+    assert pool.floors[generation] == binding and pool.schedule["prompt"] == prompt
+    pool.finished = True
+    assert await disposal._close_answer_receiver(runtime, binding, complete=False) is None
+    assert pool.floors[generation] == binding and not pool.dispositions
+    pool.unresolved = True
+    assert await disposal._close_answer_receiver(runtime, binding, complete=True) is None
+    assert not pool.dispositions and pool.schedule["prompt"] == prompt
+    pool.unresolved = False
+    pool.attempt["tool_generation"], pool.attempt["receiving_session"] = uuid4(), uuid4()
+    assert await disposal._close_answer_receiver(runtime, binding, complete=True) is None
+    assert not pool.dispositions  # Server completion never attests the Tool context.
+    pool.tool_finished = True
+    runtime.delegation_writer.receiving_answers[generation] = object()
+    assert await disposal._close_answer_receiver(runtime, binding, complete=True) is None
+    runtime.delegation_writer.receiving_answers.clear()
+    pool.sibling_qualified = False
+    assert await disposal._close_answer_receiver(runtime, binding, complete=True) is None
+    assert not pool.dispositions and pool.schedule["prompt"] == prompt
+    pool.sibling_qualified = True
+    pool.schedule["prompt"] = "changed current task"
+    with pytest.raises(PolicyUnavailableError, match="return task changed"):
+        await disposal._close_answer_receiver(runtime, binding, complete=True)
+    assert pool.schedule["prompt"] == "changed current task" and not pool.dispositions
+    pool.schedule["prompt"] = prompt
+    receipt = await disposal._close_answer_receiver(runtime, binding, complete=True)
+    assert receipt is not None and pool.dispositions[generation]["receipt_id"] == receipt
+    assert pool.schedule["prompt"] == disposal._REDUCED_RETURN and not pool.schedule["enabled"]
+    assert await disposal._close_answer_receiver(runtime, binding, complete=True) == receipt
+    pool.schedule["prompt"] = "post-COMMIT changed task"
+    with pytest.raises(PolicyUnavailableError, match="Committed native answer task differs"):
+        await disposal.answer_receiver_status(runtime, decision, receipt)
+    assert pool.dispositions[generation]["receipt_id"] == receipt
+    pool.schedule["prompt"] = disposal._REDUCED_RETURN
+    pool.unknown = True
+    with pytest.raises(PolicyUnavailableError, match="disposition is unavailable"):
+        await disposal._close_answer_receiver(runtime, binding, complete=True)
+    assert pool.dispositions[generation]["receipt_id"] == receipt
+    pool.unknown = False
+    with pytest.raises(PolicyUnavailableError, match="receiving floor differs"):
+        await disposal._close_answer_receiver(
+            runtime, binding | {"loan_id": uuid4()}, complete=True
+        )
+    assert pool.dispositions[generation]["receipt_id"] == receipt
+
+
+async def _assert_native_answer_context_values():
+    """Full declared return ancestry, not a smaller surviving JOIN; software only."""
+    import hashlib
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_answer_disposal import closed_answer_context_input
+    from butlers.chronicler.location_return_processing import _bundle
+
+    runtime = SimpleNamespace(incarnation=uuid4())
+    claim, generation, session, decision, first, second = [uuid4() for _ in range(6)]
+    prompt = "synthetic complete two-answer return"
+    binding = dict(
+        receiving_generation=first,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        receiving_incarnation=runtime.incarnation,
+    )
+    parents = []
+    for receiving in (first, second):
+        answer, loan, ledger, source_inc = [uuid4() for _ in range(4)]
+        parents.append(
+            dict(
+                original_receiving=receiving,
+                declared_receiving=receiving,
+                receiving_generation=receiving,
+                original_digest=b"b" * 32,
+                bundle_digest=b"b" * 32,
+                source_name="relationship",
+                answer_generation=answer,
+                loan_id=loan,
+                ledger_id=ledger,
+                source_incarnation=source_inc,
+                receiving_incarnation=runtime.incarnation,
+                parent_count=2,
+                exclusive_input=True,
+                wake_key="fixed wake",
+                scheduled_prompt=prompt,
+                prompt_digest=hashlib.sha256(prompt.encode()).digest(),
+                decision_id=decision,
+                manifest_digest=b"m" * 32,
+                floor_digest=b"b" * 32,
+                floor_source="relationship",
+                floor_answer=answer,
+                floor_loan=loan,
+                floor_source_incarnation=source_inc,
+                floor_incarnation=runtime.incarnation,
+                floor_ledger=ledger,
+                floor_complete=True,
+            )
+        )
+    original_bundle = _bundle(parents, prompt)
+    frozen = dict(
+        receiving_session=session,
+        bundle_digest=b"f" * 32,
+        prompt_digest=hashlib.sha256(prompt.encode()).digest(),
+    )
+    captured = dict(
+        claim_generation=claim,
+        reserved_claim=claim,
+        receiving_session=session,
+        bundle_digest=b"f" * 32,
+        prompt_digest=frozen["prompt_digest"],
+        original_bundle=original_bundle,
+        claim_bundle_digest=original_bundle,
+        exclusive_input=True,
+        receiving_incarnation=runtime.incarnation,
+        ended_receipt=uuid4(),
+        parent_count=2,
+    )
+
+    class Conn:
+        rows = parents
+
+        async def fetchrow(self, sql, *args):
+            assert "FROM relationship.location_received_answer_contexts" in sql
+            return self.captured
+
+        async def fetch(self, sql, *args):
+            assert "LEFT JOIN relationship.location_received_answer_inputs" in sql
+            return self.rows
+
+    conn = Conn()
+    conn.captured = captured
+    assert await closed_answer_context_input(
+        conn, "relationship", runtime, frozen, generation, binding
+    )
+    conn.rows = parents[:1]
+    assert not await closed_answer_context_input(
+        conn, "relationship", runtime, frozen, generation, binding
+    )
+    for key, changed in (
+        ("floor_complete", False),
+        ("floor_loan", uuid4()),
+        ("exclusive_input", False),
+        ("original_digest", b"x" * 32),
+        ("decision_id", uuid4()),
+    ):
+        conn.rows = [parents[0], parents[1] | {key: changed}]
+        assert not await closed_answer_context_input(
+            conn, "relationship", runtime, frozen, generation, binding
+        )
+    conn.rows = parents + [parents[0]]
+    assert not await closed_answer_context_input(
+        conn, "relationship", runtime, frozen, generation, binding
+    )
+    conn.rows = parents
+    conn.captured = captured | {"ended_receipt": None}
+    assert not await closed_answer_context_input(
+        conn, "relationship", runtime, frozen, generation, binding
+    )
+    conn.captured = captured
+    assert await closed_answer_context_input(
+        conn, "relationship", runtime, frozen, generation, binding
+    )
+
+    from butlers.chronicler.location_answer_disposal import _closed_return_task_cohort
+
+    class TaskConn:
+        rows = [row | {"qualified": True} for row in parents]
+
+        async def fetch(self, sql, *args):
+            assert "WHERE s.task_id=$1" in sql
+            return self.rows
+
+    task_conn = TaskConn()
+    schedule = dict(task_id=uuid4(), prompt_digest=frozen["prompt_digest"])
+    assert await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
+    task_conn.rows = [task_conn.rows[0], task_conn.rows[1] | {"qualified": False}]
+    assert not await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
+    task_conn.rows = [row | {"qualified": True} for row in parents]
+    task_conn.rows[1] = task_conn.rows[1] | {"exclusive_input": False}
+    assert not await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
+    task_conn.rows = [row | {"qualified": True} for row in parents]
+    assert await _closed_return_task_cohort(task_conn, runtime, schedule, binding)

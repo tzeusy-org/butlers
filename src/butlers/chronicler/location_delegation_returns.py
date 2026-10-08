@@ -304,7 +304,8 @@ async def prepare_answer_source(writer: Any, token: str, body: dict) -> dict:
             await conn.execute(
                 "INSERT INTO location_native_answer_loans "
                 "(loan_id,answer_generation,receiving_generation,receiver_name,"
-                "receiving_incarnation,bundle_digest) VALUES($1,$2,$3,$4,$5,$6) "
+                "receiving_incarnation,bundle_digest,source_incarnation) "
+                "VALUES($1,$2,$3,$4,$5,$6,$7) "
                 "ON CONFLICT(receiving_generation) DO NOTHING",
                 loan,
                 source["answer_generation"],
@@ -312,6 +313,7 @@ async def prepare_answer_source(writer: Any, token: str, body: dict) -> dict:
                 receiver,
                 incarnation,
                 source["bundle_digest"],
+                runtime.incarnation,
             )
             # A lost acknowledgement resumes the exact immutable receiver
             # attempt and committed loan, never a replacement generation.
@@ -326,6 +328,7 @@ async def prepare_answer_source(writer: Any, token: str, body: dict) -> dict:
                     "receiver_name": receiver,
                     "receiving_incarnation": incarnation,
                     "bundle_digest": source["bundle_digest"],
+                    "source_incarnation": runtime.incarnation,
                 }.items()
             ):
                 raise PolicyUnavailableError("Native answer immutable loan differs")
@@ -333,13 +336,14 @@ async def prepare_answer_source(writer: Any, token: str, body: dict) -> dict:
     if not await runtime.domain.fetchval(
         "SELECT EXISTS(SELECT 1 FROM location_native_answer_loans WHERE loan_id=$1 "
         "AND answer_generation=$2 AND receiving_generation=$3 AND receiver_name=$4 "
-        "AND receiving_incarnation=$5 AND bundle_digest=$6)",
+        "AND receiving_incarnation=$5 AND bundle_digest=$6 AND source_incarnation=$7)",
         loan,
         source["answer_generation"],
         receiving,
         receiver,
         incarnation,
         source["bundle_digest"],
+        runtime.incarnation,
     ):
         raise PolicyUnavailableError("Committed native answer loan is unknown")
     return {
@@ -366,7 +370,7 @@ async def verify_answer_delivery(writer: Any, token: str, body: dict) -> dict:
                 loan_id,
                 receiver,
             )
-            if loan is None:
+            if loan is None or loan["source_incarnation"] != runtime.incarnation:
                 raise PolicyUnavailableError("Native answer delivery is unavailable")
             source = await _answer_source(writer, conn, loan["ledger_id"], receiver)
     witness = await runtime.exchange(
@@ -444,7 +448,7 @@ async def reserve_received_answer(
         for key, value in writer.answer_pending.items()
         if value.deadline > time.monotonic()
     }
-    if len(writer.answer_pending) >= 128:
+    if len(writer.answer_pending) >= 128 or (server is not None and len(server.answers) >= 128):
         raise PolicyUnavailableError("Native answer receiver capacity is unavailable")
     receiving, nonce = uuid4(), secrets.token_urlsafe(32)
     async with runtime.domain.acquire() as conn:
@@ -486,6 +490,10 @@ async def reserve_received_answer(
                 tool.generation if tool else None,
                 server.request if server else None,
             )
+    if server is not None:
+        # The attempt has committed. Even a later readback/admission failure
+        # leaves this actual server generation attached to its finalizer.
+        server.answers.append((runtime, receiving))
     attempt = await runtime.domain.fetchrow(
         "SELECT * FROM location_received_answer_attempts WHERE receiving_generation=$1",
         receiving,
@@ -559,6 +567,12 @@ async def reserve_received_answer(
                 await runtime.lock_domain(conn)
                 if pending.deadline <= time.monotonic() or not runtime.active:
                     raise PolicyUnavailableError("Native answer input lifetime expired")
+                if await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_received_answer_floors "
+                    "WHERE receiving_generation=$1)",
+                    receiving,
+                ):
+                    raise PolicyUnavailableError("Native answer input is fenced")
                 # No copied processing or prompt construction precedes this
                 # full native body match and own same-transaction reservation.
                 canonical = await conn.fetchrow(
@@ -609,6 +623,11 @@ async def reserve_received_answer(
             or answer_bundle_digest(current) != digest
         ):
             raise PolicyUnavailableError("Committed native answer input is unknown")
+        if tool is not None:
+            # Mark only after exact input/body outer-COMMIT readback. A Tool
+            # result witness does not itself dispose this processing or task.
+            tool.read_observed = True
+            tool.mixed_inputs = tool.mixed_inputs or not prepared["exclusive_input"]
         admission = _ReceivedAnswer(
             writer, receiving, ledger, digest, pending.deadline, tool=tool, server=server
         )
@@ -650,6 +669,12 @@ async def schedule_received_answer(admission: Any, write: Any) -> dict:
             async with conn.transaction():
                 await runtime.lock_domain(conn)
                 _receiving(admission)
+                if await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_received_answer_floors "
+                    "WHERE receiving_generation=$1)",
+                    admission.generation,
+                ):
+                    raise PolicyUnavailableError("Native return task input is fenced")
                 captured = await conn.fetchrow(
                     "SELECT i.*,a.ledger_id,a.wake_key,a.receiving_incarnation "
                     "FROM location_received_answer_inputs i "
@@ -672,12 +697,6 @@ async def schedule_received_answer(admission: Any, write: Any) -> dict:
                     or answer_bundle_digest(canonical) != admission.bundle_digest
                 ):
                     raise PolicyUnavailableError("Native return task input differs")
-                if await conn.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM location_received_answer_floors "
-                    "WHERE receiving_generation=$1)",
-                    admission.generation,
-                ):
-                    raise PolicyUnavailableError("Native return task input is fenced")
                 prompt = _build_return_task_prompt(
                     ledger_id=admission.ledger,
                     asking_butler=canonical["asking_butler"],
@@ -742,3 +761,46 @@ async def schedule_received_answer(admission: Any, write: Any) -> dict:
     finally:
         admission.active = False
         admission.writer.receiving_answers.pop(admission.generation, None)
+
+
+async def finish_answer_server(runtime: Any, receiving: UUID, server: UUID) -> None:
+    """Actual final-body completion settles only this owning attempt lifetime."""
+    receipt = uuid4()
+    async with runtime.domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            if not await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_answer_attempts "
+                "WHERE receiving_generation=$1 AND server_request=$2 "
+                "AND receiving_incarnation=$3)",
+                receiving,
+                server,
+                runtime.incarnation,
+            ):
+                raise PolicyUnavailableError("Native answer server attempt differs")
+            await conn.execute(
+                "INSERT INTO location_received_answer_server_finished "
+                "(receiving_generation,server_request,receipt_id) VALUES($1,$2,$3) "
+                "ON CONFLICT DO NOTHING",
+                receiving,
+                server,
+                receipt,
+            )
+            original = await conn.fetchrow(
+                "SELECT * FROM location_received_answer_server_finished "
+                "WHERE receiving_generation=$1",
+                receiving,
+            )
+            if original is None or original["server_request"] != server:
+                raise PolicyUnavailableError("Native answer server history differs")
+            receipt = original["receipt_id"]
+    committed = await runtime.domain.fetchrow(
+        "SELECT * FROM location_received_answer_server_finished WHERE receiving_generation=$1",
+        receiving,
+    )
+    if (
+        committed is None
+        or committed["server_request"] != server
+        or committed["receipt_id"] != receipt
+    ):
+        raise PolicyUnavailableError("Committed native answer server lifetime is unknown")
