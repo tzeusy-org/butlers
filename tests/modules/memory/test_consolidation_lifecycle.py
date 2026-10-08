@@ -1200,6 +1200,8 @@ async def _assert_native_memory_mutation_chain(pool, domain):
             assert await current_artifact_body_matches(readback, row, original)
         # New native mutation-input SQL is a planted private receiving binding,
         # not proof that a remote invocation/guard authenticated this fixture.
+        import hashlib
+
         from butlers.chronicler.location_catalog_copies import CatalogCopyRuntime, _runtimes
         from butlers.chronicler.location_memory_context import _context_writers
         from butlers.chronicler.location_tool_copies import (
@@ -1207,7 +1209,6 @@ async def _assert_native_memory_mutation_chain(pool, domain):
             _ToolCopy,
             finish_tool_copy,
         )
-
         from butlers.core.sessions import session_create
 
         tool_generation = uuid.uuid4()
