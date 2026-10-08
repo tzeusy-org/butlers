@@ -308,6 +308,8 @@ class NativeDelegationWriter:
             or question_digest(dict(actual)) != digest
         ):
             raise PolicyUnavailableError("Committed native delegation birth is unknown")
+        tool.read_observed = True
+        tool.mixed_inputs = tool.mixed_inputs or not exclusive
         return str(ledger)
 
 
@@ -350,7 +352,10 @@ async def delegation_frontier_closed(conn: Any, decision: Any) -> bool:
             f"SELECT 1 FROM {dispositions} d "
             "JOIN location_retention_plans plan USING(decision_id) "
             f"WHERE d.{generation}=q.{generation} AND d.decision_id=$1 "
-            "AND d.body_digest=q.body_digest AND d.manifest_digest=plan.manifest_digest))",
+            "AND d.body_digest=q.body_digest AND d.manifest_digest=plan.manifest_digest "
+            "AND EXISTS(SELECT 1 FROM location_runtime_context_dispositions c "
+            "WHERE c.input_generation=q.context_generation AND c.decision_id=$1 "
+            "AND c.manifest_digest=plan.manifest_digest)))",
             decision,
         ):
             return False

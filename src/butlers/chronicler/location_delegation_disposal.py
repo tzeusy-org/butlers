@@ -472,3 +472,196 @@ async def reconcile_question_receivers(domain: Any, decision: UUID) -> None:
             )
             if committed != UUID(receipt):
                 raise PolicyUnavailableError("Committed receiving observation is unknown")
+
+
+_REDUCED_QUESTION = "Delegated location input forgotten under the source retention policy."
+_REDUCED_REASON = "location_retention_expired"
+
+
+def unanswered_source_question(row: Any) -> bool:
+    """Only the owning unanswered ledger profile, never arbitrary metadata.
+
+    A failed/routed status alone is no disposal witness. This profile merely
+    selects the business row; complete source and receiving lifetimes must
+    still close under the owning policy-first transaction.
+    """
+    return (
+        row["asking_butler"] == "chronicler"
+        and row["status"] in {"pending", "routed", "failed", "unroutable"}
+        and row["metadata"] in (None, {})
+        and row["wake_state"] == "not_applicable"
+        and all(
+            row[key] is None
+            for key in (
+                "answer",
+                "answer_digest",
+                "answered_at",
+                "answering_butler",
+                "wake_key",
+                "wake_task_id",
+                "wake_task_name",
+                "wake_updated_at",
+            )
+        )
+    )
+
+
+async def dispose_source_questions(domain: Any, decision: UUID) -> None:
+    """Dispose exact source ledger copies after every receiving disposition.
+
+    Child/ledger disposal precedes source context disposal to avoid requiring
+    each to attest the other. The immutable question receipt closes ONLY the
+    source ledger and its observed receiver generations. The runtime context
+    and its tool records remain an independent frontier until their own receipt.
+    Answer and return copies use their separate protocol, never this profile.
+    """
+    from butlers.core.delegation_source import _writers
+
+    writer = _writers.get(domain)
+    if writer is None or not writer.runtime.active or writer.runtime.name != "chronicler":
+        return
+    runtime = writer.runtime
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            plan = await conn.fetchrow(
+                "SELECT * FROM location_retention_plans WHERE decision_id=$1 FOR UPDATE",
+                decision,
+            )
+            if plan is None or plan["state"] != "holder_pending":
+                return
+            cohort = await source_question_cohort(conn, decision)
+            for question in cohort:
+                if question["complete_input"] is not True:
+                    continue
+                generation = UUID(question["question_generation"])
+                digest = bytes.fromhex(question["body_digest"])
+                header = await conn.fetchrow(
+                    "SELECT * FROM location_native_delegation_inputs WHERE question_generation=$1",
+                    generation,
+                )
+                prior = await conn.fetchrow(
+                    "SELECT * FROM location_native_delegation_dispositions "
+                    "WHERE question_generation=$1",
+                    generation,
+                )
+                if prior is not None:
+                    if (
+                        prior["decision_id"] != decision
+                        or prior["manifest_digest"] != plan["manifest_digest"]
+                        or prior["body_digest"] != digest
+                    ):
+                        raise PolicyUnavailableError("Native source disposition binding differs")
+                    continue
+                if any(pending.question == generation for pending in writer.pending.values()):
+                    continue
+                receivers_closed = True
+                for loan in question["loans"]:
+                    if not await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_retention_holder_receipts "
+                        "WHERE decision_id=$1 AND owning_butler=$2 "
+                        "AND holder_kind='question_consumer' AND holder_generation=$3 "
+                        "AND source_digest=$4)",
+                        decision,
+                        loan["receiver_name"],
+                        UUID(loan["loan_id"]),
+                        bytes.fromhex(loan["body_digest"]),
+                    ):
+                        receivers_closed = False
+                        break
+                if not receivers_closed:
+                    continue
+                frozen = await conn.fetchrow(
+                    "SELECT b.*,i.server_request,e.receipt_id AS ended_receipt "
+                    "FROM location_runtime_context_bindings b "
+                    "JOIN location_runtime_context_intents i USING(input_generation) "
+                    "LEFT JOIN location_runtime_context_ended e USING(input_generation) "
+                    "WHERE b.input_generation=$1 AND b.receiving_session=$2",
+                    header["context_generation"],
+                    header["receiving_session"],
+                )
+                if (
+                    frozen is None
+                    or frozen["exclusive_input"] is not True
+                    or frozen["ended_receipt"] is None
+                ):
+                    continue
+                if frozen["server_request"] is not None and not await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_runtime_context_server_finished "
+                    "WHERE input_generation=$1 AND server_request=$2)",
+                    header["context_generation"],
+                    frozen["server_request"],
+                ):
+                    continue
+                if not await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_runtime_tool_results r "
+                    "JOIN location_runtime_tool_intents t USING(tool_generation) "
+                    "WHERE t.tool_generation=$1 AND t.receiving_session=$2 "
+                    "AND t.tool_name='delegate_ask' AND t.module_name='core' "
+                    "AND r.outcome='success' AND r.exclusive_inputs)",
+                    header["tool_generation"],
+                    header["receiving_session"],
+                ):
+                    continue
+                session = await conn.fetchrow(
+                    "SELECT * FROM sessions WHERE id=$1 FOR UPDATE OF sessions",
+                    header["receiving_session"],
+                )
+                if (
+                    session is None
+                    or session["completed_at"] is None
+                    or not isinstance(session["prompt"], str)
+                    or not isinstance(session["effective_system_prompt"], str)
+                    or hashlib.sha256(session["prompt"].encode()).digest()
+                    != frozen["prompt_digest"]
+                    or hashlib.sha256(session["effective_system_prompt"].encode()).digest()
+                    != frozen["system_digest"]
+                ):
+                    continue
+                canonical = await conn.fetchrow(
+                    "SELECT * FROM public.delegation_ledger WHERE id=$1 FOR UPDATE",
+                    header["ledger_id"],
+                )
+                if canonical is None or question_digest(dict(canonical)) != digest:
+                    raise PolicyUnavailableError("Native source ledger changed before disposal")
+                if not unanswered_source_question(canonical):
+                    continue
+                receipt = uuid4()
+                await conn.execute(
+                    "UPDATE public.delegation_ledger SET question=$2,status='failed',reason=$3 "
+                    "WHERE id=$1",
+                    header["ledger_id"],
+                    _REDUCED_QUESTION,
+                    _REDUCED_REASON,
+                )
+                await conn.execute(
+                    "INSERT INTO location_native_delegation_dispositions "
+                    "(question_generation,decision_id,manifest_digest,body_digest,receipt_id) "
+                    "VALUES($1,$2,$3,$4,$5)",
+                    generation,
+                    decision,
+                    plan["manifest_digest"],
+                    digest,
+                    receipt,
+                )
+    # Observe the actual outer commit. An immutable receipt with a changed
+    # public body is not success; retries reuse the same generation and receipt.
+    async with domain.acquire() as committed:
+        rows = await committed.fetch(
+            "SELECT d.*,q.ledger_id FROM location_native_delegation_dispositions d "
+            "JOIN location_native_delegation_inputs q USING(question_generation) "
+            "WHERE d.decision_id=$1 ORDER BY d.question_generation",
+            decision,
+        )
+        for row in rows:
+            canonical = await committed.fetchrow(
+                "SELECT * FROM public.delegation_ledger WHERE id=$1", row["ledger_id"]
+            )
+            if (
+                canonical is None
+                or canonical["question"] != _REDUCED_QUESTION
+                or canonical["status"] != "failed"
+                or canonical["reason"] != _REDUCED_REASON
+                or not unanswered_source_question(canonical)
+            ):
+                raise PolicyUnavailableError("Committed native source reduction is unknown")

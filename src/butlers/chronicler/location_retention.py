@@ -922,10 +922,14 @@ async def run_retention(pool: asyncpg.Pool, *, switchboard_client: Any = None) -
                 dispose_catalog_artifacts,
                 reconcile_catalog_loans,
             )
-            from butlers.chronicler.location_delegation_disposal import reconcile_question_receivers
+            from butlers.chronicler.location_delegation_disposal import (
+                dispose_source_questions,
+                reconcile_question_receivers,
+            )
             from butlers.chronicler.location_memory_copies import dispose_native_memory
 
             await reconcile_question_receivers(pool, decision["decision_id"])
+            await dispose_source_questions(pool, decision["decision_id"])
             await reconcile_catalog_loans(pool, decision["decision_id"])
             await dispose_catalog_artifacts(pool, decision["decision_id"])
             await dispose_native_memory(pool, decision["decision_id"])

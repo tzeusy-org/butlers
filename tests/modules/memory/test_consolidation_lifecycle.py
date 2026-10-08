@@ -1809,6 +1809,7 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
             )
         from butlers.chronicler.location_delegation_copies import delegation_frontier_closed
 
+        await _assert_source_question_disposal(domain, runtime, session_id, context)
         unrelated_case = uuid.uuid4()
         assert await delegation_frontier_closed(domain, unrelated_case)
         # Purge predicate must not erase a declared cohort by joining only
@@ -2018,3 +2019,168 @@ async def _assert_question_receiver_disposal(domain, runtime):
     assert observed["loan_id"] == str(loan) and observed["manifest_digest"] == (b"m" * 32).hex()
     with pytest.raises(PolicyUnavailableError, match="floor differs"):
         await _close_question_receiver(runtime, dict(binding, body_digest=b"x" * 32))
+
+
+async def _assert_source_question_disposal(domain, runtime, session_id, context):
+    """Real owning source/receiver receipt ordering; planted lineage, NOT online proof."""
+    from butlers.chronicler.location_delegation_disposal import (
+        _REDUCED_QUESTION,
+        dispose_source_questions,
+    )
+    from butlers.chronicler.location_tool_copies import (
+        _current_tool_copy,
+        _ToolCopy,
+        finish_tool_copy,
+    )
+    from butlers.core.delegation_ledger import mark_dispatch_outcome, record_answer, record_ask
+    from butlers.core.sessions import session_complete
+
+    decision, run, generation = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    manifest = b"s" * 32
+    await domain.execute(
+        "INSERT INTO location_runtime_tool_intents "
+        "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+        "VALUES($1,$2,'delegate_ask','core',$3)",
+        generation,
+        session_id,
+        b"s" * 32,
+    )
+    tool = _ToolCopy(runtime, generation, session_id, "delegate_ask", "core")
+    token = _current_tool_copy.set(tool)
+    try:
+        ledger = uuid.UUID(
+            await record_ask(
+                domain,
+                asking_butler="chronicler",
+                question="synthetic source ledger copy",
+                target_butler="relationship",
+                status="pending",
+                metadata={},
+            )
+        )
+        assert tool.read_observed is True and tool.mixed_inputs is False
+        await finish_tool_copy((tool, token), {"ledger_id": str(ledger), "status": "pending"})
+    finally:
+        if _current_tool_copy.get() is tool:
+            _current_tool_copy.reset(token)
+    header = await domain.fetchrow(
+        "SELECT * FROM location_native_delegation_inputs WHERE ledger_id=$1",
+        ledger,
+    )
+    loan, receiver, incarnation = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_retention_runs(run_id,policy_version,cutoff,lease_until,status) "
+                "VALUES($1,1,clock_timestamp(),clock_timestamp()+interval '5 minutes','pending')",
+                run,
+            )
+            await conn.execute(
+                "INSERT INTO location_retention_plans "
+                "(decision_id,run_id,policy_version,cutoff,manifest_digest,state) "
+                "VALUES($1,$2,1,clock_timestamp(),$3,'holder_pending')",
+                decision,
+                run,
+                manifest,
+            )
+            await conn.execute(
+                "INSERT INTO location_retention_plan_outputs "
+                "(decision_id,raw_id,source_revision,adapter_name,mapping_revision,output_kind,output_id) "
+                "SELECT DISTINCT $1,$2::uuid,1,'synthetic_source',$3::bytea,output_kind,output_id "
+                "FROM location_native_copy_births WHERE receiving_session=$4",
+                decision,
+                uuid.uuid4(),
+                b"m" * 32,
+                session_id,
+            )
+            await conn.execute(
+                "INSERT INTO location_native_delegation_loans "
+                "(loan_id,question_generation,receiver_name,receiving_incarnation,"
+                "receiving_generation,body_digest) VALUES($1,$2,'relationship',$3,$4,$5)",
+                loan,
+                header["question_generation"],
+                incarnation,
+                receiver,
+                header["body_digest"],
+            )
+    # Neither a terminal-looking source nor a missing receiver receipt closes
+    # the actual child; preserve the source body from a separate acquisition.
+    await dispose_source_questions(domain, decision)
+    assert (
+        await domain.fetchval("SELECT question FROM public.delegation_ledger WHERE id=$1", ledger)
+        == "synthetic source ledger copy"
+    )
+    await domain.execute(
+        "INSERT INTO location_retention_holder_receipts "
+        "(decision_id,owning_butler,holder_kind,holder_generation,source_digest,receipt_id) "
+        "VALUES($1,'relationship','question_consumer',$2,$3,$4)",
+        decision,
+        loan,
+        header["body_digest"],
+        uuid.uuid4(),
+    )
+    await dispose_source_questions(domain, decision)
+    assert not await domain.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_native_delegation_dispositions WHERE question_generation=$1)",
+        header["question_generation"],
+    )
+    await domain.execute(
+        "INSERT INTO location_runtime_context_ended(input_generation,receipt_id) VALUES($1,$2)",
+        context,
+        uuid.uuid4(),
+    )
+    await session_complete(domain, session_id, None, [], 1, True)
+    # Business+receipt are atomic on failure too; no partial cleared source.
+    with pytest.raises(RuntimeError, match="planted source disposal rollback"):
+        async with domain.acquire() as conn:
+            async with conn.transaction():
+                await runtime.lock_domain(conn)
+                await conn.execute(
+                    "UPDATE public.delegation_ledger SET question=$2 WHERE id=$1",
+                    ledger,
+                    _REDUCED_QUESTION,
+                )
+                raise RuntimeError("planted source disposal rollback")
+    assert (
+        await domain.fetchval("SELECT question FROM public.delegation_ledger WHERE id=$1", ledger)
+        == "synthetic source ledger copy"
+    )
+    await dispose_source_questions(domain, decision)
+    async with domain.acquire() as observed:
+        row = await observed.fetchrow("SELECT * FROM public.delegation_ledger WHERE id=$1", ledger)
+        receipt = await observed.fetchrow(
+            "SELECT * FROM location_native_delegation_dispositions WHERE question_generation=$1",
+            header["question_generation"],
+        )
+        assert row["question"] == _REDUCED_QUESTION and row["status"] == "failed"
+        assert receipt["body_digest"] == header["body_digest"]
+        assert receipt["decision_id"] == decision and receipt["manifest_digest"] == manifest
+        # Source context is not silently closed by the ledger receipt.
+        assert not await observed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_runtime_context_dispositions WHERE input_generation=$1)",
+            context,
+        )
+    await mark_dispatch_outcome(domain, ledger, status="routed")
+    ordinary = _current_tool_copy.set(None)
+    try:
+        assert (
+            await record_answer(
+                domain, ledger, answering_butler="relationship", answer="synthetic late answer"
+            )
+            is None
+        )
+    finally:
+        _current_tool_copy.reset(ordinary)
+    await dispose_source_questions(domain, decision)
+    assert (
+        await domain.fetchval(
+            "SELECT receipt_id FROM location_native_delegation_dispositions WHERE question_generation=$1",
+            header["question_generation"],
+        )
+        == receipt["receipt_id"]
+    )
+    assert (
+        await domain.fetchval("SELECT question FROM public.delegation_ledger WHERE id=$1", ledger)
+        == _REDUCED_QUESTION
+    )

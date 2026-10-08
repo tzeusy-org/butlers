@@ -2488,6 +2488,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
         tool_witnesses = []
         tool_loans = []
         mutation_inputs = []
+        closed_questions = []
         mutation_disposed = False
         mutation_parents_closed = False
         artifact_row = None
@@ -2515,6 +2516,8 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             return frozen if "context_bindings" in sql else session
 
         async def fetch(self, sql, *args):
+            if "location_native_delegation_inputs q" in sql:
+                return self.closed_questions
             if "location_native_memory_mutation_inputs" in sql:
                 return [
                     row
@@ -2687,6 +2690,80 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     assert captured_artifact_calls(two_reads, [], [{"tool_name": read_call["name"]}]) is False
     assert matched_tool_records([read_call, read_call], [two_witnesses[0], two_witnesses[0]])
     assert captured_artifact_calls([read_call, read_call], [], [two_witnesses[0], two_witnesses[0]])
+
+    from butlers.chronicler.location_delegation_disposal import unanswered_source_question
+
+    source_row = {
+        "asking_butler": "chronicler",
+        "status": "routed",
+        "metadata": {},
+        "wake_state": "not_applicable",
+        **{
+            key: None
+            for key in (
+                "answer",
+                "answer_digest",
+                "answered_at",
+                "answering_butler",
+                "wake_key",
+                "wake_task_id",
+                "wake_task_name",
+                "wake_updated_at",
+            )
+        },
+    }
+    assert unanswered_source_question(source_row)
+    for changed in (
+        {"metadata": {"independent": "retained"}},
+        {"answer": "actual answer"},
+        {"wake_task_id": uuid4()},
+        {"wake_state": "callback_pending"},
+        {"asking_butler": "relationship"},
+        {"status": "answered"},
+    ):
+        assert not unanswered_source_question({**source_row, **changed})
+    question_call = {
+        **read_call,
+        "module": "core",
+        "name": "delegate_ask",
+        "result": {"ledger_id": str(uuid4())},
+    }
+    question_witness = {
+        **two_witnesses[0],
+        "tool_name": "delegate_ask",
+        "module_name": "core",
+        "tool_generation": uuid4(),
+        "result_digest": bytes.fromhex(fingerprint_tool_call_payload(question_call["result"])),
+    }
+    closed_question = {"tool_generation": question_witness["tool_generation"]}
+    assert not captured_artifact_calls([question_call], [], [question_witness])
+    assert captured_artifact_calls(
+        [question_call], [], [question_witness], closed_questions=[closed_question]
+    )
+    for damaged in (
+        {"exclusive_inputs": False},
+        {"module_name": "memory"},
+        {"result_digest": b"x" * 32},
+        {"input_digest": b"x" * 32},
+    ):
+        assert not captured_artifact_calls(
+            [question_call],
+            [],
+            [{**question_witness, **damaged}],
+            closed_questions=[closed_question],
+        )
+    assert not captured_artifact_calls(
+        [question_call],
+        [],
+        [question_witness],
+        closed_questions=[{"tool_generation": uuid4()}],
+    )
+    assert not captured_artifact_calls(
+        [question_call, question_call],
+        [],
+        [question_witness],
+        closed_questions=[closed_question],
+    )
 
     # Actual successful mutating calls require their own immutable input and
     # exact source-artifact disposition; another read witness supplies none.

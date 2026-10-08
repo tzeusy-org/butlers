@@ -101,6 +101,8 @@ async def capture_answer(writer: Any, ledger: UUID, answering: str, answer: str,
         or actual["answering_butler"] != runtime.name
     ):
         raise PolicyUnavailableError("Committed native answer birth is unknown")
+    tool.read_observed = True
+    tool.mixed_inputs = tool.mixed_inputs or not exclusive
     return dict(row)
 
 

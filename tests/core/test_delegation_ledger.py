@@ -922,11 +922,14 @@ async def _assert_native_delegated_question_birth():
         assert (pool.headers, pool.parents, pool.ledger) == committed
         pool.fail_business = False
         pool.unknown = True
+        tool.read_observed = False
         with pytest.raises(PolicyUnavailableError, match="birth is unknown"):
             await record()
         assert len(pool.headers) == len(pool.ledger) == 2  # Unknown ACK cannot fake rollback.
+        assert tool.read_observed is False
         pool.unknown = False
         assert uuid.UUID(await record()) in pool.ledger
+        assert tool.read_observed is True
         loan = {"parent_generation": uuid.uuid4(), "parent_digest": b"l" * 32}
         pool.context_loans = [loan]
         pool.freeze_bundle()
@@ -983,6 +986,7 @@ async def _assert_native_delegated_question_birth():
         pool.dispatch[0]["exclusive_input"] = False
         await record()
         assert next(reversed(pool.headers.values()))["exclusive_input"] is False
+        assert tool.mixed_inputs is True
         pool.dispatch = []
         inherited = {
             "claim_generation": uuid.uuid4(),

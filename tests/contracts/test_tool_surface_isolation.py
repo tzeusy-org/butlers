@@ -94,6 +94,19 @@ class TestEphemeralMcpConfig:
         # This is derived from decorator calls in the dispatcher, rather than
         # duplicating its production catalog.  Keep the total as a regression
         # guard for accidental registration loss.
+        retention_tools = {
+            "location_retention_prepare_questions",
+            "location_retention_question_status",
+        }
+        assert retention_tools <= set(inventory)
+        assert all(inventory[name] == "delegation" for name in retention_tools)
+        assert retention_tools <= {name for name, _ in registrations["domain"]}
+        assert retention_tools.isdisjoint(name for name, _ in registrations["switchboard"])
+        assert retention_tools.isdisjoint(name for name, _ in registrations["messenger"])
+        # Original inventory predicates remain exact for every old member.
+        inventory = {
+            name: group for name, group in inventory.items() if name not in retention_tools
+        }
         assert len(inventory) == 87
         assert sum(group is not None for group in inventory.values()) == 79
         assert inventory["schedule_toggle"] == "scheduling"

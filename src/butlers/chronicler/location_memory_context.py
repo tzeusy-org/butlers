@@ -598,8 +598,31 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                         is not True
                     ):
                         return False
+            # Only exact source ledger dispositions can select native core
+            # question tool copies. A ledger status or another tool's receipt
+            # cannot authorize erasing these original input/result records.
+            closed_questions = await conn.fetch(
+                f"SELECT q.tool_generation FROM {schema}.location_native_delegation_inputs q "
+                f"JOIN {schema}.location_native_delegation_dispositions d "
+                "USING(question_generation,body_digest) "
+                "WHERE q.context_generation=$1 AND d.decision_id=$2 AND d.manifest_digest=$3 "
+                "AND NOT EXISTS(SELECT 1 FROM "
+                f"{schema}.location_native_delegation_inputs sibling "
+                "WHERE sibling.tool_generation=q.tool_generation AND NOT EXISTS(SELECT 1 "
+                f"FROM {schema}.location_native_delegation_dispositions sd "
+                "WHERE sd.question_generation=sibling.question_generation "
+                "AND sd.body_digest=sibling.body_digest AND sd.decision_id=$2 "
+                "AND sd.manifest_digest=$3))",
+                input_generation,
+                UUID(plan["decision_id"]),
+                bytes.fromhex(plan["manifest_digest"]),
+            )
             if not captured_artifact_calls(
-                session["tool_calls"], artifacts, tool_witnesses, mutation_inputs
+                session["tool_calls"],
+                artifacts,
+                tool_witnesses,
+                mutation_inputs,
+                closed_questions,
             ):
                 return False  # Unknown/routed mutations retain their input and copy holders.
             already_disposed = set()
@@ -742,7 +765,11 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
 
 
 def captured_artifact_calls(
-    calls: Any, artifacts: list[Any], witnesses: list[Any] = (), mutation_inputs: list[Any] = ()
+    calls: Any,
+    artifacts: list[Any],
+    witnesses: list[Any] = (),
+    mutation_inputs: list[Any] = (),
+    closed_questions: list[Any] = (),
 ) -> bool:
     """Recorded outputs can select only SAME-writer captured artifact IDs.
 
@@ -764,7 +791,8 @@ def captured_artifact_calls(
     )
 
     if any(
-        isinstance(call, dict) and call.get("name") in (NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS)
+        isinstance(call, dict)
+        and call.get("name") in (NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS | {"delegate_ask"})
         for call in calls
     ):
         try:
@@ -775,6 +803,17 @@ def captured_artifact_calls(
     for call in calls:
         if not isinstance(call, dict) or call.get("outcome") != "success":
             return False
+        if call.get("name") == "delegate_ask":
+            applicable = [row for row in witnesses if row["tool_name"] == "delegate_ask"]
+            if not applicable or any(
+                row["module_name"] != "core"
+                or row["outcome"] != "success"
+                or row["exclusive_inputs"] is not True
+                or not any(q["tool_generation"] == row["tool_generation"] for q in closed_questions)
+                for row in applicable
+            ):
+                return False
+            continue
         if call.get("name") in NATIVE_MEMORY_READ_TOOLS:
             applicable = [row for row in witnesses if row["tool_name"] == call["name"]]
             if not applicable or any(
@@ -1063,7 +1102,7 @@ async def capture_context_catalog_source(
             )
             or (not active_write and tool["outcome"] != "success")
             or (
-                tool["tool_name"] in (NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS)
+                tool["tool_name"] in (NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS | {"delegate_ask"})
                 and tool["exclusive_inputs"] is not True
             )
         ):
