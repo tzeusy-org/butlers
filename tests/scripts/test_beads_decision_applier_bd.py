@@ -49,11 +49,22 @@ def test_bd_tracker_parses_show_and_not_found(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("stdout", "rc"),
-    [("not json", 1), ('{"error": "connection refused"}', 1), ("[]", 0)],
+    [("not json", 1), ('{"error": "connection refused"}', 1)],
 )
-def test_bd_tracker_treats_anything_else_as_unavailable(tmp_path: Path, stdout, rc) -> None:
+def test_bd_tracker_treats_a_failed_unstructured_answer_as_unavailable(
+    tmp_path: Path, stdout, rc
+) -> None:
     tracker = applier_mod.BdTracker(str(_fake_bd(tmp_path, show_stdout=stdout, show_rc=rc)))
     with pytest.raises(applier_mod.TrackerUnavailable):
+        tracker.show("bu-x")
+
+
+@pytest.mark.parametrize("stdout", ["[]", "not json", '[{"id": "bu-other"}]', '{"id": "bu-x"}'])
+def test_bd_tracker_treats_a_clean_but_wrong_answer_as_this_bead_unreadable(
+    tmp_path: Path, stdout
+) -> None:
+    tracker = applier_mod.BdTracker(str(_fake_bd(tmp_path, show_stdout=stdout, show_rc=0)))
+    with pytest.raises(applier_mod.BeadUnreadable):
         tracker.show("bu-x")
 
 

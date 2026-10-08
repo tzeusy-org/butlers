@@ -57,6 +57,11 @@ _BUDGET_WINDOW = timedelta(hours=24)
 _DEFERRAL_LEDGER_WINDOW = timedelta(hours=12)
 _IN_FLIGHT_TIMEOUT = timedelta(minutes=10)
 _LABEL_CHARS = 64
+# Beyond these an intent could not be stored (the intent's option CHECK) or the
+# message could not be sent (Telegram's text limit), so the bead is left to the
+# dashboard instead of producing a prompt that fails.
+_MAX_OPTION_CHARS = 512
+_MAX_TELEGRAM_TEXT_CHARS = 4096
 _ACTOR = "decision_routing"
 _PRIORITY = "medium"
 
@@ -85,6 +90,8 @@ def _ordered_candidates(
         if bead.structured_details_available
         and bead.options
         and len(bead.options) <= MAX_DECISION_OPTIONS
+        and all(len(option) <= _MAX_OPTION_CHARS for option in bead.options)
+        and len(compose_prompt_message(bead)) <= _MAX_TELEGRAM_TEXT_CHARS
         and bead.id not in prompted
         and bead.id not in decided
     ]
@@ -282,7 +289,11 @@ async def _offer(pool: asyncpg.Pool, bead: DecisionBead, *, now: datetime) -> st
         if not recipient or not secret:
             reason = "no_recipient_configured" if not recipient else "callback_secret_unavailable"
             await _settle(pool, reservation.prompt_id, "not_attempted", now=now)
-            await _ledger(pool, bead.id, "failed", reason)
+            # A configuration gap repeats every run until fixed: ledger it once per window.
+            if not await attention_event_recorded_since(
+                pool, dedup_key=_dedup_key(bead.id), since=now - _DEFERRAL_LEDGER_WINDOW
+            ):
+                await _ledger(pool, bead.id, "failed", reason)
             return "not_attempted"
 
         envelope = build_decision_request_envelope(

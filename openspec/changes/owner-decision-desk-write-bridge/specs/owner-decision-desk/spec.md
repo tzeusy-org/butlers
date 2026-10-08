@@ -63,7 +63,9 @@ The applier SHALL then claim pending intents oldest first, in a bounded batch, b
 each from `pending` to `applying` and committing that claim before any tracker call. For each
 claimed intent it SHALL re-read the bead and SHALL fail the intent with a categorical reason when the
 bead does not exist (`bead_not_found`), is not open (`bead_not_open`), no longer carries the
-`decision` label (`not_a_decision`), or no longer offers the option (`option_not_offered`). Otherwise
+`decision` label (`not_a_decision`), or no longer offers the option (`option_not_offered`). A bead
+that `bd` answers for but cannot describe SHALL fail that intent alone (`bead_unreadable`) and
+SHALL NOT stop the batch. Otherwise
 it SHALL close the bead with a reason containing the chosen option, the intent marker, and the
 source, under a fixed audit actor, and mark the intent `applied`.
 

@@ -75,7 +75,10 @@ Trust boundary (`REQ-beads-projection-007`):
   `BUTLERS_RUNTIME_BEADS_DOLT_USER` / `BUTLERS_RUNTIME_BEADS_DOLT_PASSWORD`, never through the shared
   `butlers-bws` Secret.
 - NetworkPolicy `butlers-tracker-egress` gives every other pod in the namespace egress to
-  everything except the tracker's address (`beadsExport.doltEgressCidr`).
+  everything except the tracker's IPv4 addresses (`beadsExport.doltEgressCidrs`). It renders from
+  `beadsExport.denyTrackerEgress` (on in dev), not from `enabled`, so disabling the bridge keeps
+  the tracker closed. It assumes IPv4-only pods (k3s single-stack); a dual-stack cluster needs an
+  IPv6 rule too.
 - The runtime never reaches the tracker. It records intents in Postgres; the CronJob applies them.
 
 Facts verified on `butlers-dev`, 2026-10-08:
@@ -88,13 +91,14 @@ Facts verified on `butlers-dev`, 2026-10-08:
 | `bd` version | 1.3.1, pinned by release-tarball SHA-256 in `Dockerfile.beads`. The tracker is stamped 1.0.4 (66 schema migrations); 1.3.1 reads and writes it without migrating. |
 | Workspace | `bd export` needs `.beads/metadata.json` (`backend: dolt`, `dolt_mode: server`, `dolt_database`) pointed at by `BEADS_DIR`. The cycle script writes it. |
 | Env names | `BEADS_DOLT_SERVER_HOST`, `BEADS_DOLT_SERVER_PORT`, `BEADS_DOLT_SERVER_USER`, `BEADS_DOLT_PASSWORD`; `BD_ACTOR` sets the audit actor. |
-| Egress policy | Allowing `0.0.0.0/0` except the tracker `/32` plus all pods blocks 3307 to the tracker and keeps Postgres, Telegram, OTLP, the registry and in-cluster services reachable. |
+| Egress policy | Allowing `0.0.0.0/0` except the tracker's `/32` (it has one IPv4 address) plus all pods blocks 3307 to the tracker and keeps Postgres, Telegram, OTLP, the registry and in-cluster services reachable. |
 
-Configuration: `values.dev.yaml` sets `enabled`, the 5-minute schedule and the BWS key names.
-`scripts/k8s/site-helm-args.sh` supplies the site-specific values from `BEADS_DOLT_SERVER_HOST`
-and `BUTLERS_IMAGE_REGISTRY`: `beadsExport.doltHost`, `beadsExport.doltEgressCidr` (resolved with
-`getent`) and `beadsExport.imageRepository`. An unresolvable host prints no CIDR, so the render
-fails rather than shipping without the egress boundary. `scripts/k8s/build-push.sh` builds
+Configuration: `values.dev.yaml` sets `enabled`, `denyTrackerEgress`, the 5-minute schedule and
+the BWS key names. `scripts/k8s/site-helm-args.sh` supplies the site-specific values from
+`BEADS_DOLT_SERVER_HOST` and `BUTLERS_IMAGE_REGISTRY`: `beadsExport.doltHost`,
+`beadsExport.doltEgressCidrs` (every IPv4 address from `getent ahostsv4`, each as a `/32`) and
+`beadsExport.imageRepository`. An unresolvable host prints no CIDR, so the render fails rather
+than shipping without the egress boundary. `scripts/k8s/build-push.sh` builds
 `butlers-beads:<sha>` beside the app image.
 
 Decision prompts over Telegram (`jobs/decision_routing`) stay off until the owner consents:

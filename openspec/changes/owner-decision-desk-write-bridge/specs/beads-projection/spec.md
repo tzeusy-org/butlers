@@ -21,11 +21,11 @@ into chart values, or written to logs. The tracker host SHALL remain site-specif
 
 `dashboard-api`, `butlers-up`, connectors, and every other pod in the namespace SHALL receive no
 tracker host, port, credential, `bd` binary, or `.beads` workspace. They SHALL keep only the
-existing read-only export-file mount. When the bridge is enabled, the deployment SHALL also apply a
-network policy that denies every non-bridge pod in the namespace egress to the tracker address,
-while preserving their other egress, so tracker reachability is enforced rather than conventional.
-Disabling the bridge SHALL remove the workload, its Secret consumer, and its tracker egress
-allowance together.
+existing read-only export-file mount. A deployment that enables the bridge SHALL also apply a
+network policy that denies every non-bridge pod in the namespace egress to every address the
+tracker host resolves to, while preserving their other egress, so tracker reachability is enforced
+rather than conventional. Disabling the bridge SHALL remove the workload and its Secret consumer,
+and SHALL NOT remove that denial: rolling the bridge back never reopens the tracker to other pods.
 
 ID: REQ-beads-projection-007
 Source: RFC 0025 §§1-2 (amended by owner ruling 2026-10-08); bu-sng0tu; bu-ckkpz.3
@@ -45,6 +45,12 @@ Scope: v1-mandatory
 - **THEN** the namespace network policy refuses that egress
 - **AND** the same pod's egress to the database, the Telegram API, and in-cluster services is
   unchanged
+
+#### Scenario: Rolling the bridge back keeps the tracker closed
+
+- **WHEN** the development deployment disables the bridge
+- **THEN** the bridge workload and its credential Secret are no longer rendered
+- **AND** the tracker egress denial for the namespace's other pods is still rendered
 
 #### Scenario: Credential stays out of tracked files and logs
 

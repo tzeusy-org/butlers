@@ -63,7 +63,7 @@
 - `bd` is pinned to 1.3.1 by release-tarball SHA-256: it is the version the agent fleet uses
   against this tracker today. The tracker's own stamp is 1.0.4 / 66 migrations, and 1.3.1 does
   not migrate it.
-- An upgrade is a reviewed change to `BD_VERSION`/`BD_SHA256`.
+- An upgrade is a reviewed change to the release URL and checksum in `Dockerfile.beads`.
 - The image is small (`python:3.12-slim`, `asyncpg` pinned to the lockfile version, the applier
   script, the shell scripts). It carries no Butlers package code.
 
@@ -72,9 +72,14 @@
 - `<release>-tracker-egress` selects every pod whose `app.kubernetes.io/component` is not
   `beads-export`. Its egress rules allow:
   - all pods in all namespaces;
-  - `0.0.0.0/0` except `beadsExport.doltEgressCidr`.
-- The CIDR is site-specific. `scripts/k8s/site-helm-args.sh` resolves it from
-  `BEADS_DOLT_SERVER_HOST`, following the existing site-env pattern.
+  - `0.0.0.0/0` except each of `beadsExport.doltEgressCidrs`.
+- It renders from `beadsExport.denyTrackerEgress`, not from `enabled`, so rolling the bridge back
+  keeps the tracker closed. Dev sets it; prod does not opt in.
+- The CIDRs are site-specific. `scripts/k8s/site-helm-args.sh` resolves every IPv4 address of
+  `BEADS_DOLT_SERVER_HOST` (each as a /32), following the existing site-env pattern. An
+  unresolvable host yields none, and the render fails.
+- Precondition: pods are IPv4-only (k3s single-stack, verified on `butlers-dev`), so the tracker's
+  tailnet IPv6 address is unroutable from them. A dual-stack cluster needs an IPv6 rule first.
 - With the passwordless tracker root, this policy, not the credential, is what makes "one
   workload" true.
 - Setting a root password on the tracker is an owner follow-up outside this namespace.
@@ -114,7 +119,9 @@ The applier runs as a single process because the CronJob uses `concurrencyPolicy
    - the option is still offered.
 
    Each violation is a terminal `failed` with a categorical reason (`bead_not_found`,
-   `bead_not_open`, `not_a_decision`, `option_not_offered`).
+   `bead_not_open`, `not_a_decision`, `option_not_offered`). A bead `bd` answers for but cannot
+   describe fails alone (`bead_unreadable`); only a failed, unstructured `bd` answer counts as the
+   tracker being unavailable, so one bad bead cannot stall the queue.
 4. `bd close <id> --reason "Decision: <option> (decision-intent <uuid>, via <source>)"` runs with
    `BD_ACTOR=butlers-decision-desk`.
    - Success, or a re-read showing our marker, means `applied`.
@@ -146,14 +153,18 @@ The applier runs as a single process because the CronJob uses `concurrencyPolicy
 
   | Transport | Prompt outcome | Ledger row |
   | --- | --- | --- |
-  | `confirmed` | `delivered` | `delivered` |
+  | `confirmed` with `status: sent` | `delivered` | `delivered` |
   | `not_attempted` | `not_attempted` (retried next tick) | `failed` |
   | `rejected` | `rejected` | `failed` |
-  | `uncertain` or unknown | `uncertain` | `failed`, `delivery_uncertain` |
+  | `uncertain`, unknown, or `confirmed` without `status: sent` | `uncertain` | `failed`, `delivery_uncertain` |
+  | none, refused before routing | `rejected` | `failed`, `rejected:envelope_invalid` |
 
 - A reservation still in flight after 10 minutes becomes `uncertain`; it is never resent.
 - The callback secret and owner recipient come from the daemon's bound `ApprovalPushRuntime`,
-  the same authority the approval push uses. A missing one is `not_attempted`.
+  the same authority the approval push uses. A missing one is `not_attempted`, retried each run
+  and ledgered at most once per bead per 12 hours.
+- A bead is not offered when an option exceeds the intent's 512-character bound or the message
+  would exceed Telegram's 4096-character limit; the dashboard remains its surface.
 
 ### D6. Telegram one-tap
 
@@ -187,7 +198,7 @@ The applier runs as a single process because the CronJob uses `concurrencyPolicy
   - a recorded choice: "Choice recorded." (a repeat of the same choice: "Already handled.");
   - another live choice, or the decision closed: "Already handled.", keyboard removed;
   - changed options: "Options changed; open the dashboard.", keyboard removed;
-  - the API unreachable: a retry hint, keyboard kept.
+  - the API unreachable or failing (prompt lookup or choose): a retry hint, keyboard kept.
 
 ## Risks / Trade-offs
 
@@ -199,6 +210,9 @@ The applier runs as a single process because the CronJob uses `concurrencyPolicy
   The lane shows `applied` from Postgres in the meantime.
 - Prompts sent but never answered stay on the dashboard and in the weekly digest. Re-prompting
   needs its own design.
+- A bead reopened after its intent was `applied` keeps that live intent, so it cannot be decided
+  again until the intent is superseded. Telling a reopen apart from export lag needs a
+  `superseded` state; it is a follow-up.
 
 ## Migration Plan
 

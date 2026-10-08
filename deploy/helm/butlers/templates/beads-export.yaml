@@ -6,8 +6,8 @@
 # owner-decision-desk-write-bridge, bu-ckkpz.3). Each run applies the
 # Decision Desk intents recorded in Postgres with `bd`, then derives the export
 # file. It is the only pod that holds the Dolt endpoint and credential, and the
-# tracker-egress NetworkPolicy below denies every other pod in the namespace a
-# route to the tracker. dashboard-api and butlers-up mount just the resulting
+# tracker-egress NetworkPolicy (tracker-egress.yaml) denies every other pod in
+# the namespace a route to the tracker. dashboard-api and butlers-up mount just the resulting
 # PVC, read-only.
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -48,29 +48,6 @@ spec:
       remoteRef:
         key: {{ required "beadsExport.credentialBwsKeys.password is required unless beadsExport.credentialSecretName is set" $bx.credentialBwsKeys.password | quote }}
 {{- end }}
----
-# Every other pod in the namespace keeps its egress, except to the tracker.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ .Release.Name }}-tracker-egress
-  labels:
-    {{- include "butlers.labels" . | nindent 4 }}
-spec:
-  podSelector:
-    matchExpressions:
-      - key: app.kubernetes.io/component
-        operator: NotIn
-        values: [beads-export]
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector: {}
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - {{ required "beadsExport.doltEgressCidr is required when beadsExport.enabled (scripts/k8s/site-helm-args.sh resolves it)" $bx.doltEgressCidr }}
 ---
 apiVersion: batch/v1
 kind: CronJob

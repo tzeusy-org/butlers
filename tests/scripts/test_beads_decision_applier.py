@@ -33,6 +33,7 @@ class FakeTracker:
         self.issues: dict[str, dict[str, Any]] = {}
         self.closes: list[tuple[str, str]] = []
         self.down = False
+        self.unreadable: set[str] = set()
         self.fail_close = False
         self.close_lands_despite_failure = False
 
@@ -51,6 +52,8 @@ class FakeTracker:
     def show(self, bead_id: str) -> dict[str, Any] | None:
         if self.down:
             raise applier_mod.TrackerUnavailable
+        if bead_id in self.unreadable:
+            raise applier_mod.BeadUnreadable
         issue = self.issues.get(bead_id)
         return dict(issue) if issue is not None else None
 
@@ -277,3 +280,29 @@ async def test_main_exits_nonzero_without_a_database(monkeypatch) -> None:
     monkeypatch.setenv("POSTGRES_HOST", "127.0.0.1")
     monkeypatch.setenv("POSTGRES_PORT", "1")
     assert await applier_mod.main() == 1
+
+
+async def test_unreadable_bead_fails_alone_and_does_not_stall_the_queue(pool, tracker) -> None:
+    tracker.add("bu-ok")
+    stuck = await _intent(pool, "bu-weird")
+    fine = await _intent(pool, "bu-ok")
+    tracker.unreadable.add("bu-weird")
+
+    applier = await _run(pool, tracker)
+
+    assert applier.tracker_unavailable is False
+    state = await _state(pool, stuck)
+    assert (state["status"], state["failure_reason"]) == ("failed", "bead_unreadable")
+    assert (await _state(pool, fine))["status"] == "applied"
+
+
+async def test_unreadable_stranded_intent_stays_applying_without_blocking(pool, tracker) -> None:
+    stranded = await _intent(pool, "bu-weird", status="applying")
+    tracker.add("bu-ok")
+    fine = await _intent(pool, "bu-ok")
+    tracker.unreadable.add("bu-weird")
+
+    await _run(pool, tracker)
+
+    assert (await _state(pool, stranded))["status"] == "applying"
+    assert (await _state(pool, fine))["status"] == "applied"

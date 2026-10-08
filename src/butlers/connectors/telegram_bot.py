@@ -119,6 +119,9 @@ _GAP_INTERVIEW_ANSWER_TOASTS: dict[str, str] = {
 
 _APPROVAL_CALLBACK_DECISION_ACTOR = "owner@telegram"
 _APPROVAL_CALLBACK_DECISION_HEADER = "X-Butlers-Decision-Actor"
+_DECISION_CALLBACK_RETRY_TOAST = (
+    "Couldn't record that right now. Please try again or use the dashboard."
+)
 _APPROVAL_CALLBACK_RESOLVED_TEXT = {
     "approved": "✅ Approved",
     "executed": "✅ Approved",
@@ -223,6 +226,14 @@ class HealthStatus(BaseModel):
     last_ingest_submit_at: str | None
     source_api_connectivity: Literal["connected", "disconnected", "unknown"]
     timestamp: str
+
+
+def _decision_recorded_text(intent: dict[str, Any]) -> str:
+    """The prompt's replacement text, stating the intent as the API returned it."""
+    option = intent.get("option", "")
+    if intent.get("status") == "applied":
+        return f"Decision recorded: {option}\nApplied to the tracker."
+    return f"Decision recorded: {option}\nPending update to the tracker."
 
 
 @dataclass
@@ -1177,7 +1188,13 @@ class TelegramBotConnector:
             return True
 
         secret = self._config.approval_callback_secret
-        prompt = await self._fetch_decision_prompt(str(parsed.prompt_id)) if secret else None
+        prompt, transient = (
+            await self._fetch_decision_prompt(str(parsed.prompt_id)) if secret else (None, False)
+        )
+        if transient:
+            # Unverified yet, so nothing is recorded; the owner can tap again.
+            await answer(_DECISION_CALLBACK_RETRY_TOAST)
+            return True
         created_at = self._approval_callback_requested_at(prompt)
         options = prompt.get("options") if prompt is not None else None
         if created_at is None or not isinstance(options, list) or not secret:
@@ -1201,8 +1218,7 @@ class TelegramBotConnector:
             created = isinstance(meta, dict) and meta.get("created") is True
             await answer("Choice recorded." if created else "Already handled.")
             await self._edit_decision_callback_message(
-                callback_query,
-                f"Decision recorded: {data.get('option', '')}\nPending update to the tracker.",
+                callback_query, _decision_recorded_text(data)
             )
         elif status_code in {409, 422}:
             detail = payload.get("detail") if isinstance(payload, dict) else None
@@ -1213,7 +1229,7 @@ class TelegramBotConnector:
             await self._edit_decision_callback_message(callback_query, None)
         else:
             # Nothing was recorded and the cause may be transient: keep the keyboard.
-            await answer("Couldn't record that right now. Please try again or use the dashboard.")
+            await answer(_DECISION_CALLBACK_RETRY_TOAST)
         return True
 
     async def _is_primary_owner_callback(self, callback_query: dict[str, Any]) -> bool:
@@ -1226,24 +1242,30 @@ class TelegramBotConnector:
         )
         return owner_channel is not None and owner_channel[1]
 
-    async def _fetch_decision_prompt(self, prompt_id: str) -> dict[str, Any] | None:
-        """Read the prompt snapshot needed to verify a ``dsk1`` token."""
+    async def _fetch_decision_prompt(self, prompt_id: str) -> tuple[dict[str, Any] | None, bool]:
+        """Read the prompt snapshot for a ``dsk1`` token: ``(detail, transient failure)``.
+
+        A 4xx answer (no such prompt) is permanent; an unreachable API or a 5xx
+        may clear, so the caller tells the owner to retry instead.
+        """
         connector_token = self._config.approval_callback_connector_token
         if not self._config.internal_api_url or not connector_token:
-            return None
+            return None, False
         try:
             response = await self._http_client.get(
                 f"{self._config.internal_api_url.rstrip('/')}/api/decisions/prompts/{prompt_id}",
                 headers={APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token},
             )
+            if response.status_code >= 500:
+                return None, True
             if response.status_code != 200:
-                return None
+                return None, False
             payload = response.json()
         except Exception:  # noqa: BLE001 -- untrusted network boundary
             logger.warning("Telegram decision callback prompt lookup failed", exc_info=True)
-            return None
+            return None, True
         detail = payload.get("data") if isinstance(payload, dict) else None
-        return detail if isinstance(detail, dict) else None
+        return (detail if isinstance(detail, dict) else None), False
 
     async def _submit_decision_choice(
         self, prompt_id: str, option_index: int

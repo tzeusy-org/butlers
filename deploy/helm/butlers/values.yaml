@@ -279,8 +279,12 @@ beadsExport:
   image: ""
   # Site-specific; scripts/k8s/site-helm-args.sh sets both from BEADS_DOLT_SERVER_HOST.
   doltHost: ""
-  # The tracker's address as a /32, excluded from every other pod's egress.
-  doltEgressCidr: ""
+  # Deny every other pod in the namespace a route to the tracker
+  # (templates/tracker-egress.yaml). Independent of `enabled`, so a rollback
+  # keeps the tracker closed.
+  denyTrackerEgress: false
+  # Every IPv4 address of doltHost as a /32, excluded from that egress.
+  doltEgressCidrs: []
   doltPort: 3307
   doltDatabase: butlers
   # Apply Decision Desk intents before each export.

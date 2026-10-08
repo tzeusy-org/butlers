@@ -239,6 +239,13 @@ async def test_missing_recipient_or_secret_is_not_attempted(pool, enabled, seams
         ("decision_prompt:bu-test1", "failed", "callback_secret_unavailable")
     ]
 
+    # The gap persists: retried every run, ledgered once per window.
+    with patch.object(decision_routing, "_callback_secret", AsyncMock(return_value=None)):
+        await run_decision_routing(
+            pool, _now=NOW + timedelta(minutes=15), _digest=make_digest(make_bead())
+        )
+    assert len(await _ledger(pool)) == 1
+
 
 async def test_envelope_refused_before_routing_is_terminal(pool, enabled, seams) -> None:
     seams.return_value = {"status": "failed", "error": "Invalid notify.v1 envelope: x"}
@@ -260,6 +267,8 @@ async def test_decided_or_unstructured_beads_are_not_offered(pool, enabled, seam
         make_bead("bu-decided"),
         make_bead("bu-bare", available=False),
         make_bead("bu-wide", options=tuple(f"o{n}" for n in range(17))),
+        make_bead("bu-long", options=("x" * 513, "Hold")),
+        make_bead("bu-huge", options=tuple(f"{n}" + "y" * 400 for n in range(12))),
     )
 
     result = await run_decision_routing(pool, _now=NOW, _digest=digest)

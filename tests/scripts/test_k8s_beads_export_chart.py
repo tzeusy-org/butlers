@@ -21,7 +21,7 @@ _CYCLE = _CHART / "files" / "beads_cycle.sh"
 _SITE = [
     "--set", "beadsExport.imageRepository=registry.invalid/butlers-beads",
     "--set", "beadsExport.doltHost=dolt.invalid",
-    "--set", "beadsExport.doltEgressCidr=192.0.2.1/32",
+    "--set", "beadsExport.doltEgressCidrs={192.0.2.1/32,192.0.2.2/32}",
 ]  # fmt: skip
 _ENABLE = [
     "--set", "beadsExport.enabled=true",
@@ -55,7 +55,7 @@ def _pod_spec(doc: dict) -> dict:
 @needs_helm
 @pytest.mark.parametrize("env", ["dev", "prod"])
 def test_disabled_renders_no_beads_export_and_no_bead_mounts(env: str) -> None:
-    docs = _render(env, "--set", "beadsExport.enabled=false")
+    docs = _render(env, "--set", "beadsExport.enabled=false", *_SITE)
     names = _by_kind_name(docs)
     assert ("CronJob", "butlers-beads-export") not in names
     assert ("PersistentVolumeClaim", "butlers-beads-export") not in names
@@ -67,11 +67,12 @@ def test_disabled_renders_no_beads_export_and_no_bead_mounts(env: str) -> None:
             for c in spec["containers"]
             for m in c.get("volumeMounts", [])
         )
-    assert ("NetworkPolicy", "butlers-tracker-egress") not in names
     assert ("ExternalSecret", "butlers-beads-dolt") not in names
+    # Rolling the bridge back keeps the tracker closed on dev; prod never opts in.
+    assert (("NetworkPolicy", "butlers-tracker-egress") in names) == (env == "dev")
     if env == "prod":
         # Prod's default is off: the explicit flag renders the same as omitting it.
-        assert _render(env) == docs
+        assert _render(env, *_SITE) == docs
 
 
 @needs_helm
@@ -169,7 +170,7 @@ def test_tracker_egress_policy_covers_every_pod_but_the_bridge() -> None:
     assert policy["policyTypes"] == ["Egress"]
     assert policy["egress"] == [
         {"to": [{"namespaceSelector": {}}]},
-        {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["192.0.2.1/32"]}}]},
+        {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["192.0.2.1/32", "192.0.2.2/32"]}}]},
     ]
     template = names[("CronJob", "butlers-beads-export")]["spec"]["jobTemplate"]["spec"]
     assert template["template"]["metadata"]["labels"]["app.kubernetes.io/component"] == (

@@ -289,6 +289,42 @@ async def test_unreachable_api_keeps_the_keyboard(pool, digest, owner) -> None:
     assert http_client.telegram_calls[0][1]["text"].startswith("Couldn't record that")
 
 
+@pytest.mark.parametrize("failure", ["network", "server_error"])
+async def test_unreachable_prompt_lookup_says_retry(pool, digest, owner, failure) -> None:
+    prompt_id = await _prompt(pool)
+    connector, http_client = _connector(pool)
+    real_get = http_client.get
+
+    async def failing_get(url: str, **kwargs: Any) -> httpx.Response:
+        if failure == "network":
+            raise httpx.ConnectError("dashboard-api down")
+        return httpx.Response(503, request=httpx.Request("GET", url))
+
+    http_client.get = failing_get  # type: ignore[method-assign]
+    try:
+        await connector._maybe_handle_decision_callback(_tap(_token(prompt_id, 0)))
+    finally:
+        http_client.get = real_get  # type: ignore[method-assign]
+        await http_client.close()
+
+    assert await _intents(pool) == []
+    assert [name for name, _ in http_client.telegram_calls] == ["answerCallbackQuery"]
+    assert http_client.telegram_calls[0][1]["text"].startswith("Couldn't record that")
+
+
+async def test_unknown_prompt_gets_only_the_generic_acknowledgement(pool, digest, owner) -> None:
+    connector, http_client = _connector(pool)
+    stranger = UUID("99999999-9999-4999-8999-999999999999")
+    try:
+        await connector._maybe_handle_decision_callback(_tap(_token(stranger, 0)))
+    finally:
+        await http_client.close()
+
+    assert http_client.telegram_calls == [
+        ("answerCallbackQuery", {"callback_query_id": "cbq-1", "text": ""})
+    ]
+
+
 async def test_credentials_are_not_interchangeable(pool, digest) -> None:
     prompt_id = await _prompt(pool)
     connector_headers = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CONNECTOR_TOKEN}

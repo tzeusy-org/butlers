@@ -19,7 +19,9 @@ Contract (at most once per intent):
    then ``bd close`` it with a reason carrying the option and the marker.
 4. A failed close is re-read before it is classified. ``bd_close_failed`` is
    terminal after :data:`MAX_CLOSE_ATTEMPTS`; an unreachable tracker returns
-   the batch to ``pending`` without spending attempts and stops the run.
+   the batch to ``pending`` without spending attempts and stops the run. A
+   bead ``bd`` answers for but cannot describe fails alone (``bead_unreadable``)
+   instead of stalling the queue behind it.
 
 Failure reasons are categorical. Raw ``bd`` output can carry host names, so it
 is never stored or logged.
@@ -59,6 +61,10 @@ class TrackerUnavailable(Exception):
     """``bd`` could not read the tracker. Nothing about the bead is known."""
 
 
+class BeadUnreadable(Exception):
+    """``bd`` answered, but not with this bead. A per-bead fault, not an outage."""
+
+
 class CloseFailed(Exception):
     """``bd close`` exited non-zero. The bead's state is unknown until re-read."""
 
@@ -92,11 +98,14 @@ class BdTracker:
         try:
             payload = json.loads(result.stdout)
         except ValueError as exc:
-            raise TrackerUnavailable from exc
-        if result.returncode == 0 and isinstance(payload, list) and payload:
-            issue = payload[0]
+            # A clean exit with unparsable output is this bead's problem; a failed
+            # exit with no structured answer is the tracker's.
+            raise (BeadUnreadable if result.returncode == 0 else TrackerUnavailable) from exc
+        if result.returncode == 0:
+            issue = payload[0] if isinstance(payload, list) and payload else None
             if isinstance(issue, dict) and issue.get("id") == bead_id:
                 return issue
+            raise BeadUnreadable
         if isinstance(payload, dict) and "no issues found" in str(payload.get("error", "")):
             return None
         raise TrackerUnavailable
@@ -209,6 +218,10 @@ class Applier:
                 # Leave it applying: only tracker evidence may settle it.
                 self.tracker_unavailable = True
                 return
+            except BeadUnreadable:
+                # Unsettleable without evidence, but it must not block the rest.
+                self.outcomes["applying:bead_unreadable"] += 1
+                continue
             if issue is None:
                 await self._finish(intent, "failed", "bead_not_found")
             elif _closed_by(issue, intent):
@@ -242,7 +255,12 @@ class Applier:
 
     async def apply(self, intent: Claimed) -> None:
         """Raises :class:`TrackerUnavailable` with *intent* still ``applying``."""
-        issue = await self._show(intent.bead_id)
+        try:
+            issue = await self._show(intent.bead_id)
+        except BeadUnreadable:
+            # Nothing was attempted, so a terminal failure is honest.
+            await self._finish(intent, "failed", "bead_unreadable")
+            return
         if issue is not None and _closed_by(issue, intent):
             await self._finish(intent, "applied")
             return
@@ -261,7 +279,10 @@ class Applier:
         try:
             await self._close(intent.bead_id, intent.close_reason)
         except CloseFailed:
-            reread = await self._show(intent.bead_id)
+            try:
+                reread = await self._show(intent.bead_id)
+            except BeadUnreadable:
+                reread = None
             if reread is not None and _closed_by(reread, intent):
                 await self._finish(intent, "applied")
             elif attempts >= MAX_CLOSE_ATTEMPTS:

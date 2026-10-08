@@ -20,7 +20,7 @@ needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not i
 _SITE = [
     "--set", "beadsExport.imageRepository=registry.invalid/butlers-beads",
     "--set", "beadsExport.doltHost=dolt.invalid",
-    "--set", "beadsExport.doltEgressCidr=192.0.2.1/32",
+    "--set", "beadsExport.doltEgressCidrs={192.0.2.1/32,192.0.2.2/32}",
 ]  # fmt: skip
 # Dev's beads bridge syncs its own tracker credential (bu-ckkpz.3).
 _BRIDGE_STORES = {"dev": 1, "prod": 0}

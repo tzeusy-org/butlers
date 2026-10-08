@@ -2247,6 +2247,36 @@ class TestDecisionRequestDelivery:
             ]
         }
 
+    async def test_email_decision_prompt_carries_the_dashboard_link(self, tmp_path: Path) -> None:
+        messenger_dir = _messenger_dir(tmp_path)
+        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        envelope = _make_route_envelope(
+            channel="email",
+            intent="decision_request",
+            recipient=OWNER_EMAIL,
+            message="Decision needed: Pick a rollout",
+            origin_butler="switchboard",
+            actions=_decision_request_actions(),
+        )
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(_owner_contact(), True)),
+            ),
+            patch.object(EmailModule, "_send_email", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result.get("status") == "ok", result
+        assert send_spy.await_args.args[2] == (
+            "Decision needed: Pick a rollout\n\nDecide in the dashboard: "
+            "https://dashboard.example.test/decisions?bead=bu-test1"
+        )
+
     async def test_non_owner_decision_target_is_rejected_before_delivery(
         self, tmp_path: Path
     ) -> None:

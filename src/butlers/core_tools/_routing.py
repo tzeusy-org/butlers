@@ -659,6 +659,18 @@ def _decision_request_reply_markup(actions: Any) -> dict[str, Any]:
     return {"inline_keyboard": keyboard}
 
 
+def _owner_control_plain_text(intent: str, message: str, actions: Any) -> str:
+    """Text for a channel without inline buttons: a decision prompt carries its link.
+
+    The decision template names options for buttons, so without them the owner
+    needs the dashboard URL to answer; approval messages already embed theirs.
+    """
+    if intent != "decision_request":
+        return message
+    url = next((a.dashboard_url for a in actions if a.verb == "open_dashboard"), None)
+    return f"{message}\n\nDecide in the dashboard: {url}" if url else message
+
+
 def _owner_control_reply_markup(intent: str, actions: Any) -> dict[str, Any]:
     if intent == "decision_request":
         return _decision_request_reply_markup(actions)
@@ -1879,7 +1891,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     adapter_result = await email_module._send_email(
                         approval_recipient,
                         normalized_subject,
-                        message_text,
+                        _owner_control_plain_text(
+                            intent, message_text, notify_request.actions or ()
+                        ),
                     )
                 else:
                     raise ValueError(f"Unsupported email intent: {intent}")
@@ -1908,7 +1922,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         raise RuntimeError("WhatsApp module does not expose _send_message method.")
                     adapter_result = await send_tool(
                         recipient=approval_recipient,
-                        text=rendered_text,
+                        text=_owner_control_plain_text(
+                            intent, rendered_text, notify_request.actions or ()
+                        ),
                     )
                 else:
                     raise ValueError(f"Unsupported whatsapp intent: {intent}")

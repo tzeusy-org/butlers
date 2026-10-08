@@ -39,6 +39,7 @@ commonEnv:
 # image repository come from scripts/k8s/site-helm-args.sh.
 beadsExport:
   enabled: true
+  denyTrackerEgress: true
   schedule: "*/5 * * * *"
   credentialBwsKeys:
     user: BUTLERS_RUNTIME_BEADS_DOLT_USER
