@@ -425,6 +425,34 @@ def main() -> int:
         weights_path = ROOT / ".github/ci-test-weights.json"
         assignment = partition(data, read_json(weights_path) if weights_path.is_file() else {})
         args.output.mkdir(parents=True, exist_ok=True)
+        # Controlled scratch-PR mutation only. Never merge this diagnostic branch.
+        # Keep the genuine complete assignment as the positioned healthy companion.
+        (args.output / "canary-healthy-assignment.json").write_text(
+            json.dumps(assignment, sort_keys=True) + "\n"
+        )
+        canary_target = "tests/testing/test_source_test_map.py"
+        canary_bins = assignment["shards"]["unit"]
+        source_bin = next(item for item in canary_bins if canary_target in item["files"])
+        destination_bin = next(item for item in canary_bins if item is not source_bin)
+        destination_bin["files"].append(canary_target)
+        destination_bin["files"].sort()
+        assignment["digest"] = body_digest(assignment)
+        (args.output / "canary-mutation.json").write_text(
+            json.dumps(
+                {
+                    "schema": "ci-controlled-negative.v1",
+                    "variant": "duplicate-file",
+                    "target": canary_target,
+                    "identity": data["identity"],
+                    "inventory_digest": data["digest"],
+                    "mutated_assignment_digest": assignment["digest"],
+                    "expected_refusal": "assignment omits or duplicates actual collected file",
+                    "source_scope": "scratch PR only; ordinary full commands and corpus unchanged",
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
         for name, value in (("inventory.json", data), ("assignment.json", assignment)):
             (args.output / name).write_text(json.dumps(value, sort_keys=True) + "\n")
         print(
