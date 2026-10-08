@@ -196,10 +196,17 @@ class TestCreateHealingWorktree:
         from butlers.core.healing import worktree as native
 
         spawn = asyncio.create_subprocess_exec
-        for mode in ("cancel", "timeout"):
+
+        async def discard(stream):
+            if stream is not None:
+                while await stream.read(65536):
+                    pass
+
+        for mode in ("cancel", "timeout", "cancel-flood", "timeout-flood"):
             ready = asyncio.Event()
             children = []
             groups = []
+            operation = None
 
             async def helper_git(executable, *args, **kwargs):
                 assert executable == "git"
@@ -208,10 +215,30 @@ class TestCreateHealingWorktree:
                     if args[0] == "released-control"
                     else "time.sleep(30)"
                 )
+                flooded = "flood" in mode and args[0] != "released-control"
+                if flooded:
+                    script = (
+                        "import sys,time,threading; print('READY',flush=True); "
+                        "ts=[threading.Thread(target=lambda s: "
+                        "(s.write(b'X'*1048576),s.flush()),args=(s,),daemon=True) "
+                        "for s in (sys.stdout.buffer,sys.stderr.buffer)]; "
+                        "[t.start() for t in ts]; time.sleep(30)"
+                    )
                 child = await spawn(sys.executable, "-u", "-c", script, **kwargs)
                 children.append(child)
                 assert await asyncio.wait_for(child.stdout.readline(), 5) == b"READY\n"
-                groups.append(os.getpgid(child.pid))
+                if flooded:
+
+                    async def pipes_saturated():
+                        while not all(
+                            len(stream._buffer) > stream._limit and stream._paused
+                            for stream in (child.stdout, child.stderr)
+                        ):
+                            await asyncio.sleep(0.005)
+
+                    await asyncio.wait_for(pipes_saturated(), 5)
+                    assert child.stdout._paused and child.stderr._paused
+                groups.append(os.getpgid(child.pid) if args[0] != "released-control" else None)
                 ready.set()
                 return child
 
@@ -228,24 +255,40 @@ class TestCreateHealingWorktree:
                 ):
                     operation = asyncio.create_task(create_healing_worktree(tmp_path, "email", fp))
                     await asyncio.wait_for(ready.wait(), 5)
-                    if mode == "cancel":
+                    if mode.startswith("cancel"):
                         operation.cancel()
+                    done, _ = await asyncio.wait({operation}, timeout=2)
+                    assert operation in done, (
+                        f"{mode}: child_reaped={children[0].returncode is not None}, "
+                        "cleanup_completed=False"
+                    )
+                    if mode.startswith("cancel"):
                         with pytest.raises(asyncio.CancelledError):
-                            await asyncio.wait_for(operation, 2)
+                            await operation
                     else:
                         with pytest.raises(WorktreeCreationError, match="timed out"):
-                            await asyncio.wait_for(operation, 2)
+                            await operation
                     assert children[0].returncode is not None
                     assert groups[0] == children[0].pid
                     with branch_exclusion(tmp_path):
                         rc, out, err = await native._run_git("released-control", cwd=tmp_path)
                     assert (rc, out, err) == (0, "released", "companion")
             finally:
-                # A causal old-source red must not leave its real child alive.
+                # Independently finish a causal old-source red even when its
+                # killed child's paused pipes leave native wait() unfinished.
+                if operation is not None and not operation.done():
+                    operation.cancel()
                 for child in children:
                     if child.returncode is None:
                         child.kill()
-                    await child.wait()
+                    await asyncio.wait_for(
+                        asyncio.gather(discard(child.stdout), discard(child.stderr), child.wait()),
+                        5,
+                    )
+                if operation is not None:
+                    done, _ = await asyncio.wait({operation}, timeout=5)
+                    assert operation in done
+                    await asyncio.gather(operation, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

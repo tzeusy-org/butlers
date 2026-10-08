@@ -110,7 +110,8 @@ internally. Initial QA read-only fetch may precede acquisition; branch/worktree
 creation is fenced. Native busy custody refuses creation or defers best-effort
 cleanup. Each native Git command has a 60-second communication bound; timeout
 returns the ordinary nonzero tuple/caller failure path. Timeout or cancellation
-stops the actual process group and reaps the owned child before releasing the
+stops the actual process group, drains and discards residual pipe output in
+bounded chunks, and reaps the owned child before releasing the
 custody lock, including cancellation during creation. This is ordinary process
 lifecycle handling under the existing trusted-host premise, not kernel or
 malicious-hook isolation. This is cooperation by the existing trusted actors, not isolation from

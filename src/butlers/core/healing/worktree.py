@@ -122,6 +122,19 @@ def _worktree_path(repo_root: Path, branch_name: str) -> Path:
 _GIT_COMMAND_TIMEOUT_SECONDS = 60.0
 
 
+async def _drain_and_reap(proc: asyncio.subprocess.Process) -> None:
+    """Discard residual output without buffering it while reaping a killed child."""
+
+    async def discard(stream: asyncio.StreamReader | None) -> None:
+        if stream is not None:
+            while await stream.read(65536):
+                pass
+
+    # Cancelled communicate() may leave either PIPE transport paused. Waiting
+    # alone can then deadlock even after SIGKILL; drain both streams to EOF.
+    await asyncio.gather(discard(proc.stdout), discard(proc.stderr), proc.wait())
+
+
 async def _run_git(
     *args: str,
     cwd: Path,
@@ -174,7 +187,7 @@ async def _run_git(
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            reap = asyncio.create_task(proc.wait())
+            reap = asyncio.create_task(_drain_and_reap(proc))
             while not reap.done():
                 try:
                     await asyncio.shield(reap)
