@@ -10,7 +10,7 @@ This change amends `dashboard-chat-ui` for the narrowed `bu-0ynlk.14` outcome. I
 - an empty thread that teaches the lanes;
 - the remaining Dispatch chrome corrections.
 
-It is proposed future behavior only. Implementation stays blocked until the owner adopts this exact artifact and answers the queued-text retention question in `design.md` § Owner decision.
+It is proposed future behavior only. The owner answered the queued-text retention question on 2026-10-09 (Option A, recorded in `design.md` § Owner decision). Implementation stays blocked until the owner adopts this exact artifact.
 
 ## What Changes
 
@@ -32,7 +32,7 @@ It is proposed future behavior only. Implementation stays blocked until the owne
 
 The owner adopted `persist-safe-dashboard-unsent-drafts` on 2026-09-12 (PR #4056 at `d2dc32ff`, recorded in `bu-2jtfw.15` as `[owner-adoption bu-qqb2kw]`). That contract already governs browser-local chat drafts per `{butler, conversation | new}`: transactional IndexedDB, 24-hour sliding expiry, a 64 KiB limit, compare-and-swap cross-tab ordering, and clear-on-proven-acceptance (REQ-dashboard-chat-ui-004 and -005). `bu-2jtfw.15` owns implementing it.
 
-This change does not re-specify, fork, or weaken that contract. Earlier `bu-0ynlk.14` drafts proposed a local key with timestamp last-write-wins; that conflicts with the adopted contract and is withdrawn. The one retention question left open is narrower: does a queued, not-yet-dispatched message belong to that same draft record? It is posed in `design.md` § Owner decision.
+This change does not re-specify, fork, or weaken that contract. Earlier `bu-0ynlk.14` drafts proposed a local key with timestamp last-write-wins; that conflicts with the adopted contract and is withdrawn. The one narrower retention question, whether a queued, not-yet-dispatched message belongs to that same draft record, was answered by the owner on 2026-10-09: it does (Option A, `design.md` § Owner decision).
 
 ## Capabilities
 
@@ -53,7 +53,7 @@ None.
   - the integration points: an optional suggestion projection on `ShellCapability` in `frontend/src/lib/shell-capability.ts`, and the turn integration in `useConversationTurn`;
   - the consumers: `ChatDock`, `ChatPage`, `FloatingChatWidget`, and `ChatPanel`, which use the shared behavior rather than reimplementing it.
 - **Out of scope.** No backend request model, endpoint, migration, core tool, conversation-summary field, `last_seen_at`, pin field, lane override, rename/archive action, scoped-resume rule, or cross-channel thread behavior.
-- **Rollback.** Revert the frontend components. No server or data downgrade exists. If the owner chooses retention option A, the queued text is ordinary draft text in the adopted store, and reverting leaves it restorable as a draft.
+- **Rollback.** Revert the frontend components. No server or data downgrade exists. Under the decided retention (Option A), the queued text is ordinary draft text in the adopted store, so reverting leaves it restorable as a draft.
 - **Tests.** No test files change in this spec-only change (`Tests: +0 ~0 -0`). The implementation estimate is in `tasks.md`.
 
 ## Out of Scope

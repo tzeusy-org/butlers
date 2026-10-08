@@ -1,7 +1,7 @@
 ## 1. Adoption gates (owner)
 
 - [ ] 1.1 Owner adopts this exact artifact, including the supersession of the baseline "Input disabled during streaming" scenario and the three-bouncing-dots Typing Indicator scenario, and the proposed suggestion and empty-state copy in `design.md` Decisions 5 and 6 (edits allowed at adoption).
-- [ ] 1.2 Owner answers `design.md` § Owner decision (queued-text retention). On Option B, replace REQ-dashboard-chat-ui-010's scenarios with the single "Queued text is not retained across reload" scenario before implementation starts, and re-run section 5.
+- [x] 1.2 Owner answered `design.md` § Owner decision (queued-text retention) on 2026-10-09: Option A. REQ-dashboard-chat-ui-010 stands as written.
 
 ## 2. Composer identity and queue (REQ-dashboard-chat-ui-006, -008, -009, -010)
 
@@ -9,7 +9,7 @@
 - [ ] 2.2 Integrate the helper with `useConversationTurn` so release happens only on a committed `message_complete` and every other terminal or interrupted outcome, Stop activation, conversation switch, unmount, and unload demotes per REQ-dashboard-chat-ui-009; dispatch reuses the stored `message_id` and captured context.
 - [ ] 2.3 Update `MessageInput` so no prop disables the textarea; Send and Stop render side by side during a turn; add the queued row with `Edit`, the one-item helper line, and the polite announcements.
 - [ ] 2.4 Replace the per-posture `inputValue` state in `ChatDock`, `ChatPanel`, `FloatingChatWidget`, and `ChatPage` with the shared helper; keep `bu-p5umi2.1`'s ownership gate as a Send gate only.
-- [ ] 2.5 If Option A is adopted and `bu-2jtfw.15`'s chat-draft seam has landed, store queued text in the same draft record per REQ-dashboard-chat-ui-010; otherwise record the follow-up on `bu-2jtfw.15` so its chat slice includes the queued-text field.
+- [ ] 2.5 If `bu-2jtfw.15`'s chat-draft seam has landed, store queued text in the same draft record per REQ-dashboard-chat-ui-010; otherwise record the follow-up on `bu-2jtfw.15` so its chat slice includes the queued-text field.
 
 ## 3. Starting prompts and empty thread (REQ-dashboard-chat-ui-011, -012)
 

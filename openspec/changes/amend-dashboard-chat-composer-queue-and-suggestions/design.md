@@ -12,7 +12,7 @@ The scope correction was written on 2026-09-21. Re-checked on 2026-10-08:
 | --- | --- | --- |
 | `bu-0ynlk.12` must land before `MessageThread` is touched | Closed; PR #4205 merged the answer renderer, citations, and attribution | Serialization satisfied. Build on the landed `MessageThread`. |
 | `bu-0ynlk.13` supplies a truthful pending label | Shipped: `pendingActivityStatus()` and `chat-activity-status` live region in `MessageThread.tsx` | Only the decorative dots remain. The pill reuses the existing label text. |
-| This bead owns per-`{butler, conversation}` local draft persistence with timestamp last-write-wins | **Stale.** The owner adopted `persist-safe-dashboard-unsent-drafts` on 2026-09-12 (PR #4056 at `d2dc32ff`). It forbids timestamp last-write-wins and is owned by `bu-2jtfw.15` (unimplemented) | Drafts removed from this change. Only the queued-text retention question remains (Owner decision below). |
+| This bead owns per-`{butler, conversation}` local draft persistence with timestamp last-write-wins | **Stale.** The owner adopted `persist-safe-dashboard-unsent-drafts` on 2026-09-12 (PR #4056 at `d2dc32ff`). It forbids timestamp last-write-wins and is owned by `bu-2jtfw.15` (unimplemented) | Drafts removed from this change. The narrower queued-text retention question was answered by the owner on 2026-10-09 (Owner decision below). |
 | Composer is disabled only during streaming | **Incomplete.** All four postures also pass `disabled={isLoadingConversations}` or `isLoadingDetail` | The amended Message Input Area forbids any state from disabling typing. |
 | Composer text is per conversation | **Incomplete.** `ChatDock`, `ChatPanel`, `FloatingChatWidget`, and `ChatPage` each hold one `inputValue` per posture. Text typed for conversation A stays visible after switching to B | The queue needs per-identity composer text (Decision 2). |
 | Suggestion projection carries a registered resource kind and coarse window | `/qa` publishes kind `qa_overview`. `/spend` publishes kind `spend_window` with an exact `YYYY-MM-DD..YYYY-MM-DD` label. `/entities/:entityId` publishes no resource kind, only `entity_ref` (a canonical name, which is forbidden input) | Window class is derived from the page's preset, never the exact dates. Entity suggestions use the route pattern alone. |
@@ -149,11 +149,13 @@ Each clause maps to a classifier lane on main (`pipeline.py` lanes D, A, C, B). 
 
 ## Owner decision: retention of queued, not-yet-dispatched text
 
+**Decided 2026-10-09: Option A.** Queued, not-yet-dispatched text is kept in the conversation's adopted browser-local draft record, restored after reload marked "Not sent", and never sent automatically. REQ-dashboard-chat-ui-010 encodes this choice. The question, options, and reasoning below are kept as the decision record.
+
 **Question.** When the owner queues a follow-up and the page then reloads, closes, or crashes before that queued message is dispatched, should the queued text survive in this browser?
 
 **Background.** Ordinary unsent composer text is already retained under the adopted browser-local draft contract (`persist-safe-dashboard-unsent-drafts`, adopted 2026-09-12). Retention is per butler and conversation, in this browser profile's IndexedDB, for 24 hours after the last edit, capped at 64 KiB, and cleared on proven send acceptance or Discard. That contract does not cover queued text. Queueing clears the editor, and an empty editor tombstones the draft.
 
-| | Option A: retain as draft (recommended) | Option B: memory only |
+| | Option A: retain as draft (chosen) | Option B: memory only (not chosen) |
 | --- | --- | --- |
 | Behavior | While queued, the text is kept in the same conversation's draft record. After reload it reappears as ordinary editable text marked "Not sent", never auto-sent. The auto-send intent and its `message_id` are never persisted. | The queued text lives only in the open tab. Reload, tab close, or crash before dispatch loses it with no trace. |
 | Retention | Same as the adopted draft contract: same browser profile, 24-hour sliding expiry, 64 KiB, cleared on dispatch-then-acceptance or Discard. | None beyond the tab's lifetime. |
@@ -161,7 +163,7 @@ Each clause maps to a classifier lane on main (`pipeline.py` lanes D, A, C, B). 
 | Failure the owner experiences | None new. The worst case is a stale "Not sent" draft that expires after 24 hours. | The owner pressed Enter and saw "1 message queued", so they believe the words are on their way. After a reload they are gone, and nothing tells the owner to retype them. |
 | Spec effect | Keep REQ-dashboard-chat-ui-010 as written. | Replace REQ-dashboard-chat-ui-010's scenarios with one: "Queued text is not retained across reload". Leave the rest of the change unchanged. |
 
-**Recommendation: Option A.** With a single owner who owns the data, the meaningful threat is losing the owner's words, not exposing them to themselves. Option A adds no exposure beyond what the owner already accepted on 2026-09-12. Option B creates the most damaging kind of loss: words the owner believes were sent. Option A's effect depends on `bu-2jtfw.15` implementing the draft store. Until then both options behave identically: the text is in memory only.
+**Recommendation (accepted): Option A.** With a single owner who owns the data, the meaningful threat is losing the owner's words, not exposing them to themselves. Option A adds no exposure beyond what the owner already accepted on 2026-09-12. Option B creates the most damaging kind of loss: words the owner believes were sent. Option A's effect depends on `bu-2jtfw.15` implementing the draft store. Until then, queued text is held in memory only.
 
 ## UX walkthrough (design bar)
 
