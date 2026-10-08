@@ -425,3 +425,60 @@ def test_downgrade_refuses_a_partial_restore(postgres_container) -> None:
         assert _backup_tables(conn) == set()
         assert _links(conn, "dashboard_messages", "id") == {moved_message: first}
     engine.dispose()
+
+
+def test_dev_shaped_anchors_collapse_deterministically(postgres_container) -> None:
+    """No provider handles, pre-prefixed Telegram keys, and colon-bearing other channels."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS general"))
+    command.upgrade(_config(db_url, "general"), "core@core_261")
+    with engine.begin() as conn:
+        # Without handles the newest row keeps the chat, whether or not it is
+        # the one already keyed telegram:<chat>.
+        prefixed_newest = _insert_anchor(conn, thread="telegram:-200", offset=2)
+        older_raw = [
+            _insert_anchor(conn, thread="-200:1", offset=0),
+            _insert_anchor(conn, thread="-200:3", offset=1),
+        ]
+        prefixed_oldest = _insert_anchor(conn, thread="telegram:-300", offset=0)
+        newer_raw = _insert_anchor(conn, thread="-300:5", offset=1)
+        moved_message = _insert_message(conn, prefixed_oldest)
+        untouched = {
+            _insert_anchor(conn, thread=thread, channel=channel): thread
+            for channel, thread in (
+                ("spotify_user_client", "spotify:ctx:synthetic"),
+                ("wellness", "wellness:checkin:2026-10-01"),
+                ("google_drive", "drive-file-synthetic"),
+                ("email", "gmail-thread-synthetic"),
+                ("dashboard", str(uuid.uuid4())),
+            )
+        }
+        whatsapp = _insert_anchor(
+            conn, thread="6591234567@s.whatsapp.net", channel="whatsapp_user_client"
+        )
+        before = _anchors(conn)
+
+    command.upgrade(_config(db_url, "general"), "core@core_265")
+    with engine.connect() as conn:
+        keys = dict(
+            conn.execute(
+                text(
+                    "SELECT id, external_conversation_id FROM public.dashboard_conversations"
+                    " WHERE external_conversation_id = source_thread_identity"
+                )
+            ).all()
+        )
+        assert keys.pop(prefixed_newest) == "telegram:-200"
+        assert keys.pop(newer_raw) == "telegram:-300"
+        assert keys.pop(whatsapp) == "whatsapp:6591234567@s.whatsapp.net"
+        assert keys == untouched
+        assert _links(conn, "dashboard_messages", "id") == {moved_message: newer_raw}
+        assert not {*older_raw, prefixed_oldest} & set(_anchors(conn))
+
+    command.downgrade(_config(db_url, "general"), "core@core_261")
+    with engine.connect() as conn:
+        assert _anchors(conn) == before
+        assert _links(conn, "dashboard_messages", "id") == {moved_message: prefixed_oldest}
+    engine.dispose()

@@ -74,6 +74,12 @@ _ROWS = [
         },
         {"external_conversation_id": "telegram:-100777:topic:9", "reply_target_ref": "-100777:43"},
     ),
+    (
+        "spotify",
+        "completed",
+        {"source_channel": "spotify_user_client", "source_thread_identity": "spotify:ctx:1"},
+        {"external_thread_id": "spotify:ctx:1"},
+    ),
     ("no-thread", "completed", {"source_channel": "api"}, {}),
 ]
 
@@ -136,6 +142,7 @@ def test_sw_041_backfills_conversation_key_once(postgres_container) -> None:
             "user-client": "telegram:998877",
             "whatsapp-pending": "whatsapp:6591234567@s.whatsapp.net",
             "email": "gmail-thread-1",
+            "spotify": "spotify:ctx:1",
             "already-split": "telegram:-100777:topic:9",
             "no-thread": None,
         }
