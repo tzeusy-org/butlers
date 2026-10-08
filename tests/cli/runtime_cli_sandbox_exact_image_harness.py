@@ -20,6 +20,36 @@ from butlers.cli_auth.sandbox_platform import (
 )
 
 
+def _closed_launch_diagnostic(content: bytes) -> dict[str, str]:
+    """Classify only public executable/error vocabulary; never reflect bytes."""
+    lowered = content.lower()
+    origin = "bubblewrap" if content.startswith(b"bwrap:") else "unknown"
+    if content.startswith(b"runtime-cli-sandbox-init failed"):
+        origin = "shim"
+    error = "unknown"
+    for phrase, label in (
+        (b"permission denied", "permission-denied"),
+        (b"operation not permitted", "operation-not-permitted"),
+        (b"no such file or directory", "missing-path"),
+    ):
+        if phrase in lowered:
+            error = label
+            break
+    operation = "unknown"
+    for phrase, label in (
+        (b"mount", "mount"),
+        (b"execvp", "exec"),
+        (b"uid map", "uid-map"),
+        (b"gid map", "gid-map"),
+        (b"chdir", "chdir"),
+        (b"namespace", "namespace"),
+    ):
+        if phrase in lowered:
+            operation = label
+            break
+    return {"origin": origin, "os_error": error, "operation": operation}
+
+
 async def _run() -> None:
     provider = PROVIDERS["codex"]
     invocation = resolve_readonly_runtime_inputs(provider, (provider.binary(), "--version"))
@@ -107,6 +137,7 @@ async def _run() -> None:
                             if process.returncode == 125
                             else "nonzero"
                         ),
+                        **_closed_launch_diagnostic(pre_release),
                     },
                     sort_keys=True,
                 )
