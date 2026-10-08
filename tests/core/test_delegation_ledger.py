@@ -714,6 +714,8 @@ async def _assert_native_delegated_question_birth():
                 raise AssertionError("unexpected source write")
 
         async def fetchval(self, sql, *args):
+            if "JOIN location_native_delegation_dispositions d" in sql:
+                return args[0] in getattr(self, "closed_question_floors", set())
             if "location_runtime_tool_intents" in sql:
                 return self.intent
             if "location_runtime_context_dispositions" in sql:
@@ -1061,6 +1063,43 @@ async def _assert_native_delegated_question_birth():
                 assert pool.ledger[selected]["status"] == "routed"
                 assert (pool.answers, pool.answer_parents) == before
         pool.intent, pool.fail_business, pool.unknown = True, False, False
+        # Current registered constructor remains installed. Absence of a
+        # producer never admits an eligible answer; actual rejected canonical
+        # guards return None without any business write or native birth.
+        absent = _current_tool_copy.set(None)
+        try:
+            before = deepcopy((pool.answers, pool.answer_parents, pool.ledger))
+            assert (
+                await record_answer(
+                    pool, answer_ledger, answering_butler="chronicler", answer="late unchanged"
+                )
+                is None
+            )
+            assert (pool.answers, pool.answer_parents, pool.ledger) == before
+            eligible = uuid.uuid4()
+            pool.ledger[eligible] = {"status": "routed", "target_butler": "chronicler"}
+            with pytest.raises(RuntimeError, match="Native answer source producer is unavailable"):
+                await record_answer(
+                    pool, eligible, answering_butler="chronicler", answer="unproven new input"
+                )
+            assert pool.ledger[eligible]["status"] == "routed"
+            pool.closed_question_floors = {eligible}
+            before = deepcopy((pool.answers, pool.answer_parents, pool.ledger))
+            assert (
+                await record_answer(
+                    pool, eligible, answering_butler="chronicler", answer="late replay"
+                )
+                is None
+            )
+            assert (pool.answers, pool.answer_parents, pool.ledger) == before
+            assert (
+                await record_answer(
+                    pool, eligible, answering_butler="wrong-target", answer="unproven"
+                )
+                is None
+            )
+        finally:
+            _current_tool_copy.reset(absent)
     finally:
         _current_tool_copy.reset(token)
         clear_writer(pool, writer)

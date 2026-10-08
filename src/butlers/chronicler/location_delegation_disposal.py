@@ -336,9 +336,11 @@ async def prepare_question_receivers(runtime: Any, decision: UUID) -> dict:
             if receipt is None:
                 from butlers.chronicler.location_delegation_contexts import (
                     dispose_core_question_contexts,
+                    dispose_memory_question_contexts,
                 )
 
                 await dispose_core_question_contexts(runtime, binding)
+                await dispose_memory_question_contexts(runtime, binding, plan)
                 receipt = await _close_question_receiver(runtime, binding)
             if receipt is not None:
                 receipts.append(str(receipt))

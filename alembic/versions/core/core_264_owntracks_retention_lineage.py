@@ -225,6 +225,8 @@ def _validate_local_tables(schema: str) -> None:
                 ("manifest_digest", "bytea", True),
                 ("receipt_id", "uuid", True),
                 ("committed_at", "timestamp with time zone", True),
+                ("reduced_system_digest", "bytea", False),
+                ("reduced_provenance_digest", "bytea", False),
             ],
         }
     )
@@ -500,6 +502,10 @@ def _validate_local_tables(schema: str) -> None:
                 "PRIMARY KEY (input_generation)",
                 "CHECK ((octet_length(manifest_digest) = 32))",
                 "UNIQUE (receipt_id)",
+                "CHECK (((reduced_system_digest IS NULL) OR "
+                "(octet_length(reduced_system_digest) = 32)))",
+                "CHECK (((reduced_provenance_digest IS NULL) OR "
+                "(octet_length(reduced_provenance_digest) = 32)))",
             },
         }
     )
@@ -845,6 +851,11 @@ def upgrade() -> None:
           receipt_id UUID NOT NULL UNIQUE,
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        ALTER TABLE location_runtime_context_dispositions
+          ADD COLUMN IF NOT EXISTS reduced_system_digest BYTEA
+            CHECK(reduced_system_digest IS NULL OR octet_length(reduced_system_digest)=32),
+          ADD COLUMN IF NOT EXISTS reduced_provenance_digest BYTEA
+            CHECK(reduced_provenance_digest IS NULL OR octet_length(reduced_provenance_digest)=32);
         CREATE TABLE IF NOT EXISTS location_catalog_copy_loans (
           loan_id UUID PRIMARY KEY,
           source_generation UUID NOT NULL,

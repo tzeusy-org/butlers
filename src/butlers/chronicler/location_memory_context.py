@@ -368,7 +368,69 @@ async def finish_context_server(runtime: Any, generation: UUID, request: UUID) -
         raise PolicyUnavailableError("Committed context server completion is unknown")
 
 
-async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: dict) -> bool:
+async def dispose_runtime_context(
+    runtime: Any, input_generation: UUID, plan: dict, *, question_binding: dict | None = None
+) -> bool:
+    """Complete own transaction followed by independent immutable-body readback.
+
+    Replay cannot skip this readback. Legacy receipts with no frozen reduction
+    witnesses remain unavailable rather than being refilled from a current row.
+    """
+    completed = await _dispose_runtime_context_once(
+        runtime, input_generation, plan, question_binding=question_binding
+    )
+    if not completed:
+        return False
+    schema = _own_schema(runtime)
+    async with runtime.memory.acquire() as observed:
+        async with observed.transaction():
+            binding = _RuntimeContext(runtime, input_generation, UUID(int=0), False)
+            await _lock_memory_context(observed, binding)
+            row = await observed.fetchrow(
+                f"SELECT d.*,b.receiving_session "
+                f"FROM {schema}.location_runtime_context_dispositions d "
+                f"JOIN {schema}.location_runtime_context_bindings b USING(input_generation) "
+                "WHERE d.input_generation=$1",
+                input_generation,
+            )
+            session = (
+                None
+                if row is None
+                else await observed.fetchrow(
+                    f"SELECT * FROM {schema}.sessions WHERE id=$1", row["receiving_session"]
+                )
+            )
+            if (
+                row is None
+                or row["decision_id"] != UUID(plan["decision_id"])
+                or row["manifest_digest"] != bytes.fromhex(plan["manifest_digest"])
+                or row["reduced_system_digest"] is None
+                or row["reduced_provenance_digest"] is None
+                or session is None
+                or session["prompt"] != "[Location input forgotten]"
+                or session["result"] != "[Location output forgotten]"
+                or session["tool_calls"] != []
+                or session["error"] is not None
+                or not isinstance(session["effective_system_prompt"], str)
+                or hashlib.sha256(session["effective_system_prompt"].encode()).digest()
+                != row["reduced_system_digest"]
+                or content_digest(session["prompt_provenance"]) != row["reduced_provenance_digest"]
+                or await observed.fetchval(
+                    f"SELECT EXISTS(SELECT 1 FROM {schema}.session_process_logs "
+                    "WHERE session_id=$1 "
+                    "AND ((command IS DISTINCT FROM '[Location input forgotten]' "
+                    "AND command IS DISTINCT FROM '[Location-derived diagnostic forgotten]') "
+                    "OR stderr IS NOT NULL))",
+                    row["receiving_session"],
+                )
+            ):
+                raise PolicyUnavailableError("Committed configured context body is unknown")
+    return True
+
+
+async def _dispose_runtime_context_once(
+    runtime: Any, input_generation: UUID, plan: dict, *, question_binding: dict | None = None
+) -> bool:
     """Own exact unchanged closed input, session and native episodes atomically.
 
     Independent/mixed context, missing runtime/server finalizers, other live
@@ -491,17 +553,27 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
             # A native generated prompt has real own-domain parent births.
             # Its entire prompt ancestry must be selected, including newer
             # local inputs; a catalog loan alone cannot authorize that prompt.
-            if runtime.name != "chronicler" or await conn.fetchval(
-                "SELECT NOT EXISTS(SELECT 1 FROM chronicler.location_native_copy_births "
-                "WHERE receiving_session=$1) OR EXISTS(SELECT 1 FROM "
-                "chronicler.location_native_copy_births b WHERE b.receiving_session=$1 "
-                "AND (NOT b.lineage_known OR NOT b.exclusive_input OR NOT EXISTS(SELECT 1 "
-                "FROM chronicler.location_retention_plan_outputs o WHERE o.decision_id=$2 "
-                "AND o.output_kind=b.output_kind AND o.output_id=b.output_id)))",
-                frozen["receiving_session"],
-                UUID(plan["decision_id"]),
-            ):
-                return False
+            if question_binding is not None:
+                from butlers.chronicler.location_delegation_contexts import (
+                    closed_question_context_input,
+                )
+
+                if not await closed_question_context_input(
+                    conn, schema, runtime, frozen, input_generation, question_binding
+                ):
+                    return False
+            else:
+                if runtime.name != "chronicler" or await conn.fetchval(
+                    "SELECT NOT EXISTS(SELECT 1 FROM chronicler.location_native_copy_births "
+                    "WHERE receiving_session=$1) OR EXISTS(SELECT 1 FROM "
+                    "chronicler.location_native_copy_births b WHERE b.receiving_session=$1 "
+                    "AND (NOT b.lineage_known OR NOT b.exclusive_input OR NOT EXISTS(SELECT 1 "
+                    "FROM chronicler.location_retention_plan_outputs o WHERE o.decision_id=$2 "
+                    "AND o.output_kind=b.output_kind AND o.output_id=b.output_id)))",
+                    frozen["receiving_session"],
+                    UUID(plan["decision_id"]),
+                ):
+                    return False
             encoded_system = session["effective_system_prompt"].encode()
             size = frozen["context_bytes"]
             if size:
@@ -736,11 +808,14 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                 )
             await conn.execute(
                 f"INSERT INTO {schema}.location_runtime_context_dispositions "
-                "(input_generation,decision_id,manifest_digest,receipt_id) VALUES($1,$2,$3,$4)",
+                "(input_generation,decision_id,manifest_digest,receipt_id,reduced_system_digest,"
+                "reduced_provenance_digest) VALUES($1,$2,$3,$4,$5,$6)",
                 input_generation,
                 UUID(plan["decision_id"]),
                 bytes.fromhex(plan["manifest_digest"]),
                 receipt,
+                hashlib.sha256(reduced_system.encode()).digest(),
+                content_digest(preserved_provenance),
             )
     async with runtime.domain.acquire() as committed:
         observed = await committed.fetchval(
@@ -957,6 +1032,8 @@ async def context_artifact_scope(pool: Any, conn: Any) -> _ArtifactWriter | None
         f"SELECT 1 FROM {schema}.location_catalog_copy_lifetimes l "
         "WHERE (l.holder_id=b.input_generation AND l.holder_kind='unbound_processing') "
         "OR (l.holder_id=b.receiving_session AND l.holder_kind='runtime_session')) "
+        f"OR EXISTS(SELECT 1 FROM {schema}.location_received_delegation_contexts q "
+        "WHERE q.input_generation=b.input_generation AND q.receiving_session=b.receiving_session) "
         + (
             "OR EXISTS(SELECT 1 FROM chronicler.location_native_copy_births n "
             "WHERE n.receiving_session=b.receiving_session)"

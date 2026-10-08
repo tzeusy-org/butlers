@@ -1838,6 +1838,8 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
         from butlers.chronicler.location_memory_context import register_context_writer
         from butlers.core.delegation_source import _writers, clear_writer, register_writer
 
+        # Actual configured Memory pool/role remains distinct from core-only enrollment.
+        await _assert_question_receiver_disposal(domain, runtime)
         clear_writer(domain, runtime.delegation_writer)
         core = None
         try:
@@ -2200,6 +2202,22 @@ async def _assert_core_question_context_disposal(domain, runtime, binding, task,
     from butlers.core.sessions import session_complete, session_create
     from butlers.location_retention import content_digest
 
+    dispose_context = dispose_core_question_contexts
+    if getattr(runtime, "memory", None) is not None:
+        from butlers.chronicler.location_delegation_contexts import dispose_memory_question_contexts
+
+        async def dispose_context(runtime, binding):
+            # Planted source plan for SQL-engine proof only, never online/source admission.
+            await dispose_memory_question_contexts(
+                runtime,
+                binding,
+                dict(
+                    decision_id=str(binding["decision_id"]),
+                    manifest_digest=binding["manifest_digest"].hex(),
+                    catalog_loans=[],
+                ),
+            )
+
     generation, claim = uuid.uuid4(), uuid.uuid4()
     system = "Independent configured core instructions stay byte exact"
     session = await session_create(
@@ -2265,12 +2283,48 @@ async def _assert_core_question_context_disposal(domain, runtime, binding, task,
             )
     await write_process_log(domain, session, command=prompt, stderr="synthetic copied output")
     assert await _close_question_receiver(runtime, binding) is None
-    await dispose_core_question_contexts(runtime, binding)
+    await dispose_context(runtime, binding)
     assert await domain.fetchval("SELECT prompt FROM sessions WHERE id=$1", session) == prompt
     assert not await domain.fetchval(
         "SELECT EXISTS(SELECT 1 FROM location_runtime_context_dispositions WHERE input_generation=$1)",
         generation,
     )
+    await session_complete(domain, session, "synthetic derived response", [], 1, True)
+    episode = None
+    if getattr(runtime, "memory", None) is not None:
+        from butlers.chronicler.location_memory_context import (
+            _current_runtime_context,
+            _RuntimeContext,
+        )
+        from butlers.modules.memory.storage import store_episode
+
+        native = _RuntimeContext(runtime, generation, session, True, admitted=True)
+        token = _current_runtime_context.set(native)
+        try:
+            episode = await store_episode(
+                runtime.memory,
+                "synthetic derived response",
+                runtime.name,
+                SimpleNamespace(
+                    model_name="synthetic-native-receiving", embed=lambda _body: [0.0] * 384
+                ),
+                session_id=session,
+            )
+        finally:
+            _current_runtime_context.reset(token)
+        async with runtime.memory.acquire() as observed:
+            assert (
+                await observed.fetchval("SELECT content FROM episodes WHERE id=$1", episode)
+                == "synthetic derived response"
+            )
+        async with domain.acquire() as observed:
+            assert (
+                await observed.fetchval(
+                    "SELECT episode_id FROM location_runtime_context_episodes WHERE input_generation=$1",
+                    generation,
+                )
+                == episode
+            )
     async with domain.acquire() as conn:
         async with conn.transaction():
             await runtime.lock_domain(conn)
@@ -2284,8 +2338,7 @@ async def _assert_core_question_context_disposal(domain, runtime, binding, task,
                 generation,
                 uuid.uuid4(),
             )
-    await session_complete(domain, session, "synthetic derived response", [], 1, True)
-    await dispose_core_question_contexts(runtime, binding)
+    await dispose_context(runtime, binding)
     async with domain.acquire() as observed:
         row = await observed.fetchrow("SELECT * FROM sessions WHERE id=$1", session)
         receipt = await observed.fetchval(
@@ -2302,7 +2355,12 @@ async def _assert_core_question_context_disposal(domain, runtime, binding, task,
         assert row["prompt"] == "[Location input forgotten]"
         assert row["result"] == "[Location output forgotten]"
         assert row["effective_system_prompt"] == system and row["prompt_provenance"] == []
-    await dispose_core_question_contexts(runtime, binding)
+    if episode is not None:
+        async with runtime.memory.acquire() as observed:
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM episodes WHERE id=$1)", episode
+            )
+    await dispose_context(runtime, binding)
     assert (
         await domain.fetchval(
             "SELECT receipt_id FROM location_runtime_context_dispositions WHERE input_generation=$1",
@@ -2312,7 +2370,7 @@ async def _assert_core_question_context_disposal(domain, runtime, binding, task,
     )
 
     await write_process_log(domain, session, command=prompt, stderr="synthetic late copied output")
-    await dispose_core_question_contexts(runtime, binding)
+    await dispose_context(runtime, binding)
     async with domain.acquire() as observed:
         diagnostic = await observed.fetchrow(
             "SELECT command,stderr FROM session_process_logs WHERE session_id=$1", session

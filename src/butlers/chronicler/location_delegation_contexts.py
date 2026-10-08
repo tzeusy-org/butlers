@@ -112,15 +112,20 @@ async def dispose_core_question_contexts(runtime: Any, binding: dict) -> None:
                     continue
                 captured = await conn.fetch(
                     "SELECT b.*,c.receiving_generation,c.prompt_digest,c.exclusive_input,"
-                    "c.receiving_incarnation,e.receipt_id AS ended_receipt "
+                    "c.receiving_incarnation,i.claim_generation AS reserved_claim,"
+                    "e.receipt_id AS ended_receipt "
                     "FROM location_received_delegation_contexts b "
                     "JOIN location_received_delegation_claims c USING(claim_generation) "
-                    "LEFT JOIN location_received_delegation_claims_ended e USING(claim_generation) "
+                    "LEFT JOIN location_runtime_context_question_intents i "
+                    "ON i.input_generation=b.input_generation "
+                    "LEFT JOIN location_received_delegation_claims_ended e "
+                    "ON e.claim_generation=b.claim_generation "
                     "WHERE b.input_generation=$1",
                     generation,
                 )
                 if (
                     len(captured) != 1
+                    or captured[0]["reserved_claim"] != captured[0]["claim_generation"]
                     or captured[0]["receiving_generation"] != binding["receiving_generation"]
                     or captured[0]["receiving_session"] != frozen["receiving_session"]
                     or captured[0]["bundle_digest"] != frozen["bundle_digest"]
@@ -192,11 +197,14 @@ async def dispose_core_question_contexts(runtime: Any, binding: dict) -> None:
                 )
                 await conn.execute(
                     "INSERT INTO location_runtime_context_dispositions "
-                    "(input_generation,decision_id,manifest_digest,receipt_id) VALUES($1,$2,$3,$4)",
+                    "(input_generation,decision_id,manifest_digest,receipt_id,reduced_system_digest,"
+                    "reduced_provenance_digest) VALUES($1,$2,$3,$4,$5,$6)",
                     generation,
                     binding["decision_id"],
                     binding["manifest_digest"],
                     receipt,
+                    frozen["system_digest"],
+                    content_digest(session["prompt_provenance"]),
                 )
                 committed_receipts.append((generation, receipt))
     # Separate actual outer-COMMIT readback, including preserved instructions.
@@ -222,7 +230,10 @@ async def dispose_core_question_contexts(runtime: Any, binding: dict) -> None:
                 or row["receipt_id"] != receipt
                 or row["decision_id"] != binding["decision_id"]
                 or row["manifest_digest"] != binding["manifest_digest"]
+                or row["reduced_system_digest"] != row["system_digest"]
+                or row["reduced_provenance_digest"] is None
                 or session is None
+                or content_digest(session["prompt_provenance"]) != row["reduced_provenance_digest"]
                 or session["prompt"] != "[Location input forgotten]"
                 or session["result"] != "[Location output forgotten]"
                 or session["tool_calls"] != []
@@ -239,3 +250,110 @@ async def dispose_core_question_contexts(runtime: Any, binding: dict) -> None:
                 )
             ):
                 raise PolicyUnavailableError("Committed native core context disposal is unknown")
+
+
+async def closed_question_context_input(
+    conn: Any, schema: str, runtime: Any, frozen: Any, generation: Any, binding: dict
+) -> bool:
+    """Own configured Memory witness, never a Chronicle/private peer query.
+
+    The schema is produced by the configured constructor. The binding is the
+    previously committed own floor selected through the fixed source MCP plan.
+    A smaller surviving JOIN or a receipt from another receiver cannot qualify.
+    """
+    if binding["receiving_incarnation"] != runtime.incarnation:
+        return False
+    floor = await conn.fetchrow(
+        f"SELECT * FROM {schema}.location_received_delegation_floors "
+        "WHERE receiving_generation=$1 FOR UPDATE",
+        binding["receiving_generation"],
+    )
+    if floor is None or any(floor[k] != v for k, v in binding.items()):
+        raise PolicyUnavailableError("Configured question context floor differs")
+    admitted = await conn.fetchrow(
+        f"SELECT * FROM {schema}.location_received_delegation_inputs WHERE receiving_generation=$1",
+        binding["receiving_generation"],
+    )
+    if admitted is None or admitted["exclusive_input"] is not True or admitted["parent_count"] < 1:
+        return False
+    if any(
+        admitted[k] != binding[k]
+        for k in (
+            "ledger_id",
+            "source_name",
+            "question_generation",
+            "loan_id",
+            "body_digest",
+            "receiving_incarnation",
+        )
+    ):
+        return False
+    captured = await conn.fetch(
+        f"SELECT b.*,c.receiving_generation,c.prompt_digest,c.exclusive_input,"
+        "c.receiving_incarnation,i.claim_generation AS reserved_claim,"
+        "e.receipt_id AS ended_receipt "
+        f"FROM {schema}.location_received_delegation_contexts b "
+        f"JOIN {schema}.location_received_delegation_claims c USING(claim_generation) "
+        f"LEFT JOIN {schema}.location_runtime_context_question_intents i "
+        "ON i.input_generation=b.input_generation "
+        f"LEFT JOIN {schema}.location_received_delegation_claims_ended e "
+        "ON e.claim_generation=b.claim_generation "
+        "WHERE b.input_generation=$1",
+        generation,
+    )
+    return len(captured) == 1 and all(
+        (
+            captured[0]["reserved_claim"] is not None,
+            captured[0]["reserved_claim"] == captured[0]["claim_generation"],
+            captured[0]["receiving_generation"] == binding["receiving_generation"],
+            captured[0]["receiving_session"] == frozen["receiving_session"],
+            captured[0]["bundle_digest"] == frozen["bundle_digest"],
+            captured[0]["prompt_digest"] == frozen["prompt_digest"],
+            captured[0]["exclusive_input"] is True,
+            captured[0]["receiving_incarnation"] == runtime.incarnation,
+            captured[0]["ended_receipt"] is not None,
+        )
+    )
+
+
+async def dispose_memory_question_contexts(runtime: Any, binding: dict, plan: dict) -> None:
+    """Select actual owning Memory contexts after the fixed source plan/floor.
+
+    Never create a pool, assume a default identity or borrow the source owner's
+    connection. Other catalog/local inputs remain independently required by
+    the complete context engine's existing same-writer body/descendant checks.
+    """
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_memory_context import context_writer, dispose_runtime_context
+
+    if (
+        not runtime.active
+        or _runtimes.get(getattr(runtime, "memory", None)) is not runtime
+        or context_writer(runtime.domain) is not runtime
+    ):
+        return
+    if (
+        str(plan["decision_id"]) != str(binding["decision_id"])
+        or bytes.fromhex(plan["manifest_digest"]) != binding["manifest_digest"]
+    ):
+        raise PolicyUnavailableError("Configured question context plan differs")
+    async with runtime.domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            floor = await conn.fetchrow(
+                "SELECT * FROM location_received_delegation_floors "
+                "WHERE receiving_generation=$1 FOR UPDATE",
+                binding["receiving_generation"],
+            )
+            if floor is None or any(floor[k] != v for k, v in binding.items()):
+                raise PolicyUnavailableError("Configured question context floor differs")
+            selected = await conn.fetch(
+                "SELECT i.input_generation FROM location_runtime_context_question_intents i "
+                "JOIN location_received_delegation_claims c USING(claim_generation) "
+                "WHERE c.receiving_generation=$1 ORDER BY i.input_generation",
+                binding["receiving_generation"],
+            )
+    for row in selected:
+        await dispose_runtime_context(
+            runtime, row["input_generation"], plan, question_binding=binding
+        )

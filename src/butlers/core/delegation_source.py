@@ -70,6 +70,34 @@ async def capture_answer(pool: Any, ledger: Any, answering: str, answer: str, wr
     selected = [writer for writer in _writers.values() if writer.capture_active()]
     if not selected:
         if pool in _writers:
+            # Rejected late/duplicate/wrong-target answers create no input,
+            # body or answer authority. Read only the canonical guard under
+            # the fixed owning writer's lock; an eligible answer still needs
+            # the actual private producer before any business mutation.
+            runtime = _writers[pool].runtime
+            if not runtime.active:
+                raise RuntimeError("Native answer source producer is unavailable")
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await runtime.lock_domain(conn)
+                    guard = await conn.fetchrow(
+                        "SELECT status,target_butler FROM public.delegation_ledger "
+                        "WHERE id=$1 FOR UPDATE OF delegation_ledger",
+                        ledger,
+                    )
+                    if (
+                        guard is None
+                        or guard["status"] != "routed"
+                        or guard["target_butler"] != answering
+                    ):
+                        return None
+                    if await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_native_delegation_inputs q "
+                        "JOIN location_native_delegation_dispositions d "
+                        "USING(question_generation,body_digest) WHERE q.ledger_id=$1)",
+                        ledger,
+                    ):
+                        return None  # Permanent owning source floor, never a new birth.
             raise RuntimeError("Native answer source producer is unavailable")
         return await write(pool)  # Explicit ordinary unconfigured writer contract.
     if len(selected) != 1 or _writers.get(pool) is not selected[0]:

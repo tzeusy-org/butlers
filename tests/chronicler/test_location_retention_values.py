@@ -2484,6 +2484,8 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     class Pool:
         writes = []
         receipt = None
+        terminal = None
+        diagnostic = {"command": "Synthetic copied input", "stderr": "Synthetic copied output"}
         artifacts = []
         tool_witnesses = []
         tool_loans = []
@@ -2507,6 +2509,8 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             return False
 
         async def fetchrow(self, sql, *args):
+            if "SELECT d.*,b.receiving_session" in sql:
+                return self.terminal
             if "public.memory_catalog" in sql:
                 return None
             if "SELECT * FROM rules" in sql:
@@ -2548,6 +2552,12 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             return [loan]
 
         async def fetchval(self, sql, *args):
+            if "session_process_logs" in sql:
+                return (
+                    self.diagnostic["command"]
+                    not in {"[Location input forgotten]", "[Location-derived diagnostic forgotten]"}
+                    or self.diagnostic["stderr"] is not None
+                )
             if "location_native_memory_artifact_dispositions" in sql:
                 return self.mutation_disposed
             if "SELECT count(*)=$5 AND bool_and" in sql or "SELECT count(*)=$4 AND bool_and" in sql:
@@ -2573,7 +2583,27 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
         async def execute(self, sql, *args):
             self.writes.append((sql, args))
             if "INSERT INTO" in sql and "context_dispositions" in sql:
-                self.receipt = args[-1]
+                self.receipt = args[3]
+                self.terminal = dict(
+                    input_generation=args[0],
+                    decision_id=args[1],
+                    manifest_digest=args[2],
+                    receipt_id=args[3],
+                    reduced_system_digest=args[4],
+                    reduced_provenance_digest=args[5],
+                    receiving_session=session_id,
+                )
+            if "UPDATE" in sql and ".session_process_logs " in sql:
+                self.diagnostic.update(command="[Location input forgotten]", stderr=None)
+            if "UPDATE" in sql and ".sessions " in sql:
+                session.update(
+                    prompt="[Location input forgotten]",
+                    result="[Location output forgotten]",
+                    tool_calls=[],
+                    error=None,
+                    effective_system_prompt=args[2],
+                    prompt_provenance=args[3],
+                )
 
     pool = Pool()
     runtime = SimpleNamespace(
@@ -3060,6 +3090,29 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     assert update[3] == [{"source": "base", "sha": "retained"}]
     assert any("location_catalog_copy_finished" in sql for sql, _ in pool.writes)
     await _assert_closed_native_mutation_copy_disposal()
+    # A replay never refills its immutable reduced-body witnesses from current rows.
+    assert await dispose_runtime_context(runtime, generation, plan)
+    original_reduced = session["effective_system_prompt"]
+    session["effective_system_prompt"] += " changed independent suffix"
+    with pytest.raises(
+        PolicyUnavailableError, match="Committed configured context body is unknown"
+    ):
+        await dispose_runtime_context(runtime, generation, plan)
+    session["effective_system_prompt"] = original_reduced
+    original_digest = pool.terminal["reduced_system_digest"]
+    pool.terminal["reduced_system_digest"] = None
+    with pytest.raises(
+        PolicyUnavailableError, match="Committed configured context body is unknown"
+    ):
+        await dispose_runtime_context(runtime, generation, plan)
+    pool.terminal["reduced_system_digest"] = original_digest
+    pool.diagnostic["stderr"] = "Synthetic retained source diagnostic"
+    with pytest.raises(
+        PolicyUnavailableError, match="Committed configured context body is unknown"
+    ):
+        await dispose_runtime_context(runtime, generation, plan)
+    pool.diagnostic["stderr"] = None
+    assert await dispose_runtime_context(runtime, generation, plan)
     await _assert_core_question_context_values()
 
 
@@ -3729,6 +3782,7 @@ async def _assert_core_question_context_values():
         acquired = 0
         admitted_valid = True
         captured_valid = True
+        captured_extra = False
 
         @asynccontextmanager
         async def acquire(self):
@@ -3768,10 +3822,14 @@ async def _assert_core_question_context_values():
             raise AssertionError("Unknown core context query")
 
         async def fetch(self, sql, *args):
-            if "location_runtime_context_question_intents" in sql:
+            if "SELECT i.input_generation" in sql:
                 return [{"input_generation": generation}]
             if "location_received_delegation_contexts" in sql:
-                return [captured] if self.captured_valid else []
+                return (
+                    [captured, dict(captured)]
+                    if self.captured_extra
+                    else ([captured] if self.captured_valid else [])
+                )
             raise AssertionError("Unknown core context cohort")
 
         async def fetchval(self, sql, *args):
@@ -3812,6 +3870,8 @@ async def _assert_core_question_context_values():
                     decision_id=args[1],
                     manifest_digest=args[2],
                     receipt_id=args[3],
+                    reduced_system_digest=args[4],
+                    reduced_provenance_digest=args[5],
                 )
                 return
             raise AssertionError("Unknown core context write")
@@ -3835,6 +3895,8 @@ async def _assert_core_question_context_values():
         "receiving_incarnation": runtime.incarnation,
     }
     captured.update(
+        claim_generation=(claim_generation := uuid4()),
+        reserved_claim=claim_generation,
         receiving_generation=binding["receiving_generation"],
         receiving_incarnation=runtime.incarnation,
     )
@@ -3842,11 +3904,46 @@ async def _assert_core_question_context_values():
     _writers[pool] = runtime.delegation_writer
     _context_writers[pool] = runtime
     try:
+        from butlers.chronicler.location_delegation_contexts import closed_question_context_input
+
+        assert await closed_question_context_input(
+            pool, '"relationship"', runtime, frozen, generation, binding
+        )
+        for key in ("captured_valid", "admitted_valid"):
+            setattr(pool, key, False)
+            assert not await closed_question_context_input(
+                pool, '"relationship"', runtime, frozen, generation, binding
+            )
+            setattr(pool, key, True)
+        pool.captured_extra = True
+        assert not await closed_question_context_input(
+            pool, '"relationship"', runtime, frozen, generation, binding
+        )
+        pool.captured_extra = False
+        for key, damaged in (
+            ("reserved_claim", None),
+            ("reserved_claim", uuid4()),
+            ("receiving_generation", uuid4()),
+            ("prompt_digest", b"x" * 32),
+            ("bundle_digest", b"x" * 32),
+            ("ended_receipt", None),
+        ):
+            original = captured[key]
+            captured[key] = damaged
+            assert not await closed_question_context_input(
+                pool, '"relationship"', runtime, frozen, generation, binding
+            )
+            captured[key] = original
+        assert await closed_question_context_input(
+            pool, '"relationship"', runtime, frozen, generation, binding
+        )
         for row, key, damaged in (
             (frozen, "exclusive_input", False),
             (frozen, "ended_receipt", None),
             (frozen, "context_bytes", 1),
             (frozen, "bundle_digest", b"x" * 32),
+            (captured, "reserved_claim", None),
+            (captured, "reserved_claim", uuid4()),
             (captured, "ended_receipt", None),
             (captured, "receiving_incarnation", uuid4()),
             (session, "completed_at", None),
