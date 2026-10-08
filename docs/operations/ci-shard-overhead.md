@@ -156,5 +156,12 @@ the literal broken recipe succeeded. The old image diagnostic's discarded
 stderr leaves its precise failure cause unknown. The current launcher's
 complete three-recipe validation and offline proof job stay intact. Manual
 image-size and offline-proof inputs are mutually exclusive; their original
-60-minute and 45-minute caps remain unchanged. Source preparation does not
-claim either image proof, trained-model execution or a wall-clock gain.
+60-minute and 45-minute caps remain unchanged. The source mechanism alone proves neither actual image result nor
+trained-model execution or a wall-clock gain; dated observations below credit
+only their actual bounded scope.
+
+## Source preparation readback (2026-10-09)
+
+Root-authenticated normal37799700172 at source9b3fa6dcb728a2c661854ae450d985af0143c4ef finished with all11 official XML artifacts and zero failures/errors. The actual PG17 bootstrap/ordinary-role/vector/commit/separate-readback node passed4.678s without skip. Manual image37800940231 at that source completed all four before/current normal and RouteA builds and bounded CPU/offline-input/runtime controls in1029.347s within1800, cleanup0. Historical1690 input bodies and the reversible representation adapter remain explicitly bound; the unsupported literal-old recipe is a separately retained compiler negative. These observations establish preparation, not trained-model/provider/launcher admission, timing gain or whole delivery.
+
+Following independent HIGH preparation review and root completion-scope approval, normal validated own archive automatically synchronized the five046–050 requirements and32 scenarios into testing. Complete public38-requirement/153-scenario bytes and all foreign native/tasks were preserved; baseline now has43 requirements/185 scenarios. No product, metric, default or watchdog changed in this native successor. Fresh final-head normal, independent/protected union and every original hard timing, ten-run and supported full worker/core obligation remain separately mandatory.
