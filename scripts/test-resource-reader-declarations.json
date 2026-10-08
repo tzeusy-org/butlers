@@ -79,7 +79,7 @@
         "tests/contracts/test_ci_test_targets.py": "d2987fd64f427d92089ea5b28c61750cf7348d53cbc3ca9b4e5f1f730eca734a",
         "tests/core/test_provider_allowance.py": "66eb7581cd5d64488330f0be6f0470b315d4d32cfc960173b3719b925c65df93",
         "tests/integration/test_filtered_event_buffer_jsonb_roundtrip.py": "ded278f9b2423ab5c16e20cacfbffd206f02287a5e28a400911c5516ab44be09",
-        "tests/testing/test_scoped_runner.py": "ef7413d66ec7a49609ccdf1eb1f2ae26763bfb0247a1044769003d0925bcb009",
+        "tests/testing/test_scoped_runner.py": "e36c31466ca53d30eb2ee3d90e8d98eaa066f13c3bc15df52e73727c2fd52dcc",
         "tests/testing/test_source_test_map.py": "24c29739e87a6845d72fd2ed7b32f744a4b6545ff0344a3a8a436dae8c1e3305",
         "tests/three_seams_helpers.py": "f57b7889f0e5c8835eb2fe1b9c6761ae8c21aa5ccd615260c4d8900895f3f1a4"
       },

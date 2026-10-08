@@ -453,6 +453,9 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(
     alias_repo = tmp_path / "alias-reader"
     alias_repo.mkdir()
     _git(alias_repo, "init", "-q")
+    # This fixture's real index-merge control must not rely on host Git identity.
+    _git(alias_repo, "config", "user.email", "tests@example.invalid")
+    _git(alias_repo, "config", "user.name", "Butlers test")
     alias = "tests/test_alias_reader.py"
     _write(
         alias_repo,
