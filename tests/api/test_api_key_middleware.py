@@ -97,6 +97,29 @@ async def test_header_cookie_and_csrf_precedence():
         return await authorize(**kwargs)
 
     service.authorize.side_effect = verify_unproven_principal
+    from butlers.api.owner_auth.context import CUSTODY_COMMAND_PREFIX, owner_custody_proof
+    from butlers.api.owner_auth.service import _digest
+
+    observed = []
+
+    @app.api_route(CUSTODY_COMMAND_PREFIX, methods=["GET", "POST"])
+    async def custody(request: Request):
+        proof = owner_custody_proof.get()
+        if proof is None:
+            observed.append(None)
+        else:
+            assert "session-sentinel" not in repr(proof)
+            observed.append(proof.sql_values())
+            assert set(proof.sql_values()) == {
+                "session_digest",
+                "csrf_digest",
+                "origin",
+                "rp_id",
+                "key_generation",
+            }
+        await request.body()
+        return {"command": "synthetic-only"}
+
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as client:
         assert (await client.get("/api/private")).status_code == 401
         assert in_http_request.get() is False
@@ -120,6 +143,50 @@ async def test_header_cookie_and_csrf_precedence():
         assert (
             await client.post("/api/private", headers={"X-API-Key": "synthetic-key"})
         ).status_code == 200
+        # Header-only authority remains valid on generic routes, but cannot
+        # bypass the command door's actual browser session/origin/CSRF proof.
+        for headers, status in (
+            ({"X-API-Key": "synthetic-key"}, 401),
+            ({"Cookie": COOKIE, "Origin": ORIGIN, "X-API-Key": "synthetic-key"}, 403),
+            (
+                {
+                    "Cookie": COOKIE,
+                    "Origin": "https://evil.example.test",
+                    "X-CSRF-Token": "csrf-sentinel",
+                    "X-API-Key": "synthetic-key",
+                },
+                403,
+            ),
+        ):
+            response = await client.post(CUSTODY_COMMAND_PREFIX, headers=headers)
+            assert response.status_code == status
+            assert observed == []
+            assert owner_custody_proof.get() is None
+        for method in (client.post, client.get):
+            response = await method(
+                CUSTODY_COMMAND_PREFIX,
+                headers={
+                    "Cookie": COOKIE,
+                    "Origin": ORIGIN,
+                    "X-CSRF-Token": "csrf-sentinel",
+                    "X-API-Key": "wrong",
+                },
+            )
+            assert response.status_code == 200
+            assert owner_custody_proof.get() is None
+        assert (
+            observed
+            == [
+                {
+                    "session_digest": _digest("session-sentinel"),
+                    "csrf_digest": _digest("csrf-sentinel"),
+                    "origin": ORIGIN,
+                    "rp_id": CONFIG.rp_id,
+                    "key_generation": CONFIG.key_generation,
+                }
+            ]
+            * 2
+        )
 
 
 async def test_closed_exemptions_and_exact_health_methods():

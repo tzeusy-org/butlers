@@ -39,6 +39,7 @@ import logging
 import os
 import uuid
 from collections.abc import Iterable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -341,7 +342,9 @@ async def create_google_account(
     granted_scopes = scopes or []
 
     async with pool.acquire() as conn:
-        async with conn.transaction():
+        from butlers.core.custody_bindings import native_google_companion_creation
+
+        async with native_google_companion_creation(pool, conn, email), conn.transaction():
             # Soft limit check.
             active_count = await _count_active_accounts(conn)
             if active_count >= _max_accounts():
@@ -728,7 +731,14 @@ async def disconnect_account(
         refresh_token = await _get_refresh_token(conn, entity_id)
 
     async with pool.acquire() as conn:
-        async with conn.transaction():
+        from butlers.core.custody_bindings import native_account_entity_mutation
+
+        boundary = (
+            native_account_entity_mutation(pool, conn, "google", account_id, entity_id)
+            if hard_delete
+            else nullcontext(conn)
+        )
+        async with boundary, conn.transaction():
             if hard_delete:
                 # Hard delete: remove the companion entity (CASCADE handles the rest).
                 await conn.execute(

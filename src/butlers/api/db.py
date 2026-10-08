@@ -59,6 +59,7 @@ class DatabaseManager:
         self._max_pool_size = env_max_pool_size if max_pool_size is None else max_pool_size
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
+        self._shared_db_name: str | None = None
         self._butler_modules: dict[str, frozenset[str]] = {}
         # The explicit target schema for each butler pool.  Query paths that
         # own per-butler tables must use this rather than falling through to
@@ -77,6 +78,65 @@ class DatabaseManager:
         # (conservative default — enforcement not yet confirmed) and may be
         # updated via set_role_enforcement_disabled() during startup.
         self._role_enforcement_disabled: bool = True
+        self._identity_writer_runtime: Any | None = None
+        self._shared_identity_writer_runtime: Any | None = None
+
+    async def start_identity_writer(self, db_name: str) -> None:
+        """Fixed Relationship API writer, using existing bootstrap/owning roles.
+
+        Ordinary API readers retain their existing pool policy. Only native
+        canonical mutations enter the existing Relationship SET ROLE on their
+        acquired connection. This allocation has zero operation/audience scope
+        and cannot act as another daemon, receiver or ingress source.
+        """
+        from butlers.core.custody_admission import CustodyProfile
+        from butlers.core.custody_bootstrap import CustodyRuntime
+        from butlers.core.custody_source import CustodyError, digest
+        from butlers.db import Database
+
+        if self._identity_writer_runtime is not None:
+            raise CustodyError("conflict")
+        if self.schema_for_butler("relationship") != "relationship":
+            raise CustodyError("refused")
+        database = Database(
+            db_name=db_name,
+            schema="relationship",
+            role="butler_relationship_rw",
+            host=self._host,
+            port=self._port,
+            user=self._user,
+            password=self._password,
+            ssl=self._ssl,
+            strict_role_enforcement=True,
+        )
+        runtime = CustodyRuntime(
+            database,
+            CustodyProfile(
+                "relationship",
+                "butler_relationship_rw",
+                ("domain_evidence",),
+                (),
+                (),
+                digest({"kind": "native-api-identity-writer.v1", "schema": "relationship"}),
+            ),
+            _api_writer_pool=self.pool("relationship"),
+        )
+        await runtime.start()
+        self._identity_writer_runtime = runtime
+        if self._shared_pool is not None:
+            # Fixed API startup owns BOTH actual pools before any request. The
+            # existing shared credential identity remains unchanged for reads;
+            # only companion hard-delete enters its zero-operation canonical
+            # writer. Different databases cannot lend an identity projection.
+            if self._shared_db_name != db_name:
+                raise CustodyError("unavailable")
+            shared_runtime = CustodyRuntime(
+                database,
+                runtime._profile,
+                _api_writer_pool=self._shared_pool,
+            )
+            await shared_runtime.start()
+            self._shared_identity_writer_runtime = shared_runtime
 
     async def _create_pool(
         self,
@@ -176,6 +236,11 @@ class DatabaseManager:
 
     async def set_credential_shared_pool(self, db_name: str, db_schema: str | None = None) -> None:
         """Set the dedicated shared credential DB pool."""
+        if self._shared_identity_writer_runtime is not None:
+            # A live enrolled pool cannot be replaced under its callbacks.
+            from butlers.core.custody_source import CustodyError
+
+            raise CustodyError("conflict")
         if self._shared_pool is not None:
             await self._shared_pool.close()
             self._shared_pool = None
@@ -184,6 +249,7 @@ class DatabaseManager:
             log_name="shared credentials",
             schema=db_schema,
         )
+        self._shared_db_name = db_name
         logger.info("Configured shared credential pool (db=%s, schema=%s)", db_name, db_schema)
 
     def credential_shared_pool(self) -> asyncpg.Pool:
@@ -415,17 +481,35 @@ class DatabaseManager:
 
     async def close(self) -> None:
         """Close all connection pools."""
+        runtimes = (self._identity_writer_runtime, self._shared_identity_writer_runtime)
+        self._identity_writer_runtime = self._shared_identity_writer_runtime = None
+        for runtime in runtimes:
+            if runtime is not None:
+                try:
+                    await runtime.stop()
+                except Exception:
+                    # Allocation remains refusal-only through actual close.
+                    logger.warning("Identity writer shutdown acknowledgement unavailable")
         if self._shared_pool is not None:
             try:
                 await self._shared_pool.close()
+                from butlers.core.custody_bootstrap import release_closed_pool_allocations
+
+                if type(self._shared_pool) is asyncpg.Pool:
+                    release_closed_pool_allocations(self._shared_pool)
                 logger.info("Closed shared credential pool")
             except Exception:
                 logger.warning("Error closing shared credential pool", exc_info=True)
             self._shared_pool = None
+            self._shared_db_name = None
 
         for name, p in self._pools.items():
             try:
                 await p.close()
+                from butlers.core.custody_bootstrap import release_closed_pool_allocations
+
+                if type(p) is asyncpg.Pool:
+                    release_closed_pool_allocations(p)
                 logger.info("Closed pool for butler: %s", name)
             except Exception:
                 logger.warning("Error closing pool for butler: %s", name, exc_info=True)

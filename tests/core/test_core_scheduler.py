@@ -336,6 +336,9 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
         coro.close()
 
     lifecycle_patches = (
+        # This test intentionally mocks daemon migration/connection startup;
+        # its real PG purpose is legacy public audit identity, not custody.
+        patch("butlers.core.custody_lifecycle.start_daemon_custody", new_callable=AsyncMock),
         patch("butlers.lifecycle.init_telemetry"),
         patch("butlers.lifecycle.init_metrics"),
         patch("butlers.lifecycle.validate_credentials"),

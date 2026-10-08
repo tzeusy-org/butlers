@@ -1,0 +1,1112 @@
+{
+  "version": 1,
+  "core_revision": "core_260",
+  "functions": [
+    {
+      "signature": "custody_admission.accepted_birth()",
+      "body_sha256": "38d8d17a62e87404c7341766083b1d2a94c6ae5d79ac1268d4b76e4e88de6e09",
+      "argument_names": [],
+      "return_type": "trigger",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.accepted_projection(jsonb)",
+      "body_sha256": "8da382f124e656305eba582967c23911e1ce40d31efa058cc680907905a8f8a9",
+      "argument_names": [
+        "projection"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.accepted_work(text,jsonb)",
+      "body_sha256": "69a92bf40d1334bbf26008bd8a2b6d07eadb1ff4b65f91c55be80bee3f902565",
+      "argument_names": [
+        "action",
+        "payload"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.admit_write(uuid,text,jsonb)",
+      "body_sha256": "23b68673c0fb7bc6d9f095a46d3f24a52351c5794ebc693f41221306f96df7d8",
+      "argument_names": [
+        "source_ref",
+        "operation",
+        "target_set"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.anchor()",
+      "body_sha256": "212158a09d3cf717a79f1a05c9c78b8329e096f3b6f6486def71b5f23aa2609c",
+      "argument_names": [],
+      "return_type": "uuid",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.binding_digest(jsonb)",
+      "body_sha256": "fa74f812668d80cf7f0144e5aaa4704d0104794f372e82482b788a3d9f9482c8",
+      "argument_names": [
+        "value"
+      ],
+      "return_type": "text",
+      "language": "sql",
+      "security_definer": false,
+      "strict": true,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "i",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.browser_check(jsonb)",
+      "body_sha256": "ebbe1f4041f0b2f59cc56577bb23c3d6f44488b9622c54aeffd9ba2552ec0aaa",
+      "argument_names": [
+        "proof"
+      ],
+      "return_type": "timestamp with time zone",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.caller_role()",
+      "body_sha256": "a9a2a2d52a6d325dbe8eeece5d6f4f69ca980eb6352051db4174bc9553c0aa4b",
+      "argument_names": [],
+      "return_type": "oid",
+      "language": "sql",
+      "security_definer": false,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "s",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.canonical_json(jsonb)",
+      "body_sha256": "2d3ea635c902a73720a3b8d44ac31fe2b680e965413d549958c4586ded6df064",
+      "argument_names": [
+        "value"
+      ],
+      "return_type": "text",
+      "language": "sql",
+      "security_definer": false,
+      "strict": true,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "i",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.canonical_json_at_depth(jsonb,integer)",
+      "body_sha256": "59f060890c808e2d73fd6890e36ef0ec5da848c5cf0401a24dc762a2abc2e83a",
+      "argument_names": [
+        "value",
+        "depth"
+      ],
+      "return_type": "text",
+      "language": "plpgsql",
+      "security_definer": false,
+      "strict": true,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "i",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.closed(jsonb,text[],text[])",
+      "body_sha256": "ceefff30941746471fbf42a8d081ecc5867cec9c9a18a338d7ca4030afbc7d14",
+      "argument_names": [
+        "value",
+        "required",
+        "optional"
+      ],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": false,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "i",
+      "defaults": "ARRAY[]::text[]",
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.command_current(uuid)",
+      "body_sha256": "a56fd34c691a0e658d659437b7fef4aff30959efbbfe21c907aed9c713532a9e",
+      "argument_names": [
+        "command_id"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.command_source_current(uuid,jsonb)",
+      "body_sha256": "0c94a4dc37ca696133146b6d47b087bc7b6fe3c75fdf973ead5693650197ab76",
+      "argument_names": [
+        "source_ref",
+        "operation"
+      ],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.commit_command(uuid,uuid)",
+      "body_sha256": "c7719aeae614628bf01b162054eefe74a1afe8f816249ba9717ae0736b2f571e",
+      "argument_names": [
+        "command_id",
+        "call_ref"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.current_control()",
+      "body_sha256": "46cff46e6e5b1915ac9ad25ef4675104e27989c4fa60092cc5457d3d55f577b0",
+      "argument_names": [],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.endpoint_lock_prepare(uuid,jsonb)",
+      "body_sha256": "51a6857e90de11e8da28d01444e30d4930292b8025babe327537f90943b24b90",
+      "argument_names": [
+        "source_ref",
+        "selection"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.finalize_interface()",
+      "body_sha256": "df1665106fb0df91a6606163dccddf7283a3d7d4e49c4ac1f82762b140e317e7",
+      "argument_names": [],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.host_enroll(jsonb)",
+      "body_sha256": "ccede15e7b40543f95192bce800b6d475ab95aa1f98d98b35fcac54617353f1b",
+      "argument_names": [
+        "manifest"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.host_only()",
+      "body_sha256": "6b97ce348a5eff23b49b939813373debd1d3bfbc484b349bb156c3a1cf700531",
+      "argument_names": [],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.host_revoke(uuid,bigint)",
+      "body_sha256": "3696f6212c70fa4a64f48b0270d5af54fb971e5d907732222796b14d9c0a62f5",
+      "argument_names": [
+        "process_id",
+        "expected_control_epoch"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.host_revoke_control(bigint)",
+      "body_sha256": "7071d6fb4c8ef1afb4529540899b7996076187bfc1cd22c706c8e93dce6885a0",
+      "argument_names": [
+        "expected_control_epoch"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.install_accepted_birth()",
+      "body_sha256": "695ae01eee8bd564d075ac8f58b3b5237f295441aaaff36d7d5d39e2adf36bfc",
+      "argument_names": [],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.install_dashboard_interface()",
+      "body_sha256": "0c0c3f6d6ef4a1386e8272ccd6e2475cebe65a779b3b1ea456e9ab2c14e373d2",
+      "argument_names": [],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.install_interface()",
+      "body_sha256": "5eaa4eb035a5650ef9638ff5cf328068c0a13edafb22d553c6706b18f7b606b3",
+      "argument_names": [],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.lock_targets(jsonb,uuid)",
+      "body_sha256": "61fd2bcdfa05f430bc3d5e3b7cf82a1dfee6420b5b9c5438f1f66a02852c69bc",
+      "argument_names": [
+        "selection",
+        "issuer"
+      ],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": "NULL::uuid",
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.mark_provider_start(uuid,uuid,text)",
+      "body_sha256": "16bd95daa84d9da16c2fa8cfce841c6765da5636423d826859fb2bec55c4514b",
+      "argument_names": [
+        "source_ref",
+        "call_ref",
+        "operation_digest"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.prepare(text,text,jsonb,jsonb,uuid)",
+      "body_sha256": "b308d2f33c3b4120914e490ca011aa8cd372dd5955639fe6cd4311481f3450ed",
+      "argument_names": [
+        "kind",
+        "operation",
+        "proof",
+        "selection",
+        "source_ref"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": "NULL::uuid",
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.process_current(uuid)",
+      "body_sha256": "b2ae5c575099eb6da69387c5e85fbd711d3766efa25aa6190c2bcf70fb5293f1",
+      "argument_names": [
+        "process"
+      ],
+      "return_type": "boolean",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.protocol(text,jsonb)",
+      "body_sha256": "6dd35d1d9e6e3711bb75d000abd3daee1cf0361a396dc89760b9f3778ae26b4d",
+      "argument_names": [
+        "action",
+        "p"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.prove_interface()",
+      "body_sha256": "15206be5f82d49e91d2fa1b9e2f6bccc8f21238aa8b6930b06ae30ed6a1e7c18",
+      "argument_names": [],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.require_origin_current(uuid)",
+      "body_sha256": "4dee3dc7a4c315c4518971a833967b7f3e70534df94588a6c38b9e7e790b5ef8",
+      "argument_names": [
+        "expected_source_ref"
+      ],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.require_verified_call(uuid)",
+      "body_sha256": "02d854a5336778b48cff406e147409b776dd1fc1f6a15f3dcf3c9b5b191e016d",
+      "argument_names": [
+        "call_ref"
+      ],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.rollback_interface()",
+      "body_sha256": "cbb59a4043684970c4423bc77136c600a35d3baf78d89f664bcdec8c6731779f",
+      "argument_names": [],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.schema_identity()",
+      "body_sha256": "20d3fe5572bdaa78cd19fc2f3b0263274b553bbace285500e8243646be85757c",
+      "argument_names": [],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "s",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.security_answer_prepare(uuid,uuid,text,text)",
+      "body_sha256": "078d6d7bd01083b8c3c8f17d468988f692ffc762159350a67c8ad01041529de4",
+      "argument_names": [
+        "question_id",
+        "callback_source_ref",
+        "answer",
+        "token_digest"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.selection_valid(jsonb)",
+      "body_sha256": "719d6f6b69f6b092d1140304d3d3fff5713e155682982945c7a6e3772eb848d3",
+      "argument_names": [
+        "selection"
+      ],
+      "return_type": "void",
+      "language": "plpgsql",
+      "security_definer": false,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "i",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "custody_admission.writer()",
+      "body_sha256": "f075c2efb5b17591671634eab73d17a5bed485d44c4de9b192eacf92e718c5d0",
+      "argument_names": [],
+      "return_type": "uuid",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "dashboard_auth.custody_check_locked(uuid,text)",
+      "body_sha256": "cb8c4d22bbd660812985030be6c18379b3e2c69196605f67b63c60fbfedca9ea",
+      "argument_names": [
+        "command_id",
+        "expected_operation_digest"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "dashboard_auth.custody_host_prepare(text,jsonb)",
+      "body_sha256": "f4ffe6b4651690c2fd0df908c249463601b0c2ebb683a0c1ecfd25af98de8411",
+      "argument_names": [
+        "operation",
+        "exact_selection"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "dashboard_auth.custody_prepare(text,jsonb,jsonb)",
+      "body_sha256": "b262b4b27f6a28c6649b68127b5f1f1fcc1e7f846834650f86882d13d5fea773",
+      "argument_names": [
+        "operation",
+        "proof",
+        "selection"
+      ],
+      "return_type": "jsonb",
+      "language": "plpgsql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_admit_write(uuid,text,jsonb)",
+      "body_sha256": "7a3a3296c7664569e63281532398f6be93585cd2dd5e04b077984c5b902aa743",
+      "argument_names": [
+        "source_ref",
+        "operation",
+        "target_set"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_anchor_begin()",
+      "body_sha256": "50543e9681d9a90fdc20bcb9de2255dad6ac99388aba8ea0978d73eb46c95c8b",
+      "argument_names": [],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_anchor_renew()",
+      "body_sha256": "be3aa8da469d2756cd0c5a10f86574b7f389fa4723aec5936776e93cfe3bcd08",
+      "argument_names": [],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_bind_connection(text)",
+      "body_sha256": "164e18fa43f0b0ae2f0a81e66f84eff435346e197c456ac77c0810d7a5d5484a",
+      "argument_names": [
+        "writer_nonce"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_challenge(uuid,text)",
+      "body_sha256": "6eb89527234ff89c7cc05033b73a810d755f2ebe5096e04722bce8d1b03677b9",
+      "argument_names": [
+        "call_ref",
+        "operation_digest"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_commit_command(uuid,uuid)",
+      "body_sha256": "c00312cc45ad566046acf2fb884893ec77e2ad60148848755bc9b9f5f063046c",
+      "argument_names": [
+        "command_id",
+        "call_ref"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_connection_begin()",
+      "body_sha256": "e2cfea7ad97551665cf73a43f6864a218f64b8c531e45e0779150142adb522f5",
+      "argument_names": [],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_connection_finish(text)",
+      "body_sha256": "4e0842b10082ff6d3e360bb7318c3f954555dc71ee05ed49286c7b102bbba0b1",
+      "argument_names": [
+        "writer_nonce"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_connection_unbind(bigint)",
+      "body_sha256": "2d66700d84a9c6cb1916fd8e5ba4d3def7e99a5fb453a1e7747ff897c9226a5a",
+      "argument_names": [
+        "acquisition_generation"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_mark_provider_start(uuid,uuid,text)",
+      "body_sha256": "5abfa2f6d1dc1684beb1501e0e3b1fab4f047323119c4e05b3cfb6cac69080b2",
+      "argument_names": [
+        "source_ref",
+        "call_ref",
+        "operation_digest"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_mint(uuid,jsonb,text)",
+      "body_sha256": "c9cc8df52b41a5b14201b84b3a68b7ea1a8548ded5d9b1e70244957e08a7bc50",
+      "argument_names": [
+        "source_ref",
+        "operation",
+        "destination_actor"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_respond(uuid,text)",
+      "body_sha256": "7293e1a4c243a39abf7801e5ccaf64ebeae074b6b2d5b9c66f030e83f3abb511",
+      "argument_names": [
+        "call_ref",
+        "challenge_ref"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_result_read(uuid,uuid)",
+      "body_sha256": "11efa619452bf41ea0a212a12631c98172cdeeb1b9efd877afdd7fef04d1d3c6",
+      "argument_names": [
+        "command_id",
+        "call_ref"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_source_register(text,jsonb)",
+      "body_sha256": "ddbfd4759779757767b081120db93251f8df36c1e5701ae98e4e64958bd1b5b0",
+      "argument_names": [
+        "source_family",
+        "projection"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    },
+    {
+      "signature": "public.custody_verify(uuid,text,text)",
+      "body_sha256": "25f9611a188bdfdbd3c5d48f173ae3803eaf1fc823f3171a5b8ee3f0ce940871",
+      "argument_names": [
+        "call_ref",
+        "challenge_ref",
+        "operation_digest"
+      ],
+      "return_type": "jsonb",
+      "language": "sql",
+      "security_definer": true,
+      "strict": false,
+      "leakproof": false,
+      "parallel": "u",
+      "returns_set": false,
+      "argument_modes": null,
+      "volatility": "v",
+      "defaults": null,
+      "configuration": [
+        "search_path=pg_catalog, pg_temp"
+      ]
+    }
+  ]
+}

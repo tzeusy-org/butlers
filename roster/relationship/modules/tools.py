@@ -198,8 +198,16 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             raise ValueError("invalid channel identifier")
         from dataclasses import asdict
 
+        from butlers.core.custody_bindings import owning_binding_publisher
         from butlers.identity import resolve_contacts_by_channel_bulk
 
+        if not channel_values:
+            return {}  # Empty read is neither currentness nor a source grant.
+        publisher = owning_binding_publisher(module._get_pool())
+        if publisher is not None:
+            return await publisher.observe_channels(
+                channel_type, list(dict.fromkeys(channel_values))
+            )
         pairs = [(channel_type, value) for value in dict.fromkeys(channel_values)]
         resolved = await resolve_contacts_by_channel_bulk(
             module._get_pool(), pairs, raise_on_error=True
@@ -224,8 +232,14 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         Unsupported channels and unavailable writes return recorded=false;
         callers preserve ingress and its durable temporary-entity reservation.
         """
+        from butlers.core.custody_bindings import native_channel_mutation
+
         pool = module._get_pool()
-        async with pool.acquire() as conn, conn.transaction():
+        async with (
+            pool.acquire() as conn,
+            native_channel_mutation(pool, conn, [entity_id]),
+            conn.transaction(),
+        ):
             row = await conn.fetchrow(
                 "SELECT metadata FROM public.entities WHERE id=$1 FOR KEY SHARE",
                 entity_id,

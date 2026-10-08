@@ -607,6 +607,12 @@ class Database:
         """Close the connection pool."""
         if self.pool:
             await self.pool.close()
+            from butlers.core.custody_bootstrap import release_closed_pool_allocations
+
+            # Genuine native pools retain refusal-only custody callbacks until
+            # acknowledged closure. Transport doubles provide no such proof.
+            if type(self.pool) is asyncpg.Pool:
+                release_closed_pool_allocations(self.pool)
             self.pool = None
             logger.info("Connection pool closed for: %s", self.db_name)
 

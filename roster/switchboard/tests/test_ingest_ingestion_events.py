@@ -541,7 +541,7 @@ class TestEnsurePartitionOutsideTransaction:
     the transaction block so that DDL commits immediately and independently.
     """
 
-    async def test_ensure_partition_called_via_pool_execute(self) -> None:
+    async def test_ensure_partition_called_via_pool_execute(self, monkeypatch) -> None:
         """ensure_partition must be called on pool (auto-commit), not conn (inside tx)."""
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="90001")
@@ -559,6 +559,94 @@ class TestEnsurePartitionOutsideTransaction:
             "ensure_partition must be called exactly once via pool.execute() "
             "(outside the advisory-lock transaction)"
         )
+
+        # REQ-endpoint-custody-holds-002: native hook reachability/ordering
+        # only. No SQL, enrolled source, role or durable trigger credit comes
+        # from these explicit transport doubles.
+        from contextlib import asynccontextmanager
+
+        from butlers.core.custody_admission import CustodyAdmission, CustodyProfile
+        from butlers.core.custody_producer import (
+            CustodyAcceptedProducer,
+            install_accepted_producer,
+            remove_accepted_producer,
+        )
+        from butlers.core.custody_source import CustodyError
+
+        for fail_event in (False, True):
+            pool = _FakePool()
+            events = []
+            admission = CustodyAdmission(
+                CustodyProfile(
+                    "switchboard",
+                    "butler_switchboard_rw",
+                    ("accepted_ingress",),
+                    ("hold",),
+                    ("switchboard",),
+                    "a" * 64,
+                ),
+                pool,
+                None,
+                host_enroll=None,
+            )
+            admission._ready = True  # Unit allocation, not real enrollment.
+
+            @asynccontextmanager
+            async def bound_writer(actual):
+                assert actual is pool.conn
+                if not admission._ready:
+                    raise CustodyError("unavailable")
+                assert len(pool.pool_execute_calls) == 1  # Partition committed first.
+                assert actual.execute_calls == []  # BEFORE advisory/domain SQL.
+                events.append("bound")
+                try:
+                    yield None
+                except BaseException:
+                    events.append("rollback")
+                    raise
+                else:
+                    events.append("commit")
+                finally:
+                    events.append("unbind")
+
+            monkeypatch.setattr(admission, "bound_writer", bound_writer)
+            execute = pool.conn.execute
+
+            async def event_write(sql, *args):
+                assert events == ["bound"]
+                if fail_event and "INSERT INTO public.ingestion_events" in sql:
+                    raise RuntimeError("synthetic event failure")
+                return await execute(sql, *args)
+
+            monkeypatch.setattr(pool.conn, "execute", event_write)
+            producer = CustodyAcceptedProducer(admission, pool)
+            install_accepted_producer(pool, producer)
+            try:
+                if fail_event:
+                    with pytest.raises(RuntimeError, match="synthetic event failure"):
+                        await ingest_v1(
+                            pool, envelope, policy_evaluator=None, enable_thread_affinity=False
+                        )
+                    assert events == ["bound", "rollback", "unbind"]
+                else:
+                    result = await ingest_v1(
+                        pool, envelope, policy_evaluator=None, enable_thread_affinity=False
+                    )
+                    assert not result.duplicate
+                    assert pool.conn.has_message_inbox_insert()
+                    assert pool.conn.has_ingestion_events_insert()
+                    assert events == ["bound", "commit", "unbind"]
+                # Shutdown retains the allocation while refusing new writers.
+                # It cannot temporarily become the legacy unguarded branch.
+                admission._ready = False
+                previous = list(pool.conn.execute_calls)
+                with pytest.raises(RuntimeError, match="unavailable"):
+                    await ingest_v1(
+                        pool, envelope, policy_evaluator=None, enable_thread_affinity=False
+                    )
+                assert pool.conn.execute_calls == previous
+            finally:
+                remove_accepted_producer(pool, producer)
 
     async def test_ensure_partition_not_in_conn_execute_calls(self) -> None:
         """ensure_partition must NOT appear in conn.execute_calls (inside-tx path)."""

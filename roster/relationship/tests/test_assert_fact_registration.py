@@ -71,8 +71,8 @@ async def test_assert_fact_resolvable_via_get_tool():
     assert callable(getattr(tool, "fn", None))
 
 
-async def test_approved_groups_register_expected_relationship_surface():
-    """Eight approved groups expose 60 tools plus the mandatory fact writer."""
+async def test_approved_groups_register_expected_relationship_surface(monkeypatch):
+    """Approved groups retain the fact writer and the owning channel resolver."""
     names = await _register(_PRODUCTION_GROUPS)
     assert len(names - {"identity_resolve_channels", "identity_assert_sender_channel"}) == 61
     assert {"identity_resolve_channels", "identity_assert_sender_channel"} <= names
@@ -93,6 +93,100 @@ async def test_approved_groups_register_expected_relationship_surface():
         "entity_update",
         "relationship_record_coverage",
     }.isdisjoint(names)
+
+    # REQ-endpoint-custody-holds-002: actual registered callback selection, not
+    # SQL/source/currentness evidence. Both external reads are explicit doubles.
+    from types import SimpleNamespace
+
+    from fastmcp import Client
+
+    import butlers.identity as identity_module
+    from butlers.core.custody_admission import CustodyAdmission, CustodyProfile
+    from butlers.core.custody_bindings import (
+        CustodyChannelBindings,
+        install_binding_publisher,
+        remove_binding_publisher,
+    )
+    from butlers.identity import ResolvedContact
+
+    pool = object()
+    entity_id = uuid.uuid4()
+    events = []
+    payload = {
+        "name": "synthetic",
+        "roles": ["owner"],
+        "entity_id": str(entity_id),
+        "is_unidentified": False,
+    }
+    admission = CustodyAdmission(
+        CustodyProfile(
+            "relationship",
+            "butler_relationship_rw",
+            ("domain_evidence",),
+            ("write",),
+            ("relationship",),
+            "a" * 64,
+        ),
+        pool,
+        None,
+        host_enroll=None,
+    )
+    admission._ready = True  # SOFTWARE-only constructor allocation.
+    publisher = CustodyChannelBindings(admission)
+
+    async def observe(channel_type, values):
+        events.append(("publisher", channel_type, values))
+        return {value: dict(payload) for value in values}
+
+    async def legacy(actual, pairs, *, raise_on_error):
+        assert actual is pool and raise_on_error
+        events.append(("legacy", pairs))
+        return {pair: ResolvedContact("synthetic", ["owner"], entity_id) for pair in pairs}
+
+    monkeypatch.setattr(publisher, "observe_channels", observe)
+    monkeypatch.setattr(identity_module, "resolve_contacts_by_channel_bulk", legacy)
+    mcp = FastMCP("owning-resolver-callback-control")
+    mod = RelationshipModule()
+    await mod.register_tools(
+        mcp,
+        RelationshipModuleConfig(groups=_PRODUCTION_GROUPS),
+        db=SimpleNamespace(pool=pool),
+        butler_name="relationship",
+    )
+    install_binding_publisher(pool, publisher)
+    try:
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "identity_resolve_channels",
+                {
+                    "channel_type": "email",
+                    "channel_values": ["synthetic@example.test"],
+                },
+            )
+            assert result.structured_content == {"synthetic@example.test": payload}
+            assert events == [("publisher", "email", ["synthetic@example.test"])]
+            events.clear()
+            empty = await client.call_tool(
+                "identity_resolve_channels",
+                {
+                    "channel_type": "email",
+                    "channel_values": [],
+                },
+            )
+            assert empty.structured_content == {} and events == []
+    finally:
+        remove_binding_publisher(pool, publisher)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "identity_resolve_channels",
+            {
+                "channel_type": "email",
+                "channel_values": ["synthetic@example.test"],
+            },
+        )
+    assert result.structured_content == {"synthetic@example.test": payload}
+    assert events == [("legacy", [("email", "synthetic@example.test")])]
+    assert set(payload) == {"name", "roles", "entity_id", "is_unidentified"}
 
 
 async def test_assert_fact_closure_invokes_library_writer(monkeypatch):

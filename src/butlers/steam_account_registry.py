@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -579,7 +580,14 @@ async def disconnect_account(
         If the account does not exist.
     """
     async with pool.acquire() as conn:
-        async with conn.transaction():
+        from butlers.core.custody_bindings import native_account_entity_mutation
+
+        boundary = (
+            native_account_entity_mutation(pool, conn, "steam", account_id)
+            if hard_delete
+            else nullcontext(conn)
+        )
+        async with boundary, conn.transaction():
             account_row = await conn.fetchrow(
                 """
                 SELECT id, entity_id, is_primary, status

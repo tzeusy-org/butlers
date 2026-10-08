@@ -15,6 +15,7 @@ import click
 
 from butlers.api.owner_auth.host_cli import auth as owner_auth_commands
 from butlers.config import ConfigError, load_config
+from butlers.core.custody_host_cli import custody as custody_host_commands
 from butlers.db import is_db_unreachable
 
 logger = logging.getLogger(__name__)
@@ -227,17 +228,10 @@ schema = "{name}"
 )
 def dashboard(host: str, port: int) -> None:
     """Start the Butlers dashboard web UI."""
-    import uvicorn
+    from butlers.core.custody_api_parent import run_dashboard_parent
 
     click.echo(f"Starting Butlers dashboard on {host}:{port}")
-    uvicorn.run(
-        "butlers.api.app:create_app",
-        host=host,
-        port=port,
-        factory=True,
-        proxy_headers=False,
-        access_log=False,
-    )
+    raise click.exceptions.Exit(asyncio.run(run_dashboard_parent(host, port)))
 
 
 @cli.command()
@@ -789,3 +783,5 @@ async def _start_single(config_path: Path) -> None:
 # Host-only commands are deliberately absent from the dashboard HTTP router.
 
 cli.add_command(owner_auth_commands)
+
+cli.add_command(custody_host_commands)

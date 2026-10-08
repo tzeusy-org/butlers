@@ -280,6 +280,10 @@ class ButlerDaemon:
         self._approval_delivery_runtime: Any | None = None
         self._approval_delivery_task: asyncio.Task | None = None
         self._approval_delivery_stop: asyncio.Event | None = None
+        # Core-owned private custody anchor/profile; never supplied by a model
+        # or inherited from the request-admission attribution context.
+        self._custody_runtime: Any | None = None
+        self._custody_mcp_service: Any | None = None
         self.blob_store: S3BlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
@@ -466,7 +470,18 @@ class ButlerDaemon:
         """
         from butlers.lifecycle import run_startup
 
-        await run_startup(self)
+        try:
+            await run_startup(self)
+        except BaseException:
+            # A later startup failure must not leave its custody anchor renewing
+            # a process that never reached serving. Preserve the original error.
+            from butlers.core.custody_lifecycle import stop_daemon_custody
+
+            try:
+                await stop_daemon_custody(self)
+            except BaseException:
+                logger.warning("Custody startup cleanup unavailable")
+            raise
 
     def _wire_pipelines(self, pool: Any) -> None:
         """Attach a MessagePipeline to modules that support set_pipeline().
@@ -808,7 +823,9 @@ class ButlerDaemon:
             butler_name=butler_name,
             approval_push_runtime=approval_push_runtime,
         )
-        return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
+        from butlers.core.custody_mcp import CustodyJsonRpcGuard
+
+        return _McpSseDisconnectGuard(CustodyJsonRpcGuard(guarded_app), butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.
@@ -1418,6 +1435,9 @@ class ButlerDaemon:
             is_messenger=butler_name == "messenger",
             route_metrics=_route_metrics,
         )
+        custody_runtime = getattr(self, "_custody_runtime", None)
+        if custody_runtime is not None:
+            self._custody_mcp_service = custody_runtime.attach_mcp(self.mcp)
         register_all_core_tools(ctx, mcp, _core_tool)
         direct_names = mcp._registered_tool_names - _effective_core_names
         self._declared_tool_names.update(_declared_core_names | direct_names)

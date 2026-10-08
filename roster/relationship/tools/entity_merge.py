@@ -32,6 +32,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from butlers.core import entity_graph_edges
+from butlers.core.custody_native import native_channel_mutation
 from butlers.entity_rebind import ENTITY_REBOUND_EVENT_TYPE, rebind_entity_references
 from butlers.fleet_events import publish_fleet_event
 from butlers.tools.relationship.fact_temporal import OCCURRENCE_COLLISION, temporal_bearing_sql
@@ -254,7 +255,10 @@ async def merge_entity_pair(
 
     rebind_id = uuid4()
     receipt_rows: list[Mapping[str, Any]] = []
-    async with pool.acquire() as conn:
+    async with (
+        pool.acquire() as conn,
+        native_channel_mutation(pool, conn, [source_entity_id, target_entity_id]),
+    ):
         async with conn.transaction():
             lock_rows = await conn.fetch(
                 """

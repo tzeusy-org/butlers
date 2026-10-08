@@ -53,16 +53,38 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     preflight_runtime_attention_downgrade(op, context)
+    # Both tables are database-global. A previous schema-scoped downgrade
+    # may already have removed either lane column. Lock before testing live
+    # column presence/evidence so no concurrent writer can commit a lane
+    # between the refusal check and the following DDL. Missing base tables
+    # remain an error; only genuinely absent own columns are a replay no-op.
     op.execute(
         """
         DO $$
         BEGIN
+            LOCK TABLE public.model_dispatch_attempts, public.token_usage_ledger
+                IN ACCESS EXCLUSIVE MODE;
             IF EXISTS (
-                SELECT 1 FROM public.model_dispatch_attempts WHERE purpose_lane IS NOT NULL
-            ) OR EXISTS (
-                SELECT 1 FROM public.token_usage_ledger WHERE purpose_lane IS NOT NULL
+                SELECT 1 FROM pg_catalog.pg_attribute
+                 WHERE attrelid = 'public.model_dispatch_attempts'::regclass
+                   AND attname = 'purpose_lane' AND NOT attisdropped
             ) THEN
-                RAISE EXCEPTION 'cannot downgrade core_238 while purpose-lane evidence exists';
+                IF EXISTS (
+                    SELECT 1 FROM public.model_dispatch_attempts WHERE purpose_lane IS NOT NULL
+                ) THEN
+                    RAISE EXCEPTION 'cannot downgrade core_238 while purpose-lane evidence exists';
+                END IF;
+            END IF;
+            IF EXISTS (
+                SELECT 1 FROM pg_catalog.pg_attribute
+                 WHERE attrelid = 'public.token_usage_ledger'::regclass
+                   AND attname = 'purpose_lane' AND NOT attisdropped
+            ) THEN
+                IF EXISTS (
+                    SELECT 1 FROM public.token_usage_ledger WHERE purpose_lane IS NOT NULL
+                ) THEN
+                    RAISE EXCEPTION 'cannot downgrade core_238 while purpose-lane evidence exists';
+                END IF;
             END IF;
         END
         $$

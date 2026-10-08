@@ -84,6 +84,7 @@ tests/cli/test_cli_port_conflicts.py
 tests/cli/test_cli_port_retry.py
 tests/config/test_init_db_admin_function_guard_lists.py
 tests/config/test_migration_chain_head.py
+tests/config/test_migration_preflight.py
 tests/config/test_roster_contacts_rollout.py
 tests/config/test_spotify_credentials.py
 tests/connectors/test_bridge_manager.py
@@ -135,6 +136,7 @@ tests/core/test_calendar_provenance.py
 tests/core/test_commitments.py
 tests/core/test_connector_liveness.py
 tests/core/test_core_spawner.py
+tests/core/test_custody_source.py
 tests/core/test_deploy.py
 tests/core/test_failover_classifier.py
 tests/core/test_identity.py

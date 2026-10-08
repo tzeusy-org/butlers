@@ -1,4 +1,4 @@
-"""Own the process-local state installed by mocked daemon lifecycles."""
+"""Restore fact registry; custody infrastructure fixture is root-registered."""
 
 from __future__ import annotations
 

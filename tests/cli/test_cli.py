@@ -315,3 +315,133 @@ class TestListCommandStatus:
         assert result3.exit_code == 0
         assert "running" in result3.output.lower()
         assert "stopped" in result3.output.lower()
+
+
+class TestCustodyHostCommand:
+    def test_closed_selection_recovery_locator_and_cli_privacy(self, runner, tmp_path, monkeypatch):
+        """CLI/software controls only; no host/MCP/SQL authorization evidence."""
+        import uuid
+
+        from butlers.core import custody_host_cli as module
+        from butlers.core.custody_source import CustodyError
+
+        identifier = str(uuid.uuid4())
+        path = tmp_path / "selection.json"
+        selection = {"target_set": [], "target_set_version": 1}
+        path.write_text('{"target_set":[],"target_set_version":1}')
+        assert module.read_selection(path) == selection
+        import os
+
+        symlink = tmp_path / "linked-selection"
+        symlink.symlink_to(path)
+        fifo = tmp_path / "selection-fifo"
+        os.mkfifo(fifo)
+        for nonregular in (symlink, fifo):
+            with pytest.raises(CustodyError, match="invalid"):
+                module.read_selection(nonregular)
+        path.write_bytes(path.read_text().encode("utf-16"))
+        with pytest.raises(CustodyError, match="invalid"):
+            module.read_selection(path)
+
+        for body in (
+            '{"target_set":[],"target_set":[],"target_set_version":1}',
+            '{"target_set_version":1.0}',
+            '{"target_set":[],"target_set_version":true}',
+            '{"target_set":[],"target_set_version":1,"actor":"owner"}',
+            "[]",
+            '"caller-principal"',
+            " " * 8193,
+        ):
+            path.write_text(body)
+            with pytest.raises(CustodyError, match="invalid"):
+                module.read_selection(path)
+        path.write_text('{"target_set":[],"target_set_version":1}')
+        config = tmp_path / "switchboard"
+        config.mkdir()
+        calls = []
+        outcome = ["committed"]
+
+        async def execute(config_path, operation, selected, *, on_prepared=None):
+            calls.append((config_path, operation, selected))
+            on_prepared(identifier)
+            if outcome[0] == "unknown":
+                raise CustodyError("unknown")
+            return {
+                "status": "committed",
+                "command_id": identifier,
+                "private_field": "never-render",
+            }
+
+        monkeypatch.setattr(module, "run_host_custody", execute)
+        result = runner.invoke(
+            cli,
+            [
+                "custody",
+                "control",
+                "--config",
+                str(config),
+                "--operation",
+                "hold",
+                "--selection",
+                str(path),
+            ],
+        )
+        assert result.exit_code == 0
+        assert calls == [(config, "hold", selection)]
+        assert result.output == f"Command: {identifier}\nCustody committed.\n"
+        outcome[0] = "unknown"
+        unknown = runner.invoke(
+            cli,
+            [
+                "custody",
+                "control",
+                "--config",
+                str(config),
+                "--operation",
+                "hold",
+                "--selection",
+                str(path),
+            ],
+        )
+        assert unknown.exit_code == 1
+        assert unknown.output == f"Command: {identifier}\nError: Custody unknown.\n"
+        outcome[0] = "committed"
+        replay = runner.invoke(
+            cli, ["custody", "result", "--config", str(config), "--command", identifier]
+        )
+        assert replay.exit_code == 0
+        assert calls[-1] == (
+            config,
+            "eligibility",
+            {"target_set": [], "target_set_version": 1, "result_command_id": identifier},
+        )
+        before = len(calls)
+        for args in (
+            ["custody", "result", "--config", str(config), "--command", "not-a-command"],
+            [
+                "custody",
+                "control",
+                "--config",
+                str(config),
+                "--operation",
+                "hold",
+                "--selection",
+                str(path),
+                "--actor",
+                "owner",
+            ],
+            [
+                "custody",
+                "control",
+                "--config",
+                str(config),
+                "--operation",
+                "hold",
+                "--selection",
+                str(path),
+                "--verifier-url",
+                "http://caller.invalid/mcp",
+            ],
+        ):
+            assert runner.invoke(cli, args).exit_code != 0
+        assert len(calls) == before

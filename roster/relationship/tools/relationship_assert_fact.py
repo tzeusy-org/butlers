@@ -70,6 +70,7 @@ import asyncpg
 
 from butlers.core import entity_graph_edges
 from butlers.core.approvals_hooks import park_pending_action
+from butlers.core.custody_bindings import native_channel_mutation
 from butlers.core.fact_authority import FactWriteContext, current_fact_write_context
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
@@ -1725,10 +1726,18 @@ async def _assert_on_conn(
         frozen=approved.frozen if approved is not None else None,
         fact_context=fact_context,
     )
-    if wrap_transaction:
-        async with conn.transaction():
-            return await _write_fact_with_receipts(conn, kwargs)
-    return await _write_fact_with_receipts(conn, kwargs)
+    # Parking/approval notification above stays outside a newly acquired
+    # custody transaction. Enter the current-binding writer BEFORE the actual
+    # native entity/fact locks below; conn-aware callers must already own the
+    # genuine outer writer if their transaction has started.
+    subjects = [subject]
+    if object_kind == "entity":
+        subjects.append(uuid.UUID(object))
+    async with native_channel_mutation(pool, conn, subjects) as current_conn:
+        if wrap_transaction:
+            async with current_conn.transaction():
+                return await _write_fact_with_receipts(current_conn, kwargs)
+        return await _write_fact_with_receipts(current_conn, kwargs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2221,11 +2230,13 @@ async def retract_contact_info_fact(
         return fact_id
 
     if conn is not None:
-        return await _retract(conn)
+        async with native_channel_mutation(pool, conn, [subject]) as current_conn:
+            return await _retract(current_conn)
 
     async with pool.acquire() as acquired_conn:
-        async with acquired_conn.transaction():
-            return await _retract(acquired_conn)
+        async with native_channel_mutation(pool, acquired_conn, [subject]) as current_conn:
+            async with current_conn.transaction():
+                return await _retract(current_conn)
 
 
 # ---------------------------------------------------------------------------
@@ -2519,10 +2530,12 @@ async def assert_prefers_channel(
         )
 
     if conn is not None:
-        return await _do(conn)
+        async with native_channel_mutation(pool, conn, [subject]) as current_conn:
+            return await _do(current_conn)
     async with pool.acquire() as acquired_conn:
-        async with acquired_conn.transaction():
-            return await _do(acquired_conn)
+        async with native_channel_mutation(pool, acquired_conn, [subject]) as current_conn:
+            async with current_conn.transaction():
+                return await _do(current_conn)
 
 
 async def retract_prefers_channel(
@@ -2544,10 +2557,12 @@ async def retract_prefers_channel(
         return await _supersede_active_prefers_channel(c, subject, validity="retracted")
 
     if conn is not None:
-        return await _do(conn)
+        async with native_channel_mutation(pool, conn, [subject]) as current_conn:
+            return await _do(current_conn)
     async with pool.acquire() as acquired_conn:
-        async with acquired_conn.transaction():
-            return await _do(acquired_conn)
+        async with native_channel_mutation(pool, acquired_conn, [subject]) as current_conn:
+            async with current_conn.transaction():
+                return await _do(current_conn)
 
 
 def _same_report(row: Any, report: FactWriteContext) -> bool:

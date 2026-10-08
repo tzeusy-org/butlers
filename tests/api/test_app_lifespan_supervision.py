@@ -243,3 +243,70 @@ async def test_shutdown_cancels_all_dashboard_loops_including_calendar_deadman(m
         f"a loop restarted during/after shutdown: {call_counts}"
     )
     assert "restarting in" not in caplog.text
+
+    # REQ-endpoint-custody-holds-002: real lifespan ordering/cleanup with fake
+    # allocations only. This is NOT SQL enrollment/currentness/topology proof.
+    import socket
+    from types import SimpleNamespace
+
+    from butlers.core import custody_api
+
+    for later_failure in (False, True):
+        events = []
+        cleanup_failure = RuntimeError("later-startup-sentinel")
+        service = SimpleNamespace()
+        runtime = SimpleNamespace(producer=SimpleNamespace())
+
+        async def start_custody(actual_service, endpoint):
+            assert actual_service is service
+            assert endpoint == "http://127.0.0.1:19101/mcp"
+            events.append("enroll")
+            return runtime
+
+        async def stop():
+            events.append("stop-custody")
+
+        async def close(actual_service):
+            assert actual_service is service
+            events.append("close-auth")
+
+        runtime.stop = stop
+        monkeypatch.setattr(custody_api, "start_api_custody", start_custody)
+        monkeypatch.setattr(api_app, "create_owner_auth_service", AsyncMock(return_value=service))
+        monkeypatch.setattr(api_app, "close_owner_auth_service", close)
+        manager = SimpleNamespace(
+            get_connection_info=lambda _: SimpleNamespace(sse_url="http://127.0.0.1:19101/sse")
+        )
+        monkeypatch.setattr(api_app, "get_mcp_manager", lambda: manager)
+        parent_socket, child_socket = socket.socketpair()
+        custody_api.install_api_parent_channel(child_socket)
+        assert not __import__("os").get_inheritable(child_socket.fileno())
+
+        def other_startup():
+            assert child_socket.fileno() == -1
+            events.append("other-startup")
+            if later_failure:
+                raise cleanup_failure
+
+        monkeypatch.setattr(api_app, "check_infra_default_creds", other_startup)
+        app = FastAPI()
+        app.state.owner_auth_config = SimpleNamespace()
+        try:
+            if later_failure:
+                with pytest.raises(RuntimeError, match="later-startup-sentinel"):
+                    async with api_app.lifespan(app):
+                        pytest.fail("Failed startup became ready")
+            else:
+                async with api_app.lifespan(app):
+                    assert app.state.custody_runtime is runtime
+                    assert app.state.custody_browser_door is not None
+            assert events == ["enroll", "other-startup", "stop-custody", "close-auth"]
+            assert app.state.custody_runtime is None
+            assert app.state.custody_browser_door is None
+            assert app.state.owner_auth_service is None
+            assert custody_api._PARENT_CHANNEL is None
+            assert parent_socket.recv(1) == b""
+        finally:
+            custody_api.discard_api_parent_channel()
+            child_socket.close()
+            parent_socket.close()

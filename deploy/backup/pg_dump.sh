@@ -98,6 +98,13 @@
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
+#   - custody_admission.*, public.custody_holds, and the exact15 public wrappers
+#         endpoint-custody source/command/hold history and private admission
+#         control. This ordinary backup does NOT recover that history. The
+#         bootstrap reconstructs fenced objects, not lost receipts or holds;
+#         restored-history admission/reconciliation is still undelivered.
+#         A successful ordinary backup is not custody recovery proof.
+#
 # No ordinary application data is excluded. The three cost-claim tables are the
 # narrow exception to pg_dump's data path: their schema, ownership, FORCE RLS,
 # policies, triggers, and definer function remain in the ordinary dump, while
@@ -130,14 +137,16 @@ BACKUP_RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-14}"
 
 # Trusted-bootstrap exclusion set. Whitespace-separated; parsed by
 # tests/scripts/test_pg_dump_backup.py, so keep the assignments on one line each.
-BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_generation_admin runtime_attention_admin"
+BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_generation_admin runtime_attention_admin custody_admission"
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity public.custody_holds"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
+# Exact unrecovered public callable identities, never caller-selected patterns.
+BACKUP_CUSTODY_SIGNATURES="public.custody_admit_write(uuid,text,jsonb) public.custody_anchor_begin() public.custody_anchor_renew() public.custody_bind_connection(text) public.custody_challenge(uuid,text) public.custody_commit_command(uuid,uuid) public.custody_connection_begin() public.custody_connection_finish(text) public.custody_connection_unbind(bigint) public.custody_mark_provider_start(uuid,uuid,text) public.custody_mint(uuid,jsonb,text) public.custody_respond(uuid,text) public.custody_result_read(uuid,uuid) public.custody_source_register(text,jsonb) public.custody_verify(uuid,text,text)"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
@@ -334,7 +343,7 @@ if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "3" ]; then
   exit 1
 fi
 
-# pg_dump writes to stdout; we pipe through gzip into a .tmp file so the
+# The selected archive renders to stdout; we pipe through gzip into a .tmp file so the
 # directory scanner in get_backup_facts() never sees a partial dump.  gzip's
 # own exit status says nothing about pg_dump's, and the left-hand side of a
 # pipeline runs in a subshell, so the dump records its failure in a status file
@@ -347,10 +356,100 @@ fi
     --port="${POSTGRES_PORT}" \
     --username="${POSTGRES_USER}" \
     --dbname="${POSTGRES_DB}" \
-    --format=plain \
+    --format=custom \
+    --file="${SNAPSHOT_DIR}/ordinary.archive" \
     --snapshot="${BACKUP_SNAPSHOT}" \
     --no-password \
     "$@" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+
+  # Catalog and archive describe the same exported snapshot. Only fixed public
+  # custody wrappers are unrecoverable with the excluded private history. No
+  # ordinary function/body/data is interpreted or removed by a text scrubber.
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+        SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+        SET LOCAL search_path=pg_catalog;
+        SELECT CASE WHEN EXISTS(
+          SELECT 1 FROM pg_namespace WHERE nspname='custody_admission')
+          THEN 'installed:1' ELSE 'installed:0' END;
+        SELECT 'public.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ')'
+          FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='public' AND left(p.proname,8)='custody_'
+         ORDER BY p.proname,p.oid;
+        COMMIT" > "${SNAPSHOT_DIR}/custody.catalog" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  pg_restore --list "${SNAPSHOT_DIR}/ordinary.archive" > "${SNAPSHOT_DIR}/ordinary.toc" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+
+  # BEGIN fixed custody TOC selector (also exercised directly by software tests).
+  awk -v expected="${BACKUP_CUSTODY_SIGNATURES}" -v catalog="${SNAPSHOT_DIR}/custody.catalog" '
+    function refuse() {
+      print "[backup] FAILED: custody archive/catalog boundary changed" > "/dev/stderr"
+      failed=1; exit 1
+    }
+    function signature(value,    name,args,n,a,i,types,part) {
+      name=value; sub(/\(.*/, "", name)
+      if (name !~ /^custody_[a-z_]+$/ || value !~ /\([^()]*\)$/) refuse()
+      args=value; sub(/^[^(]*\(/,"",args); sub(/\)$/,"",args)
+      n=split(args,a,","); types=""
+      for (i=1;i<=n;i++) {
+        part=a[i]; gsub(/^[[:space:]]+|[[:space:]]+$/,"",part)
+        # TOC definitions use input types; ACL/comment identities can include
+        # parameter names. Only the four published scalar types are admitted.
+        if (part ~ /^[a-z_][a-z_0-9]* (uuid|text|jsonb|bigint)$/) sub(/^[^ ]+ /,"",part)
+        if (part!="" && part!="uuid" && part!="text" && part!="jsonb" && part!="bigint") refuse()
+        if (part=="" && (n!=1 || args!="")) refuse()
+        types=types (i>1 ? "," : "") part
+      }
+      return "public." name "(" types ")"
+    }
+    BEGIN {
+      n=split(expected,a," "); if(n!=15) refuse()
+      for(i=1;i<=n;i++) { if(a[i] in fixed) refuse(); fixed[a[i]]=1 }
+      if((getline line < catalog)!=1 || line!~/^installed:[01]$/) refuse()
+      installed=substr(line,length(line),1)+0
+      while((rc=getline line < catalog)>0) {
+        gsub(/[[:space:]]/,"",line)
+        if(!(line in fixed) || line in captured) refuse()
+        captured[line]=1; count++
+      }
+      close(catalog)
+      if(rc<0 || (installed && count!=15) || (!installed && count!=0)) refuse()
+    }
+    /^;/ || /^[[:space:]]*$/ { print; next }
+    {
+      body=$0
+      if(body !~ /^[0-9]+;[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+/) refuse()
+      sub(/^[0-9]+;[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+/,"",body)
+      if(body ~ /^(FUNCTION public|ACL public FUNCTION|COMMENT public FUNCTION|SECURITY LABEL public FUNCTION) "?custody_/) {
+        definition=body ~ /^FUNCTION public /
+        sub(/^(FUNCTION public|ACL public FUNCTION|COMMENT public FUNCTION|SECURITY LABEL public FUNCTION) /,"",body)
+        if(body !~ /\)[[:space:]]+.+$/) refuse()
+        sub(/\)[[:space:]]+.*/, ")", body)
+        key=signature(body)
+        if(!(key in fixed) || !(key in captured)) refuse()
+        if(definition) { if(key in found) refuse(); found[key]=1 }
+        next
+      }
+      print
+    }
+    END {
+      if(failed) exit 1
+      for(key in captured) if(!(key in found)) refuse()
+      for(key in found) if(!(key in captured)) refuse()
+    }
+  ' "${SNAPSHOT_DIR}/ordinary.toc" > "${SNAPSHOT_DIR}/ordinary.selected" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  # END fixed custody TOC selector.
+  # Explicit stdout and no --dbname: pg_restore renders ordinary SQL only;
+  # it does not execute a restore. Existing owners/ACLs and all other entries
+  # survive unchanged, followed by the original scoped cost-claim row carrier.
+  pg_restore --file=- --use-list="${SNAPSHOT_DIR}/ordinary.selected" \
+    "${SNAPSHOT_DIR}/ordinary.archive" \
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
 
   # The ordinary dump has already emitted schema, ownership, policies, and all

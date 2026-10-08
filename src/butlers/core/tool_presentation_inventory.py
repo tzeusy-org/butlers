@@ -38,6 +38,14 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "core",
         "direct",
+        "custody.challenge custody.apply",
+        presentable=False,
+        posture="eager",
+        namespace="custody",
+    ),
+    *_declare(
+        "core",
+        "direct",
         "route.execute",
         presentable=False,
         posture="eager",

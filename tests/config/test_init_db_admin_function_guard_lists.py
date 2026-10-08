@@ -82,7 +82,7 @@ _PRONAME_IN = re.compile(r"proname\s+IN\s*\(", re.IGNORECASE)
 _NSPNAME_FILTER = re.compile(r"nspname\s*=\s*'([a-z_][a-z0-9_]*)'", re.IGNORECASE)
 _PRONARGS_ZERO = re.compile(r"pronargs\s*=\s*0", re.IGNORECASE)
 _QUOTED_NAME = re.compile(r"'([a-z_][a-z0-9_]*)'")
-_FROM_PG_PROC = re.compile(r"FROM\s+pg_proc\b", re.IGNORECASE)
+_FROM_PG_PROC = re.compile(r"FROM\s+(?:pg_catalog\.)?pg_proc\b", re.IGNORECASE)
 
 # How far past the ``proname IN (...)`` list the companion ``pronargs = 0``
 # predicate may sit before we treat the guard as malformed.
@@ -102,7 +102,7 @@ _RELNAME_FILTER = re.compile(
     re.IGNORECASE,
 )
 _RELKIND_ORDINARY = re.compile(r"relkind\s*=\s*'r'", re.IGNORECASE)
-_FROM_PG_CLASS = re.compile(r"FROM\s+pg_class\b", re.IGNORECASE)
+_FROM_PG_CLASS = re.compile(r"FROM\s+(?:pg_catalog\.)?pg_class\b", re.IGNORECASE)
 
 # How far past a ``relname`` filter the companion ``relkind = 'r'`` predicate may
 # sit before we treat the guard as malformed.
@@ -183,10 +183,20 @@ def _guard_blocks(source: str) -> list[_GuardBlock]:
     blocks: list[_GuardBlock] = []
     for match in _PRONAME_IN.finditer(source):
         line = _line_of(source, match.start())
+        # Capability/ACL lists can contain mixed arities. Only this same SQL
+        # statement's owner-mismatch predicate makes a name list an ownership
+        # guard; the required zero-arity check below remains strict.
+        statement_start = source.rfind(";", 0, match.start()) + 1
+        statement_end = source.find(";", match.start())
+        statement = source[statement_start : statement_end if statement_end >= 0 else None]
+        if not re.search(r"\bproowner\s*(?:<>|!=)", statement, re.IGNORECASE):
+            continue
 
         # Associate the list with the ``nspname`` filter of the *same* subquery
         # by bounding the backwards search at the enclosing ``FROM pg_proc``.
         preceding = [m.end() for m in _FROM_PG_PROC.finditer(source, 0, match.start())]
+        if not preceding or preceding[-1] < statement_start:
+            continue
         assert preceding, (
             f"init-db.sql:{line}: `proname IN (...)` guard list has no enclosing "
             "`FROM pg_proc`; this test cannot tell which schema it constrains."
@@ -203,7 +213,10 @@ def _guard_blocks(source: str) -> list[_GuardBlock]:
         names = tuple(_QUOTED_NAME.findall(source[open_index + 1 : close_index]))
         assert names, f"init-db.sql:{line}: `proname IN ()` guard list is empty."
 
-        tail = source[close_index : close_index + _PRONARGS_LOOKAHEAD]
+        end = statement_end if statement_end >= 0 else len(source)
+        tail = source[close_index : min(close_index + _PRONARGS_LOOKAHEAD, end)]
+        if not re.search(r"\bproowner\s*(?:<>|!=)", scope + tail, re.IGNORECASE):
+            continue
         assert _PRONARGS_ZERO.search(tail), (
             f"init-db.sql:{line}: guard list for schema "
             f"'{schema_filters[-1].lower()}' is not paired with `pronargs = 0`, so it does "
@@ -267,6 +280,17 @@ def test_every_admin_schema_has_a_function_ownership_guard() -> None:
     source = _read_sql()
     blocks = _guard_blocks(source)
     definitions = _function_definitions(source)
+    # A mixed-arity capability branch is not an ownership guard. A real
+    # ownership guard lacking its zero-arity predicate must still fail closed.
+    mixed = "SELECT p.oid FROM pg_catalog.pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='example_admin' AND p.proname IN ('one','two');"
+    assert _guard_blocks(mixed) == []
+    malformed = mixed.replace(";", " AND p.proowner<>owner_oid;")
+    with pytest.raises(AssertionError, match="pronargs = 0"):
+        _guard_blocks(malformed)
+    assert (
+        len(_guard_blocks(malformed.replace(" AND p.proowner", " AND p.pronargs=0 AND p.proowner")))
+        == 1
+    )
 
     guarded = {block.schema for block in blocks}
     owning_admin_schemas = {
@@ -347,7 +371,13 @@ def _table_guard_blocks(source: str) -> list[_GuardBlock]:
         line = _line_of(source, match.start())
 
         preceding = [item.end() for item in _FROM_PG_CLASS.finditer(source, 0, match.start())]
-        if not preceding:
+        statement_start = source.rfind(";", 0, match.start()) + 1
+        if not preceding or preceding[-1] < statement_start:
+            continue
+        prefix = source[statement_start : preceding[-1]]
+        # Fingerprints aggregate names/owners without asserting ownership.
+        # Existing table guards select the owner INTO their comparison variable.
+        if not re.search(r"\brelowner\s+INTO\b", prefix, re.IGNORECASE):
             continue
         scope = source[preceding[-1] : match.start()]
         schema_filters = _NSPNAME_FILTER.findall(scope)
@@ -410,6 +440,14 @@ def _describe_unmatched_table(
 
 
 def test_every_admin_schema_has_a_table_ownership_guard() -> None:
+    # A fingerprint is not an ownership assertion. A real owner lookup still
+    # refuses missing relation-kind qualification, with a matched positive.
+    fingerprint = "SELECT jsonb_agg(r.relowner) FROM pg_catalog.pg_class r JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname='example_admin' AND r.relname='configuration';"
+    assert _table_guard_blocks(fingerprint) == []
+    lookup = fingerprint.replace("jsonb_agg(r.relowner)", "r.relowner INTO owner_oid")
+    with pytest.raises(AssertionError, match="relkind = 'r'"):
+        _table_guard_blocks(lookup)
+    assert len(_table_guard_blocks(lookup.replace(";", " AND r.relkind='r';"))) == 1
     source = _read_sql()
     blocks = _table_guard_blocks(source)
     definitions = _table_definitions(source)

@@ -9,7 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from butlers.migrations import _chain_script_directory
+from butlers.migrations import _chain_script_directory, get_all_chains, get_chain_revision_ids
 
 _RUNTIME_ATTENTION_REVISION = "core_198"
 _RUNTIME_ATTENTION_MIGRATION = (
@@ -27,19 +27,37 @@ def _destination_revisions(context: Any) -> tuple[str | None, ...]:
 
 def _downgrade_crosses_runtime_attention(context: Any) -> bool:
     """Use the checked-in revision graph to determine whether core_198 is crossed."""
-    current = context.get_context().get_current_revision()
-    if current is None:
+    # A per-schema version table legitimately contains independent core,
+    # module and roster heads. The singular Alembic API rejects that supported
+    # topology before the protected boundary can decide anything.
+    current_heads = tuple(context.get_context().get_current_heads())
+    known = {revision for chain in get_all_chains() for revision in get_chain_revision_ids(chain)}
+    if len(set(current_heads)) != len(current_heads) or any(
+        not isinstance(head, str) or head not in known for head in current_heads
+    ):
+        raise RuntimeError("Protected downgrade has unknown or duplicate current revisions")
+    core_ids = get_chain_revision_ids("core")
+    core_heads = [head for head in current_heads if head in core_ids]
+    if len(core_heads) > 1:
+        raise RuntimeError("Protected downgrade has ambiguous current core revisions")
+    if not core_heads:
         return False
+    current = core_heads[0]
     script = _chain_script_directory("core")
     for destination in _destination_revisions(context):
         if isinstance(destination, str):
             relative = re.fullmatch(r"-(\d+)", destination)
             if relative is not None:
-                revisions_above_core_198 = sum(
-                    1 for _step in script.iterate_revisions(current, _RUNTIME_ATTENTION_REVISION)
-                )
-                if int(relative.group(1)) > revisions_above_core_198:
+                steps = list(script.iterate_revisions(current, None))
+                count = int(relative.group(1))
+                if count > len(steps):
+                    raise RuntimeError("Protected downgrade relative target exceeds core history")
+                if any(step.revision == _RUNTIME_ATTENTION_REVISION for step in steps[:count]):
                     return True
+                continue
+            if destination in known and destination not in core_ids:
+                # Preserve foreign branch version rows; their own downgrade
+                # semantics cannot remove the protected core interface.
                 continue
         revisions = script.iterate_revisions(current, destination)
         if any(revision.revision == _RUNTIME_ATTENTION_REVISION for revision in revisions):
