@@ -1,10 +1,10 @@
 ARG ROUTE_A_NODE_IMAGE
 ARG ROUTE_A_NPM_CACHE_IMAGE
+FROM ${ROUTE_A_NPM_CACHE_IMAGE} AS route-a-npm-cache
 FROM ${ROUTE_A_NODE_IMAGE} AS build
-ARG ROUTE_A_NPM_CACHE_IMAGE
 
 WORKDIR /app
-COPY --from=${ROUTE_A_NPM_CACHE_IMAGE} /root/.npm/ /root/.npm/
+COPY --from=route-a-npm-cache /root/.npm/ /root/.npm/
 COPY package.json package-lock.json ./
 RUN npm ci --offline --cache=/root/.npm
 COPY . ./
@@ -13,9 +13,8 @@ ENV VITE_API_URL=${VITE_API_URL}
 RUN npm run build
 
 FROM ${ROUTE_A_NODE_IMAGE}
-ARG ROUTE_A_NPM_CACHE_IMAGE
 WORKDIR /app
-COPY --from=${ROUTE_A_NPM_CACHE_IMAGE} /root/.npm/ /root/.npm/
+COPY --from=route-a-npm-cache /root/.npm/ /root/.npm/
 COPY --from=build /app/package.json /app/package-lock.json ./
 # Vite preview is a development dependency. Keep the lockfile-resolved CLI in
 # the sealed evidence image rather than allowing npx to download anything at

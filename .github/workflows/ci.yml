@@ -140,8 +140,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Plan affected tests
         id: plan
@@ -213,8 +227,22 @@ jobs:
         if: ${{ !cancelled() }}
         run: uv lock --check
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Lint
         id: lint
@@ -240,11 +268,13 @@ jobs:
       - name: Write PR title and body to files
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          printf '%s' "$PR_TITLE" > "${RUNNER_TEMP}/pr_title.txt"
-          printf '%s' "$PR_BODY" > "${RUNNER_TEMP}/pr_body.txt"
+          # Fetch-point admission: reruns see actual current metadata, while
+          # the commit range below remains bound to this event's source head.
+          python3 scripts/fetch_pr_metadata.py \
+            --number "$PR_NUMBER" --output-dir "$RUNNER_TEMP"
 
       - name: Fetch review comments (best-effort)
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
@@ -259,11 +289,11 @@ jobs:
           # script below does the field mapping so no shell/jq quoting games
           # are needed here.
           gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate \
-            > "${RUNNER_TEMP}/rc_review_comments.json" || true
+            > "${RUNNER_TEMP}/rc_review_comments.json" 2>/dev/null || true
           gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-            > "${RUNNER_TEMP}/rc_issue_comments.json" || true
+            > "${RUNNER_TEMP}/rc_issue_comments.json" 2>/dev/null || true
           gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
-            > "${RUNNER_TEMP}/rc_reviews.json" || true
+            > "${RUNNER_TEMP}/rc_reviews.json" 2>/dev/null || true
           python3 scripts/combine_review_comment_sources.py \
             --output "${RUNNER_TEMP}/review_comments.json" \
             --input review-comment "${RUNNER_TEMP}/rc_review_comments.json" \
@@ -274,7 +304,7 @@ jobs:
         id: session_links
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         run: |
-          python3 scripts/session_link_guard.py \
+          python3 scripts/session_link_guard.py --redact-findings \
             --pr-title-file "${RUNNER_TEMP}/pr_title.txt" \
             --pr-body-file "${RUNNER_TEMP}/pr_body.txt" \
             --commit-range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
@@ -478,22 +508,6 @@ jobs:
     # the merge queue already validated this exact tree.
     if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
-    env:
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
-
     steps:
       - uses: actions/checkout@v6
 
@@ -520,8 +534,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Verify CI test shard manifests
         # This replaces the old integration-only path guard. It derives both
@@ -652,22 +680,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -695,8 +709,36 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
+
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane unit --shard 1)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-1/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Unit tests (shard 1)
         # File-only manifests preserve whole-file fixture lifetime. The selector
@@ -704,7 +746,16 @@ jobs:
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-unit-1.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-1
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/unit-1/shard-observation.json
         run: uv run python scripts/check_ci_test_shards.py run --lane unit --shard 1
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-1/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare unit shard 1 duration evidence
         if: always()
@@ -723,6 +774,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/unit-1/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-1/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/unit-1/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/unit-1/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -760,22 +813,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -803,8 +842,36 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
+
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane unit --shard 2)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-2/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Unit tests (shard 2)
         # File-only manifests preserve whole-file fixture lifetime. The selector
@@ -812,7 +879,16 @@ jobs:
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-unit-2.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-2
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/unit-2/shard-observation.json
         run: uv run python scripts/check_ci_test_shards.py run --lane unit --shard 2
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-2/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare unit shard 2 duration evidence
         if: always()
@@ -831,6 +907,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/unit-2/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-2/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/unit-2/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/unit-2/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -868,22 +946,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -911,8 +975,36 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
+
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane unit --shard 3)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-3/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Unit tests (shard 3)
         # File-only manifests preserve whole-file fixture lifetime. The selector
@@ -920,7 +1012,16 @@ jobs:
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-unit-3.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-3
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/unit-3/shard-observation.json
         run: uv run python scripts/check_ci_test_shards.py run --lane unit --shard 3
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-3/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare unit shard 3 duration evidence
         if: always()
@@ -939,6 +1040,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/unit-3/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-3/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/unit-3/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/unit-3/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -976,22 +1079,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -1019,8 +1108,36 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
+
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane unit --shard 4)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-4/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Unit tests (shard 4)
         # File-only manifests preserve whole-file fixture lifetime. The selector
@@ -1028,7 +1145,16 @@ jobs:
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-unit-4.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-4
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/unit-4/shard-observation.json
         run: uv run python scripts/check_ci_test_shards.py run --lane unit --shard 4
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-4/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare unit shard 4 duration evidence
         if: always()
@@ -1047,6 +1173,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/unit-4/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-4/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/unit-4/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/unit-4/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1084,22 +1212,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -1127,8 +1241,36 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
+
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane unit --shard 5)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-5/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Unit tests (shard 5)
         # File-only manifests preserve whole-file fixture lifetime. The selector
@@ -1136,7 +1278,16 @@ jobs:
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-unit-5.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-5
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/unit-5/shard-observation.json
         run: uv run python scripts/check_ci_test_shards.py run --lane unit --shard 5
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/unit-5/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare unit shard 5 duration evidence
         if: always()
@@ -1155,6 +1306,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/unit-5/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-5/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/unit-5/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/unit-5/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1192,22 +1345,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -1235,8 +1374,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Free disk space before testcontainers
         # Runner disk capacity varies. Preserve the cleanup that eliminated
@@ -1270,14 +1423,37 @@ jobs:
           echo "Disk usage after cleanup decision:"
           df -h /
 
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane integration --shard 1)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-1/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
+
       - name: Integration tests (shard 1)
         # The preflight job proves all integration-selected files belong to
         # exactly one manifest before these Docker/testcontainers shards run.
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-integration-1.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-1
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/integration-1/shard-observation.json
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run python scripts/check_ci_test_shards.py run --lane integration --shard 1
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-1/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare integration shard 1 duration evidence
         if: always()
@@ -1296,6 +1472,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/integration-1/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-1/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/integration-1/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/integration-1/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1333,22 +1511,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -1376,8 +1540,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Free disk space before testcontainers
         # Runner disk capacity varies. Preserve the cleanup that eliminated
@@ -1411,14 +1589,37 @@ jobs:
           echo "Disk usage after cleanup decision:"
           df -h /
 
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane integration --shard 2)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-2/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
+
       - name: Integration tests (shard 2)
         # The preflight job proves all integration-selected files belong to
         # exactly one manifest before these Docker/testcontainers shards run.
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-integration-2.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-2
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/integration-2/shard-observation.json
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run python scripts/check_ci_test_shards.py run --lane integration --shard 2
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-2/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare integration shard 2 duration evidence
         if: always()
@@ -1437,6 +1638,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/integration-2/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-2/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/integration-2/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/integration-2/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1474,22 +1677,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -1517,8 +1706,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Free disk space before testcontainers
         # Runner disk capacity varies. Preserve the cleanup that eliminated
@@ -1552,14 +1755,37 @@ jobs:
           echo "Disk usage after cleanup decision:"
           df -h /
 
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane integration --shard 3)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-3/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
+
       - name: Integration tests (shard 3)
         # The preflight job proves all integration-selected files belong to
         # exactly one manifest before these Docker/testcontainers shards run.
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-integration-3.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-3
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/integration-3/shard-observation.json
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run python scripts/check_ci_test_shards.py run --lane integration --shard 3
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-3/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare integration shard 3 duration evidence
         if: always()
@@ -1578,6 +1804,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/integration-3/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-3/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/integration-3/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/integration-3/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1615,22 +1843,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -1658,8 +1872,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Free disk space before testcontainers
         # Every Docker-heavy shard needs a small-runner guard, but runners that
@@ -1692,14 +1920,37 @@ jobs:
           echo "Disk usage after cleanup decision:"
           df -h /
 
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane integration --shard 4)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-4/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
+
       - name: Integration tests (shard 4)
         # The preflight job proves all integration-selected files belong to
         # exactly one manifest before these Docker/testcontainers shards run.
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-integration-4.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-4
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/integration-4/shard-observation.json
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run python scripts/check_ci_test_shards.py run --lane integration --shard 4
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-4/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare integration shard 4 duration evidence
         if: always()
@@ -1718,6 +1969,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/integration-4/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-4/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/integration-4/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/integration-4/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1755,22 +2008,8 @@ jobs:
     # already guarantees since a failed/skipped plan's output is empty.
     if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v6
@@ -1798,8 +2037,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Free disk space before testcontainers
         # Every Docker-heavy shard needs a small-runner guard, but runners that
@@ -1832,14 +2085,37 @@ jobs:
           echo "Disk usage after cleanup decision:"
           df -h /
 
+      - name: Compute compatible shard timing key
+        id: timing-key
+        run: |
+          set -euo pipefail
+          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane integration --shard 5)"
+          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory shard timings
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-5/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
+
       - name: Integration tests (shard 5)
         # The preflight job proves all integration-selected files belong to
         # exactly one manifest before these Docker/testcontainers shards run.
         env:
           COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-integration-5.data
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-5
+          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/integration-5/shard-observation.json
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run python scripts/check_ci_test_shards.py run --lane integration --shard 5
+
+      - name: Save complete shard timings
+        if: success()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/ci-artifacts/integration-5/shard-observation.json
+          key: ${{ steps.timing-key.outputs.key }}
 
       - name: Prepare integration shard 5 duration evidence
         if: always()
@@ -1858,6 +2134,8 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/integration-5/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-5/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/integration-5/shard-observation.json
+            ${{ runner.temp }}/ci-artifacts/integration-5/runner-observation.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1893,22 +2171,6 @@ jobs:
     # -- a chain of implication too fragile to rely on silently.
     if: always() && needs.changes.result == 'success' && github.event_name == 'pull_request' && needs.plan.outputs.mode == 'scoped'
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: test
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
-    env:
-      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
-
     steps:
       - uses: actions/checkout@v6
 
@@ -1935,8 +2197,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Affected tests (scoped plan)
         env:
@@ -2134,8 +2410,22 @@ jobs:
           done
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
       - name: Install dependencies for coverage aggregation
-        run: uv sync --frozen --dev
+        run: python3 scripts/ci_environment.py prepare
 
       - name: Download unit shard 1 coverage data
         uses: actions/download-artifact@v4

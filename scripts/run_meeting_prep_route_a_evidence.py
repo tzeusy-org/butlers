@@ -386,19 +386,19 @@ def validate_sealed_build_inputs(worktree: Path) -> None:
             "ARG ROUTE_A_GO_IMAGE",
             "ARG ROUTE_A_GO_DEPS_IMAGE",
             "ARG ROUTE_A_UV_CACHE_IMAGE",
-            "COPY --from=${ROUTE_A_GO_DEPS_IMAGE}",
-            "COPY --from=${ROUTE_A_UV_CACHE_IMAGE}",
+            "COPY --from=route-a-go-deps",
+            "COPY --from=route-a-uv-cache",
             "GOPROXY=off",
             "uv sync --offline",
         ),
         worktree / "frontend/Dockerfile.meeting-prep-evidence": (
             "ARG ROUTE_A_NPM_CACHE_IMAGE",
-            "COPY --from=${ROUTE_A_NPM_CACHE_IMAGE}",
+            "COPY --from=route-a-npm-cache",
             "npm ci --offline --cache=/root/.npm",
         ),
         worktree / "frontend/Dockerfile.meeting-prep-browser": (
             "ARG ROUTE_A_NPM_CACHE_IMAGE",
-            "COPY --from=${ROUTE_A_NPM_CACHE_IMAGE}",
+            "COPY --from=route-a-npm-cache",
             "npm ci --offline --cache=/root/.npm",
         ),
     }
@@ -408,6 +408,27 @@ def validate_sealed_build_inputs(worktree: Path) -> None:
             raise SafetyError(f"{recipe.name} may not select an external Dockerfile frontend")
         if any(item not in source for item in required):
             raise SafetyError(f"{recipe.name} does not consume every sealed Route A input")
+        stages = re.findall(r"^FROM[ \t]+(\S+)(?:[ \t]+AS[ \t]+(\S+))?[ \t]*$", source, re.M | re.I)
+        first_from = re.search(r"^FROM\s", source, re.M | re.I)
+        if first_from is None:
+            raise SafetyError(f"{recipe.name} has no sealed Route A input stage")
+        globals_ = source[: first_from.start()]
+        cache_stages = (
+            (
+                ("ROUTE_A_GO_DEPS_IMAGE", "route-a-go-deps"),
+                ("ROUTE_A_UV_CACHE_IMAGE", "route-a-uv-cache"),
+            )
+            if recipe.name == ROUTE_A_DOCKERFILE
+            else (("ROUTE_A_NPM_CACHE_IMAGE", "route-a-npm-cache"),)
+        )
+        for argument, alias in cache_stages:
+            if (
+                not re.search(rf"^ARG\s+{argument}\s*$", globals_, re.M)
+                or stages.count(("${" + argument + "}", alias)) != 1
+                or sum(stage_alias == alias for _, stage_alias in stages) != 1
+                or re.search(r"^COPY\s+--from=\S*\$", source, re.M | re.I)
+            ):
+                raise SafetyError(f"{recipe.name} has an invalid sealed Route A input stage")
 
 
 def route_a_environment(

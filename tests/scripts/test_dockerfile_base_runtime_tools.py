@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -56,12 +57,193 @@ def _base_input_fingerprint(inputs: tuple[str, ...], *, cwd: Path, env: dict[str
     return result.stdout.strip()
 
 
-def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
+def test_base_image_installs_uv_git_and_gh_for_qa_runtime(tmp_path: Path, monkeypatch) -> None:
     text = _dockerfile_base_text()
     assert "git" in text
     assert "python -m pip install --no-cache-dir uv" in text
     assert "uv --version" in text
     assert "gh" in text
+
+    # REQ-testing-048: project/lock packaging choice; these structural and
+    # installed witnesses do not claim either application image was built.
+    project = tomllib.loads(Path("pyproject.toml").read_text())
+    assert project["tool"]["uv"].get("sources", {}).get("torch") == {"index": "pytorch-cpu"}
+    index = next(
+        index for index in project["tool"]["uv"]["index"] if index["name"] == "pytorch-cpu"
+    )
+    assert index["explicit"] is True
+    assert index["url"] == "https://download.pytorch.org/whl/cpu"
+    packages = tomllib.loads(Path("uv.lock").read_text())["package"]
+    assert not any(package["name"].startswith("nvidia-") for package in packages)
+    assert not any(package["name"] in {"pgvector", "qrcode"} for package in packages)
+    for name in ("Dockerfile", "Dockerfile.meeting-prep-route-a"):
+        app = Path(name).read_text()
+        assert "--frozen" in app and "--extra whatsapp" not in app
+        assert "UV_TORCH_BACKEND" not in app
+        assert "COPY --from=go-builder /out/whatsapp-bridge" in app
+    assert "github.com/skip2/go-qrcode" in Path("whatsapp-bridge/cmd/bridge/main.go").read_text()
+    import torch
+
+    assert torch.version.cuda is None
+    assert not torch.cuda.is_available()
+    assert int(torch.tensor([2, 3], device="cpu").sum()) == 5
+
+    # Actual local archive conformance, not a mocked application-image build.
+    import hashlib
+    import importlib.util
+    import io
+    import json
+    import tarfile
+
+    spec = importlib.util.spec_from_file_location(
+        "image_diagnostic", Path("scripts/ci_image_size_diagnostic.py")
+    )
+    diagnostic = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(diagnostic)
+    layer_archive = io.BytesIO()
+    with tarfile.open(fileobj=layer_archive, mode="w") as output:
+        member = tarfile.TarInfo("probe")
+        member.size = len(b"fixture")
+        output.addfile(member, io.BytesIO(b"fixture"))
+    layer = layer_archive.getvalue()
+    labels = {"org.butlers.route-a.cache-kind": "uv-cache"}
+    config = json.dumps(
+        {
+            "config": {"Labels": labels},
+            "rootfs": {"diff_ids": ["sha256:" + hashlib.sha256(layer).hexdigest()]},
+        }
+    ).encode()
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as output:
+        for name, body in (
+            ("layer/layer.tar", layer),
+            ("config.json", config),
+            (
+                "manifest.json",
+                json.dumps([{"Config": "config.json", "Layers": ["layer/layer.tar"]}]).encode(),
+            ),
+        ):
+            member = tarfile.TarInfo(name)
+            member.size = len(body)
+            output.addfile(member, io.BytesIO(body))
+    encoded = archive.getvalue()
+    uri = diagnostic.write_oci_layout(io.BytesIO(encoded), tmp_path / "positive", labels)
+    assert "@sha256:" in uri
+    index = json.loads((tmp_path / "positive/index.json").read_text())
+    digest = index["manifests"][0]["digest"].split(":")[1]
+    sealed = (tmp_path / "positive/blobs/sha256" / digest).read_bytes()
+    assert hashlib.sha256(sealed).hexdigest() == digest
+    assert json.loads(sealed)["config"]["digest"] == "sha256:" + hashlib.sha256(config).hexdigest()
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="label_mismatch"):
+        diagnostic.write_oci_layout(
+            io.BytesIO(encoded), tmp_path / "wrong-label", {next(iter(labels)): "go-modules"}
+        )
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="content_mismatch"):
+        diagnostic.write_oci_layout(
+            io.BytesIO(encoded.replace(b"fixture", b"mutated", 1)), tmp_path / "wrong-layer", labels
+        )
+    # The diagnostic refuses local Docker execution before its first build.
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="hosted_exact_source"):
+        diagnostic.run_diagnostic(Path.cwd(), Path.cwd(), tmp_path / "no-local-docker", "not-a-sha")
+    # The complete source-owned recipe fixture has the same pinned e7 bytes.
+    # Ordinary unit checkouts need no history/network. This software comparator
+    # is not a historical input, Docker/compiler or trained-model witness.
+    original = Path(
+        "tests/fixtures/route_a_9ff_offline_recipes/Dockerfile.meeting-prep-route-a"
+    ).read_bytes()
+    adapted = diagnostic.baseline_compatibility_recipe(original)
+    assert hashlib.sha256(original).hexdigest() == diagnostic.BASE_ROUTE_RECIPE_SHA256
+    prefix = (
+        b"ARG ROUTE_A_GO_DEPS_IMAGE\nARG ROUTE_A_UV_CACHE_IMAGE\n\n"
+        b"FROM ${ROUTE_A_GO_DEPS_IMAGE} AS route-a-go-deps\n"
+        b"FROM ${ROUTE_A_UV_CACHE_IMAGE} AS route-a-uv-cache\n\n"
+    )
+    restored = adapted.replace(prefix, b"", 1)
+    restored = restored.replace(
+        b"COPY --from=route-a-go-deps ", b"COPY --from=${ROUTE_A_GO_DEPS_IMAGE} "
+    )
+    restored = restored.replace(
+        b"COPY --from=route-a-uv-cache ", b"COPY --from=${ROUTE_A_UV_CACHE_IMAGE} "
+    )
+    assert restored == original
+    assert b"COPY --from=${" not in adapted
+    assert b"uv sync --offline --frozen --no-dev --extra whatsapp" in adapted
+    assert b"ENV UV_TORCH_BACKEND=cpu" in adapted
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_recipe_mismatch"):
+        diagnostic.baseline_compatibility_recipe(original + b"\n")
+
+    # A self-contained miniature Git tree exercises the exact production byte,
+    # mode and extra-input checks without requiring history in a shallow shard.
+    # It is explicitly not the historical1690-input/image comparison: that
+    # remains in the unchanged hosted diagnostic's actual pinned e7 checkout.
+    before = tmp_path / "immutable-before"
+    before.mkdir()
+    for relative in (
+        "Dockerfile.base",
+        "scripts/runtime_cli_sandbox_init.c",
+        "scripts/generate_runtime_cli_sandbox_manifest.py",
+        "whatsapp-bridge/go.mod",
+        "whatsapp-bridge/go.sum",
+    ):
+        destination = before / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(Path(relative).read_bytes())
+    (before / "Dockerfile.meeting-prep-route-a").write_bytes(original)
+    (before / "pyproject.toml").write_text("# miniature software fixture project\n")
+    lock = before / "uv.lock"
+    lock.write_text("# miniature software fixture lock\n")
+    (before / "src").mkdir()
+    (before / "src/payload.py").write_text("# miniature software fixture source\n")
+    link = before / "src/alias.py"
+    link.symlink_to("payload.py")
+    monkeypatch.setenv("GIT_DIR", str(before / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(before))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(before / ".git/index"))
+    subprocess.run(["git", "init", "-q", str(before)], check=True)
+    subprocess.run(["git", "add", "--all"], check=True)
+    tree = subprocess.check_output(["git", "write-tree"], text=True).strip()
+    # The module instance is private to this node. Only this software fixture's
+    # source selector changes; production BASE_SOURCE and CLI remain fixed e7.
+    monkeypatch.setattr(diagnostic, "BASE_SOURCE", tree)
+    inputs = diagnostic.baseline_build_inputs(before)
+    assert inputs["source"] == diagnostic.BASE_SOURCE
+    assert inputs["input_files"] > 0 and inputs["all_original_git_blob_bytes_equal"] is True
+    assert inputs["literal_recipe_sha256"] == diagnostic.BASE_ROUTE_RECIPE_SHA256
+    for shared_base_input in (
+        "Dockerfile.base",
+        "scripts/runtime_cli_sandbox_init.c",
+        "scripts/generate_runtime_cli_sandbox_manifest.py",
+    ):
+        assert (Path.cwd() / shared_base_input).read_bytes() == (
+            before / shared_base_input
+        ).read_bytes()
+    sys_path = str(Path.cwd() / "scripts")
+    monkeypatch.syspath_prepend(sys_path)
+    from run_meeting_prep_route_a_evidence import SafetyError, validate_sealed_build_inputs
+
+    # The current launcher remains strict: it refuses the original variable COPY.
+    with pytest.raises(SafetyError):
+        validate_sealed_build_inputs(before)
+    original_lock = lock.read_bytes()
+    lock.write_bytes(lock.read_bytes() + b"\n")
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_input_mismatch"):
+        diagnostic.baseline_build_inputs(before)
+    lock.write_bytes(original_lock)
+    mode_source = before / "scripts/runtime_cli_sandbox_init.c"
+    original_mode = mode_source.stat().st_mode
+    mode_source.chmod(0o755)
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_input_mode_mismatch"):
+        diagnostic.baseline_build_inputs(before)
+    mode_source.chmod(original_mode)
+    link.unlink()
+    link.symlink_to("different.py")
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_input_mismatch"):
+        diagnostic.baseline_build_inputs(before)
+    link.unlink()
+    link.symlink_to("payload.py")
+    (before / "src/extra-untracked.py").write_text("# not an original input\n")
+    with pytest.raises(diagnostic.DiagnosticRefusal, match="baseline_inputs_untracked"):
+        diagnostic.baseline_build_inputs(before)
 
 
 def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> None:

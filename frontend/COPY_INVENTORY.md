@@ -534,6 +534,9 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Analytics
 - No curriculums yet.
 - Request one to start adaptive learning.
+- Active curricula
+- Setting-up curricula
+- Selected curriculum
 - Select a curriculum
 
 ## `frontend/src/pages/EntityDetailPage.tsx`
@@ -1579,15 +1582,18 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Mind maps
 - No active mind maps (start learning to see progress here).
 - Pending reviews
+- Review schedule is incomplete.
 - No reviews scheduled: keep learning and reviews will appear here.
 - Ready to learn
+- Frontier is incomplete.
 - No frontier nodes yet. Keep mastering prerequisites!
 - Retention · 7d
-- Could not load retention trend.
 - Select a mind map to see retention trend.
 - No retention data in this window.
 - new Date(e.next_review_at)
+- Curriculum list
 - {}% mastered
+- Curriculum
 - Total cards
 - Mastered
 - Overdue
@@ -2676,6 +2682,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Abandon
 - Re-activate
+- There are no concepts to return to.
 - Cancel
 - Confirm
 
@@ -2712,7 +2719,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Concept Map
 - Loading...
-- This curriculum has no concepts yet. The butler is still building it.
 - Concept map
 
 ## `frontend/src/components/education/NodeDetailPanel.tsx`
@@ -2762,7 +2768,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - No reviews scheduled. Keep learning and reviews will appear here.
 - Open {} in {}
-- Review schedule
+- Curriculum list
 - Overdue
 - Today
 - This Week
@@ -4869,4 +4875,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3874*
+*Total strings: 3880*

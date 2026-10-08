@@ -273,6 +273,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--json", action="store_true", help="emit machine-readable JSON instead of text"
     )
+    parser.add_argument(
+        "--redact-findings",
+        action="store_true",
+        help="Public CI: report fixed source/pattern categories without matched text",
+    )
     return parser
 
 
@@ -307,8 +312,12 @@ def main(argv: list[str] | None = None) -> int:
                 named_texts.update(_load_review_comments(args.review_comments_file))
             except (json.JSONDecodeError, OSError) as exc:
                 print(
-                    f"session_link_guard: warning: could not read review comments "
-                    f"({exc}); continuing with body/commit checks only.",
+                    "session_link_guard: warning: could not read review comments "
+                    + (
+                        "(unavailable); continuing with body/commit checks only."
+                        if args.redact_findings
+                        else f"({exc}); continuing with body/commit checks only."
+                    ),
                     file=sys.stderr,
                 )
         else:
@@ -328,7 +337,28 @@ def main(argv: list[str] | None = None) -> int:
 
     findings = scan_sources(named_texts)
 
-    if args.json:
+    if args.redact_findings:
+        categories = [
+            {
+                "source": (
+                    f.source
+                    if f.source in {"pr_title", "pr_body"}
+                    else "commit"
+                    if f.source.startswith("commit ")
+                    else "review_comment"
+                ),
+                "pattern_name": f.pattern_name,
+            }
+            for f in findings
+        ]
+        if args.json:
+            json.dump({"count": len(findings), "findings": categories}, sys.stdout)
+            sys.stdout.write("\n")
+        else:
+            print(f"session_link_guard: {'refused' if findings else 'clean'} count={len(findings)}")
+            for item in categories:
+                print(f"  - {item['source']}: {item['pattern_name']}")
+    elif args.json:
         json.dump([f.to_dict() for f in findings], sys.stdout, indent=2)
         sys.stdout.write("\n")
     else:

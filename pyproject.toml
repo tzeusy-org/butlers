@@ -27,7 +27,7 @@ dependencies = [
     "httpx",
     "aiohttp>=3.9",
     "sentence-transformers",
-    "pgvector",
+    "torch==2.12.0",
     "structlog",
     "prometheus-client",
     "pillow>=10.0.0",
@@ -49,6 +49,14 @@ dependencies = [
 # hint can be removed.
 required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
 [project.optional-dependencies]
 connectors = [
 ]
@@ -56,9 +64,6 @@ live-listener = [
     "sounddevice>=0.4.6",
     "onnxruntime>=1.17.0",
     "numpy>=1.26.0",
-]
-whatsapp = [
-    "qrcode[pil]>=7.4.2",
 ]
 
 [dependency-groups]

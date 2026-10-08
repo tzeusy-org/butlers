@@ -160,12 +160,17 @@ class TestFullPatrolCycle:
                 "butlers.core.qa.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
                 return_value=(worktree_path, branch_name),
-            ),
+            ) as mock_worktree,
             patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
+            fresh_main_commit = "a" * 40
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            # Successful fetch has no output; rev-parse supplies the immutable
+            # origin/main commit required before a new investigation can start.
+            mock_proc.communicate = AsyncMock(
+                side_effect=[(b"", b""), (fresh_main_commit.encode() + b"\n", b"")]
+            )
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -186,6 +191,17 @@ class TestFullPatrolCycle:
         assert result.attempt_id == attempt_id
         # Watchdog was scheduled
         assert len(task_registry) == 1
+        assert [call.args for call in mock_exec.await_args_list] == [
+            ("git", "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"),
+            ("git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
+        ]
+        mock_worktree.assert_awaited_once_with(
+            Path("/tmp/repo"),
+            finding.source_butler,
+            finding.fingerprint,
+            prefix="qa",
+            base_ref=fresh_main_commit,
+        )
 
         # Cancel background tasks
         for task in task_registry:
@@ -247,7 +263,7 @@ class TestFullPatrolCycle:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -313,7 +329,7 @@ class TestFullPatrolCycle:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -453,7 +469,7 @@ class TestReactiveRelay:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -544,7 +560,7 @@ class TestCrossSourceDeduplication:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -851,7 +867,7 @@ class TestHealingApiBackwardCompatibility:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -915,7 +931,7 @@ class TestHealingApiBackwardCompatibility:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 

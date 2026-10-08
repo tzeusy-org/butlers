@@ -32,7 +32,12 @@ from butlers.tools.education.analytics import (
 )
 from butlers.tools.education.mastery import mastery_detect_struggles, mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
-from butlers.tools.education.mind_maps import mind_map_get, mind_map_list, mind_map_update_status
+from butlers.tools.education.mind_maps import (
+    MindMapLifecycleError,
+    mind_map_get,
+    mind_map_list,
+    mind_map_update_status,
+)
 from butlers.tools.education.source_material import source_material_get_many
 from butlers.tools.education.spaced_repetition import spaced_repetition_pending_reviews
 from butlers.tools.education.teaching_flows import teaching_flow_list
@@ -159,7 +164,9 @@ def _map_dict_to_response(m: dict, include_dag: bool = False) -> MindMapResponse
 
 @router.get("/mind-maps", response_model=PaginatedResponse[MindMapResponse])
 async def list_mind_maps(
-    status: str | None = Query(None, description="Filter by status (active, completed, abandoned)"),
+    status: str | None = Query(
+        None, description="Filter by status (draft, active, completed, abandoned)"
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -662,6 +669,8 @@ async def update_mind_map_status(
 
     try:
         await mind_map_update_status(pool, mind_map_id, body.status)
+    except MindMapLifecycleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
 

@@ -93,7 +93,7 @@ Two images, both pinned by digest where practical:
 
 1. A Go builder stage compiles the bundled helper binaries.
 2. Source (`pyproject.toml`, `src/`, `alembic.ini`, `alembic/`, …) is copied in
-   and installed with `uv sync --frozen --no-dev` (plus the `whatsapp` extra).
+   and installed with `uv sync --frozen --no-dev` (the Go WhatsApp bridge is included separately).
 3. Entrypoint `uv run --frozen --no-dev butlers`; default command
    `run --config /etc/butler`.
 
