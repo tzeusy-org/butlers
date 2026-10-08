@@ -81,6 +81,7 @@ from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
     load_account_wide_ingestion_consent,
 )
+from butlers.conversation_identity import telegram_conversation_id
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
@@ -868,7 +869,8 @@ class TelegramUserClientConnector:
                 provider=self._config.provider,
                 endpoint_identity=self._config.endpoint_identity,
                 external_event_id=batch_event_id,
-                external_thread_id=chat_id,
+                external_thread_id=None,
+                external_conversation_id=telegram_conversation_id(chat_id) if chat_id else None,
                 observed_at=datetime.now(UTC).isoformat(),
                 sender_identity=sender_identity,
                 raw={},
@@ -1223,7 +1225,8 @@ class TelegramUserClientConnector:
             },
             "event": {
                 "external_event_id": f"batch:{chat_id}:{min_id}-{max_id}",
-                "external_thread_id": chat_id,
+                "external_conversation_id": telegram_conversation_id(chat_id),
+                "reply_target_ref": f"{chat_id}:{max_id}",
                 "observed_at": flush_timestamp,
             },
             "sender": {
@@ -1304,7 +1307,8 @@ class TelegramUserClientConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=message_id_str,
-                            external_thread_id=self._extract_chat_id(message),
+                            external_thread_id=None,
+                            external_conversation_id=self._conversation_id(message),
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(message),
                             # Filtered-content privacy tier (bu-it77x): content
@@ -1340,7 +1344,8 @@ class TelegramUserClientConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=message_id_str,
-                            external_thread_id=self._extract_chat_id(message),
+                            external_thread_id=None,
+                            external_conversation_id=self._conversation_id(message),
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(message),
                             # Filtered-content privacy tier (bu-it77x): content
@@ -1407,7 +1412,8 @@ class TelegramUserClientConnector:
                                 provider=self._config.provider,
                                 endpoint_identity=self._config.endpoint_identity,
                                 external_event_id=message_id_str,
-                                external_thread_id=self._extract_chat_id(message),
+                                external_thread_id=None,
+                                external_conversation_id=self._conversation_id(message),
                                 observed_at=datetime.now(UTC).isoformat(),
                                 sender_identity=self._extract_sender_identity(message),
                                 # Filtered-content privacy tier (bu-it77x):
@@ -1492,6 +1498,12 @@ class TelegramUserClientConnector:
             source_channel="telegram_user_client",
             raw_key=chat_id,
         )
+
+    @classmethod
+    def _conversation_id(cls, message: Any) -> str | None:
+        """Return the stable ``telegram:<chat_id>`` key for *message*, if it has a chat."""
+        chat_id = cls._extract_chat_id(message)
+        return telegram_conversation_id(chat_id) if chat_id else None
 
     @staticmethod
     def _extract_chat_id(message: Any) -> str | None:
@@ -1893,7 +1905,8 @@ class TelegramUserClientConnector:
         - source.provider: "telegram"
         - source.endpoint_identity: user-client identity
         - event.external_event_id: message.id
-        - event.external_thread_id: chat.id or thread_id
+        - event.external_conversation_id: stable Telegram chat identity
+        - event.reply_target_ref: chat.id:message.id
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: sender user ID
         - sender.participant_count: number of chat participants (RFC 0013)
@@ -1980,7 +1993,8 @@ class TelegramUserClientConnector:
             },
             "event": {
                 "external_event_id": message_id,
-                "external_thread_id": chat_id,
+                "external_conversation_id": telegram_conversation_id(chat_id) if chat_id else None,
+                "reply_target_ref": f"{chat_id}:{message_id}" if chat_id else None,
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {

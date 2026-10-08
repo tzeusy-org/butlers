@@ -36,7 +36,9 @@ Connectors and the dashboard API submit events using this canonical envelope:
   },
   "event": {
     "external_event_id": "<provider-event-id>",
-    "external_thread_id": "<thread-or-conversation-id | null>",
+    "external_conversation_id": "<stable provider conversation id | null>",
+    "reply_target_ref": "<provider reply target | null>",
+    "external_thread_id": "<unsplit thread id | null; producers without the split only>",
     "observed_at": "<RFC 3339 timestamp>"
   },
   "sender": {
@@ -71,7 +73,9 @@ The Switchboard assigns canonical request context at ingest acceptance:
 - `request_id` (UUIDv7) -- canonical identifier for the request lifecycle
 - `received_at` -- server-side timestamp
 - `source_channel`, `source_endpoint_identity`, `source_sender_identity` -- derived from the envelope
-- `source_thread_identity` -- from `event.external_thread_id` when present
+- `external_conversation_id` -- from the same-named event field; the only continuity key (conversation anchors, provider-session resume, realtime history)
+- `reply_target_ref` and `source_thread_identity` -- both from `event.reply_target_ref`; reply and reaction targeting only
+- A producer that has not split its identity sends only `event.external_thread_id`, which then serves as both its conversation key and its reply target; a split field always wins over it. `telegram_bot` envelopes must carry both split fields.
 - `trace_context` -- propagated from `control.trace_context`
 
 The ingest response includes the canonical `request_id` for lineage tracking.
@@ -92,7 +96,7 @@ After deduplication and envelope normalization, the triage pipeline evaluates in
 
 **Stage 1: Thread affinity** (email only, if enabled)
 
-Given `source_channel = "email"` and a non-null `event.external_thread_id`:
+Given `source_channel = "email"` and a non-null resolved conversation key (the Gmail `threadId`):
 
 1. Check global disable flag.
 2. Check thread-specific override (`disabled` or `force:<butler>`).

@@ -71,7 +71,7 @@ The module defines three reaction constants used by the daemon's ingest pipeline
 | `REACTION_SUCCESS` | Thumbs up | Pipeline completed successfully |
 | `REACTION_FAILURE` | Space invader | Pipeline error |
 
-The `react_for_ingest()` method parses `external_thread_id` (format: `"<chat_id>:<message_id>"`) from the ingest envelope and sets the appropriate reaction. Failures are silently logged -- reaction errors never block message processing.
+The `react_for_ingest()` method parses the envelope's reply target (`event.reply_target_ref`, format `"<chat_id>:<message_id>"`; its parameter keeps the historical name `external_thread_id`) and sets the appropriate reaction. Failures are silently logged -- reaction errors never block message processing.
 
 ## Implementation Details
 

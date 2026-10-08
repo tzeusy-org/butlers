@@ -921,7 +921,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     for recent inbound messages on user-to-person channels
     (``telegram_user_client``, ``whatsapp_user_client``, ``email``).
 
-    Groups by ``(source_thread_identity, source_channel,
+    Groups by ``(external_conversation_id, source_channel,
     source_endpoint_identity, DATE(received_at))``
     — a chat-centric view — rather than by individual sender.  Per RFC 0013 D4:
 
@@ -1057,19 +1057,22 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     # Step 1: Query switchboard.message_inbox grouped by chat identity.
     #
-    # RFC 0013 D4: group by (source_thread_identity, source_channel, date)
-    # and collect the distinct set of senders per group.  Messages flagged
-    # as interaction_eligible=false are excluded before grouping.
+    # RFC 0013 D4: group by (chat identity, source_channel, date) and collect
+    # the distinct set of senders per group.  Messages flagged as
+    # interaction_eligible=false are excluded before grouping.
     #
-    # When source_thread_identity is NULL (legacy/connectors that don't set it),
-    # fall back to source_sender_identity as the grouping key so that each sender
-    # forms its own "chat" group rather than being merged into a NULL mega-group.
+    # The chat identity is external_conversation_id: source_thread_identity is
+    # the per-message reply target (bu-7exe4.2), so grouping on it would make
+    # every message its own chat.  Rows without either fall back to
+    # source_sender_identity so that each sender forms its own "chat" group
+    # rather than being merged into a NULL mega-group.
     # -----------------------------------------------------------------------
     try:
         rows = await db_pool.fetch(
             """
             SELECT
                 COALESCE(
+                    request_context ->> 'external_conversation_id',
                     request_context ->> 'source_thread_identity',
                     request_context ->> 'source_sender_identity'
                 )                                              AS thread_identity,
@@ -1116,6 +1119,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
               AND COALESCE(request_context ->> 'interaction_eligible', 'true') != 'false'
             GROUP BY
                 COALESCE(
+                    request_context ->> 'external_conversation_id',
                     request_context ->> 'source_thread_identity',
                     request_context ->> 'source_sender_identity'
                 ),

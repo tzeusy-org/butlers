@@ -3803,7 +3803,8 @@ async def list_entity_message_threads(
     Resolves the entity's channel identifiers from ``relationship.entity_facts``
     has-* triples → matches against ``request_context ->> 'source_sender_identity'``
     in ``switchboard.message_inbox``. Groups by (source_channel, thread_identity)
-    ordered by recency.
+    ordered by recency, where thread_identity is the conversation key
+    (``external_conversation_id``, else the pre-split ``source_thread_identity``).
 
     Returns ``[]`` when:
     - the entity has no linked contacts with reachable identifiers,
@@ -3860,7 +3861,10 @@ async def list_entity_message_threads(
             WITH matches AS (
                 SELECT
                     request_context ->> 'source_channel'        AS source_channel,
-                    request_context ->> 'source_thread_identity' AS thread_identity,
+                    COALESCE(
+                        request_context ->> 'external_conversation_id',
+                        request_context ->> 'source_thread_identity'
+                    )                                            AS thread_identity,
                     request_context ->> 'source_sender_identity' AS sender_identity,
                     direction,
                     received_at,

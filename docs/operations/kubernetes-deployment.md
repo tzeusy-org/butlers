@@ -145,6 +145,66 @@ history butlers` lists the tags).
 The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
 `/secrets/.bws.prod.env`.
 
+### Rolling back the conversation-identity split (core_265, sw_041)
+
+A plain `make deploy-dev TAG=<previous sha>` is not enough to undo bu-7exe4.2. The new image
+migrates data: `core_265` collapses Telegram anchors into `public.core_265_*` snapshots, and
+`sw_041` backfills `external_conversation_id` into `switchboard.message_inbox`. Older images do
+not know either revision, so their `butlers db migrate` initContainer cannot start on the
+upgraded schema. The rollout is stop-the-world in both directions. Connectors and Switchboard
+must flip together: the old `IngestEventV1` (`extra="forbid"`) rejects the new
+`external_conversation_id` / `reply_target_ref` fields, and the new validator rejects a
+`telegram_bot` envelope that lacks them.
+
+1. Stop every writer: scale `butlers-up`, `dashboard-api`, and every connector Deployment to 0,
+   and confirm no pod is left.
+2. With the **current** image, which still contains both revisions, and the migration-role
+   database URL, downgrade `sw_041`. Then downgrade core to `core_261` in every schema whose
+   `alembic_version` is at `core_265` or a later core revision. Schemas below that never ran
+   the split and are skipped; asking alembic to "downgrade" one to `core_261` would fail midway.
+   `core_265` restores only when the last of the selected schemas leaves it, so an interrupted
+   pass restores nothing and can simply be rerun.
+
+   ```python
+   from alembic import command
+   from alembic.script import ScriptDirectory
+   from sqlalchemy import create_engine, text
+   from butlers.migrations import _build_alembic_config
+
+   url = "<migration-role database URL>"  # e.g. read from the pod env; never print it
+   script = ScriptDirectory.from_config(_build_alembic_config(url, ["core"]))
+   # core_265 and every later core revision: only these schemas hold the split.
+   split = {rev.revision for rev in script.walk_revisions(base="core_265", head="heads")}
+   with create_engine(url).connect() as conn:
+       schemas = conn.execute(text(
+           "SELECT table_schema FROM information_schema.tables WHERE table_name = 'alembic_version'"
+       )).scalars().all()
+       core_schemas = [
+           schema for schema in schemas
+           if split & set(conn.execute(text(
+               f'SELECT version_num FROM "{schema}".alembic_version'
+           )).scalars())
+       ]
+   command.downgrade(
+       _build_alembic_config(url, ["switchboard"], target_schema="switchboard"),
+       "switchboard@sw_040",
+   )
+   for schema in core_schemas:
+       command.downgrade(_build_alembic_config(url, ["core"], target_schema=schema), "core@core_261")
+   ```
+
+   The last `core_265` downgrade verifies its restore against the snapshots. If a row written
+   after the upgrade holds an original anchor identity, it raises `core_265 downgrade cannot
+   restore ...`, and the whole downgrade rolls back with the snapshots kept. Resolve the named
+   conflict and rerun. `sw_041` downgrade only drops its index; the backfilled JSON key is inert
+   to older code.
+3. Only then `make deploy-dev TAG=<previous sha>` (or `scripts/k8s/deploy-dev.sh <sha>`), which
+   restarts the connectors and Switchboard on the old envelope together.
+
+Never start the old image against the upgraded schema, and never run old connectors against the
+new Switchboard (or the reverse). Upgrading again later re-runs `core_265` from fresh
+snapshots.
+
 - `make image-*` tags images with the 12-character commit SHA and refuses a dirty worktree
   unless `ALLOW_DIRTY=1`. `make deploy-*` uses the same `TAG` (override with `TAG=<sha>`).
 - `make template-dev` renders into the gitignored `_templates/`. Put per-operator overrides in

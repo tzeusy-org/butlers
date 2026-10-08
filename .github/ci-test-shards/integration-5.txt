@@ -23,6 +23,7 @@ tests/integration/test_fleet_case_contribution_roundtrip.py
 tests/integration/test_meeting_debrief_db.py
 tests/integration/test_runtime_attention_daemon_wiring.py
 tests/integration/test_runtime_attention_delivery_worker.py
+tests/integration/test_telegram_conversation_resume_composition.py
 tests/integration/test_timeline_intervals.py
 tests/jobs/test_flight_status.py
 tests/jobs/test_health_baselines.py
@@ -32,6 +33,7 @@ tests/migrations/test_core_254_qa_patrol_fleet_handoff_migration.py
 tests/migrations/test_core_255_insight_premise_binding_migration.py
 tests/migrations/test_core_257_provider_allowance_states_migration.py
 tests/migrations/test_core_258_personal_baselines_migration.py
+tests/migrations/test_core_265_conversation_identity_split_migration.py
 tests/migrations/test_dashboard_message_provenance_migration.py
 tests/migrations/test_dashboard_messages_page_context_migration.py
 tests/migrations/test_dashboard_messages_search_index_migration.py
@@ -49,6 +51,7 @@ tests/migrations/test_runtime_attention_producer_upgrade.py
 tests/migrations/test_runtime_config_blind_spot_flag_migration.py
 tests/migrations/test_sw_039_definer_search_path_migration.py
 tests/migrations/test_sw_040_scrub_bearer_material_migration.py
+tests/migrations/test_sw_041_message_inbox_conversation_identity_migration.py
 tests/migrations/test_task_continuity_migration.py
 tests/modules/approvals/test_prepared_actions.py
 tests/modules/approvals/test_prepared_execution.py

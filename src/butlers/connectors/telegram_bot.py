@@ -48,6 +48,10 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.conversation_identity import (
+    telegram_bot_message_identity,
+    telegram_bot_update_identity,
+)
 from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY,
@@ -875,6 +879,7 @@ class TelegramBotConnector:
         """
         async with self._semaphore:
             update_id = str(update.get("update_id", "unknown"))
+            _conversation_id, _reply_target_ref = telegram_bot_update_identity(update)
             try:
                 # Approval callbacks are control-plane decisions, never
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
@@ -919,7 +924,9 @@ class TelegramBotConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=update_id,
-                            external_thread_id=self._extract_chat_id(update),
+                            external_thread_id=None,
+                            external_conversation_id=_conversation_id,
+                            reply_target_ref=_reply_target_ref,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
                             # Filtered-content privacy tier (bu-glbjx): content
@@ -953,7 +960,9 @@ class TelegramBotConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=update_id,
-                            external_thread_id=self._extract_chat_id(update),
+                            external_thread_id=None,
+                            external_conversation_id=_conversation_id,
+                            reply_target_ref=_reply_target_ref,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
                             # Filtered-content privacy tier (bu-glbjx): content
@@ -989,7 +998,9 @@ class TelegramBotConnector:
                         provider=self._config.provider,
                         endpoint_identity=self._config.endpoint_identity,
                         external_event_id=update_id,
-                        external_thread_id=self._extract_chat_id(update),
+                        external_thread_id=None,
+                        external_conversation_id=_conversation_id,
+                        reply_target_ref=_reply_target_ref,
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity="unknown",
                         raw=update,
@@ -1612,7 +1623,8 @@ class TelegramBotConnector:
         - source.provider: "telegram"
         - source.endpoint_identity: receiving bot identity
         - event.external_event_id: update_id
-        - event.external_thread_id: chat.id:message_id (fallback: chat.id)
+        - event.external_conversation_id: stable Telegram chat/topic identity
+        - event.reply_target_ref: chat.id:message_id
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: message.from.id
         - payload.raw: full Telegram update JSON
@@ -1650,11 +1662,7 @@ class TelegramBotConnector:
             sender_id = str(msg["from"].get("id", "unknown"))
 
         message_id = msg.get("message_id")
-
-        # Build thread identity as chat_id:message_id for reply targeting
-        thread_identity = (
-            f"{chat_id}:{message_id}" if chat_id and message_id is not None else chat_id
-        )
+        external_conversation_id, reply_target_ref = telegram_bot_message_identity(msg)
 
         # Canonical idempotency key: tg:<chat_id>:<message_id>
         # Uses chat_id + message_id (unique per chat) so that bot and user-client
@@ -1682,7 +1690,9 @@ class TelegramBotConnector:
                         provider=self._config.provider,
                         endpoint_identity=self._config.endpoint_identity,
                         external_event_id=update_id,
-                        external_thread_id=thread_identity,
+                        external_thread_id=None,
+                        external_conversation_id=external_conversation_id,
+                        reply_target_ref=reply_target_ref,
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity=sender_id,
                         raw={},
@@ -1708,7 +1718,8 @@ class TelegramBotConnector:
             },
             "event": {
                 "external_event_id": update_id,
-                "external_thread_id": thread_identity,
+                "external_conversation_id": external_conversation_id,
+                "reply_target_ref": reply_target_ref,
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {
@@ -1771,17 +1782,6 @@ class TelegramBotConnector:
     # -------------------------------------------------------------------------
     # Internal: FilteredEventBuffer helpers
     # -------------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_chat_id(update: dict[str, Any]) -> str | None:
-        """Extract chat ID string from a Telegram update, or None if absent."""
-        for msg_key in ("message", "edited_message", "channel_post"):
-            msg = update.get(msg_key)
-            if isinstance(msg, dict):
-                chat = msg.get("chat")
-                if isinstance(chat, dict) and "id" in chat:
-                    return str(chat["id"])
-        return None
 
     @staticmethod
     def _extract_sender_identity(update: dict[str, Any]) -> str:
