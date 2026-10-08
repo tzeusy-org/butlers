@@ -76,8 +76,10 @@ Acceptance:
 
 ### 7. curriculum_generate activation gate
 
-- [ ] 7.1 `curriculum_generate()` becomes the sole activation path and refuses an empty
-      graph with a curriculum-shaped error.
+- [ ] 7.1 `curriculum_generate()` activates a populated draft exclusively through
+      `mind_map_update_status()`, the single activation invariant owner, and refuses
+      an empty graph with a curriculum-shaped error. Independently specified tool
+      and API transitions remain available for populated eligible maps.
 
 Acceptance:
 - `module-education-curriculum` scenarios pass.
@@ -154,3 +156,16 @@ Acceptance:
 - [ ] 14.1 Query the education schema and confirm no row satisfies
       `status = 'active' AND node_count = 0`, and that the named phantom is
       `abandoned`.
+
+
+### Implementation verification record (bu-27dxl.14)
+
+The source implements tasks 1–13. The migration also adds `mind_maps.metadata`
+(JSONB, non-null, default `{}`) and nullable integer `mind_map_nodes.sequence`,
+which existing goal/curriculum writers and the governing planning scenarios
+already require. It does not alter root-node planning or receipt migrations.
+Software-only roster and frontend checks have run; real-Postgres migration,
+role/concurrency/rollback checks, independent review and protected hosted CI are
+still pending. Boxes remain unchecked until their complete corresponding
+acceptance evidence is available. Task 14 remains separately mandatory and
+UNRUN: this PR author has no live migration/deployment/private-content authority.
