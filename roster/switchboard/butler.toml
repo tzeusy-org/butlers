@@ -139,6 +139,8 @@ job_name = "rule_promotion_trigger"
 # Xd"), Monday 09:00 UTC. Reads the beads JSONL export bind-mounted into this
 # container (see docker-compose.yml + butlers.jobs.decision_review's module
 # docstring for why: no butler daemon has a live path to the Dolt/bd server).
+# This and decision-escalation-check are no-ops when the deployment sets
+# BUTLERS_DECISION_REVIEW_ENABLED=0 (dev does, until the owner opts in).
 [[butler.schedule]]
 name = "decision-review-digest"
 cron = "0 9 * * 1"
