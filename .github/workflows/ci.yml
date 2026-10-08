@@ -1049,6 +1049,43 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF: ${{ github.ref }}
         run: |
+          # Scratch-only: every actual required merge-group check refuses landing.
+          # Built-in job identity keeps extracted verdict tests independent.
+          if [ "${GITHUB_EVENT_NAME:-}" = "merge_group" ] && [ "${GITHUB_JOB:-}" = "check" ]; then
+            # Metadata only, automatic job token only, no raw output or token retained.
+            # Inner 120s deadline plus TERM/KILL outer bound fits the unchanged 3m cap.
+            CI_CANARY_TOKEN="${{ github.token }}" timeout --signal=TERM --kill-after=5s 130s python3 - <<'CANARY_WAIT'
+          import json, os, re, time, urllib.request
+          deadline = time.monotonic() + 120
+          try:
+              repository = os.environ.get('GITHUB_REPOSITORY', '')
+              run_id = os.environ.get('GITHUB_RUN_ID', '')
+              attempt = os.environ.get('GITHUB_RUN_ATTEMPT', '')
+              if re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) and re.fullmatch(r'[1-9][0-9]*', run_id) and re.fullmatch(r'[1-9][0-9]*', attempt):
+                  url = f'https://api.github.com/repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100'
+                  while time.monotonic() < deadline:
+                      try:
+                          request = urllib.request.Request(url, headers={
+                              'Authorization': 'Bearer ' + os.environ['CI_CANARY_TOKEN'],
+                              'Accept': 'application/vnd.github+json',
+                              'X-GitHub-Api-Version': '2022-11-28',
+                          })
+                          with urllib.request.urlopen(request, timeout=min(10, deadline-time.monotonic())) as response:
+                              body = response.read(65537)
+                          payload = json.loads(body) if len(body) <= 65536 else None
+                          if isinstance(payload, dict) and isinstance(payload.get('artifacts'), list):
+                              if any(isinstance(artifact, dict) and artifact.get('name') == 'ci-controlled-coverage-negative-' + attempt and artifact.get('expired') is False for artifact in payload['artifacts']):
+                                  break
+                      except Exception:
+                          # Unknown/API errors cannot permit landing or expose messages.
+                          pass
+                      time.sleep(min(5, max(0, deadline-time.monotonic())))
+          finally:
+              raise SystemExit(1)
+          CANARY_WAIT
+            # Even an unexpected successful metadata waiter is never a landing permit.
+            exit 1
+          fi
           python3 - <<'PY'
           import json, os
           def verdict(*, needs: dict, event: str, ref: str) -> bool:
@@ -1248,6 +1285,26 @@ jobs:
         with:
           name: ci-integration-6-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-6
+
+      - name: Controlled healthy corrupt restored coverage predicate
+        # Always fails after the real predicate: all later success-only reporting skips.
+        run: |
+          uv run --no-sync python scripts/ci_coverage_canary.py \
+            --input-root "${RUNNER_TEMP}/ci-coverage" \
+            --inventory-dir "${RUNNER_TEMP}/ci-inventory" \
+            --receipt "${RUNNER_TEMP}/coverage-canary/receipt.json"
+          # Even an unexpected successful probe must never permit publication.
+          exit 1
+
+      - name: Upload closed controlled-negative receipt only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-controlled-coverage-negative-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/coverage-canary/receipt.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
 
       - name: Combine coverage from all independent test shards
         id: coverage
