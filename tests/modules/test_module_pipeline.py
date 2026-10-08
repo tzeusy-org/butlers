@@ -336,7 +336,9 @@ async def test_batch_unknown_reservation_failure_preserves_other_speaker_anchor(
     assert "15551234567" not in caplog.text
 
 
-async def test_decomposition_primary_sender_reuses_batch_resolution():
+async def test_decomposition_primary_sender_reuses_batch_resolution(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+):
     """REQ-switchboard-identity-002: the routing sender is not resolved twice."""
     primary_entity = uuid4()
     messages = [
@@ -376,7 +378,9 @@ async def test_decomposition_primary_sender_reuses_batch_resolution():
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
     single_resolver = AsyncMock(return_value=primary_result)
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -397,6 +401,7 @@ async def test_decomposition_primary_sender_reuses_batch_resolution():
             message_inbox_id="00000000-0000-0000-0000-000000000099",
         )
 
+    assert fact_authority.source_registry() is prior_registry
     assert result.target_butler == "decomposed_empty"
     pipeline._resolve_decomp_speakers.assert_awaited_once_with(
         source_channel="whatsapp_user_client",
@@ -406,6 +411,12 @@ async def test_decomposition_primary_sender_reuses_batch_resolution():
     routing_context = pipeline._set_routing_context.call_args.kwargs
     assert routing_context["identity_preamble"] == primary_result.preamble
     assert routing_context["source_entity_id"] == str(primary_entity)
+
+    with pytest.raises(RuntimeError, match="primary scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("primary scenario failed")
+    assert fact_authority.source_registry() is prior_registry
 
 
 async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_history(
