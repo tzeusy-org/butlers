@@ -170,13 +170,15 @@ async def reserve_mutation_tool_input(
     if runtime.name != "chronicler" or tool.module != "memory" or tool.name not in _MUTATION_TOOLS:
         raise PolicyUnavailableError("Native mutation tool producer differs")
     if not await conn.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c "
-        "WHERE c.conrelid='chronicler.location_native_memory_mutation_inputs'::pg_catalog.regclass "
-        "AND c.confrelid='chronicler.location_runtime_tool_intents'::pg_catalog.regclass "
+        "SELECT count(*)=1 AND bool_and("
+        "c.confrelid='chronicler.location_runtime_tool_intents'::pg_catalog.regclass "
         "AND c.conname='location_native_memory_mutation_inputs_tool_generation_fkey' "
-        "AND c.contype='f' AND c.conkey=ARRAY[2]::SMALLINT[] AND c.confkey=ARRAY[1]::SMALLINT[] "
+        "AND c.conkey=ARRAY[2]::SMALLINT[] AND c.confkey=ARRAY[1]::SMALLINT[] "
         "AND c.convalidated AND NOT c.condeferrable AND NOT c.condeferred "
-        "AND c.confupdtype='a' AND c.confdeltype='a' AND c.confmatchtype='s')"
+        "AND c.confupdtype='a' AND c.confdeltype='a' AND c.confmatchtype='s') "
+        "FROM pg_catalog.pg_constraint c WHERE "
+        "c.conrelid='chronicler.location_native_memory_mutation_inputs'::pg_catalog.regclass "
+        "AND c.contype='f' AND 2=ANY(c.conkey)"
     ):
         raise PolicyUnavailableError("Native mutation installed tool dependency differs")
     if not await conn.fetchval(
@@ -195,7 +197,7 @@ async def reserve_mutation_tool_input(
         "FROM chronicler.location_native_memory_artifacts a "
         "JOIN chronicler.location_native_dispatch_inputs i USING(input_generation) "
         "JOIN chronicler.location_native_memory_bundles m USING(input_generation) "
-        "JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
+        "LEFT JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
         "LEFT JOIN chronicler.location_native_copy_births b "
         "ON b.copy_generation=p.copy_generation "
         "WHERE a.artifact_generation=$1 ORDER BY p.copy_generation,b.output_kind,b.output_id",
@@ -203,20 +205,9 @@ async def reserve_mutation_tool_input(
     )
     if not parents:
         raise PolicyUnavailableError("Native mutation complete input ancestry is unavailable")
-    expected = parents[0]["parent_count"]
-    if (
-        not isinstance(expected, int)
-        or isinstance(expected, bool)
-        or expected < 1
-        or len({(row["copy_generation"], row["input_digest"]) for row in parents}) != expected
-        or any(
-            row["parent_count"] != expected
-            or row["output_id"] is None
-            or row["birth_digest"] != row["input_digest"]
-            for row in parents
-        )
-    ):
-        raise PolicyUnavailableError("Native mutation complete input ancestry differs")
+    from butlers.chronicler.location_memory_ancestry import require_complete_parents
+
+    require_complete_parents(parents)
     digest = content_digest({"native_mutation_input": _digest_value(dict(before))})
     generation = uuid4()
     outputs = {}

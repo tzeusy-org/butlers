@@ -241,7 +241,8 @@ async def capture_memory_episode(domain: Any, memory: Any, session: Any, content
     async with memory.acquire() as committed:
         observed = await committed.fetchval(
             "SELECT count(*) FROM chronicler.location_native_memory_parents p "
-            "JOIN chronicler.location_native_memory_reservations r USING(reservation_id) "
+            "JOIN chronicler.location_native_memory_reservations r "
+            "USING(reservation_id) "
             "WHERE reservation_id=$1 AND r.content_digest=$2 AND r.receiving_session=$3",
             reservation,
             digest,
@@ -345,6 +346,21 @@ async def dispose_native_memory(domain: Any, decision: UUID) -> None:
                 await _lock(conn, schema, role)
                 if candidate["memory_schema"] != schema or candidate["writer_role"] != role:
                     raise PolicyUnavailableError("Committed Memory producer differs")
+                from butlers.chronicler.location_memory_ancestry import require_complete_parents
+
+                ancestry = await conn.fetch(
+                    "SELECT p.copy_generation,p.input_digest,r.parent_count,b.output_id,"
+                    "b.input_digest AS birth_digest FROM "
+                    "chronicler.location_native_memory_reservations r "
+                    "LEFT JOIN chronicler.location_native_memory_parents p "
+                    "USING(reservation_id) "
+                    "LEFT JOIN chronicler.location_native_copy_births b "
+                    "ON b.copy_generation=p.copy_generation WHERE r.reservation_id=$1",
+                    candidate["reservation_id"],
+                )
+                if not ancestry:
+                    raise PolicyUnavailableError("Native episode input ancestry is unavailable")
+                require_complete_parents(ancestry)
                 if not await conn.fetchval(
                     "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_copy_dispositions "
                     "WHERE receiving_session=$1) AND NOT EXISTS("
@@ -361,7 +377,8 @@ async def dispose_native_memory(domain: Any, decision: UUID) -> None:
                 ):
                     continue
                 body = await conn.fetchrow(
-                    "SELECT * FROM episodes WHERE id=$1 FOR UPDATE", candidate["episode_id"]
+                    "SELECT * FROM episodes WHERE id=$1 FOR UPDATE OF episodes",
+                    candidate["episode_id"],
                 )
                 if (
                     body is None
@@ -587,32 +604,41 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                 )
                 if table == "episodes":
                     parents = await conn.fetch(
-                        "SELECT DISTINCT b.output_kind,b.output_id,b.lineage_known,"
-                        "b.exclusive_input,"
+                        "SELECT p.copy_generation,p.input_digest,r.parent_count,"
+                        "b.output_kind,b.output_id,"
+                        "b.input_digest AS birth_digest,b.lineage_known,b.exclusive_input,"
                         "c.body_digest FROM chronicler.location_native_memory_commits c "
-                        "JOIN chronicler.location_native_memory_parents p USING(reservation_id) "
-                        "JOIN chronicler.location_native_copy_births b "
-                        "USING(copy_generation,input_digest) "
+                        "JOIN chronicler.location_native_memory_reservations r "
+                        "USING(reservation_id) "
+                        "LEFT JOIN chronicler.location_native_memory_parents p "
+                        "USING(reservation_id) "
+                        "LEFT JOIN chronicler.location_native_copy_births b "
+                        "ON b.copy_generation=p.copy_generation "
                         "WHERE c.episode_id=$1 ORDER BY b.output_kind,b.output_id",
                         row["id"],
                     )
                 else:
                     parents = await conn.fetch(
-                        "SELECT DISTINCT b.output_kind,b.output_id,"
+                        "SELECT p.copy_generation,p.input_digest,i.parent_count,"
+                        "b.input_digest AS birth_digest,b.output_kind,b.output_id,"
                         "(b.lineage_known AND m.exclusive_input) AS lineage_known,"
                         "(b.exclusive_input AND m.exclusive_input) AS exclusive_input,"
                         "a.body_digest,a.content_digest,a.memory_table,a.artifact_generation "
                         "FROM chronicler.location_native_memory_artifacts a "
                         "JOIN chronicler.location_native_memory_bundles m USING(input_generation) "
-                        "JOIN chronicler.location_native_dispatch_parents p "
+                        "JOIN chronicler.location_native_dispatch_inputs i USING(input_generation) "
+                        "LEFT JOIN chronicler.location_native_dispatch_parents p "
                         "USING(input_generation) "
-                        "JOIN chronicler.location_native_copy_births b "
-                        "USING(copy_generation,input_digest) "
+                        "LEFT JOIN chronicler.location_native_copy_births b "
+                        "ON b.copy_generation=p.copy_generation "
                         "WHERE a.memory_table=$1 AND a.artifact_id=$2 "
                         "ORDER BY b.output_kind,b.output_id",
                         table,
                         row["id"],
                     )
+                from butlers.chronicler.location_memory_ancestry import require_complete_parents
+
+                require_complete_parents(parents)
                 if not parents:
                     mixed_inputs = True
                     continue

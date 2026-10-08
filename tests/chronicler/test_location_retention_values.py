@@ -1482,6 +1482,7 @@ async def _assert_native_episode_tool_reads():
 
     from butlers.chronicler import location_memory_copies as copies
     from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_policy import PolicyUnavailableError
     from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
     from butlers.modules.memory.storage import get_memory
 
@@ -1497,6 +1498,7 @@ async def _assert_native_episode_tool_reads():
             self.original = copies.episode_body_digest(self.row)
             self.artifact = None
             self.artifact_exclusive = True
+            self.artifact_partial = None
             self.extra = {}
             self.plan_unknown = False
             self.mutations = []
@@ -1557,21 +1559,56 @@ async def _assert_native_episode_tool_reads():
             if "FROM chronicler.location_native_memory_artifacts" in sql:
                 if self.artifact is None:
                     return []
-                return [
+                rows = [
                     {
                         **self.artifact,
                         "output_kind": "point_event",
                         "output_id": self.row["id"],
+                        "copy_generation": self.row["id"],
+                        "input_digest": b"p" * 32,
+                        "birth_digest": b"p" * 32,
+                        "parent_count": 1,
                         "lineage_known": self.artifact_exclusive,
                         "exclusive_input": self.artifact_exclusive,
                     }
                 ]
+                if self.artifact_partial is not None:
+                    rows[0]["parent_count"] = 2
+                    second = {**rows[0], "copy_generation": sibling_parent}
+                    if self.artifact_partial == "missing":
+                        second["output_id"], second["birth_digest"] = None, None
+                    elif self.artifact_partial == "digest":
+                        second["birth_digest"] = b"x" * 32
+                    rows.append(second)
+                    if self.artifact_partial == "extra":
+                        rows.append({**second, "copy_generation": uuid4()})
+                    if self.artifact_partial == "empty":
+                        rows = [
+                            {
+                                **rows[0],
+                                "copy_generation": None,
+                                "input_digest": None,
+                                "output_id": None,
+                                "birth_digest": None,
+                            }
+                        ]
+                    if "LEFT JOIN" not in sql:
+                        rows = [
+                            r
+                            for r in rows
+                            if r["output_id"] is not None and r["birth_digest"] == r["input_digest"]
+                        ]
+                return rows
             if "FROM chronicler.location_native_memory_commits" in sql:
                 return (
                     [
                         {
                             "output_kind": "point_event",
                             "output_id": self.row["id"],
+                            "copy_generation": self.row["id"],
+                            "input_digest": b"p" * 32,
+                            "birth_digest": b"p" * 32,
+                            "parent_count": 1,
                             "lineage_known": True,
                             "exclusive_input": True,
                             "body_digest": self.original,
@@ -1589,6 +1626,7 @@ async def _assert_native_episode_tool_reads():
                 else [{**self.row, **self.extra}]
             )
 
+    sibling_parent = uuid4()
     domain, memory = object(), Memory()
     runtime = SimpleNamespace(domain=domain, memory=memory, active=True)
     copies._receivers[domain] = (memory, "chronicler_mem", "actual-owner-double")
@@ -1633,6 +1671,19 @@ async def _assert_native_episode_tool_reads():
         assert tool.read_observed and not tool.mixed_inputs
         assert memory.artifact["body_digest"] == original_full  # History never refreshed.
         assert memory.births[-1][4] is True and memory.births[-1][5] == tool.session
+        memory.artifact_partial = "complete"
+        await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+        assert not tool.mixed_inputs and memory.births[-1][4] is True
+        for partial in ("missing", "digest", "extra", "empty"):
+            memory.artifact_partial = partial
+            before = len(memory.births)
+            with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                try:
+                    await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
+                finally:
+                    assert len(memory.births) == before  # Refuse before any copied input birth.
+            assert len(memory.births) == before
+        memory.artifact_partial = None
         memory.extra = {"rank": 0.75, "similarity": 1.0}
         tool.mixed_inputs = False
         await copies.capture_memory_rows(memory, "facts", "SELECT * FROM facts")
@@ -2246,6 +2297,9 @@ async def _assert_native_consolidation_full_ancestry():
                 self.witnesses[table] = {
                     "copy_generation": uuid4(),
                     "input_digest": b"p" * 32,
+                    "birth_digest": b"p" * 32,
+                    "parent_count": 1,
+                    "output_id": uuid4(),
                     "lineage_known": True,
                     "exclusive_input": True,
                     "body_digest": episode_body_digest(row)
@@ -2257,6 +2311,7 @@ async def _assert_native_consolidation_full_ancestry():
                     else artifact_content_digest(table, row),
                 }
             self.missing = None
+            self.partial = None
 
         async def fetchrow(self, sql, *args):
             table = sql.split(" FROM ")[1].split()[0]
@@ -2265,8 +2320,38 @@ async def _assert_native_consolidation_full_ancestry():
 
         async def fetch(self, sql, *args):
             table = "episodes" if "location_native_memory_commits" in sql else args[0]
-            return [] if table == self.missing else [self.witnesses[table]]
+            if table == self.missing:
+                return []
+            rows = [dict(self.witnesses[table])]
+            if table == "rules" and self.partial is not None:
+                rows[0]["parent_count"] = 2
+                second = {**rows[0], "copy_generation": sibling, "output_id": uuid4()}
+                if self.partial == "missing":
+                    second["output_id"], second["birth_digest"] = None, None
+                elif self.partial == "digest":
+                    second["birth_digest"] = b"x" * 32
+                rows.append(second)
+                if self.partial == "extra":
+                    rows.append({**second, "copy_generation": uuid4()})
+                if self.partial == "empty":
+                    rows = [
+                        {
+                            **rows[0],
+                            "copy_generation": None,
+                            "input_digest": None,
+                            "output_id": None,
+                            "birth_digest": None,
+                        }
+                    ]
+                if "LEFT JOIN" not in sql:
+                    rows = [
+                        r
+                        for r in rows
+                        if r["output_id"] is not None and r["birth_digest"] == r["input_digest"]
+                    ]
+            return rows
 
+    sibling = uuid4()
     bundle = Bundle()
     selected = {
         table: [{"id": row["id"], "content": row["content"]}] for table, row in bundle.rows.items()
@@ -2279,6 +2364,17 @@ async def _assert_native_consolidation_full_ancestry():
 
     parents, exclusive = await capture()
     assert exclusive is True and len(parents) == 3  # All actual native source generations survive.
+    bundle.partial = "complete"
+    full_parents, full_exclusive = await capture()
+    assert full_exclusive is True and len(full_parents) == 4
+    assert sibling in {p["copy_generation"] for p in full_parents}
+    for partial in ("missing", "digest", "extra", "empty"):
+        bundle.partial = partial
+        with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+            await capture()
+    bundle.partial = "complete"
+    assert (await capture()) == (full_parents, True)
+    bundle.partial = None
     bundle.rows["facts"]["reference_count"] = 7
     assert (await capture())[1] is True  # Producer content-v1 permits read counters only.
     bundle.missing = "rules"
@@ -2704,16 +2800,21 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     native_pool.tool_loans = list(pool.tool_loans)
     original_fetch = native_pool.fetch
     source_parent_known = True
+    source_partial = None
+    sibling_loan_parent = uuid4()
 
     async def source_fetch(sql, *args):
         if "location_catalog_copy_loans l" in sql:
             return native_pool.tool_loans
         if "location_native_catalog_generations" in sql:
-            return (
+            rows = (
                 [
                     {
                         "copy_generation": late_parent,
                         "input_digest": b"l" * 32,
+                        "birth_digest": b"l" * 32,
+                        "parent_count": 1,
+                        "output_id": identifier,
                         "lineage_known": True,
                         "exclusive_input": True,
                     }
@@ -2721,6 +2822,33 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
                 if source_parent_known
                 else []
             )
+            if rows and source_partial is not None:
+                rows[0]["parent_count"] = 2
+                second = {**rows[0], "copy_generation": sibling_loan_parent}
+                if source_partial == "missing":
+                    second["output_id"], second["birth_digest"] = None, None
+                elif source_partial == "digest":
+                    second["birth_digest"] = b"x" * 32
+                rows.append(second)
+                if source_partial == "extra":
+                    rows.append({**second, "copy_generation": uuid4()})
+                if source_partial == "empty":
+                    rows = [
+                        {
+                            **rows[0],
+                            "copy_generation": None,
+                            "input_digest": None,
+                            "output_id": None,
+                            "birth_digest": None,
+                        }
+                    ]
+                if "LEFT JOIN" not in sql:
+                    rows = [
+                        r
+                        for r in rows
+                        if r["output_id"] is not None and r["birth_digest"] == r["input_digest"]
+                    ]
+            return rows
         if "FROM chronicler.location_native_copy_births" in sql:
             return [
                 {
@@ -2760,6 +2888,30 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
         from butlers.chronicler.location_memory_copies import artifact_content_digest
 
         assert source_artifact[-1] == artifact_content_digest("rules", native_pool.artifact_row)
+        native_pool.writes.clear()
+        source_partial = "complete"
+        assert await contexts.capture_context_catalog_source(
+            writer, uuid4(), "rules", identifier, native_digest
+        )
+        full_source_rows = [
+            args
+            for sql, args in native_pool.writes
+            if "INSERT INTO" in sql and "location_native_dispatch_parents" in sql
+        ]
+        assert {args[1] for args in full_source_rows} == {
+            native_parent,
+            late_parent,
+            sibling_loan_parent,
+        }
+        for partial in ("missing", "digest", "extra", "empty"):
+            native_pool.writes.clear()
+            source_partial = partial
+            with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                await contexts.capture_context_catalog_source(
+                    writer, uuid4(), "rules", identifier, native_digest
+                )
+            assert native_pool.writes == []
+        source_partial = None
         native_pool.writes.clear()
         with pytest.raises(PolicyUnavailableError, match="body differs"):
             await contexts.capture_context_catalog_source(
@@ -2927,6 +3079,7 @@ async def _assert_native_memory_mutation_versions():
             ]
             self.declared_parent_count = 1
             self.dependency_present = True
+            self.dependency_count = 1
             self.intent_present = True
             self.input_unknown = False
             self.trace = []
@@ -3001,7 +3154,9 @@ async def _assert_native_memory_mutation_versions():
 
         async def fetchval(self, sql, *args):
             if "pg_catalog.pg_constraint" in sql:
-                return self.dependency_present
+                return self.dependency_present and (
+                    self.dependency_count == 1 if "count(*)=1" in sql else True
+                )
             if "location_runtime_tool_intents" in sql:
                 self.trace.append("intent_read")
                 return self.intent_present
@@ -3212,6 +3367,20 @@ async def _assert_native_memory_mutation_versions():
             await confirm_memory(native, "fact", native.row["id"])
         assert (native.row, native.transitions, native.input_births) == fixed_before
         native.dependency_present = True
+        native.dependency_count = 2
+        tool.generation = uuid4()
+        duplicate_before = deepcopy(
+            (native.row, native.transitions, native.input_births, native.mutation_inputs)
+        )
+        with pytest.raises(copies.PolicyUnavailableError, match="installed tool dependency"):
+            await confirm_memory(native, "fact", native.row["id"])
+        assert (
+            native.row,
+            native.transitions,
+            native.input_births,
+            native.mutation_inputs,
+        ) == duplicate_before
+        native.dependency_count = 1
         native.intent_present = False
         before = deepcopy((native.row, native.transitions, native.input_births))
         with pytest.raises(copies.PolicyUnavailableError, match="reservation is unavailable"):

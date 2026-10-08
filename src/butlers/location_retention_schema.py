@@ -23,6 +23,11 @@ def tool_input_dependency_sql(schema: str) -> str:
           -- parent. Its native producer cannot admit an input in this phase.
           IF child_oid IS NULL OR parent_oid IS NULL THEN RETURN; END IF;
           IF EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c
+              WHERE c.conrelid=child_oid AND c.contype='f' AND 2=ANY(c.conkey)
+                AND c.conname<>'location_native_memory_mutation_inputs_tool_generation_fkey') THEN
+            RAISE EXCEPTION 'Native mutation tool dependency differs';
+          END IF;
+          IF EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c
               WHERE c.conrelid=child_oid
                 AND c.conname='location_native_memory_mutation_inputs_tool_generation_fkey') THEN
             IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c
@@ -34,10 +39,6 @@ def tool_input_dependency_sql(schema: str) -> str:
               RAISE EXCEPTION 'Native mutation tool dependency differs';
             END IF;
           ELSE
-            IF EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c
-                WHERE c.conrelid=child_oid AND c.contype='f' AND 2=ANY(c.conkey)) THEN
-              RAISE EXCEPTION 'Native mutation tool dependency differs';
-            END IF;
             ALTER TABLE {child}
               ADD CONSTRAINT location_native_memory_mutation_inputs_tool_generation_fkey
               FOREIGN KEY(tool_generation) REFERENCES {parent}(tool_generation);

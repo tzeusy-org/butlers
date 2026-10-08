@@ -98,28 +98,36 @@ async def _captured_bundle_parents(conn: Any, episodes, facts, rules):
                 raise PolicyUnavailableError("Native consolidation full input changed")
             if table == "episodes":
                 witnesses = await conn.fetch(
-                    "SELECT b.copy_generation,b.input_digest,b.lineage_known,b.exclusive_input,"
+                    "SELECT p.copy_generation,p.input_digest,r.parent_count,b.output_id,"
+                    "b.input_digest AS birth_digest,b.lineage_known,b.exclusive_input,"
                     "c.body_digest FROM chronicler.location_native_memory_commits c "
-                    "JOIN chronicler.location_native_memory_parents p USING(reservation_id) "
-                    "JOIN chronicler.location_native_copy_births b "
-                    "USING(copy_generation,input_digest) WHERE c.episode_id=$1",
+                    "JOIN chronicler.location_native_memory_reservations r USING(reservation_id) "
+                    "LEFT JOIN chronicler.location_native_memory_parents p USING(reservation_id) "
+                    "LEFT JOIN chronicler.location_native_copy_births b "
+                    "ON b.copy_generation=p.copy_generation WHERE c.episode_id=$1",
                     expected["id"],
                 )
             else:
                 witnesses = await conn.fetch(
-                    "SELECT b.copy_generation,b.input_digest,"
+                    "SELECT p.copy_generation,p.input_digest,i.parent_count,b.output_id,"
+                    "b.input_digest AS birth_digest,"
                     "(b.lineage_known AND m.exclusive_input) AS lineage_known,"
                     "(b.exclusive_input AND m.exclusive_input) AS exclusive_input,"
                     "a.body_digest,a.content_digest,a.memory_table,a.artifact_generation "
                     "FROM chronicler.location_native_memory_artifacts a "
                     "JOIN chronicler.location_native_memory_bundles m USING(input_generation) "
-                    "JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
-                    "JOIN chronicler.location_native_copy_births b "
-                    "USING(copy_generation,input_digest) "
+                    "JOIN chronicler.location_native_dispatch_inputs i USING(input_generation) "
+                    "LEFT JOIN chronicler.location_native_dispatch_parents p "
+                    "USING(input_generation) "
+                    "LEFT JOIN chronicler.location_native_copy_births b "
+                    "ON b.copy_generation=p.copy_generation "
                     "WHERE a.memory_table=$1 AND a.artifact_id=$2",
                     table,
                     expected["id"],
                 )
+            from butlers.chronicler.location_memory_ancestry import require_complete_parents
+
+            require_complete_parents(witnesses)
             exclusive &= bool(witnesses)
             for witness in witnesses:
                 exclusive &= (
@@ -163,18 +171,15 @@ async def native_consolidation_input(
     domain, schema, role = registered
     ids = [UUID(str(row["id"])) for row in episodes]
     parents = await domain.fetch(
-        "SELECT DISTINCT p.copy_generation,p.input_digest FROM location_native_memory_commits c "
-        "JOIN location_native_memory_parents p USING(reservation_id) WHERE c.episode_id=ANY($1)",
+        "SELECT c.reservation_id FROM location_native_memory_commits c WHERE c.episode_id=ANY($1)",
         ids,
     )
     for table, selected in (("facts", facts), ("rules", rules)):
         if selected:
             parents = list(parents) + list(
                 await domain.fetch(
-                    "SELECT DISTINCT b.copy_generation,b.input_digest "
+                    "SELECT a.input_generation "
                     "FROM location_native_memory_artifacts a "
-                    "JOIN location_native_dispatch_parents p USING(input_generation) "
-                    "JOIN location_native_copy_births b USING(copy_generation,input_digest) "
                     "WHERE a.memory_table=$1 AND a.artifact_id=ANY($2::uuid[])",
                     table,
                     [UUID(str(row["id"])) for row in selected],

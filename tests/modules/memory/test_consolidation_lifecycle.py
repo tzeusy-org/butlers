@@ -1259,6 +1259,51 @@ async def _assert_native_memory_mutation_chain(pool, domain):
                 "AND conname='location_native_memory_mutation_inputs_tool_generation_fkey' "
                 "AND contype='f' AND convalidated)"
             )
+            # The expected FK alongside an extra FK is not the exact installed
+            # set. Both migration convergence and actual producer must refuse.
+            await domain.execute(
+                "ALTER TABLE location_native_memory_mutation_inputs ADD CONSTRAINT "
+                "planted_extra_tool_dependency FOREIGN KEY(tool_generation) "
+                "REFERENCES location_runtime_tool_intents(tool_generation)"
+            )
+            with pytest.raises(asyncpg.RaiseError, match="tool dependency differs"):
+                await domain.execute(tool_input_dependency_sql("chronicler"))
+            with pytest.raises(PolicyUnavailableError, match="installed tool dependency"):
+                await confirm_memory(pool, "fact", artifact)
+            assert not await domain.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_memory_mutation_inputs "
+                "WHERE tool_generation=$1)",
+                tool_generation,
+            )
+            await domain.execute(
+                "ALTER TABLE location_native_memory_mutation_inputs DROP CONSTRAINT "
+                "planted_extra_tool_dependency"
+            )
+            await domain.execute(
+                "ALTER TABLE location_native_memory_mutation_inputs ALTER CONSTRAINT "
+                "location_native_memory_mutation_inputs_tool_generation_fkey DEFERRABLE"
+            )
+            with pytest.raises(asyncpg.RaiseError, match="tool dependency differs"):
+                await domain.execute(tool_input_dependency_sql("chronicler"))
+            with pytest.raises(PolicyUnavailableError, match="installed tool dependency"):
+                await confirm_memory(pool, "fact", artifact)
+            assert not await domain.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_memory_mutation_inputs "
+                "WHERE tool_generation=$1)",
+                tool_generation,
+            )
+            await domain.execute(
+                "ALTER TABLE location_native_memory_mutation_inputs ALTER CONSTRAINT "
+                "location_native_memory_mutation_inputs_tool_generation_fkey NOT DEFERRABLE"
+            )
+            await domain.execute(tool_input_dependency_sql("chronicler"))
+            async with domain.acquire() as observed:
+                assert await observed.fetchval(
+                    "SELECT count(*)=1 AND bool_and(convalidated AND NOT condeferrable "
+                    "AND NOT condeferred) FROM pg_catalog.pg_constraint WHERE "
+                    "conrelid='chronicler.location_native_memory_mutation_inputs'::pg_catalog.regclass "
+                    "AND contype='f' AND 2=ANY(conkey)"
+                )
             with pytest.raises(RuntimeError, match="planted input rollback"):
                 async with memory_mutation_transaction(pool, "facts", artifact) as writer:
                     await writer.execute(
@@ -1358,6 +1403,7 @@ async def _assert_native_memory_mutation_chain(pool, domain):
 async def _assert_two_parent_native_mutation_inputs(pool, domain, runtime, session_id):
     """Declared ancestry SQL controls; private receiving/source bindings planted."""
     from butlers.chronicler.location_memory_copies import artifact_content_digest
+    from butlers.chronicler.location_memory_derivation import _captured_bundle_parents
     from butlers.chronicler.location_projection import _digest_value
     from butlers.chronicler.location_retention import PolicyUnavailableError
     from butlers.chronicler.location_tool_copies import (
@@ -1368,15 +1414,18 @@ async def _assert_two_parent_native_mutation_inputs(pool, domain, runtime, sessi
     from butlers.location_retention import content_digest
     from butlers.modules.memory.storage import confirm_memory
 
-    for species in ("missing", "mismatched_digest", "extra", "complete"):
+    for species in ("missing", "mismatched_digest", "extra", "empty", "complete"):
         artifact, generation, bundle, tool_id = (uuid.uuid4() for _ in range(4))
-        parents = [uuid.uuid4() for _ in range(3 if species == "extra" else 2)]
+        parents = [
+            uuid.uuid4() for _ in range(0 if species == "empty" else 3 if species == "extra" else 2)
+        ]
         async with pool.acquire() as writer:
             async with writer.transaction():
                 await writer.execute(
                     "INSERT INTO facts(id,subject,predicate,content) "
-                    "VALUES($1,'native','location','two-parent fixed source body')",
+                    "VALUES($1,$2,'location','two-parent fixed source body')",
                     artifact,
+                    "native-" + species + "-" + artifact.hex,
                 )
                 row = await writer.fetchrow("SELECT * FROM facts WHERE id=$1", artifact)
                 await writer.execute(
@@ -1422,6 +1471,25 @@ async def _assert_two_parent_native_mutation_inputs(pool, domain, runtime, sessi
                     content_digest({"memory_artifact": _digest_value(dict(row))}),
                     artifact_content_digest("facts", row),
                 )
+        # The same frozen bundle feeds actual consolidation. Check all declared
+        # parents before copying the prompt, independently of mutation admission.
+        async with pool.acquire() as observed:
+            async with observed.transaction():
+                from butlers.chronicler.location_memory_copies import _lock
+
+                await _lock(observed, "chronicler_mem", runtime.memory_identity[1])
+                selected = [
+                    dict(await observed.fetchrow("SELECT * FROM facts WHERE id=$1", artifact))
+                ]
+                if species != "complete":
+                    with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                        await _captured_bundle_parents(observed, [], selected, [])
+                else:
+                    captured_parents, exclusive = await _captured_bundle_parents(
+                        observed, [], selected, []
+                    )
+                    assert exclusive is True and len(captured_parents) == 2
+                    assert {p["copy_generation"] for p in captured_parents} == set(parents)
         await domain.execute(
             "INSERT INTO location_runtime_tool_intents "
             "(tool_generation,receiving_session,tool_name,module_name,input_digest) "

@@ -527,3 +527,22 @@ trusted installer restoration and the existing actual writer positives; new SQL
 remains unrun locally until the exact hosted receipt. Exact f4cb official evidence
 was0FAIL20setupERROR, with source-bound UndefinedTableError for the absent parent;
 its extended Memory and engine nodes were unreached, not positive evidence.
+
+Complete native ancestry also applies at the actual selected-row Memory reader,
+consolidation prompt capture, inherited catalog-context producer and owning episode
+disposal. Each reads the original frozen parent count and preserves all declared
+parents, including a native header with no surviving parent births. Missing,
+changed-digest or extra ancestry refuses before another copied input or terminal
+receipt; a smaller successful join is never a replacement cohort. Truly independent
+rows remain distinct from incomplete native records. Complete two-parent positives
+and empty/missing/digest/extra negatives are positioned in the existing software and
+migrated species; new migrated controls remain locally UNRUN until exact hosted
+readback. No peer namespace, role or caller-selected source proof is introduced.
+
+The installer and native admission check the complete tool-generation FK set,
+including an extra differently named FK beside the expected valid FK. Only one
+exact validated, nondeferrable NO ACTION dependency qualifies; extra or differing
+constraints refuse before any input/business write. Existing migrated controls
+plant the extra dependency and a differing deferrability profile, prove installer
+and native refusal, then restore the exact-one source installation and read it
+back separately. Those new controls are hosted-only, not locally executed SQL.

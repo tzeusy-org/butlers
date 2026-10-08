@@ -1066,17 +1066,23 @@ async def capture_context_catalog_source(
         # Memory bridge. Other receivers never read this namespace. A loan from
         # any other source must use that source's actual owning protocol.
         selected = await conn.fetch(
-            "SELECT DISTINCT b.copy_generation,b.input_digest,b.lineage_known,b.exclusive_input "
+            "SELECT p.copy_generation,p.input_digest,i.parent_count,b.output_id,"
+            "b.input_digest AS birth_digest,b.lineage_known,b.exclusive_input "
             "FROM chronicler.location_native_catalog_generations g "
             "JOIN chronicler.location_native_memory_artifacts a USING(artifact_generation) "
-            "JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
-            "JOIN chronicler.location_native_copy_births b USING(copy_generation,input_digest) "
+            "JOIN chronicler.location_native_dispatch_inputs i USING(input_generation) "
+            "LEFT JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
+            "LEFT JOIN chronicler.location_native_copy_births b "
+            "ON b.copy_generation=p.copy_generation "
             "WHERE g.source_generation=$1 AND g.body_digest=$2",
             loan["source_generation"],
             loan["body_digest"],
         )
         if not selected:
             return False
+        from butlers.chronicler.location_memory_ancestry import require_complete_parents
+
+        require_complete_parents(selected)
         loan_parents.extend(selected)
     parents = await conn.fetch(
         "SELECT DISTINCT copy_generation,input_digest,lineage_known,exclusive_input "
