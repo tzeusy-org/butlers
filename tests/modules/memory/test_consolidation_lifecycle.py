@@ -1210,7 +1210,8 @@ async def _assert_native_memory_mutation_chain(pool, domain):
 
         session_id, tool_generation = uuid.uuid4(), uuid.uuid4()
         await domain.execute(
-            "INSERT INTO sessions(id,prompt,trigger_source,request_id) VALUES($1,$2,$3,$4)",
+            "INSERT INTO sessions(id,prompt,trigger_source,request_id,effective_system_prompt) "
+            "VALUES($1,$2,$3,$4,'synthetic frozen system')",
             session_id,
             "planted receiving input",
             "test:native_mutation",
@@ -1551,15 +1552,12 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
     from butlers.chronicler.location_policy import PolicyUnavailableError
     from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
     from butlers.core.delegation_ledger import record_ask
+    from butlers.location_retention import content_digest
 
     context, tool_generation = uuid.uuid4(), uuid.uuid4()
     async with domain.acquire() as conn:
         async with conn.transaction():
             await runtime.lock_domain(conn)
-            await conn.execute(
-                "UPDATE sessions SET effective_system_prompt='synthetic frozen system' WHERE id=$1",
-                session_id,
-            )
             session = await conn.fetchrow("SELECT * FROM sessions WHERE id=$1", session_id)
             await conn.execute(
                 "INSERT INTO location_runtime_context_intents(input_generation,receiving_session) "
@@ -1570,9 +1568,19 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
             await conn.execute(
                 "INSERT INTO location_runtime_context_bindings "
                 "(input_generation,receiving_session,bundle_digest,context_digest,system_digest,"
-                "prompt_digest,exclusive_input,context_bytes) VALUES($1,$2,$3,$3,$4,$5,true,0)",
+                "prompt_digest,exclusive_input,context_bytes) VALUES($1,$2,$3,$4,$5,$6,true,0)",
                 context,
                 session_id,
+                content_digest(
+                    {
+                        "loans": [],
+                        "context": (b"c" * 32).hex(),
+                        "system": hashlib.sha256(
+                            session["effective_system_prompt"].encode()
+                        ).hexdigest(),
+                        "prompt": hashlib.sha256(session["prompt"].encode()).hexdigest(),
+                    }
+                ),
                 b"c" * 32,
                 hashlib.sha256(session["effective_system_prompt"].encode()).digest(),
                 hashlib.sha256(session["prompt"].encode()).digest(),

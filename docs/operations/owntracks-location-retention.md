@@ -560,6 +560,12 @@ native/catalog parent, refuses disposed or prepared inputs, and captures the
 full frozen question frame plus its immutable complete parent set before the
 public ledger insert in the SAME transaction. A separate committed acquisition
 reads header, canonical question and every parent before dispatch can proceed.
+The original context loan set is reconstructed with its stored context, system
+and prompt digests and compared to the immutable bundle digest. A missing loan
+lifetime cannot shrink that original bundle. Later stored tool inputs require
+each exact owning loan and lifetime digest; repeated identical loans deduplicate
+without hiding a missing or changed dependency. Sessions seed their actual
+system prompt before input binding; fixture code cannot rewrite that frozen body.
 Rollback removes both births and ledger body. Unknown acknowledgement preserves
 the committed copy and refuses dispatch; it never fabricates rollback.
 

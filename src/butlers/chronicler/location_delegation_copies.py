@@ -96,20 +96,54 @@ class NativeDelegationWriter:
                     raise PolicyUnavailableError("Native delegation receiving context is disposed")
                 exclusive = frozen["exclusive_input"] is True and not tool.mixed_inputs
                 # Each receiver sees only its OWN committed loan source history.
-                loans = await conn.fetch(
+                context_loans = await conn.fetch(
                     "SELECT l.loan_id AS parent_generation,l.body_digest AS parent_digest "
                     "FROM location_catalog_copy_loans l "
                     "JOIN location_catalog_copy_lifetimes h USING(loan_id,body_digest) "
-                    "WHERE h.holder_id=$1 OR EXISTS(SELECT 1 FROM location_runtime_tool_intents t "
-                    "JOIN location_runtime_tool_inputs i USING(tool_generation) "
-                    "WHERE t.receiving_session=$2 AND i.loan_id=l.loan_id "
-                    "AND i.body_digest=l.body_digest) ORDER BY l.loan_id",
+                    "WHERE h.holder_id=$1 AND h.holder_kind='unbound_processing' "
+                    "ORDER BY l.loan_id",
                     frozen["input_generation"],
+                )
+                reconstructed = content_digest(
+                    {
+                        "loans": [
+                            [str(row["parent_generation"]), row["parent_digest"].hex()]
+                            for row in context_loans
+                        ],
+                        "context": frozen["context_digest"].hex(),
+                        "system": frozen["system_digest"].hex(),
+                        "prompt": frozen["prompt_digest"].hex(),
+                    }
+                )
+                if reconstructed != frozen["bundle_digest"]:
+                    raise PolicyUnavailableError("Native delegation complete context loans differ")
+                later = await conn.fetch(
+                    "SELECT i.loan_id AS parent_generation,i.body_digest AS parent_digest,"
+                    "l.body_digest AS loan_digest,h.body_digest AS lifetime_digest "
+                    "FROM location_runtime_tool_inputs i "
+                    "JOIN location_runtime_tool_intents t USING(tool_generation) "
+                    "LEFT JOIN location_catalog_copy_loans l USING(loan_id) "
+                    "LEFT JOIN location_catalog_copy_lifetimes h ON h.loan_id=i.loan_id "
+                    "AND h.holder_id=t.tool_generation AND h.holder_kind='unbound_processing' "
+                    "WHERE t.receiving_session=$1 ORDER BY i.loan_id",
                     tool.session,
                 )
+                if any(
+                    row["loan_digest"] != row["parent_digest"]
+                    or row["lifetime_digest"] != row["parent_digest"]
+                    for row in later
+                ):
+                    raise PolicyUnavailableError("Native delegation complete tool loans differ")
+                indexed = {row["parent_generation"]: row["parent_digest"] for row in context_loans}
+                for row in later:
+                    if (
+                        row["parent_generation"] in indexed
+                        and indexed[row["parent_generation"]] != row["parent_digest"]
+                    ):
+                        raise PolicyUnavailableError("Native delegation loan generation differs")
+                    indexed[row["parent_generation"]] = row["parent_digest"]
                 parents = [
-                    ("catalog_loan", row["parent_generation"], row["parent_digest"])
-                    for row in loans
+                    ("catalog_loan", selected, body) for selected, body in sorted(indexed.items())
                 ]
                 if runtime.name == "chronicler":
                     from butlers.chronicler.location_memory_ancestry import require_complete_parents

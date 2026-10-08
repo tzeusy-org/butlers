@@ -574,6 +574,7 @@ async def _assert_native_delegated_question_birth():
     from butlers.chronicler.location_policy import PolicyUnavailableError
     from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
     from butlers.core.delegation_source import clear_writer, register_writer
+    from butlers.location_retention import content_digest
 
     trace = []
 
@@ -587,6 +588,10 @@ async def _assert_native_delegated_question_birth():
                 "prompt_digest": hashlib.sha256(b"frozen prompt").digest(),
                 "system_digest": hashlib.sha256(b"frozen system").digest(),
             }
+            self.context["context_digest"] = b"c" * 32
+            self.context_loans = []
+            self.later = []
+            self.freeze_bundle()
             self.composed_changed = False
             self.intent = True
             self.fenced = False
@@ -595,6 +600,19 @@ async def _assert_native_delegated_question_birth():
             self.fail_business = False
             self.acquired = 0
             self.in_transaction = False
+
+        def freeze_bundle(self):
+            self.context["bundle_digest"] = content_digest(
+                {
+                    "loans": [
+                        [str(row["parent_generation"]), row["parent_digest"].hex()]
+                        for row in self.context_loans
+                    ],
+                    "context": self.context["context_digest"].hex(),
+                    "system": self.context["system_digest"].hex(),
+                    "prompt": self.context["prompt_digest"].hex(),
+                }
+            )
 
         @asynccontextmanager
         async def acquire(self):
@@ -662,6 +680,8 @@ async def _assert_native_delegated_question_birth():
                 return False
             if "location_native_copy_dispositions" in sql:
                 return self.fenced
+            if "location_catalog_copy_dispositions" in sql:
+                return False
             if "public.delegation_ledger" in sql:
                 trace.append("business")
                 if self.fail_business:
@@ -705,8 +725,10 @@ async def _assert_native_delegated_question_birth():
         async def fetch(self, sql, *args):
             if "location_native_dispatch_sessions" in sql:
                 return self.dispatch
+            if "FROM location_runtime_tool_inputs" in sql:
+                return self.later
             if "location_catalog_copy_loans" in sql:
-                return []
+                return self.context_loans
             if "location_native_copy_births" in sql:
                 return [
                     {
@@ -793,6 +815,30 @@ async def _assert_native_delegated_question_birth():
         assert len(pool.headers) == len(pool.ledger) == 2  # Unknown ACK cannot fake rollback.
         pool.unknown = False
         assert uuid.UUID(await record()) in pool.ledger
+        loan = {"parent_generation": uuid.uuid4(), "parent_digest": b"l" * 32}
+        pool.context_loans = [loan]
+        pool.freeze_bundle()
+        prior_count = len(pool.headers)
+        assert uuid.UUID(await record()) in pool.ledger
+        assert len(pool.headers) == prior_count + 1
+        assert next(reversed(pool.headers.values()))["parent_count"] == 2
+        pool.context_loans = []  # Missing lifetime must not shrink the frozen original bundle.
+        prior_count = len(pool.headers)
+        with pytest.raises(PolicyUnavailableError, match="complete context loans differ"):
+            await record()
+        assert len(pool.headers) == prior_count
+        pool.context_loans = [loan]
+        for missing in ("loan_digest", "lifetime_digest"):
+            pool.later = [dict(loan, loan_digest=b"l" * 32, lifetime_digest=b"l" * 32)]
+            pool.later[0][missing] = None
+            with pytest.raises(PolicyUnavailableError, match="complete tool loans differ"):
+                await record()
+            assert len(pool.headers) == prior_count
+        pool.later = [dict(loan, loan_digest=b"l" * 32, lifetime_digest=b"l" * 32)]
+        assert uuid.UUID(await record()) in pool.ledger
+        assert (
+            next(reversed(pool.headers.values()))["parent_count"] == 2
+        )  # Complete shared loan, once.
     finally:
         _current_tool_copy.reset(token)
         clear_writer(pool, writer)
