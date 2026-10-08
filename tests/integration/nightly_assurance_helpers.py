@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import uuid
 from datetime import UTC, datetime
@@ -37,8 +38,9 @@ async def exercise_nightly_runtime_boundary(admin, db_url, tmp_path, monkeypatch
         return {"status": "sent", "notification_id": str(uuid.uuid4())}
 
     monkeypatch.setattr(job, "resolve_owner_telegram_recipient", recipient)
-    from butlers.tools.switchboard.notification import deliver
-
+    # The package exports a function named deliver; patch the actual module
+    # resolved by production's local function import, not that package alias.
+    deliver = importlib.import_module("butlers.tools.switchboard.notification.deliver")
     monkeypatch.setattr(deliver, "deliver", transport)
     day = datetime(2026, 10, 4, 12, tzinfo=UTC)  # 20:00 Singapore, ordinary gate open
     quiet = datetime(2026, 10, 4, 16, tzinfo=UTC)  # 00:00 Singapore, seeded policy closes

@@ -367,7 +367,9 @@ jobs:
       always() && needs.nightly.result == 'success' &&
       needs.faketime-matrix.result == 'success' &&
       needs.exact-image-sandbox.result == 'success'
-    timeout-minutes: 75
+    # Full population3600+30s, isolated QA up to2x300+30s, UV640 and
+    # setup/artifact reserve fit this finite provisional new-job bound.
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

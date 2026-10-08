@@ -17,15 +17,17 @@ from pathlib import Path
 
 from summarize_junit_durations import sanitize_junit_report
 
-from butlers.nightly_assurance import VARIANTS, RunIdentity, atomic_json, digest, read_json
+from butlers.nightly_assurance import (
+    EXACT_IMAGE_FUNCTIONS,
+    VARIANTS,
+    RunIdentity,
+    atomic_json,
+    digest,
+    read_json,
+)
 
 MARKERS = "not bench and not perf and not nightly and not pg_clock and not faketime_fragile"
-EXACT_NODES = (
-    "test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled",
-    "test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence",
-    "test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other",
-    "test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment",
-)
+EXACT_NODES = EXACT_IMAGE_FUNCTIONS
 
 
 def command(variant: str) -> list[str]:

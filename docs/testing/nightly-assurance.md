@@ -180,3 +180,29 @@ with the runner date. Every original keep/drop assertion remains, and the same
 January partition has a positive eligibility companion a year later. Real
 libfaketime software reproduction was red at +120 days before this fixture
 repair and green at ordinary/+45/+120 days after it; it is not SQL proof.
+
+Reconciliation reads current canonical assignment/status before every incident
+mutation and applies the installed CLI's owner/status guards. Independent readback
+preserves the complete existing contract, unrelated metadata and relation edges.
+The CLI's close command has no such guards: automatic recovery therefore uses a
+guarded closed-status update only for an unpinned ordinary owned incident with
+no dependency/dependent edges. Other recovery states remain explicitly unavailable
+for coordinator adjudication. Active foreign file-cluster ownership is retained
+and classified without mutation; closed own clusters are guarded-reopened on
+recurrence, while closed foreign or unknown-owner coverage is never called active.
+
+A green exact-image assessment requires the exact four original selected safe
+nodes, each with a nonskipped PASSED outcome. Successful job/exit flags cannot
+substitute four skips, missing nodes, duplicates or unrelated replacements.
+Existing legitimate named skips in other whole-corpus species remain permitted.
+
+All existing timeout-register rows remain unchanged. Three added job rows are
+explicitly provisional: folded-clock90 minutes, assessor10 minutes and manual
+kernel diagnostic30 minutes. The folded bound covers the full3600-second
+population watchdog and its30-second abort grace, up to two original300-second
+QA cases and abort grace, UV640 plus setup/artifact reserve. These finite new-job
+bounds are command envelopes, not actual healthy p95 or wall-clock-gain evidence.
+The original75-minute faketime-matrix bound remains unchanged. Its enforcing
+3600-second ABRT/30-second KILL and300-second thread argv now come from the
+actual wrapper; the owning contract executes that producer and checks the same
+scope, marker, worker and timeout invariants rather than searching copied prose.

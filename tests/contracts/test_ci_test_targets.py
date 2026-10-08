@@ -913,9 +913,47 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
     ]
     assert nightly["timeout-minutes"] == 75
     nightly_shell = "\n".join(step.get("run", "") for step in nightly["steps"])
-    assert "WATCHDOG_SECONDS=3600" in nightly_shell
-    assert "--signal=SIGABRT --kill-after=30s" in nightly_shell
-    assert "--timeout=300 --timeout-method=thread" in nightly_shell
+    # REQ-nightly-ci-assurance-004: enforcement moved to the actual wrapper.
+    # Execute its command producer instead of treating copied comments/literals
+    # as a watchdog. The registered workflow must call that same producer.
+    import importlib.util
+
+    wrapper_path = REPO_ROOT / "scripts/run_nightly_assurance.py"
+    assert "python scripts/run_nightly_assurance.py" in nightly_shell
+    assert '--variant "${VARIANT}"' in nightly_shell
+    wrapper_spec = importlib.util.spec_from_file_location("nightly_command_contract", wrapper_path)
+    assert wrapper_spec and wrapper_spec.loader
+    wrapper = importlib.util.module_from_spec(wrapper_spec)
+    previous_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        wrapper_spec.loader.exec_module(wrapper)
+    finally:
+        sys.path[:] = previous_path
+    for variant in ("offset-45", "offset-120", "folded-hour", "folded-minute"):
+        actual = wrapper.command(variant)
+        assert actual[:4] == ["timeout", "--signal=SIGABRT", "--kill-after=30s", "3600"]
+        assert actual[-2:] == ["--timeout=300", "--timeout-method=thread"]
+        assert actual[4:8] == ["uv", "run", "--no-sync", "pytest"]
+        assert actual[actual.index("-m") + 1] == (
+            "not bench and not perf and not nightly and not pg_clock and not faketime_fragile"
+        )
+        assert ["tests/", "roster/"] == actual[actual.index("tests/") : actual.index("tests/") + 2]
+        assert actual[actual.index("-n") + 1] == "auto"
+        assert actual[actual.index("--dist") + 1] == "loadfile"
+        assert "--ignore=tests/e2e" in actual
+    assert wrapper.command("schema")[6:8] == [
+        "tests/config/test_schema_matrix_migrations.py",
+        "tests/migrations/",
+    ]
+    assert wrapper.command("exact-image")[6] == "tests/cli/test_runtime_cli_sandbox.py"
+    assert len(wrapper.EXACT_NODES) == 4
+    assert set(wrapper.EXACT_NODES) == {
+        "test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled",
+        "test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence",
+        "test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other",
+        "test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment",
+    }
 
     schedules = yaml.safe_load((REPO_ROOT / ".github/workflows/e2e-main-schedule.yml").read_text())
     browser_jobs = [jobs["frontend-e2e"], schedules["jobs"]["frontend-e2e"]]

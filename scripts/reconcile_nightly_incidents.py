@@ -39,6 +39,7 @@ class BeadsCoordinator:
     def __init__(self, *, apply: bool, owner: str | None) -> None:
         self.apply = apply
         self.owner = owner
+        self.cluster_states: dict[str, dict] = {}
 
     def command(self, arguments: list[str], *, input_text: str | None = None) -> Any:
         mutation = arguments[0] in {"create", "update", "close", "dep"}
@@ -91,6 +92,57 @@ class BeadsCoordinator:
             raise EvidenceUnavailable("beads-identity-readback-mismatch")
         return row
 
+    @staticmethod
+    def metadata(row: dict) -> dict:
+        value = row.get("metadata", {})
+        if not isinstance(value, dict):
+            raise EvidenceUnavailable("invalid-beads-metadata")
+        return value
+
+    @staticmethod
+    def contract(row: dict) -> dict:
+        """Complete readback projection, excluding only this subsystem's mutable state."""
+        metadata = row.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise EvidenceUnavailable("invalid-beads-metadata")
+        return {
+            key: value
+            for key, value in row.items()
+            if key not in {"status", "metadata", "updated_at", "closed_at", "closed_reason"}
+        } | {"metadata": {key: value for key, value in metadata.items() if key != "nightly"}}
+
+    def owned(self, row: dict) -> None:
+        if not self.owner or row.get("assignee") != self.owner:
+            raise EvidenceUnavailable("foreign-or-unknown-bead-owner")
+        if row.get("status") not in {"open", "in_progress", "blocked", "closed"}:
+            raise EvidenceUnavailable("unknown-bead-status")
+
+    def guarded_update(self, before: dict, fields: list[str], *, status: str | None = None) -> dict:
+        """Actual CLI owner/status CAS plus independent whole-contract/edge readback."""
+        self.owned(before)
+        fresh = self.show(before["id"])
+        if fresh != before:
+            raise EvidenceUnavailable("bead-changed-before-mutation")
+        self.command(
+            [
+                "update",
+                before["id"],
+                "--if-assignee",
+                self.owner,
+                "--if-status",
+                before["status"],
+                *fields,
+                "--json",
+            ]
+        )
+        after = self.show(before["id"])
+        if self.contract(after) != self.contract(before) or after.get("status") != (
+            status or before["status"]
+        ):
+            raise EvidenceUnavailable("bead-contract-or-relations-changed")
+        self.owned(after)
+        return after
+
     def cluster(self, path: str, assessment: Assessment) -> str | None:
         if (
             not re.fullmatch(r"(?:tests|roster)/[A-Za-z0-9_./-]+\.py", path)
@@ -99,7 +151,37 @@ class BeadsCoordinator:
             raise EvidenceUnavailable("unsafe-node-owner-path")
         external_ref = f"nightly-file:{digest(path)}"
         existing = self.find(external_ref)
+        expected = {
+            "version": VERSION,
+            "repository": REPOSITORY,
+            "workflow": WORKFLOW,
+            "path": path,
+        }
         if existing:
+            existing = self.show(existing["id"])
+            if (
+                existing.get("external_ref") != external_ref
+                or self.metadata(existing).get("nightly_cluster") != expected
+            ):
+                raise EvidenceUnavailable("foreign-or-unknown-file-cluster")
+            assignee, status = existing.get("assignee"), existing.get("status")
+            if not isinstance(assignee, str) or not assignee:
+                raise EvidenceUnavailable("file-cluster-owner-unavailable")
+            if status == "closed":
+                self.owned(existing)
+                if not self.apply:
+                    raise EvidenceUnavailable("closed-file-cluster-requires-reconciliation")
+                existing = self.guarded_update(existing, ["--status", "open"], status="open")
+                status = "open"
+            if status not in {"open", "in_progress", "blocked"}:
+                raise EvidenceUnavailable("file-cluster-not-active")
+            self.cluster_states[existing["id"]] = {
+                "status": status,
+                "assignee": assignee,
+                "classification": "active-owned"
+                if assignee == self.owner
+                else "active-foreign-owned",
+            }
             return existing["id"]
         if not self.apply:
             return None
@@ -126,6 +208,8 @@ class BeadsCoordinator:
                 external_ref,
                 "--body-file",
                 "-",
+                "--metadata",
+                json.dumps({"nightly_cluster": expected}),
                 "--acceptance",
                 "Causal old red and current positive; "
                 "owning invariants and exact-hosted proof retained.",
@@ -133,8 +217,19 @@ class BeadsCoordinator:
             ],
             input_text=description,
         )
-        if self.show(bead_id).get("external_ref") != external_ref:
+        created = self.show(bead_id)
+        self.owned(created)
+        if (
+            created.get("external_ref") != external_ref
+            or created.get("status") != "open"
+            or self.metadata(created).get("nightly_cluster") != expected
+        ):
             raise EvidenceUnavailable("cluster-external-reference-readback-mismatch")
+        self.cluster_states[bead_id] = {
+            "status": "open",
+            "assignee": self.owner,
+            "classification": "active-owned",
+        }
         return bead_id
 
     def reconcile(self, *, issue: int, assessment: Assessment, recover: bool) -> dict:
@@ -142,23 +237,24 @@ class BeadsCoordinator:
         existing = self.find(external_ref)
         if existing:
             existing = self.show(existing["id"])
-            old = existing.get("metadata", {}).get("nightly", {})
+            old = self.metadata(existing).get("nightly", {})
+            self.owned(existing)
             if old.get("repository") != REPOSITORY or old.get("workflow") != WORKFLOW:
                 raise EvidenceUnavailable("foreign-existing-incident")
         else:
             old = {}
         if recover:
             if existing and self.apply and existing.get("status") != "closed":
-                self.command(
-                    [
-                        "close",
-                        existing["id"],
-                        "--reason",
-                        "Verified complete nightly recovery; file-cluster work remains separate.",
-                        "--json",
-                    ]
-                )
-                existing = self.show(existing["id"])
+                # bd close lacks owner/status guards. A guarded status update
+                # is restricted to an unpinned ordinary incident with NO edges;
+                # it cannot bypass a dependency, dependent, gate or pinned close.
+                if (
+                    existing.get("pinned")
+                    or existing.get("issue_type", existing.get("type")) in {"gate", "epic"}
+                    or any(existing.get(key) for key in ("dependencies", "dependents", "blocks"))
+                ):
+                    raise EvidenceUnavailable("incident-recovery-relations-require-coordinator")
+                existing = self.guarded_update(existing, ["--status", "closed"], status="closed")
                 if existing.get("status") != "closed":
                     raise EvidenceUnavailable("recovery-readback-unavailable")
             return {
@@ -168,6 +264,10 @@ class BeadsCoordinator:
                 "owners": old.get("owners", {}),
             }
         owners = dict(old.get("owners", {}))
+        self.cluster_states.clear()
+        for node in owners:
+            path = node.split(":", 1)[1].split("::", 1)[0]
+            owners[node] = self.cluster(path, assessment)
         for node in assessment.failures:
             path = node.split(":", 1)[1].split("::", 1)[0]
             owners[node] = self.cluster(path, assessment)
@@ -186,6 +286,7 @@ class BeadsCoordinator:
             "episode_id": episode,
             "key": assessment.key,
             "owners": owners,
+            "owner_states": dict(self.cluster_states),
             "assessment": assessment.document(),
         }
         if not self.apply:
@@ -229,13 +330,20 @@ class BeadsCoordinator:
             )
         else:
             bead_id = existing["id"]
-            arguments = ["update", bead_id, "--set-metadata", f"nightly={json.dumps(metadata)}"]
-            if existing.get("status") == "closed":
-                arguments += ["--if-status", "closed", "--status", "open"]
-            self.command(arguments + ["--json"])
+            arguments = ["--set-metadata", f"nightly={json.dumps(metadata)}"]
+            status = existing["status"]
+            if status == "closed":
+                arguments += ["--status", "open"]
+                status = "open"
+            self.guarded_update(existing, arguments, status=status)
         readback = self.show(bead_id)
-        stored = readback.get("metadata", {}).get("nightly", {})
-        if readback.get("external_ref") != external_ref or stored != metadata:
+        self.owned(readback)
+        stored = self.metadata(readback).get("nightly", {})
+        if (
+            readback.get("external_ref") != external_ref
+            or stored != metadata
+            or readback.get("status") not in {"open", "in_progress", "blocked"}
+        ):
             raise EvidenceUnavailable("incident-readback-unavailable")
         return {"incident_id": bead_id, "episode_id": episode, "status": "open", "owners": owners}
 

@@ -18,6 +18,7 @@ import pytest
 
 from butlers.nightly_assurance import (
     BASE_VARIANTS,
+    EXACT_IMAGE_MANIFEST,
     REPOSITORY,
     WORKFLOW,
     EvidenceUnavailable,
@@ -87,18 +88,39 @@ def _assessment(
         variant: {
             **identity.document(),
             "variant": variant,
-            "manifest": manifest,
-            "manifest_digest": digest(manifest),
+            "manifest": sorted(EXACT_IMAGE_MANIFEST) if variant == "exact-image" else manifest,
+            "manifest_digest": digest(
+                sorted(EXACT_IMAGE_MANIFEST) if variant == "exact-image" else manifest
+            ),
             "controller_complete": True,
             "clock_conformance_verified": True,
             "exit_code": 1 if failed and n == 1 else 0,
             "outcomes": {
                 node: "FAILED" if failed and n == 1 and i == 0 else "PASSED"
-                for i, node in enumerate(manifest)
+                for i, node in enumerate(
+                    sorted(EXACT_IMAGE_MANIFEST) if variant == "exact-image" else manifest
+                )
             },
         }
         for n, variant in enumerate(BASE_VARIANTS)
     }
+    kernel = evidence["exact-image"]
+    if corrupt == "kernel-skips":
+        kernel["outcomes"] = dict.fromkeys(kernel["manifest"], "SKIPPED")
+    elif corrupt == "kernel-missing":
+        kernel["manifest"].pop()
+        kernel["outcomes"] = dict.fromkeys(kernel["manifest"], "PASSED")
+    elif corrupt == "kernel-extra":
+        kernel["manifest"].append("tests/example.py::test_replacement::case-1")
+        kernel["outcomes"] = dict.fromkeys(kernel["manifest"], "PASSED")
+    elif corrupt == "kernel-duplicate":
+        kernel["manifest"].append(kernel["manifest"][0])
+    elif corrupt == "kernel-replacement":
+        kernel["manifest"] = ["tests/example.py::test_replacement::case-1"]
+        kernel["outcomes"] = dict.fromkeys(kernel["manifest"], "PASSED")
+    elif corrupt == "ordinary-skip":
+        evidence["schema"]["outcomes"][manifest[0]] = "SKIPPED"
+    kernel["manifest_digest"] = digest(kernel["manifest"])
     if corrupt == "clock":
         evidence["offset-45"]["clock_conformance_verified"] = False
     if corrupt == "identity":
@@ -177,6 +199,18 @@ def test_nightly_evidence_replay_privacy_and_host_command_boundary(tmp_path, mon
     second = RunIdentity(101, 1, "b" * 40, "schedule", "main", "2026-10-02")
     green = _assessment(second)
     assert green.state == "green" and not green.failures and not green.unavailable
+    # Official success/exit0/full completion cannot credit skipped or substituted
+    # kernel proofs. Legitimate named skips in the ordinary corpus remain valid.
+    assert _assessment(second, corrupt="ordinary-skip").state == "green"
+    for species in (
+        "kernel-skips",
+        "kernel-missing",
+        "kernel-extra",
+        "kernel-duplicate",
+        "kernel-replacement",
+    ):
+        invalid_kernel = _assessment(second, corrupt=species)
+        assert invalid_kernel.state != "green" and invalid_kernel.unavailable
     red1 = _assessment(first, conclusion="failure", failed=True)
     red2 = _assessment(second, conclusion="failure", evidence_missing=True)
     assert red2.state == "red" and red2.workflow_failure and red2.unavailable
@@ -320,6 +354,47 @@ def test_nightly_evidence_replay_privacy_and_host_command_boundary(tmp_path, mon
         for word in ("secret-a", "secret-b", "private assertion body")
     )
 
+    # Position the same canonical transport-module patch used by the real-PG
+    # helper. This is a software import/producer proof, not role/policy/SQL proof.
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from butlers.jobs import nightly_assurance as runtime_job
+
+    transport_module = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    with monkeypatch.context() as transport_patch:
+        transport = AsyncMock(
+            return_value={
+                "status": "sent",
+                "notification_id": "00000000-0000-0000-0000-000000000123",
+            }
+        )
+        transport_patch.setattr(transport_module, "deliver", transport)
+        transport_patch.setattr(
+            runtime_job,
+            "get_approvals_policy_quiet_hours",
+            AsyncMock(return_value={"enabled": True}),
+        )
+        transport_patch.setattr(runtime_job, "is_policy_quiet_now", lambda policy, now: False)
+        transport_patch.setattr(
+            runtime_job, "get_suppressing_context_signal", AsyncMock(return_value=None)
+        )
+        transport_patch.setattr(
+            runtime_job,
+            "resolve_owner_telegram_recipient",
+            AsyncMock(return_value="synthetic-owner"),
+        )
+        delivered = asyncio.run(
+            runtime_job._decision(
+                None,
+                {"incident_id": "bu-disposable", "episode_id": "e" * 64},
+                now=datetime(2026, 10, 4, tzinfo=UTC),
+            )
+        )
+        assert delivered["outcome"] == "delivered"
+        assert delivered["notification_ref"] == "00000000-0000-0000-0000-000000000123"
+        transport.assert_awaited_once()
+
     # A genuine disposable executable, not a mock bd response: commit then
     # lose the create ACK; next readback must find the single external_ref.
     script = _load_script("reconcile_nightly_incidents")
@@ -338,12 +413,22 @@ if a[0]=='list': out=[r for r in d['rows'] if r['external_ref']==value('--extern
 elif a[0]=='show': out=next(r for r in d['rows'] if r['id']==a[1])
 elif a[0]=='create':
  r={'id':'bu-fake'+str(len(d['rows'])+1),'external_ref':value('--external-ref'),'status':'open',
+    'assignee':value('--assignee'),'title':a[1],'description':sys.stdin.read(),
+    'design':'unchanged design','notes':'unchanged notes','acceptance_criteria':value('--acceptance'),
+    'labels':value('--labels').split(','),'dependencies':[],'dependents':[], 'pinned':False,
     'metadata':json.loads(value('--metadata')) if '--metadata' in a else {}}
  d['rows'].append(r);d['mutations'].append('create');p.write_text(json.dumps(d))
  if os.environ.get('NIGHTLY_FAKE_ACK_LOSS')=='1': sys.exit(1)
  print(r['id']);sys.exit(0)
 elif a[0]=='update':
- out=next(r for r in d['rows'] if r['id']==a[1]);out['metadata']['nightly']=json.loads(value('--set-metadata').split('=',1)[1]);d['mutations'].append('update')
+ out=next(r for r in d['rows'] if r['id']==a[1])
+ if os.environ.get('NIGHTLY_FAKE_OWNER_RACE')=='1':out['assignee']='foreign-after-read'
+ if ('--if-assignee' in a and out['assignee']!=value('--if-assignee')) or ('--if-status' in a and out['status']!=value('--if-status')):
+  p.write_text(json.dumps(d));sys.exit(13)
+ if '--set-metadata' in a:out['metadata']['nightly']=json.loads(value('--set-metadata').split('=',1)[1])
+ if '--status' in a:out['status']=value('--status')
+ if os.environ.get('NIGHTLY_FAKE_CONTRACT_RACE')=='1':out['description']='externally changed contract'
+ d['mutations'].append('close' if out['status']=='closed' else 'update')
 elif a[0]=='close':
  out=next(r for r in d['rows'] if r['id']==a[1]);out['status']='closed';d['mutations'].append('close')
 else: sys.exit(2)
@@ -376,6 +461,72 @@ p.write_text(json.dumps(d));print(json.dumps(out))
     recurrence = beads.reconcile(issue=51, assessment=later_red, recover=False)
     assert recurrence["incident_id"] == "bu-fake1"
     assert recurrence["episode_id"] != rebound["episode_id"]
+    # Fresh owner/status and whole contract/relations controls, through the
+    # same disposable CLI protocol. No live tracker mutation occurs here.
+    saved = read_json(db)
+    for owner, status in (
+        ("foreign-coordinator", "open"),
+        (None, "open"),
+        ("existing-host-coordinator", "unknown"),
+    ):
+        snapshot = read_json(db)
+        row = next(row for row in snapshot["rows"] if row["id"] == "bu-fake1")
+        row.update(assignee=owner, status=status)
+        atomic_json(db, snapshot)
+        for recover in (False, True):
+            with pytest.raises(EvidenceUnavailable):
+                beads.reconcile(issue=51, assessment=later_red, recover=recover)
+            assert read_json(db) == snapshot
+        atomic_json(db, saved)
+    monkeypatch.setenv("NIGHTLY_FAKE_OWNER_RACE", "1")
+    with pytest.raises(EvidenceUnavailable):
+        beads.reconcile(issue=51, assessment=later_red, recover=False)
+    assert read_json(db)["mutations"] == saved["mutations"]
+    monkeypatch.delenv("NIGHTLY_FAKE_OWNER_RACE")
+    atomic_json(db, saved)
+    for key, value in (
+        ("pinned", True),
+        ("dependencies", [{"id": "bu-existing"}]),
+        ("dependents", [{"id": "bu-existing"}]),
+    ):
+        snapshot = read_json(db)
+        next(row for row in snapshot["rows"] if row["id"] == "bu-fake1")[key] = value
+        atomic_json(db, snapshot)
+        with pytest.raises(EvidenceUnavailable):
+            beads.reconcile(issue=51, assessment=green, recover=True)
+        assert read_json(db) == snapshot
+        atomic_json(db, saved)
+    monkeypatch.setenv("NIGHTLY_FAKE_CONTRACT_RACE", "1")
+    with pytest.raises(EvidenceUnavailable, match="bead-contract-or-relations-changed"):
+        beads.reconcile(issue=51, assessment=later_red, recover=False)
+    monkeypatch.delenv("NIGHTLY_FAKE_CONTRACT_RACE")
+    atomic_json(db, saved)
+    cluster_id = beads.cluster("tests/example.py", red1)
+    assert cluster_id is not None
+    snapshot = read_json(db)
+    cluster = next(row for row in snapshot["rows"] if row["id"] == cluster_id)
+    cluster.update(assignee="existing-foreign-worker", status="in_progress")
+    atomic_json(db, snapshot)
+    assert beads.cluster("tests/example.py", red1) == cluster_id
+    assert read_json(db) == snapshot
+    assert beads.cluster_states[cluster_id]["classification"] == "active-foreign-owned"
+    cluster["status"] = "closed"
+    atomic_json(db, snapshot)
+    with pytest.raises(EvidenceUnavailable):
+        beads.cluster("tests/example.py", red1)
+    assert read_json(db) == snapshot
+    cluster["assignee"] = "existing-host-coordinator"
+    atomic_json(db, snapshot)
+    assert beads.cluster("tests/example.py", red1) == cluster_id
+    reopened = read_json(db)
+    assert next(row for row in reopened["rows"] if row["id"] == cluster_id)["status"] == "open"
+    assert beads.cluster_states[cluster_id]["classification"] == "active-owned"
+    assert beads.contract(
+        next(row for row in reopened["rows"] if row["id"] == cluster_id)
+    ) == beads.contract(cluster)
+    # Restore the incident/export fixture; added ownership controls must not
+    # replace any of the original replay, recovery or privacy assertions.
+    atomic_json(db, saved)
 
     exported = {
         "version": 1,

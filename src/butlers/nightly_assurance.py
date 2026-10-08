@@ -23,6 +23,15 @@ WORKFLOW = ".github/workflows/nightly.yml"
 VERSION = 1
 BASE_VARIANTS = ("schema", "offset-45", "offset-120", "exact-image")
 FOLDED_VARIANTS = ("folded-hour", "folded-minute")
+EXACT_IMAGE_FUNCTIONS = (
+    "test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled",
+    "test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence",
+    "test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other",
+    "test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment",
+)
+EXACT_IMAGE_MANIFEST = frozenset(
+    f"tests/cli/test_runtime_cli_sandbox.py::{name}::case-1" for name in EXACT_IMAGE_FUNCTIONS
+)
 VARIANTS = BASE_VARIANTS + FOLDED_VARIANTS
 EXPORT_PATH = Path("/run/butlers-nightly/incidents.json")
 MAX_EXPORT_BYTES = 256 * 1024
@@ -254,6 +263,11 @@ def assess(
                     failures.add(f"{variant}:{node}:{status}")
                 elif status not in {"PASSED", "SKIPPED"}:
                     raise EvidenceUnavailable("invalid-outcome")
+            if variant == "exact-image" and (
+                set(manifest) != EXACT_IMAGE_MANIFEST
+                or any(outcomes.get(node) != "PASSED" for node in EXACT_IMAGE_MANIFEST)
+            ):
+                raise EvidenceUnavailable("exact-image-original-proofs-unavailable")
             if (
                 variant.startswith(("offset-", "folded-"))
                 and item.get("clock_conformance_verified") is not True
