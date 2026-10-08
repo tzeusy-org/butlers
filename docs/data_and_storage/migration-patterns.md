@@ -392,7 +392,7 @@ SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
 
 ### OwnTracks retention history
 
-`core_264` follows `core_261` and adds connector-owned immutable source birth,
+`core_264` follows protected `core_265` (which descends `core_261`) and adds connector-owned immutable source birth,
 lineage, tombstones and committed receipts plus per-owning-schema source-copy
 history. `chronicler_027` follows `chronicler_026` and adds owning policy,
 projection coverage, decisions and floors. These revisions create no principal
