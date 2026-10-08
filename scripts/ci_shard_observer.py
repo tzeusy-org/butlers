@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import resource
@@ -116,10 +117,13 @@ class Observer:
             and self.logical_starts == Counter({node: 1 for node in selected})
             and not self.unexpected_file
         )
-        durations: dict[str, float] = {}
+        phase_durations: dict[str, list[float]] = {}
         for key, phases in self.phases.items():
             file = self.files[key]
-            durations[file] = durations.get(file, 0) + sum(p["duration_s"] for p in phases.values())
+            phase_durations.setdefault(file, []).extend(p["duration_s"] for p in phases.values())
+        # Arrival order and JSON's sorted node/phase keys must reconstruct the
+        # same exact binary float, without a tolerance that could hide tampering.
+        durations = {file: math.fsum(values) for file, values in phase_durations.items()}
         ordered = sorted(self.completed)
         count = len(selected)
         one_percent = ordered[max(0, (count + 99) // 100 - 1)] if complete else None

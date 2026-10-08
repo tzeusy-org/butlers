@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import math
 import random
 import subprocess
 import sys
@@ -162,7 +163,7 @@ def test_partition_preserves_fresh_membership_with_unknown_weights(
 
 
 def test_reconciliation_requires_complete_node_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pytestconfig: pytest.Config
 ) -> None:
     """REQ-ci-shard-assurance-003/005/006/008; REQ-testing-051: identity and origin."""
     _corpus(tmp_path, monkeypatch)
@@ -218,6 +219,94 @@ def test_reconciliation_requires_complete_node_identity(
     # Synthetic protocol fixtures never claim actual execution provenance.
     assert partition.reconcile(data, assignment, receipts, root=tmp_path)["complete"]
     first = next(iter(receipts))
+    # Synthetic raw timers pin deterministic wire reconstruction, not hosted
+    # execution. JSON sorts node/phase keys and must not change exact totals.
+    timed = copy.deepcopy(receipts)
+    timer_label = "unit-1"
+    timer_file = min(timed[timer_label]["file_durations_s"])
+    timer_nodes = sorted(
+        timed[timer_label]["nodes"],
+        key=lambda node: (timed[timer_label]["node_files"][node] != timer_file, node),
+    )
+    for node, durations in zip(timer_nodes, ((0.001, 0.001, 0.001), (0.001, 0.3, 0.7))):
+        for phase, seconds in zip(("setup", "call", "teardown"), durations):
+            timed[timer_label]["nodes"][node][phase]["duration_s"] = seconds
+    timed[timer_label]["file_durations_s"] = {
+        name: math.fsum(
+            phase["duration_s"]
+            for node, phases in timed[timer_label]["nodes"].items()
+            if timed[timer_label]["node_files"][node] == name
+            for phase in phases.values()
+        )
+        for name in timed[timer_label]["file_durations_s"]
+    }
+    for values in (timed, json.loads(json.dumps(timed, sort_keys=True))):
+        assert partition.reconcile(data, assignment, values, root=tmp_path)["complete"]
+    reversed_timers = copy.deepcopy(timed)
+    reversed_timers[timer_label]["nodes"] = {
+        node: dict(reversed(list(phases.items())))
+        for node, phases in reversed(list(timed[timer_label]["nodes"].items()))
+    }
+    flattened = 0.0
+    for node, phases in reversed_timers[timer_label]["nodes"].items():
+        if reversed_timers[timer_label]["node_files"][node] == timer_file:
+            for phase in phases.values():
+                flattened += phase["duration_s"]
+    assert flattened != timed[timer_label]["file_durations_s"][timer_file]
+    assert partition.reconcile(data, assignment, reversed_timers, root=tmp_path)["complete"]
+    for kind in (
+        "aggregate",
+        "one-ulp",
+        "aggregate-bool",
+        "timer-nan",
+        "timer-negative",
+        "timer-bool",
+    ):
+        bad = copy.deepcopy(timed)
+        name = bad[timer_label]["node_files"][timer_nodes[0]]
+        if kind == "aggregate":
+            bad[timer_label]["file_durations_s"][name] += 1.0
+        elif kind == "one-ulp":
+            bad[timer_label]["file_durations_s"][name] = math.nextafter(
+                bad[timer_label]["file_durations_s"][name], math.inf
+            )
+        elif kind == "aggregate-bool":
+            zero = next(label for label in bad if label != timer_label)
+            name = next(iter(bad[zero]["file_durations_s"]))
+            bad[zero]["file_durations_s"][name] = False
+        else:
+            bad[timer_label]["nodes"][timer_nodes[0]]["setup"]["duration_s"] = {
+                "timer-nan": math.nan,
+                "timer-negative": -1.0,
+                "timer-bool": False,
+            }[kind]
+        with pytest.raises(ValueError, match="aggregate|timer"):
+            partition.reconcile(data, assignment, bad, root=tmp_path)
+
+    # Drive the real producer callback with explicit synthetic phase values.
+    # Neither this fixture nor its receipt claims real execution provenance.
+    from ci_shard_observer import Observer
+
+    observer_receipt = tmp_path / "synthetic-observer.json"
+    monkeypatch.setenv("CI_SHARD_STARTED", "0")
+    monkeypatch.setenv(
+        "CI_SHARD_CONTEXT", json.dumps({"files": list(timed[timer_label]["file_durations_s"])})
+    )
+    monkeypatch.setenv("CI_SHARD_RECEIPT", str(observer_receipt))
+    observer = Observer(pytestconfig)
+    observer.phases = timed[timer_label]["nodes"]
+    observer.files = timed[timer_label]["node_files"]
+    observer.classes = timed[timer_label]["node_classes"]
+    observer.collections = [timer_nodes]
+    observer.logical_starts.update({node: 1 for node in timer_nodes})
+    observer.phase_counts.update(
+        {(node, phase): 1 for node in timer_nodes for phase in observer.phases[node]}
+    )
+    observer.completed = [0.0 for node in timer_nodes]
+    observer.pytest_sessionfinish(None, 0)
+    produced = json.loads(observer_receipt.read_text())
+    assert produced["complete"] is True
+    assert produced["file_durations_s"] == timed[timer_label]["file_durations_s"]
     for key, value in (("nonce", "0" * 64), ("complete", False), ("pytest_exit", 1)):
         bad = copy.deepcopy(receipts)
         bad[first][key] = value
