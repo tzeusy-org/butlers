@@ -9,7 +9,7 @@ prune sessions, audits, other providers or independent owner corrections.
 
 ## Installed source stage
 
-`core_264` follows adopted `core_261`; `chronicler_027` follows
+`core_264` follows protected `core_265` (which follows `core_261`); `chronicler_027` follows
 `chronicler_026`. The connector freezes its original effective birth, raw
 identity/revision/digests and the actual accepted request locator. Legacy rows
 without accepted-source evidence remain ineligible. Native point, place and
