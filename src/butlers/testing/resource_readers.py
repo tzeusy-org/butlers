@@ -14,12 +14,15 @@ import hashlib
 import json
 import re
 import subprocess
+from collections import OrderedDict
+from copy import deepcopy
 from pathlib import Path
 
 FAMILIES = ("docs/", "about/", "openspec/", ".claude/skills/", "frontend/", "deploy/")
 REGISTRY = "scripts/test-resource-readers.json"
 DECLARATIONS = "scripts/test-resource-reader-declarations.json"
 REFERENCE = re.compile(r"(?:docs|about|openspec|frontend|deploy|\.claude/skills)/[\w./*{}-]+")
+_DISCOVERY_CACHE: OrderedDict[str, dict] = OrderedDict()
 
 
 def digest(value: object) -> str:
@@ -201,12 +204,31 @@ def discover(root: Path, declarations: dict) -> dict:
     owners = declarations.get("helper_owners", {})
     if not isinstance(owners, dict) or any(name not in sources for name in owners):
         raise ValueError("READER_UNCLASSIFIED")
-    trees = {name: ast.parse((root / name).read_bytes()) for name in sources}
+    # Replay batches share AST work, never source validation. Read/hash EVERY
+    # current visited body and physical consumer path on each call. A changed
+    # body/declaration/importer or newly present test cannot reuse old discovery.
+    raw_bodies = {name: (root / name).read_bytes() for name in sources}
+    identities = {name: hashlib.sha256(raw).hexdigest() for name, raw in raw_bodies.items()}
+    cache_key = digest(
+        {
+            "root": str(root.resolve()),
+            "declarations": declarations,
+            "bodies": identities,
+            "consumer_paths": sorted(
+                str(p.relative_to(root))
+                for directory in (root / "tests", root / "roster")
+                for p in directory.rglob("test_*.py")
+            ),
+        }
+    )
+    if cache_key in _DISCOVERY_CACHE:
+        _DISCOVERY_CACHE.move_to_end(cache_key)
+        return deepcopy(_DISCOVERY_CACHE[cache_key])
+    trees = {name: ast.parse(raw) for name, raw in raw_bodies.items()}
     bindings: dict[str, set[str]] = {}
-    identities = {}
     unresolved = []
     for name in sources:
-        raw = (root / name).read_bytes()
+        raw = raw_bodies[name]
         tree = trees[name]
         # String references are conservative candidates, including docstrings.
         # A split root join is a whole-family candidate, not an exact filename.
@@ -282,7 +304,11 @@ def discover(root: Path, declarations: dict) -> dict:
         "families": [*FAMILIES, "*.md"],
         "unresolved_dynamic_readers": unresolved,
     }
-    return {**body, "digest": digest(body)}
+    result = {**body, "digest": digest(body)}
+    _DISCOVERY_CACHE[cache_key] = deepcopy(result)
+    if len(_DISCOVERY_CACHE) > 8:
+        _DISCOVERY_CACHE.popitem(last=False)
+    return result
 
 
 def load(root: Path) -> dict:

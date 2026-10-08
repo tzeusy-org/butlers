@@ -24,6 +24,11 @@ passed to helpers; finite literal concatenation is folded without executing test
 Unknown paths reached through supported I/O retain conservative whole-family readers.
 Strings and this static analysis are not proof of arbitrary runtime
 completeness: historical actual-reader auditing remains mandatory.
+Batch replay may reuse AST discovery in a bounded process-local cache. Every
+call still reads and hashes all visited bodies, declarations and physical
+consumer paths; changed inputs cannot reuse a previous result, and returned
+data is copied. This is source-validation reuse, never cached test results or
+cost/timing evidence.
 
 Missing static targets select FULL. Direct deleted test files may use their
 surviving test-bearing parent; a complete configured root selects FULL and the

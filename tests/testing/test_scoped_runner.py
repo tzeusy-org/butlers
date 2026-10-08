@@ -512,6 +512,9 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(tmp_p
     assert caller in select("docs/contract.md", refined)
     assert unrelated not in select("docs/contract.md", refined)
     assert helper in refined["unresolved_dynamic_readers"]
+    # Returned data cannot poison a subsequent body-keyed batch lookup.
+    refined["readers"].clear()
+    assert caller in select("docs/contract.md", discover(alias_repo, owned))
     _write(alias_repo, "tests/api/test_new_helper_reader.py", "from tests import resource_helper\n")
     _git(alias_repo, "add", "tests/api/test_new_helper_reader.py")
     with pytest.raises(ValueError, match="READER_UNCLASSIFIED"):
