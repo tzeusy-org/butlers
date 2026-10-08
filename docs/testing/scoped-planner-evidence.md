@@ -80,7 +80,11 @@ compatible affected maxima remain separate mandatory outcomes. The replay tool's
 default `--mode current-vectors` evaluates the frozen changed-file lists against
 the pinned, tracked-clean CURRENT planner checkout and its actual registry/profile.
 This is the scratch-corpus replay; unavailable historical refs remain UNKNOWN
-and it supplies no historical Git-diff or last-100 reader proof. The separate
+and path-only decisions supply no historical Git-diff or last-100 reader proof.
+Optional actual base/head annotations must match the complete original frozen
+file list before admitting a historical manifest delta; other vectors do not
+need old refs. Preserve the original lists and retain annotation provenance.
+The separate
 `--mode historical-diffs` requires available actual base/head commits and verifies
 the complete changed-file list against their Git diff. Missing refs or a different
 list remain UNKNOWN. Historical manifest admission requires that genuine diff;

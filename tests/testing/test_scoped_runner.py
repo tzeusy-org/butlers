@@ -566,6 +566,20 @@ def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     _git(repo, "add", manifest, new)
     _git(repo, "commit", "-qm", "actual same-diff added test")
     assert eligible(repo, [manifest, new], base, "HEAD") == {manifest}
+    from replay_ci_planner import replay
+
+    vector = {
+        "id": "actual-manifest-vector",
+        "files": [manifest, new],
+        "base": base,
+        "head": "HEAD",
+    }
+    admitted = replay([vector], root=repo)
+    assert admitted["qualified_scoped"] == 1
+    assert admitted["records"][0]["historical_diff"] == "verified"
+    mismatch = replay([{**vector, "files": [manifest]}], root=repo)
+    assert mismatch["records"][0]["historical_diff"] == "UNKNOWN"
+    assert mismatch["records"][0]["decision"]["mode"] == "full"
     with pytest.raises(ValueError, match="MANIFEST_INELIGIBLE"):
         eligible(repo, [manifest], base, "HEAD")
     duplicate = ".github/ci-test-shards/unit-2.txt"

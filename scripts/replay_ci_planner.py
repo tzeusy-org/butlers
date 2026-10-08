@@ -97,7 +97,10 @@ def replay(rows: list[dict], *, root: Path = ROOT, mode: str = "current-vectors"
                 }
             )
             continue
-        refs = _historical_refs(root, row, files) if mode == "historical-diffs" else None
+        # Optional genuine annotations can admit a historical manifest delta
+        # within CURRENT vector replay. They never qualify an altered list and
+        # are not a prerequisite for unrelated current path vectors.
+        refs = _historical_refs(root, row, files)
         qualified = mode == "current-vectors" or refs is not None
         base, plan_head = refs if refs else (head, head)
         plan = _plan_for_changed_files(
