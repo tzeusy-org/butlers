@@ -12,7 +12,9 @@ import collections
 import hashlib
 import json
 import os
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 from ci_frontend_evidence import ROOT, identity
@@ -20,6 +22,83 @@ from ci_frontend_evidence import ROOT, identity
 
 class VitestSubprocessFailure(ValueError):
     """Nonzero collection outcome; no raw subprocess output is retained."""
+
+
+class VitestTimeout(subprocess.TimeoutExpired):
+    """Closed timeout evidence after terminating only this invocation's group."""
+
+    def __init__(self, timeout: float, diagnostics: dict):
+        # Do not attach argv, stdout, stderr or exception text to the failure.
+        super().__init__("locked-vitest", timeout)
+        self.diagnostics = diagnostics
+
+
+def run_process(command: list[str], *, cwd: Path, env: dict, timeout: float):
+    """Include TERM/KILL and pipe drainage in the existing invocation deadline.
+
+    subprocess.run's timeout kills only the direct child; a Vitest fork can
+    keep inherited pipes open after that child dies. A fresh session binds the
+    signals to this invocation, including its ordinary descendants. The cleanup
+    reserve reduces useful work time rather than extending the 180/900s limits.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
+    reserve = min(10.0, timeout / 2)
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=max(0, deadline - reserve - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        term_sent = kill_sent = False
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            term_sent = True
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = process.communicate(timeout=max(0, (deadline - time.monotonic()) / 2))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+                kill_sent = True
+            except ProcessLookupError:
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                # An escaped process cannot extend the wrapper or supply item
+                # authority. Close our handles; do not search/kill other PIDs.
+                process.stdout.close()
+                process.stderr.close()
+                raise VitestTimeout(
+                    timeout,
+                    {
+                        "term_sent": term_sent,
+                        "kill_sent": kill_sent,
+                        "pipes_drained": False,
+                        "child_reaped": process.poll() is not None,
+                        "stdout_bytes": None,
+                        "stderr_bytes": None,
+                    },
+                ) from None
+        raise VitestTimeout(
+            timeout,
+            {
+                "term_sent": term_sent,
+                "kill_sent": kill_sent,
+                "pipes_drained": True,
+                "child_reaped": process.poll() is not None,
+                "stdout_bytes": len(stdout),
+                "stderr_bytes": len(stderr),
+            },
+        ) from None
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def key(file: str, title: str, root: Path) -> str:
@@ -40,11 +119,10 @@ def collect(root: Path, shard: int | None) -> list[dict]:
     if shard is not None:
         command.append(f"--shard={shard}/2")
     command.append("--json")
-    result = subprocess.run(
+    result = run_process(
         command,
         cwd=root / "frontend",
         env={**os.environ, "CI": "1"},
-        capture_output=True,
         timeout=180,
     )
     if result.returncode != 0:
@@ -107,11 +185,10 @@ def run(root: Path, shard: int, output: Path) -> int:
             "--reporter=json",
         ]
         stage = "execute"
-        result = subprocess.run(
+        result = run_process(
             command,
             cwd=root / "frontend",
             env={**os.environ, "CI": "1"},
-            capture_output=True,
             timeout=900,
         )
         receipt["exit_code"] = result.returncode
@@ -145,6 +222,8 @@ def run(root: Path, shard: int, output: Path) -> int:
         # messages, subprocess output, test names or arbitrary provider values.
         if isinstance(exc, subprocess.TimeoutExpired):
             category = "timeout"
+            if isinstance(exc, VitestTimeout):
+                receipt["process_cleanup"] = exc.diagnostics
         elif isinstance(exc, VitestSubprocessFailure):
             category = "subprocess_failed"
         elif isinstance(exc, OSError):

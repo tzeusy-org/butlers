@@ -26,6 +26,12 @@ populations refuse. Setup skip and legitimate xfail are outcomes, not omissions.
 Raw node IDs and failure payloads are never uploaded; hashed names are minimization,
 not anonymity or authentication. Complete flags alone never establish provenance.
 
+Per-file durations are `math.fsum` of every actual finite raw phase duration.
+The observer and independent verifier perform that reconstruction separately;
+neither groups rounded node totals nor depends on receipt dictionary order. The
+aggregate must equal the reconstruction exactly. A one-ULP change, malformed
+timer or boolean masquerading as zero still refuses; no timing tolerance is used.
+
 The DAG is route→guards→5+6 backend and2Vitest children/browser. Preflight and
 coverage start after both backend matrices; peak fan-out is14. The final expanded
 workflow contains21 rows including conditional affected/coverage/skips, rather than
@@ -68,3 +74,18 @@ from an actual Vitest exit, which exists only after execution returns. No raw
 subprocess output or exception text enters the receipt. The existing 180-second
 collection, 900-second execution and finite hosted job bounds remain in force;
 these provisional bounds do not establish the five-minute performance target.
+
+Each invocation owns a fresh process group. Its existing deadline includes a
+cleanup reserve (at most ten seconds) for TERM, KILL and pipe drainage. A fork
+retaining the parent's output pipes cannot extend the wrapper indefinitely.
+Failure receipts expose only numeric stream sizes and closed cleanup booleans;
+they retain no child output, argv or exception text. Escaped resources remain
+unavailable evidence; the wrapper never searches for or kills unrelated PIDs.
+
+The f57c pull-request observation reached all eleven backend children without a
+test failure, but both installed Vitest collectors timed out before emitting item
+inventories. Local locked-Vitest controls on Node24 establish a real single-file
+positive and continuing full collection, not a hosted Node22 full-population
+positive or an underlying hosted timeout cause. Process cleanup and deterministic
+phase reconstruction do not establish that missing proof. Pool, worker settings,
+CLI collection, configuration, corpus and the 180/900-second limits are retained.

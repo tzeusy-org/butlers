@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -759,12 +760,20 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         (buildroot / "frontend/control-b.test.ts").write_text("control stand-in")
         helper.write_text(
             f"#!{sys.executable}\n"
-            + """import json, os, sys, time
+            + """import json, os, subprocess, sys, time
 from pathlib import Path
 root = Path(__file__).resolve().parents[2]
 shard = next((a for a in sys.argv if a.startswith('--shard=')), None)
 stage = ('collect-full' if shard is None else 'collect-shard-' + shard[8]) if sys.argv[1] == 'list' else 'execute'
 mode = os.environ.get('VITEST_CONTROL')
+if mode == 'descendant-stall' and stage == 'collect-full':
+    ready_read, ready_write = os.pipe()
+    child = subprocess.Popen([sys.executable, '-c', "import os, signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[2]).write_text('ready'); os.write(int(sys.argv[1]), b'1'); time.sleep(1.5); Path(sys.argv[3]).write_text('late descendant output')", str(ready_write), str(root / 'descendant-ready'), str(root / 'descendant-late')], pass_fds=(ready_write,))
+    os.close(ready_write)
+    assert os.read(ready_read, 1) == b'1'
+    os.close(ready_read)
+    print('private control text', flush=True)
+    time.sleep(5)
 if mode == stage:
     print('private control text', flush=True)
     time.sleep(5)
@@ -783,14 +792,16 @@ else:
 """
         )
         helper.chmod(0o755)
-        native_run = subprocess.run
+        native_run = vitest.run_process
 
         def bounded_helper(command, **kwargs):
             if command[0] == str(helper):
-                kwargs["timeout"] = 0.2
+                kwargs["timeout"] = (
+                    0.8 if os.environ.get("VITEST_CONTROL") == "descendant-stall" else 0.2
+                )
             return native_run(command, **kwargs)
 
-        local.setattr(vitest.subprocess, "run", bounded_helper)
+        local.setattr(vitest, "run_process", bounded_helper)
         for mode, stage, category in (
             ("collect-full", "collect-full", "timeout"),
             ("collect-shard-1", "collect-shard-1", "timeout"),
@@ -808,6 +819,24 @@ else:
             assert (receipt["stage"], receipt["failure_category"]) == (stage, category)
             assert receipt["identity"] == build.identity(buildroot)
             assert "private control text" not in receipt_text
+            if category == "timeout":
+                assert receipt["process_cleanup"]["term_sent"] is True
+                assert receipt["process_cleanup"]["pipes_drained"] is True
+                assert receipt["process_cleanup"]["child_reaped"] is True
+        local.setenv("VITEST_CONTROL", "descendant-stall")
+        destination = tmp_path / "vitest-descendant-stall"
+        assert vitest.run(buildroot, 1, destination) == 2
+        receipt_text = (destination / "receipt.json").read_text()
+        receipt = json.loads(receipt_text)
+        assert (buildroot / "frontend/descendant-ready").read_text() == "ready"
+        assert (receipt["stage"], receipt["failure_category"]) == ("collect-full", "timeout")
+        assert receipt["process_cleanup"]["term_sent"] is True
+        assert receipt["process_cleanup"]["kill_sent"] is True
+        assert receipt["process_cleanup"]["pipes_drained"] is True
+        assert receipt["process_cleanup"]["child_reaped"] is True
+        assert "private control text" not in receipt_text
+        time.sleep(1.5)
+        assert not (buildroot / "frontend/descendant-late").exists()
         local.delenv("VITEST_CONTROL")
         destination = tmp_path / "vitest-healthy"
         assert vitest.run(buildroot, 1, destination) == 0

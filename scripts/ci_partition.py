@@ -354,7 +354,7 @@ def reconcile(
                 node: name for name in files for node in data["lanes"][lane][name]
             }:
                 raise ValueError("child file/item bindings differ")
-            reconstructed = {name: 0.0 for name in files}
+            raw_durations = {name: [] for name in files}
             for node, phases in receipt["nodes"].items():
                 if (
                     not isinstance(phases, dict)
@@ -373,8 +373,18 @@ def reconcile(
                             or value[field] < 0
                         ):
                             raise ValueError("child phase timer malformed")
-                    reconstructed[receipt["node_files"][node]] += value["duration_s"]
-            if receipt.get("file_durations_s") != reconstructed:
+                    raw_durations[receipt["node_files"][node]].append(value["duration_s"])
+            reconstructed = {name: math.fsum(values) for name, values in raw_durations.items()}
+            aggregate = receipt.get("file_durations_s")
+            if (
+                not isinstance(aggregate, dict)
+                or set(aggregate) != set(files)
+                or any(
+                    type(value) not in (int, float) or not math.isfinite(value) or value < 0
+                    for value in aggregate.values()
+                )
+                or aggregate != reconstructed
+            ):
                 raise ValueError("child aggregate not reconstructed from actual phases")
             command = receipt.get("command")
             if (
