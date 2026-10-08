@@ -445,6 +445,60 @@ async def dispose_native_memory(domain: Any, decision: UUID) -> None:
             raise PolicyUnavailableError("Committed Memory disposal is unknown")
 
 
+async def fence_memory_mutation(
+    pool: Any, conn: Any, table: str, identifier: UUID, *, memory_schema: str | None = None
+) -> None:
+    """Current prepared-generation fence on the actual configured owning writer.
+
+    Ordinary unconfigured Memory keeps its established behavior. This grants
+    no lineage to the mutation or terminal authority to its returned fields.
+    """
+    owners = [cell for cell in _receivers.values() if cell[0] is pool]
+    if not owners:
+        return
+    if len(owners) != 1 or table not in {"episodes", "facts", "rules"}:
+        raise PolicyUnavailableError("Native mutation owning writer differs")
+    _, schema, role = owners[0]
+    if memory_schema is not None and memory_schema != schema:
+        raise PolicyUnavailableError("Native mutation owning schema differs")
+    await _lock(conn, schema, role)  # Policy precedes the actual canonical row.
+    await conn.fetchrow(f"SELECT id FROM {table} WHERE id=$1 FOR UPDATE", identifier)
+    if table == "episodes":
+        query = (
+            "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_memory_commits c "
+            "JOIN chronicler.location_native_memory_parents i USING(reservation_id) "
+            "JOIN chronicler.location_native_copy_births b USING(copy_generation,input_digest) "
+            "JOIN chronicler.location_retention_plan_outputs p USING(output_kind,output_id) "
+            "WHERE c.episode_id=$1)"
+        )
+        values = (identifier,)
+    else:
+        query = (
+            "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_memory_artifacts a "
+            "JOIN chronicler.location_native_dispatch_parents i USING(input_generation) "
+            "JOIN chronicler.location_native_copy_births b USING(copy_generation,input_digest) "
+            "JOIN chronicler.location_retention_plan_outputs p USING(output_kind,output_id) "
+            "WHERE a.memory_table=$1 AND a.artifact_id=$2)"
+        )
+        values = (table, identifier)
+    if await conn.fetchval(query, *values):
+        raise PolicyUnavailableError("Native mutation source generation is prepared")
+
+
+@asynccontextmanager
+async def memory_mutation_writer(
+    pool: Any, table: str, identifier: UUID, *, memory_schema: str | None = None
+):
+    """Single-update helper retains unconfigured pool call compatibility."""
+    if not any(cell[0] is pool for cell in _receivers.values()):
+        yield pool
+        return
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await fence_memory_mutation(pool, conn, table, identifier, memory_schema=memory_schema)
+            yield conn
+
+
 async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> list[Any]:
     """Policy-first native Memory reads, with actual receiving lineage.
 
@@ -616,6 +670,8 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
                 raise PolicyUnavailableError("Committed Memory read birth is unknown")
             if api_export:
                 register_native_export(pool, "native_read", generation, digest)
+    if context is not None and context.runtime.memory is pool:
+        context.known_context &= not mixed_inputs
     if tool is not None:
         tool.read_observed = True
         tool.mixed_inputs |= mixed_inputs

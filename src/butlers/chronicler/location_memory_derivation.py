@@ -76,6 +76,66 @@ _current_derivation: ContextVar[_Derivation | None] = ContextVar(
 )
 
 
+async def _captured_bundle_parents(conn: Any, episodes, facts, rules):
+    """Reread every actual input and its owning immutable body/parent witnesses.
+
+    Nearby native rows cannot confer lineage on an independent dedup input.
+    Every parent is retained, even when one selected row makes the bundle mixed.
+    """
+    from butlers.chronicler.location_memory_copies import (
+        artifact_body_matches,
+        episode_body_digest,
+    )
+
+    parents = {}
+    exclusive = True
+    for table, selected in (("episodes", episodes), ("facts", facts), ("rules", rules)):
+        for expected in selected:
+            actual = await conn.fetchrow(
+                f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", expected["id"]
+            )
+            if actual is None or any(actual.get(key) != value for key, value in expected.items()):
+                raise PolicyUnavailableError("Native consolidation full input changed")
+            if table == "episodes":
+                witnesses = await conn.fetch(
+                    "SELECT b.copy_generation,b.input_digest,b.lineage_known,b.exclusive_input,"
+                    "c.body_digest FROM chronicler.location_native_memory_commits c "
+                    "JOIN chronicler.location_native_memory_parents p USING(reservation_id) "
+                    "JOIN chronicler.location_native_copy_births b "
+                    "USING(copy_generation,input_digest) WHERE c.episode_id=$1",
+                    expected["id"],
+                )
+            else:
+                witnesses = await conn.fetch(
+                    "SELECT b.copy_generation,b.input_digest,"
+                    "(b.lineage_known AND m.exclusive_input) AS lineage_known,"
+                    "(b.exclusive_input AND m.exclusive_input) AS exclusive_input,"
+                    "a.body_digest,a.content_digest,a.memory_table "
+                    "FROM chronicler.location_native_memory_artifacts a "
+                    "JOIN chronicler.location_native_memory_bundles m USING(input_generation) "
+                    "JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
+                    "JOIN chronicler.location_native_copy_births b "
+                    "USING(copy_generation,input_digest) "
+                    "WHERE a.memory_table=$1 AND a.artifact_id=$2",
+                    table,
+                    expected["id"],
+                )
+            exclusive &= bool(witnesses)
+            for witness in witnesses:
+                exclusive &= (
+                    witness["lineage_known"] is True
+                    and witness["exclusive_input"] is True
+                    and (
+                        episode_body_digest(actual) == witness["body_digest"]
+                        if table == "episodes"
+                        else artifact_body_matches(actual, witness)
+                    )
+                )
+                key = (witness["copy_generation"], witness["input_digest"])
+                parents[key] = {"copy_generation": key[0], "input_digest": key[1]}
+    return list(parents.values()), exclusive
+
+
 @asynccontextmanager
 async def native_consolidation_input(
     pool: Any, spawner: Any, episodes: list[dict], facts: list[dict], rules: list[dict], prompt: str
@@ -107,6 +167,19 @@ async def native_consolidation_input(
         "JOIN location_native_memory_parents p USING(reservation_id) WHERE c.episode_id=ANY($1)",
         ids,
     )
+    for table, selected in (("facts", facts), ("rules", rules)):
+        if selected:
+            parents = list(parents) + list(
+                await domain.fetch(
+                    "SELECT DISTINCT b.copy_generation,b.input_digest "
+                    "FROM location_native_memory_artifacts a "
+                    "JOIN location_native_dispatch_parents p USING(input_generation) "
+                    "JOIN location_native_copy_births b USING(copy_generation,input_digest) "
+                    "WHERE a.memory_table=$1 AND a.artifact_id=ANY($2::uuid[])",
+                    table,
+                    [UUID(str(row["id"])) for row in selected],
+                )
+            )
     if not parents:
         yield
         return
@@ -118,34 +191,26 @@ async def native_consolidation_input(
     async with pool.acquire() as conn:
         async with conn.transaction():
             await _lock(conn, schema, role)
-            # Re-read actual claimed bodies before copied prompt admission. The
-            # lease changes are deliberately outside the content comparison.
-            for expected in episodes:
-                actual = await conn.fetchrow(
-                    "SELECT id,butler,content,importance,metadata,created_at,tenant_id,"
-                    "consolidation_attempts,content_authority,authority_entity_id "
-                    "FROM episodes WHERE id=$1 FOR UPDATE",
-                    expected["id"],
-                )
-                if actual is None or dict(actual) != expected:
-                    raise PolicyUnavailableError("Native consolidation input changed")
-            for table, selected, columns in (
-                ("facts", facts, "id,subject,predicate,content,permanence,entity_id,valid_at"),
-                ("rules", rules, "id,content,maturity"),
-            ):
-                for expected in selected:
-                    actual = await conn.fetchrow(
-                        f"SELECT {columns} FROM {table} WHERE id=$1 FOR UPDATE", expected["id"]
-                    )
-                    if actual is None or dict(actual) != expected:
-                        raise PolicyUnavailableError("Native dedup input changed")
+            # The outside lookup selects only whether a source reservation is
+            # needed. Authoritative complete bodies/parents are captured here,
+            # under the real policy-first owning writer before prompt admission.
+            parents, exclusive = await _captured_bundle_parents(conn, episodes, facts, rules)
+            if not parents:
+                raise PolicyUnavailableError("Native consolidation current parents unavailable")
             for parent in parents:
                 if await conn.fetchval(
                     "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_copy_dispositions "
-                    "WHERE copy_generation=$1)",
+                    "WHERE copy_generation=$1) OR EXISTS("
+                    "SELECT 1 FROM chronicler.location_native_copy_births b "
+                    "JOIN chronicler.location_retention_plan_outputs o "
+                    "USING(output_kind,output_id) "
+                    "WHERE b.copy_generation=$1 AND b.input_digest=$2)",
                     parent["copy_generation"],
+                    parent["input_digest"],
                 ):
-                    raise PolicyUnavailableError("Native consolidation input was disposed")
+                    raise PolicyUnavailableError(
+                        "Native consolidation input was disposed or prepared"
+                    )
             await conn.execute(
                 "INSERT INTO chronicler.location_native_dispatch_inputs "
                 "(input_generation,server_request,prompt_digest,parent_count,origin_kind) "
@@ -154,15 +219,10 @@ async def native_consolidation_input(
                 server_request,
                 digest,
             )
-            # One generation describes this full captured bundle. Independent
-            # fact/rule context remains preserved; it is not exclusively owned
-            # by an episode's location input merely because it was read nearby.
-            complete = await conn.fetchval(
-                "SELECT count(DISTINCT episode_id) FROM chronicler.location_native_memory_commits "
-                "WHERE episode_id=ANY($1)",
-                ids,
-            ) == len(ids)
-            exclusive = complete and not facts and not rules
+            # All actual source inputs can be exclusive, including previously
+            # derived facts/rules. Any independent/changed/unknown input keeps
+            # the complete bundle mixed; no type-based blanket promotion.
+            complete = exclusive
             for parent in parents:
                 await conn.execute(
                     "INSERT INTO chronicler.location_native_copy_births "
@@ -273,11 +333,16 @@ async def derivation_writer(pool: Any):
         async with conn.transaction():
             await _lock(conn, binding.schema, binding.role)
             if await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_copy_dispositions "
-                "WHERE copy_generation=$1)",
+                "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_dispatch_parents i "
+                "JOIN chronicler.location_native_copy_dispositions d USING(copy_generation) "
+                "WHERE i.input_generation=$1) OR EXISTS("
+                "SELECT 1 FROM chronicler.location_native_dispatch_parents i "
+                "JOIN chronicler.location_native_copy_births b USING(copy_generation,input_digest) "
+                "JOIN chronicler.location_retention_plan_outputs o USING(output_kind,output_id) "
+                "WHERE i.input_generation=$1)",
                 binding.generation,
             ):
-                raise PolicyUnavailableError("Native artifact input was disposed")
+                raise PolicyUnavailableError("Native artifact input was disposed or prepared")
             prior = binding.connection
             binding.connection = conn
             try:

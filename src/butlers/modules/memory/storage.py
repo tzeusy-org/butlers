@@ -2823,6 +2823,11 @@ async def _forget_plain(
     table = _memory_relation(memory_type, memory_schema)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+
+            await fence_memory_mutation(
+                pool, conn, _TYPE_TABLE[memory_type], memory_id, memory_schema=memory_schema
+            )
             if memory_type == "fact":
                 result = await conn.execute(
                     f"UPDATE {table} SET validity = 'retracted' WHERE id = $1",
@@ -2870,6 +2875,11 @@ async def _forget_with_correction_provenance(
     table = _memory_relation(memory_type, memory_schema)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+
+            await fence_memory_mutation(
+                pool, conn, _TYPE_TABLE[memory_type], memory_id, memory_schema=memory_schema
+            )
             if memory_type == "fact":
                 result = await conn.execute(
                     f"UPDATE {table} "
@@ -2981,10 +2991,15 @@ async def confirm_memory(
     if allowed_sensitivities is not None:
         params.append(list(allowed_sensitivities))
         conditions.append(f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)")
-    result = await pool.execute(
-        f"UPDATE {table} SET last_confirmed_at = now() WHERE {' AND '.join(conditions)}",
-        *params,
-    )
+    from butlers.chronicler.location_memory_copies import memory_mutation_writer
+
+    async with memory_mutation_writer(
+        pool, _TYPE_TABLE[memory_type], memory_id, memory_schema=memory_schema
+    ) as writer:
+        result = await writer.execute(
+            f"UPDATE {table} SET last_confirmed_at = now() WHERE {' AND '.join(conditions)}",
+            *params,
+        )
     return result.endswith("1")
 
 
@@ -3037,6 +3052,11 @@ async def retry_dead_letter_episode(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+
+            await fence_memory_mutation(
+                pool, conn, "episodes", episode_id, memory_schema=memory_schema
+            )
             updated = await conn.fetchrow(
                 f"""
                 UPDATE {table}
@@ -3110,6 +3130,9 @@ async def retire_rule(
     table = _memory_relation("rule", memory_schema)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+
+            await fence_memory_mutation(pool, conn, "rules", rule_id, memory_schema=memory_schema)
             result = await conn.execute(
                 f"UPDATE {table} SET retired_at = COALESCE(retired_at, now()) WHERE id = $1",
                 rule_id,
@@ -3149,6 +3172,9 @@ async def endorse_rule(
     table = _memory_relation("rule", memory_schema)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+
+            await fence_memory_mutation(pool, conn, "rules", rule_id, memory_schema=memory_schema)
             row = await conn.fetchrow(
                 f"SELECT id, content_authority, endorsed_at, endorsed_by, retired_at,"
                 f" COALESCE((metadata->>'forgotten')::boolean, false) AS forgotten,"
@@ -3260,6 +3286,9 @@ async def mark_helpful(
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+
+            await fence_memory_mutation(pool, conn, "rules", rule_id)
             # Increment counts and update timestamp in one atomic UPDATE
             conditions = [
                 "id = $1",
@@ -3359,6 +3388,9 @@ async def mark_harmful(
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from butlers.chronicler.location_memory_copies import fence_memory_mutation
+
+            await fence_memory_mutation(pool, conn, "rules", rule_id)
             # Increment counts
             conditions = [
                 "id = $1",

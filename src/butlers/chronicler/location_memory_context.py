@@ -813,6 +813,13 @@ async def context_artifact_scope(pool: Any, conn: Any) -> _ArtifactWriter | None
         generation,
     ):
         raise PolicyUnavailableError("Native context artifact input was disposed")
+    if runtime.name == "chronicler" and await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_copy_births b "
+        "JOIN chronicler.location_retention_plan_outputs o USING(output_kind,output_id) "
+        "WHERE b.receiving_session=$1)",
+        session,
+    ):
+        raise PolicyUnavailableError("Native context artifact source is prepared")
     return _ArtifactWriter(runtime, generation, conn)
 
 

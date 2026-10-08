@@ -324,3 +324,27 @@ Handler failure capture precedes receipt cleanup. A secondary unavailable failur
 Actual native fact/rule writers now additionally freeze a nullable content-v1 witness beside the original immutable full-body digest. Only reference_count and last_referenced_at vary under this profile. Old NULL history is not filled from current data. Local selected reads compare the locked canonical body and immutable exclusive parent bundle; changed content/authority/metadata, unknown ancestry or prepared source generations retain/refuse their copies. Existing configured owning Memory roles and same-database registration remain required, and no peer schema or new grant is authorized.
 
 The reached preparation counter query uses explicit bigint arithmetic binds; its genuine SQL survivor remains pending. Session process-log enrichment supplies SQL text to both the ordinary and actual Chronicler capture adapter. Valid-log positives and old tuple-failure controls establish software transport only; the hosted sibling-pool timeout cause remains unproved.
+
+Native consolidation now rereads every actual full canonical episode/fact/rule
+under the policy-first writer before prompt admission. All producer-owned body
+and exclusive parent witnesses enter the complete immutable bundle; valid
+previously derived facts/rules are not permanently treated as independent solely
+because of their table type. An independent, changed, missing or legacy-unknown
+selected input keeps the entire bundle mixed. Every actual parent generation
+remains captured, and a disposed or prepared parent refuses new sensitive prompt
+admission. This does not promote a model citation, row ID or context label into
+lineage, and actual hosted native role/processing/descendant closure remains
+required.
+
+Configured owning Memory confirm/retraction/retry/retirement/endorsement and
+rule-feedback writers now take the policy-first lock on their actual existing
+connection before their canonical target row and current prepared-source parent
+check. The single-update confirm helper retains unconfigured pool compatibility.
+A caller-supplied schema must match the actual constructor-owned Memory schema;
+a prepared source, unavailable check or mismatched identity prevents the write.
+Native derivation writers follow the actual input-generation-to-parent relation,
+not an equality between two distinct generation namespaces. Context-derived
+writes also refuse an already selected native receiving-session parent. These
+fences confer neither exclusive mutation lineage nor terminal erasure; changed
+content/authority/feedback and routed or unclassified mutations retain their
+required independent source/descendant witnesses.

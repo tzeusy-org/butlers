@@ -1338,6 +1338,8 @@ async def _assert_native_episode_tool_reads():
             self.artifact = None
             self.artifact_exclusive = True
             self.extra = {}
+            self.plan_unknown = False
+            self.mutations = []
 
         @asynccontextmanager
         async def acquire(self):
@@ -1351,7 +1353,12 @@ async def _assert_native_episode_tool_reads():
             self.trace.append("commit")
 
         async def fetchrow(self, sql, *args):
-            if "SELECT * FROM" in sql:
+            if "SELECT consolidation_status" in sql:
+                return {"consolidation_status": "dead_letter"}
+            if "SELECT validity" in sql:
+                return {"validity": "active"}
+            if "SELECT * FROM" in sql or "SELECT id FROM" in sql:
+                self.trace.append("canonical-lock")
                 return self.row
             assert "location_retention_policy" in sql
             self.trace.append("policy")
@@ -1362,7 +1369,9 @@ async def _assert_native_episode_tool_reads():
                 return "chronicler_mem"
             if "current_user" in sql:
                 return "actual-owner-double"
-            if "location_retention_plans" in sql:
+            if "location_retention_plans" in sql or "location_retention_plan_outputs" in sql:
+                if self.plan_unknown:
+                    raise RuntimeError("fixed unavailable plan read double")
                 return self.fenced
             if "count(*) FROM chronicler.location_native_copy_births" in sql:
                 self.trace.append("readback")
@@ -1373,6 +1382,10 @@ async def _assert_native_episode_tool_reads():
             if "INSERT INTO chronicler.location_native_copy_births" in sql:
                 self.trace.append("birth")
                 self.births.append(args)
+            elif sql.startswith("UPDATE "):
+                self.trace.append("mutation")
+                self.mutations.append((sql, args))
+                return "UPDATE 1"
 
         async def fetch(self, sql, *args):
             if "FROM chronicler.location_native_memory_artifacts" in sql:
@@ -1496,7 +1509,63 @@ async def _assert_native_episode_tool_reads():
         tool.mixed_inputs = False
         await get_memory(memory, "rule", memory.row["id"], allowed_sensitivities=["normal"])
         assert not tool.mixed_inputs
+        from butlers.chronicler.location_memory_context import (
+            _current_runtime_context,
+            _RuntimeContext,
+            observe_context_rows,
+        )
+
+        context = _RuntimeContext(runtime, uuid4(), tool.session, True)
+        context_token = _current_runtime_context.set(context)
+        try:
+            await copies.capture_memory_rows(memory, "rules", "SELECT * FROM rules")
+            observe_context_rows(memory, "rules", [memory.row])
+            assert context.known_context and ("rules", memory.row["id"]) in context.local_rows
+            memory.artifact_exclusive = False
+            await copies.capture_memory_rows(memory, "rules", "SELECT * FROM rules")
+            observe_context_rows(memory, "rules", [memory.row])
+            assert (
+                context.known_context is False
+            )  # A matching UUID never blesses mixed body ancestry.
+        finally:
+            _current_runtime_context.reset(context_token)
+            memory.artifact_exclusive = True
+        from butlers.modules.memory.storage import confirm_memory
+
+        memory.trace.clear()
+        assert await confirm_memory(
+            memory, "fact", memory.row["id"], memory_schema="chronicler_mem"
+        )
+        assert memory.trace.index("policy") < memory.trace.index("canonical-lock")
+        assert memory.trace.index("canonical-lock") < memory.trace.index("mutation")
+        assert memory.trace.index("mutation") < memory.trace.index("commit")
+        before_mutations = len(memory.mutations)
+        with pytest.raises(copies.PolicyUnavailableError, match="schema differs"):
+            await confirm_memory(memory, "fact", memory.row["id"], memory_schema="another_mem")
+        memory.plan_unknown = True
+        with pytest.raises(RuntimeError, match="unavailable plan"):
+            await confirm_memory(memory, "rule", memory.row["id"])
+        memory.plan_unknown = False
         memory.fenced = True
+        with pytest.raises(copies.PolicyUnavailableError, match="prepared"):
+            await confirm_memory(memory, "rule", memory.row["id"])
+        from butlers.modules.memory import storage
+
+        prepared_mutations = (
+            lambda: storage.forget_memory(memory, "fact", memory.row["id"]),
+            lambda: storage.forget_memory(
+                memory, "fact", memory.row["id"], correction_id=str(uuid4())
+            ),
+            lambda: storage.retry_dead_letter_episode(memory, memory.row["id"]),
+            lambda: storage.retire_rule(memory, memory.row["id"]),
+            lambda: storage.endorse_rule(memory, memory.row["id"], endorsed_by=None),
+            lambda: storage.mark_helpful(memory, memory.row["id"]),
+            lambda: storage.mark_harmful(memory, memory.row["id"], reason="independent feedback"),
+        )
+        for mutation in prepared_mutations:
+            with pytest.raises(copies.PolicyUnavailableError, match="prepared"):
+                await mutation()
+        assert len(memory.mutations) == before_mutations  # No write precedes the current fence.
         before = len(memory.births)
         with pytest.raises(copies.PolicyUnavailableError, match="fenced"):
             await copies.capture_memory_rows(memory, "episodes", "SELECT * FROM episodes")
@@ -1800,6 +1869,86 @@ async def test_native_processing_reserves_full_reads_before_render_and_keeps_fai
         assert len(pool.receipts) == 3  # Actual native scope end; not a runtime/descendant receipt.
     finally:
         _receivers.pop(domain)
+
+    await _assert_native_consolidation_full_ancestry()
+
+
+async def _assert_native_consolidation_full_ancestry():
+    """Actual full-bundle reader; DB double only, no SQL/role admission proof."""
+    from uuid import uuid4
+
+    from butlers.chronicler.location_memory_copies import (
+        artifact_content_digest,
+        episode_body_digest,
+    )
+    from butlers.chronicler.location_memory_derivation import _captured_bundle_parents
+    from butlers.chronicler.location_projection import _digest_value
+    from butlers.chronicler.location_retention import PolicyUnavailableError
+
+    class Bundle:
+        def __init__(self):
+            self.rows = {
+                table: {"id": uuid4(), "content": table + " source sentinel", "reference_count": 0}
+                for table in ("episodes", "facts", "rules")
+            }
+            self.witnesses = {}
+            for table, row in self.rows.items():
+                self.witnesses[table] = {
+                    "copy_generation": uuid4(),
+                    "input_digest": b"p" * 32,
+                    "lineage_known": True,
+                    "exclusive_input": True,
+                    "body_digest": episode_body_digest(row)
+                    if table == "episodes"
+                    else content_digest({"memory_artifact": _digest_value(row)}),
+                    "memory_table": table,
+                    "content_digest": None
+                    if table == "episodes"
+                    else artifact_content_digest(table, row),
+                }
+            self.missing = None
+
+        async def fetchrow(self, sql, *args):
+            table = sql.split(" FROM ")[1].split()[0]
+            assert sql.endswith("FOR UPDATE") and args[0] == self.rows[table]["id"]
+            return self.rows[table]
+
+        async def fetch(self, sql, *args):
+            table = "episodes" if "location_native_memory_commits" in sql else args[0]
+            return [] if table == self.missing else [self.witnesses[table]]
+
+    bundle = Bundle()
+    selected = {
+        table: [{"id": row["id"], "content": row["content"]}] for table, row in bundle.rows.items()
+    }
+
+    async def capture():
+        return await _captured_bundle_parents(
+            bundle, selected["episodes"], selected["facts"], selected["rules"]
+        )
+
+    parents, exclusive = await capture()
+    assert exclusive is True and len(parents) == 3  # All actual native source generations survive.
+    bundle.rows["facts"]["reference_count"] = 7
+    assert (await capture())[1] is True  # Producer content-v1 permits read counters only.
+    bundle.missing = "rules"
+    parents, exclusive = await capture()
+    assert exclusive is False and len(parents) == 2  # Independent selected rule is never blessed.
+    bundle.missing = None
+    bundle.witnesses["rules"]["exclusive_input"] = False
+    assert (await capture())[1] is False
+    bundle.witnesses["rules"]["exclusive_input"] = True
+    bundle.rows["facts"]["metadata"] = {"independent": "preserved"}
+    assert (await capture())[1] is False  # Same visible prompt does not prove unchanged full body.
+    bundle.rows["facts"].pop("metadata")
+    bundle.witnesses["facts"]["content_digest"] = None
+    assert (await capture())[1] is False  # Legacy NULL cannot acquire reference-change permission.
+    bundle.witnesses["facts"]["content_digest"] = artifact_content_digest(
+        "facts", bundle.rows["facts"]
+    )
+    selected["episodes"][0]["content"] = "stale copied input"
+    with pytest.raises(PolicyUnavailableError, match="full input changed"):
+        await capture()
 
 
 @pytest.mark.asyncio
