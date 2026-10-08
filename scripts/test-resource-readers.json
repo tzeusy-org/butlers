@@ -1,6 +1,6 @@
 {
   "declarations_digest": "1089fb415a0c653d2e18dca2f04c9bf5aee885c004c1da9b61a268041ebf9c78",
-  "digest": "9a986b92b1656ba0e9d7767b1404a3a6ad7c17ca10ccc2e7383ed1b0dd58be19",
+  "digest": "9a9cbbc5f19df2dad2233f0b1ea2acd0d64294431457f435f243840de8ea4d20",
   "families": [
     "docs/",
     "about/",
@@ -4015,7 +4015,7 @@
     "tests/core/test_baselines.py": "26e80c574f95c240b927c638ab5b17e0227ec7c7d9cb788a84fdcf0c0e30c829",
     "tests/core/test_blind_spot_declarations.py": "4dba6d3e40c462a33e32b6a25f14096ae790083e29fd0fedcaa8955d7f9da0f4",
     "tests/core/test_blob_storage.py": "bed0e3d91c89300bc2a4f6af7b546ea58b1bd0aec36987b241ad1e4e2937ae43",
-    "tests/core/test_buffer.py": "37e3aadd1ce330d5705fa1b9e604ce5375283a0cd4cedcb9108fa8594d6cc9b4",
+    "tests/core/test_buffer.py": "e980d1a25462bc8cfa7e0228b8210c493acb119120afaafd89c107690c21f687",
     "tests/core/test_butler_logging.py": "8d262bdc3f319aa7b816edf2440e7ea20dd47eabe863eeaddc16cd578242d6d1",
     "tests/core/test_butler_logging_jsonb_roundtrip.py": "e352ac60d0effcc57742abf0750362bc0c7edb1983e241590aaf599bf1a9f504",
     "tests/core/test_calendar_event_prompt.py": "01bfa8f3b7770c24f0ec06b47868e71e2df8b47e44e1e84b7ff7014cc93b49cc",
