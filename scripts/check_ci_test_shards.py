@@ -493,7 +493,11 @@ def run_shard(
                 "--cov-report=term-missing",
             ]
         )
-    command.extend([f"--junitxml={evidence_dir / 'raw-junit.xml'}", "--", *files])
+    # pytest 9.1 scopes conftest fixtures to collector objects. Interleaving
+    # package paths in argv can recreate their parents and orphan fixtures.
+    # Collect lexically, then the worker-visible observer hook applies the
+    # validated schedule after fixture discovery and marker deselection.
+    command.extend([f"--junitxml={evidence_dir / 'raw-junit.xml'}", "--", *sorted(files)])
     environment = {
         **os.environ,
         "TEST_EVIDENCE_DIR": str(evidence_dir),
@@ -502,6 +506,7 @@ def run_shard(
             {
                 **context,
                 "ordering": ordering,
+                "collection_order": "lexical",
                 "files": files,
                 "test_step_started_at": started_at,
                 "requested_workers": unit_workers(lane),
@@ -525,6 +530,7 @@ def run_shard(
             {
                 **context,
                 "ordering": ordering,
+                "collection_order": "lexical",
                 "requested_workers": unit_workers(lane),
                 "coverage_core": environment.get("COVERAGE_CORE") if coverage_enabled else None,
                 "pytest_exit": result,

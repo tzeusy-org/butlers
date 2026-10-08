@@ -46,8 +46,14 @@ The optional CI_SHARD_TIMINGS input must have complete phase/node identity,
 source/run/attempt and no more than fourteen days of age, exact files/current
 Python-source+dependency topology, and an independently re-collected selected
 population. Duplicate, malformed, negative/nonfinite, missing or mismatched data
-retains lexical argv and an explicit UNKNOWN. Compatible data orders the same
-files by descending total setup/call/teardown duration with lexical ties.
+retains the lexical schedule and an explicit UNKNOWN. Compatible data schedules
+the same files by descending total setup/call/teardown duration with lexical ties.
+Pytest always receives lexical file argv: installed pytest 9.1 can orphan
+directory-scoped fixtures when explicit package paths are interleaved. The
+worker-visible final collection hook applies the validated schedule after
+fixture discovery, marker deselection and fixture reordering. Receipts distinguish
+`collection_order: lexical` from the actual advisory schedule in `files` and
+`ordering`; no old receipt is restamped as current evidence.
 `--dist loadfile --no-loadscope-reorder` keeps module fixtures whole and prevents
 xdist's inherited item-count sort from overriding that order. Manifests and
 within-file collection order remain unchanged.
