@@ -32,8 +32,9 @@ from typing import Any
 import asyncpg
 
 from butlers.core.state import state_list
-from butlers.tools.education._helpers import _row_to_dict
+from butlers.tools.education._helpers import _row_to_dict, _transaction
 from butlers.tools.education.concept_types import CONCEPT_TYPES, classify_concept_type
+from butlers.tools.education.mind_maps import mind_map_update_status
 from butlers.tools.education.source_material import PROVENANCE_VALUES, SOURCE_KEY_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -504,7 +505,10 @@ async def curriculum_generate(
     diagnostic_results: dict[str, Any] | None = None,
     source_refs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate a concept graph, run topological sort, assign learning sequence.
+    """Validate and sequence a populated graph atomically, then activate its draft.
+
+    Activation goes through mind_map_update_status on the same connection.
+    An empty graph is refused and leaves its map in draft.
 
     Called during the PLANNING phase after all nodes and edges have been
     persisted. Every concept in the curriculum plan MUST be a node in the DB
@@ -559,9 +563,28 @@ async def curriculum_generate(
         If the mind map is not found, structural constraints are violated, or
         ``source_refs`` is malformed.
     """
+    async with _transaction(pool) as connection:
+        return await _curriculum_generate(
+            connection,
+            mind_map_id,
+            goal=goal,
+            diagnostic_results=diagnostic_results,
+            source_refs=source_refs,
+        )
+
+
+async def _curriculum_generate(
+    pool: asyncpg.Pool,
+    mind_map_id: str,
+    *,
+    goal: str | None = None,
+    diagnostic_results: dict[str, Any] | None = None,
+    source_refs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Curriculum generation inside the caller-owned transaction."""
     # Verify mind map exists and is in a plannable state
     map_row = await pool.fetchrow(
-        "SELECT id, status FROM education.mind_maps WHERE id = $1",
+        "SELECT id, status FROM education.mind_maps WHERE id = $1 FOR UPDATE",
         mind_map_id,
     )
     if map_row is None:
@@ -617,28 +640,14 @@ async def curriculum_generate(
     )
     await _write_metadata_patches(pool, patches)
 
-    # Transition to 'active'; merge goal into metadata if supplied
     if goal is not None:
         await pool.execute(
-            """
-            UPDATE education.mind_maps
-            SET metadata = metadata || $1::jsonb,
-                status = 'active',
-                updated_at = now()
-            WHERE id = $2
-            """,
+            "UPDATE education.mind_maps SET metadata = metadata || $1::jsonb WHERE id = $2",
             {"goal": goal},
             mind_map_id,
         )
-    else:
-        await pool.execute(
-            """
-            UPDATE education.mind_maps
-            SET status = 'active', updated_at = now()
-            WHERE id = $1
-            """,
-            mind_map_id,
-        )
+    if map_status == "draft":
+        await mind_map_update_status(pool, mind_map_id, "active")
 
     logger.info(
         "curriculum_generate: mind_map_id=%s nodes=%d edges=%d goal=%r "
@@ -757,6 +766,8 @@ async def curriculum_replan(
         )
 
     map_status = map_row["status"]
+    if map_status == "draft":
+        raise ValueError("Cannot replan a draft mind map: it has no curriculum to re-plan")
     if map_status == "abandoned":
         raise ValueError(
             f"Cannot replan mind map {mind_map_id}: status is 'abandoned'. "
@@ -843,6 +854,8 @@ async def curriculum_next_node(
     if map_row is None:
         return None
 
+    if map_row["status"] == "draft":
+        raise ValueError("Mind map is not active: curriculum has not been generated")
     if map_row["status"] in ("completed", "abandoned"):
         return None
 

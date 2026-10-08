@@ -1267,6 +1267,40 @@ class TestUpdateMindMapStatus:
         assert resp.status_code == 200
         assert resp.json()["status"] == "active"
 
+    async def test_lifecycle_refusal_is_409_with_reason_and_no_success_read(self):
+        from butlers.tools.education.mind_maps import MindMapLifecycleError
+
+        app = _app_with_mock_pool(AsyncMock())
+        edu = _get_education_module(app)
+        for target, reason in [
+            ("active", "A curriculum with no concepts cannot be activated"),
+            ("completed", "Cannot transition from draft to completed"),
+        ]:
+            with (
+                patch.object(
+                    edu,
+                    "mind_map_update_status",
+                    AsyncMock(side_effect=MindMapLifecycleError(reason)),
+                ),
+                patch.object(edu, "mind_map_get", AsyncMock()) as read,
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.put(
+                        f"/api/education/mind-maps/{_MAP_ID}/status", json={"status": target}
+                    )
+                assert response.status_code == 409
+                assert response.json()["detail"] == reason
+                read.assert_not_awaited()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/education/mind-maps/{_MAP_ID}/status", json={"status": "draft"}
+            )
+        assert response.status_code == 422
+
     async def test_invalid_status_returns_422(self):
         """Invalid status value should return 422."""
         mock_pool = AsyncMock()

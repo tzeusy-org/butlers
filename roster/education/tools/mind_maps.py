@@ -6,11 +6,11 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.education._helpers import _row_to_dict
+from butlers.tools.education._helpers import _row_to_dict, _transaction
 
 
 async def mind_map_create(pool: asyncpg.Pool, title: str) -> str:
-    """Create a new mind map with status='active' and NULL root_node_id.
+    """Create a new mind map with status='draft' and NULL root_node_id.
 
     Parameters
     ----------
@@ -27,7 +27,7 @@ async def mind_map_create(pool: asyncpg.Pool, title: str) -> str:
     row = await pool.fetchrow(
         """
         INSERT INTO education.mind_maps (title, status)
-        VALUES ($1, 'active')
+        VALUES ($1, 'draft')
         RETURNING id
         """,
         title,
@@ -119,42 +119,43 @@ async def mind_map_list(
     return [_row_to_dict(row) for row in rows]
 
 
-async def mind_map_update_status(
-    pool: asyncpg.Pool,
-    mind_map_id: str,
-    status: str,
-) -> None:
-    """Update the status of a mind map.
+class MindMapLifecycleError(ValueError):
+    """A stored map cannot make the requested lifecycle transition."""
 
-    Parameters
-    ----------
-    pool:
-        asyncpg connection pool.
-    mind_map_id:
-        UUID of the mind map.
-    status:
-        New status value ('active', 'completed', or 'abandoned').
 
-    Raises
-    ------
-    ValueError
-        If the mind map is not found.
+_TRANSITIONS = {
+    "draft": {"active", "abandoned"},
+    "active": {"completed", "abandoned"},
+    "completed": {"active"},
+    "abandoned": {"active"},
+}
+
+
+async def mind_map_update_status(pool: asyncpg.Pool, mind_map_id: str, status: str) -> None:
+    """Change status under the same parent-row lock used by node removal.
+
+    Creation alone enters draft. Refused transitions never write; activation
+    requires at least one persisted node. Database triggers guard direct SQL.
     """
-    result = await pool.execute(
-        """
-        UPDATE education.mind_maps
-        SET status = $1, updated_at = now()
-        WHERE id = $2
-        """,
-        status,
-        mind_map_id,
-    )
-    # asyncpg returns "UPDATE N" — check N > 0
-    affected = int(result.split()[-1])
-    if affected == 0:
-        raise ValueError(
-            f"Mind map not found: {mind_map_id}. "
-            "Use mind_map_list() to find existing mind maps and their IDs."
+    if status not in {"active", "completed", "abandoned"}:
+        raise MindMapLifecycleError(f"Invalid target status: {status!r}")
+    async with _transaction(pool) as connection:
+        row = await connection.fetchrow(
+            "SELECT status FROM education.mind_maps WHERE id = $1 FOR UPDATE", mind_map_id
+        )
+        if row is None:
+            raise ValueError(f"Mind map not found: {mind_map_id}")
+        if status not in _TRANSITIONS.get(row["status"], set()):
+            raise MindMapLifecycleError(f"Cannot transition from {row['status']} to {status}")
+        if status == "active" and not await connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM education.mind_map_nodes WHERE mind_map_id = $1)",
+            mind_map_id,
+        ):
+            raise MindMapLifecycleError("A curriculum with no concepts cannot be activated")
+        await connection.execute(
+            "UPDATE education.mind_maps SET status = $2, updated_at = now() WHERE id = $1",
+            mind_map_id,
+            status,
         )
 
 
@@ -162,18 +163,14 @@ async def mind_map_abandon_stale(
     pool: asyncpg.Pool,
     inactivity_days: int = 30,
 ) -> list[str]:
-    """Transition stale ``active`` mind maps to ``'abandoned'``.
+    """Abandon stalled drafts and inactive populated maps through the shared sweep.
 
-    A mind map is *stale* when its status is ``'active'`` and more than
-    ``inactivity_days`` (default 30, per the module-education-mind-map spec)
-    have elapsed since the most recent activity on the map. "Activity" is the
-    maximum ``updated_at`` across all nodes belonging to the map. Maps with no
-    nodes fall back to the map's own ``updated_at`` so freshly created empty
-    maps are not abandoned prematurely.
+    Empty drafts use a strict 24-hour creation threshold. Populated maps use
+    newest node activity, independently of the flow's session clock, with the strict
+    ``inactivity_days`` boundary. Completed and all-mastered maps stay unchanged;
+    already-abandoned maps retry only idempotent review-schedule cleanup.
 
-    ``completed`` and already-``abandoned`` maps are never touched.
-
-    This is the query backing the weekly staleness-abandonment scheduled job.
+    This backs the registered weekly staleness-abandonment scheduled job.
 
     Parameters
     ----------
@@ -188,22 +185,11 @@ async def mind_map_abandon_stale(
     list of str
         The UUIDs of the mind maps that were transitioned to ``'abandoned'``.
     """
-    rows = await pool.fetch(
-        """
-        WITH stale AS (
-            SELECT m.id
-            FROM education.mind_maps m
-            LEFT JOIN education.mind_map_nodes n ON n.mind_map_id = m.id
-            WHERE m.status = 'active'
-            GROUP BY m.id
-            HAVING COALESCE(MAX(n.updated_at), m.updated_at)
-                   < now() - make_interval(days => $1)
-        )
-        UPDATE education.mind_maps
-        SET status = 'abandoned', updated_at = now()
-        WHERE id IN (SELECT id FROM stale)
-        RETURNING id
-        """,
-        inactivity_days,
+    from butlers.tools.education.teaching_flows import _abandon_stale_maps
+
+    async def delete_schedule(name: str) -> None:
+        await pool.execute("DELETE FROM scheduled_tasks WHERE name = $1", name)
+
+    return await _abandon_stale_maps(
+        pool, node_activity=True, stale_days=inactivity_days, schedule_delete=delete_schedule
     )
-    return [str(row["id"]) for row in rows]

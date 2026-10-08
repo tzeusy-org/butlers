@@ -569,6 +569,43 @@ def test_public_resource_readers_are_current_and_selected_before_docs_skip(
     with pytest.raises(ValueError, match="READER_UNCLASSIFIED"):
         discover(alias_repo, narrowed)
 
+    # A resolved working body is not a resolved index. Three merge stages
+    # cannot create repeated reader authority or populate the discovery cache.
+    index_reader = "tests/test_index_reader.py"
+    body = (
+        "from pathlib import Path\nvalue = 'base'\ndef read():\n"
+        "    return Path('docs/contract.md').read_text()\n"
+    )
+    _write(alias_repo, index_reader, body)
+    _git(alias_repo, "add", ".")
+    _git(alias_repo, "commit", "-qm", "reader index baseline")
+    _git(alias_repo, "branch", "reader-companion")
+    _write(alias_repo, index_reader, body.replace("'base'", "'own'"))
+    _git(alias_repo, "add", index_reader)
+    _git(alias_repo, "commit", "-qm", "own reader change")
+    _git(alias_repo, "checkout", "reader-companion")
+    _write(alias_repo, index_reader, body.replace("'base'", "'public'"))
+    _git(alias_repo, "add", index_reader)
+    _git(alias_repo, "commit", "-qm", "public reader change")
+    _git(alias_repo, "checkout", "-")
+    conflict = subprocess.run(
+        ["git", "merge", "--no-commit", "reader-companion"],
+        cwd=alias_repo,
+        capture_output=True,
+        timeout=30,
+    )
+    assert conflict.returncode == 1
+    _write(alias_repo, index_reader, body.replace("'base'", "'resolved'"))
+    with pytest.raises(ValueError, match="READER_UNCLASSIFIED"):
+        discover(alias_repo, declared)
+    old_registry = (alias_repo / REGISTRY).read_bytes()
+    assert subprocess.run(command, capture_output=True, timeout=30).returncode == 1
+    assert (alias_repo / REGISTRY).read_bytes() == old_registry
+    _git(alias_repo, "add", index_reader)
+    assert discover(alias_repo, declared)["unresolved_dynamic_readers"].count(index_reader) == 1
+    assert subprocess.run(command, capture_output=True, timeout=30).returncode == 0
+    assert subprocess.run(command + ["--check"], capture_output=True, timeout=30).returncode == 0
+
 
 def test_manifest_and_cost_admission_preserve_provenance_and_finite_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

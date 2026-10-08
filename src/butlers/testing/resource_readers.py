@@ -49,17 +49,26 @@ def safe_path(path: str) -> bool:
 
 def tracked_sources(root: Path) -> list[str]:
     result = subprocess.run(
-        ["git", "ls-files", "-z", "--", "tests", "roster"],
+        ["git", "ls-files", "--stage", "-z", "--", "tests", "roster"],
         cwd=root,
         capture_output=True,
         check=True,
         timeout=10,
     )
-    return sorted(
-        p.decode()
-        for p in result.stdout.split(b"\0")
-        if p.endswith(b".py") and (p.startswith(b"tests/") or b"/tests/" in p)
-    )
+    sources = []
+    for entry in result.stdout.split(b"\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split(b"\t", 1)
+        if not path.endswith(b".py") or not (path.startswith(b"tests/") or b"/tests/" in path):
+            continue
+        # An unresolved merge yields multiple index stages for the same path.
+        # Refuse before discovery/cache admission, even if the working body has
+        # already been edited into valid Python but has not yet been staged.
+        if metadata.rsplit(b" ", 1)[-1] != b"0":
+            raise ValueError("READER_UNCLASSIFIED")
+        sources.append(path.decode())
+    return sorted(sources)
 
 
 def consumers(root: Path, source: str) -> list[str]:

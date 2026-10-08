@@ -30,6 +30,14 @@ consumer paths; changed inputs cannot reuse a previous result, and returned
 data is copied. This is source-validation reuse, never cached test results or
 cost/timing evidence.
 
+Regeneration requires a resolved test-source index. A valid working Python
+body with unresolved Git merge stages still refuses discovery before cache
+admission. Stage the resolved files before regenerating, then run the reader
+guard again on the committed checkout. This preserves one tracked source and
+one unresolved-reader record per file; merge-stage duplicates are not new
+readers. Public-main consumer changes require a real source union and fresh
+body bindings, never edits that remove a reader or restamp an old profile.
+
 Missing static targets select FULL. Direct deleted test files may use their
 surviving test-bearing parent; a complete configured root selects FULL and the
 legacy runner refuses to execute it. A historical shard-manifest exception needs
