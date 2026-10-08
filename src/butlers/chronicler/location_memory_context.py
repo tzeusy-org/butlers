@@ -782,7 +782,10 @@ async def context_artifact_scope(pool: Any, conn: Any) -> _ArtifactWriter | None
     invocation = _current_copy_invocation.get()
     if native is not None and native.runtime is runtime and native.admitted:
         session = native.session
-    elif invocation is not None and invocation.target == runtime.name:
+    elif invocation is not None:
+        from butlers.chronicler.location_tool_copies import registered_copy_invocation
+
+        invocation = registered_copy_invocation(runtime.name)
         session = UUID(invocation.runtime_session)
     else:
         return None

@@ -1404,6 +1404,7 @@ async def test_native_memory_writer_reserves_before_embedding_and_commits_exact_
         location_retention._copy_pools.discard(pool)
 
     await _assert_native_episode_tool_reads()
+    await _assert_native_artifact_invocation_lifetime()
 
 
 async def _assert_native_episode_tool_reads():
@@ -1672,6 +1673,114 @@ async def _assert_native_episode_tool_reads():
         _current_tool_copy.reset(token)
         _runtimes.pop(domain)
         copies._receivers.pop(domain)
+
+
+async def _assert_native_artifact_invocation_lifetime():
+    """Actual producer entry paths; registry/SQL doubles, no auth/SQL credit."""
+    import time
+    from contextlib import asynccontextmanager
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler import location_memory_context as contexts
+    from butlers.chronicler import location_memory_copies as copies
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.core.copy_lifetime import _current_copy_invocation
+    from butlers.core.fact_authority import _Invocation, _invocations
+
+    generation, session = uuid4(), uuid4()
+
+    class Memory:
+        def __init__(self):
+            self.trace = []
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        def is_closed(self):
+            return False
+
+        async def fetchval(self, sql, *args):
+            if "current_schema" in sql:
+                return "chronicler_mem"
+            if "current_user" in sql:
+                return "existing-owning-role-double"
+            return False
+
+        async def fetchrow(self, sql, *args):
+            self.trace.append("writer")
+            if "location_retention_policy" in sql:
+                return {"version": 1}
+            assert "location_runtime_context_bindings" in sql
+            assert args == (session,)
+            return {"input_generation": generation}
+
+        async def fetch(self, sql, *args):
+            self.trace.append("selected")
+            return []
+
+        async def execute(self, sql, *args):
+            assert "pg_advisory_xact_lock" in sql
+
+    memory, domain = Memory(), object()
+    runtime = SimpleNamespace(
+        name="chronicler",
+        memory=memory,
+        domain=domain,
+        active=True,
+        memory_identity=("chronicler_mem", "existing-owning-role-double"),
+        identity=("chronicler", "existing-owning-role-double"),
+    )
+    original = _Invocation("chronicler", str(session), None, None, time.monotonic() + 60)
+    key = str(uuid4())
+    _runtimes[memory] = _runtimes[domain] = runtime
+    copies._receivers[domain] = (memory, *runtime.memory_identity)
+    token = _current_copy_invocation.set(original)
+    try:
+
+        async def refused(cell):
+            previous = _current_copy_invocation.set(cell)
+            before = list(memory.trace)
+            try:
+                with pytest.raises(copies.PolicyUnavailableError, match="invocation differs"):
+                    await contexts.context_artifact_scope(memory, memory)
+                with pytest.raises(copies.PolicyUnavailableError, match="invocation differs"):
+                    await copies.capture_memory_rows(memory, "episodes", "SELECT * FROM episodes")
+                assert memory.trace == before  # Neither writer nor selected body reached.
+            finally:
+                _current_copy_invocation.reset(previous)
+
+        await refused(original)  # Typed fields without registry identity are not proof.
+        _invocations[key] = original
+        accepted = await contexts.context_artifact_scope(memory, memory)
+        assert accepted is not None and accepted.generation == generation
+        assert accepted.runtime is runtime and accepted.connection is memory
+        assert await copies.capture_memory_rows(memory, "episodes", "SELECT * FROM episodes") == []
+        assert "writer" in memory.trace and "selected" in memory.trace
+        await refused(replace(original))  # Equal copied cell is still a distinct object.
+        for altered in (
+            replace(original, deadline=time.monotonic() - 1),
+            replace(original, target="relationship"),
+        ):
+            _invocations[key] = altered
+            await refused(altered)
+        _invocations[key] = original
+        assert await contexts.context_artifact_scope(memory, memory) is not None
+        _invocations.pop(key)
+        await refused(original)  # Native finalizer removal also revokes the producer cell.
+    finally:
+        _current_copy_invocation.reset(token)
+        _invocations.pop(key, None)
+        copies._receivers.pop(domain)
+        _runtimes.pop(memory)
+        _runtimes.pop(domain)
 
 
 @pytest.mark.asyncio

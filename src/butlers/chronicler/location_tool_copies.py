@@ -49,10 +49,32 @@ def current_tool_copy(runtime: Any) -> _ToolCopy | None:
     return binding
 
 
+def registered_copy_invocation(target: str):
+    """Resolve only the guard's still registered exact private lifetime.
+
+    This is a receiving-copy binding, never fact/custody privilege. Target or
+    session fields on an object (including a copied genuine cell) do not
+    replace current identity membership in the native invocation registry.
+    """
+    from butlers.core.copy_lifetime import _current_copy_invocation
+    from butlers.core.fact_authority import _Invocation, _invocations
+
+    invocation = _current_copy_invocation.get()
+    if invocation is None:
+        return None
+    if (
+        not isinstance(invocation, _Invocation)
+        or invocation.target != target
+        or invocation.deadline <= time.monotonic()
+        or not any(cell is invocation for cell in _invocations.values())
+    ):
+        raise PolicyUnavailableError("Native tool invocation differs")
+    return invocation
+
+
 async def begin_tool_copy(butler: str, module: str, name: str, fingerprint: str):
     from butlers.chronicler.location_catalog_copies import _runtimes
     from butlers.core.copy_lifetime import _current_copy_invocation
-    from butlers.core.fact_authority import _Invocation, _invocations
 
     invocation = _current_copy_invocation.get()
     if invocation is None:
@@ -60,13 +82,7 @@ async def begin_tool_copy(butler: str, module: str, name: str, fingerprint: str)
     runtime = next((r for r in _runtimes.values() if r.name == butler and r.active), None)
     if runtime is None:
         return None
-    if (
-        not isinstance(invocation, _Invocation)
-        or invocation.target != runtime.name
-        or invocation.deadline <= time.monotonic()
-        or not any(cell is invocation for cell in _invocations.values())
-    ):
-        raise PolicyUnavailableError("Native tool invocation differs")
+    invocation = registered_copy_invocation(runtime.name)
     session, generation = UUID(invocation.runtime_session), uuid4()
     digest = bytes.fromhex(fingerprint)
     if len(digest) != 32:

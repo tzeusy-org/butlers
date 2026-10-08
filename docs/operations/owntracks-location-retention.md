@@ -395,3 +395,15 @@ writes also refuse an already selected native receiving-session parent. These
 fences confer neither exclusive mutation lineage nor terminal erasure; changed
 content/authority/feedback and routed or unclassified mutations retain their
 required independent source/descendant witnesses.
+
+Native artifact writers and Memory read producers now use the same exact
+receiving-invocation registration and deadline check as native tool admission.
+A typed cell's target/session fields, an equal copied cell, an expired cell or
+a cell removed by the native finalizer cannot create a producer birth. This
+check runs before selected Memory bytes or artifact writer locks. Constructor-
+owned admitted runtime contexts retain their distinct native authority. The
+paired software control neutralizes only identity-membership checking: the
+actual writer then fails to refuse a typed unregistered cell; restored writer
+and reader refusal controls plus a genuinely registered-cell companion pass.
+Those registry/SQL doubles prove source wiring only, not online admission,
+PostgreSQL roles or whole copy closure.

@@ -552,7 +552,10 @@ async def capture_memory_rows(pool: Any, table: str, query: str, args=()) -> lis
     receiver = context.session if context is not None else None
     if tool is not None:
         receiver = tool.session  # Only the already admitted private tool binding.
-    elif invocation is not None and invocation.target == "chronicler":
+    elif invocation is not None:
+        from butlers.chronicler.location_tool_copies import registered_copy_invocation
+
+        invocation = registered_copy_invocation("chronicler")
         receiver = UUID(invocation.runtime_session)
     elif dispatch is not None and dispatch.active:
         receiver = dispatch.session_id
