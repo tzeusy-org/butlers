@@ -1208,14 +1208,21 @@ async def _assert_native_memory_mutation_chain(pool, domain):
             finish_tool_copy,
         )
 
-        session_id, tool_generation = uuid.uuid4(), uuid.uuid4()
-        await domain.execute(
-            "INSERT INTO sessions(id,prompt,trigger_source,request_id,effective_system_prompt) "
-            "VALUES($1,$2,$3,$4,'synthetic frozen system')",
-            session_id,
-            "planted receiving input",
-            "test:native_mutation",
-            str(uuid.uuid4()),
+        from butlers.core.sessions import session_create
+
+        tool_generation = uuid.uuid4()
+        system_prompt = "synthetic frozen system"
+        # The real producer validates the complete core_236 receipt and legal
+        # trigger, then commits it before any immutable native input binding.
+        # This remains planted receiving lineage, not online source admission.
+        session_id = await session_create(
+            domain,
+            prompt="planted receiving input",
+            trigger_source="trigger",
+            request_id=str(uuid.uuid4()),
+            effective_system_prompt=system_prompt,
+            prompt_digest=hashlib.sha256(system_prompt.encode()).hexdigest(),
+            prompt_provenance=[],
         )
         await domain.execute(
             "INSERT INTO location_runtime_tool_intents "
