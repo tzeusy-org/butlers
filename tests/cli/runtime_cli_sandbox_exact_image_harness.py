@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
 
@@ -20,6 +21,95 @@ from butlers.cli_auth.sandbox_platform import (
 )
 
 
+def _closed_launch_diagnostic(content: bytes) -> dict[str, str]:
+    """Classify only public executable/error vocabulary; never reflect bytes."""
+    lowered = content.lower()
+    origin = "bubblewrap" if content.startswith(b"bwrap:") else "unknown"
+    if content.startswith(b"runtime-cli-sandbox-init failed"):
+        origin = "shim"
+    error = "unknown"
+    for phrase, label in (
+        (b"permission denied", "permission-denied"),
+        (b"operation not permitted", "operation-not-permitted"),
+        (b"no such file or directory", "missing-path"),
+    ):
+        if phrase in lowered:
+            error = label
+            break
+    operation = "unknown"
+    for phrase, label in (
+        (b"mount", "mount"),
+        (b"execvp", "exec"),
+        (b"uid map", "uid-map"),
+        (b"gid map", "gid-map"),
+        (b"chdir", "chdir"),
+        (b"namespace", "namespace"),
+    ):
+        if phrase in lowered:
+            operation = label
+            break
+    return {"origin": origin, "os_error": error, "operation": operation}
+
+
+def _diagnostic_preexec(identity, diagnostic_fd: int):
+    """Compose the unchanged identity setup with one closed, pre-exec pipe write.
+
+    The extra FD is closed BEFORE Bubblewrap exec. It never enters a namespace
+    or provider and is not a handshake/control FD. No proc contents or labels
+    are exported: only fixed booleans, with unavailable represented as null.
+    """
+    original = _outer_identity_preexec(identity)
+    mode = os.environ.get("BUTLERS_NIGHTLY_DUMPABILITY_DIAGNOSTIC", "baseline")
+    if mode not in {"baseline", "reset-to-one"}:
+        raise ValueError("invalid-closed-diagnostic-mode")
+
+    def setup():
+        original()
+        # Diagnostic-only controlled intervention after the original identity
+        # setup. It does not change launch arguments, namespace gates, UID/GID,
+        # supplementary groups, no_new_privs or any production function.
+        if mode == "reset-to-one":
+            if ctypes.CDLL(None).prctl(4, 1, 0, 0, 0) != 0:
+                raise RuntimeError("diagnostic-dumpability-reset-refused")
+        result = {
+            "dumpable": None,
+            "proc_owned_by_euid": None,
+            "userns_restriction": None,
+            "apparmor_unconfined": None,
+        }
+        dumpable = ctypes.CDLL(None).prctl(3, 0, 0, 0, 0)  # PR_GET_DUMPABLE, no mutation
+        if dumpable in {0, 1, 2}:
+            result["dumpable"] = dumpable == 1
+        try:
+            result["proc_owned_by_euid"] = os.stat("/proc/self/uid_map").st_uid == os.geteuid()
+        except OSError:
+            pass
+        for path, key, true_value, false_value in (
+            (
+                "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+                "userns_restriction",
+                b"1",
+                b"0",
+            ),
+            ("/proc/self/attr/current", "apparmor_unconfined", b"unconfined", None),
+        ):
+            try:
+                with open(path, "rb") as stream:
+                    observed = stream.read(256).strip()
+                if observed == true_value:
+                    result[key] = True
+                elif observed == false_value or key == "apparmor_unconfined":
+                    result[key] = False
+            except OSError:
+                pass
+        try:
+            os.write(diagnostic_fd, json.dumps(result, sort_keys=True).encode())
+        finally:
+            os.close(diagnostic_fd)
+
+    return setup
+
+
 async def _run() -> None:
     provider = PROVIDERS["codex"]
     invocation = resolve_readonly_runtime_inputs(provider, (provider.binary(), "--version"))
@@ -32,11 +122,13 @@ async def _run() -> None:
     pidfd: int | None = None
     handle: _BubblewrapDeviceAuthHandle | None = None
     info_read = info_write = block_read = block_write = shim_gate_read = shim_gate_write = None
+    diagnostic_read = diagnostic_write = None
     try:
         stage = sandbox._stage_factory(identity)
         info_read, info_write = os.pipe2(os.O_CLOEXEC)
         block_read, block_write = os.pipe2(os.O_CLOEXEC)
         shim_gate_read, shim_gate_write = os.pipe2(os.O_CLOEXEC)
+        diagnostic_read, diagnostic_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         plan = build_bubblewrap_launch_plan(
             bwrap_path=sandbox._bwrap_path,
             shim_path=sandbox._shim_path,
@@ -56,9 +148,14 @@ async def _run() -> None:
             stderr=asyncio.subprocess.STDOUT,
             env=plan.environment,
             close_fds=plan.close_fds,
-            pass_fds=plan.pass_fds,
-            preexec_fn=_outer_identity_preexec(identity),
+            pass_fds=(*plan.pass_fds, diagnostic_write),
+            preexec_fn=_diagnostic_preexec(identity, diagnostic_write),
         )
+        _close_fd(diagnostic_write)
+        diagnostic_write = None
+        closed_setup = json.loads(os.read(diagnostic_read, 512))
+        _close_fd(diagnostic_read)
+        diagnostic_read = None
         _close_fd(info_write)
         info_write = None
         _close_fd(block_read)
@@ -81,11 +178,38 @@ async def _run() -> None:
         )
         pidfd = None
         try:
-            await asyncio.wait_for(process.stdout.readline(), timeout=0.1)
+            pre_release = await asyncio.wait_for(process.stdout.readline(), timeout=0.1)
         except TimeoutError:
             pass
         else:
-            raise RuntimeError("provider output arrived before the exact gate release")
+            # A closed pipe and actual output are distinct failures. Never emit
+            # the child bytes: stderr is merged here and may contain secrets.
+            try:
+                await asyncio.wait_for(process.wait(), timeout=0.2)
+            except TimeoutError:
+                pass
+            raise RuntimeError(
+                json.dumps(
+                    {
+                        "probe": "exact-image-release-v1",
+                        "phase": "before-release",
+                        "observation": "early-eof" if pre_release == b"" else "nonempty-output",
+                        "process_state": ("running" if process.returncode is None else "exited"),
+                        "exit_kind": (
+                            "unknown"
+                            if process.returncode is None
+                            else "zero"
+                            if process.returncode == 0
+                            else "shim-refused"
+                            if process.returncode == 125
+                            else "nonzero"
+                        ),
+                        **_closed_launch_diagnostic(pre_release),
+                        **closed_setup,
+                    },
+                    sort_keys=True,
+                )
+            )
 
         sandbox._release_payload(block_write)
         _close_fd(block_write)
@@ -105,6 +229,8 @@ async def _run() -> None:
     finally:
         for fd in (info_read, info_write, block_read, block_write, shim_gate_read, shim_gate_write):
             _close_fd(fd)
+        _close_fd(diagnostic_read)
+        _close_fd(diagnostic_write)
         if pidfd is not None:
             _close_fd(pidfd)
         if handle is not None:

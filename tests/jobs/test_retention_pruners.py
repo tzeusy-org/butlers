@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.jobs import retention
 from butlers.jobs.retention import (
     prune_filtered_events_partitions,
     prune_insight_candidates,
@@ -132,8 +133,20 @@ class TestPruneSessionProcessLogs:
 # ===========================================================================
 
 
+@pytest.fixture
+def june_partition_clock(monkeypatch):
+    """These literal partitions describe June 2026, independently of today's date."""
+
+    class June(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 18, tzinfo=UTC).astimezone(tz)
+
+    monkeypatch.setattr(retention, "datetime", June)
+
+
 class TestPruneFilteredEventsPartitions:
-    async def test_dry_run_lists_eligible_without_dropping(self):
+    async def test_dry_run_lists_eligible_without_dropping(self, june_partition_clock, monkeypatch):
         """With enabled=True, dry_run=True: eligible list returned, no DROP issued."""
         # Simulate partitions: current month 2026-06, keep_months=12 → cutoff = 2025-06
         # Partitions from 2024-12 and 2025-01 are old enough to drop.
@@ -156,7 +169,22 @@ class TestPruneFilteredEventsPartitions:
         assert result["partitions_dropped"] == []
         pool.execute.assert_not_called()
 
-    async def test_enabled_and_confirmed_drops_eligible_partitions(self):
+        # Positive clock-boundary companion: the same formerly retained
+        # January partition genuinely becomes eligible twelve months later.
+        class NextJune(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2027, 6, 18, tzinfo=UTC).astimezone(tz)
+
+        monkeypatch.setattr(retention, "datetime", NextJune)
+        later = await prune_filtered_events_partitions(
+            pool, enabled=True, dry_run=True, keep_months=12
+        )
+        assert "filtered_events_202601" in later["partitions_eligible"]
+        assert later["partitions_dropped"] == []
+        pool.execute.assert_not_called()
+
+    async def test_enabled_and_confirmed_drops_eligible_partitions(self, june_partition_clock):
         """With enabled=True, dry_run=False: eligible partitions are DROPped."""
         # Today is 2026-06; keep_months=12 → retain 2025-07 through 2026-06.
         # 202412 (Dec 2024) is 18 months old → eligible to drop.

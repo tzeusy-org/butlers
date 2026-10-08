@@ -20,7 +20,7 @@ import json
 import shutil
 import uuid
 from contextlib import AsyncExitStack
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -155,7 +155,7 @@ async def _event(
     starts_at: datetime | None = None,
     ends_at: datetime | None = None,
 ) -> uuid.UUID:
-    ends = ends_at or (datetime.now(UTC) - ended_ago)
+    ends = ends_at or ((await pool.fetchval("SELECT clock_timestamp()")) - ended_ago)
     starts = starts_at or (ends - timedelta(hours=1))
     meta = {"attendees": attendees or []}
     meta.update(extra_meta or {})
@@ -473,7 +473,7 @@ class TestSelection:
     async def test_recurring_series_is_debriefed_per_occurrence(self, pool) -> None:
         src = await _source(pool)
         await _person(pool, "Sam Rivera", "sam@example.test")
-        now = datetime.now(UTC)
+        now = await pool.fetchval("SELECT clock_timestamp()")
         event_id = await _event(
             pool,
             src,
@@ -543,7 +543,7 @@ class TestSelection:
 
 
 async def _prompted_batch(pool, *, ago: timedelta, answered: bool = False) -> None:
-    prompted_at = datetime.now(UTC) - ago
+    prompted_at = (await pool.fetchval("SELECT clock_timestamp()")) - ago
     await pool.execute(
         """
         INSERT INTO meeting_debriefs
@@ -681,7 +681,7 @@ class TestAnswer:
             pool, debrief_id=debrief_id, commitments=[{"summary": "Send Sam the deck"}]
         )
         src = await _source(pool)
-        tomorrow = datetime.now(UTC) + timedelta(days=1)
+        tomorrow = (await pool.fetchval("SELECT clock_timestamp()")) + timedelta(days=1)
         next_event = await _event(
             pool,
             src,
@@ -777,7 +777,9 @@ class TestAnswer:
 
             monkeypatch.setattr(debrief_job, "active_entity_ids", held_active)
             job = asyncio.create_task(
-                debrief_job._propose_batch(pool, _Proposer(), datetime.now(UTC))
+                debrief_job._propose_batch(
+                    pool, _Proposer(), (await pool.fetchval("SELECT clock_timestamp()"))
+                )
             )
             try:
                 async with asyncio.timeout(15):

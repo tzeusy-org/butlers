@@ -217,3 +217,14 @@ Tests can use this to skip gracefully when Docker is not installed.
 ## Related Pages
 
 - [Testing Strategy](testing-strategy.md) -- Test pyramid and quality gates
+
+## Supplementary nightly evidence
+
+The full nightly clock/image corpus remains supplementary to the required merge
+queue. Its opt-in plugin records safe function-local case indexes and outcomes;
+its external wrapper retains sanitized JUnit and actual installed-library,
+controller/worker wall and monotonic conformance. Timestamp-file minute controls
+run serially as a separate existing QA-node phase, with atomic replacement at
+the resumed/final-tick milestone. They do not change application clocks or the
+normal test population. See [nightly assurance](nightly-assurance.md) for host
+tracker admission, runtime ledger proof and mandatory postlanding observations.

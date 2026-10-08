@@ -221,6 +221,14 @@ worktree.
 
 ### Coordinator guardrails
 
+- Nightly assurance is a bounded step of the existing sole-writer host cycle:
+  `scripts/reconcile_nightly_incidents.py` defaults to a read-only plan.
+  After independent terminal GitHub evidence readback, the coordinator may invoke
+  `--coordinator-apply` with its existing owner identity and inherited
+  `.beads.gate.lock` FD. No worker/runtime/CI Beads writer is introduced.
+  See [nightly assurance](docs/testing/nightly-assurance.md) for the exact
+  lock, export, recovery and mandatory scheduled-night observation contracts.
+
 - A worker can finish with its branch pushed but its bead still `in_progress`. Detect a branch ahead
   of `main` with no PR; open the PR and mark the bead `blocked` with `pr-review` and `external_ref`.
   Merge-blocker workers likewise leave beads `in_progress` after merging: close them and any related

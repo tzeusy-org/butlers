@@ -117,7 +117,9 @@ async def _insert_old_inactive_rule(pool) -> UUID:
 
 
 async def _park_delivery_action(pool: asyncpg.Pool):
-    now = datetime.now(UTC)
+    # claim_next's not_before/expiry predicates use the database clock.
+    # This fixture represents an immediately due presentation in that domain.
+    now = await pool.fetchval("SELECT clock_timestamp()")
     action_id = uuid4()
     schema_name = await pool.fetchval("SELECT current_schema()")
     action_key = f"approval:{schema_name}:{action_id}"

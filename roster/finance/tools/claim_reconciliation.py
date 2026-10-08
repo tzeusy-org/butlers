@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -126,7 +126,10 @@ async def _reconcile_one(conn: asyncpg.Connection, claim: dict[str, Any]) -> str
             evidence_horizon_at=horizon,
         )
         return "unverifiable"
-    now = datetime.now(UTC)
+    # Feed timestamps and the persisted sweep verdict use PostgreSQL's clock.
+    # Compare in that same clock domain, including when the caller's wall
+    # clock differs. An application clock jump is not evidence of a stale feed.
+    now = await conn.fetchval("SELECT clock_timestamp()")
     if max(synced) < now - timedelta(hours=_FRESH_HOURS):
         await _write_resolution(
             conn,

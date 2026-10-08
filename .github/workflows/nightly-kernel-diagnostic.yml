@@ -1,0 +1,141 @@
+name: Nightly kernel diagnostic (branch only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      posture:
+        description: Test-only pre-exec discriminator; never scheduled-night evidence
+        type: choice
+        required: true
+        default: baseline
+        options: [baseline, reset-to-one]
+      runner:
+        description: Test-only hosted kernel/environment species; never a production setting
+        type: choice
+        required: true
+        default: ubuntu-latest
+        options: [ubuntu-latest, ubuntu-22.04]
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-discriminator:
+    timeout-minutes: 30
+    # Branch-only complete original kernel corpus. This retains every release,
+    # descendant, peer and signer assertion. It is a diagnostic environment
+    # species, never scheduled-night or production-correction evidence.
+    runs-on: ${{ inputs.runner }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          set -euo pipefail
+          max_attempts=5
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              echo "uv installed on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              echo "::error::uv install failed after ${max_attempts} attempts" >&2
+              exit 1
+            fi
+            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Free disk space before image builds
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean -q
+          docker image prune -f --filter "until=1h" || true
+
+      - name: Build butlers-base image
+        # Labels mirror scripts/compose.sh's freshness receipt so this stays
+        # provably the same base-image build contract production uses.
+        run: |
+          # shellcheck source=scripts/base-image-input-fingerprint.sh
+          source scripts/base-image-input-fingerprint.sh
+          BASE_DOCKERFILE_SHA=$(sha256sum < Dockerfile.base | awk '{print $1}')
+          BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint \
+            Dockerfile.base \
+            scripts/runtime_cli_sandbox_init.c \
+            scripts/generate_runtime_cli_sandbox_manifest.py)
+          docker build \
+            --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
+            --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
+            -f Dockerfile.base \
+            -t butlers-base:latest .
+
+      - name: Build butlers-app exact image
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
+            -t "butlers-app:${GIT_SHA}" .
+
+      - name: Closed runner and exact-image identities
+        env:
+          GIT_SHA: ${{ github.sha }}
+          DIAGNOSTIC_RUNNER: ${{ inputs.runner }}
+        run: |
+          python3 - <<'PYIDENTITY'
+          import hashlib, json, os, pathlib, re, subprocess
+          def output(arguments):
+              result = subprocess.run(arguments, capture_output=True, timeout=30)
+              if result.returncode or len(result.stdout) > 8192:
+                  raise SystemExit("closed-identity-unavailable")
+              return result.stdout.decode("ascii").strip()
+          def bounded(value, pattern):
+              if re.fullmatch(pattern, value) is None:
+                  raise SystemExit("closed-identity-invalid")
+              return value
+          release = {}
+          for line in pathlib.Path("/etc/os-release").read_text().splitlines():
+              key, separator, value = line.partition("=")
+              if separator and key in {"ID", "VERSION_ID"}:
+                  release[key] = value.strip('"')
+          if release.get("ID") != "ubuntu":
+              raise SystemExit("unexpected-diagnostic-runner-os")
+          head = bounded(os.environ["GIT_SHA"], r"[0-9a-f]{40}")
+          image = "butlers-app:" + head
+          document = {
+              "diagnostic_kind": "runner-environment-four-original-kernel-nodes",
+              "head": head,
+              "runner_selection": os.environ["DIAGNOSTIC_RUNNER"],
+              "os": "ubuntu",
+              "os_version": bounded(release.get("VERSION_ID", ""), r"[0-9.]{1,20}"),
+              "kernel_version": bounded(output(["uname", "-r"]), r"[0-9][A-Za-z0-9.+~_-]{0,100}"),
+              "image_id": bounded(output(["docker", "image", "inspect", "--format", "{{.Id}}", image]), r"sha256:[0-9a-f]{64}"),
+              "bubblewrap_package_version": bounded(output(["docker", "run", "--rm", "--entrypoint", "dpkg-query", image, "-W", "-f=${Version}", "bubblewrap"]), r"[0-9][A-Za-z0-9.+~:-]{0,100}"),
+              "base_dockerfile_sha256": hashlib.sha256(pathlib.Path("Dockerfile.base").read_bytes()).hexdigest(),
+              "app_dockerfile_sha256": hashlib.sha256(pathlib.Path("Dockerfile").read_bytes()).hexdigest(),
+          }
+          print(json.dumps(document, sort_keys=True))
+          PYIDENTITY
+
+      - name: Four original kernel nodes with explicit diagnostic-only posture
+        run: |
+          uv run --no-sync pytest tests/cli/test_runtime_cli_sandbox.py -v --tb=short \
+            -k 'test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled or test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence or test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other or test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment'
+        env:
+          BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST: "1"
+          BUTLERS_RUNTIME_SANDBOX_IMAGE: butlers-app:${{ github.sha }}
+          BUTLERS_NIGHTLY_DUMPABILITY_DIAGNOSTIC: ${{ inputs.posture }}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -89,7 +89,7 @@ async def test_no_account_is_unverifiable_not_unreconciled(db_url: str) -> None:
         await pool.close()
 
 
-async def test_one_fresh_matching_credit_settles_and_binds(db_url: str) -> None:
+async def test_one_fresh_matching_credit_settles_and_binds(db_url: str, monkeypatch) -> None:
     claim_id = await _claim(db_url, key=f"test:settled:{uuid.uuid4()}")
     pool = await _finance_pool(db_url)
     try:
@@ -106,7 +106,7 @@ async def test_one_fresh_matching_credit_settles_and_binds(db_url: str) -> None:
             VALUES ($1, $2, 'Alex', 25, 'SGD', 'credit', 'income') RETURNING id
             """,
             account_id,
-            datetime.now(UTC),
+            (await pool.fetchval("SELECT clock_timestamp()")),
         )
         result = await reconcile_cost_claims(pool)
         row = await pool.fetchrow(
@@ -119,6 +119,27 @@ async def test_one_fresh_matching_credit_settles_and_binds(db_url: str) -> None:
         assert row["matched_amount"] == 25
         assert row["matched_currency"] == "SGD"
         assert str(transaction_id) in row["match_refs"]
+        assert (
+            await pool.fetchval(
+                "SELECT transaction_id FROM claim_match_bindings WHERE claim_id = $1", claim_id
+            )
+            == transaction_id
+        )
+        # Source-level counterfactual: a caller wall-clock jump cannot age
+        # database-owned feed evidence. The same actual sweep, roles and rows
+        # must still settle; only the application clock changes.
+        from butlers.tools.finance import claim_reconciliation
+
+        database_now = await pool.fetchval("SELECT clock_timestamp()")
+
+        class ShiftedWallClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return (database_now + timedelta(days=120)).astimezone(tz)
+
+        with monkeypatch.context() as shifted:
+            shifted.setattr(claim_reconciliation, "datetime", ShiftedWallClock)
+            assert (await reconcile_cost_claims(pool))["outcomes"] == {"settled": 1}
         assert (
             await pool.fetchval(
                 "SELECT transaction_id FROM claim_match_bindings WHERE claim_id = $1", claim_id

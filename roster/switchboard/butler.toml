@@ -157,6 +157,14 @@ cron = "0 */6 * * *"
 dispatch_mode = "job"
 job_name = "decision_escalation_check"
 
+# Read-only, content-blind host incident export; no runtime Beads/GitHub access.
+[[butler.schedule]]
+name = "nightly-assurance"
+cron = "17 * * * *"
+dispatch_mode = "job"
+job_name = "nightly_assurance"
+
+
 # Decision Desk routing (bu-ckkpz.3) -- offers open decision beads to the owner
 # as one-tap Telegram prompts through quiet hours, the context bus and a
 # 3-per-24h budget, at most once per bead. A no-op unless the deployment sets

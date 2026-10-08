@@ -5,6 +5,19 @@ on:
     # Run daily at 2am UTC
     - cron: '0 2 * * *'
   workflow_dispatch:
+    inputs:
+      freeze-clock-control:
+        description: Deliberate branch red; no scheduled-night credit
+        type: boolean
+        default: false
+      minute-old-cron-control:
+        description: Neutralize only PR4310 in the isolated minute conformance; no scheduled-night credit
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   nightly:
@@ -62,9 +75,22 @@ jobs:
         # perf-marked tests (e.g. test_audit_log_index_perf.py, which is
         # `pytest.mark.perf` + `pytest.mark.integration` and is documented as
         # opt-in only via an explicit `-m perf` run).
-        run: uv run pytest tests/config/test_schema_matrix_migrations.py tests/migrations/ -q --tb=short -m "(nightly or integration) and not bench and not perf" -n auto
+        run: |
+          export NIGHTLY_LOGICAL_DATE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at[:10]')
+          uv run --no-sync python scripts/run_nightly_assurance.py --variant schema --output .tmp/nightly-evidence/schema
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Retain sanitized schema evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-${{ github.run_id }}-${{ github.run_attempt }}-schema
+          path: .tmp/nightly-evidence/schema/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
 
   faketime-matrix:
     # bu-10fgt.4: catches wall-clock time-bomb tests -- fixtures/business logic
@@ -89,9 +115,8 @@ jobs:
     #
     # Scheduled/dispatch-only by design: this must never gate PR merges or
     # slow the required `check` job, only surface future hazards early. A
-    # failure here is visible via GitHub's built-in scheduled-workflow-failure
-    # email notification -- no bespoke issue-tracking automation is added
-    # (kept in scope with the epic's cost budget).
+    # Source-owned sanitized evidence additionally feeds the trusted host
+    # coordinator. CI evidence transport has no Beads/DB credential bridge.
     #
     # bu-hmdqz.8: run 29140308642 (first scheduled run) proved the detector
     # works -- it surfaced real +45d wall-clock time-bomb failures within ~20
@@ -176,9 +201,24 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Install libfaketime
+        # Ubuntu 24.04's 0.9.10-2.1 translates real monotonic absolute sleeps
+        # using the fake wall offset. Pin the upstream-fixed Ubuntu package;
+        # retain real monotonic time and verify the artifact before installation.
         run: |
+          set -euo pipefail
+          PACKAGE=./.tmp/libfaketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb
+          WRAPPER=./.tmp/faketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb
+          mkdir -p .tmp
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            --output "${PACKAGE}" \
+            "https://archive.ubuntu.com/ubuntu/pool/universe/f/faketime/${PACKAGE##*/}"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            --output "${WRAPPER}" \
+            "https://archive.ubuntu.com/ubuntu/pool/universe/f/faketime/${WRAPPER##*/}"
+          echo "430037630f6544d307b9983c88eafbb3ab99bd14e7f8533f26dc42c8613936ee  ${PACKAGE}" | sha256sum --check --strict
+          echo "3deac96929b1ef682eb7d6a16606c353e12e0102f507dfbb5655eb29c76e9523  ${WRAPPER}" | sha256sum --check --strict
           sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends faketime
+          sudo apt-get install -y --no-install-recommends "${PACKAGE}" "${WRAPPER}"
 
       - name: Free disk space before testcontainers
         # Same rationale as ci.yml's check job: testcontainers pulls
@@ -196,66 +236,25 @@ jobs:
       - name: Full suite at faketime offset ${{ matrix.offset }}
         run: |
           LIBFAKETIME_SO=$(dpkg -L libfaketime | grep -m1 '/libfaketime\.so\.1$')
-          echo "Using libfaketime shared library: ${LIBFAKETIME_SO}"
-          # bu-hmdqz.8: --timeout bounds each individual test (pytest-timeout,
-          # dev dep) so one wall-clock-confused hang can no longer silently
-          # eat the whole job -- it surfaces as a single NAMED failure and
-          # the run continues, letting the rest of the suite's time-bomb
-          # signal survive intact. Scoped to this leg only (CLI flag, not a
-          # pyproject.toml addopts change) so the required `check`/`nightly`
-          # jobs are unaffected.
-          # bu-sjf9q: recover named failures even when the leg hangs to a
-          # cancel. --timeout-method=thread catches more hangs than the default
-          # signal method, but a run on this branch (29208931855) still hung
-          # mid-suite despite it -- the stall is session/worker-level, not a
-          # single test pytest-timeout can bound. So -v is load-bearing, not
-          # noise: it prints each test name INLINE as it runs, so the failed
-          # names survive a mid-run cancel (a -rf/--tb summary only prints at
-          # session end and is lost on cancel -- the PR #3176 failure mode
-          # where no names were recoverable). -rf/--tb=short still give the
-          # clean summary + tracebacks on the runs that do finish.
-          # bu-szgi9: `not pg_clock` drops the tests whose pass/fail hinges on
-          # comparing a Postgres-clock timestamp against a Python-clock value.
-          # libfaketime shifts only the Python process clock, not the Postgres
-          # testcontainer, so those tests skew by the offset and false-fail --
-          # they are CI-artifact skew, not wall-clock time-bombs, so they are
-          # excluded from THIS leg only (they still run in every other job).
-          #
-          # bu-ik7p3: session/worker-level watchdog. --timeout=300 bounds each
-          # test CALL, but the observed wedge lives in xdist/session shutdown
-          # or a session-scoped fixture finalizer where no per-item timer runs.
-          # coreutils `timeout` runs pytest in its own process group and, on
-          # expiry, sends SIGABRT to the WHOLE group -- the controller and every
-          # xdist worker. With PYTHONFAULTHANDLER=1 (inherited by the execnet
-          # workers), each process's SIGABRT handler dumps all-thread
-          # native+Python stacks to stderr (captured in the log) before
-          # aborting, so the next hang names the exact frame it is stuck on
-          # (e.g. a docker socket read inside container teardown). --kill-after
-          # SIGKILLs any straggler that blocks SIGABRT. `timeout` exits non-zero
-          # on fire, so the leg concludes 'failure' (preserving the
-          # scheduled-failure email) instead of a silent job-level 'cancelled'.
-          # WATCHDOG_SECONDS is ~3x the observed healthy runtime (~20 min to
-          # 100%) and comfortably inside the 75-min job bound.
-          # bu-tegqi: `not faketime_fragile` drops the pure-concurrency tests
-          # whose progress DEPENDS on a timed thread-sync primitive expiring
-          # (e.g. threading.Event.wait(timeout)). CPython implements those via a
-          # CLOCK_REALTIME-based timed wait, which libfaketime shifts by the leg
-          # offset -- the deadline lands +45d/+120d out, the wait never returns,
-          # and the test deadlocks an xdist worker for the whole leg (this was
-          # the recurring 99% wedge: run 29254910952 hung in
-          # test_concurrent_same_model_builds_single_instance's RaceDict.wait,
-          # NOT in a real embedding-model load). No time semantics -> zero value
-          # under faketime; they still run in every other job.
-          WATCHDOG_SECONDS=3600
-          timeout --signal=SIGABRT --kill-after=30s "${WATCHDOG_SECONDS}" \
-            env LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \
-            PYTHONFAULTHANDLER=1 \
-            uv run pytest tests/ roster/ -v -rf --tb=short --ignore=tests/e2e \
-            -m "not bench and not perf and not nightly and not pg_clock and not faketime_fragile" \
-            -n auto --dist loadfile \
-            --timeout=300 --timeout-method=thread
+          export NIGHTLY_LOGICAL_DATE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at[:10]')
+          uv run --no-sync python scripts/run_nightly_assurance.py \
+            --variant "${VARIANT}" --library "${LIBFAKETIME_SO}" \
+            --output ".tmp/nightly-evidence/${VARIANT}"
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
+          GH_TOKEN: ${{ github.token }}
+          VARIANT: ${{ matrix.offset == '+45d' && 'offset-45' || 'offset-120' }}
+          BUTLERS_NIGHTLY_FROZEN_CONFORMANCE: ${{ github.event_name == 'workflow_dispatch' && inputs['freeze-clock-control'] && '1' || '0' }}
+
+      - name: Retain sanitized offset evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.offset == '+45d' && 'offset-45' || 'offset-120' }}
+          path: .tmp/nightly-evidence/${{ matrix.offset == '+45d' && 'offset-45' || 'offset-120' }}/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
 
   exact-image-sandbox:
     timeout-minutes: 30
@@ -287,7 +286,10 @@ jobs:
     # against the same exact image -- spec.md's ENOENT-on-signer and
     # protected-parent-environment guarantees had no real-kernel test
     # anywhere in the repo either.
-    runs-on: ubuntu-latest
+    # The complete original four-test corpus passed on this standard runner.
+    # Ubuntu 24.04 failed the same unprivileged UID-map launch; this keeps all
+    # security settings unchanged and does not isolate the kernel cause.
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v6
@@ -354,12 +356,168 @@ jobs:
             -t "butlers-app:${GIT_SHA}" .
 
       - name: Exact-image Bubblewrap sandbox proof
+        run: |
+          export NIGHTLY_LOGICAL_DATE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at[:10]')
+          uv run --no-sync python scripts/run_nightly_assurance.py --variant exact-image \
+            --output .tmp/nightly-evidence/exact-image
         env:
           BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST: "1"
           BUTLERS_RUNTIME_SANDBOX_IMAGE: butlers-app:${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Retain sanitized exact-image evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-${{ github.run_id }}-${{ github.run_attempt }}-exact-image
+          path: .tmp/nightly-evidence/exact-image/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  folded-clock:
+    # Skipped/unknown folded jobs never count as a complete green night.
+    needs: [nightly, faketime-matrix, exact-image-sandbox]
+    if: >-
+      always() && needs.nightly.result == 'success' &&
+      needs.faketime-matrix.result == 'success' &&
+      needs.exact-image-sandbox.result == 'success'
+    # Full population3600+30s, isolated QA up to2x300+30s, UV640 and
+    # setup/artifact reserve fit this finite provisional new-job bound.
+    timeout-minutes: 90
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [hour, minute]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
         run: |
-          uv run pytest tests/cli/test_runtime_cli_sandbox.py -v --tb=short \
-            -k "test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled \
-                or test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence \
-                or test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other \
-                or test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment"
+          set -euo pipefail
+          max_attempts=5
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              echo "uv installed on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              echo "::error::uv install failed after ${max_attempts} attempts" >&2
+              exit 1
+            fi
+            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Install libfaketime
+        # Ubuntu 24.04's 0.9.10-2.1 translates real monotonic absolute sleeps
+        # using the fake wall offset. Pin the upstream-fixed Ubuntu package;
+        # retain real monotonic time and verify the artifact before installation.
+        run: |
+          set -euo pipefail
+          PACKAGE=./.tmp/libfaketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb
+          WRAPPER=./.tmp/faketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb
+          mkdir -p .tmp
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            --output "${PACKAGE}" \
+            "https://archive.ubuntu.com/ubuntu/pool/universe/f/faketime/${PACKAGE##*/}"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            --output "${WRAPPER}" \
+            "https://archive.ubuntu.com/ubuntu/pool/universe/f/faketime/${WRAPPER##*/}"
+          echo "430037630f6544d307b9983c88eafbb3ab99bd14e7f8533f26dc42c8613936ee  ${PACKAGE}" | sha256sum --check --strict
+          echo "3deac96929b1ef682eb7d6a16606c353e12e0102f507dfbb5655eb29c76e9523  ${WRAPPER}" | sha256sum --check --strict
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends "${PACKAGE}" "${WRAPPER}"
+
+      - name: Free disk space before testcontainers
+        # Same rationale as ci.yml's check job: testcontainers pulls
+        # pgvector/pgvector:pg17 and the runner only starts with ~14 GB free.
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean -q
+          docker image prune -f --filter "until=1h" || true
+
+      - name: Full suite and positioned folded boundary
+        run: |
+          LIBFAKETIME_SO=$(dpkg -L libfaketime | grep -m1 '/libfaketime\.so\.1$')
+          export NIGHTLY_LOGICAL_DATE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at[:10]')
+          uv run --no-sync python scripts/run_nightly_assurance.py \
+            --variant "folded-${PHASE}" --library "${LIBFAKETIME_SO}" \
+            --output ".tmp/nightly-evidence/folded-${PHASE}"
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+          GH_TOKEN: ${{ github.token }}
+          PHASE: ${{ matrix.phase }}
+          BUTLERS_NIGHTLY_QA_OLD_CRON_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs['minute-old-cron-control'] && '1' || '0' }}
+
+      - name: Retain sanitized folded evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-${{ github.run_id }}-${{ github.run_attempt }}-folded-${{ matrix.phase }}
+          path: .tmp/nightly-evidence/folded-${{ matrix.phase }}/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  assess-nightly:
+    needs: [nightly, faketime-matrix, exact-image-sandbox, folded-clock]
+    if: always()
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    concurrency:
+      group: nightly-assurance-evidence-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+      - name: Provisional evidence assessment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PYTHONPATH=src python scripts/assess_nightly_assurance.py \
+            --run-id "${GITHUB_RUN_ID}" --publish-evidence \
+            --output .tmp/nightly-assessment.json
+      - name: Retain assessor receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-${{ github.run_id }}-${{ github.run_attempt }}-assessment
+          path: .tmp/nightly-assessment.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14

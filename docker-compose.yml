@@ -235,6 +235,8 @@ services:
       # it is permanently decisions_available=False. Never mount the whole
       # .beads/ dir (see butlers-up's own volumes block for why).
       - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+      # Dedicated content-blind export directory; atomic replacement stays visible.
+      - ./.nightly-assurance:/run/butlers-nightly:ro
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
@@ -670,6 +672,8 @@ services:
       # butlers.jobs.decision_review's module docstring for why this is the
       # only path from beads issue data into the running system today.
       - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+      # Dedicated content-blind export directory; atomic replacement stays visible.
+      - ./.nightly-assurance:/run/butlers-nightly:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
     # here, so all-butlers receives the public keyring and deliberately declares
     # no `secrets:` at all -- there is no private file for this stack to hold.
@@ -813,6 +817,8 @@ services:
       # bu-ckkpz.4: see butlers-up's own volumes block above for why only
       # this one file is mounted, never the whole .beads/ dir.
       - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+      # Dedicated content-blind export directory; atomic replacement stays visible.
+      - ./.nightly-assurance:/run/butlers-nightly:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
     # here, so all-butlers receives the public keyring and deliberately declares
     # no `secrets:` at all -- there is no private file for this stack to hold.
@@ -879,6 +885,8 @@ services:
       - butlers_backups:/backups:ro
       # bu-hmdqz.6: see dashboard-api's own volumes block above for why.
       - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+      # Dedicated content-blind export directory; atomic replacement stays visible.
+      - ./.nightly-assurance:/run/butlers-nightly:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Dashboard is the only signing
     # side, so it is the only service that receives the private signer.  The
     # keyring below is public and shared with every verifying process; the

@@ -69,6 +69,14 @@ def test_butler_toml_has_decision_review_schedules():
     assert escalation["dispatch_mode"] == "job"
     assert escalation["job_name"] == "decision_escalation_check"
 
+    # REQ-nightly-ci-assurance-002: operational assurance is a native job,
+    # not an LLM trigger or a runtime tracker client.
+    assurance = next((s for s in schedules if s["name"] == "nightly-assurance"), None)
+    assert assurance is not None
+    assert assurance["cron"] == "17 * * * *"
+    assert assurance["dispatch_mode"] == "job"
+    assert assurance["job_name"] == "nightly_assurance"
+
     routing = next((s for s in schedules if s["name"] == "decision-routing"), None)
     assert routing is not None
     assert routing["cron"] == "7,22,37,52 * * * *"

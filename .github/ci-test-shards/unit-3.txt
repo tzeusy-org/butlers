@@ -216,6 +216,7 @@ tests/scripts/test_check_archived_requirements_landed.py
 tests/scripts/test_compose_dashboard_url.py
 tests/scripts/test_compose_sysctls.py
 tests/scripts/test_generate_runtime_cli_sandbox_manifest.py
+tests/scripts/test_nightly_assurance.py
 tests/scripts/test_pg_dump_backup.py
 tests/scripts/test_restore_drill_tcp_proxy.py
 tests/scripts/test_route_a_meeting_prep_harness.py

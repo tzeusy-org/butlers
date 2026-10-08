@@ -350,8 +350,12 @@ class TestDetectRecurringMonthly:
         }
         if endpoint is not None:
             await pool.execute(
-                "INSERT INTO public._finance_test_liveness VALUES ('gmail', $1, 'healthy', now())",
+                "INSERT INTO public._finance_test_liveness VALUES ('gmail', $1, 'healthy', $2)",
                 endpoint,
+                # Expected-signal liveness is evaluated against the runtime's
+                # wall clock. Plant an actually fresh observation in that clock,
+                # rather than an unfaked PostgreSQL timestamp 45/120 days old.
+                datetime.now(UTC),
             )
         base = datetime.now(UTC) - timedelta(days=120)
         for index in range(4):
