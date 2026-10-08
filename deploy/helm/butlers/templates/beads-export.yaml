@@ -1,6 +1,12 @@
 {{- if .Values.beadsExport.enabled }}
 {{- $bx := .Values.beadsExport }}
 {{- $secret := $bx.credentialSecretName | default (printf "%s-beads-dolt" .Release.Name) }}
+{{- /* Derived from the app image's registry when unset, so an upgrade that only
+       reuses image.repository still finds the bridge image. */}}
+{{- $bxRepo := $bx.imageRepository }}
+{{- if and (not $bxRepo) (hasSuffix "/butlers-app" .Values.image.repository) }}
+{{- $bxRepo = printf "%s/butlers-beads" (trimSuffix "/butlers-app" .Values.image.repository) }}
+{{- end }}
 # Management workload bridging the Dolt tracker and the runtime
 # (docs/architecture/beads-runtime-data-bridge.md; OpenSpec change
 # owner-decision-desk-write-bridge, bu-ckkpz.3). Each run applies the
@@ -78,7 +84,7 @@ spec:
             fsGroup: 65532
           containers:
             - name: export
-              image: {{ $bx.image | default (printf "%s:%s" (required "beadsExport.imageRepository or beadsExport.image is required when beadsExport.enabled" $bx.imageRepository) (required "image.tag is required (git SHA)" .Values.image.tag)) }}
+              image: {{ $bx.image | default (printf "%s:%s" (required "beadsExport.imageRepository or beadsExport.image is required when beadsExport.enabled and image.repository is not <registry>/butlers-app" $bxRepo) (required "image.tag is required (git SHA)" .Values.image.tag)) }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               env:
                 - {name: EXPORT_DIR, value: /export}

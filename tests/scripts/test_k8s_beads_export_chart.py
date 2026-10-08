@@ -110,7 +110,7 @@ def test_enabled_keeps_dolt_credential_and_host_paths_out_of_runtime_pods(env: s
 
 
 @needs_helm
-@pytest.mark.parametrize("missing", range(3))
+@pytest.mark.parametrize("missing", [1, 2])
 def test_enabled_requires_every_site_value(missing: int) -> None:
     site = [
         arg for i, pair in enumerate(zip(_SITE[::2], _SITE[1::2])) if i != missing for arg in pair
@@ -118,6 +118,39 @@ def test_enabled_requires_every_site_value(missing: int) -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
         _render("dev", *site)
     assert "beadsExport." in exc.value.stderr
+
+
+def _bridge_image(*args: str) -> str:
+    names = _by_kind_name(_render("dev", "--set", "image.tag=abc123", *args))
+    return _pod_spec(names[("CronJob", "butlers-beads-export")])["containers"][0]["image"]
+
+
+@needs_helm
+def test_bridge_image_derives_from_the_app_image_registry() -> None:
+    # A `--reset-then-reuse-values` upgrade carries image.repository but no bridge value.
+    site = _SITE[2:]
+    assert _bridge_image("--set", "image.repository=reg.example/butlers-app", *site) == (
+        "reg.example/butlers-beads:abc123"
+    )
+    assert _bridge_image(*_SITE) == "registry.invalid/butlers-beads:abc123"
+
+
+@needs_helm
+def test_bridge_image_is_required_when_the_app_image_is_not_derivable() -> None:
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        _bridge_image("--set", "image.repository=reg.example/custom", *_SITE[2:])
+    assert "beadsExport.imageRepository" in exc.value.stderr
+
+
+@needs_helm
+def test_dev_ships_the_owner_facing_decision_review_jobs_off() -> None:
+    names = _by_kind_name(_render("dev", *_SITE))
+    env = {
+        e["name"]: e.get("value")
+        for e in _pod_spec(names[("Deployment", "butlers-up")])["containers"][0]["env"]
+    }
+    assert env["BUTLERS_DECISION_REVIEW_ENABLED"] == "0"
+    assert env["BUTLERS_DECISION_ROUTING_ENABLED"] == "0"
 
 
 @needs_helm

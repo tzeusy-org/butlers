@@ -1517,3 +1517,37 @@ async def test_run_escalation_check_suppressed_does_not_write_marker(tmp_path):
 
     assert result["escalated"] == 0
     append_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Deployment opt-out (BUTLERS_DECISION_REVIEW_ENABLED)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("job", [run_decision_review_digest, run_decision_escalation_check])
+async def test_opted_out_job_is_a_no_op_that_never_reads_or_notifies(monkeypatch, job):
+    monkeypatch.setenv("BUTLERS_DECISION_REVIEW_ENABLED", "0")
+    with (
+        patch("butlers.jobs.decision_review.compute_decision_digest") as digest,
+        patch("butlers.jobs.decision_review._deliver", new=AsyncMock()) as deliver,
+        patch("butlers.jobs.decision_review.record_attention_event", new=AsyncMock()) as ledger,
+    ):
+        result = await job(MagicMock())
+    assert result == {"enabled": False}
+    digest.assert_not_called()
+    deliver.assert_not_awaited()
+    ledger.assert_not_awaited()
+
+
+@pytest.mark.parametrize("value", [None, "", "1", "yes"])
+async def test_review_jobs_run_unless_explicitly_opted_out(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("BUTLERS_DECISION_REVIEW_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("BUTLERS_DECISION_REVIEW_ENABLED", value)
+    with patch("butlers.jobs.decision_review.compute_decision_digest") as digest:
+        digest.return_value.available = False
+        digest.return_value.unavailable_reason = "export_missing"
+        result = await run_decision_escalation_check(MagicMock())
+    digest.assert_called_once()
+    assert result == {"available": False, "reason": "export_missing"}
