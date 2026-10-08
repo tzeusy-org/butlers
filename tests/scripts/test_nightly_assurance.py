@@ -651,6 +651,7 @@ p.write_text(json.dumps(d));print(json.dumps(out))
             self.created = 0
             self.label = False
             self.omit_label = False
+            self.patch_ack_loss = False
             self.assessments = {first.run_id: red1, second.run_id: green}
             self.run_ids = []
 
@@ -688,6 +689,8 @@ p.write_text(json.dumps(d));print(json.dumps(out))
                 row = self.rows[int(suffix.split("/")[1])]
                 if method == "PATCH":
                     row.update(body)
+                    if self.patch_ack_loss:
+                        raise EvidenceUnavailable("transport-ack-unavailable")
                 return row
             raise AssertionError("unexpected-transport-operation")
 
@@ -772,12 +775,93 @@ p.write_text(json.dumps(d));print(json.dumps(out))
         next(row for row in read_json(db)["rows"] if row["id"] == original_bead)["external_ref"]
         == "gh-issue:51"
     )
-    assert pipeline.upsert_issue(red2) == 52 and pipeline.created == 2
+    changed_identity = RunIdentity(106, 1, "e" * 40, "schedule", "main", "2026-10-06")
+    changed_red = _assessment(changed_identity, conclusion="failure", evidence_missing=True)
+    pipeline.assessments[106] = changed_red
+    assert pipeline.upsert_issue(changed_red) == 52 and pipeline.created == 2
     assert (
         parse_marker(pipeline.rows[51]["body"])["key"]
         != parse_marker(pipeline.rows[52]["body"])["key"]
     )
     atomic_json(db, saved)
+    # Genuine provisional -> terminal evolution supplies authority from the
+    # independent API assessment, not the earlier marker's verdict or key.
+    promoted = Transport()
+    pending_first = _assessment(first, status="in_progress", conclusion=None, evidence_missing=True)
+    pending_second = _assessment(
+        second, status="in_progress", conclusion=None, evidence_missing=True
+    )
+    promoted.assessments = {100: red1, 101: red2, 102: recovered_green}
+    assert promoted.upsert_issue(pending_first) == 51
+    assert promoted.upsert_issue(pending_second) == 52
+    assert promoted.read_marker_assessment(parse_marker(promoted.rows[51]["body"])) == red1
+    assert promoted.read_marker_assessment(parse_marker(promoted.rows[52]["body"])) == red2
+    # A copied terminal verdict cannot use the provisional promotion exception.
+    invalid_pending = marker_document(pending_second)
+    for field, value in (("head", "f" * 40), ("attempt", 2), ("completed", True)):
+        forged = {**invalid_pending, field: value}
+        with pytest.raises(EvidenceUnavailable, match="incident-evidence-binding-unavailable"):
+            promoted.read_marker_assessment(forged)
+    atomic_json(db, {"rows": [], "mutations": []})
+    promoted.run_ids = [100, 101]
+    promoted.patch_ack_loss = True
+    with pytest.raises(EvidenceUnavailable, match="transport-ack-unavailable"):
+        script.reconcile(promoted, beads, export=pipeline_export, receipt=pipeline_receipt)
+    assert read_json(db)["mutations"] == []
+    assert parse_marker(promoted.rows[52]["body"])["completed"] is True
+    promoted.patch_ack_loss = False
+    script.reconcile(promoted, beads, export=pipeline_export, receipt=pipeline_receipt)
+    promoted_incident = read_json(pipeline_export)["incidents"][0]
+    assert promoted_incident["issue"] == 52
+    assert len([r for r in read_json(db)["rows"] if "nightly-incident" in r["labels"]]) == 1
+    assert parse_marker(promoted.rows[51]["body"])["key"] == red1.key
+    assert parse_marker(promoted.rows[52]["body"])["key"] == red2.key
+    assert all(parse_marker(row["body"])["completed"] for row in promoted.rows.values())
+    promoted.run_ids.append(102)
+    script.reconcile(promoted, beads, export=pipeline_export, receipt=pipeline_receipt)
+    assert read_json(pipeline_export)["incidents"][0]["status"] == "recovered"
+    assert all(row["state"] == "closed" for row in promoted.rows.values())
+    # Later provisional evidence can converge on an established stable set.
+    # Its closed terminal alias has no second incident authority or Bead.
+    later_changed = _assessment(fifth, conclusion="failure", evidence_missing=True)
+    pending_same_set = _assessment(
+        fifth, status="in_progress", conclusion=None, evidence_missing=True
+    )
+    promoted.assessments[105] = later_changed
+    stable_body = promoted.rows[52]["body"]
+    assert promoted.upsert_issue(pending_same_set) == 52
+    assert promoted.rows[52]["body"] == stable_body and promoted.rows[52]["state"] == "closed"
+    pending_later = _assessment(fifth, status="in_progress", conclusion=None)
+    pending_number = promoted.upsert_issue(pending_later)
+    assert pending_number == 53
+    assert promoted.upsert_issue(later_changed) == 52
+    alias = parse_marker(promoted.rows[pending_number]["body"])
+    assert alias["canonical_issue"] == 52 and promoted.rows[pending_number]["state"] == "closed"
+    assert promoted.read_marker_assessment(alias) == later_changed
+    wrong_alias = {**alias, "canonical_issue": 51}
+    with pytest.raises(EvidenceUnavailable, match="canonical-incident-binding-unavailable"):
+        promoted.read_marker_assessment(wrong_alias)
+    fourth_changed = _assessment(later, conclusion="failure", evidence_missing=True)
+    promoted.assessments[104] = fourth_changed
+    promoted.run_ids.extend([104, 105])
+    script.reconcile(promoted, beads, export=pipeline_export, receipt=pipeline_receipt)
+    promoted_recurrence = read_json(pipeline_export)["incidents"][0]
+    assert promoted_recurrence["issue"] == promoted_incident["issue"]
+    assert promoted_recurrence["incident_id"] == promoted_incident["incident_id"]
+    assert promoted_recurrence["episode_id"] != promoted_incident["episode_id"]
+    assert len([r for r in read_json(db)["rows"] if "nightly-incident" in r["labels"]]) == 1
+    atomic_json(db, saved)
+    terminal_green_triage = Transport()
+    terminal_green_triage.assessments[100] = _assessment(first)
+    assert terminal_green_triage.upsert_issue(pending_first) == 51
+    assert terminal_green_triage.upsert_issue(_assessment(first)) == 51
+    assert terminal_green_triage.rows[51]["state"] == "closed"
+    assert (
+        terminal_green_triage.read_marker_assessment(
+            parse_marker(terminal_green_triage.rows[51]["body"])
+        ).state
+        == "green"
+    )
     atomic_json(tmp_path / "export.json", exported)
     link = tmp_path / "link.json"
     link.symlink_to(tmp_path / "export.json")

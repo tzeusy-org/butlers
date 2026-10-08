@@ -390,6 +390,14 @@ def reconcile(
         if marker["scope"] != "scheduled":
             continue
         bound = github.read_marker_assessment(marker)
+        if "canonical_issue" in marker:
+            continue  # Independently verified evidence alias, not another Bead.
+        if not marker["completed"] and beads.apply:
+            canonical = github.upsert_issue(bound)
+            if canonical != issue["number"]:
+                continue
+        if bound.state != "red":
+            continue  # Triage/green evidence alone never mints an escalation.
         recover = current.state == "green" and current.identity.night >= bound.identity.night
         if not recover and not second_red(assessments, bound):
             continue
@@ -463,6 +471,14 @@ def reconcile_conformance(
         if marker["scope"] != current.identity.scope:
             continue
         bound = github.read_marker_assessment(marker)
+        if "canonical_issue" in marker:
+            continue
+        if not marker["completed"] and beads.apply:
+            canonical = github.upsert_issue(bound)
+            if canonical != issue["number"]:
+                continue
+        if bound.state != "red":
+            continue
         recovery = current.state == "green"
         if not recovery and bound.key != current.key:
             continue

@@ -160,14 +160,20 @@ class GitHubEvidence:
             raise EvidenceUnavailable("incident-label-unacknowledged")
 
     def _issue_readback(
-        self, number: int, assessment: Assessment, *, recovery: Assessment | None = None
+        self,
+        number: int,
+        assessment: Assessment,
+        *,
+        recovery: Assessment | None = None,
+        closed: bool = False,
+        canonical_issue: int | None = None,
     ) -> int:
         row = self.request(f"issues/{positive_integer(number)}")
         if (
             not isinstance(row, dict)
             or row.get("number") != number
             or row.get("pull_request")
-            or row.get("state") != ("closed" if recovery else "open")
+            or row.get("state") != ("closed" if recovery or closed else "open")
         ):
             raise EvidenceUnavailable("incident-issue-unacknowledged")
         labels = row.get("labels")
@@ -175,25 +181,72 @@ class GitHubEvidence:
             isinstance(label, dict) and label.get("name") == LABEL for label in labels
         ):
             raise EvidenceUnavailable("incident-label-unacknowledged")
-        if parse_marker(row.get("body")) != marker_document(assessment, recovery=recovery):
+        if parse_marker(row.get("body")) != marker_document(
+            assessment, recovery=recovery, canonical_issue=canonical_issue
+        ):
             raise EvidenceUnavailable("incident-marker-unacknowledged")
         return number
 
     def read_marker_assessment(self, marker: dict) -> Assessment:
         """Read both bindings independently; a copied marker never authorizes recovery."""
         bound = self.read_assessment(marker["run_id"])
-        if marker_document(bound) != {
-            key: value for key, value in marker.items() if key != "recovery"
-        }:
+        if RunIdentity.parse(marker) != bound.identity or not bound.completed:
             raise EvidenceUnavailable("incident-evidence-binding-unavailable")
+        if marker["completed"]:
+            if marker_document(bound) != {
+                key: value
+                for key, value in marker.items()
+                if key not in {"recovery", "canonical_issue"}
+            }:
+                raise EvidenceUnavailable("incident-evidence-binding-unavailable")
+        elif (
+            marker["workflow_failure"]
+            or marker["state"] == "green"
+            or "recovery" in marker
+            or "canonical_issue" in marker
+        ):
+            raise EvidenceUnavailable("invalid-provisional-incident")
+        # A provisional verdict/key is explicitly not authority. Only its
+        # immutable run envelope survives; the genuine terminal read above
+        # supplies the completed failure set and every subsequent command.
         if "recovery" in marker:
             recovery = self.read_assessment(marker["recovery"]["run_id"])
-            if marker_document(bound, recovery=recovery) != marker:
+            if marker_document(bound, recovery=recovery) != {
+                key: value for key, value in marker.items() if key != "canonical_issue"
+            }:
                 raise EvidenceUnavailable("recovery-evidence-binding-unavailable")
+        if "canonical_issue" in marker:
+            row = self.request(f"issues/{positive_integer(marker['canonical_issue'])}")
+            if not isinstance(row, dict) or not isinstance(row.get("labels"), list):
+                raise EvidenceUnavailable("canonical-incident-binding-unavailable")
+            canonical = parse_marker(row.get("body"))
+            if (
+                row.get("number") != marker["canonical_issue"]
+                or row.get("pull_request")
+                or "canonical_issue" in canonical
+                or canonical["scope"] != bound.identity.scope
+                or canonical["key"] != bound.key
+                or not any(
+                    isinstance(label, dict) and label.get("name") == LABEL
+                    for label in row.get("labels", [])
+                )
+                or self.read_marker_assessment(canonical).key != bound.key
+            ):
+                raise EvidenceUnavailable("canonical-incident-binding-unavailable")
         return bound
 
     def upsert_issue(self, assessment: Assessment, *, recover: bool = False) -> int | None:
         """Evidence candidate only; the host re-verifies terminal authority later."""
+        if assessment.completed and self.read_assessment(assessment.identity.run_id) != assessment:
+            raise EvidenceUnavailable("terminal-evidence-binding-unavailable")
+
+        def matches_assessment(marker: dict) -> bool:
+            return marker["scope"] == assessment.identity.scope and (
+                recover
+                or (marker["completed"] and marker["key"] == assessment.key)
+                or (not marker["completed"] and RunIdentity.parse(marker) == assessment.identity)
+            )
+
         matches = []
         for issue in self.issues():
             if issue.get("pull_request"):
@@ -202,9 +255,11 @@ class GitHubEvidence:
                 marker = parse_marker(issue.get("body"))
             except EvidenceUnavailable:
                 continue
-            if marker["scope"] == assessment.identity.scope and (
-                recover or marker["key"] == assessment.key
-            ):
+            if "canonical_issue" in marker:
+                if matches_assessment(marker):
+                    self.read_marker_assessment(marker)
+                continue
+            if matches_assessment(marker):
                 matches.append(issue)
         if recover:
             if assessment.state != "green" or not assessment.completed:
@@ -223,23 +278,68 @@ class GitHubEvidence:
                     RunIdentity.parse(marker["recovery"])
                 ):
                     raise EvidenceUnavailable("recovery-evidence-stale")
-                body = marker_body(bound, recovery=assessment)
-                recovered.append((issue, bound, body))
-            for issue, bound, body in recovered:
+                # Genuine terminal-green triage has no established red key;
+                # close it without inventing an escalation or replacing red.
+                if bound.state == "green":
+                    if _run_order(assessment.identity) < _run_order(bound.identity):
+                        raise EvidenceUnavailable("recovery-evidence-stale")
+                    recovery = None
+                else:
+                    recovery = assessment
+                body = marker_body(bound, recovery=recovery)
+                recovered.append((issue, bound, body, recovery))
+            for issue, bound, body, recovery in recovered:
                 self.request(
                     f"issues/{positive_integer(issue['number'])}",
                     method="PATCH",
                     body={"state": "closed", "body": body},
                 )
-                self._issue_readback(issue["number"], bound, recovery=assessment)
+                self._issue_readback(issue["number"], bound, recovery=recovery, closed=True)
             return None
         body = marker_body(assessment)
-        if len(matches) > 1:
-            raise EvidenceUnavailable("duplicate-incident-issue")
         if matches:
-            number = positive_integer(matches[0]["number"])
-            self.request(f"issues/{number}", method="PATCH", body={"body": body, "state": "open"})
-            return self._issue_readback(number, assessment)
+            if not assessment.completed and len(matches) > 1:
+                raise EvidenceUnavailable("duplicate-provisional-incident")
+            # Provisional evidence may arrive for the same set after an older
+            # terminal incident. Never replace that stable terminal marker
+            # with a caller/provisional verdict or reopen before genuine red.
+            stable = [issue for issue in matches if parse_marker(issue["body"])["completed"]]
+            if not assessment.completed and stable:
+                issue = min(stable, key=lambda row: positive_integer(row["number"]))
+                marker = parse_marker(issue["body"])
+                bound = self.read_marker_assessment(marker)
+                recovery = (
+                    self.read_assessment(marker["recovery"]["run_id"])
+                    if "recovery" in marker
+                    else None
+                )
+                return self._issue_readback(
+                    issue["number"], bound, recovery=recovery, closed=issue["state"] == "closed"
+                )
+            number = min(positive_integer(issue["number"]) for issue in stable or matches)
+            closed = assessment.completed and assessment.state == "green"
+            self.request(
+                f"issues/{number}",
+                method="PATCH",
+                body={"body": body, "state": "closed" if closed else "open"},
+            )
+            self._issue_readback(number, assessment, closed=closed)
+            for duplicate in matches:
+                other = positive_integer(duplicate["number"])
+                if other == number:
+                    continue
+                # A closed, terminal-bound evidence alias is never a second
+                # Bead. The host independently verifies its canonical key.
+                self.request(
+                    f"issues/{other}",
+                    method="PATCH",
+                    body={
+                        "body": marker_body(assessment, canonical_issue=number),
+                        "state": "closed",
+                    },
+                )
+                self._issue_readback(other, assessment, closed=True, canonical_issue=number)
+            return number
         # Re-query immediately before create. Workflow-scoped concurrency is
         # the serialization boundary; this also handles create-before-ACK.
         for issue in self.issues():
@@ -247,7 +347,7 @@ class GitHubEvidence:
                 marker = parse_marker(issue.get("body"))
             except EvidenceUnavailable:
                 continue
-            if marker["key"] == assessment.key and marker["scope"] == assessment.identity.scope:
+            if "canonical_issue" not in marker and matches_assessment(marker):
                 # A committed create-before-ACK candidate is updated and then
                 # independently read back; stale version/fields are not credit.
                 number = positive_integer(issue["number"])
@@ -272,7 +372,12 @@ def _run_order(identity: RunIdentity) -> tuple:
     return identity.night, identity.run_id, identity.attempt
 
 
-def marker_document(assessment: Assessment, *, recovery: Assessment | None = None) -> dict:
+def marker_document(
+    assessment: Assessment,
+    *,
+    recovery: Assessment | None = None,
+    canonical_issue: int | None = None,
+) -> dict:
     # A fixed-size transport marker references the full independently fetched
     # artifact census. Large failure sets cannot suppress second-red ingress
     # by exceeding GitHub's issue-body limit. No supplied text is authority.
@@ -287,7 +392,7 @@ def marker_document(assessment: Assessment, *, recovery: Assessment | None = Non
     }
     if recovery is not None:
         if (
-            assessment.state != "red"
+            assessment.state not in {"red", "unknown"}
             or not assessment.completed
             or recovery.state != "green"
             or not recovery.completed
@@ -296,12 +401,23 @@ def marker_document(assessment: Assessment, *, recovery: Assessment | None = Non
         ):
             raise EvidenceUnavailable("recovery-not-proven")
         document["recovery"] = marker_document(recovery)
+    if canonical_issue is not None:
+        if not assessment.completed or recovery is not None:
+            raise EvidenceUnavailable("invalid-canonical-incident")
+        document["canonical_issue"] = positive_integer(canonical_issue)
     return document
 
 
-def marker_body(assessment: Assessment, *, recovery: Assessment | None = None) -> str:
+def marker_body(
+    assessment: Assessment,
+    *,
+    recovery: Assessment | None = None,
+    canonical_issue: int | None = None,
+) -> str:
     encoded = json.dumps(
-        marker_document(assessment, recovery=recovery), sort_keys=True, separators=(",", ":")
+        marker_document(assessment, recovery=recovery, canonical_issue=canonical_issue),
+        sort_keys=True,
+        separators=(",", ":"),
     )
     if len(encoded) > 4096:
         raise EvidenceUnavailable("issue-marker-too-large")
@@ -326,7 +442,7 @@ def parse_marker(body: Any) -> dict:
             "key",
         }
         if (
-            set(value) not in (fields, fields | {"recovery"})
+            set(value) not in (fields, fields | {"recovery"}, fields | {"canonical_issue"})
             or value["scope"] != identity.scope
             or value["state"] not in {"green", "red", "unknown"}
         ):
@@ -356,7 +472,7 @@ def parse_marker(body: Any) -> dict:
                 raise EvidenceUnavailable("invalid-recovery-marker")
             parsed = parse_marker(f"{MARKER}{json.dumps(recovery)}\n-->\n")
             if (
-                value["state"] != "red"
+                value["state"] not in {"red", "unknown"}
                 or value["completed"] is not True
                 or parsed["state"] != "green"
                 or parsed["completed"] is not True
@@ -364,6 +480,10 @@ def parse_marker(body: Any) -> dict:
                 or _run_order(RunIdentity.parse(parsed)) <= _run_order(identity)
             ):
                 raise EvidenceUnavailable("invalid-recovery-marker")
+        if "canonical_issue" in value:
+            positive_integer(value["canonical_issue"])
+            if value["completed"] is not True:
+                raise EvidenceUnavailable("invalid-canonical-incident")
         return value
     except (KeyError, ValueError, TypeError, AttributeError) as exc:
         raise EvidenceUnavailable("invalid-issue-marker") from exc

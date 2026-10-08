@@ -75,6 +75,18 @@ external reference, then the same Bead with a new episode; a changed set has its
 own issue. Software conformance covers this full transport and disposable CLI
 path, while actual host adoption and recovery still need their own readback.
 
+The always assessor can publish before its workflow is terminal. Such a marker's
+verdict and failure digest are provisional hints. The host requires the exact
+same repository/workflow/run/attempt/head/event/ref/UTC-date envelope, fetches
+genuine completed evidence, and explicitly promotes the issue to that terminal
+failure-set binding with independent issue readback before an applied incident
+command. A forged completed verdict or stale identity cannot use this exception.
+When another provisional issue converges on an established failure set, the
+stable incident issue is retained and the other becomes a closed terminal-bound
+evidence alias. Its canonical issue and genuine matching key are independently
+checked; the alias never authorizes another Bead. Changed terminal sets remain
+separate, and genuine terminal-green triage closes without inventing red work.
+
 ## Runtime export and topology
 
 The host atomically replaces a bounded regular `incidents.json`. Its allowlisted
