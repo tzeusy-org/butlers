@@ -2562,14 +2562,58 @@ async def test_interaction_sync_calendar_idempotent_second_run(interaction_sync_
         assert len(rows) == 1
 
 
-async def test_interaction_sync_calendar_no_attendees_field_skipped(interaction_sync_pool):
+async def test_interaction_sync_calendar_no_attendees_field_skipped(
+    interaction_sync_pool, monkeypatch
+):
     """Absent, non-array and malformed attendees never manufacture interactions."""
     from butlers.core.state import state_set
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with interaction_sync_pool() as pool:
-        event_at = await pool.fetchval("SELECT now() - interval '1 hour'")
+        db_now = await pool.fetchval("SELECT now()")
+        job_now = db_now
+
+        class JobClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return job_now.astimezone(tz) if tz is not None else job_now.replace(tzinfo=None)
+
+        # This metadata test needs one clock envelope: the job's Python lower
+        # bound and the calendar query's SQL-now upper bound must overlap.
+        # Freeze only this job's clock, never the production cap or database.
+        monkeypatch.setitem(run_interaction_sync.__globals__, "datetime", JobClock)
+        event_at = db_now - timedelta(hours=1)
         event_id = await _insert_calendar_event(pool, title="Solo Event", starts_at=event_at)
+        malformed = {"attendees": [None, {}, {"email": 7}]}
+        await pool.execute(
+            "UPDATE relationship.calendar_events SET metadata = $2 WHERE id = $1",
+            uuid.UUID(event_id),
+            malformed,
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT metadata = $2::jsonb FROM relationship.calendar_events WHERE id = $1",
+                uuid.UUID(event_id),
+                malformed,
+            )
+            is True
+        )
+
+        # Reproduce the old vacuous scan under both shifted process-clock
+        # species using a real planted row and the unchanged job/SQL query.
+        for offset_days in (45, 120):
+            job_now = db_now + timedelta(days=offset_days)
+            await state_set(
+                pool, "interaction_sync.last_scan_at", (event_at - timedelta(days=1)).isoformat()
+            )
+            shifted = await run_interaction_sync(pool)
+            assert datetime.fromisoformat(shifted["scan_window_start"]) == job_now - timedelta(
+                days=30
+            )
+            assert shifted["calendar_events_scanned"] == 0
+            assert shifted["logged"] == shifted["errors"] == 0
+
+        job_now = db_now
         for metadata, scanned in [
             ({}, 0),
             ({"attendees": []}, 0),
@@ -2589,6 +2633,48 @@ async def test_interaction_sync_calendar_no_attendees_field_skipped(interaction_
             result = await run_interaction_sync(pool)
             assert result["calendar_events_scanned"] == scanned
             assert result["logged"] == result["errors"] == 0
+
+        # Keep the positive malformed-array row present while moving it
+        # outside the unchanged 30-day cap, then restore its eligible time.
+        stale_at = db_now - timedelta(days=35)
+        await pool.execute(
+            "UPDATE relationship.calendar_events SET starts_at = $2, ends_at = $3 WHERE id = $1",
+            uuid.UUID(event_id),
+            stale_at,
+            stale_at + timedelta(hours=1),
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM relationship.calendar_events WHERE id = $1 AND starts_at = $2",
+                uuid.UUID(event_id),
+                stale_at,
+            )
+            == 1
+        )
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (db_now - timedelta(days=60)).isoformat()
+        )
+        stale = await run_interaction_sync(pool)
+        assert datetime.fromisoformat(stale["scan_window_start"]) == db_now - timedelta(days=30)
+        assert stale["calendar_events_scanned"] == stale["logged"] == stale["errors"] == 0
+        await pool.execute(
+            "UPDATE relationship.calendar_events SET starts_at = $2, ends_at = $3 WHERE id = $1",
+            uuid.UUID(event_id),
+            event_at,
+            event_at + timedelta(hours=1),
+        )
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (event_at - timedelta(days=1)).isoformat()
+        )
+        restored = await run_interaction_sync(pool)
+        assert restored["calendar_events_scanned"] == 1
+        assert restored["logged"] == restored["errors"] == 0
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM relationship.facts WHERE predicate LIKE 'interaction_%'"
+            )
+            == 0
+        )
 
 
 @pytest.mark.pg_clock
