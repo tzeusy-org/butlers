@@ -124,6 +124,28 @@ No new role, grant, table or global exactly-once notify guarantee is introduced.
 
 ## Clock and kernel proof limits
 
+Both clock jobs install the same independently digest-pinned Ubuntu libfaketime
+and matching faketime CLI packages
+`0.9.10+2024-06-05+gba9ed5b2-0.6build1`. Ubuntu 24.04's `0.9.10-2.1`
+misadjusts `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` even when monotonic
+faking is disabled; CPython 3.12 uses that call for `time.sleep`. The pinned
+snapshot includes the upstream correction that leaves this real monotonic
+deadline unchanged. Its package requires libc6 >=2.38, which the Ubuntu 24.04
+runner satisfies; apt still checks dependencies. HTTPS download, bounded
+retries and both reviewed SHA256 digests precede installation; a bad download or digest
+refuses the job. No custom time shim or new clock flag is introduced.
+
+Source and physical controls position that package defect: the unchanged child
+program with Python 3.12.14 and the old package produces sleep/OSError22 at both
+offsets through UV and direct Python, while the pinned package passes the same
+real sleep, shifted wall, unshifted monotonic and independent restart checks.
+These local extracted-package controls do not establish a corrected hosted
+night. Installed package/digest, full child/worker conformance and original
+whole nightly corpus checks still run and must pass on the actual runner.
+Upstream references: [libfaketime issue426](https://github.com/wolfcw/libfaketime/issues/426),
+[fixed snapshot](https://github.com/wolfcw/libfaketime/blob/ba9ed5b2/src/libfaketime.c),
+[CPython 3.12.14 sleep](https://github.com/python/cpython/blob/v3.12.14/Modules/timemodule.c).
+
 The wrapper explicitly uses `FAKETIME_DONT_FAKE_MONOTONIC=1` and measures the
 actual installed library's package version, hash, controller/worker wall and
 monotonic observations. Progressing start-at resets when an independent child

@@ -201,9 +201,24 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Install libfaketime
+        # Ubuntu 24.04's 0.9.10-2.1 translates real monotonic absolute sleeps
+        # using the fake wall offset. Pin the upstream-fixed Ubuntu package;
+        # retain real monotonic time and verify the artifact before installation.
         run: |
+          set -euo pipefail
+          PACKAGE=./.tmp/libfaketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb
+          WRAPPER=./.tmp/faketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb
+          mkdir -p .tmp
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            --output "${PACKAGE}" \
+            "https://archive.ubuntu.com/ubuntu/pool/universe/f/faketime/${PACKAGE##*/}"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            --output "${WRAPPER}" \
+            "https://archive.ubuntu.com/ubuntu/pool/universe/f/faketime/${WRAPPER##*/}"
+          echo "430037630f6544d307b9983c88eafbb3ab99bd14e7f8533f26dc42c8613936ee  ${PACKAGE}" | sha256sum --check --strict
+          echo "3deac96929b1ef682eb7d6a16606c353e12e0102f507dfbb5655eb29c76e9523  ${WRAPPER}" | sha256sum --check --strict
           sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends faketime
+          sudo apt-get install -y --no-install-recommends "${PACKAGE}" "${WRAPPER}"
 
       - name: Free disk space before testcontainers
         # Same rationale as ci.yml's check job: testcontainers pulls
@@ -421,9 +436,24 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Install libfaketime
+        # Ubuntu 24.04's 0.9.10-2.1 translates real monotonic absolute sleeps
+        # using the fake wall offset. Pin the upstream-fixed Ubuntu package;
+        # retain real monotonic time and verify the artifact before installation.
         run: |
+          set -euo pipefail
+          PACKAGE=./.tmp/libfaketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb
+          WRAPPER=./.tmp/faketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb
+          mkdir -p .tmp
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            --output "${PACKAGE}" \
+            "https://archive.ubuntu.com/ubuntu/pool/universe/f/faketime/${PACKAGE##*/}"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            --output "${WRAPPER}" \
+            "https://archive.ubuntu.com/ubuntu/pool/universe/f/faketime/${WRAPPER##*/}"
+          echo "430037630f6544d307b9983c88eafbb3ab99bd14e7f8533f26dc42c8613936ee  ${PACKAGE}" | sha256sum --check --strict
+          echo "3deac96929b1ef682eb7d6a16606c353e12e0102f507dfbb5655eb29c76e9523  ${WRAPPER}" | sha256sum --check --strict
           sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends faketime
+          sudo apt-get install -y --no-install-recommends "${PACKAGE}" "${WRAPPER}"
 
       - name: Free disk space before testcontainers
         # Same rationale as ci.yml's check job: testcontainers pulls

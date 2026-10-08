@@ -201,8 +201,81 @@ def test_nightly_evidence_replay_privacy_and_host_command_boundary(tmp_path, mon
     }
     # Position every closed preflight failure species without retaining child
     # output/error arguments. Real installed-library conformance is separate.
+    # Run both real workflow installer bodies with disposable commands. The
+    # software fixture substitutes only its public artifact/digest; physical
+    # official-package sleep/clock controls are retained separately.
+    import hashlib
     import json
     import subprocess
+
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/nightly.yml").read_text())
+    installs = [
+        step["run"]
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("name") == "Install libfaketime"
+    ]
+    assert len(installs) == 2 and installs[0] == installs[1]
+    pinned_digest = "430037630f6544d307b9983c88eafbb3ab99bd14e7f8533f26dc42c8613936ee"
+    wrapper_digest = "3deac96929b1ef682eb7d6a16606c353e12e0102f507dfbb5655eb29c76e9523"
+    assert pinned_digest in installs[0] and wrapper_digest in installs[0]
+    assert "libfaketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb" in installs[0]
+    fixture = b"synthetic-public-library-package"
+    commands = tmp_path / "installer-commands"
+    commands.mkdir()
+    curl = commands / "curl"
+    curl.write_text(
+        "#!/usr/bin/env python3\nimport os,pathlib,sys\n"
+        "if os.environ['INSTALL_SPECIES']=='download-refused': sys.exit(22)\n"
+        "target=sys.argv[sys.argv.index('--output')+1]\n"
+        "bad=(os.environ['INSTALL_SPECIES']=='corrupt-library' and 'libfaketime_' in target) "
+        "or (os.environ['INSTALL_SPECIES']=='corrupt-wrapper' and '/faketime_' in target)\n"
+        "pathlib.Path(target).write_bytes(b'corrupt' if bad "
+        "else b'synthetic-public-library-package')\n"
+    )
+    sudo = commands / "sudo"
+    sudo.write_text(
+        "#!/usr/bin/env python3\nimport os,pathlib,sys\n"
+        "with open(os.environ['INSTALL_LEDGER'],'a') as output: "
+        "output.write(' '.join(sys.argv[1:])+'\\n')\n"
+    )
+    curl.chmod(0o755)
+    sudo.chmod(0o755)
+    for species in ("positive", "corrupt-library", "corrupt-wrapper", "download-refused"):
+        destination = tmp_path / ("installer-" + species)
+        destination.mkdir()
+        ledger = destination / "installed"
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                installs[0]
+                .replace(pinned_digest, hashlib.sha256(fixture).hexdigest())
+                .replace(wrapper_digest, hashlib.sha256(fixture).hexdigest()),
+            ],
+            cwd=destination,
+            env={
+                **os.environ,
+                "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+                "INSTALL_SPECIES": species,
+                "INSTALL_LEDGER": str(ledger),
+            },
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        if species == "positive":
+            assert result.returncode == 0
+            assert ledger.read_text().splitlines() == [
+                "apt-get update -q",
+                "apt-get install -y --no-install-recommends "
+                "./.tmp/libfaketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb "
+                "./.tmp/faketime_0.9.10+2024-06-05+gba9ed5b2-0.6build1_amd64.deb",
+            ]
+        else:
+            assert result.returncode != 0 and not ledger.exists()
 
     class ParentWall(datetime):
         @classmethod
