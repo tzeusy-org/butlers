@@ -421,6 +421,7 @@ async def test_decomposition_primary_sender_reuses_batch_resolution(
 
 async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_history(
     caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
 ):
     """REQ-switchboard-identity-002: strict batch outages stay neutral and fail-open."""
     sentinel = "15551234567@s.whatsapp.net"
@@ -458,7 +459,9 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
     reserve_unknown = AsyncMock()
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -485,6 +488,7 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
             message_inbox_id="00000000-0000-0000-0000-000000000098",
         )
 
+    assert fact_authority.source_registry() is prior_registry
     assert result.target_butler == "decomposed_empty"
     assert captured_messages[0]["sender"] == "Unknown WhatsApp sender"
     assert captured_messages[0]["sender_identity"] == sentinel
@@ -504,6 +508,12 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
         if record.message == "pipeline.decomposition_identity_resolution_failed"
     )
     assert warning_record.failure_class == "RuntimeError"
+
+    with pytest.raises(RuntimeError, match="bulk outage scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("bulk outage scenario failed")
+    assert fact_authority.source_registry() is prior_registry
 
 
 @pytest.mark.parametrize(
