@@ -81,6 +81,13 @@ narrows away from that default, never replaces or widens it on its own authority
 `merge_group` run is unaffected either way -- it always runs the full matrix, unabridged, against
 the tree about to land.
 
+Test support modules and package markers with unproved import ownership escalate to every
+configured pytest root, including both `tests/` and `roster/`; adjacent test files cannot prove
+that a helper has no consumers elsewhere. CI validates the selected scope independently of the
+changed-file list. Empty, unsupported, outside-root or root-wide selections, and any selected
+ancestor or descendant of `tests/e2e/`, fall back to the complete matrix. Known small API scopes,
+direct test edits and pytest-governed nested conftest scopes remain eligible.
+
 The required `check` evaluates needed-job verdicts without checkout or dependency installation.
 The visible, non-required `coverage` job runs only after all ten merge-group shards succeed.
 It validates each database and its same-checkout/run/attempt shard metadata before combining
