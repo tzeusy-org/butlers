@@ -412,9 +412,8 @@ def test_downgrade_refuses_a_partial_restore(postgres_container) -> None:
         assert _has_column(conn)
         assert _backup_tables(conn) == set(_BACKUP_TABLES)
         assert _links(conn, "dashboard_messages", "id") == {moved_message: second}
-        assert conn.execute(text("SELECT version_num FROM general.alembic_version")).scalar() == (
-            "core_265"
-        )
+        version = conn.execute(text("SELECT version_num FROM general.alembic_version")).scalar()
+        assert version == "core_265"  # pinned-revision: a refused downgrade stays put.
 
     with engine.begin() as conn:
         conn.execute(
