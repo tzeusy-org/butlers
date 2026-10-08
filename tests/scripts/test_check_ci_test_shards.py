@@ -195,6 +195,17 @@ def _computed_runner_fixture(monkeypatch: pytest.MonkeyPatch, root: Path) -> Non
     """
     import ci_partition
 
+    # Collection and its later assignment/readback use this same local fixture
+    # identity for the full test lifetime, including when CI supplies a SHA.
+    for name in (
+        "GITHUB_SHA",
+        "GITHUB_REPOSITORY",
+        "GITHUB_WORKFLOW",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_EVENT_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
     native_run = subprocess.run
     root.joinpath("roster").mkdir(exist_ok=True)
     root.joinpath("pyproject.toml").write_text(

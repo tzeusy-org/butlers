@@ -53,3 +53,18 @@ This change claims no wall-clock gain. Ten actual merge-group route≤15s,
 guards≤180s and shard-spread<15% samples, the independent five-minute routine-lane
 targets and all original actual scratch-PR negative controls remain mandatory.
 Source/miniature tests and historical timings do not satisfy those outcomes.
+
+The inventory producer and every Python consumer install the same pinned Python
+patch (`3.12.15`) through setup-python and `UV_PYTHON`. Full interpreter identity
+still participates in cache compatibility and inventory admission. A cached
+minor-version resolution cannot silently choose a different patch in a child.
+
+Each Vitest child prepares its failure carrier before identity or collection.
+The receipt records a closed stage (`identity`, `collect-full`,
+`collect-shard-1`, `collect-shard-2`, `partition`, `execute`, `report`, or
+`complete`) and, on failure, a closed category. An early failure has
+`complete: false` and no claimed collected population. Wrapper exit is separate
+from an actual Vitest exit, which exists only after execution returns. No raw
+subprocess output or exception text enters the receipt. The existing 180-second
+collection, 900-second execution and finite hosted job bounds remain in force;
+these provisional bounds do not establish the five-minute performance target.

@@ -10,6 +10,10 @@ on:
   # group below already keys on github.ref, which is unique per queue entry.
   merge_group:
 
+env:
+  # Setup actions and uv/cache repair share the same full interpreter identity.
+  UV_PYTHON: "3.12.15"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -89,7 +93,7 @@ jobs:
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.15"
 
       - name: Install uv
         run: |
@@ -490,7 +494,7 @@ jobs:
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.15"
 
       - name: Install uv
         run: |
@@ -668,7 +672,7 @@ jobs:
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.15"
 
       - name: Install uv
         run: |
@@ -797,7 +801,7 @@ jobs:
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.15"
 
       - name: Install uv
         run: |
@@ -960,7 +964,7 @@ jobs:
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.15"
 
       - name: Install uv
         run: |
@@ -1136,7 +1140,7 @@ jobs:
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.15"
 
       - name: Install uv
         run: |

@@ -526,6 +526,17 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     jobs = workflow["jobs"]
     # A structurally passing topology is unusable if GitHub cannot admit a job.
     assert all(job.get("runs-on") for job in jobs.values() if "steps" in job)
+    # Inventory and children must install the same full interpreter identity.
+    assert workflow.get("env", {}).get("UV_PYTHON") == "3.12.15"
+    python_steps = [
+        step
+        for job in jobs.values()
+        for step in job.get("steps", [])
+        if step.get("uses", "").startswith("actions/setup-python@")
+    ]
+    assert python_steps and all(
+        step["with"]["python-version"] == workflow["env"]["UV_PYTHON"] for step in python_steps
+    )
     preflight = jobs["check-preflight"]
     unit_jobs = [
         json.loads(json.dumps(jobs["check-unit"]).replace("${{ matrix.shard }}", str(index)))
@@ -737,6 +748,72 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         local.delenv("GITHUB_RUN_ATTEMPT")
         build.consume(buildroot, artifact)
         assert (buildroot / "frontend/dist/index.html").read_text() == payload
+
+        # Real bounded subprocess transport controls of the receipt protocol.
+        # This helper is not Vitest and provides no installed frontend proof.
+        import ci_vitest as vitest
+
+        helper = buildroot / "frontend/node_modules/.bin/vitest"
+        helper.parent.mkdir(parents=True)
+        (buildroot / "frontend/control-a.test.ts").write_text("control stand-in")
+        (buildroot / "frontend/control-b.test.ts").write_text("control stand-in")
+        helper.write_text(
+            f"#!{sys.executable}\n"
+            + """import json, os, sys, time
+from pathlib import Path
+root = Path(__file__).resolve().parents[2]
+shard = next((a for a in sys.argv if a.startswith('--shard=')), None)
+stage = ('collect-full' if shard is None else 'collect-shard-' + shard[8]) if sys.argv[1] == 'list' else 'execute'
+mode = os.environ.get('VITEST_CONTROL')
+if mode == stage:
+    print('private control text', flush=True)
+    time.sleep(5)
+if mode == 'collect-failed' and stage == 'collect-full':
+    print('private control text', file=sys.stderr)
+    sys.exit(1)
+rows = [{'file': str(root / ('control-' + letter + '.test.ts')), 'name': 'control ' + letter} for letter in ('a', 'b')]
+if shard:
+    rows = [rows[int(shard[8]) - 1]]
+if sys.argv[1] == 'list':
+    print(json.dumps(rows))
+elif mode == 'report-malformed':
+    print('private control text')
+else:
+    print(json.dumps({'success': True, 'testResults': [{'name': row['file'], 'assertionResults': [{'ancestorTitles': [], 'title': row['name'], 'status': 'passed'}]} for row in rows]}))
+"""
+        )
+        helper.chmod(0o755)
+        native_run = subprocess.run
+
+        def bounded_helper(command, **kwargs):
+            if command[0] == str(helper):
+                kwargs["timeout"] = 0.2
+            return native_run(command, **kwargs)
+
+        local.setattr(vitest.subprocess, "run", bounded_helper)
+        for mode, stage, category in (
+            ("collect-full", "collect-full", "timeout"),
+            ("collect-shard-1", "collect-shard-1", "timeout"),
+            ("collect-shard-2", "collect-shard-2", "timeout"),
+            ("execute", "execute", "timeout"),
+            ("collect-failed", "collect-full", "subprocess_failed"),
+            ("report-malformed", "report", "invalid_evidence"),
+        ):
+            local.setenv("VITEST_CONTROL", mode)
+            destination = tmp_path / ("vitest-" + mode)
+            assert vitest.run(buildroot, 1, destination) == 2
+            receipt_text = (destination / "receipt.json").read_text()
+            receipt = json.loads(receipt_text)
+            assert receipt["complete"] is False
+            assert (receipt["stage"], receipt["failure_category"]) == (stage, category)
+            assert receipt["identity"] == build.identity(buildroot)
+            assert "private control text" not in receipt_text
+        local.delenv("VITEST_CONTROL")
+        destination = tmp_path / "vitest-healthy"
+        assert vitest.run(buildroot, 1, destination) == 0
+        receipt = json.loads((destination / "receipt.json").read_text())
+        assert receipt["complete"] is True and receipt["count"] == 1
+        assert receipt["stage"] == "complete" and "failure_category" not in receipt
     assert check_job["needs"] == [
         "route",
         "guards",

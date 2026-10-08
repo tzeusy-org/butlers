@@ -24,7 +24,18 @@ from ci_shard_observer import node_digest  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
-def _corpus(root: Path) -> None:
+def _corpus(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # This real miniature Git checkout is local fixture evidence. Never borrow
+    # the hosted checkout/attempt identity; pytest restores it after this test.
+    for name in (
+        "GITHUB_SHA",
+        "GITHUB_REPOSITORY",
+        "GITHUB_WORKFLOW",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_EVENT_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
     (root / "tests").mkdir()
     (root / "roster").mkdir()
     (root / "pyproject.toml").write_text(
@@ -70,10 +81,19 @@ def _weights(data: dict) -> dict:
     }
 
 
-def test_partition_preserves_fresh_membership_with_unknown_weights(tmp_path: Path) -> None:
+def test_partition_preserves_fresh_membership_with_unknown_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """REQ-ci-shard-assurance-001/002/008: actual collector, not a glob/weights mirror."""
-    _corpus(tmp_path)
+    _corpus(tmp_path, monkeypatch)
     first = partition.collect_inventory(root=tmp_path)
+    # Real hosted mismatch remains a refusal; fixture isolation does not weaken
+    # the production admission check or claim a hosted source identity.
+    with monkeypatch.context() as hosted:
+        hosted.setenv("GITHUB_SHA", "0" * 40)
+        with pytest.raises(ValueError, match="checkout does not match workflow"):
+            partition.checkout_identity(tmp_path)
+    assert partition.checkout_identity(tmp_path) == first["identity"]
     for lane in partition.DIMENSIONS:
         independent = legacy.collect_lane_node_ids(lane, repo_root=tmp_path)
         expected = {node_digest(node, first["nonce"]) for node in independent}
@@ -145,7 +165,7 @@ def test_reconciliation_requires_complete_node_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """REQ-ci-shard-assurance-003/005/006/008; REQ-testing-051: identity and origin."""
-    _corpus(tmp_path)
+    _corpus(tmp_path, monkeypatch)
     # The original dedicated selector sees this actual marked miniature item.
     (tmp_path / "conftest.py").write_text(
         "import pytest\n"
