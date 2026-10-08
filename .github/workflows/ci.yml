@@ -945,6 +945,8 @@ jobs:
 
   check-affected:
     timeout-minutes: 82
+    outputs:
+      verified: ${{ steps.selected-execution.outputs.verified }}
     # Affected-test lane (bu-v28ho): the route job's evidence when it
     # selected a scoped plan. Runs the planner-selected test paths directly
     # instead of the full eleven-child matrix. Not part of the coverage-combine
@@ -1002,18 +1004,14 @@ jobs:
         run: python3 scripts/ci_environment.py prepare
 
       - name: Affected tests (scoped plan)
+        id: selected-execution
         env:
           TEST_PATHS_JSON: ${{ needs.route.outputs.test_paths }}
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/affected
-          # The scoped selection may include integration/db-marked tests
-          # (testcontainers), same as the check-integration-* shards.
+          # Keep the same real integration/testcontainers runner and defaults.
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: |
-          mkdir -p "$TEST_EVIDENCE_DIR"
-          mapfile -t TEST_PATHS < <(python3 -c "import json, os; print('\n'.join(json.loads(os.environ['TEST_PATHS_JSON'])))")
-          echo "Running affected-test lane over: ${TEST_PATHS[*]}"
-          uv run pytest "${TEST_PATHS[@]}" -q --tb=short -n auto --dist loadfile \
-            --junitxml="$TEST_EVIDENCE_DIR/raw-junit.xml"
+          uv run --no-sync python scripts/ci_affected.py --output "$TEST_EVIDENCE_DIR"
 
       - name: Prepare affected-test duration evidence
         if: always()
@@ -1032,6 +1030,9 @@ jobs:
           path: |
             ${{ runner.temp }}/ci-artifacts/affected/junit.xml
             ${{ runner.temp }}/ci-artifacts/affected/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/affected/selected-reference.json
+            ${{ runner.temp }}/ci-artifacts/affected/selected-execution.json
+            ${{ runner.temp }}/ci-artifacts/affected/selected-proof.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1051,6 +1052,27 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
+          from pathlib import PurePosixPath
+          def admitted_paths(paths: object) -> bool:
+              """Checkout-free selected-file admission, mirrored by the required verdict."""
+              return (
+                  isinstance(paths, list)
+                  and bool(paths)
+                  and all(isinstance(path, str) for path in paths)
+                  and len(paths) == len(set(paths))
+                  and all(
+                      PurePosixPath(path).as_posix() == path
+                      and not any(part in {".", ".."} for part in path.split("/"))
+                      and "\\" not in path
+                      and "::" not in path
+                      and path.endswith(".py")
+                      and path.startswith(("tests/", "roster/"))
+                      and not path.startswith("tests/e2e/")
+                      and not any(ord(character) < 32 for character in path)
+                      for path in paths
+                  )
+              )
+
           def verdict(*, needs: dict, event: str, ref: str) -> bool:
               """Only verdicts; unknown jobs/skips/results and malformed outputs fail closed."""
               expected = {
@@ -1106,6 +1128,11 @@ jobs:
               ):
                   return False
               if bool(paths) != (mode == "scoped"):
+                  return False
+              if mode == "scoped" and (
+                  not admitted_paths(paths)
+                  or needs["check-affected"]["outputs"].get("verified") != "true"
+              ):
                   return False
               if outputs.get("inventory") != ("true" if mode in {"full", "push"} else "false"):
                   return False

@@ -78,6 +78,23 @@ Push to main collects/budget-checks fresh inventory but skips heavy execution af
 validation. Docs-only skips remain explicit. The required `check` verifies exact event/mode
 pairings from prerequisite verdicts only, with no checkout, installation or report work.
 
+Test support modules and package markers with unproved import ownership escalate to every
+configured pytest root, including both `tests/` and `roster/`; adjacent test files cannot prove
+that a helper has no consumers elsewhere. CI validates the selected scope independently of the
+changed-file list. Empty, unsupported, outside-root or root-wide selections, and any selected
+ancestor or descendant of `tests/e2e/`, fall back to the complete matrix. Known small API scopes,
+direct test edits and pytest-governed nested conftest scopes remain eligible.
+
+The conditional affected job accepts canonical selected Python files only, excluding E2E.
+It freshly collects the actual default-selected item identities, runs the unchanged affected
+pytest flags and independently recollects after execution. Its source/run/attempt/config/nonce
+bound receipt must prove exact item multiplicity, logical starts and all actual setup/call/teardown
+phases, including named skips. Count-only JUnit cannot authorize it. The job uploads minimized
+reference, execution and independently verified proof carriers; required check also demands
+its explicit successful verifier output. Each subprocess belongs to the same finite affected
+job envelope and cleans up only its own process group. No cached inventory or full-lane evidence
+is borrowed to certify a scoped execution.
+
 Guards performs one actual installed `pytest tests/ roster/ --collect-only -q -n0 -m ""`
 collection. Exact inherited markers establish both populations; advisory weights never do.
 Both unchanged lane budgets consume this inventory. Deterministic LPT assigns whole files to

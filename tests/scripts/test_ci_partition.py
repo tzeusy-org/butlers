@@ -17,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import check_ci_test_shards as legacy  # noqa: E402
+import ci_affected as affected  # noqa: E402
 import ci_partition as partition  # noqa: E402
 import ci_preflight_reconcile as preflight  # noqa: E402
 import ci_weight_candidates as candidates  # noqa: E402
@@ -167,6 +168,104 @@ def test_reconciliation_requires_complete_node_identity(
 ) -> None:
     """REQ-ci-shard-assurance-003/005/006/008; REQ-testing-051: identity and origin."""
     _corpus(tmp_path, monkeypatch)
+    # Fresh default scoped reference + real xdist execution + independent
+    # recollection. This miniature is genuine software, never hosted/SQL proof.
+    scoped_output = tmp_path / "scoped-proof"
+    paths = ["tests/test_0.py"]
+    # A surrounding real matrix child must not lend its collection schedule or
+    # output destination to this independent subprocess protocol.
+    with monkeypatch.context() as inherited:
+        inherited.setenv("CI_SHARD_CONTEXT", json.dumps({"files": ["tests/not_selected.py"]}))
+        inherited.setenv("CI_SHARD_RECEIPT", str(tmp_path / "parent-must-stay-absent.json"))
+        inherited.setenv("CI_SHARD_STARTED", "0")
+        scoped = affected.execute(paths, root=tmp_path, output=scoped_output, workers="3")
+    assert not (tmp_path / "parent-must-stay-absent.json").exists()
+    assert scoped["verified"] is True and scoped["selected_count"] == 3
+    reference = partition.read_json(scoped_output / "selected-reference.json")
+    observed = partition.read_json(scoped_output / "selected-execution.json")
+    arguments = dict(
+        identity=observed["inventory_identity"],
+        paths=paths,
+        nonce=observed["nonce"],
+        command=observed["command"],
+    )
+    for corrupt in (
+        {"complete": False},
+        {"pytest_exit": 1},
+        {"nonce": "0" * 64},
+        {"logical_starts": {key: 2 for key in reference["nodes"]}},
+        {"nodes": {}},
+        {"inventory_identity": {}},
+        {"actual_selector": {}},
+    ):
+        with pytest.raises(ValueError):
+            affected.verify(reference, {**observed, **corrupt}, **arguments)
+    wrong = copy.deepcopy(observed)
+    node = next(iter(wrong["nodes"]))
+    substitute = "0" * 64
+    wrong["nodes"][substitute] = wrong["nodes"].pop(node)
+    wrong["node_files"][substitute] = wrong["node_files"].pop(node)
+    wrong["logical_starts"][substitute] = wrong["logical_starts"].pop(node)
+    wrong["selected_node_digest"] = partition.digest(sorted(wrong["nodes"]))
+    with pytest.raises(ValueError):
+        affected.verify(reference, wrong, **arguments)
+    assert affected.verify(reference, observed, **arguments)["verified"] is True
+    for corrupt_reference in ({**reference, "complete": False}, {**reference, "digest": "0" * 64}):
+        with pytest.raises(ValueError):
+            affected.verify(corrupt_reference, observed, **arguments)
+    for mutation in ("missing_phase", "failed_phase", "nonfinite_timer", "bad_total"):
+        corrupt = copy.deepcopy(observed)
+        target = next(iter(corrupt["nodes"]))
+        if mutation == "missing_phase":
+            corrupt["nodes"][target].pop("teardown")
+        elif mutation == "failed_phase":
+            corrupt["nodes"][target]["call"]["outcome"] = "failed"
+        elif mutation == "nonfinite_timer":
+            corrupt["nodes"][target]["call"]["duration_s"] = float("inf")
+        else:
+            corrupt["file_durations_s"][paths[0]] += 1
+        with pytest.raises(ValueError):
+            affected.verify(reference, corrupt, **arguments)
+    # Preserve actual default marker deselection, declared and dynamic skips.
+    selected_file = tmp_path / paths[0]
+    original_file = selected_file.read_text()
+    config_file = tmp_path / "pyproject.toml"
+    original_config = config_file.read_text()
+    config_file.write_text(
+        original_config + "addopts=\"-m 'not nightly and not bench and not perf'\"\n"
+    )
+    selected_file.write_text(
+        original_file
+        + "@pytest.mark.skip(reason='conformance')\ndef test_declared_skip(): assert False\n"
+        + "def test_dynamic_skip(): pytest.skip('conformance')\n"
+        + "@pytest.mark.nightly\ndef test_not_selected(): assert False\n"
+    )
+    skips = affected.execute(paths, root=tmp_path, output=tmp_path / "skips", workers="3")
+    assert skips["verified"] is True and skips["selected_count"] == 5
+    skipped_observed = partition.read_json(tmp_path / "skips/selected-execution.json")
+    assert (
+        sum(
+            any(phase["outcome"] == "skipped" for phase in phases.values())
+            for phases in skipped_observed["nodes"].values()
+        )
+        == 2
+    )
+    selected_file.write_text(original_file + "def test_real_failure(): assert False\n")
+    with pytest.raises(ValueError, match="selected pytest failed"):
+        affected.execute(paths, root=tmp_path, output=tmp_path / "failed", workers="3")
+    assert not (tmp_path / "failed/selected-proof.json").exists()
+    failed = partition.read_json(tmp_path / "failed/selected-execution.json")
+    assert failed["pytest_exit"] == 1 and failed["complete"] is False
+    selected_file.write_text(original_file)
+    config_file.write_text(original_config)
+    # Actual malformed collection refuses before any body/verification output.
+    (tmp_path / "conftest.py").write_text(
+        "def pytest_collection_modifyitems(items): items.append(items[0])\n"
+    )
+    with pytest.raises(ValueError, match="collection unavailable"):
+        affected.execute(paths, root=tmp_path, output=tmp_path / "duplicate", workers="3")
+    assert not (tmp_path / "duplicate/selected-proof.json").exists()
+    (tmp_path / "conftest.py").unlink()
     # The original dedicated selector sees this actual marked miniature item.
     (tmp_path / "conftest.py").write_text(
         "import pytest\n"

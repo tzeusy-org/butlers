@@ -6,10 +6,12 @@ import argparse
 import json
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+
+from ci_test_plan import decide_mode  # noqa: E402
 
 from butlers.testing.scoped_runner import (  # noqa: E402
     FULL_SUITE_FALLBACK_ALLOWLIST,
@@ -85,14 +87,35 @@ def route(
             fallback_allowlist=FULL_SUITE_FALLBACK_ALLOWLIST + ("tests/e2e/",),
         )
         if (
-            plan.scope == "scoped"
-            and plan.test_paths
+            decide_mode(plan, repo_root=root) == "scoped"
+            and admitted_paths(plan.test_paths)
             and all((root / path).is_file() for path in plan.test_paths)
         ):
             result.update(mode="scoped", inventory="false", test_paths=plan.test_paths)
     except (OSError, ValueError, RuntimeError):
         pass
     return result
+
+
+def admitted_paths(paths: object) -> bool:
+    """Checkout-free selected-file admission, mirrored by the required verdict."""
+    return (
+        isinstance(paths, list)
+        and bool(paths)
+        and all(isinstance(path, str) for path in paths)
+        and len(paths) == len(set(paths))
+        and all(
+            PurePosixPath(path).as_posix() == path
+            and not any(part in {".", ".."} for part in path.split("/"))
+            and "\\" not in path
+            and "::" not in path
+            and path.endswith(".py")
+            and path.startswith(("tests/", "roster/"))
+            and not path.startswith("tests/e2e/")
+            and not any(ord(character) < 32 for character in path)
+            for path in paths
+        )
+    )
 
 
 def verdict(*, needs: dict, event: str, ref: str) -> bool:
@@ -150,6 +173,10 @@ def verdict(*, needs: dict, event: str, ref: str) -> bool:
     ):
         return False
     if bool(paths) != (mode == "scoped"):
+        return False
+    if mode == "scoped" and (
+        not admitted_paths(paths) or needs["check-affected"]["outputs"].get("verified") != "true"
+    ):
         return False
     if outputs.get("inventory") != ("true" if mode in {"full", "push"} else "false"):
         return False

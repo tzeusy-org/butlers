@@ -156,6 +156,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         mode="scoped", inventory="false", test_paths='["tests/contracts/test_ci_test_targets.py"]'
     )
     scoped["check-affected"]["result"] = "success"
+    scoped["check-affected"]["outputs"] = {"verified": "true"}
     contexts.append(("scoped", "pull_request", "refs/pull/1/merge", scoped, False))
     docs = copy.deepcopy(scoped)
     docs["route"]["outputs"].update(backend="false", mode="docs", test_paths="[]")
@@ -248,6 +249,23 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         )
         assert result.returncode != 0
         assert "shards_ran=true" not in output
+    for selected in (
+        ["tests/e2e/test_performance.py"],
+        ["tests/"],
+        ["roster/"],
+        ["tests/contracts/test_ci_test_targets.py"] * 2,
+        ["tests//contracts/test_ci_test_targets.py"],
+        ["tests/../outside.py"],
+    ):
+        changed = copy.deepcopy(scoped)
+        changed["route"]["outputs"]["test_paths"] = json.dumps(selected)
+        check(
+            f"unsupported-selected/{selected}", changed, "pull_request", "refs/pull/1/merge", False
+        )
+    for evidence in ({}, {"verified": "false"}, {"verified": "unknown"}):
+        changed = copy.deepcopy(scoped)
+        changed["check-affected"]["outputs"] = evidence
+        check(f"selected-proof/{evidence}", changed, "pull_request", "refs/pull/1/merge", False)
     assert not failures, "\n".join(failures)
 
     # Reached fault controls prove that each independent policy check matters.
