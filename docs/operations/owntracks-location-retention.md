@@ -407,3 +407,26 @@ actual writer then fails to refuse a typed unregistered cell; restored writer
 and reader refusal controls plus a genuinely registered-cell companion pass.
 Those registry/SQL doubles prove source wiring only, not online admission,
 PostgreSQL roles or whole copy closure.
+
+The exact e007 hosted node advanced through the healthy nonempty generation
+control and its restored positive, then reached actual point disposal. Its
+closed failure was a TypeError during privacy-generation hashing after the
+point row had become a minimal tombstone. The adopted tombstone contains a
+BYTEA logical-source digest. Native canonicalization now represents bytes
+as a typed hex object, retaining that binding and every remaining semantic
+field rather than dropping it or stringifying arbitrary objects. Existing
+software controls exercise the actual point-missing/tombstone lookup, stable
+replay, changed-byte/changed-body/hex-string negatives and the disposal phase
+revision update. Removing only bytes handling produces the original JSON
+TypeError; restoration passes. This source-positioned control is not the
+required hosted real-Postgres disposal/raw-deletion survivor.
+
+Native consolidation processing completion now preserves the runner's
+original error or cancellation when an ordinary secondary receipt operation
+fails, records only a fixed unknown-disposition diagnostic, and leaves the
+missing receipt unresolved. Successful processing still raises a failed
+completion witness; a new cancellation during completion is never swallowed.
+The native processing-ended receipt attests only that Python processing scope,
+not runtime/session/catalog or persisted descendant disposal. Paired old
+secondary-error replacement RED and restored primary/cancellation/metadata
+success controls run in the same existing software species.

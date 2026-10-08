@@ -107,6 +107,11 @@ def _digest_value(value: Any) -> Any:
         if value.tzinfo is None:
             raise ValueError("Native output time is unavailable")
         return value.isoformat()
+    if isinstance(value, bytes):
+        # Native BYTEA columns (notably the minimal evidence tombstone's
+        # logical-source digest) have a deterministic typed representation.
+        # Do not omit the binding or stringify arbitrary unsupported values.
+        return {"native_bytea_hex": value.hex()}
     if isinstance(value, dict):
         return {key: _digest_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

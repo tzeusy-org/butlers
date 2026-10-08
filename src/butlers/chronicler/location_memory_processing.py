@@ -8,6 +8,7 @@ Runtime, catalog and persisted descendants retain their separate holders.
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from uuid import UUID, uuid4
 
 from butlers.chronicler.location_retention import PolicyUnavailableError
 from butlers.location_retention import content_digest
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -53,48 +56,64 @@ async def processing_lifetime(pool: Any):
     domain, schema, role = registered
     binding = _Processing(pool, domain, schema, role)
     token = _processing.set(binding)
+    primary_failed = False
     try:
         yield
+    except BaseException:
+        primary_failed = True
+        raise
     finally:
-        # The nested native runner has returned/unwound: its prompt, selected
-        # row bundles and output-processing locals are no longer processing.
-        # A crash before this commit leaves a genuine unfinished holder.
+        # Only the native runner's actual unwind ends this processing scope.
+        # Missing durable receipt remains unresolved; it must not overwrite
+        # a runner failure or pretend to complete any persisted descendant.
         binding.active = False
         _processing.reset(token)
-        from butlers.chronicler.location_memory_copies import _lock
+        try:
+            await _finish_processing(binding)
+        except Exception:
+            if not primary_failed:
+                raise  # Successful processing still requires its real witness.
+            logger.warning("location_native_processing_disposition_unknown")
+        # Cancellation/BaseException from completion is never swallowed. A
+        # new task cancellation wins over an ordinary runner error; an
+        # ordinary secondary error preserves the original cancellation.
 
-        receipts = []
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await _lock(conn, schema, role)
-                for claim, digest in binding.claims:
-                    receipt = uuid4()
-                    # Failed/rolled-back claim transactions created no admitted
-                    # durable reservation. Never insert a receipt for them.
-                    exists = await conn.fetchval(
-                        "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_processing_claims "
-                        "WHERE claim_id=$1 AND bundle_digest=$2)",
-                        claim,
-                        digest,
-                    )
-                    if exists is not True:
-                        continue
-                    await conn.execute(
-                        "INSERT INTO chronicler.location_native_processing_finished "
-                        "(claim_id,bundle_digest,receipt_id) VALUES($1,$2,$3)",
-                        claim,
-                        digest,
-                        receipt,
-                    )
-                    receipts.append(receipt)
-        async with pool.acquire() as committed:
-            observed = await committed.fetchval(
-                "SELECT count(*) FROM chronicler.location_native_processing_finished "
-                "WHERE receipt_id=ANY($1::uuid[])",
-                receipts,
-            )
-        if observed != len(receipts):
-            raise PolicyUnavailableError("Committed native processing completion is unknown")
+
+async def _finish_processing(binding: _Processing) -> None:
+    from butlers.chronicler.location_memory_copies import _lock
+
+    receipts = []
+    async with binding.pool.acquire() as conn:
+        async with conn.transaction():
+            await _lock(conn, binding.schema, binding.role)
+            for claim, digest in binding.claims:
+                receipt = uuid4()
+                # Failed/rolled-back claim transactions created no admitted
+                # durable reservation. Never insert a receipt for them.
+                exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_processing_claims "
+                    "WHERE claim_id=$1 AND bundle_digest=$2)",
+                    claim,
+                    digest,
+                )
+                if exists is not True:
+                    continue
+                await conn.execute(
+                    "INSERT INTO chronicler.location_native_processing_finished "
+                    "(claim_id,bundle_digest,receipt_id) VALUES($1,$2,$3)",
+                    claim,
+                    digest,
+                    receipt,
+                )
+                receipts.append(receipt)
+    async with binding.pool.acquire() as committed:
+        observed = await committed.fetchval(
+            "SELECT count(*) FROM chronicler.location_native_processing_finished "
+            "WHERE receipt_id=ANY($1::uuid[])",
+            receipts,
+        )
+    if observed != len(receipts):
+        raise PolicyUnavailableError("Committed native processing completion is unknown")
 
 
 async def lock_claim(pool: Any, conn: Any) -> None:

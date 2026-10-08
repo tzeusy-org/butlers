@@ -448,6 +448,72 @@ async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monk
     with pytest.raises(location_retention.PolicyUnavailableError, match="generation changed"):
         await location_retention._output_generation_cohort(native, [key], [])
 
+    # Actual native point disposal advances to a minimal stored tombstone.
+    # Its adopted BYTEA logical-source binding must survive canonical JSON
+    # hashing, not disappear or become an arbitrary object/string fallback.
+    from datetime import UTC, datetime
+
+    event = uuid4()
+    tombstone = {
+        "event_id": event,
+        "raw_id": raw_id,
+        "source_revision": 1,
+        "logical_source_digest": b"p" * 32,
+        "decision_id": decision,
+        "spatial_precision_m": 150,
+        "spatial_scheme_version": 1,
+        "occurred_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "privacy": "normal",
+        "purged_at": datetime(2026, 2, 1, tzinfo=UTC),
+    }
+    observed_queries = []
+
+    async def diminished(query, *args):
+        observed_queries.append(query)
+        assert args == (event,)
+        if query == "SELECT * FROM point_events WHERE id=$1":
+            return None
+        assert query == "SELECT * FROM location_evidence_tombstones WHERE event_id=$1"
+        return dict(tombstone)
+
+    native.fetchrow.side_effect = diminished
+    diminished_digest = await location_projection.output_digest(native, {("point_event", event)})
+    assert observed_queries == [
+        "SELECT * FROM point_events WHERE id=$1",
+        "SELECT * FROM location_evidence_tombstones WHERE event_id=$1",
+    ]
+    assert (
+        await location_projection.output_digest(native, {("point_event", event)})
+        == diminished_digest
+    )
+    tombstone["logical_source_digest"] = b"q" * 32
+    assert (
+        await location_projection.output_digest(native, {("point_event", event)})
+        != diminished_digest
+    )
+    tombstone["logical_source_digest"] = (b"p" * 32).hex()
+    assert (
+        await location_projection.output_digest(native, {("point_event", event)})
+        != diminished_digest
+    )
+    tombstone["logical_source_digest"] = b"p" * 32
+    tombstone["privacy"] = "different stored body"
+    assert (
+        await location_projection.output_digest(native, {("point_event", event)})
+        != diminished_digest
+    )
+    tombstone["privacy"] = "normal"
+    point_contributor = {**contributor, "output_revision": digest}
+    native.fetch.side_effect = lambda query, *args: [
+        {"output_kind": "point_event", "output_id": event}
+    ]
+    await location_retention._commit_privacy_generations(
+        native, decision, [point_contributor], phase="dispose"
+    )
+    assert native.execute.await_args.args[-3:] == ("dispose", digest, diminished_digest)
+    assert native.fetchval.await_args.args[-2:] == (diminished_digest, digest)
+    assert contributor["original_output_revision"] == digest
+
     # Expired descriptors carry a real minimal tombstone, never exact old title.
     from butlers.chronicler.location_evidence import expired_evidence_links
 
@@ -2033,6 +2099,7 @@ async def test_native_processing_reserves_full_reads_before_render_and_keeps_fai
         claim = None
         digest = None
         receipts = []
+        finish_error = None
 
         @asynccontextmanager
         async def acquire(self):
@@ -2083,6 +2150,8 @@ async def test_native_processing_reserves_full_reads_before_render_and_keeps_fai
                 self.claim, self.digest = args[:2]
             if "INSERT INTO chronicler.location_native_processing_finished" in sql:
                 trace.append("native-processing-ended")
+                if self.finish_error is not None:
+                    raise self.finish_error
                 self.receipts.append(args[-1])
 
     domain, pool = object(), Pool()
@@ -2107,6 +2176,40 @@ async def test_native_processing_reserves_full_reads_before_render_and_keeps_fai
                 await processing.read_dedup_bundle(pool, [episode], "chronicler", "shared")
         assert trace[-2:] == ["commit", "acquire"]
         assert len(pool.receipts) == 3  # Actual native scope end; not a runtime/descendant receipt.
+        import asyncio
+
+        async def unwind(primary, secondary):
+            current = Pool()
+            current.receipts = []
+            current.finish_error = secondary
+            _receivers[domain] = (current, "chronicler_mem", "installed-own-role-double")
+            observed = None
+            try:
+                async with processing.processing_lifetime(current):
+                    await processing.read_dedup_bundle(current, [episode], "chronicler", "shared")
+                    if primary is not None:
+                        raise primary
+            except BaseException as exc:
+                observed = exc
+            assert processing._processing.get() is None
+            return observed, current.receipts
+
+        primary = ValueError("fixed runner failure sentinel")
+        secondary = RuntimeError("fixed receipt failure sentinel")
+        observed, ended = await unwind(primary, secondary)
+        assert observed is primary and ended == []
+        cancelled = asyncio.CancelledError("fixed runner cancellation sentinel")
+        observed, ended = await unwind(cancelled, secondary)
+        assert observed is cancelled and ended == []
+        observed, ended = await unwind(None, secondary)
+        assert observed is secondary and ended == []  # Normal return cannot hide failed witness.
+        new_cancellation = asyncio.CancelledError("fixed completion cancellation sentinel")
+        observed, ended = await unwind(primary, new_cancellation)
+        assert observed is new_cancellation and ended == []
+        observed, ended = await unwind(primary, None)
+        assert observed is primary and len(ended) == 1
+        observed, ended = await unwind(None, None)
+        assert observed is None and len(ended) == 1  # Real ended-scope companion.
     finally:
         _receivers.pop(domain)
 
