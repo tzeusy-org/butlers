@@ -713,7 +713,9 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     buildroot = tmp_path / "build-control"
     (buildroot / "frontend/dist").mkdir(parents=True)
     (buildroot / "frontend/dist/index.html").write_text("planted compiler-output stand-in")
-    (buildroot / "frontend/package-lock.json").write_text("{}")
+    (buildroot / "frontend/package-lock.json").write_bytes(
+        (REPO_ROOT / "frontend/package-lock.json").read_bytes()
+    )
     subprocess.run(["git", "init", "-q", str(buildroot)], check=True)
     subprocess.run(["git", "-C", str(buildroot), "add", "frontend/package-lock.json"], check=True)
     subprocess.run(
@@ -763,61 +765,107 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
             + """import json, os, subprocess, sys, time
 from pathlib import Path
 root = Path(__file__).resolve().parents[2]
+time.sleep(float(os.environ.get('VITEST_CONTROL_STARTUP_DELAY', '0')))
 shard = next((a for a in sys.argv if a.startswith('--shard=')), None)
-stage = ('collect-full' if shard is None else 'collect-shard-' + shard[8]) if sys.argv[1] == 'list' else 'execute'
+output = next((a[9:] for a in sys.argv if a.startswith('--output=')), None)
+stage = 'collect-full' if sys.argv[1] == 'list' else 'execute'
 mode = os.environ.get('VITEST_CONTROL')
+(root / ('transport-ready-' + stage)).write_text('ready')
 if mode == 'descendant-stall' and stage == 'collect-full':
     ready_read, ready_write = os.pipe()
-    child = subprocess.Popen([sys.executable, '-c', "import os, signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[2]).write_text('ready'); os.write(int(sys.argv[1]), b'1'); time.sleep(1.5); Path(sys.argv[3]).write_text('late descendant output')", str(ready_write), str(root / 'descendant-ready'), str(root / 'descendant-late')], pass_fds=(ready_write,))
+    child = subprocess.Popen([sys.executable, '-c', "import os, signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[2]).write_text('ready'); os.write(int(sys.argv[1]), b'1'); time.sleep(3); Path(sys.argv[3]).write_text('late descendant output')", str(ready_write), str(root / 'descendant-ready'), str(root / 'descendant-late')], pass_fds=(ready_write,))
     os.close(ready_write)
     assert os.read(ready_read, 1) == b'1'
     os.close(ready_read)
     print('private control text', flush=True)
     time.sleep(5)
-if mode == stage:
+if mode == stage or (stage == 'execute' and mode == 'collect-shard-' + shard[8]):
     print('private control text', flush=True)
     time.sleep(5)
 if mode == 'collect-failed' and stage == 'collect-full':
     print('private control text', file=sys.stderr)
     sys.exit(1)
-rows = [{'file': str(root / ('control-' + letter + '.test.ts')), 'name': 'control ' + letter} for letter in ('a', 'b')]
-if shard:
-    rows = [rows[int(shard[8]) - 1]]
+import hashlib
+config = {'node':'24.21.0','vitest':'3.2.4','pool':'forks','isolate':True,'available_parallelism':4,'max_workers':None,'min_workers':None,'file_parallelism':True,'test_timeout':5000,'hook_timeout':10000,'retry':0,'sequence_shuffle':False}
+def opaque(file, name):
+    return hashlib.sha256(json.dumps([file, name]).encode()).hexdigest()
+modules = {}
+for letter in ('a', 'b'):
+    file = 'frontend/control-' + letter + '.test.ts'
+    modules[file] = {'file':file,'items':{opaque(file, 'occurrence'): {'key':opaque(file, 'control ' + letter),'mode':'run'}},'errors':0,'ok':True}
+files = sorted(modules)
 if sys.argv[1] == 'list':
-    print(json.dumps(rows))
+    reference = {'schema':'ci-vitest-reference.v2','config':config,'files':files,'halves':{'1':[files[0]],'2':[files[1]]},'modules':modules,'unhandled_errors':0,'controller_exit':0,'complete':True}
+    Path(output).write_text(json.dumps(reference))
 elif mode == 'report-malformed':
     print('private control text')
+    Path(os.environ['BUTLERS_VITEST_EVIDENCE']).write_text('private control text')
 else:
-    print(json.dumps({'success': True, 'testResults': [{'name': row['file'], 'assertionResults': [{'ancestorTitles': [], 'title': row['name'], 'status': 'passed'}]} for row in rows]}))
+    file = files[int(shard[8]) - 1]
+    items = modules[file]['items']
+    execution = {'schema':'ci-vitest-execution.v2','config':config,'modules':{file:modules[file]},'queued':{file:1},'starts':{file:1},'ends':{file:{'count':1,'errors':0,'ok':True,'state':'passed'}},'ready':{token:1 for token in items},'results':{token:{'state':'passed','declared_mode':'run'} for token in items},'terminal_files':[file],'unhandled_errors':0,'reporter_problems':{},'update_errors':0,'reason':'passed','complete':True}
+    Path(os.environ['BUTLERS_VITEST_EVIDENCE']).write_text(json.dumps(execution))
 """
         )
         helper.chmod(0o755)
         native_run = vitest.run_process
 
         def bounded_helper(command, **kwargs):
-            if command[0] == str(helper):
-                kwargs["timeout"] = (
-                    0.8 if os.environ.get("VITEST_CONTROL") == "descendant-stall" else 0.2
-                )
+            reference_call = command[:2] == ["node", str(vitest.REPORTER)]
+            if command[0] == str(helper) or reference_call:
+                # Preserve finite readiness before the positioned stall. This
+                # source-owned process double proves transport only, not Vitest.
+                stage = "collect-full" if reference_call else "execute"
+                if reference_call:
+                    command = [str(helper), "list", "--output=" + command[4]]
+                ready = buildroot / "frontend" / ("transport-ready-" + stage)
+                ready.unlink(missing_ok=True)
+                kwargs["timeout"] = 2
+                try:
+                    return native_run(command, **kwargs)
+                finally:
+                    assert ready.is_file() and ready.read_text() == "ready", (
+                        "current helper entry unavailable"
+                    )
             return native_run(command, **kwargs)
 
         local.setattr(vitest, "run_process", bounded_helper)
+        local.setenv("VITEST_CONTROL_STARTUP_DELAY", "0.2")
+        # The actual PATH-selected Node probe is optional diagnostic metadata,
+        # not an identity or worker-admission substitute for the real collector.
+        observed = vitest.runtime_observation(buildroot)
+        assert observed is not None and observed["available_parallelism"] > 0
+        for raw in (
+            b"private control text",
+            b'{"node":"24.21.0","available_parallelism":true}',
+            b'{"node":"private control text","available_parallelism":4}',
+            b'{"node":"24.21.0","available_parallelism":0}',
+            b'{"node":"24.21.0","available_parallelism":4,"extra":"private control text"}',
+        ):
+            with monkeypatch.context() as diagnostic:
+                diagnostic.setattr(
+                    vitest,
+                    "run_process",
+                    lambda command, **kwargs: subprocess.CompletedProcess(command, 0, raw, b""),
+                )
+                assert vitest.runtime_observation(buildroot) is None
         for mode, stage, category in (
             ("collect-full", "collect-full", "timeout"),
-            ("collect-shard-1", "collect-shard-1", "timeout"),
-            ("collect-shard-2", "collect-shard-2", "timeout"),
+            ("collect-shard-1", "execute", "timeout"),
+            ("collect-shard-2", "execute", "timeout"),
             ("execute", "execute", "timeout"),
             ("collect-failed", "collect-full", "subprocess_failed"),
             ("report-malformed", "report", "invalid_evidence"),
         ):
             local.setenv("VITEST_CONTROL", mode)
             destination = tmp_path / ("vitest-" + mode)
-            assert vitest.run(buildroot, 1, destination) == 2
+            assert vitest.run(buildroot, 2 if mode == "collect-shard-2" else 1, destination) == 2
             receipt_text = (destination / "receipt.json").read_text()
             receipt = json.loads(receipt_text)
             assert receipt["complete"] is False
             assert (receipt["stage"], receipt["failure_category"]) == (stage, category)
             assert receipt["identity"] == build.identity(buildroot)
+            assert receipt["runtime_observation"] == observed
             assert "private control text" not in receipt_text
             if category == "timeout":
                 assert receipt["process_cleanup"]["term_sent"] is True
@@ -835,7 +883,7 @@ else:
         assert receipt["process_cleanup"]["pipes_drained"] is True
         assert receipt["process_cleanup"]["child_reaped"] is True
         assert "private control text" not in receipt_text
-        time.sleep(1.5)
+        time.sleep(3)
         assert not (buildroot / "frontend/descendant-late").exists()
         local.delenv("VITEST_CONTROL")
         destination = tmp_path / "vitest-healthy"
@@ -843,6 +891,159 @@ else:
         receipt = json.loads((destination / "receipt.json").read_text())
         assert receipt["complete"] is True and receipt["count"] == 1
         assert receipt["stage"] == "complete" and "failure_category" not in receipt
+        second = tmp_path / "vitest-healthy-two"
+        assert vitest.run(buildroot, 2, second) == 0
+        pair = [receipt, json.loads((second / "receipt.json").read_text())]
+        vitest.reconcile(buildroot, pair)
+        # Same counts cannot hide changed parameters, missing declarations,
+        # duplicated logical starts, unfinished outcomes or stale attempts.
+        for mutation in (
+            "parameter",
+            "missing",
+            "duplicate",
+            "result",
+            "attempt",
+            "full-reference",
+            "reporter-error",
+            "update-error",
+            "late",
+            "boolean-exit",
+        ):
+            corrupted = copy.deepcopy(pair)
+            child = corrupted[0]
+            execution = child["execution"]
+            file = next(iter(execution["modules"]))
+            token = next(iter(execution["ready"]))
+            if mutation == "parameter":
+                execution["modules"][file]["items"][token]["key"] = "0" * 64
+            elif mutation == "missing":
+                del execution["modules"][file]
+            elif mutation == "duplicate":
+                execution["ready"][token] = 2
+            elif mutation == "result":
+                execution["results"][token]["state"] = "pending"
+            elif mutation == "attempt":
+                child["identity"]["attempt"] = "other-attempt"
+            elif mutation == "reporter-error":
+                execution["reporter_problems"] = {"ready_multiplicity": 1}
+            elif mutation == "update-error":
+                execution["update_errors"] = 1
+            elif mutation == "late":
+                child["elapsed_s"] = 901
+            elif mutation == "boolean-exit":
+                child["exit_code"] = False
+            else:
+                child["reference"]["modules"][file]["items"][token]["key"] = "1" * 64
+            with pytest.raises(ValueError):
+                vitest.reconcile(buildroot, corrupted)
+        vitest.reconcile(buildroot, pair)
+        for declared_mode in ("skip", "todo"):
+            reference = copy.deepcopy(pair[0]["reference"])
+            execution = copy.deepcopy(pair[0]["execution"])
+            file = next(iter(execution["modules"]))
+            token = next(iter(execution["ready"]))
+            reference["modules"][file]["items"][token]["mode"] = declared_mode
+            execution["modules"][file]["items"][token]["mode"] = declared_mode
+            execution["results"][token]["declared_mode"] = declared_mode
+            with pytest.raises(ValueError):
+                vitest.validate_execution(reference, execution, 1)
+            execution["results"][token]["state"] = "skipped"
+            assert vitest.validate_execution(reference, execution, 1)["count"] == 1
+        # Ordinary declared run can dynamically skip: this is an actual Vitest
+        # terminal species and must not be mistaken for an executed pass.
+        dynamic = copy.deepcopy(pair[0]["execution"])
+        token = next(iter(dynamic["results"]))
+        dynamic["results"][token]["state"] = "skipped"
+        assert vitest.validate_execution(pair[0]["reference"], dynamic, 1)["outcomes"] == {
+            "skipped": 1
+        }
+        # The required fan-in executes this real CLI entrypoint, not just a
+        # library function that happens to accept the healthy artifacts.
+        with monkeypatch.context() as cli_control:
+            cli_control.setattr(vitest, "ROOT", buildroot)
+            cli_control.setattr(
+                sys,
+                "argv",
+                [
+                    "ci_vitest.py",
+                    "--reconcile",
+                    str(destination / "receipt.json"),
+                    str(second / "receipt.json"),
+                ],
+            )
+            assert vitest.main() == 0
+            bad = copy.deepcopy(pair[0])
+            bad["execution"]["update_errors"] = 1
+            invalid = tmp_path / "invalid-vitest-receipt.json"
+            invalid.write_text(json.dumps(bad))
+            cli_control.setattr(
+                sys,
+                "argv",
+                ["ci_vitest.py", "--reconcile", str(invalid), str(second / "receipt.json")],
+            )
+            assert vitest.main() == 2
+
+        # The full reference may need more than the former 180s list cap, but
+        # execution never gets a fresh 900s. This virtual-clock producer checks
+        # actual wrapper budgets, not installed Vitest or measured performance.
+        for execution_seconds, expected_exit in ((100, 0), (650, 2)):
+            clock = [0.0]
+            budgets = []
+
+            class Clock:
+                @staticmethod
+                def monotonic():
+                    return clock[0]
+
+            def measured_transport(command, **kwargs):
+                reference_call = command[:2] == ["node", str(vitest.REPORTER)]
+                budget = kwargs["timeout"]
+                duration = 286 if reference_call else execution_seconds
+                budgets.append(budget)
+                if duration >= budget:
+                    clock[0] += budget
+                    raise vitest.VitestTimeout(
+                        budget,
+                        {
+                            "term_sent": True,
+                            "kill_sent": False,
+                            "pipes_drained": True,
+                            "child_reaped": True,
+                            "stdout_bytes": 0,
+                            "stderr_bytes": 0,
+                        },
+                    )
+                clock[0] += duration
+                if reference_call:
+                    Path(command[4]).write_text(json.dumps(pair[0]["reference"]))
+                else:
+                    Path(kwargs["env"]["BUTLERS_VITEST_EVIDENCE"]).write_text(
+                        json.dumps(pair[0]["execution"])
+                    )
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+
+            with monkeypatch.context() as timing:
+                timing.setattr(vitest, "time", Clock)
+                timing.setattr(vitest, "runtime_observation", lambda root: observed)
+                timing.setattr(vitest, "run_process", measured_transport)
+                destination = tmp_path / f"vitest-shared-deadline-{execution_seconds}"
+                assert vitest.run(buildroot, 1, destination) == expected_exit
+                timed_receipt = json.loads((destination / "receipt.json").read_text())
+            assert budgets == [900, 614]
+            assert timed_receipt["complete"] is (expected_exit == 0)
+            assert timed_receipt["elapsed_s"] == (386 if expected_exit == 0 else 900)
+            if expected_exit:
+                assert (timed_receipt["stage"], timed_receipt["failure_category"]) == (
+                    "execute",
+                    "timeout",
+                )
+    protocol = subprocess.run(
+        [shutil.which("node"), str(REPO_ROOT / "tests/ci_vitest_protocol_controls.mjs")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        timeout=10,
+    )
+    assert protocol.returncode == 0, "Vitest ordered bookkeeping conformance refused"
     assert check_job["needs"] == [
         "route",
         "guards",

@@ -1386,6 +1386,23 @@ jobs:
           valid = valid and needs['frontend-vitest']['result'] == ('success' if applicable == 'true' else 'skipped')
           raise SystemExit(0 if valid else 1)
           PY
+      - uses: actions/checkout@v6
+        if: needs.route.outputs.frontend == 'true'
+      - name: Download actual Vitest child one
+        if: needs.route.outputs.frontend == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-vitest-1
+          path: ${{ runner.temp }}/vitest-1
+      - name: Download actual Vitest child two
+        if: needs.route.outputs.frontend == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-vitest-2
+          path: ${{ runner.temp }}/vitest-2
+      - name: Independently reconcile both current Vitest populations
+        if: needs.route.outputs.frontend == 'true'
+        run: python3 scripts/ci_vitest.py --reconcile "${RUNNER_TEMP}/vitest-1/receipt.json" "${RUNNER_TEMP}/vitest-2/receipt.json"
 
   frontend-e2e:
     timeout-minutes: 14

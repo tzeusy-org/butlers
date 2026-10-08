@@ -139,3 +139,24 @@ profile or FULL decisions. Do not drop resource readers, weaken membership,
 change required contexts, replay cached test results or bypass the protected
 full gate. Revoke an incompatible candidate rather than pretending its missing
 fields are measured. Preserve failed/unknown receipts and exact source hashes.
+
+## Frontend prerequisite for a usable full reference
+
+The locked frontend collector uses one 900-second deadline for its fresh full
+reference, selected half execution, TERM/KILL cleanup, pipe drainage and final
+receipt. Collection consumes that deadline; execution receives only the time
+remaining. The former independent 180-second list calls are outside the active
+execution path. The full reference and both half receipts retain exact current
+runtime configuration, file and logical occurrence multiplicity. The required
+frontend job independently reconciles both receipts and refuses missing, stale,
+changed, duplicate or unfinished evidence.
+
+This source uses the attributable collector and reporter published in
+`bu-ly3lv5.6` at `85d540dd917d405e5b25ba423af60c6d4bdf5326`. That published source
+is a reference for this bounded prerequisite correction; it does not establish
+peer landing, current hosted success, an installed cost profile or planner timing
+acceptance. Virtual-clock controls show the shared deadline and real subprocess
+controls cover cleanup. Genuine Vitest and compatible full/affected measurements
+remain distinct hosted evidence owned by the coordinator. All original replay,
+natural-run and protected obligations remain mandatory; no wall-clock gain is
+claimed.

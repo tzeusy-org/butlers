@@ -1,6 +1,6 @@
 {
-  "declarations_digest": "1089fb415a0c653d2e18dca2f04c9bf5aee885c004c1da9b61a268041ebf9c78",
-  "digest": "0ab9559c8966d6139a569d77148ece64300839f2aa33d497d22d6fe4071c544e",
+  "declarations_digest": "8ee72a9dc9ad966f6071236b126c5f90a8cfed8733aedd94c416c95e87c658ad",
+  "digest": "fa455f2f2c6b829a18385cf23748b6866b732dde52ebcd13510d5d1aa547fd15",
   "families": [
     "docs/",
     "about/",
@@ -2759,6 +2759,9 @@
     "frontend/README.md": [
       "tests/contracts/test_doctrine_drift.py"
     ],
+    "frontend/control-": [
+      "tests/contracts/test_ci_test_targets.py"
+    ],
     "frontend/control-a.test.ts": [
       "tests/contracts/test_ci_test_targets.py"
     ],
@@ -3920,7 +3923,7 @@
     "tests/contracts/test_chronicler_no_cross_schema.py": "e2e6527f5c68a5d731184b3aa5db815733b3e94bb4e69942d4378faa759091fe",
     "tests/contracts/test_chronicler_no_llm.py": "d7dcd6ec9cce0626e4fccdc81accaedb6e5b76a216d19e43f5e8683fca398132",
     "tests/contracts/test_chronicler_schema_drift.py": "e1d64c6465989345ec403780f15f1eab219c568067aefc35a9f569e5e1e5a597",
-    "tests/contracts/test_ci_test_targets.py": "53ba43717ef50013b229f8a119c5cd3840e23fb70b84cf06b25483d444d3adc5",
+    "tests/contracts/test_ci_test_targets.py": "b21434e6f393101767151e248a1d9b2f0fa6fcbb84f5a3bdc0e9cb781e348fd9",
     "tests/contracts/test_citation_route_manifest.py": "b2c2573e2e07d07efda4257e4cb389b6a82f4b87baa3fe2005a4f7e6e44d9a89",
     "tests/contracts/test_client_openapi_contract.py": "99b61357c16eb6f0db7a09e3cd4e949dc6a813fe28661d930d0e410f6153b528",
     "tests/contracts/test_codex_auth_generation_plan_contract.py": "11d0e115e179380e24c8edfd0a695052c9b7774d89932530964467ef72a0401d",
@@ -4580,7 +4583,7 @@
     "tests/modules/test_module_memory.py": "5ea78f0b5380802dbfd09bb60feae4d4c7e5f0a93297a92169411624c5cdc8fd",
     "tests/modules/test_module_metrics.py": "3e4571bbf6e5315113134fae8638d4ade3c65937e812aabf0f52762b928f4ffb",
     "tests/modules/test_module_owner_conditions_broker.py": "90d3bf6e1ceb98c433efa46fe4f274278cb31ed5b926b4194c35078ffb6f4082",
-    "tests/modules/test_module_pipeline.py": "d9ac5fbf86334619dc98241a61fb528679bab01627787a5b1fa4e490e96b51e2",
+    "tests/modules/test_module_pipeline.py": "1d2256735aa1df9d109bdc4fa34295a5b4c883e5fe4aea87a97d1213f154fce5",
     "tests/modules/test_module_qa.py": "de49971f47d1cb941aa0068029620430730e17c3226ec9a64d34185acb60ad03",
     "tests/modules/test_module_registry.py": "d919432398b21b15e1c745634cfb035140dd5f444b6df42105948639b6cb0f2f",
     "tests/modules/test_module_self_healing.py": "cf0ed044d14e838cb6a4064077553d29233720a75e552f4ebdd08e7aaf29c926",

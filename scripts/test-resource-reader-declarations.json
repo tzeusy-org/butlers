@@ -76,7 +76,7 @@
       "body_sha256": {
         "roster/relationship/tests/test_entity_posture.py": "1b9bad82fe9cae32627268af9e3690538423c084c30042c3888470d150a18c6e",
         "tests/connectors/test_filtered_event_buffer.py": "5806b98c15d7e37a1af0580b884f07e99c3fb6d1554e7b3f12f829405fe79e05",
-        "tests/contracts/test_ci_test_targets.py": "53ba43717ef50013b229f8a119c5cd3840e23fb70b84cf06b25483d444d3adc5",
+        "tests/contracts/test_ci_test_targets.py": "b21434e6f393101767151e248a1d9b2f0fa6fcbb84f5a3bdc0e9cb781e348fd9",
         "tests/core/test_provider_allowance.py": "66eb7581cd5d64488330f0be6f0470b315d4d32cfc960173b3719b925c65df93",
         "tests/integration/test_filtered_event_buffer_jsonb_roundtrip.py": "ded278f9b2423ab5c16e20cacfbffd206f02287a5e28a400911c5516ab44be09",
         "tests/three_seams_helpers.py": "f57b7889f0e5c8835eb2fe1b9c6761ae8c21aa5ccd615260c4d8900895f3f1a4"
