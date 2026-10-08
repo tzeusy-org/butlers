@@ -153,7 +153,11 @@ def test_unavailable_base_fails_closed_to_escalation(tmp_path: Path) -> None:
     # miniature cost profile is inner conformance, not measured scope evidence.
     from replay_ci_planner import replay
 
-    row = {"id": "frozen-vector", "files": ["tests/api/test_existing.py"]}
+    row = {
+        "id": "frozen-vector",
+        "files": ["tests/api/test_existing.py"],
+        "mode": "[CI DECISION] mode=full",
+    }
     current = replay([row], root=repo)
     assert current["qualified_scoped"] == 1
     assert current["replay_mode"] == "current-vectors"

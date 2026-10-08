@@ -65,7 +65,14 @@ def replay(rows: list[dict], *, root: Path = ROOT, mode: str = "current-vectors"
     outcomes = []
     for row in rows:
         files = row.get("files") if isinstance(row, dict) else None
-        if isinstance(row, dict) and "mode" in row and row["mode"] not in {"full", "scoped"}:
+        # The frozen original rows retain the exact old decision-line grammar.
+        # Do not mistake that carrier for the three malformed first-row modes.
+        if (
+            isinstance(row, dict)
+            and "mode" in row
+            and row["mode"]
+            not in {"full", "scoped", "[CI DECISION] mode=full", "[CI DECISION] mode=scoped"}
+        ):
             outcomes.append(
                 {
                     "id": row.get("id"),
