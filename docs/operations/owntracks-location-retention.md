@@ -273,7 +273,7 @@ versions, other contexts, links, unknown operations and unclosed catalog copies
 remain held. Routed/mixed descendant completeness and real SQL/online behavior
 are still mandatory unfinished proof, not completed erasure.
 
-The current hosted head9bf has7 failing cases and1 setup error. The SSID
+The earlier hosted head9bf had7 failing cases and1 setup error. The SSID
 source-selection helper incorrectly read a field absent from the actual
 ProjectionCheckpoint model; it now reads durable carry on the same locked
 writer. Two software fixtures now install the daemon's constructor registration
@@ -282,3 +282,33 @@ readers use actual ordinary-source ancestry classification; projected/native
 rows still refuse before emission. These corrections are software-tested and
 remain unproven in the next hosted migrated run. No local SQL, live purge,
 provider, backup or restore action was performed.
+
+
+### Native tool copies and reached-failure continuation
+
+The two actual MCP execution wrappers reserve a private tool generation from
+only the configured runtime and admitted private receiving invocation. The
+full input fingerprint commits and is independently read back before the
+handler runs; the actual result commits before it is returned. Catalog loans
+bind on that same owning lifetime writer. Ordinary unregistered tooling keeps
+its existing behavior and gains no receiving authority from a session string.
+
+Full context disposal matches every executed input/result exactly, includes
+all late loans in the selected cohort, and preserves unfinished/error, changed,
+mixed and unresolved mutating paths. The catalog selected-row producer marks
+actual independent rows as mixed. New Chronicle artifacts snapshot the whole
+original context and later native tool inputs/parents in a separate generation;
+the original bundle is never rewritten. Publication refreshes the actual
+catalog head after final canonical artifact capture in the same transaction.
+Other-source native publication still needs its real owning protocol and cannot
+borrow Chronicle's private source tables. That unresolved mechanism remains a
+mandatory source obligation; safe refusal alone is not delivered erasure.
+
+Exact d5acc hosted evidence has4 failures and1 timeout error. Five earlier named
+failures passed there; two original PostgreSQL cases, two new reached cases and
+the degraded sibling timeout remain unresolved at that SHA. Current fixes align
+the disposable SSID dataset's native cursor/coverage reset and the real policy
+row transactionid-lock observer, without relaxing overlap, rollback or roles.
+New artifact/tool history tables participate in exact replay owner/shape checks
+and immutable history triggers. Owning PostgreSQL controls remain unrun locally;
+software controls, collection and mock transactions do not certify them.

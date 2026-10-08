@@ -1631,6 +1631,8 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
         writes = []
         receipt = None
         artifacts = []
+        tool_witnesses = []
+        tool_loans = []
         artifact_row = None
         descendant = False
         deleted = False
@@ -1647,6 +1649,8 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             return False
 
         async def fetchrow(self, sql, *args):
+            if "public.memory_catalog" in sql:
+                return None
             if "SELECT * FROM rules" in sql:
                 return self.artifact_row
             if "location_native_memory_bundles" in sql:
@@ -1654,6 +1658,12 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             return frozen if "context_bindings" in sql else session
 
         async def fetch(self, sql, *args):
+            if "location_native_catalog_generations" in sql:
+                return []  # No planted owning source; never fabricate a catalog parent.
+            if "location_runtime_tool_inputs" in sql:
+                return self.tool_loans
+            if "location_runtime_tool_intents" in sql:
+                return self.tool_witnesses
             if "context_episodes" in sql:
                 return []
             if "FROM chronicler.location_native_copy_births" in sql:
@@ -1683,7 +1693,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             if sql == "SELECT current_user":
                 return "own-role-double"
             if "count(*) FROM location_catalog_copy_finished" in sql:
-                return 1
+                return 1 + len(self.tool_loans)
             if "location_runtime_context_dispositions" in sql:
                 return self.receipt
             return False
@@ -1760,6 +1770,47 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     assert await dispose_runtime_context(runtime, generation, plan) is False
     assert not pool.deleted
     pool.artifact_row["content"] = "actual native output"
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    stored_call = {**session["tool_calls"][0], "module": "memory", "input_fingerprint": "a" * 64}
+    read_call = {
+        "name": "memory_catalog_search",
+        "module": "memory",
+        "outcome": "success",
+        "input_fingerprint": "b" * 64,
+        "result": [{"summary": "selected catalog body"}],
+    }
+    session["tool_calls"] = [stored_call, read_call]
+    pool.tool_witnesses = [
+        {
+            "tool_name": call["name"],
+            "module_name": call["module"],
+            "input_digest": bytes.fromhex(call["input_fingerprint"]),
+            "outcome": "success",
+            "result_digest": bytes.fromhex(fingerprint_tool_call_payload(call["result"])),
+            "exclusive_inputs": call is read_call,
+        }
+        for call in session["tool_calls"]
+    ]
+    pool.tool_loans = [{**loan, "loan_id": uuid4()}]
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    assert not pool.deleted  # Unselected late input preserves the entire context.
+    plan["catalog_loans"].append(
+        {
+            **plan["catalog_loans"][0],
+            "loan_id": str(pool.tool_loans[0]["loan_id"]),
+        }
+    )
+    pool.tool_witnesses[1]["outcome"] = None
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    pool.tool_witnesses[1]["outcome"] = "success"
+    pool.tool_witnesses[1]["exclusive_inputs"] = False
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    pool.tool_witnesses[1]["exclusive_inputs"] = True
+    read_call["result"] = [{"summary": "changed later or independent body"}]
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    read_call["result"] = [{"summary": "selected catalog body"}]
+    assert not pool.deleted
     assert await dispose_runtime_context(runtime, generation, plan) is True
     assert pool.deleted
     # Same fixed invocation cannot refill after the actual context disposition.
@@ -1773,6 +1824,112 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     finally:
         contexts._current_runtime_context.reset(native_token)
         _runtimes.pop(pool)
+    # Same-writer late-read snapshot binds every actual parent and does not
+    # reuse the original context generation as a mutable lineage bundle.
+    from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
+
+    native_parent, late_parent, active_tool = uuid4(), uuid4(), uuid4()
+    native_pool = Pool()
+    native_pool.writes = []
+    native_pool.tool_witnesses = [
+        {**row, "tool_generation": uuid4()} for row in pool.tool_witnesses
+    ]
+    native_pool.tool_witnesses.append(
+        {
+            "tool_generation": active_tool,
+            "tool_name": "memory_store_rule",
+            "module_name": "memory",
+            "input_digest": b"w" * 32,
+            "outcome": None,
+            "result_digest": None,
+            "exclusive_inputs": False,
+        }
+    )
+    native_pool.tool_loans = list(pool.tool_loans)
+    original_fetch = native_pool.fetch
+    source_parent_known = True
+
+    async def source_fetch(sql, *args):
+        if "location_catalog_copy_loans l" in sql:
+            return native_pool.tool_loans
+        if "location_native_catalog_generations" in sql:
+            return (
+                [
+                    {
+                        "copy_generation": late_parent,
+                        "input_digest": b"l" * 32,
+                        "lineage_known": True,
+                        "exclusive_input": True,
+                    }
+                ]
+                if source_parent_known
+                else []
+            )
+        if "FROM chronicler.location_native_copy_births" in sql:
+            return [
+                {
+                    "copy_generation": native_parent,
+                    "input_digest": b"n" * 32,
+                    "lineage_known": True,
+                    "exclusive_input": True,
+                }
+            ]
+        return await original_fetch(sql, *args)
+
+    native_pool.fetch = source_fetch
+    source_runtime = SimpleNamespace(
+        **{**vars(runtime), "memory": native_pool, "domain": native_pool}
+    )
+    active_copy = _ToolCopy(source_runtime, active_tool, session_id, "memory_store_rule", "memory")
+    tool_token = _current_tool_copy.set(active_copy)
+    writer = contexts._ArtifactWriter(source_runtime, generation, native_pool)
+    try:
+        emitted_artifact = uuid4()
+        assert (
+            await contexts.capture_context_catalog_source(
+                writer,
+                emitted_artifact,
+                "rules",
+                identifier,
+                b"a" * 32,
+            )
+            is True
+        )
+        source_rows = [
+            args
+            for sql, args in native_pool.writes
+            if "INSERT INTO" in sql and "location_native_dispatch_parents" in sql
+        ]
+        assert {args[1] for args in source_rows} == {native_parent, late_parent}
+        assert all(args[0] == emitted_artifact and args[0] != generation for args in source_rows)
+        native_pool.writes.clear()
+        source_parent_known = False
+        assert (
+            await contexts.capture_context_catalog_source(
+                writer,
+                uuid4(),
+                "rules",
+                identifier,
+                b"a" * 32,
+            )
+            is False
+        )
+        assert native_pool.writes == []
+        source_parent_known = True
+        native_pool.tool_witnesses[1]["exclusive_inputs"] = False
+        assert (
+            await contexts.capture_context_catalog_source(
+                writer,
+                uuid4(),
+                "rules",
+                identifier,
+                b"a" * 32,
+            )
+            is False
+        )
+        assert native_pool.writes == []
+    finally:
+        _current_tool_copy.reset(tool_token)
     update = next(args for sql, args in pool.writes if "UPDATE" in sql and ".sessions " in sql)
     assert update[2] == base
     assert update[3] == [{"source": "base", "sha": "retained"}]

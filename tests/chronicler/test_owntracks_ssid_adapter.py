@@ -437,7 +437,13 @@ async def test_run_preserves_projection_error_when_failure_metadata_write_fails(
     result = await adapter.run(pool=pool, chronicler_pool=pool)
 
     assert result.error == "location_projection_failed"
-    assert result.warnings == ["failure_receipt_unavailable"]
+    assert result.warnings == [
+        "failure_receipt_unavailable",
+        "location_projection_diagnostic:native_projection:native:unknown",
+        "location_projection_class:runtime_error",
+    ]
+    assert not any("original projection failure" in warning for warning in result.warnings)
+    assert not any("failure metadata unavailable" in warning for warning in result.warnings)
     pool.execute.assert_awaited_once()
 
 

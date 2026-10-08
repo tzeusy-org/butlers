@@ -101,7 +101,10 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
             with engine.connect() as catalog:
                 catalog.execute(sa.text("SET search_path TO chronicler,public"))
                 catalog.commit()
-                migration.op = SimpleNamespace(get_bind=lambda: catalog)
+                from alembic.migration import MigrationContext
+                from alembic.operations import Operations
+
+                migration.op = Operations(MigrationContext.configure(catalog))
                 with catalog.begin():
                     catalog.execute(sa.text("SET LOCAL ROLE butler_chronicler_rw"))
                     migration._validate_local_tables("chronicler")
@@ -124,6 +127,23 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
                     print(
                         "RETENTION_MANAGED_OWNER " + __import__("json").dumps(facts, sort_keys=True)
                     )
+                # Exact newly added artifact table is existing replay history,
+                # not a new relation whose owner can be silently transferred.
+                transaction = catalog.begin()
+                try:
+                    catalog.execute(
+                        sa.text(
+                            "ALTER TABLE location_runtime_context_artifacts "
+                            "OWNER TO butler_chronicler_rw"
+                        )
+                    )
+                    migration._create_local_tables("chronicler", "SELECT 1")
+                    with pytest.raises(RuntimeError, match="identity differs"):
+                        migration._validate_local_tables("chronicler")
+                finally:
+                    transaction.rollback()
+                with catalog.begin():
+                    migration._validate_local_tables("chronicler")
                 for statements, reason in (
                     (
                         [
@@ -169,6 +189,41 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
             "JOIN pg_class s ON s.relnamespace=n.oid AND s.relname='state' "
             "WHERE n.nspname='chronicler' AND c.relname='location_retention_copy_receipts'"
         )
+        async with pool.acquire() as artifact_conn:
+            context_id, native_session, artifact_id = uuid4(), uuid4(), uuid4()
+            async with artifact_conn.transaction():
+                await artifact_conn.execute(
+                    "INSERT INTO location_runtime_context_intents "
+                    "(input_generation,receiving_session) VALUES($1,$2)",
+                    context_id,
+                    native_session,
+                )
+                await artifact_conn.execute(
+                    "INSERT INTO location_runtime_context_artifacts "
+                    "(artifact_generation,input_generation,memory_table,artifact_id,body_digest) "
+                    "VALUES($1,$2,'rules',$3,$4)",
+                    uuid4(),
+                    context_id,
+                    artifact_id,
+                    b"a" * 32,
+                )
+            for mutation in (
+                "UPDATE location_runtime_context_artifacts SET body_digest=$2 WHERE artifact_id=$1",
+                "DELETE FROM location_runtime_context_artifacts WHERE artifact_id=$1 "
+                "AND body_digest<>$2",
+            ):
+                with pytest.raises(asyncpg.RaiseError, match="permanent"):
+                    async with artifact_conn.transaction():
+                        await artifact_conn.execute(mutation, artifact_id, b"b" * 32)
+        async with pool.acquire() as artifact_readback:
+            assert (
+                await artifact_readback.fetchval(
+                    "SELECT body_digest=$2 FROM location_runtime_context_artifacts WHERE artifact_id=$1",
+                    artifact_id,
+                    b"a" * 32,
+                )
+                is True
+            )
         await seed_source_registry(pool)
         policy = await read_policy(pool)
         assert policy["days"] == 30 and policy["version"] == 1
@@ -216,7 +271,15 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
         )
         for adapter in adapters:
             result = await adapter.run(pool=pool, chronicler_pool=pool)
-            assert result.error is None and not result.skipped
+            assert result.error is None and not result.skipped, tuple(
+                warning
+                for warning in result.warnings
+                if __import__("re").fullmatch(
+                    r"location_projection_diagnostic:[a-z_]+:(?:postgres|native):(?:[A-Z0-9]{5}|unknown)"
+                    r"|location_projection_class:[a-z_]+",
+                    warning,
+                )
+            )
         assert await pool.fetchval("SELECT count(*) FROM location_projection_coverage") == 9
         assert (
             await pool.fetchval(
@@ -318,7 +381,15 @@ async def test_native_projection_policy_rollback_and_real_role_fences(migrated_d
         # These synthetic accepted locators do not prove online admission.
         for adapter in adapters:
             actual = await adapter.run(pool=pool, chronicler_pool=pool)
-            assert actual.error is None and not actual.skipped
+            assert actual.error is None and not actual.skipped, tuple(
+                warning
+                for warning in actual.warnings
+                if __import__("re").fullmatch(
+                    r"location_projection_diagnostic:[a-z_]+:(?:postgres|native):(?:[A-Z0-9]{5}|unknown)"
+                    r"|location_projection_class:[a-z_]+",
+                    warning,
+                )
+            )
         assert (
             await pool.fetchval(
                 """SELECT max(n) FROM (SELECT count(DISTINCT raw_id) n

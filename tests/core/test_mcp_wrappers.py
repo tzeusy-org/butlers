@@ -44,6 +44,133 @@ async def test_tool_call_capture_fingerprints_hidden_arguments() -> None:
     assert second["input_payload"] == {}
     assert first["input_fingerprint"] != second["input_fingerprint"]
 
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_tool_copies import _current_tool_copy, matched_tool_records
+    from butlers.core.copy_lifetime import _current_copy_invocation
+    from butlers.core.fact_authority import _Invocation, _invocations
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    # This is a software fixture for the real private hook/order, not SQL or
+    # registered outer-guard authentication evidence.
+    class NativePool:
+        committed = True
+        receipt = None
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            trace.append("begin")
+            yield
+            trace.append("commit")
+
+        async def fetchval(self, sql, *args):
+            if "context_dispositions" in sql:
+                return False
+            if "tool_results" in sql:
+                trace.append("result_readback")
+                return self.receipt if self.committed else None
+            if "tool_intents" in sql:
+                trace.append("input_readback")
+                return self.committed
+            return True
+
+        async def execute(self, sql, *args):
+            writes.append((sql, args))
+            if "tool_results" in sql:
+                self.receipt = args[3]
+                trace.append("result_capture")
+            else:
+                trace.append("input_capture")
+
+    async def lock_domain(conn):
+        assert conn is pool
+        trace.append("policy_lock")
+
+    pool, trace, writes = NativePool(), [], []
+    runtime = SimpleNamespace(
+        domain=pool, active=True, name="relationship", lock_domain=lock_domain
+    )
+    _runtimes[pool] = runtime
+    import time
+
+    invocation = _Invocation("relationship", str(uuid4()), None, None, time.monotonic() + 60)
+    _invocations["native-tool-unit"] = invocation
+    token = _current_copy_invocation.set(invocation)
+    try:
+        from butlers.chronicler.location_retention import PolicyUnavailableError
+
+        for kind in (_ToolCallLoggingMCP, _SpanWrappingMCP):
+            trace.clear()
+            writes.clear()
+            proxy = kind(mock_mcp, "relationship", module_name="memory")
+
+            @proxy.tool(name="memory_catalog_search")
+            async def native_search(query: str):
+                assert _current_tool_copy.get() is not None
+                assert _current_tool_copy.get().runtime is runtime
+                trace.append("handler")
+                return [{"summary": query}]
+
+            with patch("butlers.mcp_wrappers.capture_tool_call") as capture:
+                assert await native_search(query="selected full body") == [
+                    {"summary": "selected full body"}
+                ]
+            assert (
+                trace.index("input_capture") < trace.index("commit") < trace.index("input_readback")
+            )
+            assert trace.index("input_readback") < trace.index("handler")
+            assert (
+                trace.index("handler")
+                < trace.index("result_capture")
+                < trace.index("result_readback")
+            )
+            assert _current_tool_copy.get() is None
+            record = capture.call_args.kwargs
+            result_args = next(args for sql, args in writes if "tool_results" in sql)
+            input_args = next(args for sql, args in writes if "tool_intents" in sql)
+            assert input_args[-1].hex() == record["input_fingerprint"]
+            witness = {
+                "tool_name": record["tool_name"],
+                "module_name": record["module_name"],
+                "input_digest": input_args[-1],
+                "outcome": result_args[1],
+                "result_digest": result_args[2],
+            }
+            call = {
+                "name": record["tool_name"],
+                "module": record["module_name"],
+                "input_fingerprint": record["input_fingerprint"],
+                "outcome": "success",
+                "result": record["result_payload"],
+            }
+            assert result_args[2].hex() == fingerprint_tool_call_payload(call["result"])
+            assert matched_tool_records([call], [witness])
+            assert not matched_tool_records([{**call, "result": []}], [witness])
+            assert not matched_tool_records([call, call], [witness])
+            assert not matched_tool_records([call], [{**witness, "outcome": None}])
+            pool.committed = False
+            trace.clear()
+            with pytest.raises(PolicyUnavailableError, match="Committed native tool input"):
+                await native_search(query="interrupted admission")
+            assert "handler" not in trace and _current_tool_copy.get() is None
+            pool.committed = True
+            _invocations.pop("native-tool-unit")
+            with pytest.raises(PolicyUnavailableError, match="invocation differs"):
+                await native_search(query="stopped invocation")
+            assert "handler" not in trace
+            _invocations["native-tool-unit"] = invocation
+    finally:
+        _current_copy_invocation.reset(token)
+        _invocations.pop("native-tool-unit", None)
+        _runtimes.pop(pool)
+
 
 async def test_span_wrapper_captures_day_close_date_and_timezone_binding() -> None:
     """The audited day-close witness retains only its safe target binding."""

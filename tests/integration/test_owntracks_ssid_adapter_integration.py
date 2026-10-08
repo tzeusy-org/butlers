@@ -54,6 +54,13 @@ async def pool(migrated_db_url: str):
     )
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
+    # The actual native replay/cursor/coverage belongs to this same disposable
+    # source dataset. Preserve it within a test; a fixture's fresh raw UUIDs
+    # cannot resume a previous test's durable cursor.
+    await p.execute(
+        "TRUNCATE TABLE location_projection_heads,location_projection_cursors,"
+        "location_projection_coverage,location_projection_outputs CASCADE"
+    )
     await p.execute("DELETE FROM state WHERE key = $1", SSID_PLACE_STATE_KEY)
     await seed_source_registry(p, sources=INITIAL_SOURCES)
     yield p
@@ -409,7 +416,9 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
                             SELECT 1
                             FROM pg_locks
                             WHERE locktype = 'advisory'
-                              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                              AND ((locktype='transactionid' AND database IS NULL)
+                        OR (locktype='advisory' AND database=(
+                          SELECT oid FROM pg_database WHERE datname=current_database())))
                               AND NOT granted
                         )
                         """
@@ -484,7 +493,9 @@ async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
                     WHERE locktype IN ('transactionid','advisory')
                               AND pid IN (SELECT pid FROM pg_stat_activity
                                 WHERE application_name='ssid-constrained-proof')
-                      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                      AND ((locktype='transactionid' AND database IS NULL)
+                        OR (locktype='advisory' AND database=(
+                          SELECT oid FROM pg_database WHERE datname=current_database())))
                       AND NOT granted
                 )
                 """

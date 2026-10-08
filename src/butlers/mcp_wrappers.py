@@ -275,10 +275,21 @@ class _SpanWrappingMCP:
                         )
                         return disabled_result
 
+                from butlers.chronicler.location_tool_copies import (
+                    begin_tool_copy,
+                    finish_tool_copy,
+                )
+
+                copy_handle = await begin_tool_copy(
+                    self._butler_name, self._module_name, resolved_tool_name, input_fingerprint
+                )
                 try:
                     with tool_span(resolved_tool_name, butler_name=self._butler_name):
                         result = await fn(*args, **kwargs)
-                except Exception as exc:
+                except BaseException as exc:
+                    await finish_tool_copy(copy_handle, failed=True)
+                    if not isinstance(exc, Exception):
+                        raise
                     capture_tool_call(
                         tool_name=resolved_tool_name,
                         module_name=self._module_name,
@@ -295,6 +306,7 @@ class _SpanWrappingMCP:
                     )
                     raise
 
+                await finish_tool_copy(copy_handle, result)
                 capture_tool_call(
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,
@@ -372,9 +384,20 @@ class _ToolCallLoggingMCP:
                         result_payload=policy_result,
                     )
                     return policy_result
+                from butlers.chronicler.location_tool_copies import (
+                    begin_tool_copy,
+                    finish_tool_copy,
+                )
+
+                copy_handle = await begin_tool_copy(
+                    self._butler_name, self._module_name, resolved_tool_name, input_fingerprint
+                )
                 try:
                     result = await fn(*args, **kwargs)
-                except Exception as exc:
+                except BaseException as exc:
+                    await finish_tool_copy(copy_handle, failed=True)
+                    if not isinstance(exc, Exception):
+                        raise
                     capture_tool_call(
                         tool_name=resolved_tool_name,
                         module_name=self._module_name,
@@ -390,6 +413,7 @@ class _ToolCallLoggingMCP:
                         exc=exc,
                     )
                     raise
+                await finish_tool_copy(copy_handle, result)
                 capture_tool_call(
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,

@@ -50,7 +50,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
           ('location_retention_copy_receipts','location_retention_source_floors',
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
-           'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_dispositions')
+           'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results')
     """),
             {"schema": schema},
         ).scalars()
@@ -71,6 +71,9 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_runtime_context_episodes",
         "location_runtime_context_artifacts",
         "location_runtime_context_dispositions",
+        "location_runtime_tool_intents",
+        "location_runtime_tool_inputs",
+        "location_runtime_tool_results",
     ):
         if table not in present:
             op.execute(f"ALTER TABLE {quote(schema)}.{quote(table)} OWNER TO {quote(owner)}")
@@ -173,6 +176,28 @@ def _validate_local_tables(schema: str) -> None:
                 ("body_digest", "bytea", True),
                 ("committed_at", "timestamp with time zone", True),
             ],
+            "location_runtime_tool_intents": [
+                ("tool_generation", "uuid", True),
+                ("receiving_session", "uuid", True),
+                ("tool_name", "text", True),
+                ("module_name", "text", True),
+                ("input_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_runtime_tool_inputs": [
+                ("tool_generation", "uuid", True),
+                ("loan_id", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_runtime_tool_results": [
+                ("tool_generation", "uuid", True),
+                ("outcome", "text", True),
+                ("result_digest", "bytea", False),
+                ("exclusive_inputs", "boolean", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
             "location_runtime_context_dispositions": [
                 ("input_generation", "uuid", True),
                 ("decision_id", "uuid", True),
@@ -271,6 +296,28 @@ def _validate_local_tables(schema: str) -> None:
                 "location_runtime_context_intents(input_generation)",
                 "CHECK ((memory_table = ANY (ARRAY['facts'::text, 'rules'::text])))",
                 "CHECK ((octet_length(body_digest) = 32))",
+            },
+            "location_runtime_tool_intents": {
+                "PRIMARY KEY (tool_generation)",
+                "FOREIGN KEY (receiving_session) REFERENCES sessions(id)",
+                "CHECK ((octet_length(input_digest) = 32))",
+            },
+            "location_runtime_tool_inputs": {
+                "PRIMARY KEY (tool_generation, loan_id)",
+                "UNIQUE (loan_id)",
+                "FOREIGN KEY (tool_generation) REFERENCES "
+                "location_runtime_tool_intents(tool_generation)",
+                "FOREIGN KEY (loan_id) REFERENCES location_catalog_copy_loans(loan_id)",
+                "CHECK ((octet_length(body_digest) = 32))",
+            },
+            "location_runtime_tool_results": {
+                "PRIMARY KEY (tool_generation)",
+                "FOREIGN KEY (tool_generation) REFERENCES "
+                "location_runtime_tool_intents(tool_generation)",
+                "UNIQUE (receipt_id)",
+                "CHECK ((outcome = ANY (ARRAY['success'::text, 'error'::text])))",
+                "CHECK (((result_digest IS NULL) OR (octet_length(result_digest) = 32)))",
+                "CHECK (((outcome = 'success'::text) = (result_digest IS NOT NULL)))",
             },
             "location_runtime_context_dispositions": {
                 "FOREIGN KEY (input_generation) REFERENCES "
@@ -492,6 +539,30 @@ def upgrade() -> None:
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        CREATE TABLE IF NOT EXISTS location_runtime_tool_intents (
+          tool_generation UUID PRIMARY KEY,
+          receiving_session UUID NOT NULL REFERENCES sessions(id),
+          tool_name TEXT NOT NULL,
+          module_name TEXT NOT NULL,
+          input_digest BYTEA NOT NULL CHECK(octet_length(input_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_tool_inputs (
+          tool_generation UUID NOT NULL REFERENCES location_runtime_tool_intents,
+          loan_id UUID NOT NULL UNIQUE REFERENCES location_catalog_copy_loans,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          PRIMARY KEY(tool_generation,loan_id)
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_tool_results (
+          tool_generation UUID PRIMARY KEY REFERENCES location_runtime_tool_intents,
+          outcome TEXT NOT NULL CHECK(outcome IN ('success','error')),
+          result_digest BYTEA CHECK(result_digest IS NULL OR octet_length(result_digest)=32),
+          exclusive_inputs BOOLEAN NOT NULL,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          CHECK((outcome='success')=(result_digest IS NOT NULL))
+        );
         CREATE TABLE IF NOT EXISTS location_catalog_copy_finished (
           loan_id UUID PRIMARY KEY REFERENCES location_catalog_copy_lifetimes(loan_id),
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
@@ -540,7 +611,11 @@ def upgrade() -> None:
         "location_runtime_context_ended",
         "location_runtime_context_server_finished",
         "location_runtime_context_episodes",
+        "location_runtime_context_artifacts",
         "location_runtime_context_dispositions",
+        "location_runtime_tool_intents",
+        "location_runtime_tool_inputs",
+        "location_runtime_tool_results",
     ):
         op.execute(f"""
             DROP TRIGGER IF EXISTS preserve_location_copy_history ON {table};
@@ -580,7 +655,8 @@ def downgrade() -> None:
                        WHERE accepted_request_id IS NOT NULL)
              OR EXISTS(SELECT 1 FROM location_retention_copy_receipts)
              OR EXISTS(SELECT 1 FROM location_catalog_copy_loans)
-             OR EXISTS(SELECT 1 FROM location_runtime_context_intents) THEN
+             OR EXISTS(SELECT 1 FROM location_runtime_context_intents)
+             OR EXISTS(SELECT 1 FROM location_runtime_tool_intents) THEN
             RAISE EXCEPTION 'retention history exists; roll forward instead of erasing floors';
           END IF;
         END $$;

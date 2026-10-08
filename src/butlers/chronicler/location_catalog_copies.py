@@ -922,13 +922,17 @@ class CatalogCopyRuntime:
             # producer. Runtime session identity comes from the registered
             # guard cell, never a query/session/actor string.
             from butlers.chronicler.location_memory_context import current_runtime_context
+            from butlers.chronicler.location_tool_copies import bind_tool_loan, current_tool_copy
             from butlers.core.copy_lifetime import _current_copy_invocation
 
+            tool = current_tool_copy(self)
             context = current_runtime_context()
             invocation = _current_copy_invocation.get()
             scope = _server_copy_scope.get()
             holder_kind, holder_id = "unbound_processing", uuid4()
-            if context is not None and context.runtime is self:
+            if tool is not None:
+                holder_id = tool.generation
+            elif context is not None and context.runtime is self:
                 holder_id = context.generation
             elif invocation is not None and invocation.target == self.name:
                 holder_kind, holder_id = "runtime_session", UUID(invocation.runtime_session)
@@ -949,6 +953,8 @@ class CatalogCopyRuntime:
                         holder_id,
                         digest,
                     )
+                    if tool is not None:
+                        await bind_tool_loan(conn, tool, loan, digest)
             if (
                 await self.domain.fetchval(
                     "SELECT holder_id FROM location_catalog_copy_lifetimes "
@@ -959,7 +965,19 @@ class CatalogCopyRuntime:
                 != holder_id
             ):
                 raise PolicyUnavailableError("Committed receiving lifetime is unknown")
-            if context is not None and context.runtime is self:
+            if (
+                tool is not None
+                and await self.domain.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_runtime_tool_inputs "
+                    "WHERE tool_generation=$1 AND loan_id=$2 AND body_digest=$3)",
+                    tool.generation,
+                    loan,
+                    digest,
+                )
+                is not True
+            ):
+                raise PolicyUnavailableError("Committed native tool loan is unknown")
+            if tool is None and context is not None and context.runtime is self:
                 context.loans.append((loan, digest))
                 context.local_rows.add(("catalog", catalog))
             if holder_kind == "server_response":
@@ -993,6 +1011,14 @@ class CatalogCopyRuntime:
                 loan,
             )
             if input_generation is not None:
+                context_generation = await self.domain.fetchval(
+                    "SELECT b.input_generation FROM location_runtime_tool_intents t "
+                    "JOIN location_runtime_context_bindings b USING(receiving_session) "
+                    "WHERE t.tool_generation=$1",
+                    input_generation,
+                )
+                if context_generation is not None:
+                    input_generation = context_generation
                 from butlers.chronicler.location_memory_context import dispose_runtime_context
 
                 await dispose_runtime_context(self, input_generation, plan)
@@ -1088,6 +1114,13 @@ async def native_catalog_rows(pool: Any, sql: str, *params: Any) -> list[dict]:
     # Metadata-only SELECT retains the actual SQL filters/ranking/limit.
     metadata_sql = sql.replace("SELECT *,", "SELECT id,source_schema,source_butler,")
     metadata = await pool.fetch(metadata_sql, *params)
+    from butlers.chronicler.location_tool_copies import current_tool_copy
+
+    tool = current_tool_copy(runtime) if runtime is not None else None
+    if tool is not None:
+        tool.read_observed = True
+        if any(row["source_schema"] != "chronicler_mem" for row in metadata):
+            tool.mixed_inputs = True
     results: list[dict] = []
     for row in metadata:
         values = dict(row)
@@ -1137,7 +1170,7 @@ async def bind_catalog(conn: Any, pool: Any, schema: str, table: str, artifact: 
         raise PolicyUnavailableError("Native catalog configured source differs")
     own_schema = runtime.identity[0]
     context = await conn.fetchrow(
-        f'SELECT a.input_generation FROM "{own_schema}".location_runtime_context_artifacts a '
+        f'SELECT a.artifact_generation FROM "{own_schema}".location_runtime_context_artifacts a '
         "WHERE memory_table=$1 AND artifact_id=$2",
         table,
         artifact,
@@ -1145,8 +1178,8 @@ async def bind_catalog(conn: Any, pool: Any, schema: str, table: str, artifact: 
     if context is not None:
         if runtime.name != "chronicler" or not await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_memory_artifacts "
-            "WHERE input_generation=$1 AND memory_table=$2 AND artifact_id=$3)",
-            context["input_generation"],
+            "WHERE artifact_generation=$1 AND memory_table=$2 AND artifact_id=$3)",
+            context["artifact_generation"],
             table,
             artifact,
         ):

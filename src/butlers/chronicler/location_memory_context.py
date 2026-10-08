@@ -391,9 +391,39 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                 for loan in loans
             ):
                 return False
+            context_loans = list(loans)
+            tool_witnesses = await conn.fetch(
+                f"SELECT t.*,r.outcome,r.result_digest,r.exclusive_inputs "
+                f"FROM {schema}.location_runtime_tool_intents t "
+                f"LEFT JOIN {schema}.location_runtime_tool_results r USING(tool_generation) "
+                "WHERE t.receiving_session=$1 ORDER BY t.tool_generation",
+                frozen["receiving_session"],
+            )
+            tool_loans = await conn.fetch(
+                f"SELECT l.* FROM {schema}.location_runtime_tool_intents t "
+                f"JOIN {schema}.location_runtime_tool_inputs i USING(tool_generation) "
+                f"JOIN {schema}.location_catalog_copy_lifetimes h "
+                "ON h.loan_id=i.loan_id AND h.body_digest=i.body_digest "
+                "AND h.holder_id=i.tool_generation AND h.holder_kind='unbound_processing' "
+                f"JOIN {schema}.location_catalog_copy_loans l USING(loan_id,body_digest) "
+                "WHERE t.receiving_session=$1 ORDER BY l.loan_id",
+                frozen["receiving_session"],
+            )
+            if any(
+                loan["loan_id"] not in declared
+                or declared[loan["loan_id"]]["source_generation"] != str(loan["source_generation"])
+                or declared[loan["loan_id"]]["body_digest"] != loan["body_digest"].hex()
+                or declared[loan["loan_id"]]["receiving_incarnation"]
+                != str(loan["receiving_incarnation"])
+                for loan in tool_loans
+            ):
+                return False
+            loans = context_loans + list(tool_loans)
             expected_bundle = content_digest(
                 {
-                    "loans": [[str(loan["loan_id"]), loan["body_digest"].hex()] for loan in loans],
+                    "loans": [
+                        [str(loan["loan_id"]), loan["body_digest"].hex()] for loan in context_loans
+                    ],
                     "context": frozen["context_digest"].hex(),
                     "system": frozen["system_digest"].hex(),
                     "prompt": frozen["prompt_digest"].hex(),
@@ -478,7 +508,11 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                 "WHERE input_generation=$1 ORDER BY memory_table,artifact_id",
                 input_generation,
             )
-            if not captured_artifact_calls(session["tool_calls"], artifacts):
+            from butlers.chronicler.location_tool_copies import matched_tool_records
+
+            if tool_witnesses and not matched_tool_records(session["tool_calls"], tool_witnesses):
+                return False
+            if not captured_artifact_calls(session["tool_calls"], artifacts, tool_witnesses):
                 return False  # Unknown/routed mutations retain their input and copy holders.
             already_disposed = set()
             for artifact in artifacts:
@@ -497,7 +531,10 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                         "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_memory_artifacts a "
                         "JOIN chronicler.location_native_memory_artifact_dispositions d "
                         "USING(artifact_generation,body_digest) WHERE a.artifact_generation=$1 "
-                        "AND a.input_generation=$2 AND d.decision_id=$3 AND a.body_digest=$4)",
+                        "AND EXISTS(SELECT 1 FROM chronicler.location_runtime_context_artifacts c "
+                        "WHERE c.artifact_generation=a.artifact_generation "
+                        "AND c.input_generation=$2) "
+                        "AND d.decision_id=$3 AND a.body_digest=$4)",
                         artifact["artifact_generation"],
                         input_generation,
                         UUID(plan["decision_id"]),
@@ -610,7 +647,7 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
     return True
 
 
-def captured_artifact_calls(calls: Any, artifacts: list[Any]) -> bool:
+def captured_artifact_calls(calls: Any, artifacts: list[Any], witnesses: list[Any] = ()) -> bool:
     """Recorded outputs can select only SAME-writer captured artifact IDs.
 
     This admits no authority or source lineage from the record. Every selected
@@ -627,6 +664,14 @@ def captured_artifact_calls(calls: Any, artifacts: list[Any]) -> bool:
     for call in calls:
         if not isinstance(call, dict) or call.get("outcome") != "success":
             return False
+        if call.get("name") == "memory_catalog_search" and any(
+            row["tool_name"] == call["name"]
+            and row["module_name"] == "memory"
+            and row["exclusive_inputs"] is True
+            and row["outcome"] == "success"
+            for row in witnesses
+        ):
+            continue  # Complete actual selected-row producer, never a caller label.
         result = call.get("result")
         table = names.get(call.get("name"))
         if not isinstance(result, dict) or (table, str(result.get("id"))) not in owned:
@@ -790,12 +835,33 @@ async def finish_context_artifacts(binding: _ArtifactWriter) -> None:
             artifact,
             digest,
         )
-        await capture_context_catalog_source(binding, artifact_generation, table, artifact, digest)
+        captured = await capture_context_catalog_source(
+            binding, artifact_generation, table, artifact, digest
+        )
+        catalog = await binding.connection.fetchrow(
+            "SELECT source_schema FROM public.memory_catalog WHERE source_schema=$1 "
+            "AND source_table=$2 AND source_id=$3",
+            binding.runtime.memory_identity[0],
+            table,
+            artifact,
+        )
+        if catalog is not None:
+            if not captured:
+                raise PolicyUnavailableError("Native context catalog full ancestry is unavailable")
+            from butlers.chronicler.location_catalog_copies import bind_catalog
+
+            await bind_catalog(
+                binding.connection,
+                binding.runtime.memory,
+                catalog["source_schema"],
+                table,
+                artifact,
+            )
 
 
 async def capture_context_catalog_source(
     binding: _ArtifactWriter, generation: UUID, table: str, artifact: UUID, digest: bytes
-) -> None:
+) -> bool:
     """Actual exclusive Chronicler input can use its existing owning catalog plane.
 
     The full native context and every actual parent are reread on the same
@@ -804,7 +870,7 @@ async def capture_context_catalog_source(
     generation. Other receivers never read Chronicle's private namespace.
     """
     if binding.runtime.name != "chronicler":
-        return
+        return False
     conn = binding.connection
     frozen = await conn.fetchrow(
         "SELECT b.*,i.server_request FROM chronicler.location_runtime_context_bindings b "
@@ -813,33 +879,109 @@ async def capture_context_catalog_source(
         binding.generation,
     )
     if frozen is None or frozen["exclusive_input"] is not True:
-        return
-    if await conn.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM chronicler.location_catalog_copy_lifetimes "
-        "WHERE holder_id=$1 AND holder_kind='unbound_processing')",
+        return False
+    from butlers.chronicler.location_tool_copies import current_tool_copy
+
+    current_tool = current_tool_copy(binding.runtime)
+    tools = await conn.fetch(
+        "SELECT t.*,r.outcome,r.result_digest,r.exclusive_inputs "
+        "FROM chronicler.location_runtime_tool_intents t "
+        "LEFT JOIN chronicler.location_runtime_tool_results r USING(tool_generation) "
+        "WHERE t.receiving_session=$1 ORDER BY t.tool_generation",
+        frozen["receiving_session"],
+    )
+    for tool in tools:
+        active_write = (
+            current_tool is not None
+            and tool["tool_generation"] == current_tool.generation
+            and current_tool.session == frozen["receiving_session"]
+        )
+        if (
+            tool["module_name"] != "memory"
+            or tool["tool_name"]
+            not in {"memory_store_fact", "memory_store_rule", "memory_catalog_search"}
+            or (not active_write and tool["outcome"] != "success")
+            or (
+                tool["tool_name"] == "memory_catalog_search"
+                and tool["exclusive_inputs"] is not True
+            )
+        ):
+            return False
+    loans = await conn.fetch(
+        "SELECT l.* FROM chronicler.location_catalog_copy_loans l "
+        "JOIN chronicler.location_catalog_copy_lifetimes h USING(loan_id,body_digest) "
+        "WHERE (h.holder_id=$1 AND h.holder_kind='unbound_processing') OR EXISTS("
+        "SELECT 1 FROM chronicler.location_runtime_tool_intents t "
+        "JOIN chronicler.location_runtime_tool_inputs i USING(tool_generation) "
+        "WHERE t.receiving_session=$2 AND i.loan_id=l.loan_id "
+        "AND i.body_digest=l.body_digest AND h.holder_id=t.tool_generation "
+        "AND h.holder_kind='unbound_processing') ORDER BY l.loan_id",
         binding.generation,
-    ):
-        return  # Loan-only ancestry requires that actual source's own protocol.
+        frozen["receiving_session"],
+    )
+    loan_parents = []
+    for loan in loans:
+        # This is Chronicle's OWN source history through its existing configured
+        # Memory bridge. Other receivers never read this namespace. A loan from
+        # any other source must use that source's actual owning protocol.
+        selected = await conn.fetch(
+            "SELECT DISTINCT b.copy_generation,b.input_digest,b.lineage_known,b.exclusive_input "
+            "FROM chronicler.location_native_catalog_generations g "
+            "JOIN chronicler.location_native_memory_artifacts a USING(artifact_generation) "
+            "JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
+            "JOIN chronicler.location_native_copy_births b USING(copy_generation,input_digest) "
+            "WHERE g.source_generation=$1 AND g.body_digest=$2",
+            loan["source_generation"],
+            loan["body_digest"],
+        )
+        if not selected:
+            return False
+        loan_parents.extend(selected)
     parents = await conn.fetch(
         "SELECT DISTINCT copy_generation,input_digest,lineage_known,exclusive_input "
         "FROM chronicler.location_native_copy_births WHERE receiving_session=$1",
         frozen["receiving_session"],
     )
+    parents = list(
+        {
+            (row["copy_generation"], row["input_digest"]): row for row in [*parents, *loan_parents]
+        }.values()
+    )
     if not parents or any(
         row["lineage_known"] is not True or row["exclusive_input"] is not True for row in parents
     ):
-        return
+        return False
+    lineage_generation = generation
+    bundle_digest = content_digest(
+        {
+            "context": frozen["bundle_digest"].hex(),
+            "tools": [
+                {
+                    "generation": str(row["tool_generation"]),
+                    "input": row["input_digest"].hex(),
+                    "result": row["result_digest"].hex() if row["result_digest"] else None,
+                    "name": row["tool_name"],
+                    "module": row["module_name"],
+                }
+                for row in tools
+            ],
+            "loans": [[str(row["loan_id"]), row["body_digest"].hex()] for row in loans],
+            "parents": sorted(
+                [[str(row["copy_generation"]), row["input_digest"].hex()] for row in parents]
+            ),
+        }
+    )
     prior = await conn.fetchrow(
         "SELECT * FROM chronicler.location_native_memory_bundles WHERE input_generation=$1",
-        binding.generation,
+        lineage_generation,
     )
     if prior is None:
         await conn.execute(
             "INSERT INTO chronicler.location_native_dispatch_inputs "
             "(input_generation,server_request,prompt_digest,parent_count,origin_kind) "
             "VALUES($1,$2,$3,$4,'native_memory')",
-            binding.generation,
-            frozen["server_request"] or binding.generation,
+            lineage_generation,
+            frozen["server_request"] or lineage_generation,
             frozen["prompt_digest"],
             len(parents),
         )
@@ -847,25 +989,26 @@ async def capture_context_catalog_source(
             await conn.execute(
                 "INSERT INTO chronicler.location_native_dispatch_parents "
                 "(input_generation,copy_generation,input_digest) VALUES($1,$2,$3)",
-                binding.generation,
+                lineage_generation,
                 parent["copy_generation"],
                 parent["input_digest"],
             )
         await conn.execute(
             "INSERT INTO chronicler.location_native_memory_bundles "
             "(input_generation,bundle_digest,exclusive_input) VALUES($1,$2,true)",
-            binding.generation,
-            frozen["bundle_digest"],
+            lineage_generation,
+            bundle_digest,
         )
-    elif prior["bundle_digest"] != frozen["bundle_digest"] or prior["exclusive_input"] is not True:
+    elif prior["bundle_digest"] != bundle_digest or prior["exclusive_input"] is not True:
         raise PolicyUnavailableError("Native context catalog bundle differs")
     await conn.execute(
         "INSERT INTO chronicler.location_native_memory_artifacts "
         "(artifact_generation,input_generation,memory_table,artifact_id,body_digest) "
         "VALUES($1,$2,$3,$4,$5)",
         generation,
-        binding.generation,
+        lineage_generation,
         table,
         artifact,
         digest,
     )
+    return True
