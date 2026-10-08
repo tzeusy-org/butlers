@@ -534,6 +534,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Analytics
 - No curriculums yet.
 - Request one to start adaptive learning.
+- Active curricula
+- Setting-up curricula
 - Select a curriculum
 
 ## `frontend/src/pages/EntityDetailPage.tsx`
@@ -4856,4 +4858,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3864*
+*Total strings: 3866*

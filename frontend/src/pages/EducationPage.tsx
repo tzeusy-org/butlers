@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMap, useMindMaps } from "@/hooks/use-education";
 import MindMapGraph from "@/components/education/MindMapGraph";
 import NodeDetailPanel from "@/components/education/NodeDetailPanel";
@@ -25,8 +26,19 @@ import QuizHistoryList from "@/components/education/QuizHistoryList";
 import type { EducationNodeSelection } from "@/components/education/types";
 
 export default function EducationPage() {
-  const { data: mindMapsResponse, isLoading, isError, refetch } = useMindMaps();
-  const mindMaps = useMemo(() => (mindMapsResponse?.data ?? []).filter((map) => map.status === "active" || map.status === "draft"), [mindMapsResponse]);
+  // Filter before the server paginates: newer terminal maps must not consume
+  // either eligible status's list budget and hide learning or setup curricula.
+  const activeMaps = useMindMaps({ status: "active" });
+  const draftMaps = useMindMaps({ status: "draft" });
+  const mindMaps = useMemo(() => Array.from(new Map(
+    [activeMaps.data, draftMaps.data]
+      .flatMap((response) => response ? response.data : [])
+      .filter((map) => map.status === "active" || map.status === "draft")
+      .map((map) => [map.id, map]),
+  ).values()), [activeMaps.data, draftMaps.data]);
+  const isLoading = activeMaps.isLoading || draftMaps.isLoading;
+  const isError = activeMaps.isError || draftMaps.isError;
+  const refetch = () => Promise.all([activeMaps.refetch(), draftMaps.refetch()]);
 
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -157,6 +169,8 @@ export default function EducationPage() {
       </div>
 
       {receiptPanel}
+      {activeMaps.isError && <SourceDegradedNote label="Active curricula" onRetry={() => void refetch()} />}
+      {draftMaps.isError && <SourceDegradedNote label="Setting-up curricula" onRetry={() => void refetch()} />}
 
       {/* Mind map selector */}
       <Select value={selectedMapId ?? ""} onValueChange={handleMindMapSelection}>

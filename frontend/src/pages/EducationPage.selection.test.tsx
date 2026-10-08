@@ -194,4 +194,44 @@ it("keeps drafts visible and selects an active map first, falling back to a lone
     expect(screen.getByRole("tab", { name: "Curriculum" })).toBeTruthy();
     view.unmount();
   }
+
+  // The real list endpoint applies status before its default twenty-row page.
+  // A newer terminal page must not hide older active maps or setup drafts.
+  const storedMaps = [
+    ...Array.from({ length: 20 }, (_, index) => ({
+      id: `terminal-${index}`, title: `Finished ${index}`, status: index % 2 ? "completed" : "abandoned",
+    })),
+    { id: "older-active", title: "Older learning", status: "active" },
+    { id: "older-draft", title: "Older setup", status: "draft" },
+  ];
+  mockUseMindMaps.mockImplementation((params) => ({
+    data: { data: storedMaps.filter((map) => !params?.status || map.status === params.status).slice(0, params?.limit ?? 20) },
+    isLoading: false, isError: false, refetch: vi.fn(),
+  }) as unknown as ReturnType<typeof useMindMaps>);
+  const user = userEvent.setup();
+  const view = renderPage();
+  await waitFor(() => expect(screen.getByRole("combobox").textContent).toContain("Older learning"));
+  screen.getByRole("combobox").focus();
+  await user.keyboard("{Enter}");
+  expect(screen.getByRole("option", { name: "Older setup (Setting up)" })).toBeTruthy();
+  expect(screen.queryByRole("option", { name: "Finished 0" })).toBeNull();
+  expect(mockUseMindMaps).toHaveBeenCalledWith({ status: "active" });
+  expect(mockUseMindMaps).toHaveBeenCalledWith({ status: "draft" });
+  view.unmount();
+
+  const activeRetry = vi.fn();
+  const draftRetry = vi.fn();
+  mockUseMindMaps.mockImplementation((params) => ({
+    data: params?.status === "active" ? { data: [storedMaps[20]] } : undefined,
+    isLoading: false, isError: params?.status === "draft",
+    refetch: params?.status === "active" ? activeRetry : draftRetry,
+  }) as unknown as ReturnType<typeof useMindMaps>);
+  const partial = renderPage();
+  await waitFor(() => expect(screen.getByRole("combobox").textContent).toContain("Older learning"));
+  expect(screen.getByRole("alert").textContent).toContain("Setting-up curricula");
+  expect(screen.queryByText("No curriculums yet.")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(activeRetry).toHaveBeenCalledOnce();
+  expect(draftRetry).toHaveBeenCalledOnce();
+  partial.unmount();
 });
