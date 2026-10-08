@@ -4248,6 +4248,12 @@ class MessagePipeline:
                                 if request_context
                                 else None
                             ),
+                            # The fallback turn resumes the chat's anchor too.
+                            "external_conversation_id": (
+                                request_context.get("external_conversation_id")
+                                if request_context
+                                else None
+                            ),
                             "trace_context": {},
                         },
                         "input": {"prompt": message_text},

@@ -386,7 +386,7 @@ async def test_conversation_key_resumes_provider_session_without_legacy_alias(
     """One conversation key resumes one lineage; a bare legacy key is not aliased.
 
     The core_208-era canonicalization of ``<chat>:<message>`` keys is gone:
-    connectors derive ``telegram:<chat>`` themselves, and core_263 collapsed the
+    connectors derive ``telegram:<chat>`` themselves, and core_265 collapsed the
     stored legacy anchors, so the helper stores whatever key it is given.
     """
     async with migrated_core_postgres_pool() as pool:

@@ -17,7 +17,7 @@ stable conversation key, and every continuity consumer should select on it.
 - Telegram bot, Telegram user-client, WhatsApp user-client, and Gmail emit the split fields.
 - The conversation anchor upserts on a new partial unique index over
   `(butler_name, source_channel, external_conversation_id)`; the core_208 normalization is removed.
-- Migration core_263 collapses legacy per-message Telegram anchors reversibly; switchboard migration
+- Migration core_265 collapses legacy per-message Telegram anchors reversibly; switchboard migration
   sw_041 backfills the key on historical `message_inbox` rows. Realtime history selects on it.
 - Outbound history rows and filtered-event replay carry the key.
 - Relationship `interaction_sync` groups chats on the key, so per-message reply targets do not
@@ -31,6 +31,6 @@ stable conversation key, and every continuity consumer should select on it.
   `module-pipeline`, `connector-filtered-events`, `dashboard-conversations`,
   `passive-interaction-sync`.
 - Affected code: connectors, Switchboard ingest and delivery, routing anchor, pipeline history,
-  filtered-event replay, Relationship `interaction_sync`, core_263 and sw_041 migrations.
+  filtered-event replay, Relationship `interaction_sync`, core_265 and sw_041 migrations.
 - Rollout: stop every conversation-anchor writer, migrate, then start all writers on the new image
   (bu-psarp owner decision, 2026-10-08).

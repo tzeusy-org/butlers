@@ -33,19 +33,20 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
 
 #### Scenario: Legacy per-message Telegram anchors collapse reversibly
 
-- **WHEN** the conversation-identity migration (core_263) finds several Telegram bot anchors for one butler and chat, whether keyed by a legacy `<chat_id>:<message_id>`, a bare `<chat_id>`, or the earlier stable `telegram:<chat_id>`
+- **WHEN** the conversation-identity migration (core_265) finds several Telegram bot anchors for one butler and chat, whether keyed by a legacy `<chat_id>:<message_id>`, a bare `<chat_id>`, or the earlier stable `telegram:<chat_id>`
 - **THEN** it SHALL keep one anchor per chat, choosing the row with the newest provider-session handle, and key it `telegram:<chat_id>` in both identity columns
 - **AND** it SHALL re-link `dashboard_messages` and `dashboard_conversation_turns` onto the survivor before deleting the other rows, and recount the survivor's `message_count`
-- **AND** Telegram user-client and WhatsApp anchors SHALL gain the `telegram:` and `whatsapp:` namespaces their connectors emit, and every other anchored row SHALL copy its identity verbatim
+- **AND** Telegram user-client and WhatsApp anchors SHALL gain the `telegram:` and `whatsapp:` namespaces their connectors emit, collapsing the same way when a bare and an already namespaced identity name one chat, and every other anchored row SHALL copy its identity verbatim
 - **AND** the transform SHALL run once, on the first schema to install the column, because core revisions replay per schema against shared `public` tables
 - **AND** the rollout SHALL stop every conversation-anchor writer before the upgrade; no mixed-version compatibility trigger exists
 
 #### Scenario: Identity split downgrade restores without reverting later activity
 
-- **WHEN** the last schema at or past core_263 downgrades
-- **THEN** it SHALL restore the deleted anchors, their message and turn links, and every original identity from private `core_263_*` snapshots
+- **WHEN** the last schema at or past core_265 downgrades
+- **THEN** it SHALL restore the deleted anchors, their message and turn links, and every original identity from private `core_265_*` snapshots
 - **AND** it SHALL keep each survivor's other post-upgrade columns (title, status, provider handle) and recount its `message_count`
-- **AND** it SHALL drop the column, the index, and the snapshot tables, so a later upgrade snapshots afresh and refuses to reuse a leftover snapshot
+- **AND** it SHALL verify every snapshotted anchor and link was restored, and SHALL otherwise fail the downgrade with nothing changed and the snapshots kept
+- **AND** only a complete restore SHALL drop the column, the index, and the snapshot tables, so a later upgrade snapshots afresh and refuses to reuse a leftover snapshot
 
 #### Scenario: Sticky routed_butler stamping
 

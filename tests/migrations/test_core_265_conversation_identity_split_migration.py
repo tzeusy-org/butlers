@@ -1,4 +1,4 @@
-"""Real-Postgres round trip for the conversation identity split (core_263)."""
+"""Real-Postgres round trip for the conversation identity split (core_265)."""
 
 from __future__ import annotations
 
@@ -19,10 +19,9 @@ pytestmark = pytest.mark.integration
 
 _SCHEMAS = ("general", "health")
 _BACKUP_TABLES = (
-    "core_263_anchor_backup",
-    "core_263_message_backup",
-    "core_263_turn_backup",
-    "core_263_source_identity_backup",
+    "core_265_anchor_backup",
+    "core_265_message_backup",
+    "core_265_turn_backup",
 )
 
 
@@ -30,7 +29,14 @@ def _config(db_url: str, schema: str):
     return _build_alembic_config(db_url, chains=["core"], target_schema=schema)
 
 
-def _insert_anchor(conn, *, thread: str, channel: str = "telegram_bot", **fields: Any) -> uuid.UUID:
+def _insert_anchor(
+    conn,
+    *,
+    thread: str,
+    channel: str = "telegram_bot",
+    butler: str = "general",
+    **fields: Any,
+) -> uuid.UUID:
     anchor_id = fields.pop("id", None) or uuid.uuid4()
     offset = fields.pop("offset", 0)
     conn.execute(
@@ -41,7 +47,7 @@ def _insert_anchor(conn, *, thread: str, channel: str = "telegram_bot", **fields
                 provider_session_id, provider_runtime_type, provider_session_updated_at,
                 message_count, created_at, updated_at
             ) VALUES (
-                :id, 'general', :title, :channel, :thread,
+                :id, :butler, :title, :channel, :thread,
                 :handle, CASE WHEN :handle IS NULL THEN NULL ELSE 'claude' END,
                 CASE WHEN :handle IS NULL THEN NULL
                      ELSE now() + (:offset * interval '1 minute') END,
@@ -53,6 +59,7 @@ def _insert_anchor(conn, *, thread: str, channel: str = "telegram_bot", **fields
         ),
         {
             "id": anchor_id,
+            "butler": butler,
             "title": fields.pop("title", f"anchor {thread}"),
             "channel": channel,
             "thread": thread,
@@ -131,7 +138,7 @@ def _backup_tables(conn) -> set[str]:
     rows = conn.execute(
         text(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
-            "AND tablename LIKE 'core\\_263\\_%'"
+            "AND tablename LIKE 'core\\_265\\_%'"
         )
     )
     return {row[0] for row in rows}
@@ -152,7 +159,21 @@ def _seed(conn) -> dict[str, Any]:
     messages = [_insert_message(conn, legacy[0]), _insert_message(conn, legacy[1], cancelled=True)]
     messages.append(_insert_message(conn, stable))
     other_chat = _insert_anchor(conn, thread="555:9", handle="provider-other", message_count=0)
+    # The same chat under another butler and under the legacy channel name are
+    # separate conversations and collapse separately.
+    other_butler = [
+        _insert_anchor(conn, butler="health", thread=f"{chat}:20{index}", offset=index)
+        for index in range(2)
+    ]
+    legacy_channel = [
+        _insert_anchor(conn, channel="telegram", thread=f"{chat}:30{index}", offset=index)
+        for index in range(2)
+    ]
+    # A bare user-client key and its already namespaced twin share one key.
     user_client = _insert_anchor(conn, thread="998877", channel="telegram_user_client")
+    user_client_namespaced = _insert_anchor(
+        conn, thread="telegram:998877", channel="telegram_user_client", handle="provider-uc"
+    )
     whatsapp = _insert_anchor(
         conn, thread="6591234567@s.whatsapp.net", channel="whatsapp_user_client"
     )
@@ -164,7 +185,10 @@ def _seed(conn) -> dict[str, Any]:
         "bare": bare,
         "messages": messages,
         "other_chat": other_chat,
+        "other_butler": other_butler,
+        "legacy_channel": legacy_channel,
         "user_client": user_client,
+        "user_client_namespaced": user_client_namespaced,
         "whatsapp": whatsapp,
         "email": email,
     }
@@ -185,7 +209,7 @@ def test_identity_split_collapses_restores_and_cycles(postgres_container) -> Non
         messages_before = _links(conn, "dashboard_messages", "id")
         turns_before = _links(conn, "dashboard_conversation_turns", "message_id")
 
-    command.upgrade(_config(db_url, "general"), "core@core_263")
+    command.upgrade(_config(db_url, "general"), "core@core_265")
 
     survivor_id = seeded["legacy"][4]
     with engine.connect() as conn:
@@ -193,7 +217,7 @@ def test_identity_split_collapses_restores_and_cycles(postgres_container) -> Non
             conn.execute(
                 text(
                     """
-                    SELECT id, source_channel, source_thread_identity,
+                    SELECT id, butler_name, source_channel, source_thread_identity,
                            external_conversation_id, provider_session_id, message_count
                     FROM public.dashboard_conversations
                     """
@@ -206,7 +230,8 @@ def test_identity_split_collapses_restores_and_cycles(postgres_container) -> Non
         chat_rows = [
             row
             for row in rows
-            if row["source_channel"] == "telegram_bot"
+            if row["butler_name"] == "general"
+            and row["source_channel"] == "telegram_bot"
             and row["external_conversation_id"] == f"telegram:{seeded['chat']}"
         ]
         assert [row["id"] for row in chat_rows] == [survivor_id]
@@ -224,8 +249,18 @@ def test_identity_split_collapses_restores_and_cycles(postgres_container) -> Non
             survivor_id
         }
         assert by_id[seeded["other_chat"]]["external_conversation_id"] == "telegram:555"
-        assert by_id[seeded["user_client"]]["source_thread_identity"] == "telegram:998877"
-        assert by_id[seeded["user_client"]]["external_conversation_id"] == "telegram:998877"
+        for survivor_of_group, group in (
+            (seeded["other_butler"][1], seeded["other_butler"]),
+            (seeded["legacy_channel"][1], seeded["legacy_channel"]),
+        ):
+            assert set(group) & set(by_id) == {survivor_of_group}
+            assert by_id[survivor_of_group]["external_conversation_id"] == (
+                f"telegram:{seeded['chat']}"
+            )
+        assert seeded["user_client"] not in by_id
+        user_client_survivor = by_id[seeded["user_client_namespaced"]]
+        assert user_client_survivor["source_thread_identity"] == "telegram:998877"
+        assert user_client_survivor["external_conversation_id"] == "telegram:998877"
         assert (
             by_id[seeded["whatsapp"]]["external_conversation_id"]
             == "whatsapp:6591234567@s.whatsapp.net"
@@ -233,15 +268,15 @@ def test_identity_split_collapses_restores_and_cycles(postgres_container) -> Non
         assert by_id[seeded["email"]]["external_conversation_id"] == "gmail-thread-1"
         assert _backup_tables(conn) == set(_BACKUP_TABLES)
         backup_rows = conn.execute(
-            text("SELECT count(*) FROM public.core_263_anchor_backup")
+            text("SELECT count(*) FROM public.core_265_anchor_backup")
         ).scalar()
-        assert backup_rows == 8
+        assert backup_rows == 15
 
-    # A second schema replays core_263 against the already-migrated public table.
-    command.upgrade(_config(db_url, "health"), "core@core_263")
+    # A second schema replays core_265 against the already-migrated public table.
+    command.upgrade(_config(db_url, "health"), "core@core_265")
     with engine.connect() as conn:
         assert (
-            conn.execute(text("SELECT count(*) FROM public.core_263_anchor_backup")).scalar() == 8
+            conn.execute(text("SELECT count(*) FROM public.core_265_anchor_backup")).scalar() == 15
         )
 
     # The application helper resolves the survivor, not a fresh anchor.
@@ -312,10 +347,10 @@ def test_identity_split_collapses_restores_and_cycles(postgres_container) -> Non
         assert cancelled == seeded["legacy"][1]
 
     # A second cycle snapshots afresh instead of reusing the first one.
-    command.upgrade(_config(db_url, "general"), "core@core_263")
+    command.upgrade(_config(db_url, "general"), "core@core_265")
     with engine.begin() as conn:
         assert (
-            conn.execute(text("SELECT count(*) FROM public.core_263_anchor_backup")).scalar() == 8
+            conn.execute(text("SELECT count(*) FROM public.core_265_anchor_backup")).scalar() == 15
         )
         conn.execute(
             text("UPDATE public.dashboard_conversations SET title = 'cycle-2' WHERE id = :id"),
@@ -339,9 +374,55 @@ def test_upgrade_refuses_a_leftover_snapshot(postgres_container) -> None:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS general"))
     command.upgrade(_config(db_url, "general"), "core@core_261")
     with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE public.core_263_anchor_backup (id UUID PRIMARY KEY)"))
-    with pytest.raises(Exception, match="core_263_anchor_backup"):
-        command.upgrade(_config(db_url, "general"), "core@core_263")
+        conn.execute(text("CREATE TABLE public.core_265_anchor_backup (id UUID PRIMARY KEY)"))
+    with pytest.raises(Exception, match="core_265_anchor_backup"):
+        command.upgrade(_config(db_url, "general"), "core@core_265")
     with engine.connect() as conn:
         assert not _has_column(conn)
+    engine.dispose()
+
+
+def test_downgrade_refuses_a_partial_restore(postgres_container) -> None:
+    """A post-upgrade row holding an original identity fails the downgrade intact."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS general"))
+    command.upgrade(_config(db_url, "general"), "core@core_261")
+    with engine.begin() as conn:
+        first = _insert_anchor(conn, thread="-100777:1", offset=0)
+        second = _insert_anchor(conn, thread="-100777:2", offset=1)
+        moved_message = _insert_message(conn, first)
+    command.upgrade(_config(db_url, "general"), "core@core_265")
+
+    # An unsplit producer re-created the collapsed anchor's original key.
+    with engine.begin() as conn:
+        blocker = _insert_anchor(conn, thread="-100777:1")
+        conn.execute(
+            text(
+                "UPDATE public.dashboard_conversations "
+                "SET external_conversation_id = source_thread_identity WHERE id = :id"
+            ),
+            {"id": blocker},
+        )
+
+    with pytest.raises(Exception, match="core_265 downgrade cannot restore 1 anchor"):
+        command.downgrade(_config(db_url, "general"), "core@core_261")
+    with engine.connect() as conn:
+        assert _has_column(conn)
+        assert _backup_tables(conn) == set(_BACKUP_TABLES)
+        assert _links(conn, "dashboard_messages", "id") == {moved_message: second}
+        assert conn.execute(text("SELECT version_num FROM general.alembic_version")).scalar() == (
+            "core_265"
+        )
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM public.dashboard_conversations WHERE id = :id"), {"id": blocker}
+        )
+    command.downgrade(_config(db_url, "general"), "core@core_261")
+    with engine.connect() as conn:
+        assert not _has_column(conn)
+        assert _backup_tables(conn) == set()
+        assert _links(conn, "dashboard_messages", "id") == {moved_message: first}
     engine.dispose()

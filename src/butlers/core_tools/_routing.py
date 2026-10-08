@@ -1223,7 +1223,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             # (Telegram, email, ...) a durable dashboard_conversations
                             # row on the TARGET butler, so the spawner below can
                             # attach a provider resume handle to it. Idempotent
-                            # upsert (core_263's partial unique index) -- safe to
+                            # upsert (core_265's partial unique index) -- safe to
                             # call on every accepted route.execute for this thread.
                             # Best-effort: a lookup/create failure must never block
                             # routing, it just means this turn has no resume lineage.

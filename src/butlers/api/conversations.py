@@ -328,7 +328,7 @@ async def conversation_get_or_create_by_thread(
 
     The key is the connector's conversation identity, never its per-message
     reply target. The legacy ``source_thread_identity`` column receives the
-    same value so the core_185 index and the core_263 index stay congruent.
+    same value so the core_185 index and the core_265 index stay congruent.
     The helper acquires one pool connection and holds a transaction-scoped
     advisory lock through INSERT conflict recovery. This prevents two callers
     for one conversation from creating separate anchors, and prevents the

@@ -94,7 +94,7 @@ The pipeline SHALL load channel-appropriate conversation history to improve LLM 
 
 #### Scenario: Outbound rows join their conversation's history
 - **WHEN** a delivered outbound message is written to `message_inbox` for history
-- **THEN** its request context SHALL carry `external_conversation_id`: the notify request context's value when present, otherwise the key derived from the delivery target (for Telegram, `telegram:<chat_id>` of the chat the message was delivered to)
+- **THEN** its request context SHALL carry `external_conversation_id`: the notify request context's value when present, otherwise the key derived from the delivery target (for Telegram, `telegram:<chat_id>` of the chat the message was delivered to; for WhatsApp, `whatsapp:<chat_jid>`, including proactive sends)
 
 #### Scenario: Pre-split history remains readable
 - **WHEN** `message_inbox` holds rows written before connectors split conversation identity from reply targets

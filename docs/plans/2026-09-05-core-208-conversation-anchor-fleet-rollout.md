@@ -4,7 +4,7 @@
 > there is no production deployment, and the only conversation-anchor writer fleet (dev) is
 > scaled to zero, migrated, and restarted on the new image together. No core_208 writer runs
 > against the migrated table, so this mixed-fleet packet is no longer the gate. PR #3960 now
-> lands its migration as `core_263` (the PR's earlier `core_209` never landed; main's `core_209`
+> lands its migration as `core_265` (the PR's earlier `core_209` never landed; main's `core_209`
 > is an unrelated revision), without a mixed-version compatibility trigger. The record below is
 > kept as history.
 

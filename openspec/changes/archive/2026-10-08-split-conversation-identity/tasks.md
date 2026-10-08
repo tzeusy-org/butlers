@@ -11,7 +11,7 @@
 
 ## 3. Data
 
-- [x] 3.1 Add the reversible core_263 anchor collapse and the sw_041 history backfill.
+- [x] 3.1 Add the reversible core_265 anchor collapse and the sw_041 history backfill.
 
 ## 4. Verification
 

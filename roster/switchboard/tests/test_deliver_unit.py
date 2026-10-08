@@ -1536,6 +1536,37 @@ class TestWriteOutboundMessageInbox:
         assert req_ctx["source_sender_identity"] == "relationship"
         assert req_ctx["source_channel"] == "telegram_bot"
 
+    async def test_whatsapp_send_intent_lands_in_namespaced_chat_history(self) -> None:
+        """A proactive WhatsApp send shares the whatsapp:<jid> key of the chat's inbound rows."""
+
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+
+        pool = AsyncMock()
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "relationship",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "whatsapp",
+                    "message": "On my way",
+                    "recipient": "6591234567@s.whatsapp.net",
+                },
+            }
+        )
+
+        await _write_outbound_message_inbox(
+            pool,
+            notify_request=notify_request,
+            delivered_at=datetime(2026, 10, 8, 9, 0, 0, tzinfo=UTC),
+        )
+
+        pool.execute.assert_awaited_once()
+        req_ctx = pool.execute.call_args[0][2]
+        assert req_ctx["source_thread_identity"] == "6591234567@s.whatsapp.net"
+        assert req_ctx["external_conversation_id"] == "whatsapp:6591234567@s.whatsapp.net"
+
     async def test_skips_when_no_thread_and_no_recipient(self) -> None:
         """Skips write when neither thread identity nor recipient is available."""
         from butlers.tools.switchboard import _write_outbound_message_inbox
