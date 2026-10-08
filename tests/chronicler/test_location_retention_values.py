@@ -3119,6 +3119,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_native_answer_cohort_values()
     await _assert_native_answer_receiver_values()
     await _assert_native_answer_context_values()
+    await _assert_metadata_wake_tool_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
 
@@ -5108,6 +5109,8 @@ async def _assert_native_answer_receiver_values():
                 raise AssertionError("Unexpected answer disposal write")
 
         async def fetchrow(self, sql, *args):
+            if "SELECT tool_calls,completed_at FROM sessions" in sql:
+                return None
             if "FROM location_received_answer_attempts" in sql:
                 return dict(self.attempt)
             if "FROM location_received_answer_inputs" in sql:
@@ -5166,6 +5169,10 @@ async def _assert_native_answer_receiver_values():
                 floor_source_incarnation=binding["source_incarnation"],
                 floor_incarnation=incarnation,
                 floor_ledger=ledger,
+                server_request=self.attempt["server_request"],
+                tool_generation=self.attempt["tool_generation"],
+                receiving_session=self.attempt["receiving_session"],
+                wake_key="synthetic fixed wake",
             )
             return [row]
 
@@ -5178,7 +5185,10 @@ async def _assert_native_answer_receiver_values():
                 return self.finished
             if "FROM location_runtime_tool_intents" in sql:
                 return self.tool_finished
-            if "FROM location_received_answer_claim_parents" in sql:
+            if (
+                "FROM location_received_answer_claim_parents" in sql
+                or "FROM location_received_answer_claims c WHERE c.task_id" in sql
+            ):
                 return self.unresolved
             if "FROM scheduled_tasks" in sql:
                 return self.schedule["prompt"] == args[1] and not self.schedule["enabled"]
@@ -5246,7 +5256,10 @@ async def _assert_native_answer_context_values():
     from butlers.chronicler.location_answer_disposal import closed_answer_context_input
     from butlers.chronicler.location_return_processing import _bundle
 
-    runtime = SimpleNamespace(incarnation=uuid4())
+    runtime = SimpleNamespace(
+        incarnation=uuid4(),
+        delegation_writer=SimpleNamespace(receiving_answers={}, answer_pending={}),
+    )
     claim, generation, session, decision, first, second = [uuid4() for _ in range(6)]
     prompt = "synthetic complete two-answer return"
     binding = dict(
@@ -5356,19 +5369,134 @@ async def _assert_native_answer_context_values():
     from butlers.chronicler.location_answer_disposal import _closed_return_task_cohort
 
     class TaskConn:
-        rows = [row | {"qualified": True} for row in parents]
+        rows = [
+            row
+            | {
+                "qualified": True,
+                "server_request": uuid4(),
+                "tool_generation": None,
+                "receiving_session": None,
+                "wake_key": "fixed wake",
+            }
+            for row in parents
+        ]
+        unresolved = False
+        finished = True
 
         async def fetch(self, sql, *args):
             assert "WHERE s.task_id=$1" in sql
             return self.rows
 
+        async def fetchval(self, sql, *args):
+            if "FROM location_received_answer_claims c WHERE c.task_id" in sql:
+                return self.unresolved
+            assert "FROM location_received_answer_server_finished" in sql
+            return self.finished
+
     task_conn = TaskConn()
     schedule = dict(task_id=uuid4(), prompt_digest=frozen["prompt_digest"])
     assert await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
+    original_task_rows = task_conn.rows
+    task_conn.unresolved = True
+    assert not await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
+    assert parents[0]["scheduled_prompt"] == prompt and parents[1]["scheduled_prompt"] == prompt
+    task_conn.unresolved = False
+    runtime.delegation_writer.receiving_answers[second] = object()
+    assert not await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
+    runtime.delegation_writer.receiving_answers.clear()
+    task_conn.finished = False
+    assert not await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
+    task_conn.finished = True
+    assert await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
     task_conn.rows = [task_conn.rows[0], task_conn.rows[1] | {"qualified": False}]
     assert not await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
-    task_conn.rows = [row | {"qualified": True} for row in parents]
+    task_conn.rows = list(original_task_rows)
     task_conn.rows[1] = task_conn.rows[1] | {"exclusive_input": False}
     assert not await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
-    task_conn.rows = [row | {"qualified": True} for row in parents]
+    task_conn.rows = list(original_task_rows)
     assert await _closed_return_task_cohort(task_conn, runtime, schedule, binding)
+
+
+async def _assert_metadata_wake_tool_values():
+    """Locator-only actual execution witness, no generic Tool/session disposal."""
+    from uuid import uuid4
+
+    from butlers.chronicler.location_answer_disposal import metadata_wake_tool_finished
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    generation, tool, session, ledger, task = [uuid4() for _ in range(5)]
+    attempt = dict(
+        receiving_generation=generation,
+        tool_generation=tool,
+        receiving_session=session,
+        ledger_id=ledger,
+        wake_key="synthetic fixed wake",
+    )
+    result = dict(status="ok", ledger_id=str(ledger), wake_state="task_created", task_id=str(task))
+    fingerprint = fingerprint_tool_call_payload(
+        dict(ledger_id=str(ledger), wake_key=attempt["wake_key"])
+    )
+    record = dict(
+        name="delegate_wake",
+        module="core",
+        outcome="success",
+        input_fingerprint=fingerprint,
+        result=result,
+    )
+    witness = dict(
+        tool_generation=tool,
+        tool_name="delegate_wake",
+        module_name="core",
+        input_digest=bytes.fromhex(fingerprint),
+        outcome="success",
+        exclusive_inputs=True,
+        result_digest=bytes.fromhex(fingerprint_tool_call_payload(result)),
+    )
+
+    class Conn:
+        ended = True
+        calls = [record]
+        rows = [witness]
+        schedule = True
+
+        async def fetchrow(self, sql, *args):
+            assert args == (session,) and "FROM sessions" in sql
+            return dict(tool_calls=self.calls, completed_at=object() if self.ended else None)
+
+        async def fetch(self, sql, *args):
+            assert args == (session,) and "t.tool_name='delegate_wake'" in sql
+            return self.rows
+
+        async def fetchval(self, sql, *args):
+            assert "FROM location_received_answer_schedules" in sql and args == (generation, task)
+            return self.schedule
+
+    conn = Conn()
+    assert await metadata_wake_tool_finished(conn, attempt)
+    conn.calls = []
+    assert not await metadata_wake_tool_finished(conn, attempt)
+    conn.calls = [record, record]
+    assert not await metadata_wake_tool_finished(conn, attempt)
+    conn.rows = [witness, witness | {"tool_generation": uuid4()}]
+    assert await metadata_wake_tool_finished(conn, attempt)
+    conn.calls = [record]
+    conn.rows = [witness]
+    conn.ended = False
+    assert not await metadata_wake_tool_finished(conn, attempt)
+    conn.ended = True
+    conn.rows = [witness | {"exclusive_inputs": False}]
+    assert not await metadata_wake_tool_finished(conn, attempt)
+    conn.rows = [witness]
+    conn.schedule = False
+    assert not await metadata_wake_tool_finished(conn, attempt)
+    conn.schedule = True
+    for added in ({"answer": "raw copied synthetic answer"}, {"reconciled": "caller string"}):
+        altered = result | added
+        conn.calls = [record | {"result": altered}]
+        conn.rows = [
+            witness | {"result_digest": bytes.fromhex(fingerprint_tool_call_payload(altered))}
+        ]
+        assert not await metadata_wake_tool_finished(conn, attempt)
+    conn.calls = [record]
+    conn.rows = [witness]
+    assert await metadata_wake_tool_finished(conn, attempt)

@@ -2527,6 +2527,91 @@ async def _assert_received_answer_disposal(domain, runtime):
                 raise RuntimeError("synthetic outer disposal rollback")
     assert await _close_answer_receiver(runtime, binding, complete=True) is None
     await finish_answer_server(runtime, generation, server)
+    sibling, sibling_loan, sibling_server, claim = [uuid.uuid4() for _ in range(4)]
+    sibling_binding = binding | {"receiving_generation": sibling, "loan_id": sibling_loan}
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_received_answer_attempts "
+                "(receiving_generation,ledger_id,source_name,wake_key,receiving_incarnation,server_request) "
+                "VALUES($1,$2,'relationship','synthetic wake',$3,$4)",
+                sibling,
+                ledger,
+                runtime.incarnation,
+                sibling_server,
+            )
+            await conn.execute(
+                "INSERT INTO location_received_answer_inputs "
+                "(receiving_generation,source_name,answer_generation,loan_id,bundle_digest,"
+                "source_incarnation,parent_count,exclusive_input) "
+                "VALUES($1,'relationship',$2,$3,$4,$5,2,true)",
+                sibling,
+                answer,
+                sibling_loan,
+                b"b" * 32,
+                source_inc,
+            )
+            await conn.execute(
+                "INSERT INTO location_received_answer_schedules "
+                "(receiving_generation,task_id,prompt_digest) VALUES($1,$2,$3)",
+                sibling,
+                task,
+                hashlib.sha256(prompt.encode()).digest(),
+            )
+    assert await _close_answer_receiver(runtime, sibling_binding, complete=True) is None
+    assert await _close_answer_receiver(runtime, binding, complete=True) is None
+    async with domain.acquire() as observed:
+        assert (
+            await observed.fetchval("SELECT prompt FROM scheduled_tasks WHERE id=$1", task)
+            == prompt
+        )
+        assert not await observed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_answer_dispositions WHERE receiving_generation=$1)",
+            generation,
+        )
+    await finish_answer_server(runtime, sibling, sibling_server)
+    # A claim can precede a later duplicate receiving binding. Its original
+    # cohort names ONLY the sibling, so the first generation's local claim
+    # query cannot detect this genuinely still-live shared-task processing.
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_received_answer_claims "
+                "(claim_generation,task_id,prompt_digest,bundle_digest,parent_count,"
+                "receiving_incarnation,exclusive_input) VALUES($1,$2,$3,$4,1,$5,true)",
+                claim,
+                task,
+                hashlib.sha256(prompt.encode()).digest(),
+                b"c" * 32,
+                runtime.incarnation,
+            )
+            await conn.execute(
+                "INSERT INTO location_received_answer_claim_parents "
+                "(claim_generation,receiving_generation,bundle_digest) VALUES($1,$2,$3)",
+                claim,
+                sibling,
+                b"b" * 32,
+            )
+    assert await _close_answer_receiver(runtime, binding, complete=True) is None
+    async with domain.acquire() as observed:
+        assert (
+            await observed.fetchval("SELECT prompt FROM scheduled_tasks WHERE id=$1", task)
+            == prompt
+        )
+        assert not await observed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_answer_dispositions WHERE receiving_generation=$1)",
+            generation,
+        )
+    # This planted failed-before-context processing lifetime is now ended.
+    # No runtime/context descendant was created; ordinary healthy later-close
+    # must remain possible without destroying the original task prematurely.
+    await domain.execute(
+        "INSERT INTO location_received_answer_claims_ended(claim_generation,receipt_id) VALUES($1,$2)",
+        claim,
+        uuid.uuid4(),
+    )
     # A changed task cannot be silently reduced. Its original digest and all
     # immutable floor fields survive the refusal/rollback.
     await domain.execute("UPDATE scheduled_tasks SET prompt=$2 WHERE id=$1", task, "changed return")
@@ -2553,6 +2638,12 @@ async def _assert_received_answer_disposal(domain, runtime):
         )
         assert reduced["prompt"] == _REDUCED_RETURN and reduced["enabled"] is False
     assert await _close_answer_receiver(runtime, binding, complete=True) == receipt
+    sibling_receipt = await _close_answer_receiver(runtime, sibling_binding, complete=True)
+    assert sibling_receipt is not None and sibling_receipt != receipt
+    assert await _close_answer_receiver(runtime, sibling_binding, complete=True) == sibling_receipt
+    assert (await answer_receiver_status(runtime, decision, sibling_receipt))["loan_id"] == str(
+        sibling_loan
+    )
     with pytest.raises(PolicyUnavailableError, match="receiving floor differs"):
         await _close_answer_receiver(runtime, binding | {"loan_id": uuid.uuid4()}, complete=True)
     assert (await answer_receiver_status(runtime, decision, receipt))["receipt_id"] == str(receipt)

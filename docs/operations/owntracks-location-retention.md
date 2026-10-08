@@ -760,3 +760,17 @@ The new schema, actual registered route/deployment and independent process contr
 remain unproven until exact-head hosted/online evidence reaches them. Every original
 outcome and P5 obligation remains mandatory; source implementation and these scoped
 controls do not authorize live purge, native archive, protected delivery or closure.
+
+
+Shared answer tasks retain their original full prompt until every actual task claim,
+including an earlier sibling-only claim, and every qualified receiving lifetime
+has its own completion. A live sibling cannot be overlooked by a current-generation
+claim query. This keeps the original bundle reconstructable while context disposal
+is pending; later closure can use the original reduced-task receipt on replay.
+The locator-only `delegate_wake` profile checks the exact two input locators, every
+actual same-name execution record against private input/result witnesses, the fixed
+success-only metadata result and its actual owning task. It settles only that Tool's
+transient processing, never an independent model context or a scheduled body copy.
+The new two-sibling/earlier-claim interleaving controls are positioned in the existing
+migrated species and remain hosted-only proof obligations. Software neutralization
+of the shared-task lifetime guard goes red with the original prompt still required.

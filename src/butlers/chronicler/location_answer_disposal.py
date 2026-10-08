@@ -363,19 +363,21 @@ async def _close_answer_receiver(runtime: Any, binding: dict, *, complete: bool)
                     attempt["server_request"],
                 ):
                     return None
-                if attempt["tool_generation"] is not None and not await conn.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM location_runtime_tool_intents t "
-                    "JOIN location_runtime_context_bindings b "
-                    "ON b.receiving_session=t.receiving_session "
-                    "JOIN location_runtime_context_dispositions d USING(input_generation) "
-                    "WHERE t.tool_generation=$1 AND t.receiving_session=$2 "
-                    "AND d.decision_id=$3 AND d.manifest_digest=$4)",
-                    attempt["tool_generation"],
-                    attempt["receiving_session"],
-                    binding["decision_id"],
-                    binding["manifest_digest"],
-                ):
-                    return None
+                if attempt["tool_generation"] is not None:
+                    metadata_only = await metadata_wake_tool_finished(conn, attempt)
+                    if not metadata_only and not await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_runtime_tool_intents t "
+                        "JOIN location_runtime_context_bindings b "
+                        "ON b.receiving_session=t.receiving_session "
+                        "JOIN location_runtime_context_dispositions d USING(input_generation) "
+                        "WHERE t.tool_generation=$1 AND t.receiving_session=$2 "
+                        "AND d.decision_id=$3 AND d.manifest_digest=$4)",
+                        attempt["tool_generation"],
+                        attempt["receiving_session"],
+                        binding["decision_id"],
+                        binding["manifest_digest"],
+                    ):
+                        return None
                 admitted = await conn.fetchrow(
                     "SELECT * FROM location_received_answer_inputs WHERE receiving_generation=$1",
                     generation,
@@ -567,7 +569,7 @@ async def prepare_answer_receiver(runtime: Any, decision: UUID, loan_id: UUID) -
     receipt = await _close_answer_receiver(
         runtime, binding, complete=answer.get("complete_input") is True
     )
-    if receipt is None:
+    if receipt is None and answer.get("complete_input") is True:
         from butlers.chronicler.location_delegation_contexts import dispose_core_answer_contexts
 
         await dispose_core_answer_contexts(runtime, binding)
@@ -586,7 +588,8 @@ async def _closed_return_task_cohort(conn: Any, runtime: Any, schedule: Any, bin
     """One physical return task can carry several independently admitted bindings."""
     rows = await conn.fetch(
         "SELECT s.receiving_generation AS declared_receiving,s.prompt_digest,i.*,"
-        "a.receiving_incarnation,a.ledger_id,f.decision_id,f.manifest_digest,"
+        "a.receiving_incarnation,a.ledger_id,a.wake_key,a.server_request,"
+        "a.tool_generation,a.receiving_session,f.decision_id,f.manifest_digest,"
         "f.bundle_digest AS floor_digest,f.loan_id AS floor_loan,"
         "f.answer_generation AS floor_answer,f.source_name AS floor_source,"
         "f.source_incarnation AS floor_source_incarnation,"
@@ -600,7 +603,7 @@ async def _closed_return_task_cohort(conn: Any, runtime: Any, schedule: Any, bin
         "WHERE s.task_id=$1 ORDER BY s.receiving_generation",
         schedule["task_id"],
     )
-    return (
+    exact = (
         bool(rows)
         and len({row["declared_receiving"] for row in rows}) == len(rows)
         and binding["receiving_generation"] in {row["declared_receiving"] for row in rows}
@@ -624,6 +627,74 @@ async def _closed_return_task_cohort(conn: Any, runtime: Any, schedule: Any, bin
             for row in rows
         )
     )
+
+    if not exact:
+        return False
+    # A task claim may have frozen a smaller earlier binding set before a
+    # later duplicate wake enrolled another receiver. Examine EVERY claim of
+    # this physical task, not just claims naming the current receiver.
+    unresolved = await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_received_answer_claims c WHERE c.task_id=$1 "
+        "AND (c.parent_count<>(SELECT count(*) FROM location_received_answer_claim_parents p "
+        "WHERE p.claim_generation=c.claim_generation) "
+        "OR NOT EXISTS(SELECT 1 FROM location_received_answer_claims_ended e "
+        "WHERE e.claim_generation=c.claim_generation) OR EXISTS("
+        "SELECT 1 FROM location_runtime_context_answer_intents i "
+        "WHERE i.claim_generation=c.claim_generation AND NOT EXISTS(SELECT 1 "
+        "FROM location_runtime_context_dispositions d WHERE d.input_generation=i.input_generation "
+        "AND d.decision_id=$2 AND d.manifest_digest=$3))))",
+        schedule["task_id"],
+        binding["decision_id"],
+        binding["manifest_digest"],
+    )
+    if unresolved is not False:
+        return False
+    for row in rows:
+        if not await _answer_attempt_ended(conn, runtime, row, binding):
+            return False
+    return True
+
+
+async def _answer_attempt_ended(conn: Any, runtime: Any, attempt: Any, binding: dict) -> bool:
+    generation = attempt["receiving_generation"]
+    writer = runtime.delegation_writer
+    if generation in writer.receiving_answers or any(
+        pending.receiving == generation for pending in writer.answer_pending.values()
+    ):
+        return False
+    if attempt["server_request"] is None and attempt["tool_generation"] is None:
+        return False  # Missing owning attempt lifetime cannot become absence proof.
+    if (
+        attempt["server_request"] is not None
+        and await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_answer_server_finished "
+            "WHERE receiving_generation=$1 AND server_request=$2)",
+            generation,
+            attempt["server_request"],
+        )
+        is not True
+    ):
+        return False
+    if attempt["tool_generation"] is not None:
+        metadata_only = await metadata_wake_tool_finished(conn, attempt)
+        if (
+            not metadata_only
+            and await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_runtime_tool_intents t "
+                "JOIN location_runtime_context_bindings b "
+                "ON b.receiving_session=t.receiving_session "
+                "JOIN location_runtime_context_dispositions d USING(input_generation) "
+                "WHERE t.tool_generation=$1 AND t.receiving_session=$2 "
+                "AND d.decision_id=$3 AND d.manifest_digest=$4)",
+                attempt["tool_generation"],
+                attempt["receiving_session"],
+                binding["decision_id"],
+                binding["manifest_digest"],
+            )
+            is not True
+        ):
+            return False
+    return True
 
 
 async def closed_answer_context_input(
@@ -750,3 +821,90 @@ async def dispose_memory_answer_contexts(runtime: Any, binding: dict, plan: dict
         await dispose_runtime_context(
             runtime, row["input_generation"], plan, answer_binding=binding
         )
+
+
+async def metadata_wake_tool_finished(conn: Any, attempt: Any) -> bool:
+    """Exact successful locator-only wake execution ends only its Tool processing.
+
+    The actual handler exposes no copied question/answer body to its caller.
+    All recorded same-name calls must match every private input/result witness
+    one-to-one; the selected input is exactly the two stored locators, and the
+    selected successful result must contain only this ledger/task's fixed
+    metadata. This neither reduces nor attests an independent model context.
+    Session completion alone, caller arguments and generic MCP outcomes cannot
+    establish this profile. Error/conflict/mixed/unknown outcomes stay held.
+    """
+    from butlers.chronicler.location_tool_copies import matched_tool_records
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    session = await conn.fetchrow(
+        "SELECT tool_calls,completed_at FROM sessions WHERE id=$1", attempt["receiving_session"]
+    )
+    if (
+        session is None
+        or session["completed_at"] is None
+        or not isinstance(session["tool_calls"], list)
+    ):
+        return False
+    witnesses = await conn.fetch(
+        "SELECT t.*,r.outcome,r.result_digest,r.exclusive_inputs "
+        "FROM location_runtime_tool_intents t "
+        "LEFT JOIN location_runtime_tool_results r USING(tool_generation) "
+        "WHERE t.receiving_session=$1 AND t.tool_name='delegate_wake' ORDER BY t.tool_generation",
+        attempt["receiving_session"],
+    )
+    calls = [
+        call
+        for call in session["tool_calls"]
+        if isinstance(call, dict) and call.get("name") == "delegate_wake"
+    ]
+    selected = [row for row in witnesses if row["tool_generation"] == attempt["tool_generation"]]
+    if len(selected) != 1 or selected[0]["exclusive_inputs"] is not True:
+        return False
+    expected = fingerprint_tool_call_payload(
+        {
+            "ledger_id": str(attempt["ledger_id"]),
+            "wake_key": attempt["wake_key"],
+        }
+    )
+    row = selected[0]
+    if row["module_name"] != "core" or row["input_digest"].hex() != expected:
+        return False
+    try:
+        if not matched_tool_records(calls, witnesses):
+            return False
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+    matched = [
+        call
+        for call in calls
+        if call.get("input_fingerprint") == expected
+        and call.get("module") == "core"
+        and bytes.fromhex(fingerprint_tool_call_payload(call.get("result"))) == row["result_digest"]
+    ]
+    if not matched:
+        return False
+    result = matched[0].get("result")
+    if (
+        not isinstance(result, dict)
+        or not {"status", "ledger_id", "wake_state", "task_id"} <= result.keys()
+        or set(result) - {"status", "ledger_id", "wake_state", "task_id", "reconciled"}
+        or result["status"] != "ok"
+        or result["wake_state"] != "task_created"
+        or result["ledger_id"] != str(attempt["ledger_id"])
+        or ("reconciled" in result and type(result["reconciled"]) is not bool)
+    ):
+        return False
+    try:
+        task = UUID(result["task_id"])
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return (
+        await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_answer_schedules "
+            "WHERE receiving_generation=$1 AND task_id=$2)",
+            attempt["receiving_generation"],
+            task,
+        )
+        is True
+    )
