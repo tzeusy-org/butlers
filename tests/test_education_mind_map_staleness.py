@@ -8,15 +8,16 @@ than 30 days have elapsed since any node activity (the maximum ``updated_at``
 across the map's nodes). Maps with recent activity, ``completed`` maps, and
 already-``abandoned`` maps are left untouched.
 
-These tests run the real query (``mind_map_abandon_stale``) and the registered
-deterministic job handler against a migrated Postgres, since the staleness
-condition is expressed entirely in SQL and cannot be exercised by mocked pools.
+These tests run the real sweep and registered deterministic job handler against
+migrated PostgreSQL under the ordinary runtime role. They also exercise database
+content guards and durable rollback/readback, which canned rows cannot prove.
 """
 
 from __future__ import annotations
 
 import shutil
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -72,34 +73,32 @@ async def _create_map(
 ) -> str:
     """Insert a mind map whose created_at/updated_at are ``map_age_days`` old."""
     map_id = str(uuid.uuid4())
+    created_at = datetime.now(tz=UTC) - timedelta(days=map_age_days)
     await pool.execute(
         """
         INSERT INTO education.mind_maps (id, title, status, created_at, updated_at)
-        VALUES ($1, $2, $3,
-                now() - make_interval(days => $4),
-                now() - make_interval(days => $4))
+        VALUES ($1, $2, $3, $4, $4)
         """,
         map_id,
         title,
         status,
-        map_age_days,
+        created_at,
     )
     return map_id
 
 
 async def _add_node(pool: asyncpg.Pool, map_id: str, *, age_days: int) -> None:
     """Add a node to a map whose updated_at is ``age_days`` in the past."""
+    updated_at = datetime.now(tz=UTC) - timedelta(days=age_days)
     await pool.execute(
         """
         INSERT INTO education.mind_map_nodes
             (mind_map_id, label, created_at, updated_at)
-        VALUES ($1, $2,
-                now() - make_interval(days => $3),
-                now() - make_interval(days => $3))
+        VALUES ($1, $2, $3, $3)
         """,
         map_id,
         "concept",
-        age_days,
+        updated_at,
     )
 
 
