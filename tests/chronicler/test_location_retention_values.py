@@ -354,6 +354,7 @@ async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monk
     pool.execute = AsyncMock()
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={})
     monkeypatch.setattr(location_projection, "get_checkpoint", AsyncMock(return_value=None))
+    actual_carry_reader = storage.get_carryover
     monkeypatch.setattr(storage, "get_carryover", AsyncMock(return_value={}))
     # The adapter imports its own storage binding; patch the actual read seam.
     from butlers.chronicler.adapters import owntracks_ssid
@@ -459,6 +460,27 @@ async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monk
     reader.fetch.side_effect = RuntimeError("installed schema changed")
     with pytest.raises(RuntimeError, match="installed schema changed"):
         await expired_evidence_links(reader, raw_id)
+
+    from butlers.chronicler.adapters.owntracks_ssid import (
+        _SOURCE_CURSOR_KEY,
+        OwnTracksSsidPresenceAdapter,
+    )
+    from butlers.chronicler.models import ProjectionCheckpoint
+
+    monkeypatch.setattr(owntracks_ssid, "get_carryover", actual_carry_reader)
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places={})
+    stamp = datetime(2026, 1, 1, tzinfo=UTC)
+    checkpoint = ProjectionCheckpoint(source_name=adapter.source_name, watermark=stamp)
+    conn.fetchval.return_value = {}
+    assert await adapter.retention_replay_required(checkpoint, conn) is True
+    conn.fetchval.return_value = {
+        _SOURCE_CURSOR_KEY: {
+            "watermark": stamp.isoformat(),
+            "uuid": str(uuid4()),
+        }
+    }
+    assert await adapter.retention_replay_required(checkpoint, conn) is False
+    assert await adapter.retention_replay_required(None, conn) is False
 
 
 async def test_native_inline_fixture_uses_complete_owning_retention_dependencies():
@@ -1246,6 +1268,8 @@ async def test_native_memory_writer_reserves_before_embedding_and_commits_exact_
         copies._receivers.pop(pool, None)
         location_retention._copy_pools.discard(pool)
 
+    from uuid import uuid4
+
 
 @pytest.mark.asyncio
 async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is_bounded():
@@ -1545,6 +1569,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     from uuid import uuid4
 
     from butlers.chronicler.location_memory_context import dispose_runtime_context
+    from butlers.chronicler.location_policy import PolicyUnavailableError
 
     generation, session_id, loan_id, source_generation, incarnation, decision = (
         uuid4() for _ in range(6)
@@ -1555,6 +1580,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     system = base + "\n\n" + context
     body_digest = b"b" * 32
     frozen = {
+        "input_generation": generation,
         "receiving_session": session_id,
         "exclusive_input": True,
         "ended_receipt": uuid4(),
@@ -1604,6 +1630,10 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     class Pool:
         writes = []
         receipt = None
+        artifacts = []
+        artifact_row = None
+        descendant = False
+        deleted = False
 
         @asynccontextmanager
         async def acquire(self):
@@ -1617,14 +1647,37 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
             return False
 
         async def fetchrow(self, sql, *args):
+            if "SELECT * FROM rules" in sql:
+                return self.artifact_row
+            if "location_native_memory_bundles" in sql:
+                return None
             return frozen if "context_bindings" in sql else session
 
         async def fetch(self, sql, *args):
             if "context_episodes" in sql:
                 return []
+            if "FROM chronicler.location_native_copy_births" in sql:
+                return [
+                    {
+                        "copy_generation": source_generation,
+                        "input_digest": body_digest,
+                        "lineage_known": True,
+                        "exclusive_input": True,
+                    }
+                ]
+            if "context_artifacts" in sql:
+                return self.artifacts
             return [loan]
 
         async def fetchval(self, sql, *args):
+            if "DELETE FROM rules" in sql:
+                self.deleted = True
+                self.writes.append((sql, args))
+                return args[0]
+            if "SELECT EXISTS(SELECT 1 FROM rules" in sql:
+                return not self.deleted
+            if "context_artifacts" in sql:
+                return self.descendant
             if sql == "SELECT current_schema()":
                 return "chronicler_mem"
             if sql == "SELECT current_user":
@@ -1647,6 +1700,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
         identity=("chronicler", "own-role-double"),
         memory_identity=("chronicler_mem", "own-role-double"),
         name="chronicler",
+        active=True,
     )
     for field, value in (("exclusive_input", False), ("ended_receipt", None)):
         prior = frozen[field]
@@ -1659,7 +1713,66 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     session["effective_system_prompt"] = system
     empty_plan = {**plan, "catalog_loans": []}
     assert await dispose_runtime_context(runtime, generation, empty_plan) is False
+    from butlers.chronicler.location_projection import _digest_value
+
+    identifier = uuid4()
+    pool.artifact_row = {"id": identifier, "content": "actual native output"}
+    from butlers.chronicler import location_memory_context as contexts
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_memory_derivation import execute_rule_insert
+
+    _runtimes[pool] = runtime
+    native = contexts._RuntimeContext(runtime, generation, session_id, True, admitted=True)
+    native_token = contexts._current_runtime_context.set(native)
+    try:
+        await execute_rule_insert(pool, identifier, "INSERT INTO rules VALUES($1)", identifier)
+        captured_rows = [
+            args for sql, args in pool.writes if "INSERT INTO" in sql and "context_artifacts" in sql
+        ]
+        assert len(captured_rows) == 1
+        captured = captured_rows[0]
+        assert captured[1:4] == (generation, "rules", identifier)
+        assert captured[4] == content_digest({"memory_artifact": _digest_value(pool.artifact_row)})
+    finally:
+        contexts._current_runtime_context.reset(native_token)
+        _runtimes.pop(pool)
+    pool.writes.clear()
+    pool.artifacts = [
+        {
+            "artifact_id": identifier,
+            "memory_table": "rules",
+            "body_digest": content_digest({"memory_artifact": _digest_value(pool.artifact_row)}),
+        }
+    ]
+    session["tool_calls"] = [
+        {"name": "unknown_routed_mutation", "outcome": "success", "result": {"id": str(identifier)}}
+    ]
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    assert not pool.deleted
+    session["tool_calls"] = [
+        {"name": "memory_store_rule", "outcome": "success", "result": {"id": str(identifier)}}
+    ]
+    pool.descendant = True
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    assert not pool.deleted and not any("UPDATE" in sql for sql, _ in pool.writes)
+    pool.descendant = False
+    pool.artifact_row["content"] = "changed independent version"
+    assert await dispose_runtime_context(runtime, generation, plan) is False
+    assert not pool.deleted
+    pool.artifact_row["content"] = "actual native output"
     assert await dispose_runtime_context(runtime, generation, plan) is True
+    assert pool.deleted
+    # Same fixed invocation cannot refill after the actual context disposition.
+    _runtimes[pool] = runtime
+    native_token = contexts._current_runtime_context.set(native)
+    try:
+        before = len(pool.writes)
+        with pytest.raises(PolicyUnavailableError, match="input was disposed"):
+            await execute_rule_insert(pool, identifier, "INSERT INTO rules VALUES($1)", identifier)
+        assert not any("INSERT INTO rules" in sql for sql, _ in pool.writes[before:])
+    finally:
+        contexts._current_runtime_context.reset(native_token)
+        _runtimes.pop(pool)
     update = next(args for sql, args in pool.writes if "UPDATE" in sql and ".sessions " in sql)
     assert update[2] == base
     assert update[3] == [{"source": "base", "sha": "retained"}]
@@ -1703,6 +1816,27 @@ async def test_unconfigured_reader_preserves_ordinary_rows_and_closed_diagnostic
         await _read_unconfigured(pool, "episode", reader)
     row.source_name = "calendar.events"
     assert await _read_unconfigured(pool, "episode", reader) == [row]
+    from butlers.chronicler.location_retention import _api_copy_pools, _capture_api_read
+
+    legacy_pool = AsyncMock(spec=asyncpg.Pool)
+    legacy_pool.fetchval.side_effect = lambda sql, *args: (
+        "public" if sql == "SELECT current_schema()" else pool.projected
+    )
+
+    async def actual_ordinary_reader(actual):
+        assert actual is legacy_pool
+        return [row]
+
+    _api_copy_pools.add(legacy_pool)  # Explicit software registry double, no real enrollment.
+    try:
+        assert await _capture_api_read(legacy_pool, "episode", actual_ordinary_reader) == [row]
+        pool.projected = True
+        with pytest.raises(PolicyUnavailableError):
+            await _capture_api_read(legacy_pool, "episode", actual_ordinary_reader)
+        pool.projected = False
+        assert await _capture_api_read(legacy_pool, "episode", actual_ordinary_reader) == [row]
+    finally:
+        _api_copy_pools.discard(legacy_pool)
     sentinel = "synthetic raw private location must not be emitted"
     for exc, expected in (
         (asyncpg.UndefinedColumnError(sentinel), ("postgres", "undefined_column", "42703")),

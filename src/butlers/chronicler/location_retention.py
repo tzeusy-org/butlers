@@ -1325,7 +1325,14 @@ async def _capture_api_read(pool: asyncpg.Pool, kind: str, reader: Any) -> list[
     held. A failed birth
     COMMIT/readback refuses emission instead of silently producing a copy.
     """
-    if pool not in _api_copy_pools and isinstance(pool, asyncpg.Pool):
+    if isinstance(pool, asyncpg.Pool) and (
+        pool not in _api_copy_pools
+        or await pool.fetchval("SELECT current_schema()") != "chronicler"
+    ):
+        # The legacy ordinary reader may own an inline/public schema. Pool
+        # registration does not turn that schema into Chronicle's producer.
+        # Actual persisted source/ancestry classification still refuses any
+        # location input before emission; no copy birth or terminal proof.
         return await _read_unconfigured(pool, kind, reader)
     if not _api_capture_configured(pool):
         return await reader(pool)

@@ -185,7 +185,9 @@ async def test_native_location_dispatch_binds_exact_input_before_session_admissi
     from butlers.chronicler.location_input_binding import (
         NativeLocationDispatch,
         _current_dispatch_input,
+        _dispatchers,
         dispatch_with_native_input,
+        register_dispatch_runtime,
     )
     from butlers.core.sessions import session_create
     from butlers.core.spawner import Spawner
@@ -301,6 +303,9 @@ async def test_native_location_dispatch_binds_exact_input_before_session_admissi
         return SimpleNamespace(session_id=sid)
 
     spawner.trigger = trigger
+    with pytest.raises(ValueError, match="constructor differs"):
+        NativeLocationDispatch(spawner)
+    register_dispatch_runtime(spawner, type(None))
     adapter = NativeLocationDispatch(spawner)
     from butlers.api.app import create_app
 
@@ -373,3 +378,4 @@ async def test_native_location_dispatch_binds_exact_input_before_session_admissi
     finally:
         _current_location_export.reset(token)
         location_retention._copy_pools.discard(pool)
+        _dispatchers.pop(pool, None)

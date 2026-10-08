@@ -210,12 +210,21 @@ async def run_projection(adapter: Any, *, chronicler_pool: asyncpg.Pool) -> Adap
                     "SELECT * FROM location_projection_heads WHERE adapter_name=$1",
                     adapter.source_name,
                 )
-                replay_required = getattr(adapter, "retention_replay_required", lambda _: False)
+                replay_required = getattr(adapter, "retention_replay_required", None)
                 # An interrupted legacy UUID cursor requests a bounded real
                 # source replay. Its durable private head survives pages; it
                 # cannot transform legacy invalid lineage into purge authority.
                 replay = bool(head and head["replay_pending"])
-                if not replay and replay_required(checkpoint):
+                needs_replay = False
+                if not replay and replay_required is not None:
+                    # Preserve strict native carry parsing even before the
+                    # actual selected-row contribution witness exists.
+                    carry_token = _current.set(_Witness([]))
+                    try:
+                        needs_replay = await replay_required(checkpoint, conn)
+                    finally:
+                        _current.reset(carry_token)
+                if needs_replay:
                     replay = True
                     head = await conn.fetchrow(
                         """UPDATE location_projection_heads SET replay_pending=true,

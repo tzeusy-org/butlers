@@ -241,7 +241,32 @@ async def derivation_writer(pool: Any):
     binding = _current_derivation.get()
     async with pool.acquire() as conn:
         if binding is None:
-            yield conn
+            from butlers.chronicler.location_catalog_copies import _runtimes
+            from butlers.chronicler.location_memory_context import current_runtime_context
+            from butlers.core.copy_lifetime import _current_copy_invocation
+
+            if pool not in _runtimes or (
+                current_runtime_context() is None and _current_copy_invocation.get() is None
+            ):
+                yield conn  # Ordinary unconfigured writer shape remains unchanged.
+                return
+            from butlers.chronicler.location_memory_context import (
+                _artifact_writer,
+                context_artifact_scope,
+                finish_context_artifacts,
+            )
+
+            async with conn.transaction():
+                context = await context_artifact_scope(pool, conn)
+                if context is None:
+                    yield conn
+                else:
+                    token = _artifact_writer.set(context)
+                    try:
+                        yield conn
+                        await finish_context_artifacts(context)
+                    finally:
+                        _artifact_writer.reset(token)
             return
         if not binding.active or (binding.pool is not pool and binding.connection is not conn):
             raise PolicyUnavailableError("Native artifact writer differs")
@@ -264,6 +289,9 @@ async def derivation_writer(pool: Any):
 async def bind_artifact(conn: Any, table: str, artifact: UUID) -> None:
     binding = _current_derivation.get()
     if binding is None:
+        from butlers.chronicler.location_memory_context import bind_context_artifact
+
+        await bind_context_artifact(conn, table, artifact)
         return
     if not binding.active or table not in {"facts", "rules"}:
         raise PolicyUnavailableError("Native artifact producer differs")
@@ -323,8 +351,15 @@ async def finalize_derivation_artifacts(conn: Any) -> None:
 
 
 async def execute_rule_insert(pool: Any, artifact: UUID, sql: str, *values: Any) -> None:
-    if _current_derivation.get() is None:
-        await pool.execute(sql, *values)
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.chronicler.location_memory_context import current_runtime_context
+    from butlers.core.copy_lifetime import _current_copy_invocation
+
+    if _current_derivation.get() is None and (
+        pool not in _runtimes
+        or (current_runtime_context() is None and _current_copy_invocation.get() is None)
+    ):
+        await pool.execute(sql, *values)  # Preserve the ordinary unconfigured writer.
         return
     async with derivation_writer(pool) as conn:
         await conn.execute(sql, *values)

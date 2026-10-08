@@ -249,3 +249,36 @@ ancestry regardless of display label. Fixed diagnostic classes and SQLSTATE
 are emitted at actual failure boundaries without exception arguments. These
 changes do not establish the causes of the previous hosted failures or certify
 SQL success.
+
+
+### Native artifact continuation and current proof limits
+
+The registered Memory writer now freezes newly inserted facts/rules with the
+actual runtime context and complete canonical body before that transaction
+commits. No model provenance field or asserted actor supplies this binding.
+An exclusive Chronicle-owned context with every real parent and unchanged
+full bundle can publish through the existing catalog generation and routed
+prepare/body/status plane. Catalog backfill uses the same configured writer
+and binds its actual emitted IDs; it cannot skip native ancestry by using a
+wholesale INSERT. Other-source or mixed contexts retain their own held
+boundary and do not borrow Chronicle's private authority.
+
+Own unchanged unexposed artifacts can be disposed with their context, including
+existing owning graph projections. Catalog artifacts require their genuine
+loan/consumer dispositions first. Child disposal checks actual ended-runtime
+and finished-processing receipts and selected/fenced parent generations before
+the parent becomes terminal; requiring that parent terminal receipt first
+would create a cycle. Separate readback confirms actual body removal. Changed
+versions, other contexts, links, unknown operations and unclosed catalog copies
+remain held. Routed/mixed descendant completeness and real SQL/online behavior
+are still mandatory unfinished proof, not completed erasure.
+
+The current hosted head9bf has7 failing cases and1 setup error. The SSID
+source-selection helper incorrectly read a field absent from the actual
+ProjectionCheckpoint model; it now reads durable carry on the same locked
+writer. Two software fixtures now install the daemon's constructor registration
+without weakening production refusal. Registered legacy/public-schema API
+readers use actual ordinary-source ancestry classification; projected/native
+rows still refuse before emission. These corrections are software-tested and
+remain unproven in the next hosted migrated run. No local SQL, live purge,
+provider, backup or restore action was performed.

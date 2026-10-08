@@ -444,8 +444,6 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                 for entry in session["prompt_provenance"] or []
                 if entry.get("source") != "memory_context"
             ]
-            if session["tool_calls"] not in (None, []):
-                return False  # Unknown mutating/tool descendants are not erased by text similarity.
             episodes = await conn.fetch(
                 f"SELECT episode_id,body_digest FROM {schema}.location_runtime_context_episodes "
                 "WHERE input_generation=$1 ORDER BY episode_id",
@@ -471,6 +469,83 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
                     expected["episode_id"],
                 ):
                     return False
+            # These are actual newly inserted outputs captured by the owning
+            # writer before COMMIT. A graph/catalog/other-context descendant
+            # requires its own closure; absence is checked on the live writer,
+            # never inferred from a model's provenance or a missing callback.
+            artifacts = await conn.fetch(
+                f"SELECT * FROM {schema}.location_runtime_context_artifacts "
+                "WHERE input_generation=$1 ORDER BY memory_table,artifact_id",
+                input_generation,
+            )
+            if not captured_artifact_calls(session["tool_calls"], artifacts):
+                return False  # Unknown/routed mutations retain their input and copy holders.
+            already_disposed = set()
+            for artifact in artifacts:
+                table, identifier = artifact["memory_table"], artifact["artifact_id"]
+                if table not in {"facts", "rules"}:
+                    raise PolicyUnavailableError("Native context artifact profile differs")
+                canonical = await conn.fetchrow(
+                    f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", identifier
+                )
+                from butlers.chronicler.location_projection import _digest_value
+
+                if (
+                    canonical is None
+                    and runtime.name == "chronicler"
+                    and await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_memory_artifacts a "
+                        "JOIN chronicler.location_native_memory_artifact_dispositions d "
+                        "USING(artifact_generation,body_digest) WHERE a.artifact_generation=$1 "
+                        "AND a.input_generation=$2 AND d.decision_id=$3 AND a.body_digest=$4)",
+                        artifact["artifact_generation"],
+                        input_generation,
+                        UUID(plan["decision_id"]),
+                        artifact["body_digest"],
+                    )
+                ):
+                    already_disposed.add(artifact["artifact_generation"])
+                    continue
+                if (
+                    canonical is None
+                    or content_digest({"memory_artifact": _digest_value(dict(canonical))})
+                    != artifact["body_digest"]
+                    or await conn.fetchval(
+                        f"SELECT EXISTS(SELECT 1 FROM {schema}.location_runtime_context_artifacts "
+                        "WHERE memory_table=$1 AND artifact_id=$2 AND input_generation<>$3) "
+                        "OR EXISTS(SELECT 1 FROM public.memory_catalog WHERE source_schema=$4 "
+                        "AND source_table=$1 AND source_id=$2) "
+                        "OR EXISTS(SELECT 1 FROM memory_links WHERE source_id=$2 OR target_id=$2) "
+                        + (
+                            "OR EXISTS(SELECT 1 FROM facts WHERE supersedes_id=$2)"
+                            if table == "facts"
+                            else ""
+                        ),
+                        table,
+                        identifier,
+                        input_generation,
+                        runtime.memory_identity[0],
+                    )
+                ):
+                    return False
+            for artifact in artifacts:
+                if artifact.get("artifact_generation") in already_disposed:
+                    continue
+                if artifact["memory_table"] == "facts":
+                    from butlers.core import entity_graph_edges
+
+                    await entity_graph_edges.delete_entity_graph_edge(
+                        conn,
+                        source_schema=runtime.memory_identity[0],
+                        source_table="facts",
+                        source_id=artifact["artifact_id"],
+                    )
+                removed = await conn.fetchval(
+                    f"DELETE FROM {artifact['memory_table']} WHERE id=$1 RETURNING id",
+                    artifact["artifact_id"],
+                )
+                if removed != artifact["artifact_id"]:
+                    raise PolicyUnavailableError("Native context artifact disposal changed")
             for expected in episodes:
                 if (
                     await conn.fetchval(
@@ -523,8 +598,39 @@ async def dispose_runtime_context(runtime: Any, input_generation: UUID, plan: di
             "SELECT count(*) FROM location_catalog_copy_finished WHERE loan_id=ANY($1::uuid[])",
             completed_loans,
         )
+    async with runtime.memory.acquire() as committed_memory:
+        for artifact in artifacts:
+            if await committed_memory.fetchval(
+                f"SELECT EXISTS(SELECT 1 FROM {artifact['memory_table']} WHERE id=$1)",
+                artifact["artifact_id"],
+            ):
+                raise PolicyUnavailableError("Committed context artifact disposal is unknown")
     if observed != receipt or loan_count != len(completed_loans):
         raise PolicyUnavailableError("Committed native context disposal is unknown")
+    return True
+
+
+def captured_artifact_calls(calls: Any, artifacts: list[Any]) -> bool:
+    """Recorded outputs can select only SAME-writer captured artifact IDs.
+
+    This admits no authority or source lineage from the record. Every selected
+    artifact is still checked against the private immutable writer ledger and
+    canonical full body, and graph/catalog/other-context copies must close.
+    Unknown operations/outcomes keep the complete source context held.
+    """
+    if calls is None:
+        return True
+    if not isinstance(calls, list):
+        return False
+    owned = {(row["memory_table"], str(row["artifact_id"])) for row in artifacts}
+    names = {"memory_store_fact": "facts", "memory_store_rule": "rules"}
+    for call in calls:
+        if not isinstance(call, dict) or call.get("outcome") != "success":
+            return False
+        result = call.get("result")
+        table = names.get(call.get("name"))
+        if not isinstance(result, dict) or (table, str(result.get("id"))) not in owned:
+            return False
     return True
 
 
@@ -588,3 +694,178 @@ async def dispose_own_contexts(domain: Any, decision: UUID) -> None:
     )
     for row in generations:
         await dispose_runtime_context(runtime, row["input_generation"], plan)
+
+
+@dataclass
+class _ArtifactWriter:
+    runtime: Any
+    generation: UUID
+    connection: Any
+    pending: set[tuple[str, UUID]] = field(default_factory=set)
+
+
+_artifact_writer: ContextVar[_ArtifactWriter | None] = ContextVar(
+    "native_context_artifact_writer", default=None
+)
+
+
+async def context_artifact_scope(pool: Any, conn: Any) -> _ArtifactWriter | None:
+    """Resolve actual registered guard invocation or native constructor scope.
+
+    A model's session/provenance/actor argument is never consulted. Stored
+    session IDs only locate an already committed constructor-owned context.
+    """
+    from butlers.chronicler.location_catalog_copies import _runtimes
+    from butlers.core.copy_lifetime import _current_copy_invocation
+
+    runtime = _runtimes.get(pool)
+    if runtime is None or not runtime.active:
+        return None
+    native = current_runtime_context()
+    invocation = _current_copy_invocation.get()
+    if native is not None and native.runtime is runtime and native.admitted:
+        session = native.session
+    elif invocation is not None and invocation.target == runtime.name:
+        session = UUID(invocation.runtime_session)
+    else:
+        return None
+    provisional = _RuntimeContext(runtime, UUID(int=0), session, False)
+    await _lock_memory_context(conn, provisional)
+    schema = _own_schema(runtime)
+    row = await conn.fetchrow(
+        f"SELECT b.input_generation FROM {schema}.location_runtime_context_bindings b "
+        "WHERE b.receiving_session=$1 AND (EXISTS("
+        f"SELECT 1 FROM {schema}.location_catalog_copy_lifetimes l "
+        "WHERE (l.holder_id=b.input_generation AND l.holder_kind='unbound_processing') "
+        "OR (l.holder_id=b.receiving_session AND l.holder_kind='runtime_session')) "
+        + (
+            "OR EXISTS(SELECT 1 FROM chronicler.location_native_copy_births n "
+            "WHERE n.receiving_session=b.receiving_session)"
+            if runtime.name == "chronicler"
+            else ""
+        )
+        + ")",
+        session,
+    )
+    if row is None:
+        return None  # No fabricated source ancestry for ordinary writes.
+    generation = row["input_generation"]
+    if await conn.fetchval(
+        f"SELECT EXISTS(SELECT 1 FROM {schema}.location_runtime_context_dispositions "
+        "WHERE input_generation=$1)",
+        generation,
+    ):
+        raise PolicyUnavailableError("Native context artifact input was disposed")
+    return _ArtifactWriter(runtime, generation, conn)
+
+
+async def bind_context_artifact(conn: Any, table: str, artifact: UUID) -> None:
+    binding = _artifact_writer.get()
+    if binding is None:
+        return
+    if binding.connection is not conn or table not in {"facts", "rules"}:
+        raise PolicyUnavailableError("Native context artifact writer differs")
+    binding.pending.add((table, artifact))
+
+
+async def finish_context_artifacts(binding: _ArtifactWriter) -> None:
+    from butlers.chronicler.location_projection import _digest_value
+
+    schema = _own_schema(binding.runtime)
+    for table, artifact in sorted(binding.pending):
+        row = await binding.connection.fetchrow(
+            f"SELECT * FROM {table} WHERE id=$1 FOR UPDATE", artifact
+        )
+        if row is None:
+            raise PolicyUnavailableError("Native context artifact body is unavailable")
+        artifact_generation = uuid4()
+        digest = content_digest({"memory_artifact": _digest_value(dict(row))})
+        await binding.connection.execute(
+            f"INSERT INTO {schema}.location_runtime_context_artifacts "
+            "(artifact_generation,input_generation,memory_table,artifact_id,body_digest) "
+            "VALUES($1,$2,$3,$4,$5)",
+            artifact_generation,
+            binding.generation,
+            table,
+            artifact,
+            digest,
+        )
+        await capture_context_catalog_source(binding, artifact_generation, table, artifact, digest)
+
+
+async def capture_context_catalog_source(
+    binding: _ArtifactWriter, generation: UUID, table: str, artifact: UUID, digest: bytes
+) -> None:
+    """Actual exclusive Chronicler input can use its existing owning catalog plane.
+
+    The full native context and every actual parent are reread on the same
+    writer. Borrowed/mixed/unknown inputs remain in their own artifact ledger;
+    they cannot borrow Chronicle's source authority or fabricate a catalog
+    generation. Other receivers never read Chronicle's private namespace.
+    """
+    if binding.runtime.name != "chronicler":
+        return
+    conn = binding.connection
+    frozen = await conn.fetchrow(
+        "SELECT b.*,i.server_request FROM chronicler.location_runtime_context_bindings b "
+        "JOIN chronicler.location_runtime_context_intents i USING(input_generation) "
+        "WHERE b.input_generation=$1",
+        binding.generation,
+    )
+    if frozen is None or frozen["exclusive_input"] is not True:
+        return
+    if await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM chronicler.location_catalog_copy_lifetimes "
+        "WHERE holder_id=$1 AND holder_kind='unbound_processing')",
+        binding.generation,
+    ):
+        return  # Loan-only ancestry requires that actual source's own protocol.
+    parents = await conn.fetch(
+        "SELECT DISTINCT copy_generation,input_digest,lineage_known,exclusive_input "
+        "FROM chronicler.location_native_copy_births WHERE receiving_session=$1",
+        frozen["receiving_session"],
+    )
+    if not parents or any(
+        row["lineage_known"] is not True or row["exclusive_input"] is not True for row in parents
+    ):
+        return
+    prior = await conn.fetchrow(
+        "SELECT * FROM chronicler.location_native_memory_bundles WHERE input_generation=$1",
+        binding.generation,
+    )
+    if prior is None:
+        await conn.execute(
+            "INSERT INTO chronicler.location_native_dispatch_inputs "
+            "(input_generation,server_request,prompt_digest,parent_count,origin_kind) "
+            "VALUES($1,$2,$3,$4,'native_memory')",
+            binding.generation,
+            frozen["server_request"] or binding.generation,
+            frozen["prompt_digest"],
+            len(parents),
+        )
+        for parent in parents:
+            await conn.execute(
+                "INSERT INTO chronicler.location_native_dispatch_parents "
+                "(input_generation,copy_generation,input_digest) VALUES($1,$2,$3)",
+                binding.generation,
+                parent["copy_generation"],
+                parent["input_digest"],
+            )
+        await conn.execute(
+            "INSERT INTO chronicler.location_native_memory_bundles "
+            "(input_generation,bundle_digest,exclusive_input) VALUES($1,$2,true)",
+            binding.generation,
+            frozen["bundle_digest"],
+        )
+    elif prior["bundle_digest"] != frozen["bundle_digest"] or prior["exclusive_input"] is not True:
+        raise PolicyUnavailableError("Native context catalog bundle differs")
+    await conn.execute(
+        "INSERT INTO chronicler.location_native_memory_artifacts "
+        "(artifact_generation,input_generation,memory_table,artifact_id,body_digest) "
+        "VALUES($1,$2,$3,$4,$5)",
+        generation,
+        binding.generation,
+        table,
+        artifact,
+        digest,
+    )

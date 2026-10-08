@@ -69,6 +69,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_runtime_context_ended",
         "location_runtime_context_server_finished",
         "location_runtime_context_episodes",
+        "location_runtime_context_artifacts",
         "location_runtime_context_dispositions",
     ):
         if table not in present:
@@ -164,6 +165,14 @@ def _validate_local_tables(schema: str) -> None:
                 ("body_digest", "bytea", True),
                 ("committed_at", "timestamp with time zone", True),
             ],
+            "location_runtime_context_artifacts": [
+                ("artifact_generation", "uuid", True),
+                ("input_generation", "uuid", True),
+                ("memory_table", "text", True),
+                ("artifact_id", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
             "location_runtime_context_dispositions": [
                 ("input_generation", "uuid", True),
                 ("decision_id", "uuid", True),
@@ -255,6 +264,13 @@ def _validate_local_tables(schema: str) -> None:
                 "UNIQUE (episode_id)",
                 "CHECK ((octet_length(body_digest) = 32))",
                 "PRIMARY KEY (input_generation, episode_id)",
+            },
+            "location_runtime_context_artifacts": {
+                "PRIMARY KEY (artifact_generation)",
+                "FOREIGN KEY (input_generation) REFERENCES "
+                "location_runtime_context_intents(input_generation)",
+                "CHECK ((memory_table = ANY (ARRAY['facts'::text, 'rules'::text])))",
+                "CHECK ((octet_length(body_digest) = 32))",
             },
             "location_runtime_context_dispositions": {
                 "FOREIGN KEY (input_generation) REFERENCES "
@@ -444,6 +460,14 @@ def upgrade() -> None:
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           PRIMARY KEY(input_generation,episode_id)
+        );
+        CREATE TABLE IF NOT EXISTS location_runtime_context_artifacts (
+          artifact_generation UUID PRIMARY KEY,
+          input_generation UUID NOT NULL REFERENCES location_runtime_context_intents,
+          memory_table TEXT NOT NULL CHECK(memory_table IN ('facts','rules')),
+          artifact_id UUID NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
         CREATE TABLE IF NOT EXISTS location_runtime_context_dispositions (
           input_generation UUID PRIMARY KEY REFERENCES location_runtime_context_intents,

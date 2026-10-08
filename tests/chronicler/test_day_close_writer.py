@@ -1243,9 +1243,11 @@ async def test_build_day_close_completion_hooks_uses_owner_timezone(fake_pool, m
 async def test_native_cache_writer_binds_actual_input_and_receipts_exact_legacy_replacement():
     """REQ-location-retention-005/006; same native writer software, no real SQL credit."""
     from contextlib import asynccontextmanager
+    from types import SimpleNamespace
     from uuid import uuid4
 
     from butlers.chronicler import location_retention
+    from butlers.chronicler.location_input_binding import _dispatchers, register_dispatch_runtime
     from butlers.chronicler.location_projection import _digest_value
     from butlers.core.spawner import SpawnerResult
     from butlers.location_retention import content_digest
@@ -1324,6 +1326,9 @@ async def test_native_cache_writer_binds_actual_input_and_receipts_exact_legacy_
     location_retention._copy_pools.add(
         pool
     )  # Test-only source registration, not runtime authority.
+    # Same constructor registration used by the daemon; all objects here remain
+    # explicit software doubles and supply no SQL or enrollment evidence.
+    register_dispatch_runtime(SimpleNamespace(_pool=pool), SpawnerResult)
     result = SpawnerResult(
         success=True,
         output="Day summary prose.",
@@ -1361,3 +1366,4 @@ async def test_native_cache_writer_binds_actual_input_and_receipts_exact_legacy_
         assert cache == previous and "cache_body_written" not in trace
     finally:
         location_retention.unregister_native_copy_pool(pool)
+        _dispatchers.pop(pool, None)

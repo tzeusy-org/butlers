@@ -1112,6 +1112,15 @@ async def catalog_writer(pool: Any):
     runtime = _runtimes.get(pool)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if runtime is not None:
+                from butlers.chronicler.location_memory_context import (
+                    _lock_memory_context,
+                    _RuntimeContext,
+                )
+
+                await _lock_memory_context(
+                    conn, _RuntimeContext(runtime, UUID(int=0), UUID(int=0), False)
+                )
             if runtime is not None and runtime.name == "chronicler":
                 memory, schema, role = _receivers[runtime.domain]
                 if memory is not pool:
@@ -1122,7 +1131,27 @@ async def catalog_writer(pool: Any):
 
 async def bind_catalog(conn: Any, pool: Any, schema: str, table: str, artifact: UUID) -> None:
     runtime = _runtimes.get(pool)
-    if runtime is None or runtime.name != "chronicler":
+    if runtime is None:
+        return
+    if schema != runtime.memory_identity[0]:
+        raise PolicyUnavailableError("Native catalog configured source differs")
+    own_schema = runtime.identity[0]
+    context = await conn.fetchrow(
+        f'SELECT a.input_generation FROM "{own_schema}".location_runtime_context_artifacts a '
+        "WHERE memory_table=$1 AND artifact_id=$2",
+        table,
+        artifact,
+    )
+    if context is not None:
+        if runtime.name != "chronicler" or not await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_memory_artifacts "
+            "WHERE input_generation=$1 AND memory_table=$2 AND artifact_id=$3)",
+            context["input_generation"],
+            table,
+            artifact,
+        ):
+            raise PolicyUnavailableError("Native context catalog source is unavailable")
+    if runtime.name != "chronicler":
         return
     row = await conn.fetchrow(
         "SELECT * FROM public.memory_catalog WHERE source_schema=$1 AND source_table=$2 "
@@ -1380,12 +1409,31 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
                     "(b.copy_generation IS NULL OR NOT b.lineage_known OR NOT b.exclusive_input "
                     "OR NOT EXISTS(SELECT 1 FROM chronicler.location_retention_plan_outputs p "
                     "WHERE p.decision_id=$2 AND p.output_kind=b.output_kind "
-                    "AND p.output_id=b.output_id) OR NOT EXISTS("
-                    "SELECT 1 FROM chronicler.location_native_copy_dispositions d "
-                    "WHERE d.copy_generation=i.copy_generation AND d.input_digest=i.input_digest "
-                    "AND d.decision_id=$2)))",
+                    "AND p.output_id=b.output_id)))",
                     artifact["input_generation"],
                     decision,
+                ):
+                    continue
+                context = await conn.fetchrow(
+                    "SELECT a.input_generation FROM chronicler.location_runtime_context_artifacts "
+                    "a "
+                    "WHERE a.artifact_generation=$1",
+                    artifact["artifact_generation"],
+                )
+                if context is not None and not await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM chronicler.location_runtime_context_ended "
+                    "WHERE input_generation=$1)",
+                    context["input_generation"],
+                ):
+                    continue
+                if await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_processing_parents p "
+                    "JOIN chronicler.location_native_processing_claims c USING(claim_id) "
+                    "JOIN chronicler.location_native_dispatch_parents i "
+                    "USING(copy_generation,input_digest) WHERE i.input_generation=$1 "
+                    "AND NOT EXISTS(SELECT 1 FROM chronicler.location_native_processing_finished f "
+                    "WHERE f.claim_id=c.claim_id))",
+                    artifact["input_generation"],
                 ):
                     continue
                 generations = await conn.fetch(
@@ -1417,6 +1465,16 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
                     != artifact["body_digest"]
                 ):
                     continue
+                if await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM memory_links WHERE source_id=$1 OR target_id=$1) "
+                    + (
+                        "OR EXISTS(SELECT 1 FROM facts WHERE supersedes_id=$1)"
+                        if table == "facts"
+                        else ""
+                    ),
+                    artifact["artifact_id"],
+                ):
+                    continue  # Independently born/linked descendants retain their actual source.
                 catalog = await conn.fetchrow(
                     "SELECT c.*,g.body_digest FROM public.memory_catalog c "
                     "JOIN chronicler.location_native_catalog_heads h ON h.catalog_id=c.id "
@@ -1481,3 +1539,33 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
             f"SELECT EXISTS(SELECT 1 FROM {table} WHERE id=$1)", artifact["artifact_id"]
         ):
             raise PolicyUnavailableError("Committed artifact disposition is unknown")
+
+
+async def backfill_catalog_rows(
+    pool: Any, sql: str, schema: str, limit: int, excluded: list
+) -> int:
+    """Backfill's actual emitted IDs bind on the same registered owning writer.
+
+    Ordinary unconfigured maintenance keeps its old count query. Registered
+    writers never publish context-derived bodies via the wholesale SQL bypass;
+    their canonical constructor selects schema and every inserted row must
+    have the same native generation/body binding as a live catalog write.
+    """
+    runtime = _runtimes.get(pool)
+    if runtime is None:
+        return int(await pool.fetchval(sql, schema, limit, excluded) or 0)
+    if schema != runtime.memory_identity[0]:
+        raise PolicyUnavailableError("Native backfill configured source differs")
+    shaped = sql.replace("RETURNING 1", "RETURNING source_id").replace(
+        "SELECT COUNT(*) FROM inserted", "SELECT source_id FROM inserted"
+    )
+    if shaped == sql or "SELECT COUNT(*) FROM inserted" in shaped:
+        raise PolicyUnavailableError("Native backfill producer shape differs")
+    table = "facts" if "FROM facts f" in sql else "rules" if "FROM rules r" in sql else None
+    if table is None:
+        raise PolicyUnavailableError("Native backfill producer profile differs")
+    async with catalog_writer(pool) as conn:
+        rows = await conn.fetch(shaped, schema, limit, excluded)
+        for row in rows:
+            await bind_catalog(conn, pool, schema, table, row["source_id"])
+    return len(rows)

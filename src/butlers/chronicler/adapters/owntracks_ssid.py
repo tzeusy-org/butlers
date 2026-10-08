@@ -312,11 +312,13 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             }
         )
 
-    def retention_replay_required(self, checkpoint: Any) -> bool:
+    async def retention_replay_required(self, checkpoint: Any, conn: Any) -> bool:
         """Native legacy/corrupted tuple recovery; never supplies purge coverage."""
         if checkpoint is None or checkpoint.watermark is None:
             return False
-        carry = checkpoint.carryover
+        # ProjectionCheckpoint deliberately has no carryover field. Re-read
+        # the actual durable cursor on this same policy-locked writer.
+        carry = await get_carryover(conn, self.source_name)
         return (
             isinstance(carry, dict) and self._uuid_tiebreaker(carry, checkpoint.watermark) is None
         )

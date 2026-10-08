@@ -660,10 +660,11 @@ async def _backfill_facts_to_catalog(
         )
         SELECT COUNT(*) FROM inserted
     """
-    count = await pool.fetchval(
-        sql, source_schema, limit, list(CATALOG_WRITE_EXCLUDED_SENSITIVITIES)
+    from butlers.chronicler.location_catalog_copies import backfill_catalog_rows
+
+    return await backfill_catalog_rows(
+        pool, sql, source_schema, limit, list(CATALOG_WRITE_EXCLUDED_SENSITIVITIES)
     )
-    return int(count or 0)
 
 
 async def _backfill_rules_to_catalog(
@@ -719,10 +720,11 @@ async def _backfill_rules_to_catalog(
         )
         SELECT COUNT(*) FROM inserted
     """
-    count = await pool.fetchval(
-        sql, source_schema, limit, list(CATALOG_WRITE_EXCLUDED_SENSITIVITIES)
+    from butlers.chronicler.location_catalog_copies import backfill_catalog_rows
+
+    return await backfill_catalog_rows(
+        pool, sql, source_schema, limit, list(CATALOG_WRITE_EXCLUDED_SENSITIVITIES)
     )
-    return int(count or 0)
 
 
 async def _reconcile_facts_catalog_disownment(
