@@ -1053,10 +1053,11 @@ else:
     # PyYAML's YAML1.1 interprets the GitHub `on` key as True.
     events = migration_workflow[True]
     assert events["workflow_dispatch"]["inputs"]["image-size-diagnostic"]["default"] is False
+    assert events["workflow_dispatch"]["inputs"]["offline-route-a-build-proof"]["default"] is False
     ordinary = migration_workflow["jobs"]["migration-chain-head"]
     assert (
         ordinary["if"]
-        == "github.event_name != 'workflow_dispatch' || !inputs['image-size-diagnostic']"
+        == "github.event_name != 'workflow_dispatch' || (!inputs['image-size-diagnostic'] && !inputs['offline-route-a-build-proof'])"
     )
     assert ordinary["timeout-minutes"] == 14
     diagnostic = migration_workflow["jobs"]["image-size-diagnostic"]
@@ -1068,6 +1069,18 @@ else:
     assert diagnostic["steps"][0]["with"]["ref"] == "${{ github.sha }}"
     assert diagnostic["steps"][1]["with"]["ref"] == "e7b7812a3fa65c80f3f070d38ee43f7fa6474881"
     assert all(step["with"]["persist-credentials"] is False for step in diagnostic["steps"][:2])
+    # Both source-bound manual doors refuse a simultaneous request before any
+    # image preparation. Push/default dispatch retains the ordinary migration.
+    for job in (diagnostic, migration_workflow["jobs"]["offline-route-a-build-proof"]):
+        refusal = _workflow_step(job=job, name="Reject conflicting manual build modes")
+        for other_mode, expected in (("false", 0), ("", 0), ("true", 2)):
+            result = subprocess.run(
+                ["bash", "-eu", "-c", refusal["run"]],
+                env={**os.environ, "OTHER_BUILD_MODE": other_mode},
+                capture_output=True,
+                timeout=5,
+            )
+            assert result.returncode == expected
     diagnostic_shell = "\n".join(step.get("run", "") for step in diagnostic["steps"])
     assert "ci_image_size_diagnostic.py" in diagnostic_shell
     assert "pytest" not in diagnostic_shell and "docker push" not in diagnostic_shell
