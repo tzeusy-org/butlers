@@ -160,29 +160,35 @@ must flip together: the old `IngestEventV1` (`extra="forbid"`) rejects the new
    and confirm no pod is left.
 2. With the **current** image, which still contains both revisions, and the migration-role
    database URL, downgrade `sw_041`. Then downgrade core to `core_261` in every schema whose
-   `alembic_version` holds a core revision. `core_265` restores only when the last of those
-   schemas leaves it, so a partial pass changes nothing.
+   `alembic_version` is at `core_265` or a later core revision. Schemas below that never ran
+   the split and are skipped; asking alembic to "downgrade" one to `core_261` would fail midway.
+   `core_265` restores only when the last of the selected schemas leaves it, so an interrupted
+   pass restores nothing and can simply be rerun.
 
    ```python
    from alembic import command
+   from alembic.script import ScriptDirectory
    from sqlalchemy import create_engine, text
    from butlers.migrations import _build_alembic_config
 
    url = "<migration-role database URL>"  # e.g. read from the pod env; never print it
-   command.downgrade(
-       _build_alembic_config(url, ["switchboard"], target_schema="switchboard"),
-       "switchboard@sw_040",
-   )
+   script = ScriptDirectory.from_config(_build_alembic_config(url, ["core"]))
+   # core_265 and every later core revision: only these schemas hold the split.
+   split = {rev.revision for rev in script.walk_revisions(base="core_265", head="heads")}
    with create_engine(url).connect() as conn:
        schemas = conn.execute(text(
            "SELECT table_schema FROM information_schema.tables WHERE table_name = 'alembic_version'"
        )).scalars().all()
        core_schemas = [
            schema for schema in schemas
-           if conn.execute(text(
-               f'SELECT count(*) FROM "{schema}".alembic_version WHERE version_num LIKE \'core_%\''
-           )).scalar()
+           if split & set(conn.execute(text(
+               f'SELECT version_num FROM "{schema}".alembic_version'
+           )).scalars())
        ]
+   command.downgrade(
+       _build_alembic_config(url, ["switchboard"], target_schema="switchboard"),
+       "switchboard@sw_040",
+   )
    for schema in core_schemas:
        command.downgrade(_build_alembic_config(url, ["core"], target_schema=schema), "core@core_261")
    ```
