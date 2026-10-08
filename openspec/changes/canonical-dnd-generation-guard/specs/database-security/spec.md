@@ -195,17 +195,12 @@ any direct Health/Messenger access to another butler's records.
 - **THEN** a subsequent core migration SHALL add targeted GRANT statements for that table to all butler runtime roles
 - **AND** the write authorization matrix in this spec SHALL be updated
 ### Requirement: Graceful Fallback Policy
-SET ROLE enforcement SHALL retain its existing graceful development fallback
-for ordinary non-DND workloads. When runtime roles are absent, the normal
-non-DND context path may continue under the shared database user with the
-existing warning and application-level authorization behavior.
 
-The DND mutation and DND-based durable admission are a strict exception. If a
-caller cannot prove its active runtime role, the DND RLS/ACL boundary, the
-singleton guard, or database-time revalidation, it SHALL fail closed before
-changing DND or writing a durable admission. It SHALL not treat a shared-user
-development connection, a caller-supplied writer, or migration-owner privilege
-as a substitute for verified runtime authority.
+SET ROLE enforcement SHALL degrade gracefully in environments where runtime roles are absent. The system SHALL retain the existing development fallback for direct runtime connection setup when PostgreSQL roles cannot be verified, including the warning and shared-user connection behavior. This fallback SHALL NOT waive REQ-database-security-011: a supported daemon or launcher that requests online migrations SHALL satisfy the reviewed bootstrap prerequisite first, and missing provenance SHALL stop that migration/startup path even under dev. No fallback SHALL authorize self-bootstrap or recovery privileges. SET ROLE enforcement SHALL retain its existing graceful development fallback for ordinary non-DND workloads. When runtime roles are absent, the normal non-DND context path may continue under the shared database user with the existing warning and application-level authorization behavior. The DND mutation and DND-based durable admission are a strict exception. If a caller cannot prove its active runtime role, the DND RLS/ACL boundary, the singleton guard, or database-time revalidation, it SHALL fail closed before changing DND or writing a durable admission. It SHALL not treat a shared-user development connection, a caller-supplied writer, or migration-owner privilege as a substitute for verified runtime authority.
+
+ID: REQ-database-security-012
+Source: about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md (Database Connection Scoping); bu-kqnum.8.10 owner decision and clarification (2026-08-15)
+Scope: v1-mandatory
 
 #### Scenario: Missing roles do not widen DND authority
 - **WHEN** a development environment lacks the required runtime roles or an
@@ -222,17 +217,22 @@ as a substitute for verified runtime authority.
 
 #### Scenario: Missing roles in development
 - **WHEN** the `core_001_foundation` migration ran but could not create roles (e.g., connecting user lacks CREATEROLE)
+- **AND** the request is direct development runtime connection setup and requests no online migration
 - **THEN** the roles do not exist in `pg_roles`
 - **AND** `Database.connect()` detects this and skips the `setup` callback
 - **AND** a warning is logged: "Role {role} not found; SET ROLE enforcement disabled. Butler {name} runs with shared-user privileges."
 - **AND** all queries execute with the shared database user's privileges (identical to pre-enforcement behavior)
 - **AND** no error is raised -- the butler starts and operates normally
 
+- **AND** this direct runtime continuation does not waive a supported online migration/startup prerequisite
+
 #### Scenario: Enforcement in production
 - **WHEN** the PostgreSQL instance has roles created by the migration (production default)
 - **THEN** SET ROLE enforcement is active for all butler and connector connections
 - **AND** the connecting user (`butlers`) must be a member of each runtime role (granted by `core_065`)
 - **AND** any query that violates the role's privileges fails with a PostgreSQL permission error
+
+
 ## ADDED Requirements
 
 ### Requirement: DND Guard Least-Privilege Mutation Boundary
