@@ -392,13 +392,13 @@ send_enabled = true   # CAUTION: carries ban risk — review section 3 above
 **Bridge not starting / binary not found:**
 
 ```
-RuntimeError: whatsapp-bridge binary not found. Build with EXTRAS=whatsapp or install manually.
+RuntimeError: whatsapp-bridge binary not found. Rebuild the application image (which includes the Go bridge) or install manually.
 ```
 
 Rebuild the image with the WhatsApp extra:
 
 ```bash
-docker compose build --build-arg EXTRAS=whatsapp connector-whatsapp-user
+docker compose build connector-whatsapp-user
 ```
 
 **QR code modal shows an error instead of a QR:**

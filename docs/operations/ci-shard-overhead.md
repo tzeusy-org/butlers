@@ -1,0 +1,105 @@
+# CI shard overhead and evidence
+
+The backend still has five unit and five integration manifests, independent
+preflight and affected paths, and the always-running fail-closed fan-in. All
+existing watchdogs and healthy-workload floors remain. This change claims no
+wall-clock gain. Ten genuine merge-group observations per original slice,
+installation and image measurements, full normal/protected gates, and the hard
+setup/first-result/tail targets remain required before whole closure.
+
+## Dependencies and database targets
+
+The twelve jobs (preflight, unit1–5, integration1–5 and affected) no longer launch
+the unused PostgreSQL 16 service or inject its DATABASE_URL. Production URL/SSL
+parsing is unchanged. DB tests provision their own pgvector PostgreSQL 17
+container and pass its actual endpoint explicitly. The real DB lifecycle test
+also plants an unreachable ambient endpoint, migrates/bootstrap stages its own
+target, writes as the existing ordinary general role and reads its committed
+sentinel through a separate checkout. It proves the server vector extension;
+Python `pgvector` is not that extension.
+
+Torch is a direct project dependency from the explicit PyTorch CPU index.
+`uv lock --check` and frozen sync are mandatory. `uv tree --frozen --invert
+--package torch` must succeed. Zero `nvidia-` matches in uv.lock is a separate
+observation: `rg` normally exits 1 for no matches. Actual CPU tensor, embedding
+normalization/dimensions/first-use and both application-image builds/sizes are
+separate witnesses; a lock or ENV label cannot supply them. The retired Python
+pgvector and qrcode packages have no Python runtime/entrypoint consumers. The
+PostgreSQL vector extension, Pillow, Go WhatsApp QR encoder/bridge and unrelated
+extras remain. Both Dockerfiles install this same frozen project without the
+obsolete WhatsApp extra or UV_TORCH_BACKEND selector. Route A retains its
+required digest-bound offline dependency cache and its existing admission gates.
+
+## Advisory environment and duration caches
+
+`python3 scripts/ci_environment.py key` binds OS/architecture, Python ABI and
+micro-version, uv version, lock/project/helper bytes and the dev/bytecode mode.
+There are no loose restore prefixes. `prepare` accepts only this checkout's real
+.venv, checks lock/project agreement and performs bounded frozen sync/bytecode compilation and reinstalls the
+editable package on every hit, then validates its actual isolated interpreter
+and import against this checkout/src. Invalid cached metadata rebuilds only that
+job-owned directory; a top-level symlink is refused. Cache outage is advisory;
+installer/import failure fails the job. Never run it against a shared venv.
+
+`check_ci_test_shards.py timing-key` supplies an exact-compatible weekly key.
+The optional CI_SHARD_TIMINGS input must have complete phase/node identity,
+source/run/attempt and no more than fourteen days of age, exact files/current
+Python-source+dependency topology, and an independently re-collected selected
+population. Duplicate, malformed, negative/nonfinite, missing or mismatched data
+retains lexical argv and an explicit UNKNOWN. Compatible data orders the same
+files by descending total setup/call/teardown duration with lexical ties.
+`--dist loadfile --no-loadscope-reorder` keeps module fixtures whole and prevents
+xdist's inherited item-count sort from overriding that order. Manifests and
+within-file collection order remain unchanged.
+
+The plugin writes only node hashes, repository file paths, closed phase/outcome
+fields, worker resource counters, tracer names and timestamps. It records actual
+selected identities before JUnit sanitization. Completeness requires agreeing
+worker collections, every selected identity and exactly one teardown; early
+maxfail/cancellation/absent observation leaves completeness and tail UNKNOWN.
+`first_one_percent_s` and `last_five_percent_s` use controller completion times,
+including wrapper preparation. `setup_complete_s` is first item setup completion,
+not a fabricated job setup boundary. Combine `test_step_started_at` with actual
+job metadata to measure job start to setup/first result. The job setup target is
+20 seconds, first result about 25 seconds, first 1% and tail each 30 seconds;
+installation about 5 seconds and container absence/under 3 seconds remain
+unmet until genuine named hosted observations demonstrate them.
+
+## Independent experiments and coverage
+
+Ordinary/local unit defaults remain three workers, integration remains bounded
+auto and local addopts remain unchanged. For a genuine CI-shaped comparison:
+
+```sh
+CI_UNIT_WORKERS=4 CI_COVERAGE=1 CI_COVERAGE_CORE=ctrace \
+  uv run --no-sync python scripts/check_ci_test_shards.py run --lane unit --shard 1
+```
+
+Repeat independently for unit3/fixed4/bounded auto and ctrace/sysmon against the
+same selected corpus and covered source. Only 3, 4 or auto and ctrace or sysmon
+are accepted. Actual ready worker IDs, CPU allocation, peak RSS/CPU and actual
+installed tracer accompany each receipt. A unsupported/fallback sysmon request
+refuses rather than reporting ctrace as sysmon. The default remains 3/ctrace
+until genuine complete comparable hosted/no-OOM results select another setting.
+The miniature real subprocess controls prove mechanism conformance only.
+
+`ci_shard_comparison.py before.json after.json` compares complete identity and
+phase outcomes without count-only or incomplete gain claims. Its coverage
+comparison normalizes complete filenames/lines/branches/contexts. The existing
+coverage validator still requires ten unique current source/attempt/lane shards,
+rejects population/identity drift and governs report/upload/badge. CI_COVERAGE
+remains exactly 0/1, ordinary PRs remain uncovered, merge-group remains covered,
+and append across independent jobs remains forbidden. Nightly and other
+covered consumers keep their own existing settings; this issue does not adopt
+the future matrix/partition/planner/sixth-shard work.
+
+## Completion and rollback
+
+Preserve all seven original outcomes and twelve folded moves; no slice is
+deferred. Retain before/current source, complete original/native/assertion maps
+and every enforcing survivor. Revert each reviewed ordering/cache/CPU/worker/core
+unit without narrowing membership, coverage, timers or verdicts. Genuine PG17,
+both image before/after, full hosted identity/coverage, ten-run hard targets and
+independent/protected evidence cannot be replaced by software fixtures or source
+presence. Source preparation, normal own validated sync/archive, exact final
+normal/nonself/protected gates and elapsed observations have separate receipts.

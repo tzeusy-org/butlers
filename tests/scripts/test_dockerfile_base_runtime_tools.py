@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,30 @@ def test_base_image_installs_uv_git_and_gh_for_qa_runtime() -> None:
     assert "python -m pip install --no-cache-dir uv" in text
     assert "uv --version" in text
     assert "gh" in text
+
+    # REQ-testing-048: project/lock packaging choice; these structural and
+    # installed witnesses do not claim either application image was built.
+    project = tomllib.loads(Path("pyproject.toml").read_text())
+    assert project["tool"]["uv"].get("sources", {}).get("torch") == {"index": "pytorch-cpu"}
+    index = next(
+        index for index in project["tool"]["uv"]["index"] if index["name"] == "pytorch-cpu"
+    )
+    assert index["explicit"] is True
+    assert index["url"] == "https://download.pytorch.org/whl/cpu"
+    packages = tomllib.loads(Path("uv.lock").read_text())["package"]
+    assert not any(package["name"].startswith("nvidia-") for package in packages)
+    assert not any(package["name"] in {"pgvector", "qrcode"} for package in packages)
+    for name in ("Dockerfile", "Dockerfile.meeting-prep-route-a"):
+        app = Path(name).read_text()
+        assert "--frozen" in app and "--extra whatsapp" not in app
+        assert "UV_TORCH_BACKEND" not in app
+        assert "COPY --from=go-builder /out/whatsapp-bridge" in app
+    assert "github.com/skip2/go-qrcode" in Path("whatsapp-bridge/cmd/bridge/main.go").read_text()
+    import torch
+
+    assert torch.version.cuda is None
+    assert not torch.cuda.is_available()
+    assert int(torch.tensor([2, 3], device="cpu").sum()) == 5
 
 
 def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> None:

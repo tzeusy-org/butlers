@@ -604,7 +604,8 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
         == _workflow_step(job=preflight, name="Install uv")["run"]
     )
     assert (
-        _workflow_step(job=guards, name="Install dependencies")["run"] == "uv sync --frozen --dev"
+        _workflow_step(job=guards, name="Install dependencies")["run"]
+        == "python3 scripts/ci_environment.py prepare"
     )
     ordered = [step.get("name") for step in guards["steps"]]
     assert (
@@ -726,9 +727,17 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(tmp_pat
     )
     assert "check_integration_coverage.py" not in str(preflight)
 
-    for job in [preflight, *unit_jobs, *integration_jobs]:
-        assert job["services"]["postgres"]["image"] == "postgres:16"
-        assert job["env"]["DATABASE_URL"] == "postgresql://postgres:test@localhost:5432/postgres"
+    # REQ-testing-047 / REQ-testing-050: twelve former orphan-service sites retain their
+    # genuine provisioned PG17 fixtures; a CI ambient URL is no authority.
+    for job in [preflight, *unit_jobs, *integration_jobs, jobs["check-affected"]]:
+        assert "postgres" not in job.get("services", {})
+        assert "DATABASE_URL" not in job.get("env", {})
+        install = _workflow_step(job=job, name="Install dependencies")
+        assert install["run"] == "python3 scripts/ci_environment.py prepare"
+        cache = _workflow_step(job=job, name="Restore advisory environment cache")
+        assert cache["with"]["path"] == ".venv"
+        assert "restore-keys" not in cache["with"]
+        assert cache["continue-on-error"] is True
 
     expected_coverage_artifacts: list[tuple[str, str, str, str]] = []
     for index, job in enumerate(unit_jobs, start=1):
