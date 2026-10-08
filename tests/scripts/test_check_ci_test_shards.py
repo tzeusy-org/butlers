@@ -422,6 +422,12 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
         assert status == "compatible" and files == ["tests/test_b.py", "tests/test_a.py"]
         for mutation in (
             {"complete": False},
+            {"complete": 1},
+            {"pytest_exit": False},
+            {"pytest_exit": 0.0},
+            {"selected_count": float(len(selected))},
+            {"shard": True},
+            {"shard": 1.0},
             {"selected_count": 0},
             {"lane": "integration"},
             {"collected_at": "2000-01-01T00:00:00+00:00"},
@@ -438,6 +444,13 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
                 receipt=receipt,
                 repo_root=tmp_path,
             ) == (["tests/test_a.py", "tests/test_b.py"], "unknown:invalid")
+        receipt.write_text(json.dumps(record))
+        assert shards.duration_order(
+            ["tests/test_a.py", "tests/test_b.py"],
+            context=context,
+            receipt=receipt,
+            repo_root=tmp_path,
+        ) == (["tests/test_b.py", "tests/test_a.py"], "compatible")
         for disable in (False, True):
             output = tmp_path / f"scheduler-{disable}.xml"
             args = [
