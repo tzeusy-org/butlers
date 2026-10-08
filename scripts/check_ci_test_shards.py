@@ -348,6 +348,10 @@ def duration_order(
             return result
 
         data = json.loads(receipt.read_text(), object_pairs_hook=unique)
+        if type(data["complete"]) is not bool or any(
+            type(data[key]) is not int for key in ("pytest_exit", "selected_count", "shard")
+        ):
+            raise ValueError("metadata")
         keys = ("lane", "shard", "manifest_digest", "compatibility_digest")
         if any(data[k] != context[k] for k in keys) or data["complete"] is not True:
             raise ValueError("incompatible")
