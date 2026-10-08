@@ -37,6 +37,13 @@ from butlers.core.healing.worktree import (
     remove_healing_worktree,
 )
 
+
+@pytest.fixture(autouse=True)
+def mock_repository_custody_metadata(tmp_path: Path):
+    """These tests mock Git commands; give the real exclusion an owned metadata directory."""
+    (tmp_path / ".git").mkdir(exist_ok=True)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -342,6 +349,7 @@ class TestReapStaleWorktrees:
         # Orphaned branch (no worktree) → git branch -D called
         orphan_tmp = tmp_path / "orphan_test"
         orphan_tmp.mkdir()
+        (orphan_tmp / ".git").mkdir()
         orphan_branch = "self-healing/calendar/orphan000000-1710400000"
         pool_orphan = MagicMock()
 

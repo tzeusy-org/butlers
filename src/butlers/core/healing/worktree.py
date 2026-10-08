@@ -34,6 +34,8 @@ from pathlib import Path
 
 import asyncpg
 
+from butlers.core.git_custody import CustodyUnavailable, branch_exclusion
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -220,9 +222,8 @@ async def create_healing_worktree(
     """Create a git branch and worktree for a healing or QA investigation.
 
     Branches from *base_ref* when provided, otherwise from the local ``main``
-    HEAD.  Callers should prefer passing ``"origin/main"`` after a successful
-    ``git fetch`` so that long-lived daemon worktrees branch from the freshest
-    available remote ref rather than a potentially stale local copy.
+    HEAD.  Initial QA callers pass the immutable commit resolved after a successful
+    remote-main refresh. A moving ref is not an exact receipt identity.
 
     Parameters
     ----------
@@ -239,9 +240,8 @@ async def create_healing_worktree(
         The worktree path follows the pattern:
         ``{repo_root}/.healing-worktrees/{prefix}/{butler_name}/{fp_short}-{epoch}/``
     base_ref:
-        Git ref to branch from.  Pass ``"origin/main"`` when the caller has
-        just performed a successful ``git fetch origin main`` so the new
-        investigation branch starts from the freshest available commit.
+        Git commit/ref to branch from. Initial QA preparation passes the exact
+        immutable commit from its successful origin/main refresh.
         When ``None`` (the default), falls back to local ``"main"``.
 
     Returns
@@ -263,62 +263,67 @@ async def create_healing_worktree(
     branch = _branch_name(butler_name, fingerprint, prefix=prefix)
     wt_path = _worktree_path(repo_root, branch)
 
-    # Ensure parent directory exists
-    wt_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with branch_exclusion(repo_root):
+            # Ensure parent directory exists
+            wt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Create branch from the resolved base ref
-    logger.info(
-        "Creating investigation branch %r from base_ref=%r",
-        branch,
-        resolved_base,
-    )
-    rc, _, stderr = await _run_git(
-        "branch",
-        branch,
-        resolved_base,
-        cwd=repo_root,
-    )
-    if rc != 0:
-        raise WorktreeCreationError(
-            f"Failed to create branch {branch!r}: {stderr}",
-            git_output=stderr,
-        )
-
-    # Step 2: Create worktree at the computed path
-    rc, _, stderr = await _run_git(
-        "worktree",
-        "add",
-        str(wt_path),
-        branch,
-        cwd=repo_root,
-    )
-    if rc != 0:
-        # Clean up the orphaned branch we just created
-        delete_rc, _, delete_stderr = await _run_git(
-            "branch",
-            "-D",
-            branch,
-            cwd=repo_root,
-        )
-        if delete_rc != 0:
-            logger.warning(
-                "Failed to delete orphaned branch %r after worktree creation failure: %s",
+            # Step 1: Create branch from the resolved base ref
+            logger.info(
+                "Creating investigation branch %r from base_ref=%r",
                 branch,
-                delete_stderr,
+                resolved_base,
             )
-        raise WorktreeCreationError(
-            f"git worktree add failed for branch {branch!r}: {stderr}",
-            git_output=stderr,
-        )
+            rc, _, stderr = await _run_git(
+                "branch",
+                branch,
+                resolved_base,
+                cwd=repo_root,
+            )
+            if rc != 0:
+                raise WorktreeCreationError(
+                    f"Failed to create branch {branch!r}: {stderr}",
+                    git_output=stderr,
+                )
 
-    logger.info(
-        "Created investigation worktree: path=%s branch=%s prefix=%s base_ref=%s",
-        wt_path,
-        branch,
-        prefix,
-        resolved_base,
-    )
-    return wt_path, branch
+            # Step 2: Create worktree at the computed path
+            rc, _, stderr = await _run_git(
+                "worktree",
+                "add",
+                str(wt_path),
+                branch,
+                cwd=repo_root,
+            )
+            if rc != 0:
+                # Clean up the orphaned branch we just created
+                delete_rc, _, delete_stderr = await _run_git(
+                    "branch",
+                    "-D",
+                    branch,
+                    cwd=repo_root,
+                )
+                if delete_rc != 0:
+                    logger.warning(
+                        "Failed to delete orphaned branch %r after worktree creation failure: %s",
+                        branch,
+                        delete_stderr,
+                    )
+                raise WorktreeCreationError(
+                    f"git worktree add failed for branch {branch!r}: {stderr}",
+                    git_output=stderr,
+                )
+
+            logger.info(
+                "Created investigation worktree: path=%s branch=%s prefix=%s base_ref=%s",
+                wt_path,
+                branch,
+                prefix,
+                resolved_base,
+            )
+            return wt_path, branch
+
+    except CustodyUnavailable as exc:
+        raise WorktreeCreationError("Repository custody unavailable") from exc
 
 
 async def remove_healing_worktree(
@@ -348,75 +353,80 @@ async def remove_healing_worktree(
         ``git push origin --delete <branch>``.  Used for
         ``anonymization_failed`` cleanup where the branch was already pushed.
     """
-    wt_path = _worktree_path(repo_root, branch_name)
+    try:
+        with branch_exclusion(repo_root):
+            wt_path = _worktree_path(repo_root, branch_name)
 
-    # Step 1: Remove worktree
-    if wt_path.exists():
-        rc, _, stderr = await _run_git(
-            "worktree",
-            "remove",
-            str(wt_path),
-            cwd=repo_root,
-        )
-        if rc != 0:
-            # Try force-remove for dirty worktrees (uncommitted changes)
-            rc2, _, stderr2 = await _run_git(
-                "worktree",
-                "remove",
-                "--force",
-                str(wt_path),
-                cwd=repo_root,
-            )
-            if rc2 != 0:
-                logger.warning(
-                    "Failed to remove healing worktree %s (even with --force): %s | %s",
-                    wt_path,
-                    stderr,
-                    stderr2,
+            # Step 1: Remove worktree
+            if wt_path.exists():
+                rc, _, stderr = await _run_git(
+                    "worktree",
+                    "remove",
+                    str(wt_path),
+                    cwd=repo_root,
                 )
+                if rc != 0:
+                    # Try force-remove for dirty worktrees (uncommitted changes)
+                    rc2, _, stderr2 = await _run_git(
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(wt_path),
+                        cwd=repo_root,
+                    )
+                    if rc2 != 0:
+                        logger.warning(
+                            "Failed to remove healing worktree %s (even with --force): %s | %s",
+                            wt_path,
+                            stderr,
+                            stderr2,
+                        )
+                    else:
+                        logger.debug("Force-removed dirty healing worktree: %s", wt_path)
             else:
-                logger.debug("Force-removed dirty healing worktree: %s", wt_path)
-    else:
-        # Worktree directory doesn't exist; prune the git worktree metadata
-        await _run_git("worktree", "prune", cwd=repo_root)
+                # Worktree directory doesn't exist; prune the git worktree metadata
+                await _run_git("worktree", "prune", cwd=repo_root)
 
-    # Step 2: Delete remote branch (before local, so we still have the ref)
-    if delete_remote:
-        rc, _, stderr = await _run_git(
-            "push",
-            "origin",
-            "--delete",
-            branch_name,
-            cwd=repo_root,
-        )
-        if rc != 0:
-            logger.warning(
-                "Failed to delete remote branch %r: %s",
+            # Step 2: Delete remote branch (before local, so we still have the ref)
+            if delete_remote:
+                rc, _, stderr = await _run_git(
+                    "push",
+                    "origin",
+                    "--delete",
+                    branch_name,
+                    cwd=repo_root,
+                )
+                if rc != 0:
+                    logger.warning(
+                        "Failed to delete remote branch %r: %s",
+                        branch_name,
+                        stderr,
+                    )
+
+            # Step 3: Delete local branch
+            if delete_branch:
+                rc, _, stderr = await _run_git(
+                    "branch",
+                    "-D",
+                    branch_name,
+                    cwd=repo_root,
+                )
+                if rc != 0:
+                    logger.warning(
+                        "Failed to delete local branch %r: %s",
+                        branch_name,
+                        stderr,
+                    )
+
+            logger.info(
+                "Removed healing worktree: branch=%s delete_branch=%s delete_remote=%s",
                 branch_name,
-                stderr,
+                delete_branch,
+                delete_remote,
             )
 
-    # Step 3: Delete local branch
-    if delete_branch:
-        rc, _, stderr = await _run_git(
-            "branch",
-            "-D",
-            branch_name,
-            cwd=repo_root,
-        )
-        if rc != 0:
-            logger.warning(
-                "Failed to delete local branch %r: %s",
-                branch_name,
-                stderr,
-            )
-
-    logger.info(
-        "Removed healing worktree: branch=%s delete_branch=%s delete_remote=%s",
-        branch_name,
-        delete_branch,
-        delete_remote,
-    )
+    except CustodyUnavailable:
+        logger.warning("Healing cleanup deferred: repository custody unavailable")
 
 
 async def reap_stale_worktrees(
@@ -566,12 +576,17 @@ async def reap_stale_worktrees(
                     continue
             # No attempt or terminal attempt — delete the orphaned branch
             logger.info("Deleting orphaned %s branch with no worktree: %s", prefix, branch)
-            rc, _, stderr = await _run_git(
-                "branch",
-                "-D",
-                branch,
-                cwd=repo_root,
-            )
+            try:
+                with branch_exclusion(repo_root):
+                    rc, _, stderr = await _run_git(
+                        "branch",
+                        "-D",
+                        branch,
+                        cwd=repo_root,
+                    )
+            except CustodyUnavailable:
+                logger.warning("Healing branch cleanup deferred: repository custody unavailable")
+                continue
             if rc != 0:
                 logger.warning("Failed to delete orphaned branch %r: %s", branch, stderr)
 

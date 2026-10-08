@@ -219,6 +219,7 @@ tests/relationship/test_group_labels_api.py
 tests/scripts/test_backfill_point_event_entity_id.py
 tests/scripts/test_backfill_transitory_entities.py
 tests/scripts/test_check_spec_overwrites.py
+tests/scripts/test_ci_branch_hygiene.py
 tests/scripts/test_conftest_container_leak_warning.py
 tests/scripts/test_session_link_guard.py
 tests/scripts/test_setup_worktree.py
