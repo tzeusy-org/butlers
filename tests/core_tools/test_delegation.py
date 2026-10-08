@@ -881,7 +881,10 @@ async def _assert_native_received_question_schedule(monkeypatch):
             trace.append(pool.name + ":policy")
 
         async def endpoint(selected):
-            assert selected in {"chronicler", "relationship", "finance"}
+            if source_runtime.name == "chronicler" and receiver_runtime.name == "relationship":
+                assert selected in {"chronicler", "relationship"}
+            else:
+                assert selected in {"relationship", "finance"}
             return "fixed:" + selected
 
         return SimpleNamespace(
@@ -903,11 +906,17 @@ async def _assert_native_received_question_schedule(monkeypatch):
     )
 
     async def source_exchange(endpoint, token, body):
-        assert endpoint == "fixed:" + receiver_runtime.name
+        if source_runtime.name == "chronicler":
+            assert endpoint == "fixed:relationship"
+        else:
+            assert endpoint == "fixed:" + receiver_runtime.name
         return await question_challenge(receiver_writer, token, body)
 
     async def receiver_exchange(endpoint, token, body):
-        assert endpoint == "fixed:" + source_runtime.name
+        if receiver_runtime.name == "relationship":
+            assert endpoint == "fixed:chronicler"
+        else:
+            assert endpoint == "fixed:" + source_runtime.name
         if body["op"] == "question_delivery":
             return await verify_question_delivery(source_writer, token, body)
         return await prepare_question_source(source_writer, token, body)
