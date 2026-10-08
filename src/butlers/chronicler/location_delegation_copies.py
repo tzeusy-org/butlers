@@ -335,7 +335,9 @@ async def delegation_frontier_closed(conn: Any, decision: Any) -> bool:
         ),
     ):
         if await conn.fetchval(
-            f"SELECT EXISTS(SELECT 1 FROM {header} q "
+            f"SELECT EXISTS(SELECT 1 FROM {header} q WHERE q.parent_count <> "
+            f"(SELECT count(*) FROM {parents} p WHERE p.{generation}=q.{generation})) "
+            f"OR EXISTS(SELECT 1 FROM {header} q "
             f"JOIN {parents} p USING({generation}) "
             "WHERE p.parent_kind='native_copy' AND (NOT EXISTS("
             "SELECT 1 FROM location_native_copy_births b "

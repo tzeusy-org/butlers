@@ -52,7 +52,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
            'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_ordinary_delegation_inputs','location_native_delegation_inputs',
-           'location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
+           'location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -89,7 +89,10 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_received_delegation_claims",
         "location_received_delegation_schedules",
         "location_received_delegation_server_finished",
+        "location_received_delegation_dispositions",
+        "location_received_delegation_floors",
         "location_received_delegation_inputs",
+        "location_received_delegation_attempts",
         "location_native_delegation_loans",
     ):
         if table not in present:
@@ -253,6 +256,33 @@ def _validate_local_tables(schema: str) -> None:
                 ("receiving_incarnation", "uuid", True),
                 ("receiving_generation", "uuid", True),
                 ("body_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_delegation_floors": [
+                ("receiving_generation", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("source_name", "text", True),
+                ("question_generation", "uuid", True),
+                ("ledger_id", "uuid", True),
+                ("loan_id", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("receiving_incarnation", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_delegation_dispositions": [
+                ("receiving_generation", "uuid", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_delegation_attempts": [
+                ("receiving_generation", "uuid", True),
+                ("ledger_id", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("receiving_incarnation", "uuid", True),
+                ("receiving_session", "uuid", False),
+                ("tool_generation", "uuid", False),
+                ("server_request", "uuid", False),
                 ("committed_at", "timestamp with time zone", True),
             ],
             "location_received_delegation_inputs": [
@@ -498,6 +528,28 @@ def _validate_local_tables(schema: str) -> None:
                 "FOREIGN KEY (question_generation) REFERENCES "
                 "location_native_delegation_inputs(question_generation)",
             },
+            "location_received_delegation_floors": {
+                "PRIMARY KEY (receiving_generation)",
+                "UNIQUE (loan_id)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "CHECK ((source_name = 'chronicler'::text))",
+            },
+            "location_received_delegation_dispositions": {
+                "PRIMARY KEY (receiving_generation)",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_delegation_floors(receiving_generation)",
+            },
+            "location_received_delegation_attempts": {
+                "PRIMARY KEY (receiving_generation)",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "CHECK (((receiving_session IS NULL) = (tool_generation IS NULL)))",
+                "CHECK (((tool_generation IS NOT NULL) OR (server_request IS NOT NULL)))",
+                "FOREIGN KEY (receiving_session) REFERENCES sessions(id)",
+                "FOREIGN KEY (tool_generation) REFERENCES "
+                "location_runtime_tool_intents(tool_generation)",
+            },
             "location_received_delegation_inputs": {
                 "CHECK (((receiving_session IS NULL) = (tool_generation IS NULL)))",
                 "CHECK (((tool_generation IS NOT NULL) OR (server_request IS NOT NULL)))",
@@ -514,7 +566,7 @@ def _validate_local_tables(schema: str) -> None:
                 "UNIQUE (receipt_id)",
                 "CHECK ((octet_length(body_digest) = 32))",
                 "FOREIGN KEY (receiving_generation) REFERENCES "
-                "location_received_delegation_inputs(receiving_generation)",
+                "location_received_delegation_attempts(receiving_generation)",
             },
             "location_received_delegation_claims": {
                 "PRIMARY KEY (claim_generation)",
@@ -899,6 +951,35 @@ def upgrade() -> None:
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           UNIQUE(receiver_name,receiving_generation)
         );
+        CREATE TABLE IF NOT EXISTS location_received_delegation_floors (
+          receiving_generation UUID PRIMARY KEY,
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          source_name TEXT NOT NULL CHECK(source_name='chronicler'),
+          question_generation UUID NOT NULL,
+          ledger_id UUID NOT NULL,
+          loan_id UUID NOT NULL UNIQUE,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receiving_incarnation UUID NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_delegation_dispositions (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_delegation_floors,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS location_received_delegation_attempts (
+          receiving_generation UUID PRIMARY KEY,
+          ledger_id UUID NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          receiving_incarnation UUID NOT NULL,
+          receiving_session UUID REFERENCES sessions(id),
+          tool_generation UUID REFERENCES location_runtime_tool_intents(tool_generation),
+          server_request UUID,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          CHECK((receiving_session IS NULL)=(tool_generation IS NULL)),
+          CHECK(tool_generation IS NOT NULL OR server_request IS NOT NULL)
+        );
         CREATE TABLE IF NOT EXISTS location_received_delegation_inputs (
           receiving_generation UUID PRIMARY KEY,
           ledger_id UUID NOT NULL,
@@ -918,7 +999,7 @@ def upgrade() -> None:
           CHECK(tool_generation IS NOT NULL OR server_request IS NOT NULL)
         );
         CREATE TABLE IF NOT EXISTS location_received_delegation_server_finished (
-          receiving_generation UUID PRIMARY KEY REFERENCES location_received_delegation_inputs,
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_delegation_attempts,
           server_request UUID NOT NULL,
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
           receipt_id UUID NOT NULL UNIQUE,
@@ -1030,7 +1111,10 @@ def upgrade() -> None:
         "location_received_delegation_claims",
         "location_received_delegation_schedules",
         "location_received_delegation_server_finished",
+        "location_received_delegation_dispositions",
+        "location_received_delegation_floors",
         "location_received_delegation_inputs",
+        "location_received_delegation_attempts",
         "location_native_delegation_loans",
     ):
         op.execute(f"""
@@ -1083,7 +1167,10 @@ def downgrade() -> None:
              OR EXISTS(SELECT 1 FROM location_catalog_copy_loans)
              OR EXISTS(SELECT 1 FROM location_runtime_context_intents)
              OR EXISTS(SELECT 1 FROM location_runtime_tool_intents)
-             OR EXISTS(SELECT 1 FROM location_native_delegation_inputs) THEN
+             OR EXISTS(SELECT 1 FROM location_native_delegation_inputs)
+             OR EXISTS(SELECT 1 FROM location_received_delegation_attempts)
+             OR EXISTS(SELECT 1 FROM location_received_delegation_floors)
+             OR EXISTS(SELECT 1 FROM location_received_delegation_dispositions) THEN
             RAISE EXCEPTION 'retention history exists; roll forward instead of erasing floors';
           END IF;
         END $$;

@@ -76,3 +76,24 @@ async def exchange_metadata(runtime, endpoint: str, token: str, body: dict) -> d
     if not isinstance(value, dict):
         raise PolicyUnavailableError("Catalog control differs")
     return value
+
+
+async def routed_owning_tool(runtime, target: str, tool: str, args: dict) -> dict:
+    """Owning tool invocation over the constructor's real Switchboard client."""
+    from butlers.connectors.mcp_client import CachedMCPClient
+
+    if not runtime.active or runtime.registry is None:
+        raise PolicyUnavailableError("Registered owning runtime is unavailable")
+    value = CachedMCPClient._parse_result(
+        await runtime.registry.call_tool(
+            "route",
+            {"target_butler": target, "tool_name": tool, "args": args},
+        ),
+        "route",
+    )
+    if not isinstance(value, dict) or "result" not in value or value.get("error"):
+        raise PolicyUnavailableError("Registered owning route is unavailable")
+    result = value["result"]
+    if not isinstance(result, dict) or result.get("error"):
+        raise PolicyUnavailableError("Registered owning result differs")
+    return result

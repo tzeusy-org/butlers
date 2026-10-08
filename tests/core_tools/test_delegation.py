@@ -683,6 +683,8 @@ async def _assert_native_received_question_schedule(monkeypatch):
         def __init__(self, name):
             self.name = name
             self.inputs, self.loans, self.schedules, self.tasks = {}, {}, {}, {}
+            self.attempts, self.floors, self.dispositions = {}, {}, {}
+            self.unknown_terminal = False
             self.claims, self.ended, self.contexts, self.context_bindings = {}, {}, {}, {}
             self.witness_failure = False
             self.server_finished = {}
@@ -700,12 +702,30 @@ async def _assert_native_received_question_schedule(monkeypatch):
 
         @asynccontextmanager
         async def transaction(self):
-            previous = deepcopy((self.inputs, self.loans, self.schedules, self.tasks))
+            previous = deepcopy(
+                (
+                    self.inputs,
+                    self.loans,
+                    self.schedules,
+                    self.tasks,
+                    self.attempts,
+                    self.floors,
+                    self.dispositions,
+                )
+            )
             self.transaction_active = True
             try:
                 yield
             except BaseException:
-                self.inputs, self.loans, self.schedules, self.tasks = previous
+                (
+                    self.inputs,
+                    self.loans,
+                    self.schedules,
+                    self.tasks,
+                    self.attempts,
+                    self.floors,
+                    self.dispositions,
+                ) = previous
                 trace.append(self.name + ":rollback")
                 raise
             else:
@@ -714,6 +734,23 @@ async def _assert_native_received_question_schedule(monkeypatch):
                 self.transaction_active = False
 
         async def fetchrow(self, sql, *args):
+            if "FROM location_received_delegation_floors f" in sql:
+                if self.unknown_terminal:
+                    return None
+                for gen, receipt in self.dispositions.items():
+                    if self.floors[gen]["decision_id"] == args[0] and receipt == args[1]:
+                        return self.floors[gen] | {"receipt_id": receipt}
+                return None
+            if "FROM location_received_delegation_floors" in sql:
+                return self.floors.get(args[0])
+            if "FROM location_received_delegation_attempts" in sql:
+                return self.attempts.get(args[0])
+            if "FROM location_received_delegation_schedules s" in sql and "FOR UPDATE OF t" in sql:
+                entry = self.schedules.get(args[0])
+                if entry is None:
+                    return None
+                return entry | {"prompt": self.tasks[entry["task_id"]], "enabled": True}
+
             if "FROM location_received_delegation_schedules s" in sql:
                 entry = next((r for r in self.schedules.values() if r["task_id"] == args[0]), None)
                 if entry is None:
@@ -765,6 +802,28 @@ async def _assert_native_received_question_schedule(monkeypatch):
             ]
 
         async def fetchval(self, sql, *args):
+            if "FROM location_received_delegation_dispositions" in sql:
+                return self.dispositions.get(args[0])
+            if "FROM location_received_delegation_floors" in sql:
+                return args[0] in self.floors
+            if "FROM location_received_delegation_attempts" in sql:
+                row = self.attempts.get(args[0])
+                if "ledger_id=$2" in sql:
+                    return row is not None and (
+                        row["ledger_id"],
+                        row["body_digest"],
+                        row["receiving_incarnation"],
+                    ) == tuple(args[1:])
+                return row is not None and (row["body_digest"], row["server_request"]) == tuple(
+                    args[1:]
+                )
+            if "EXISTS(SELECT 1 FROM scheduled_tasks" in sql:
+                return self.tasks[args[0]] == args[1]
+            if "JOIN location_runtime_context_dispositions" in sql:
+                return False  # No planted context disposition; claims alone do not close it.
+            if "EXISTS(SELECT 1 FROM location_received_delegation_claims c" in sql:
+                return any(c["receiving_generation"] == args[0] for c in self.claims.values())
+
             if "EXISTS(SELECT 1 FROM location_native_delegation_inputs" in sql:
                 return not self.native_missing
             if "location_runtime_context_question_intents" in sql:
@@ -772,7 +831,11 @@ async def _assert_native_received_question_schedule(monkeypatch):
             if "location_received_delegation_claims_ended" in sql:
                 return self.ended.get(args[0])
             if "location_received_delegation_server_finished" in sql:
-                return self.server_finished.get(args[0])
+                return (
+                    args[0] in self.server_finished
+                    if "EXISTS" in sql
+                    else self.server_finished.get(args[0])
+                )
             if "location_received_delegation_inputs" in sql:
                 row = self.inputs.get(args[0])
                 return (
@@ -796,7 +859,50 @@ async def _assert_native_received_question_schedule(monkeypatch):
 
         async def execute(self, sql, *args):
             assert self.transaction_active
-            if "INSERT INTO location_native_delegation_loans" in sql:
+            if "INSERT INTO location_received_delegation_attempts" in sql:
+                trace.append("receiver:attempt-birth")
+                self.attempts[args[0]] = dict(
+                    zip(
+                        (
+                            "receiving_generation",
+                            "ledger_id",
+                            "body_digest",
+                            "receiving_incarnation",
+                            "receiving_session",
+                            "tool_generation",
+                            "server_request",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_delegation_floors" in sql:
+                trace.append("receiver:floor")
+                self.floors.setdefault(
+                    args[0],
+                    dict(
+                        zip(
+                            (
+                                "receiving_generation",
+                                "decision_id",
+                                "manifest_digest",
+                                "source_name",
+                                "question_generation",
+                                "ledger_id",
+                                "loan_id",
+                                "body_digest",
+                                "receiving_incarnation",
+                            ),
+                            args,
+                        )
+                    ),
+                )
+            elif "INSERT INTO location_received_delegation_dispositions" in sql:
+                trace.append("receiver:terminal")
+                self.dispositions[args[0]] = args[1]
+            elif "UPDATE scheduled_tasks SET enabled=false" in sql:
+                trace.append("receiver:reduce")
+                self.tasks[args[0]] = args[1]
+            elif "INSERT INTO location_native_delegation_loans" in sql:
                 trace.append("source:loan-birth")
                 self.loans[args[0]] = dict(
                     zip(
@@ -921,6 +1027,10 @@ async def _assert_native_received_question_schedule(monkeypatch):
             return await verify_question_delivery(source_writer, token, body)
         return await prepare_question_source(source_writer, token, body)
 
+    source_runtime.delegation_writer, receiver_runtime.delegation_writer = (
+        source_writer,
+        receiver_writer,
+    )
     source_runtime.exchange, receiver_runtime.exchange = source_exchange, receiver_exchange
     register_writer(receiver_pool, receiver_writer)
     tool = _ToolCopy(receiver_runtime, uuid.uuid4(), uuid.uuid4(), "delegate_receive", "core")
@@ -1113,6 +1223,90 @@ async def _assert_native_received_question_schedule(monkeypatch):
                 _server_copy_scope.reset(fake_token)
         finally:
             _current_tool_copy.reset(cli_token)
+        # Real registered receiving tools, software SQL/transport doubles:
+        # an unprocessed server/task copy can close after its actual attempt
+        # lifetime. A locator, active lifetime or missing attempt cannot close.
+        from butlers.chronicler.location_copy_transport import routed_owning_tool
+        from butlers.chronicler.location_delegation_disposal import _REDUCED_TASK
+
+        terminal_decision = uuid.uuid4()
+        loan = source_pool.loans[actual_input["loan_id"]]
+        question_row = {
+            "question_generation": str(question),
+            "ledger_id": str(ledger),
+            "body_digest": body_digest.hex(),
+            "parent_count": 1,
+            "complete_input": True,
+            "loans": [{k: v.hex() if isinstance(v, bytes) else str(v) for k, v in loan.items()}],
+        }
+        plan = {
+            "decision_id": str(terminal_decision),
+            "manifest_digest": (b"m" * 32).hex(),
+            "question_cohort": [question_row],
+        }
+
+        async def routed_source(tool_name, args):
+            assert tool_name == "route"
+            assert args == {
+                "target_butler": "chronicler",
+                "tool_name": "chronicler_location_retention_status",
+                "args": {"decision_id": str(terminal_decision)},
+            }
+            return {"result": plan}
+
+        receiver_runtime.registry = SimpleNamespace(call_tool=routed_source)
+        receiver_runtime.routed_tool = lambda target, tool_name, args: routed_owning_tool(
+            receiver_runtime,
+            target,
+            tool_name,
+            args,
+        )
+        receipt_tool = registered["location_retention_prepare_questions"]
+        status_tool = registered["location_retention_question_status"]
+        generation = actual_input["receiving_generation"]
+        terminal_task = receiver_pool.schedules[generation]["task_id"]
+        saved_finished = receiver_pool.server_finished.pop(generation)
+        assert (await receipt_tool(terminal_decision))["receipt_ids"] == []
+        assert generation in receiver_pool.floors and generation not in receiver_pool.dispositions
+        assert receiver_pool.tasks[terminal_task] != _REDUCED_TASK
+        before_claims = len(receiver_pool.claims)
+        with pytest.raises(PolicyUnavailableError, match="receiving input is fenced"):
+            async with scheduled_question_scope(
+                receiver_pool,
+                terminal_task,
+                receiver_pool.tasks[terminal_task],
+            ):
+                await dispatch_body(receiver_pool.tasks[terminal_task])
+        assert len(receiver_pool.claims) == before_claims
+        receiver_pool.server_finished[generation] = saved_finished
+        original_task = receiver_pool.tasks[terminal_task]
+        receiver_pool.tasks[terminal_task] += " independent change"
+        with pytest.raises(PolicyUnavailableError, match="task body changed"):
+            await receipt_tool(terminal_decision)
+        assert generation not in receiver_pool.dispositions
+        receiver_pool.tasks[terminal_task] = original_task
+        trace.clear()
+        closed = await receipt_tool(terminal_decision)
+        assert len(closed["receipt_ids"]) == 1
+        receipt = uuid.UUID(closed["receipt_ids"][0])
+        observed = await status_tool(terminal_decision, receipt)
+        assert observed["body_digest"] == body_digest.hex()
+        assert observed["loan_id"] == str(loan["loan_id"])
+        assert observed["receiving_generation"] == str(generation)
+        assert receiver_pool.tasks[terminal_task] == _REDUCED_TASK
+        assert trace.index("receiver:floor") < trace.index("receiver:reduce")
+        assert trace.index("receiver:reduce") < trace.index("receiver:terminal")
+        assert trace.index("receiver:terminal") < trace.index("receiver:commit")
+        assert (await receipt_tool(terminal_decision)) == closed
+        receiver_pool.unknown_terminal = True
+        with pytest.raises(PolicyUnavailableError, match="receipt is unavailable"):
+            await status_tool(terminal_decision, receipt)
+        receiver_pool.unknown_terminal = False
+        # Exact incarnation/source/body are mandatory, not a caller verdict.
+        question_row["complete_input"] = False
+        with pytest.raises(PolicyUnavailableError, match="cohort differs"):
+            await receipt_tool(terminal_decision)
+        question_row["complete_input"] = True
         # Installed constructor ordinary ingress requires a positive fixed
         # source-owned job birth. Neither missing native data nor a caller's
         # ordinary label can manufacture that classification.

@@ -108,7 +108,9 @@ async def question_challenge(writer: Any, token: str, body: dict) -> dict:
 async def receiving_question_fenced(conn: Any, receiving: UUID) -> bool:
     return (
         await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM location_received_delegation_claims c "
+            "SELECT EXISTS(SELECT 1 FROM location_received_delegation_floors "
+            "WHERE receiving_generation=$1) OR EXISTS("
+            "SELECT 1 FROM location_received_delegation_claims c "
             "JOIN location_received_delegation_contexts q USING(claim_generation) "
             "JOIN location_runtime_context_dispositions d USING(input_generation) "
             "WHERE c.receiving_generation=$1)",
@@ -364,6 +366,7 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
     ledger, digest = UUID(str(canonical["id"])), question_digest(canonical)
     source = canonical["asking_butler"]
     token = secrets.token_urlsafe(32)
+    receiving = uuid4()
     async with runtime.domain.acquire() as conn:
         async with conn.transaction():
             await runtime.lock_domain(conn)
@@ -375,8 +378,32 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
                 tool.session,
             ):
                 raise PolicyUnavailableError("Native question registered receiving input differs")
+            await conn.execute(
+                "INSERT INTO location_received_delegation_attempts "
+                "(receiving_generation,ledger_id,body_digest,receiving_incarnation,"
+                "receiving_session,tool_generation,server_request) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                receiving,
+                ledger,
+                digest,
+                runtime.incarnation,
+                tool.session if tool else None,
+                tool.generation if tool else None,
+                server.request if server else None,
+            )
+    if not await runtime.domain.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_received_delegation_attempts "
+        "WHERE receiving_generation=$1 AND ledger_id=$2 AND body_digest=$3 "
+        "AND receiving_incarnation=$4)",
+        receiving,
+        ledger,
+        digest,
+        runtime.incarnation,
+    ):
+        raise PolicyUnavailableError("Committed receiving attempt is unknown")
+    if server is not None:
+        server.questions.append((runtime, receiving, digest))
     pending = _QuestionPending(
-        ledger, source, digest, time.monotonic() + 30, uuid4(), tool, server=server
+        ledger, source, digest, time.monotonic() + 30, receiving, tool, server=server
     )
     writer.pending[token] = pending
     try:
@@ -439,6 +466,8 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
                     or (server is not None and not server.active)
                 ):
                     raise PolicyUnavailableError("Native receiving input lifetime expired")
+                if await receiving_question_fenced(conn, pending.receiving):
+                    raise PolicyUnavailableError("Native receiving input was fenced")
                 current = await conn.fetchrow(
                     "SELECT * FROM public.delegation_ledger WHERE id=$1 FOR UPDATE",
                     ledger,
@@ -486,8 +515,6 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
             or committed["exclusive_input"] is not prepared["exclusive_input"]
         ):
             raise PolicyUnavailableError("Committed native receiving question is unknown")
-        if server is not None:
-            server.questions.append((runtime, pending.receiving, digest))
         admission = _ReceivedQuestion(writer, pending.receiving, ledger, digest, pending.deadline)
         writer.receiving[pending.receiving] = admission
         return admission
@@ -518,6 +545,8 @@ async def schedule_received_question(admission: Any, prompt: str, write: Any) ->
                     or not runtime.active
                 ):
                     raise PolicyUnavailableError("Native question schedule lifetime differs")
+                if await receiving_question_fenced(conn, admission.generation):
+                    raise PolicyUnavailableError("Native receiving schedule was fenced")
                 receiving = await conn.fetchrow(
                     "SELECT * FROM location_received_delegation_inputs "
                     "WHERE receiving_generation=$1",
@@ -576,7 +605,7 @@ async def finish_received_server(runtime: Any, receiving: UUID, digest: bytes, s
         async with conn.transaction():
             await runtime.lock_domain(conn)
             if not await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_inputs "
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_attempts "
                 "WHERE receiving_generation=$1 AND body_digest=$2 AND server_request=$3)",
                 receiving,
                 digest,

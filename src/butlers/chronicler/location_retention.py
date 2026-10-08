@@ -141,6 +141,17 @@ async def ready_batches(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 
 
 async def plan_status(pool: asyncpg.Pool, decision_id: UUID) -> dict[str, Any]:
+    # Source cohort and canonical bodies share the actual policy-first
+    # snapshot; independent queries cannot bless a smaller parent set.
+    from butlers.chronicler.storage import _lock_location_writes
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await _lock_location_writes(conn)
+            return await _plan_status_on_conn(conn, decision_id)
+
+
+async def _plan_status_on_conn(pool: asyncpg.Connection, decision_id: UUID) -> dict[str, Any]:
     row = await pool.fetchrow(
         """SELECT decision_id,state,policy_version,cutoff,prepared_at
            FROM location_retention_plans WHERE decision_id=$1""",
@@ -174,6 +185,9 @@ async def plan_status(pool: asyncpg.Pool, decision_id: UUID) -> dict[str, Any]:
         "WHERE p.decision_id=$1 ORDER BY l.loan_id",
         decision_id,
     )
+    from butlers.chronicler.location_delegation_disposal import source_question_cohort
+
+    question_cohort = await source_question_cohort(pool, decision_id)
     return {
         **dict(row),
         "manifest_digest": (
@@ -182,6 +196,7 @@ async def plan_status(pool: asyncpg.Pool, decision_id: UUID) -> dict[str, Any]:
                 decision_id,
             )
         ).hex(),
+        "question_cohort": question_cohort,
         "catalog_loans": [
             {
                 key: loan[key]
@@ -907,8 +922,10 @@ async def run_retention(pool: asyncpg.Pool, *, switchboard_client: Any = None) -
                 dispose_catalog_artifacts,
                 reconcile_catalog_loans,
             )
+            from butlers.chronicler.location_delegation_disposal import reconcile_question_receivers
             from butlers.chronicler.location_memory_copies import dispose_native_memory
 
+            await reconcile_question_receivers(pool, decision["decision_id"])
             await reconcile_catalog_loans(pool, decision["decision_id"])
             await dispose_catalog_artifacts(pool, decision["decision_id"])
             await dispose_native_memory(pool, decision["decision_id"])

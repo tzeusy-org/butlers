@@ -51,6 +51,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
+from uuid import UUID
 
 from pydantic import Field
 
@@ -291,6 +292,33 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
     daemon = ctx.daemon
     pool = ctx.pool
     butler_name = ctx.butler_name
+
+    def receiving_runtime():
+        from butlers.core.delegation_source import _writers
+
+        writer = _writers.get(pool)
+        if writer is None or not writer.runtime.active or writer.runtime.name != butler_name:
+            raise RuntimeError("Native receiving constructor is unavailable")
+        return writer.runtime
+
+    @_core_tool("delegation")
+    async def location_retention_prepare_questions(decision_id: UUID) -> dict:
+        """Dispose this receiver's stored question copies for the owning source plan.
+
+        A decision UUID is only a locator. The fixed constructor reads the
+        actual source through Switchboard, fences late inputs and requires
+        its own finished lifetimes and separate committed readback.
+        """
+        from butlers.chronicler.location_delegation_disposal import prepare_question_receivers
+
+        return await prepare_question_receivers(receiving_runtime(), decision_id)
+
+    @_core_tool("delegation")
+    async def location_retention_question_status(decision_id: UUID, receipt_id: UUID) -> dict:
+        """Read this receiver's immutable generation/body/manifest-bound receipt."""
+        from butlers.chronicler.location_delegation_disposal import question_receiver_status
+
+        return await question_receiver_status(receiving_runtime(), decision_id, receipt_id)
 
     @_core_tool("delegation")
     @tool_span("delegate_ask", butler_name=butler_name)

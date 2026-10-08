@@ -73,6 +73,11 @@ class NativeDelegationRuntime:
 
         return await exchange_metadata(self, endpoint, token, body)
 
+    async def routed_tool(self, target: str, tool: str, args: dict) -> dict:
+        from butlers.chronicler.location_copy_transport import routed_owning_tool
+
+        return await routed_owning_tool(self, target, tool, args)
+
     async def control(self, request: Any) -> Any:
         from starlette.responses import JSONResponse
 

@@ -489,27 +489,9 @@ class CatalogCopyRuntime:
         }
 
     async def routed_tool(self, target: str, tool: str, args: dict) -> dict:
-        # Ordinary locators travel through the actual adopted Switchboard
-        # route, not an arbitrary direct peer endpoint or caller identity.
-        from butlers.connectors.mcp_client import CachedMCPClient
+        from butlers.chronicler.location_copy_transport import routed_owning_tool
 
-        value = CachedMCPClient._parse_result(
-            await self.registry.call_tool(
-                "route",
-                {
-                    "target_butler": target,
-                    "tool_name": tool,
-                    "args": args,
-                },
-            ),
-            "route",
-        )
-        if not isinstance(value, dict) or "result" not in value or value.get("error"):
-            raise PolicyUnavailableError("Registered catalog route is unavailable")
-        result = value["result"]
-        if not isinstance(result, dict):
-            raise PolicyUnavailableError("Registered catalog result differs")
-        return result
+        return await routed_owning_tool(self, target, tool, args)
 
     async def authorize_route(self, loan: UUID, token: str) -> dict:
         if self.name != "chronicler":

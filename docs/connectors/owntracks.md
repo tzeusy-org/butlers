@@ -111,3 +111,33 @@ witnesses under a shared policy-first transaction. An ordinary `(ts, id)`
 watermark, a surviving episode or a caller-supplied accepted UUID cannot prove
 complete projection. The connector's existing audit-buffer retention setting
 and six-hour cadence are separate from the raw point horizon.
+
+
+### Native delegated receiving copies (source continuation)
+
+The fixed receiving constructor now records the attempted full ledger/body and
+actual Tool or server lifetime before the source challenge. ASGI completion
+settles only that server's input copy, including an interrupted admission; it
+does not attest any remote recipient. Current-incarnation question floors bind
+source question/loan/ledger/body and the stored case/manifest. The same owning
+lock fences late birth, scheduling and processing. Missing attempts, active
+lifetimes, changed tasks, unclosed processing contexts and old incarnations
+remain unresolved.
+
+`location_retention_prepare_questions` and
+`location_retention_question_status` are additive delegation-group
+infrastructure tools with non-presentable metadata. Locators select stored
+plans/receipts. Plans and owning receipts travel over Switchboard's registered
+MCP route; challenge metadata keeps its existing fixed constructor endpoint.
+No caller label, private capability, registry address or source-owner receipt
+proxies a receiver disposition. An exact unprocessed scheduled question can be
+reduced to a fixed expired-input prompt only after its actual input lifetime
+ends; an independent task edit refuses reduction. Immutable floor/receipt and
+separate committed readback distinguish closed, replayed and unknown ACK.
+
+Source reconciliation records only the matched receiving generation. Source
+ledger/context/answer/return/wake and recursive or mixed descendants still need
+their own real dispositions before the full raw-copy frontier closes. Current
+software controls use SQL/transport doubles; extended owning migrated-role
+controls remain hosted-only. This checkpoint does not claim full all-holder
+closure, READY, real online delivery or deployed browser proof.

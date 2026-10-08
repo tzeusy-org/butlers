@@ -1807,6 +1807,28 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
                 )
                 == 1
             )
+        from butlers.chronicler.location_delegation_copies import delegation_frontier_closed
+
+        unrelated_case = uuid.uuid4()
+        assert await delegation_frontier_closed(domain, unrelated_case)
+        # Purge predicate must not erase a declared cohort by joining only
+        # surviving parents. This is a planted SQL-engine gap, not a producer.
+        async with domain.acquire() as conn:
+            async with conn.transaction():
+                await runtime.lock_domain(conn)
+                await conn.execute(
+                    "INSERT INTO location_native_delegation_inputs "
+                    "(question_generation,ledger_id,receiving_session,tool_generation,"
+                    "context_generation,body_digest,parent_count,exclusive_input) "
+                    "VALUES($1,$2,$3,$4,$5,$6,2,true)",
+                    uuid.uuid4(),
+                    uuid.uuid4(),
+                    session_id,
+                    tool_generation,
+                    context,
+                    b"g" * 32,
+                )
+        assert not await delegation_frontier_closed(domain, unrelated_case)
         tool.name, tool.generation = "delegate_ask", tool_generation
         # The core-only constructor must use this actual owning domain pool,
         # independently of the optional Memory runtime. This is migrated
@@ -1831,6 +1853,7 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
                         await core.lock_domain(conn)
             async with domain.acquire() as readback:
                 assert await readback.fetchval("SELECT current_schema()") == runtime.identity[0]
+            await _assert_question_receiver_disposal(domain, core)
             core.close()
             async with domain.acquire() as conn:
                 with pytest.raises(PolicyUnavailableError, match="owning writer differs"):
@@ -1843,3 +1866,155 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
             register_context_writer(runtime)
     finally:
         _current_tool_copy.reset(token)
+
+
+async def _assert_question_receiver_disposal(domain, runtime):
+    """Migrated owning-role floor/reduction/readback; planted source plan, NOT online proof."""
+    import hashlib
+
+    from butlers.chronicler.location_delegation_disposal import (
+        _REDUCED_TASK,
+        _close_question_receiver,
+        question_receiver_status,
+    )
+    from butlers.chronicler.location_delegation_receivers import receiving_question_fenced
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.core.scheduler import schedule_create
+
+    generation, ledger, question, loan = (uuid.uuid4() for _ in range(4))
+    decision, server = uuid.uuid4(), uuid.uuid4()
+    digest = hashlib.sha256(b"synthetic receiver input").digest()
+    binding = {
+        "receiving_generation": generation,
+        "decision_id": decision,
+        "manifest_digest": b"m" * 32,
+        "source_name": "chronicler",
+        "question_generation": question,
+        "ledger_id": ledger,
+        "loan_id": loan,
+        "body_digest": digest,
+        "receiving_incarnation": runtime.incarnation,
+    }
+    # Missing own attempt cannot close, even though the exact permanent floor
+    # prevents a later admission. The source-side loan alone is insufficient.
+    assert await _close_question_receiver(runtime, binding) is None
+    async with domain.acquire() as observed:
+        assert await receiving_question_fenced(observed, generation)
+        assert not await observed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_delegation_dispositions "
+            "WHERE receiving_generation=$1)",
+            generation,
+        )
+    # A genuinely separate planted generation supplies the positive; never
+    # refill the missing attempt behind the first permanent unknown floor.
+    generation, loan = uuid.uuid4(), uuid.uuid4()
+    binding = dict(binding, receiving_generation=generation, loan_id=loan)
+    prompt = "synthetic full receiving question prompt"
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_received_delegation_attempts "
+                "(receiving_generation,ledger_id,body_digest,receiving_incarnation,server_request) "
+                "VALUES($1,$2,$3,$4,$5)",
+                generation,
+                ledger,
+                digest,
+                runtime.incarnation,
+                server,
+            )
+            await conn.execute(
+                "INSERT INTO location_received_delegation_inputs "
+                "(receiving_generation,ledger_id,source_name,source_incarnation,question_generation,"
+                "loan_id,body_digest,receiving_incarnation,parent_count,exclusive_input,server_request) "
+                "VALUES($1,$2,'chronicler',$3,$4,$5,$6,$3,1,true,$7)",
+                generation,
+                ledger,
+                runtime.incarnation,
+                question,
+                loan,
+                digest,
+                server,
+            )
+            task = await schedule_create(conn, "receiver-" + str(generation), "0 0 * * *", prompt)
+            await conn.execute(
+                "INSERT INTO location_received_delegation_schedules "
+                "(receiving_generation,task_id,prompt_digest) VALUES($1,$2,$3)",
+                generation,
+                task,
+                hashlib.sha256(prompt.encode()).digest(),
+            )
+    # No final native response receipt: an enabled/ended-looking task does not
+    # attest completion of the actual source-owned transient server copy.
+    assert await _close_question_receiver(runtime, binding) is None
+    async with domain.acquire() as observed:
+        assert (
+            await observed.fetchval("SELECT prompt FROM scheduled_tasks WHERE id=$1", task)
+            == prompt
+        )
+        assert not await observed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_delegation_dispositions "
+            "WHERE receiving_generation=$1)",
+            generation,
+        )
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_received_delegation_server_finished "
+                "(receiving_generation,server_request,body_digest,receipt_id) VALUES($1,$2,$3,$4)",
+                generation,
+                server,
+                digest,
+                uuid.uuid4(),
+            )
+            await conn.execute(
+                "UPDATE scheduled_tasks SET prompt=$2 WHERE id=$1",
+                task,
+                prompt + " independent change",
+            )
+    with pytest.raises(PolicyUnavailableError, match="task body changed"):
+        await _close_question_receiver(runtime, binding)
+    assert not await domain.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_received_delegation_dispositions "
+        "WHERE receiving_generation=$1)",
+        generation,
+    )
+    await domain.execute("UPDATE scheduled_tasks SET prompt=$2 WHERE id=$1", task, prompt)
+    receipt = await _close_question_receiver(runtime, binding)
+    assert receipt is not None
+    async with domain.acquire() as observed:
+        reduced = await observed.fetchrow(
+            "SELECT prompt,enabled FROM scheduled_tasks WHERE id=$1", task
+        )
+        assert reduced["prompt"] == _REDUCED_TASK and reduced["enabled"] is False
+        assert await receiving_question_fenced(observed, generation)
+        assert (
+            await observed.fetchval(
+                "SELECT receipt_id FROM location_received_delegation_dispositions "
+                "WHERE receiving_generation=$1",
+                generation,
+            )
+            == receipt
+        )
+        with pytest.raises(asyncpg.RaiseError, match="Location source floors are permanent"):
+            async with observed.transaction():
+                await observed.execute(
+                    "UPDATE location_received_delegation_floors SET body_digest=$2 "
+                    "WHERE receiving_generation=$1",
+                    generation,
+                    b"x" * 32,
+                )
+        assert (
+            await observed.fetchval(
+                "SELECT body_digest FROM location_received_delegation_floors "
+                "WHERE receiving_generation=$1",
+                generation,
+            )
+            == digest
+        )
+    assert await _close_question_receiver(runtime, binding) == receipt
+    observed = await question_receiver_status(runtime, decision, receipt)
+    assert observed["loan_id"] == str(loan) and observed["manifest_digest"] == (b"m" * 32).hex()
+    with pytest.raises(PolicyUnavailableError, match="floor differs"):
+        await _close_question_receiver(runtime, dict(binding, body_digest=b"x" * 32))

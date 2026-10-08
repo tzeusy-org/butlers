@@ -973,6 +973,7 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
             self.catalog_unknown = False
             self.catalog_pending = False
             self.artifact_pending = False
+            self.answer_pending = False
             self.catalog = []
             self.unknown_commit = False
             self.frontier = None
@@ -1057,6 +1058,8 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
                 return self.role
             if "FROM location_native_delegation_inputs" in query:
                 return self.question_pending
+            if "FROM location_native_delegation_answers" in query:
+                return self.answer_pending
             if "FROM public.memory_catalog" in query:
                 return self.catalog_unknown
             if "FROM location_native_catalog_generations" in query:
@@ -1152,6 +1155,10 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
         assert await service.seal_native_frontier(pool, decision) is None
         assert pool.frontier is None and pool.raw and pool.points
         pool.question_pending = False
+        pool.answer_pending = True
+        assert await service.seal_native_frontier(pool, decision) is None
+        assert pool.frontier is None and pool.raw and pool.points
+        pool.answer_pending = False
         pool.trace.clear()
         sealed = await service.seal_native_frontier(pool, decision)
         assert sealed == pool.frontier["frontier_generation"]

@@ -69,7 +69,8 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "core",
         "delegation",
-        "delegate_receive delegate_wake",
+        "delegate_receive delegate_wake location_retention_prepare_questions "
+        "location_retention_question_status",
         presentable=False,
         namespace="delegation_control",
     ),

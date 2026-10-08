@@ -583,6 +583,9 @@ async def _assert_native_delegated_question_birth():
             self.headers, self.parents, self.ledger = {}, [], {}
             self.answers, self.answer_parents = {}, []
             self.source_parent = uuid.uuid4()
+            self.source_output = uuid.uuid4()
+            self.source_missing = False
+            self.source_bad_digest = False
             self.context = {
                 "input_generation": uuid.uuid4(),
                 "exclusive_input": True,
@@ -719,6 +722,8 @@ async def _assert_native_delegated_question_birth():
                 return self.fenced
             if "location_catalog_copy_dispositions" in sql:
                 return False
+            if "location_native_delegation_dispositions" in sql:
+                return False
             if "public.delegation_ledger" in sql:
                 trace.append("business")
                 if self.fail_business:
@@ -782,6 +787,19 @@ async def _assert_native_delegated_question_birth():
             raise AssertionError("unexpected source row")
 
         async def fetch(self, sql, *args):
+            if "FROM location_retention_plan_outputs" in sql:
+                return [{"output_kind": "point_event", "output_id": self.source_output}]
+            if "FROM location_native_delegation_loans" in sql:
+                return []
+            if "SELECT * FROM location_native_delegation_inputs" in sql:
+                return sorted(
+                    (
+                        row
+                        for row in self.headers.values()
+                        if args[0] is None or row["question_generation"] > args[0]
+                    ),
+                    key=lambda row: row["question_generation"],
+                )[:64]
             if "FROM location_native_delegation_answer_parents" in sql:
                 return [p for p in self.answer_parents if p["answer_generation"] == args[0]]
             if "location_native_dispatch_sessions" in sql:
@@ -793,10 +811,14 @@ async def _assert_native_delegated_question_birth():
             if "location_catalog_copy_loans" in sql:
                 return self.context_loans
             if "location_native_copy_births" in sql:
+                if self.source_missing:
+                    return []
                 return [
                     {
                         "copy_generation": self.source_parent,
-                        "input_digest": b"p" * 32,
+                        "input_digest": b"x" * 32 if self.source_bad_digest else b"p" * 32,
+                        "output_kind": "point_event",
+                        "output_id": self.source_output,
                         "lineage_known": True,
                         "exclusive_input": True,
                     }
@@ -837,6 +859,33 @@ async def _assert_native_delegated_question_birth():
         assert trace.index("policy-first") < trace.index("birth") < trace.index("business")
         assert trace.index("business") < trace.index("commit") < trace.index("readback")
         assert pool.acquired == 2  # The receipt is read separately after domain COMMIT.
+        from butlers.chronicler.location_delegation_disposal import source_question_cohort
+
+        async def cohort():
+            async with pool.transaction():
+                await lock_domain(pool)
+                return await source_question_cohort(pool, uuid.uuid4())
+
+        selected = await cohort()
+        assert len(selected) == 1 and selected[0]["complete_input"] is True
+        assert selected[0]["question_generation"] == str(header["question_generation"])
+        assert selected[0]["parent_count"] == 1 and selected[0]["loans"] == []
+        original_parents = deepcopy(pool.parents)
+        for damage in ("missing", "digest", "count", "extra"):
+            if damage == "missing":
+                pool.source_missing = True
+            elif damage == "digest":
+                pool.source_bad_digest = True
+            elif damage == "count":
+                header["parent_count"] = 2
+            else:
+                pool.parents.append(dict(pool.parents[0], parent_generation=uuid.uuid4()))
+            damaged = await cohort()
+            assert len(damaged) == 1 and damaged[0]["complete_input"] is False
+            pool.parents = deepcopy(original_parents)
+            pool.source_missing = pool.source_bad_digest = False
+            header["parent_count"] = 1
+        assert (await cohort())[0]["complete_input"] is True
         committed = deepcopy((pool.headers, pool.parents, pool.ledger))
         with pytest.raises(PolicyUnavailableError, match="producer differs"):
             await record(actor="caller-forged")
