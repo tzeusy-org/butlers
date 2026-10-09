@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // Tests for EpisodeDrawer — bu-ig72b.31
 //

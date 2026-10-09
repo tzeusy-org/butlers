@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useRef, useState } from "react"
-import { renderToStaticMarkup } from "react-dom/server"
-import { MemoryRouter, useLocation } from "react-router"
+import { withExpectedSsrLayoutWarnings } from "@/test/expected-console";
+import { renderToStaticMarkup as renderServerMarkup } from "react-dom/server"
+import { MemoryRouter, useLocation, StaticRouter } from "react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
@@ -97,9 +98,9 @@ function renderOverview(): string {
   const queryClient = new QueryClient()
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <StaticRouter location="/">
         <ButlerOverviewTab butlerName="general" />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   )
 }
@@ -649,3 +650,9 @@ describe("ButlerOverviewTab -- doors", () => {
     })
   })
 })
+
+
+// One closed create-session Dialog: three useId + two Presence roots. Mounted renderers keep their real layout hooks.
+function renderToStaticMarkup(...args: Parameters<typeof renderServerMarkup>): string {
+  return withExpectedSsrLayoutWarnings({"Dialog": 3, "Presence": 4}, () => renderServerMarkup(...args));
+}

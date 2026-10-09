@@ -1,3 +1,4 @@
+import { withExpectedSsrLayoutWarnings } from "@/test/expected-console";
 /**
  * SettingsModelsPage — /settings/models
  *
@@ -28,7 +29,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { render, cleanup, fireEvent, screen, act } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { axe, toHaveNoViolations } from "jest-axe";
 
@@ -139,6 +140,8 @@ function makeModel(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntr
   };
 }
 
+let ssrCatalogRowCount = 0;
+
 function setHookState({
   entries = [] as ModelCatalogEntry[],
   isLoading = false,
@@ -148,6 +151,8 @@ function setHookState({
   isLoading?: boolean;
   isError?: boolean;
 }) {
+  if (entries.length > 2) throw new Error("unreviewed SSR catalog fixture population");
+  ssrCatalogRowCount = entries.length;
   vi.mocked(useModelCatalog).mockReturnValue({
     data: isLoading || isError ? undefined : { data: entries, meta: {} },
     isLoading,
@@ -165,13 +170,13 @@ function setHookState({
 
 function renderPage(): string {
   const queryClient = new QueryClient();
-  return renderToStaticMarkup(
+  return withExpectedSsrLayoutWarnings({ Dialog: 3 + 9 * ssrCatalogRowCount, Presence: 4 + 16 * ssrCatalogRowCount, Tooltip: 2 * ssrCatalogRowCount, RadixSwitchBubbleInput: ssrCatalogRowCount }, () => renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <StaticRouter location="/">
         <SettingsModelsPage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
-  );
+  ));
 }
 
 function mountPage() {

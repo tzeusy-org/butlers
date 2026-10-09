@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // ButlerMark tests — bu-myje9
 //

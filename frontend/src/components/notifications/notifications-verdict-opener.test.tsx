@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for <NotificationsVerdictOpener> (bu-y0v0c, JARVIS pursuit move 9
  * slice 3).
@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import {
   NotificationsVerdictOpener,
@@ -21,7 +21,7 @@ import {
 import type { NotificationStats } from "@/api/index.ts";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 function stats(overrides: Partial<NotificationStats> = {}): NotificationStats {

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // Mono tests — bu-rixan
 //

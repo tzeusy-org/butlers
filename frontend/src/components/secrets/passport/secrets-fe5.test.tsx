@@ -19,7 +19,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { renderToStaticMarkup } from "react-dom/server";
 import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import * as React from "react";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ function renderInRouter(element: React.ReactElement, initialEntries: string[] = 
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
+      <StaticRouter location={(initialEntries)[0] ?? "/"}>{element}</StaticRouter>
     </QueryClientProvider>,
   );
 }

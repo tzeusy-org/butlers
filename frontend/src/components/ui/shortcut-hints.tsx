@@ -5,6 +5,7 @@ import {
   Dialog,
   DialogContent,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
@@ -104,6 +105,7 @@ export function ShortcutHints() {
       <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-sm">
         <DialogHeader>
           <DialogTitle>Keyboard Shortcuts</DialogTitle>
+          <DialogDescription className="sr-only">Keyboard shortcuts for global navigation and this page.</DialogDescription>
         </DialogHeader>
         <ShortcutRowList rows={shortcuts} />
 

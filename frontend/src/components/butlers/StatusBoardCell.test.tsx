@@ -14,7 +14,8 @@
 // ---------------------------------------------------------------------------
 
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { renderToStaticMarkup } from "react-dom/server"
+import { withExpectedSsrLayoutWarnings } from "@/test/expected-console";
+import { renderToStaticMarkup as renderServerMarkup } from "react-dom/server"
 import { render, fireEvent, cleanup } from "@testing-library/react"
 
 // StatusBoardCell now uses Link and useNavigate from react-router. Mock them so
@@ -831,3 +832,9 @@ describe("StatusBoardCell: heartbeatUnavailable=true renders honest state", () =
     expect(html).toMatch(/<button[^>]*>QUARANTINED<\/button>/)
   })
 })
+
+
+// One cadence Tooltip: one useId and one Presence. Mounted renderers keep their real layout hooks.
+function renderToStaticMarkup(...args: Parameters<typeof renderServerMarkup>): string {
+  return withExpectedSsrLayoutWarnings({"Tooltip": 1, "Presence": 2}, () => renderServerMarkup(...args));
+}

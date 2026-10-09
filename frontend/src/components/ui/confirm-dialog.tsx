@@ -73,7 +73,9 @@ export function ConfirmDialog({
       <AlertDialogContent data-testid={testId} onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
-          {description && <AlertDialogDescription>{description}</AlertDialogDescription>}
+          <AlertDialogDescription className={description ? undefined : "sr-only"}>
+            {description ?? "Review the details before confirming this action."}
+          </AlertDialogDescription>
         </AlertDialogHeader>
         {children}
         <AlertDialogFooter>

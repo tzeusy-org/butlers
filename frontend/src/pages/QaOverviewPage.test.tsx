@@ -19,8 +19,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { withExpectedSsrLayoutWarnings } from "@/test/expected-console";
+import { renderToStaticMarkup as renderServerMarkup } from "react-dom/server";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // sonner's real export is a callable toast() carrying .success/.error/.warning
@@ -178,9 +179,9 @@ function renderPage(route = "/qa") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return renderToStaticMarkup(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[route]}>
+      <StaticRouter location={([route])[0] ?? "/"}>
         <QaOverviewPage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }
@@ -1196,3 +1197,9 @@ describe("QaOverviewPage -- j/k case-rail keyboard path (bu-mmdef)", () => {
     expect(hint?.textContent).toContain("Previous item");
   });
 });
+
+
+// Two closed Dialog roots plus one optional Tooltip, including its two Presence hooks. Mounted renderers keep their real layout hooks.
+function renderToStaticMarkup(...args: Parameters<typeof renderServerMarkup>): string {
+  return withExpectedSsrLayoutWarnings({"Dialog": 6, "Presence": 10, "Tooltip": 1}, () => renderServerMarkup(...args));
+}

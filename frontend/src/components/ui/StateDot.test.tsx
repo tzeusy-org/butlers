@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // StateDot tests — bu-ec2wb, extended bu-rixan
 //

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // Row tests — bu-ovq7t
 //

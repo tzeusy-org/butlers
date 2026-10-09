@@ -49,11 +49,11 @@ describe("owner access user flows", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
     chooser.mockRejectedValueOnce(new DOMException("", "NotAllowedError"));
     // A refresh represents the cookie being received by this browser.
-    clearOwnerSession();
+    act(() => clearOwnerSession());
     await screen.findByText("Protected dashboard");
     authenticated = false;
     fetchMock.mockResolvedValueOnce(new Response("{}", { status: 401 }));
-    await ownerFetch("/api/private");
+    await act(async () => { await ownerFetch("/api/private"); });
     await waitFor(() => expect(screen.queryByText("Protected dashboard")).toBeNull());
     expect(cache.getQueryData(["private"])).toBeUndefined();
     expect(location.href).toContain("/return-here?");
@@ -144,7 +144,7 @@ describe("owner access user flows", () => {
     const fresh = { ...tuple(), csrf_token: "fresh-after-teardown" };
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: fresh }), { status: 200 }))
       .mockResolvedValueOnce(new Response("{}", { status: 200 }));
-    await ownerFetch("/api/private", { method: "POST" });
+    await act(async () => { await ownerFetch("/api/private", { method: "POST" }); });
     const requests = fetchMock.mock.calls;
     expect(requests.filter(call => call[0].endsWith("/csrf"))).toHaveLength(2);
     expect(new Headers(requests.at(-1)![1].headers).get("X-CSRF-Token")).toBe(fresh.csrf_token);

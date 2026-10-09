@@ -24,7 +24,7 @@ import { resolve } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { render as renderDom, cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, StaticRouter } from "react-router";
 
 import TopologyGraph from "./TopologyGraph";
 
@@ -64,9 +64,9 @@ vi.mock("@xyflow/react", () => ({
 
 function render(props: Parameters<typeof TopologyGraph>[0]): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <TopologyGraph {...props} />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

@@ -325,7 +325,7 @@ describe("ButlerDomainEventsPanel", () => {
       deliveries: { data: { data: [makeDelivery()] }, isLoading: false, isError: false },
     })
     mockUseReactions.mockReturnValue({
-      data: { data: [makeReaction({ status: "scheduled" }), makeReaction()] },
+      data: { data: [makeReaction({ id: "55555555-5555-5555-5555-555555555555", status: "scheduled" }), makeReaction()] },
       isLoading: false,
       isError: false,
     })

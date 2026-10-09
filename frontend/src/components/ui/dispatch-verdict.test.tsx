@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for the shared <DispatchVerdict> page-opener primitive (bu-qvnce.9,
  * JARVIS pursuit move 9).
@@ -11,12 +11,12 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { DispatchVerdict, type VerdictClause, type VerdictSource } from "@/components/ui/dispatch-verdict";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 const HEALTHY_SOURCE: VerdictSource = { label: "fleet status", isLoading: false, isError: false };

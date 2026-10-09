@@ -872,7 +872,7 @@ describe("EntitiesIndexPage — bulk gutter merge (exactly two)", () => {
     expect(gutterMerge.disabled).toBe(true);
   });
 
-  it("enables the gutter merge action when exactly two rows are selected and opens compare", () => {
+  it("enables the gutter merge action when exactly two rows are selected and opens compare", async () => {
     renderPage();
     selectRow("Alice Fogg");
     selectRow("Bob Hatch");
@@ -880,7 +880,7 @@ describe("EntitiesIndexPage — bulk gutter merge (exactly two)", () => {
       "[data-testid='gutter-merge']",
     ) as HTMLButtonElement;
     expect(gutterMerge.disabled).toBe(false);
-    act(() => gutterMerge.click());
+    await act(async () => gutterMerge.click());
     // The compare view (merge-review surface) opens for the selected pair.
     // DialogContent renders through a portal to document.body.
     expect(document.body.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
@@ -934,7 +934,7 @@ describe("EntitiesIndexPage — duplicate-candidate queue evidence drill", () =>
     expect(peerBtn.textContent).toContain("Dup Two");
   });
 
-  it("opens the compare view pre-highlighted when a peer link is clicked", () => {
+  it("opens the compare view pre-highlighted when a peer link is clicked", async () => {
     vi.mocked(useRelationshipEntityQueue).mockReturnValue({
       data: makeQueueResponse([
         {
@@ -963,7 +963,7 @@ describe("EntitiesIndexPage — duplicate-candidate queue evidence drill", () =>
     ) as HTMLButtonElement;
     expect(peerBtn).toBeTruthy();
     expect(peerBtn.textContent).toContain("Linked entity");
-    act(() => peerBtn.click());
+    await act(async () => peerBtn.click());
     // The compare view opens straight for the pair (no target picker).
     expect(document.body.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
   });

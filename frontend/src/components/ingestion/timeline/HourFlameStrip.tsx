@@ -35,7 +35,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 
 import { useTimezone } from "@/components/ui/timezone-context";
 import type { IngestionHistogramBucket, IngestionHistogramCounts } from "@/api/index.ts";

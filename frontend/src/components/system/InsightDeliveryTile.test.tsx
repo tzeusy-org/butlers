@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // InsightDeliveryTile tests -- bu-dl98i.3.3
 //

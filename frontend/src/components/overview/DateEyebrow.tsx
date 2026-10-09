@@ -10,7 +10,7 @@
  * Topology: about/lay-and-land/frontend.md §Editorial archetype layout
  */
 
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 
 import { useTimezone } from "@/components/ui/timezone-context";
 

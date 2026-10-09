@@ -1,5 +1,35 @@
-import { beforeEach } from "vitest";
+import { afterAll, afterEach, beforeEach, vi } from "vitest";
+import { createConsoleGuard } from "./console-guard";
 import { rememberOwnerCsrf } from "@/api/owner-session";
+
+// React's actual mounted act() contract, rather than suppressing its warnings.
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+let consoleGuards: ReturnType<typeof vi.spyOn>[] = [];
+let consoleGuard = createConsoleGuard();
+// Keep import-time and between-test warnings fatal too. Restoring a local
+// observer returns to these delegates, rather than the unguarded raw console.
+console.error = (...args: unknown[]) => consoleGuard.error(...args);
+console.warn = (...args: unknown[]) => consoleGuard.warn(...args);
+beforeEach(() => {
+  consoleGuard.assertClean();
+  consoleGuard = createConsoleGuard();
+  consoleGuards = (["error", "warn"] as const).map(kind =>
+    vi.spyOn(console, kind).mockImplementation(consoleGuard[kind]),
+  );
+});
+afterEach(() => {
+  try {
+    consoleGuard.assertClean();
+  } finally {
+    for (const guard of consoleGuards) guard.mockRestore();
+    // Separate the completed test from import/between-test activity.
+    consoleGuard = createConsoleGuard();
+  }
+});
+
+// The final test has no next beforeEach to inspect its between-test ledger.
+afterAll(() => consoleGuard.assertClean());
 
 // Domain-component tests run below OwnerGate with an established synthetic
 // owner session. Auth-boundary tests explicitly clear it to test real bootstrap.

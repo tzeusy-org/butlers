@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import {
   DetailEyebrow,
@@ -24,7 +24,7 @@ import {
 } from "@/components/memory/DetailSkeleton";
 
 function html(node: React.ReactNode): string {
-  return renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{node}</StaticRouter>);
 }
 
 describe("DetailEyebrow", () => {

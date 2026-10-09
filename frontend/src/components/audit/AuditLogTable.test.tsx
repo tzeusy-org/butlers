@@ -13,7 +13,7 @@ import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 
 import AuditLogTable from "./AuditLogTable";
 import type { AuditLogEntry } from "@/api/types";
@@ -65,9 +65,9 @@ function entry(overrides: Partial<AuditLogEntry> = {}): AuditLogEntry {
 
 function render(entries: AuditLogEntry[]): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <AuditLogTable entries={entries} isLoading={false} isError={false} />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 
@@ -273,7 +273,7 @@ describe("AuditLogTable -- expanded detail panel pivots", () => {
 
     const actorLink = container.querySelector('a[href^="/audit-log?actor="]') as HTMLAnchorElement;
     act(() => {
-      actorLink.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      actorLink.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
 
     // The detail panel (which renders the row's `note`) must not appear --

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { withExpectedSsrLayoutWarnings } from "@/test/expected-console";
+import { renderToStaticMarkup as renderServerMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render as renderDom, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation, useNavigate } from "react-router";
+import { MemoryRouter, useLocation, useNavigate, StaticRouter } from "react-router";
 
 import TimelinePage from "@/pages/TimelinePage";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
@@ -136,9 +137,9 @@ beforeEach(() => {
 
 function render(initialEntry = "/timeline"): string {
   return renderToStaticMarkup(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <StaticRouter location={([initialEntry])[0] ?? "/"}>
       <TimelinePage />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 
@@ -1063,3 +1064,9 @@ describe("TimelinePage — keyboard shortcuts (bu-ep4ks.12)", () => {
     expect(showNewEvents).toHaveBeenCalledTimes(1);
   });
 });
+
+
+// One real ledger layout hook and one closed save Dialog. Mounted renderers keep their real layout hooks.
+function renderToStaticMarkup(...args: Parameters<typeof renderServerMarkup>): string {
+  return withExpectedSsrLayoutWarnings({"TimelineLedger": 1, "Dialog": 3, "Presence": 4}, () => renderServerMarkup(...args));
+}

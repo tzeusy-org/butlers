@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // ButlerHeartbeatTile tests (bu-86c4c.17)
 //
@@ -21,7 +21,7 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { ButlerHeartbeatTile } from "./ButlerHeartbeatTile";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
@@ -143,9 +143,9 @@ function setData(rows: StatusBoardRow[]) {
 
 function render(): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <ButlerHeartbeatTile />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

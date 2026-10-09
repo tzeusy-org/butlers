@@ -296,7 +296,9 @@ describe("ButlersPage — keyboard board cursor", () => {
         expect.objectContaining({ action: expect.objectContaining({ label: "Undo" }) }),
       );
       const toastCall = vi.mocked(toast).mock.calls[0];
-      (toastCall[1] as unknown as { action: { onClick: () => void } }).action.onClick();
+      act(() => {
+        (toastCall[1] as unknown as { action: { onClick: () => void } }).action.onClick();
+      });
     } finally {
       vi.useFakeTimers();
     }

@@ -124,12 +124,30 @@ population, tracing, digest and same-checkout/run/attempt/computed assignment be
 PRs still run without coverage; merge-group and ordinary standalone shard calls retain it.
 Reporting integrity remains separate from required check/guards/frontend verdicts.
 
-Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
-survivors run in guards. Two locked Vitest children independently prove complete disjoint
-actual test membership. Required frontend fails if guards or either child fails. Browser
-reuses only the source/attempt/content-bound build and retains locked browser version,
-mandatory OS dependencies on cache hits/misses, three bounded attempts and ordinary cleanup.
-No source control or inferred setup saving establishes current timing or hosted upload proof.
+The independent `frontend-static` job runs lint including the CSS check, copy/coercion gates,
+knip, the one build and existing bounded Node/owner-time survivors in that order. Both locked
+Vitest children run independently of static success and each collect a fresh full reference
+before its original shard execution, inside one900-second envelope including cleanup.
+Required frontend independently reconciles both references, selected items, starts and results,
+and fails if guards, static or either child is unavailable. Browser reuses only the
+source/attempt/content-bound static build; locked browser/OS dependencies, three bounded attempts
+and ordinary cleanup remain. A retry-pass is still non-green under `failOnFlakyTests`.
+
+ESLint's private content cache is advisory and bound to actual locked tool/runtime/config/rule
+bytes. Cache misses or corrupt/unknown input run full lint; only success publishes the owned
+cache. Per-file Node environments and the date dependency optimizer preserve default isolated
+forks and exact current item/skip/todo populations. The strict warning/error ledger survives
+real mock resets/restores and catches swallowed calls, including between-test activity.
+Expected errors and synchronous SSR layout warnings have local, exact finite allowances;
+mounted effects and unrelated, excess or later asynchronous errors remain fatal.
+
+A main push may skip duplicate frontend static/Vitest/browser/heavy guards only after an
+independent same-repository protected run/attempt/artifact and protected-to-squash-to-main
+same-tree lineage check. Those receipts retain their original identities. Fresh current main
+inventory/budgets and always-running required contexts remain mandatory; unknown lineage or
+missing applicable PR/merge-group evidence cannot authorize success. The existing route token
+adds only `actions:read` for these bounded lookups. No source control, local wall time or inferred
+setup saving establishes current hosted timing, upload or natural five-before/five-after gain.
 
 The frontend verifier compares configuration booleans, module error counters and reconstructed
 count/multiplicity/outcome summaries with exact JSON types; equal integers, floats and booleans

@@ -17,7 +17,7 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, useParams } from "react-router";
+import { useParams, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ConnectorDetailPage from "@/pages/ConnectorDetailPage";
@@ -147,9 +147,9 @@ function renderPage(): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <StaticRouter location="/">
         <ConnectorDetailPage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }

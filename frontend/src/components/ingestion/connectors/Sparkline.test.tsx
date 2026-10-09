@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Sparkline unit tests.
  *

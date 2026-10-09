@@ -62,6 +62,17 @@ function snapshot(module, root) {
   return { file, items, errors: module.errors().length, ok: module.ok() };
 }
 
+function moduleMetrics(module, root) {
+  const diagnostic = module.diagnostic();
+  const values = {};
+  for (const name of ['environmentSetupDuration', 'prepareDuration', 'collectDuration', 'setupDuration', 'duration']) {
+    const value = diagnostic[name];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) fail();
+    values[name] = value;
+  }
+  return [sourcePath(module.moduleId, root), values];
+}
+
 function publish(output, value) {
   const temporary = output + '.partial';
   fs.writeFileSync(temporary, JSON.stringify(value));
@@ -106,6 +117,7 @@ async function collect(root, output) {
     publish(output, {
       schema: 'ci-vitest-reference.v2',
       config, files: files.sort(), halves, modules,
+      file_metrics: Object.fromEntries(testModules.map((m) => moduleMetrics(m, root))),
       unhandled_errors: unhandledErrors.length,
       controller_exit: process.exitCode ?? 0,
       complete: true,
@@ -230,6 +242,7 @@ export default class OccurrenceReporter {
       modules: this.modules, queued: this.queued, starts: this.starts,
       ends: this.ends, ready: this.ready, results: this.results,
       terminal_files: modules.map((m) => sourcePath(m.moduleId, this.root)).sort(),
+      file_metrics: Object.fromEntries(modules.map((m) => moduleMetrics(m, this.root))),
       unhandled_errors: errors.length, reporter_problems: this.problems,
       update_errors: this.updateQueue.failures, reason, complete: true,
     });

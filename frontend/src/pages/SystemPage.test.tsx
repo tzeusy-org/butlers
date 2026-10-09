@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render as renderDom } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import SystemPage from "@/pages/SystemPage";
@@ -385,9 +385,9 @@ function renderPage(): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <StaticRouter location="/">
         <SystemPage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }

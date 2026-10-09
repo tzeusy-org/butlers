@@ -15,7 +15,7 @@
  * pipeline band).
  */
 
-import { formatInTimeZone } from 'date-fns-tz'
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 
 import type { MemoryStats } from '@/api/types.ts'
 

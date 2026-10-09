@@ -15,7 +15,7 @@
  * date-kind facts.
  */
 
-import { format } from "date-fns";
+import { format } from "date-fns/format";
 
 import type { CoreDateEntry } from "@/api/types";
 import { FactReporterLine } from "./FactReporterLine";

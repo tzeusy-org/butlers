@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Registry↔hook coverage test (bu-qvnce.14 slice 5).
  *

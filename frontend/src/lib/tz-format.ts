@@ -7,8 +7,11 @@
 // Relies on date-fns-tz for IANA-correct formatting.
 // ---------------------------------------------------------------------------
 
-import { formatInTimeZone, toZonedTime, fromZonedTime } from "date-fns-tz"
-import { startOfDay, endOfDay } from "date-fns"
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
+import { toZonedTime } from "date-fns-tz/toZonedTime";
+import { fromZonedTime } from "date-fns-tz/fromZonedTime";
+import { startOfDay } from "date-fns/startOfDay";
+import { endOfDay } from "date-fns/endOfDay";
 
 export { formatInTimeZone }
 

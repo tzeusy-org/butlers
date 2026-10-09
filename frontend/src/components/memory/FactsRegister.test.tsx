@@ -247,7 +247,7 @@ describe("FactsRegister — the ledger", () => {
     ).find((a) => a.getAttribute("href") === "/entities/ent-9");
     expect(entityAnchor).toBeDefined();
     act(() => {
-      entityAnchor!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      entityAnchor!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     // Navigation went to the entity, NOT the fact detail.
     expect(lastPathname).toBe("/entities/ent-9");

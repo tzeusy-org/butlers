@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { render, fireEvent, cleanup } from "@testing-library/react";
 import * as React from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ function renderStatic(element: React.ReactElement): string {
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/secrets"]}>{element}</MemoryRouter>
+      <StaticRouter location={(["/secrets"])[0] ?? "/"}>{element}</StaticRouter>
     </QueryClientProvider>,
   );
 }

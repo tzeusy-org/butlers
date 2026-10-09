@@ -1,14 +1,14 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { CalendarVerdictOpener } from "@/components/calendar/CalendarVerdictOpener";
 
 function render(overrides: Partial<React.ComponentProps<typeof CalendarVerdictOpener>> = {}): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <CalendarVerdictOpener
         entriesCount={14}
         sourceCount={3}
@@ -25,7 +25,7 @@ function render(overrides: Partial<React.ComponentProps<typeof CalendarVerdictOp
         conflicts={[]}
         {...overrides}
       />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

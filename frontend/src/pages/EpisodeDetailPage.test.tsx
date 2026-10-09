@@ -14,7 +14,7 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import EpisodeDetailPage from "@/pages/EpisodeDetailPage";
 import { useEpisode, useFactsByEpisode } from "@/hooks/use-memory";
@@ -95,9 +95,9 @@ function setDerivedFacts(facts: Fact[]) {
 
 function html(): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <EpisodeDetailPage />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

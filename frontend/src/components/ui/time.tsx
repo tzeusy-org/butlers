@@ -65,7 +65,7 @@
 // ---------------------------------------------------------------------------
 
 import { useEffect, useState } from "react"
-import { formatInTimeZone } from "date-fns-tz"
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 import { useTimezone } from "@/components/ui/timezone-context"
 
 // ---------------------------------------------------------------------------

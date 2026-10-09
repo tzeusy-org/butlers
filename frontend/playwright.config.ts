@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { availableParallelism } from "node:os";
 
 /**
  * Playwright e2e configuration for the Butlers dashboard frontend.
@@ -42,7 +43,9 @@ export default defineConfig({
 
   retries: process.env.CI ? 2 : 0,
 
-  workers: process.env.CI ? 1 : 4,
+  workers: process.env.CI ? Math.max(1, availableParallelism() - 1) : 4,
+
+  failOnFlakyTests: true,
 
   reporter: process.env.CI ? "github" : "list",
 

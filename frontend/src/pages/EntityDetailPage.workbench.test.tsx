@@ -399,13 +399,13 @@ describe("EntityDetailPage — Workbench duplicate panel", () => {
     expect(panel!.textContent).toContain("x@y.com");
   });
 
-  it("commit button opens the compare view (no direct merge)", () => {
+  it("commit button opens the compare view (no direct merge)", async () => {
     useRelationshipEntityQueue.mockReturnValue(DUP_QUEUE);
     render();
     const commit = container.querySelector(
       "[data-testid='workbench-duplicate-commit']",
     ) as HTMLButtonElement;
-    act(() => commit.click());
+    await act(async () => commit.click());
     expect(document.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
   });
 });

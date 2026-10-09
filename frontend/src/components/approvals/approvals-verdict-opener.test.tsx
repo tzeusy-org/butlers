@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for <ApprovalsVerdictOpener> (bu-qvnce.9, JARVIS pursuit move 9
  * slice 2).
@@ -11,13 +11,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import type { ApprovalSummary } from "@/api/index.ts";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 function summary(overrides: Partial<ApprovalSummary>): ApprovalSummary {

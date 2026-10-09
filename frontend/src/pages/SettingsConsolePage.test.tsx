@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import SettingsConsolePage from "@/pages/SettingsConsolePage";
@@ -82,9 +82,9 @@ function renderPage() {
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <StaticRouter location="/">
         <SettingsConsolePage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }

@@ -61,6 +61,7 @@ describe('/butlers/relationship/contacts/:id redirect', () => {
               element={<RelationshipContactRedirect />}
             />
             <Route path="/contacts/:contactId" element={<ContactDetailStub />} />
+            <Route path="*" element={null} />
           </Routes>
         </MemoryRouter>,
       )

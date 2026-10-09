@@ -129,6 +129,9 @@ describe("useArchiveRelationshipEntity", () => {
       await expect(archiveAPromise).rejects.toThrow("archive A failed");
     });
 
+    // Observe the latest mounted mutation notification before test teardown.
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
     const entityList = queryClient.getQueryData<RelationshipEntityListResponse>(entityListKey);
     const queue = queryClient.getQueryData<RelationshipQueueResponse>(queueKey);
     expect(entityList?.items.map((entity) => entity.id)).toEqual(["entity-a"]);
@@ -202,6 +205,9 @@ describe("useArchiveRelationshipEntity", () => {
       archiveB.reject(new Error("archive B failed"));
       await expect(archiveBPromise).rejects.toThrow("archive B failed");
     });
+
+    // Observe the latest mounted mutation notification before test teardown.
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     const entityList = queryClient.getQueryData<RelationshipEntityListResponse>(entityListKey);
     const queue = queryClient.getQueryData<RelationshipQueueResponse>(queueKey);

@@ -18,7 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render } from "@testing-library/react";
 import * as React from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ function renderInRouter(element: React.ReactElement, initialEntries: string[] = 
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
+      <StaticRouter location={(initialEntries)[0] ?? "/"}>{element}</StaticRouter>
     </QueryClientProvider>,
   );
 }
