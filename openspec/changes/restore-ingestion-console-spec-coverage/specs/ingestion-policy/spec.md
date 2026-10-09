@@ -39,11 +39,11 @@ pool is unavailable.
 the stored document; the verb is a concession to the route shape, not a
 statement about partial update semantics.
 
-`updated_by` SHALL be carried on the request body and SHALL default to
-`dashboard`. It is caller-asserted provenance, not an authenticated identity,
-and SHALL NOT be relied on as proof of who made the change; the audit trail
-records the same caller-asserted actor alongside the originating client
-address, which is the load-bearing attribution.
+`updated_by` SHALL be derived on the server from `authenticated_principal()`.
+The request model SHALL carry no attribution field; a caller's legacy
+`updated_by` field is ignored and SHALL NOT change the stored actor or the
+audit actor. The audit trail SHALL use that same server-derived identity with
+the originating client address. No caller-supplied string is acting authority.
 
 A successful update SHALL emit an audit entry with
 `action = 'ingestion.channel_default.update'` and the channel as target. The
@@ -109,3 +109,9 @@ explicitly overwritten.
 
 - **WHEN** the retention jobs are reviewed
 - **THEN** none of them targets `public.channel_defaults`
+
+#### Scenario: Caller cannot forge update attribution
+
+- **WHEN** a caller submits a valid PATCH with a forged `updated_by` value
+- **THEN** the persisted row and audit actor use `authenticated_principal()`
+- **AND** the forged value is not used as attribution

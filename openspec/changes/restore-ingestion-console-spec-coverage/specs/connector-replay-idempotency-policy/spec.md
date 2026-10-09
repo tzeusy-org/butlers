@@ -78,6 +78,13 @@ not be confirmed.
 - **THEN** the transition does not mark the event for replay
 - **AND** the event is reported as a conflict rather than silently replayed
 
+#### Scenario: Bulk classification outage refuses the whole request
+
+- **WHEN** the bulk replay pre-flight classification query raises
+- **THEN** the handler returns HTTP 503 with the fixed safety-unavailable reason
+- **AND** no event is transitioned and an unknown classification does not pass
+  the batch safety gate
+
 ### Requirement: connector_registry.replay_safe column
 
 The connector registry SHALL carry a column
