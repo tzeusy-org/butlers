@@ -1707,3 +1707,16 @@ ancestry still refuses. Teardown and elapsed time do not manufacture a terminal
 receipt. The existing software control holds an actual middleware Task open and
 then restores its original end callback; genuine registered SQL qualification
 remains required at the corrected exact head.
+
+The actual API runtime adapter now applies the content-blind failure boundary
+before both structured and ordinary invocation diagnostics or process metadata
+can persist provider exception arguments. The inherited private ingress cell
+only restricts diagnostics, including in copied child Tasks; it grants no
+admission, source classification or terminal authority. Ordinary API errors keep
+their existing detail. Native input failures retain the wrapper/failover fields
+and original SDK causal exception while emitting only fixed class/category/code.
+This prevents a new diagnostic copy; retained exception frames, SDK response
+objects and existing logs still require their own lawful disposition. Existing
+adapter owners exercise both actual paths with synthetic SDK errors, prior
+production source red/restored positives, ordinary companions and successful
+metadata reset. No provider or SQL invocation supplies proof in that scope.

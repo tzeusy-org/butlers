@@ -306,6 +306,8 @@ The Switchboard owning source reducer SHALL also close its actual canonical meta
 
 Actual OwnTracks pipeline diagnostics SHALL omit precise message previews, raw model output and exception arguments/tracebacks on structured-classification, dispatch, policy-route and empty-route fallback failures. The configured direct ingest callback SHALL retain only fixed failure-class/category/count diagnostics for this source; ordinary unrelated diagnostics and actual business routing behavior SHALL remain compatible. This prevention SHALL NOT dispose already stored logs/errors, erase completed Task tracebacks, grant terminal authority, or qualify an errored/routed runtime as closed. Every actual inherited log/error/result/runtime copy remains in its own full lineage/disposal frontier until independently proved.
 
+The actual API runtime adapter SHALL apply the same content-blind failure boundary before emitting SDK error diagnostics or storing process stderr/error_detail for an inherited private native ingress input. Copied child Tasks and stale private input cells SHALL remain content-blind without acquiring any admission or disposal authority. Ordinary unrelated API error contracts SHALL remain compatible. The fixed wrapper class, pre-tool failure/failover fields and original SDK causal error SHALL remain; only source-defined category/class/SQLSTATE diagnostics MAY be emitted or persisted. Restricting error detail SHALL NOT certify retained exception frames, SDK payloads or runtime copies as disposed, and those holders SHALL remain unresolved until their actual lawful disposition is independently proved.
+
 #### Scenario: Actual accepting and receiving holders
 
 - **WHEN** a full or metadata OwnTracks envelope is genuinely accepted and routed

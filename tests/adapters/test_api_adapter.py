@@ -193,7 +193,7 @@ async def test_invoke_timeout_sets_last_process_info_and_reraises() -> None:
     assert info["runtime_type"] == "api"
 
 
-async def test_invoke_sdk_error_wrapped_as_runtime_error() -> None:
+async def test_invoke_sdk_error_wrapped_as_runtime_error(caplog) -> None:
     client = AsyncMock()
     client.messages.create = AsyncMock(side_effect=RuntimeError("upstream 500"))
     adapter = ApiAdapter(client=client)
@@ -206,6 +206,7 @@ async def test_invoke_sdk_error_wrapped_as_runtime_error() -> None:
     assert info is not None
     assert info["error_detail"] == "upstream 500"
     assert info["is_pre_tool_call"] is True
+    await _assert_native_ingress_adapter_error_diagnostics(caplog, structured=False)
 
 
 async def test_invoke_success_clears_last_process_info_error_fields() -> None:
@@ -400,7 +401,7 @@ async def test_invoke_structured_timeout_sets_last_process_info_and_reraises() -
     assert info["is_pre_tool_call"] is True
 
 
-async def test_invoke_structured_sdk_error_wrapped_as_runtime_error() -> None:
+async def test_invoke_structured_sdk_error_wrapped_as_runtime_error(caplog) -> None:
     client = AsyncMock()
     client.messages.create = AsyncMock(side_effect=RuntimeError("upstream 500"))
     adapter = ApiAdapter(client=client)
@@ -417,6 +418,7 @@ async def test_invoke_structured_sdk_error_wrapped_as_runtime_error() -> None:
     assert info is not None
     assert "upstream 500" in info["error_detail"]
     assert info["is_pre_tool_call"] is True
+    await _assert_native_ingress_adapter_error_diagnostics(caplog, structured=True)
 
 
 async def test_invoke_structured_no_api_key_raises() -> None:
@@ -432,3 +434,59 @@ async def test_invoke_structured_no_api_key_raises() -> None:
                 model="claude-haiku-4-5-20251001",
             )
     client.messages.create.assert_not_called()
+
+
+async def _assert_native_ingress_adapter_error_diagnostics(caplog, *, structured):
+    """Actual adapter/child Task; SDK doubles, no provider/SQL/disposal proof."""
+    import asyncio
+
+    from butlers.core.location_ingress_copies import _processing_scope
+
+    sentinel = "synthetic-owntracks-private-error-body"
+    for inherited in (False, True, False):
+        primary = RuntimeError(sentinel)
+        adapter, client = _adapter_with_client()
+        client.messages.create.side_effect = primary
+        token = _processing_scope.set((object(), object()) if inherited else None)
+        # Deliberately stale private cells can only restrict error detail; they
+        # cannot pass native ancestry/constructor admission or mint any receipt.
+        caplog.clear()
+        kwargs = dict(prompt="owntracks", system_prompt="", env={}, model="synthetic-model")
+        try:
+            if structured:
+                call = adapter.invoke_structured(**kwargs, tools=[_ROUTE_TOOL_SCHEMA])
+            else:
+                call = adapter.invoke(**kwargs, mcp_servers={})
+            task = asyncio.create_task(call)  # Inherited private scope in the actual SDK child.
+            with pytest.raises(RuntimeError, match="ApiAdapter.*invocation failed") as failed:
+                await task
+            assert failed.value.__cause__ is primary
+            info = adapter.last_process_info
+            assert info["is_pre_tool_call"] is True and info["exit_code"] == -1
+            records = [
+                record for record in caplog.records if record.name == "butlers.core.runtimes.api"
+            ]
+            assert records
+            if inherited:
+                assert sentinel not in str(failed.value)
+                assert (
+                    info["stderr"]
+                    == info["error_detail"]
+                    == ("category=native sqlstate=unknown class=runtime_error")
+                )
+                assert all(sentinel not in r.getMessage() and r.exc_info is None for r in records)
+            else:
+                assert sentinel in str(failed.value)
+                assert info["stderr"] == info["error_detail"] == sentinel
+                assert any(r.exc_info is not None and sentinel in r.getMessage() for r in records)
+            client.messages.create.side_effect = None
+            client.messages.create.return_value = _mock_response()
+            if structured:
+                await adapter.invoke_structured(**kwargs, tools=[_ROUTE_TOOL_SCHEMA])
+            else:
+                await adapter.invoke(**kwargs, mcp_servers={})
+            assert adapter.last_process_info["exit_code"] == 0
+            assert adapter.last_process_info["stderr"] == ""
+            assert "error_detail" not in adapter.last_process_info
+        finally:
+            _processing_scope.reset(token)

@@ -15,6 +15,19 @@ from butlers.core.location_copy_retention import CopyFloorUnavailable
 from butlers.location_retention import content_digest
 
 
+def native_ingress_error_redaction() -> bool:
+    """Inherited private input only restricts diagnostics, never grants authority.
+
+    An adapter invocation may run in a child Task of the original processing
+    producer. Even a stale/mismatched scope must stay content-blind; original
+    producer/currentness checks still govern admission and disposal separately.
+    No request label, returned session or caller argument selects this flag.
+    """
+    from butlers.core.location_ingress_copies import _processing_scope
+
+    return _processing_scope.get() is not None
+
+
 def current_ingress_runtime_input(pool: Any):
     from butlers.core.location_ingress_copies import _processing_scope, _writers
 
