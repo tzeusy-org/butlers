@@ -156,6 +156,22 @@ def unregistered_identity_source(
     return scenario
 
 
+@pytest.fixture
+def mocked_pipeline_source(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+) -> Iterator[None]:
+    """Opt mocked process cases out of source admission, retaining any live issuer.
+
+    These routing fixtures have synthetic pools and public request identifiers;
+    they do not model the accepted-source database boundary. Registration and
+    resolver controls request their own contexts instead of this fixture.
+    """
+    prior_registry = fact_authority.source_registry()
+    with unregistered_identity_source():
+        yield
+    assert fact_authority.source_registry() is prior_registry
+
+
 async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutral_labels(
     unregistered_identity_source: Callable[[], AbstractContextManager[None]],
 ):
@@ -278,6 +294,16 @@ async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutra
                     with unregistered_identity_source():
                         assert fact_authority.source_registry() is None
                         raise RuntimeError("scenario failed")
+                assert fact_authority.source_registry() is entry_registry
+                with unregistered_identity_source():
+                    with unregistered_identity_source():
+                        assert fact_authority.source_registry() is None
+                    assert fact_authority.source_registry() is None
+                    with pytest.raises(RuntimeError, match="nested scenario failed"):
+                        with unregistered_identity_source():
+                            assert fact_authority.source_registry() is None
+                            raise RuntimeError("nested scenario failed")
+                    assert fact_authority.source_registry() is None
                 assert fact_authority.source_registry() is entry_registry
     assert fact_authority.source_registry() is prior_registry
 
@@ -807,7 +833,7 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
 
 
 async def test_decomposition_ingress_dedupe_failure_is_content_blind(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, mocked_pipeline_source
 ):
     """Conversation-history dedupe failures never expose DB exception details."""
     sentinel = "postgresql://secret-dsn telegram:777000111 PRIVATE MESSAGE SQL SELECT"
@@ -851,7 +877,7 @@ async def test_decomposition_ingress_dedupe_failure_is_content_blind(
 
 
 async def test_content_blind_structured_classification_failure_has_no_traceback(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, mocked_pipeline_source
 ):
     sentinel = "postgresql://secret-dsn 15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
 
@@ -896,7 +922,9 @@ async def test_content_blind_structured_classification_failure_has_no_traceback(
     assert sentinel not in observability
 
 
-async def test_non_content_blind_structured_classification_keeps_detailed_diagnostic() -> None:
+async def test_non_content_blind_structured_classification_keeps_detailed_diagnostic(
+    mocked_pipeline_source,
+) -> None:
     async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
         return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
 
@@ -926,7 +954,9 @@ async def test_non_content_blind_structured_classification_keeps_detailed_diagno
     pipeline_exception.assert_called_once()
 
 
-async def test_conversation_history_routed_log_omits_raw_model_output() -> None:
+async def test_conversation_history_routed_log_omits_raw_model_output(
+    mocked_pipeline_source,
+) -> None:
     sentinel = "postgresql://secret-dsn telegram:777000111 PRIVATE MESSAGE SQL SELECT"
 
     async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
@@ -1059,7 +1089,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_dashboard_dispatch_carries_immutable_turn_id(
-        self, _mock_load, _mock_dashboard_context
+        self, _mock_load, _mock_dashboard_context, mocked_pipeline_source
     ):
         """Dashboard classification must register against its user-message turn.
 
@@ -1116,7 +1146,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_dashboard_dispatch_recovers_immutable_turn_id_from_inbox(
-        self, _mock_load, mock_dashboard_context
+        self, _mock_load, mock_dashboard_context, mocked_pipeline_source
     ):
         """Direct pipeline callers may omit transport-only dashboard metadata."""
         captured_kwargs: dict[str, Any] = {}
@@ -1158,7 +1188,9 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_dashboard_dispatch_fails_closed_without_a_valid_turn_id(self, _mock_load):
+    async def test_dashboard_dispatch_fails_closed_without_a_valid_turn_id(
+        self, _mock_load, mocked_pipeline_source
+    ):
         """A dashboard-originated runtime must never bypass Stop control."""
         dispatch = AsyncMock()
         pipeline = MessagePipeline(
@@ -1186,7 +1218,7 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_single_target_routing(self, mock_load):
+    async def test_single_target_routing(self, mock_load, mocked_pipeline_source):
         captured_kwargs = {}
 
         async def mock_dispatch(**kwargs):
@@ -1218,7 +1250,9 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_explicit_classification_timeout_is_forwarded(self, mock_load):
+    async def test_explicit_classification_timeout_is_forwarded(
+        self, mock_load, mocked_pipeline_source
+    ):
         captured_kwargs = {}
 
         async def mock_dispatch(**kwargs):
@@ -1250,7 +1284,7 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_falls_back_to_general_when_no_tools(self, mock_load):
+    async def test_falls_back_to_general_when_no_tools(self, mock_load, mocked_pipeline_source):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(output="No routing needed.", tool_calls=[])
 
@@ -1266,7 +1300,7 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_error_in_dispatch_returns_fallback(self, mock_load):
+    async def test_error_in_dispatch_returns_fallback(self, mock_load, mocked_pipeline_source):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(output=None, success=False, error="LLM error", tool_calls=[])
 
@@ -1290,7 +1324,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_decomposition_empty_runtime_output_is_decomposed_empty(
-        self, mock_load, mock_history
+        self, mock_load, mock_history, mocked_pipeline_source
     ):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
@@ -1344,7 +1378,7 @@ class TestMessagePipelineRoutingVerdictLog:
     for the migration + real-insert coverage.
     """
 
-    async def test_rule_bypass_route_to_records_rule_verdict(self):
+    async def test_rule_bypass_route_to_records_rule_verdict(self, mocked_pipeline_source):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1397,7 +1431,7 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["verdict_target"] == "finance"
         assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
 
-    async def test_non_email_route_records_the_wire_endpoint_identity(self):
+    async def test_non_email_route_records_the_wire_endpoint_identity(self, mocked_pipeline_source):
         """Opaque endpoints must remain identical to policy-rule keys."""
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
@@ -1439,7 +1473,9 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["sender_identity"] == "spotify:acct-1"
         assert kwargs["source_channel"] == "spotify_user_client"
 
-    async def test_pinned_target_bypass_records_pinned_verdict_with_no_rule_id(self):
+    async def test_pinned_target_bypass_records_pinned_verdict_with_no_rule_id(
+        self, mocked_pipeline_source
+    ):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1473,7 +1509,9 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["verdict_source"] == "pinned"
         assert kwargs["matched_rule_id"] is None
 
-    async def test_thread_affinity_bypass_records_rule_verdict_with_no_rule_id(self):
+    async def test_thread_affinity_bypass_records_rule_verdict_with_no_rule_id(
+        self, mocked_pipeline_source
+    ):
         """thread_affinity has no backing ingestion_rules row (matched_rule_id
         is always None for it) but is still bucketed as verdict_source='rule'
         — see verdict_log module docstring."""
@@ -1511,7 +1549,7 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["verdict_source"] == "rule"
         assert kwargs["matched_rule_id"] is None
 
-    async def test_skip_bypass_records_skip_verdict(self):
+    async def test_skip_bypass_records_skip_verdict(self, mocked_pipeline_source):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1542,7 +1580,7 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs.get("verdict_target") is None
         assert kwargs["matched_rule_id"] == "22222222-2222-2222-2222-222222222222"
 
-    async def test_metadata_only_bypass_records_metadata_only_verdict(self):
+    async def test_metadata_only_bypass_records_metadata_only_verdict(self, mocked_pipeline_source):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1566,7 +1604,9 @@ class TestMessagePipelineRoutingVerdictLog:
         kwargs = mock_record.await_args.kwargs
         assert kwargs["verdict_action"] == "metadata_only"
 
-    async def test_bypass_does_not_record_verdict_when_no_message_inbox_id(self):
+    async def test_bypass_does_not_record_verdict_when_no_message_inbox_id(
+        self, mocked_pipeline_source
+    ):
         """No ingestion_event_id to FK against -> the write must be skipped,
         not attempted with a null FK."""
         pipeline = MessagePipeline(
@@ -1594,7 +1634,9 @@ class TestMessagePipelineRoutingVerdictLog:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_llm_route_to_butler_call_records_llm_verdict_with_session_id(self, mock_load):
+    async def test_llm_route_to_butler_call_records_llm_verdict_with_session_id(
+        self, mock_load, mocked_pipeline_source
+    ):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
                 output="Routed to health butler.",
@@ -1642,7 +1684,9 @@ class TestMessagePipelineRoutingVerdictLog:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_llm_no_tool_calls_fallback_does_not_record_llm_verdict(self, mock_load):
+    async def test_llm_no_tool_calls_fallback_does_not_record_llm_verdict(
+        self, mock_load, mocked_pipeline_source
+    ):
         """The no-tool-calls -> infer-from-text/"general" fallback is a
         heuristic default, not a genuine per-sender LLM decision, and must
         not be logged as mining evidence."""
@@ -1671,7 +1715,9 @@ class TestMessagePipelineRoutingVerdictLog:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_llm_multiple_route_to_butler_calls_record_one_verdict_each(self, mock_load):
+    async def test_llm_multiple_route_to_butler_calls_record_one_verdict_each(
+        self, mock_load, mocked_pipeline_source
+    ):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
                 output="Routed to health and finance.",
@@ -1718,7 +1764,9 @@ class TestMessagePipelineRoutingVerdictLog:
 
 
 class TestMessagePipelineDashboardPolicyBypassContext:
-    async def test_pinned_bypass_injects_deterministic_dashboard_context_block(self):
+    async def test_pinned_bypass_injects_deterministic_dashboard_context_block(
+        self, mocked_pipeline_source
+    ):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1757,7 +1805,9 @@ class TestMessagePipelineDashboardPolicyBypassContext:
         assert '"route": "/spend"' in context
         assert '"visible_summary": "Spend — this week"' in context
 
-    async def test_pinned_bypass_omits_context_block_when_not_a_dashboard_conversation(self):
+    async def test_pinned_bypass_omits_context_block_when_not_a_dashboard_conversation(
+        self, mocked_pipeline_source
+    ):
         """No conversation_id resolved (e.g. dashboard_context load failed) —
         the bypass must dispatch exactly as before, with no context block."""
         pipeline = MessagePipeline(
@@ -1787,7 +1837,9 @@ class TestMessagePipelineDashboardPolicyBypassContext:
         envelope = mock_route.await_args.kwargs["args"]
         assert "context" not in envelope["input"]
 
-    async def test_non_dashboard_pinned_bypass_never_calls_load_dashboard_context(self):
+    async def test_non_dashboard_pinned_bypass_never_calls_load_dashboard_context(
+        self, mocked_pipeline_source
+    ):
         """A non-dashboard channel's policy bypass (e.g. email) must not pay
         the dashboard-context lookup cost or attempt injection."""
         pipeline = MessagePipeline(
@@ -1844,7 +1896,9 @@ class TestMessagePipelineDemotionSpotCheck:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_spot_check_route_to_agreement_suppresses_bypass(self, mock_load):
+    async def test_spot_check_route_to_agreement_suppresses_bypass(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Fresh LLM verdict matches the rule's own target -> agreement."""
 
         async def mock_dispatch(**kwargs):
@@ -1907,7 +1961,7 @@ class TestMessagePipelineDemotionSpotCheck:
         return_value=_MOCK_BUTLERS,
     )
     async def test_spot_check_route_to_disagreement_records_llm_target_not_rule_target(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ):
         """Fresh LLM verdict disagrees with the rule -> spot_check row still
         records what the LLM actually said, not what the rule would have."""
@@ -1960,7 +2014,9 @@ class TestMessagePipelineDemotionSpotCheck:
         assert kwargs["verdict_target"] == "general"
         assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
 
-    async def test_spot_check_skip_agreement_records_skip_counterpart_verdict(self):
+    async def test_spot_check_skip_agreement_records_skip_counterpart_verdict(
+        self, mocked_pipeline_source
+    ):
         """A spot-checked skip rule the LLM AGREES with (no route) must not
         take the early skip return, but MUST record a ``spot_check`` skip
         counterpart row (bu-wa3nb) so the agreement scorer sees the agreement,
@@ -2013,7 +2069,9 @@ class TestMessagePipelineDemotionSpotCheck:
         mock_demotion.assert_awaited_once()
         assert mock_demotion.await_args.kwargs["rule_id"] == "22222222-2222-2222-2222-222222222222"
 
-    async def test_spot_check_metadata_only_agreement_records_counterpart_verdict(self):
+    async def test_spot_check_metadata_only_agreement_records_counterpart_verdict(
+        self, mocked_pipeline_source
+    ):
         """Same as the skip counterpart, for a spot-checked metadata_only
         rule the LLM agrees with -> ``verdict_action='metadata_only'``."""
 
@@ -2062,7 +2120,9 @@ class TestMessagePipelineDemotionSpotCheck:
         assert kwargs["matched_rule_id"] == "33333333-3333-3333-3333-333333333333"
         mock_demotion.assert_awaited_once()
 
-    async def test_spot_check_skip_disagreement_records_route_to_not_skip(self):
+    async def test_spot_check_skip_disagreement_records_route_to_not_skip(
+        self, mocked_pipeline_source
+    ):
         """A spot-checked skip rule the LLM DISAGREES with (calls
         route_to_butler) records the route_to disagreement row exactly as
         before — the skip counterpart branch must NOT also fire."""
@@ -2120,7 +2180,7 @@ class TestMessagePipelineDemotionSpotCheck:
         assert kwargs["verdict_target"] == "finance"
         mock_demotion.assert_awaited_once()
 
-    async def test_spot_check_skip_did_not_run_records_nothing(self):
+    async def test_spot_check_skip_did_not_run_records_nothing(self, mocked_pipeline_source):
         """Honesty doctrine: a spot-check whose classification never produced
         a result (dispatch returns None -> spawn error/timeout equivalent)
         must record no counterpart row, so it counts as neither agreement nor
@@ -2165,7 +2225,7 @@ class TestMessagePipelineDemotionSpotCheck:
         mock_record.assert_not_awaited()
         mock_demotion.assert_not_awaited()
 
-    async def test_no_spot_check_flag_preserves_existing_skip_bypass(self):
+    async def test_no_spot_check_flag_preserves_existing_skip_bypass(self, mocked_pipeline_source):
         """Regression guard: omitting triage_spot_check must not change
         pre-existing bypass behavior."""
         pipeline = MessagePipeline(
@@ -2206,7 +2266,7 @@ class TestMessagePipelineStructuredClassificationFastLane:
         return_value=_MOCK_BUTLERS,
     )
     async def test_local_tool_server_provider_is_resolved_lazily_not_at_construction(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ):
         """Regression guard: ``ButlerDaemon._wire_pipelines()`` (and therefore
         ``MessagePipeline.__init__``) runs BEFORE ``daemon.mcp`` is assigned a
@@ -2253,7 +2313,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_fast_lane_result_flows_through_unchanged_and_cli_is_skipped(self, mock_load):
+    async def test_fast_lane_result_flows_through_unchanged_and_cli_is_skipped(
+        self, mock_load, mocked_pipeline_source
+    ):
         """When the fast lane returns a result, downstream extraction/telemetry
         must behave identically to the CLI path, and dispatch_fn (the CLI
         spawn) must never be called.
@@ -2294,7 +2356,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_falls_back_to_cli_when_fast_lane_returns_none(self, mock_load):
+    async def test_falls_back_to_cli_when_fast_lane_returns_none(
+        self, mock_load, mocked_pipeline_source
+    ):
         """try_structured_classification() returning None (runtime not "api",
         schema-invalid twice, failover exhausted, ...) must fall back to the
         existing CLI dispatch_fn path unchanged.
@@ -2333,7 +2397,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_fast_lane_not_attempted_when_mcp_server_is_none(self, mock_load):
+    async def test_fast_lane_not_attempted_when_mcp_server_is_none(
+        self, mock_load, mocked_pipeline_source
+    ):
         """mcp_server defaults to None — the fast lane must never even be
         imported/called, and every existing dispatch_fn-only test stays valid.
         """
@@ -2373,7 +2439,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_fast_lane_skipped_for_decomposition_payload(self, mock_load, mock_history):
+    async def test_fast_lane_skipped_for_decomposition_payload(
+        self, mock_load, mock_history, mocked_pipeline_source
+    ):
         """The decomposition/signal-extraction lane parses a JSON signal
         array, not route_to_butler/file_bug_report tool calls — the fast
         lane must never be attempted for it, even when mcp_server is set.
@@ -2410,7 +2478,7 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_fast_lane_exception_falls_back_to_cli(self, mock_load):
+    async def test_fast_lane_exception_falls_back_to_cli(self, mock_load, mocked_pipeline_source):
         """A bug in the fast lane must never take down classification — any
         unexpected exception falls back to the existing CLI path.
         """
@@ -2694,7 +2762,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_a_data_statement_routes_to_domain_butler(self, mock_load):
+    async def test_lane_a_data_statement_routes_to_domain_butler(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Lane A: a route_to_butler call routes normally, same as any channel."""
 
         async def mock_dispatch(**kwargs):
@@ -2737,7 +2807,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_b_bug_report_never_reaches_route_to_butler_fallback(self, mock_load):
+    async def test_lane_b_bug_report_never_reaches_route_to_butler_fallback(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Lane B: file_bug_report short-circuits — never falls into the
         route_to_butler extraction/fallback-to-general path."""
 
@@ -2777,7 +2849,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_b_surfaces_co_occurring_route_route_then_bug(self, mock_load, caplog):
+    async def test_lane_b_surfaces_co_occurring_route_route_then_bug(
+        self, mock_load, caplog, mocked_pipeline_source
+    ):
         """Route-then-bug (bu-j5jqv): route_to_butler dispatched first (the
         tool-layer guard lets an already-dispatched route stand), then
         file_bug_report claimed the lane in the same session. Bug lane still
@@ -2835,7 +2909,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_lane_b_surfaces_co_occurring_route_bug_then_route_refused(
-        self, mock_load, caplog
+        self, mock_load, caplog, mocked_pipeline_source
     ):
         """Failed/refused co-occurring routes remain observable as attempts.
 
@@ -2911,7 +2985,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_unroutable_dashboard_message_dead_letters_instead_of_general(self, mock_load):
+    async def test_unroutable_dashboard_message_dead_letters_instead_of_general(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Dashboard messages that route to neither lane must dead-letter + notify,
         never silently fall back to 'general' (that fallback is channel-specific)."""
 
@@ -2945,7 +3021,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_ambiguous_dashboard_message_yields_clarifying_question_no_route(self, mock_load):
+    async def test_ambiguous_dashboard_message_yields_clarifying_question_no_route(
+        self, mock_load, mocked_pipeline_source
+    ):
         """bu-0ynlk.1: an ambiguous message must not be force-routed via a
         best-guess route_to_butler call. When the classifier follows the
         updated prompt and calls neither tool, the pipeline must dead-letter
@@ -2990,7 +3068,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_non_dashboard_channel_still_falls_back_to_general(self, mock_load):
+    async def test_non_dashboard_channel_still_falls_back_to_general(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Non-dashboard channels are unaffected — existing fallback-to-general behavior."""
 
         async def mock_dispatch(**kwargs):
@@ -3011,7 +3091,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_dashboard_classifier_spawn_exception_dead_letters_instead_of_general(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ):
         """(G2) A classifier spawn exception on a dashboard envelope must never
         silently fall back to 'general' like every other channel — it must
@@ -3051,7 +3131,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_non_dashboard_spawn_exception_still_falls_back_to_general(self, mock_load):
+    async def test_non_dashboard_spawn_exception_still_falls_back_to_general(
+        self, mock_load, mocked_pipeline_source
+    ):
         """A classifier exception dispatches the original message to General."""
 
         async def mock_dispatch(**kwargs):
@@ -3133,10 +3215,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_classification_fallback_preserves_supported_sender_shapes(
-        self,
-        mock_load,
-        sender_field: str,
-        sender_value: str,
+        self, mock_load, sender_field: str, sender_value: str, mocked_pipeline_source
     ) -> None:
         async def mock_dispatch(**kwargs):
             raise RuntimeError("boom")
@@ -3168,7 +3247,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_non_dashboard_spawn_exception_reports_nested_fallback_rejection(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ) -> None:
         async def mock_dispatch(**kwargs):
             raise RuntimeError("boom")
@@ -3234,7 +3313,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_non_dashboard_fallback_requires_recognized_route_success(
-        self, mock_load, malformed_result
+        self, mock_load, malformed_result, mocked_pipeline_source
     ) -> None:
         async def mock_dispatch(**kwargs):
             raise RuntimeError("boom")
@@ -3263,7 +3342,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_dashboard_failed_route_dead_letters_instead_of_returning_routed(
-        self, mock_load, caplog
+        self, mock_load, caplog, mocked_pipeline_source
     ):
         """(G3) route_to_butler was attempted but route.execute failed for the
         only target — this must dead-letter, not silently return a 'routed
@@ -3317,7 +3396,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_dashboard_successful_route_does_not_dead_letter(self, mock_load):
+    async def test_dashboard_successful_route_does_not_dead_letter(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Regression guard for the 'not routed' -> 'not acked' gate change:
         a fully successful dashboard route must NOT go through the
         dead-letter path."""
@@ -3357,7 +3438,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_refused_cannot_answer_does_not_override_accepted_route(self, mock_load):
+    async def test_refused_cannot_answer_does_not_override_accepted_route(
+        self, mock_load, mocked_pipeline_source
+    ):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
                 output="Routed to finance; later decline call was refused.",
@@ -3407,7 +3490,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_d_domain_question_routes_to_domain_butler(self, mock_load):
+    async def test_lane_d_domain_question_routes_to_domain_butler(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Lane D (domain scope): answer_question dispatches to the target
         butler and merges into the same routed/acked bookkeeping route_to_butler
         uses (bu-0ynlk.2)."""
@@ -3452,7 +3537,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_d_cannot_answer_dead_letters_without_double_capture(self, mock_load):
+    async def test_lane_d_cannot_answer_dead_letters_without_double_capture(
+        self, mock_load, mocked_pipeline_source
+    ):
         """cannot_answer already performed its own dead-letter capture and
         in-thread reply — the generic 'no lane decision' dead-letter net must
         NEVER fire again for the same turn (bu-0ynlk.2 AC3)."""
@@ -3504,7 +3591,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_d_system_scope_answer_question_dead_letters_via_fallback(self, mock_load):
+    async def test_lane_d_system_scope_answer_question_dead_letters_via_fallback(
+        self, mock_load, mocked_pipeline_source
+    ):
         """bu-0ynlk.3 (Concierge) does not exist yet — a scope="system"
         answer_question resolves through the same dead-letter path as
         cannot_answer, never routes to any domain butler."""
@@ -3552,7 +3641,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_ambiguous_question_fixture_yields_cannot_answer_not_general_route(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ):
         """bu-0ynlk.2 AC1: an ambiguous question fixture resolves via
         cannot_answer, never a route_to_butler('general') best-guess."""
@@ -3869,7 +3958,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_colliding_authoritative_message_ids_are_not_selectable(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Spec: REQ-conversation-decomposition-001."""
 
@@ -3994,7 +4083,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_carries_full_schema(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Fan-out must produce the full schema, not just target/tool_name/tool_args."""
         signal = {
@@ -4083,10 +4172,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_same_target_concepts_receive_unique_target_visible_subrequests(
-        self,
-        mock_route,
-        mock_load,
-        mock_history,
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Each same-target concept has independent route.execute dedupe identity."""
         signals = [
@@ -4152,7 +4238,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_enriches_calendar_proposal_from_ingestion_context(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """A live ``events`` signal becomes a provenance-linked pending proposal call."""
         source_event_id = "00000000-0000-0000-0000-000000000010"
@@ -4240,7 +4326,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_routes_calendar_proposal_to_general_not_model_target(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Calendar proposal ownership stays code-controlled at the general butler."""
         signal = {
@@ -4300,7 +4386,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_cannot_turn_event_signal_into_provider_write(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Model tool selection cannot bypass the proposal-only event contract."""
         signal = {
@@ -4356,7 +4442,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_drops_below_floor_calendar_signal(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """A MEDIUM-confidence event never reaches the calendar proposal producer."""
         signal = {
@@ -4410,7 +4496,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_parses_markdown_fenced_output(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """A markdown-fenced array must still route, not fall back to decomposed_empty."""
         signal = {
@@ -4556,7 +4642,9 @@ class TestDecompositionEmptyMetric:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_counter_incremented_on_empty_decomposition(self, mock_load, mock_history):
+    async def test_counter_incremented_on_empty_decomposition(
+        self, mock_load, mock_history, mocked_pipeline_source
+    ):
         async def mock_dispatch(**kwargs):
             # No parseable signals → decomposed_empty short-circuit.
             return FakeSpawnerResult(
@@ -4618,7 +4706,7 @@ class TestDecompositionEmptyMetric:
         return_value={"status": "ok"},
     )
     async def test_counter_not_incremented_on_non_empty_decomposition(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         signal = {
             "signal_type": "finance",
