@@ -220,7 +220,9 @@ def backup_dir(tmp_path: Path) -> Path:
     return d
 
 
-def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path, bin_dir: Path):
+def test_successful_run_records_success_and_names_the_artifact(
+    backup_dir: Path, bin_dir: Path, capsys
+):
     proc = _run(backup_dir, bin_dir)
 
     assert proc.returncode == 0, proc.stderr
@@ -231,6 +233,29 @@ def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path,
     assert receipt["reason"] == "ok"
     assert receipt["exit_code"] == 0
     assert receipt["artifact"] == published[0].name
+
+    from butlers.testing.restore_diagnostics import emit_restore_diagnostic
+
+    private = "synthetic_private_restore_operand"
+    failed = subprocess.CompletedProcess(
+        [],
+        3,
+        "[restore] Auditing SECURITY DEFINER ownership ...\n" + private,
+        "ERROR: 42501\nNative copy restoration row differs\n" + private,
+    )
+    emit_restore_diagnostic(failed, stage="certified_restore")
+    emitted = capsys.readouterr().out
+    assert private not in emitted
+    report = json.loads(emitted.removeprefix("RESTORE_COMMAND_DIAGNOSTIC "))
+    assert report["returncode"] == 3 and report["stage"] == "certified_restore"
+    assert report["flags"]["definer_audit_started"] and report["flags"]["native_row_refused"]
+    assert report["sqlstates"]["42501"] and not report["flags"]["certified_done"]
+    emit_restore_diagnostic(
+        subprocess.CompletedProcess([], 0, "[restore] done", ""), stage="certified_restore"
+    )
+    healthy = json.loads(capsys.readouterr().out.removeprefix("RESTORE_COMMAND_DIAGNOSTIC "))
+    assert healthy["returncode"] == 0 and healthy["flags"]["certified_done"]
+    assert not any(healthy["sqlstates"].values())
 
 
 def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Path, bin_dir: Path):

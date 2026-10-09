@@ -1402,3 +1402,22 @@ original ACL refusal. The new psycopg2-backed snapshot/restore controls use the
 actual driver's pgcode, preserving exact 55P03/P0001/42501 expectations. These
 new SQL corrections await current exact-head hosted execution; no local Docker
 access, backup, restore or authority widening is inferred.
+
+### Reached recovery and expiry controls (94bd successor)
+
+The authentic 94bd run reached the stored-copy expiry check. An old device
+`tst` persisted by the real writer today has a current immutable `retention_at`
+when receipt skew exceeds four hours; it is not immediately eligible for an
+older policy cutoff. The owning SQL species now retains that genuine fresh
+source and verifies refusal, then creates a separate deliberately aged
+historical engine fixture at its initial INSERT for the receipt/fault controls.
+No immutable row is patched and no authoritative live clock is claimed for the
+synthetic historical fixture.
+
+The two reached restore return-code failures remain causally unknown until
+new evidence. Their existing command boundaries now emit only the actual
+integer return code and predefined stage/category booleans, with fixed known
+SQLSTATE flags if the real client includes them. They never print command
+arguments, SQL, row bodies or arbitrary error text through that diagnostic.
+Absent categories remain unknown. Original full-history, ownership, failure
+and role assertions remain mandatory; diagnostics do not certify replay.

@@ -65,6 +65,7 @@ from butlers.testing.migration import (
     migration_db_name,
 )
 from butlers.testing.owntracks_copy_history import COPY_HISTORY_TABLES, plant_copy_history
+from butlers.testing.restore_diagnostics import emit_restore_diagnostic
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RESTORE_SCRIPT = _REPO_ROOT / "scripts" / "pg_restore.sh"
@@ -321,7 +322,7 @@ def _run_restore_script(
     documented fallback when ``--password`` is not given, rather than through
     the flag — a restore drill's password has no business in a process table.
     """
-    return _docker_client(
+    result = _docker_client(
         backup,
         'export POSTGRES_PASSWORD="$PGPASSWORD_FOR_TEST"; '
         "bash /pg_restore.sh /backup.sql.gz "
@@ -330,6 +331,9 @@ def _run_restore_script(
         f"--target-db {target_db} --drop-existing",
         password=target.password,
     )
+
+    emit_restore_diagnostic(result, stage="certified_restore")
+    return result
 
 
 def _raw_restore(

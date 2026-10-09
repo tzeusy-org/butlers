@@ -1216,6 +1216,7 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
         read_filtered_receipt,
     )
     from butlers.connectors.owntracks_forgetting import FrozenRaw, frozen_manifest
+    from butlers.location_retention import logical_digest
 
     moment = datetime.now(UTC) - timedelta(days=31)
     stamp = int(moment.timestamp())
@@ -1246,6 +1247,58 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
         }
     )
     decision, cutoff = uuid4(), datetime.now(UTC) - timedelta(days=30)
+    plan = FilteredCopyPlan(
+        decision_id=decision,
+        policy_version=1,
+        cutoff=cutoff,
+        rows=(frozen,),
+        manifest_digest=frozen_manifest(decision, 1, cutoff, [frozen]).hex(),
+    )
+    # Actual producer receives this old device timestamp NOW. Its immutable
+    # retention birth correctly uses current received time; do not mutate it
+    # or pretend the old tst makes this freshly received point eligible.
+    fresh_source = source
+    assert source["retention_at"] >= cutoff
+    with pytest.raises(ValueError, match="native filtered raw source differs"):
+        await prepare_filtered_copies(connector, plan)
+    async with connector.acquire() as committed:
+        assert dict(
+            await committed.fetchrow(
+                "SELECT * FROM connectors.owntracks_points WHERE id=$1", fresh_source["id"]
+            )
+        ) == dict(fresh_source)
+    # Separate deliberately aged ENGINE fixture at original INSERT, under the
+    # existing connector role and actual immutable trigger. This is synthetic
+    # historical input, not live authoritative clock/accepted-source evidence.
+    endpoint += ":aged"
+    source = await connector.fetchrow(
+        "INSERT INTO connectors.owntracks_points "
+        "(idempotency_key,ts,lat,lon,accuracy,trigger,endpoint_identity,raw_payload,"
+        "recorded_at,retention_at,logical_source_digest,content_digest,"
+        "accepted_request_id,accepted_payload_digest,accepted_normalized_digest) "
+        "VALUES($1,$2,$3,$4,NULL,NULL,$5,$6,$2,$2,$7,$8,$9,$10,$11) RETURNING *",
+        f"owntracks:{endpoint}:{stamp}:location",
+        moment,
+        payload["lat"],
+        payload["lon"],
+        endpoint,
+        payload,
+        logical_digest(f"owntracks:{endpoint}:{stamp}:location"),
+        content_digest(payload),
+        uuid4(),
+        content_digest(payload),
+        b"n" * 32,
+    )
+    assert source["retention_at"] < cutoff
+    frozen = FrozenRaw.model_validate(
+        {
+            key: source[key].hex()
+            if key.endswith("digest")
+            else source["id" if key == "raw_id" else key]
+            for key in FrozenRaw.model_fields
+        }
+    )
+    decision = uuid4()
     plan = FilteredCopyPlan(
         decision_id=decision,
         policy_version=1,

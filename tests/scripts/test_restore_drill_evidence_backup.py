@@ -459,6 +459,9 @@ def _restore_artifact(artifact: str, postgres_container, target_db: str) -> str:
         text=True,
         check=False,
     )
+    from butlers.testing.restore_diagnostics import emit_restore_diagnostic
+
+    emit_restore_diagnostic(completed, stage="raw_drill")
     assert completed.returncode == 0, completed.stderr[-2000:]
     return parsed._replace(path=f"/{target_db}").geturl()
 
