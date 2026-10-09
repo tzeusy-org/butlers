@@ -57,7 +57,7 @@ def _claim() -> DeliveryClaim:
     )
 
 
-# Spec: REQ-approval-delivery-intent-recovery-004; unsupported transport fails closed without creating a listener; registered transport proof lives in its integration harness.
+# Spec: REQ-approval-delivery-intent-recovery-002, REQ-approval-delivery-intent-recovery-004; closed timeout diagnostics and unsupported peer admission; registered transport proof lives in its integration harness.
 @pytest.mark.asyncio
 async def test_recovery_transport_requires_kernel_peer_admission(tmp_path, monkeypatch) -> None:
     assert protected_approval_principal(audience="switchboard:approval-recovery") is None
@@ -91,6 +91,32 @@ async def test_recovery_transport_requires_kernel_peer_admission(tmp_path, monke
         socket_path=tmp_path / "approval.sock",
     )
     async with endpoint:
+        assert await endpoint.call("peer", {}) == {"issuer": "relationship", "wrong_audience": None}
+        # Force a typed initialization fault through the actual SDK connection
+        # runner. Its RuntimeError wrapper must not export the transport error.
+        from butlers.core import approval_delivery_authority
+
+        original_client = approval_delivery_authority.httpx.AsyncClient
+        initialization_fault = approval_delivery_authority.httpx.ReadTimeout("synthetic init")
+
+        class InitializationFaultClient(original_client):
+            async def send(self, *args, **kwargs):
+                raise initialization_fault
+
+        with monkeypatch.context() as initialization:
+            initialization.setattr(
+                approval_delivery_authority.httpx, "AsyncClient", InitializationFaultClient
+            )
+            with pytest.raises(RecoveryAuthorityError) as timeout:
+                await endpoint.call("peer", {})
+            assert str(timeout.value) == "Approval recovery authority rejected."
+            assert timeout.value.__cause__ is None and timeout.value.__suppress_context__
+            # A suggestive message cannot turn an unrelated SDK cause into a
+            # timeout. Preserve the real wrapper and its non-timeout cause.
+            initialization_fault = RuntimeError("httpx.ReadTimeout")
+            with pytest.raises(RuntimeError) as unrelated:
+                await endpoint.call("peer", {})
+            assert unrelated.value.__cause__ is initialization_fault
         assert await endpoint.call("peer", {}) == {"issuer": "relationship", "wrong_audience": None}
     assert list(tmp_path.iterdir()) == []
     with pytest.raises(RecoveryAuthorityError):
