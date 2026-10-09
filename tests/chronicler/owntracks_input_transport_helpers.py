@@ -967,7 +967,7 @@ async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_pro
                     pool,
                     prompt,
                     "classification",
-                    request_id=request_id,
+                    request_id=str(request_id),
                     ingestion_event_id=request_id,
                     effective_system_prompt=system,
                     prompt_digest=hashlib.sha256(system.encode()).hexdigest(),

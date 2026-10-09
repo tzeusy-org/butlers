@@ -39,6 +39,7 @@ async def test_session_create_strips_untranslatable_prompt_chars() -> None:
     _query, args = pool.fetchval_calls[0]
     assert args[0] == "helloworld"
     await _assert_opaque_session_policy_first()
+    await _assert_native_runtime_session_text_contract()
 
 
 async def _assert_opaque_session_policy_first():
@@ -451,3 +452,61 @@ async def test_native_location_dispatch_binds_exact_input_before_session_admissi
         _current_location_export.reset(token)
         location_retention._copy_pools.discard(pool)
         _dispatchers.pop(pool, None)
+
+
+async def _assert_native_runtime_session_text_contract():
+    """Actual helper Call/production writer with a strict TEXT adapter double.
+
+    This positions fixture argument compatibility, not real PostgreSQL or native
+    role/session-admission authority. The owning PG species must execute it.
+    """
+    import ast
+    import hashlib
+    from pathlib import Path
+
+    source = Path(__file__).parents[2] / "tests/chronicler/owntracks_input_transport_helpers.py"
+    tree = ast.parse(source.read_text())
+    owner = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.AsyncFunctionDef)
+        and n.name == "_assert_native_ingress_runtime_reservation"
+    )
+    calls = [
+        n
+        for n in ast.walk(owner)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "session_create"
+    ]
+    assert len(calls) == 1
+    canonical_request = uuid.uuid4()
+
+    class TextWriter(_FakePool):
+        async def fetchval(self, query, *args):
+            if query.lstrip().startswith("INSERT INTO sessions"):
+                assert "request_id, ingestion_event_id" in query
+                assert type(args[4]) is str and args[4] == str(canonical_request)
+                assert args[5] is canonical_request  # The owning UUID field stays UUID.
+            return await super().fetchval(query, *args)
+
+    pool = TextWriter()
+    namespace = dict(
+        session_create=session_create,
+        pool=pool,
+        prompt="Synthetic native input",
+        request_id=canonical_request,
+        system="Synthetic independent system",
+        hashlib=hashlib,
+        str=str,
+    )
+    session = await eval(compile(ast.Expression(calls[0]), str(source), "eval"), namespace)
+    assert isinstance(session, uuid.UUID)
+    assert len(pool.fetchval_calls) == 1
+    statement, values = pool.fetchval_calls[0]
+    assert statement.lstrip().startswith("INSERT INTO sessions")
+    assert values[0] == "Synthetic native input"
+    assert values[4] == str(canonical_request) and values[5] is canonical_request
+    assert values[8] == "Synthetic independent system"
+    assert values[9] == hashlib.sha256(values[8].encode()).hexdigest()
+    assert values[10] == []
