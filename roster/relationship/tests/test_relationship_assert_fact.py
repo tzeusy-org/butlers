@@ -1421,10 +1421,9 @@ class TestEffectiveTimeAfterCutover:
 
         await simulate_temporal_cutover(pool)
         await pool.execute(
-            "CREATE TABLE public.entity_info (entity_id UUID, type TEXT, value TEXT)"
-        )
-        await pool.execute(
-            "INSERT INTO public.entity_info VALUES ($1, 'telegram_chat_id', '4242')", owner_entity
+            "INSERT INTO public.entity_info(entity_id,type,value) "
+            "VALUES ($1, 'telegram_chat_id', '4242')",
+            owner_entity,
         )
         explicit = await pool.fetchval(
             """

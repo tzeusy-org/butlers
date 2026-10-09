@@ -527,6 +527,7 @@ async def create_migrated_test_pool(
     chains: list[str] | None = None,
     schemas: dict[str, str] | None = None,
     pool_schema: str | None = None,
+    pool_search_schemas: Sequence[str] | None = None,
     min_pool_size: int = 1,
     max_pool_size: int = 3,
     revisions: dict[str, str] | None = None,
@@ -542,6 +543,18 @@ async def create_migrated_test_pool(
     production :class:`butlers.db.Database` wrapper.
     """
     from butlers.db import register_jsonb_codec, schema_search_path
+
+    # Composite subscriber controls explicitly name real migrated schemas.
+    # This is not the runtime single-butler search-path API.
+    search_path = (
+        _composite_test_search_path(pool_search_schemas, stages=stages, schemas=schemas)
+        if pool_search_schemas is not None
+        else schema_search_path(pool_schema)
+    )
+    if pool_search_schemas is not None and pool_schema is not None:
+        raise ValueError("choose one explicit pool search path")
+    if pool_schema is not None:
+        assert search_path is not None
 
     cancel = threading.Event()
     construction = asyncio.create_task(
@@ -585,9 +598,7 @@ async def create_migrated_test_pool(
         "max_size": max_pool_size,
         "init": register_jsonb_codec,
     }
-    if pool_schema is not None:
-        search_path = schema_search_path(pool_schema)
-        assert search_path is not None
+    if search_path is not None:
         pool_kwargs["server_settings"] = {"search_path": search_path}
 
     creation = asyncio.ensure_future(asyncpg.create_pool(db_url, **pool_kwargs))
@@ -610,6 +621,27 @@ async def create_migrated_test_pool(
                 asyncio.to_thread(template_cache(postgres_container).discard_clone, db_url)
             )
         raise
+
+
+def _composite_test_search_path(schemas_to_search, *, stages=None, schemas=None) -> str:
+    """Only explicit real stage schemas may join a composite test consumer."""
+    from butlers.migrations import _normalize_schema
+
+    if type(schemas_to_search) not in (tuple, list) or not schemas_to_search:
+        raise ValueError("explicit test schemas required")
+    allowed = {"public"}
+    allowed.update(stage.schema for stage in (stages or ()) if stage.schema)
+    allowed.update((schemas or {}).values())
+    ordered = []
+    for schema in schemas_to_search:
+        if type(schema) is not str or not schema or _normalize_schema(schema) != schema:
+            raise ValueError("invalid explicit test schema")
+        if schema not in allowed or schema in ordered:
+            raise ValueError("unmigrated or duplicate test schema")
+        ordered.append(schema)
+    if "public" not in ordered:
+        ordered.append("public")
+    return ",".join(ordered)
 
 
 async def _join_owned_cleanup(awaitable):

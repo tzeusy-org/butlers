@@ -40,7 +40,8 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     _EPISODIC_PREDICATES,
     run_episodic_predicate_curation,
 )
-from butlers.testing.schema_standins import PENDING_ACTIONS
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 # ---------------------------------------------------------------------------
 # Skip if Docker unavailable
@@ -56,56 +57,12 @@ pytestmark = [
 # Schema creation helpers
 # ---------------------------------------------------------------------------
 
-_CREATE_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name TEXT        NOT NULL DEFAULT '',
-    name           TEXT        NOT NULL DEFAULT '',
-    entity_type    TEXT        NOT NULL DEFAULT 'person',
-    aliases        TEXT[]      NOT NULL DEFAULT '{}',
-    metadata       JSONB       DEFAULT '{}'::jsonb,
-    roles          TEXT[]      NOT NULL DEFAULT '{}',
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_PENDING_ACTIONS_SQL = PENDING_ACTIONS.ddl()
-
-_CREATE_FACTS_SQL = """
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject          TEXT        NOT NULL DEFAULT '',
-    predicate        TEXT        NOT NULL,
-    content          TEXT        NOT NULL DEFAULT '',
-    validity         TEXT        NOT NULL DEFAULT 'active',
-    scope            TEXT        NOT NULL DEFAULT 'relationship',
-    entity_id        UUID,
-    object_entity_id UUID,
-    confidence       FLOAT       NOT NULL DEFAULT 1.0,
-    permanence       TEXT        NOT NULL DEFAULT 'standard',
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    metadata         JSONB       DEFAULT '{}'::jsonb
-)
-"""
-
-_CREATE_STATE_SQL = """
-CREATE TABLE IF NOT EXISTS state (
-    key        TEXT        NOT NULL PRIMARY KEY,
-    value      JSONB       NOT NULL DEFAULT '{}',
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    version    INTEGER     NOT NULL DEFAULT 1
-)
-"""
-
 
 async def _setup_schema(pool: asyncpg.Pool) -> None:
-    """Create the minimal schema needed by run_episodic_predicate_curation tests."""
-    await pool.execute(_CREATE_ENTITIES_SQL)
-    await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
-    await pool.execute(_CREATE_FACTS_SQL)
-    await pool.execute(_CREATE_STATE_SQL)
+    """Seed case data after complete real chains; no schema repair."""
+    await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +71,17 @@ async def _setup_schema(pool: asyncpg.Pool) -> None:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
+async def pool(postgres_container):
     """Fresh isolated DB with episodic curation schema."""
-    async with provisioned_postgres_pool() as p:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as p:
         await _setup_schema(p)
         yield p
 
@@ -133,8 +98,8 @@ async def _make_entity(
     roles: list[str] | None = None,
 ) -> uuid.UUID:
     return await pool.fetchval(
-        "INSERT INTO public.entities (canonical_name, name, entity_type, roles) "
-        "VALUES ($1, $1, 'person', $2) RETURNING id",
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+        "VALUES ($1, 'person', $2) RETURNING id",
         name,
         roles or [],
     )
@@ -153,12 +118,7 @@ async def _insert_fact(
 ) -> uuid.UUID:
     """Insert a row into the facts table; return the fact id."""
     return await pool.fetchval(
-        """
-        INSERT INTO facts
-            (predicate, content, permanence, validity, scope, entity_id, confidence)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id
-        """,
+        "\n        INSERT INTO facts\n            (subject, predicate, content, permanence, validity, scope, entity_id, confidence)\n        VALUES ('fixture:' || gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7)\n        RETURNING id\n        ",
         predicate,
         content,
         permanence,

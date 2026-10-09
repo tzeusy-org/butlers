@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -276,6 +277,67 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
     finally:
         cache.close()
 
+    # The builder's actual phase boundary projects a typed failure into a tiny
+    # closed receipt. Neither the SQL operand nor its synthetic password is
+    # formatted; malformed/extra fields cannot become a public error suffix.
+    from butlers.testing import migration
+
+    class DatabaseFailure(Exception):
+        pgcode = "23505"
+
+    state = {"phase": "input", "stage": -1}
+    private = ProgrammingError(
+        "private statement", {"password": "private-value"}, DatabaseFailure()
+    )
+
+    class BuildConnection:
+        def execute(self, statement):
+            return None
+
+    @contextmanager
+    def build_connection(url):
+        yield BuildConnection()
+
+    def failed_bootstrap(*args):
+        raise private
+
+    with monkeypatch.context() as patch:
+        patch.setattr(migrated_templates, "_connection", build_connection)
+        patch.setattr(migration, "bootstrap_extensions", lambda *_: None)
+        patch.setattr(migration, "_bootstrap_migration_prerequisites", failed_bootstrap)
+        with pytest.raises(ProgrammingError) as failure:
+            migrated_templates._build(
+                {
+                    "admin_url": "postgresql://software",
+                    "name": "software",
+                    "role": "software",
+                    "url": "postgresql://software",
+                    "stages": [],
+                },
+                state,
+            )
+    receipt = migrated_templates._builder_failure(failure.value, state)
+    assert receipt == {
+        "phase": "bootstrap",
+        "stage": -1,
+        "category": "database",
+        "sqlstate": "23505",
+    }
+    status_file = tmp_path / "closed-builder-status.json"
+    status_file.write_text(json.dumps(receipt))
+    assert migrated_templates._read_builder_failure(status_file) == ":bootstrap:-1:database:23505"
+    assert "private" not in status_file.read_text()
+    for corrupted in (
+        {**receipt, "stage": True},
+        {**receipt, "category": "private-value"},
+        {**receipt, "sqlstate": "private-value"},
+        {**receipt, "operand": "private-value"},
+    ):
+        status_file.write_text(json.dumps(corrupted))
+        assert migrated_templates._read_builder_failure(status_file) == ""
+    status_file.write_text(json.dumps(receipt))
+    assert migrated_templates._read_builder_failure(status_file) == ":bootstrap:-1:database:23505"
+
     # Actual filesystem/Git inputs and finite ambient aliases bind the key;
     # these are software provenance controls, not a real server equivalence.
     checkout = tmp_path / "key-source"
@@ -320,7 +382,20 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
 
     # Repeated cancellation while actual cleanup is blocked must keep the
     # thread owner joined, not turn a cancelled await into orphaned IO.
-    from butlers.testing import migration
+    composite_stages = (
+        MigrationStage("core"),
+        MigrationStage("memory", schema="relationship"),
+        MigrationStage("chronicler", schema="chronicler"),
+    )
+    assert (
+        migration._composite_test_search_path(
+            ("relationship", "chronicler"), stages=composite_stages
+        )
+        == "relationship,chronicler,public"
+    )
+    for invalid in ((), "relationship", (True,), ("unmigrated",), ("relationship", "relationship")):
+        with pytest.raises(ValueError):
+            migration._composite_test_search_path(invalid, stages=composite_stages)
 
     cleanup_entered = threading.Event()
     cleanup_release = threading.Event()

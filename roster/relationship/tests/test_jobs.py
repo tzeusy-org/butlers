@@ -11,10 +11,8 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    PENDING_ACTIONS,
-)
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -34,120 +32,16 @@ def _utcnow() -> datetime:
 # Schema setup helpers
 # ---------------------------------------------------------------------------
 
-CREATE_CONTACTS_SQL = """
-CREATE TABLE IF NOT EXISTS contacts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    first_name TEXT,
-    last_name TEXT,
-    nickname TEXT,
-    company TEXT,
-    entity_id UUID,
-    stay_in_touch_days INT,
-    listed BOOLEAN NOT NULL DEFAULT true,
-    metadata JSONB NOT NULL DEFAULT '{}',
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-)
-"""
-
-CREATE_IMPORTANT_DATES_SQL = """
-CREATE TABLE IF NOT EXISTS important_dates (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-    label TEXT NOT NULL,
-    month INT NOT NULL,
-    day INT NOT NULL,
-    year INT,
-    created_at TIMESTAMPTZ DEFAULT now()
-)
-"""
-
-CREATE_FACTS_SQL = """
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject TEXT NOT NULL,
-    predicate TEXT NOT NULL,
-    content TEXT NOT NULL,
-    embedding vector(384),
-    search_vector tsvector,
-    importance FLOAT NOT NULL DEFAULT 5.0,
-    confidence FLOAT NOT NULL DEFAULT 1.0,
-    decay_rate FLOAT NOT NULL DEFAULT 0.008,
-    permanence TEXT NOT NULL DEFAULT 'standard',
-    source_butler TEXT,
-    source_episode_id UUID,
-    supersedes_id UUID,
-    validity TEXT NOT NULL DEFAULT 'active',
-    scope TEXT NOT NULL DEFAULT 'global',
-    reference_count INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_referenced_at TIMESTAMPTZ,
-    last_confirmed_at TIMESTAMPTZ,
-    tags JSONB DEFAULT '[]'::jsonb,
-    metadata JSONB DEFAULT '{}'::jsonb,
-    entity_id UUID,
-    object_entity_id UUID,
-    valid_at TIMESTAMPTZ,
-    tenant_id TEXT NOT NULL DEFAULT 'shared',
-    request_id TEXT,
-    retention_class TEXT NOT NULL DEFAULT 'operational',
-    sensitivity TEXT NOT NULL DEFAULT 'normal',
-    idempotency_key TEXT,
-    observed_at TIMESTAMPTZ DEFAULT now(),
-    invalid_at TIMESTAMPTZ,
-    embedding_model_version TEXT DEFAULT 'unknown'
-)
-"""
-
-CREATE_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name VARCHAR NOT NULL DEFAULT '',
-    name TEXT NOT NULL DEFAULT '',
-    entity_type VARCHAR NOT NULL DEFAULT 'other',
-    aliases TEXT[] NOT NULL DEFAULT '{}',
-    metadata JSONB DEFAULT '{}'::jsonb,
-    roles TEXT[] NOT NULL DEFAULT '{}',
-    listed BOOLEAN NOT NULL DEFAULT true,
-    posture TEXT NOT NULL DEFAULT 'active',
-    stay_in_touch_days INT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 # contact_entity_map (rel_029) — contact_id → entity_id bridge that dunbar reads
 # instead of public.contacts (Phase 7.4e).
-CREATE_CONTACT_ENTITY_MAP_SQL = CONTACT_ENTITY_MAP.ddl()
 
 
 async def _setup_relationship_schema(pool) -> None:
-    """Create the relationship-related tables needed for insight scan tests."""
-    # Install required extensions for vector embeddings and full-text search
-    await pool.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
-    await pool.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
-
-    await pool.execute(CREATE_ENTITIES_SQL)
-    await pool.execute(CREATE_CONTACTS_SQL)
-    await pool.execute(CREATE_CONTACT_ENTITY_MAP_SQL)
-    await pool.execute(CREATE_IMPORTANT_DATES_SQL)
-    await pool.execute(CREATE_FACTS_SQL)
+    """Admit only test case actions; complete real chains already own all DDL."""
     await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred ON facts (subject, predicate)"
+        "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
     )
-    # bu-2jtfw.11: the stale-contact producer parks a prepared action via
-    # park_prepared_action, so this fixture needs pending_actions -- the
-    # shared stand-in (not the full approvals migration chain, matching this
-    # file's local-DDL convention for every other table it sets up).
-    await pool.execute(PENDING_ACTIONS.ddl())
-
-
-async def _setup_insight_tables(pool) -> None:
-    """Create insight_candidates and related tables."""
-    from butlers.tools.switchboard.insight.broker import create_insight_tables
-
-    await create_insight_tables(pool)
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +75,8 @@ async def _insert_contact(
     # Seed public.entities with listed + stay_in_touch_days (rel_031 columns)
     await pool.execute(
         """
-        INSERT INTO public.entities (id, canonical_name, name, listed, stay_in_touch_days, posture)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO public.entities (id, canonical_name, aliases, listed, stay_in_touch_days, posture)
+        VALUES ($1, $2, ARRAY[$3::text], $4, $5, $6)
         ON CONFLICT (id) DO NOTHING
         """,
         resolved_entity_id,
@@ -207,8 +101,8 @@ async def _insert_contact(
     # Keep contacts row so important_dates FK + _insert_interaction_fact entity_id lookup work
     await pool.execute(
         """
-        INSERT INTO contacts (id, first_name, last_name, listed, stay_in_touch_days, entity_id)
-        VALUES ($1::uuid, $2, $3, $4, $5, $6)
+        INSERT INTO contacts (id, name, first_name, last_name, listed, stay_in_touch_days, entity_id)
+        VALUES ($1::uuid, concat_ws(' ', $2::text, $3::text), $2, $3, $4, $5, $6)
         """,
         contact_id,
         first_name,
@@ -221,8 +115,8 @@ async def _insert_contact(
     # contact_entity_map → public.entities, not public.contacts) sees this contact.
     await pool.execute(
         """
-        INSERT INTO public.entities (id, name, canonical_name, listed, stay_in_touch_days)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO public.entities (id, aliases, canonical_name, listed, stay_in_touch_days)
+        VALUES ($1, ARRAY[$2::text], $3, $4, $5)
         ON CONFLICT (id) DO NOTHING
         """,
         resolved_entity_id,
@@ -337,13 +231,21 @@ async def _insert_gift_fact(
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_no_contacts_no_op(provisioned_postgres_pool):
+async def test_insight_scan_no_contacts_no_op(postgres_container):
     """No-op: returns zeros when no contacts exist."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         result = await run_insight_scan(pool)
 
@@ -354,13 +256,21 @@ async def test_insight_scan_no_contacts_no_op(provisioned_postgres_pool):
         assert result["early_exit"] is False
 
 
-async def test_insight_scan_unlisted_contact_excluded(provisioned_postgres_pool):
+async def test_insight_scan_unlisted_contact_excluded(postgres_container):
     """Unlisted contacts are excluded from all insight categories."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         # Unlisted contact with upcoming birthday
         contact_id = await _insert_contact(pool, first_name="Bob", listed=False)
@@ -378,13 +288,21 @@ async def test_insight_scan_unlisted_contact_excluded(provisioned_postgres_pool)
 
 
 @pytest.mark.parametrize("posture", ["memorial", "quiet", "no_contact"])
-async def test_insight_scan_non_active_posture_excluded(provisioned_postgres_pool, posture):
+async def test_insight_scan_non_active_posture_excluded(postgres_container, posture):
     """A person the owner marked memorial/quiet/no_contact is no insight's subject."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(
             pool, first_name="Person", last_name="Synthetic", posture=posture
@@ -403,13 +321,21 @@ async def test_insight_scan_non_active_posture_excluded(provisioned_postgres_poo
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_upcoming_birthday_today_priority_95(provisioned_postgres_pool):
+async def test_insight_scan_upcoming_birthday_today_priority_95(postgres_container):
     """Birthday today gets priority 95 (time-critical)."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         today = _today()
         contact_id = await _insert_contact(pool, first_name="Alice", last_name="Day")
@@ -432,13 +358,21 @@ async def test_insight_scan_upcoming_birthday_today_priority_95(provisioned_post
         assert rows[0]["priority"] == 95
 
 
-async def test_insight_scan_upcoming_birthday_3_days_priority_80(provisioned_postgres_pool):
+async def test_insight_scan_upcoming_birthday_3_days_priority_80(postgres_container):
     """Birthday in 3 days gets priority 80."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=3)
         contact_id = await _insert_contact(pool, first_name="Carol")
@@ -459,13 +393,21 @@ async def test_insight_scan_upcoming_birthday_3_days_priority_80(provisioned_pos
         assert rows[0]["priority"] == 80
 
 
-async def test_insight_scan_upcoming_birthday_7_days_priority_70(provisioned_postgres_pool):
+async def test_insight_scan_upcoming_birthday_7_days_priority_70(postgres_container):
     """Birthday in 5-7 days gets priority 70."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=6)
         contact_id = await _insert_contact(pool, first_name="Dave")
@@ -486,13 +428,21 @@ async def test_insight_scan_upcoming_birthday_7_days_priority_70(provisioned_pos
         assert rows[0]["priority"] == 70
 
 
-async def test_insight_scan_birthday_beyond_window_excluded(provisioned_postgres_pool):
+async def test_insight_scan_birthday_beyond_window_excluded(postgres_container):
     """Birthdays beyond 7 days are excluded."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=10)
         contact_id = await _insert_contact(pool, first_name="Eve")
@@ -508,13 +458,21 @@ async def test_insight_scan_birthday_beyond_window_excluded(provisioned_postgres
         assert result["candidates_proposed"] == 0
 
 
-async def test_insight_scan_anniversary_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_anniversary_dedup_key_format(postgres_container):
     """Anniversary dedup_key follows anniversary:{entity-id}:{year} format."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=2)
         entity_id = str(uuid.uuid4())
@@ -539,13 +497,21 @@ async def test_insight_scan_anniversary_dedup_key_format(provisioned_postgres_po
         assert str(target.year) in dedup_key
 
 
-async def test_insight_scan_birthday_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_birthday_dedup_key_format(postgres_container):
     """Birthday dedup_key follows birthday:{entity-id}:{year} format when entity_id exists."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=4)
         entity_id = str(uuid.uuid4())
@@ -569,13 +535,21 @@ async def test_insight_scan_birthday_dedup_key_format(provisioned_postgres_pool)
         assert entity_id in dedup_key
 
 
-async def test_insight_scan_birthday_cooldown_days(provisioned_postgres_pool):
+async def test_insight_scan_birthday_cooldown_days(postgres_container):
     """Birthday cooldown_days matches priority tier."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         # within 1 day → cooldown 1
         target = _today() + timedelta(days=1)
@@ -597,13 +571,21 @@ async def test_insight_scan_birthday_cooldown_days(provisioned_postgres_pool):
         assert rows[0]["cooldown_days"] == 1
 
 
-async def test_insight_scan_birthday_message_includes_contact_name(provisioned_postgres_pool):
+async def test_insight_scan_birthday_message_includes_contact_name(postgres_container):
     """Birthday message includes the contact name."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=3)
         contact_id = await _insert_contact(pool, first_name="Isabella", last_name="Clark")
@@ -626,7 +608,7 @@ async def test_insight_scan_birthday_message_includes_contact_name(provisioned_p
 
 @pytest.mark.pg_clock
 async def test_insight_scan_contact_candidates_include_entity_and_event_metadata(
-    provisioned_postgres_pool,
+    postgres_container,
     monkeypatch,
 ):
     """Relationship candidates preserve the contact entity and real occasion date."""
@@ -634,9 +616,17 @@ async def test_insight_scan_contact_candidates_include_entity_and_event_metadata
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
         entity_id = str(uuid.uuid4())
         contact_id = await _insert_contact(
             pool,
@@ -700,7 +690,7 @@ def _mock_stale_contact_gate(monkeypatch: pytest.MonkeyPatch, *, is_overdue: boo
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
-    provisioned_postgres_pool,
+    postgres_container,
     monkeypatch,
 ):
     """Contact overdue by >2x cadence gets priority 45."""
@@ -708,9 +698,17 @@ async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         # Contact with stay_in_touch_days=14, last interaction 35 days ago (>2x)
         contact_id = await _insert_contact(pool, first_name="Jack", stay_in_touch_days=14)
@@ -731,7 +729,7 @@ async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_parks_a_prepared_reach_out(
-    provisioned_postgres_pool,
+    postgres_container,
     monkeypatch,
 ):
     """bu-2jtfw.11: the stale-contact candidate links a silently-parked prepared action."""
@@ -739,9 +737,17 @@ async def test_insight_scan_stale_contact_parks_a_prepared_reach_out(
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(pool, first_name="Priya", stay_in_touch_days=14)
         await _insert_interaction_fact(
@@ -784,7 +790,7 @@ async def test_insight_scan_stale_contact_parks_a_prepared_reach_out(
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_concurrent_scans_park_one_prepared_action(
-    provisioned_postgres_pool,
+    postgres_container,
     monkeypatch,
 ):
     """bu-2jtfw.11: two concurrent scan ticks racing the same dedup key must not
@@ -807,9 +813,17 @@ async def test_insight_scan_stale_contact_concurrent_scans_park_one_prepared_act
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(pool, first_name="Rosa", stay_in_touch_days=14)
         await _insert_interaction_fact(
@@ -856,7 +870,7 @@ async def test_insight_scan_stale_contact_concurrent_scans_park_one_prepared_act
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
-    provisioned_postgres_pool,
+    postgres_container,
     monkeypatch,
 ):
     """Contact overdue by 1-2x cadence gets priority 35."""
@@ -864,9 +878,17 @@ async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         # Contact with stay_in_touch_days=14, last interaction 20 days ago (1-2x)
         contact_id = await _insert_contact(pool, first_name="Karen", stay_in_touch_days=14)
@@ -885,17 +907,23 @@ async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
         assert rows[0]["priority"] == 35
 
 
-async def test_insight_scan_stale_contact_not_yet_overdue_excluded(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_insight_scan_stale_contact_not_yet_overdue_excluded(postgres_container, monkeypatch):
     """Contact not yet overdue is excluded from stale-contact insights."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=False)
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         # Contact with cadence 14 days, last interaction 10 days ago
         contact_id = await _insert_contact(pool, first_name="Leo", stay_in_touch_days=14)
@@ -914,15 +942,23 @@ async def test_insight_scan_stale_contact_not_yet_overdue_excluded(
 
 
 async def test_insight_scan_unmeasurable_stale_contact_suppresses_candidate(
-    provisioned_postgres_pool, monkeypatch
+    postgres_container, monkeypatch
 ):
     """Elapsed cadence cannot emit when producer admission is unmeasurable."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=False)
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
         contact_id = await _insert_contact(pool, first_name="Instrument", stay_in_touch_days=7)
         await _insert_interaction_fact(
             pool,
@@ -942,7 +978,7 @@ async def test_insight_scan_unmeasurable_stale_contact_suppresses_candidate(
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
-    provisioned_postgres_pool,
+    postgres_container,
     monkeypatch,
 ):
     """Stale contact dedup_key uses relationship:stale-contact:{id}:{year-week} format."""
@@ -950,9 +986,17 @@ async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(pool, first_name="Mia", stay_in_touch_days=7)
         await _insert_interaction_fact(
@@ -976,17 +1020,23 @@ async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
 
 
 @pytest.mark.pg_clock
-async def test_insight_scan_stale_contact_expires_7_days_from_now(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_insight_scan_stale_contact_expires_7_days_from_now(postgres_container, monkeypatch):
     """Stale contact candidate expires 7 days from generation."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(pool, first_name="Noah", stay_in_touch_days=7)
         await _insert_interaction_fact(
@@ -1013,14 +1063,22 @@ async def test_insight_scan_stale_contact_expires_7_days_from_now(
 
 
 async def test_insight_scan_pending_gift_with_upcoming_date_priority_60(
-    provisioned_postgres_pool,
+    postgres_container,
 ):
     """Pending gift (idea/purchased) with upcoming date gets priority 60."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=5)
         contact_id = await _insert_contact(pool, first_name="Olivia")
@@ -1043,13 +1101,21 @@ async def test_insight_scan_pending_gift_with_upcoming_date_priority_60(
         assert rows[0]["priority"] == 60
 
 
-async def test_insight_scan_pending_gift_no_upcoming_date_excluded(provisioned_postgres_pool):
+async def test_insight_scan_pending_gift_no_upcoming_date_excluded(postgres_container):
     """Pending gift without upcoming contact date is not surfaced."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(pool, first_name="Paul")
         # No upcoming dates for this contact
@@ -1060,13 +1126,21 @@ async def test_insight_scan_pending_gift_no_upcoming_date_excluded(provisioned_p
         assert len(rows) == 0
 
 
-async def test_insight_scan_pending_gift_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_pending_gift_dedup_key_format(postgres_container):
     """Pending gift dedup_key follows relationship:pending-gift:{gift-id} format."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=3)
         contact_id = await _insert_contact(pool, first_name="Quinn")
@@ -1091,13 +1165,21 @@ async def test_insight_scan_pending_gift_dedup_key_format(provisioned_postgres_p
         assert dedup_key == f"relationship:pending-gift:{gift_id}"
 
 
-async def test_insight_scan_gift_given_status_excluded(provisioned_postgres_pool):
+async def test_insight_scan_gift_given_status_excluded(postgres_container):
     """Gifts with status 'given' or 'thanked' are excluded."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=3)
         contact_id = await _insert_contact(pool, first_name="Riley")
@@ -1116,13 +1198,21 @@ async def test_insight_scan_gift_given_status_excluded(provisioned_postgres_pool
         assert len(rows) == 0
 
 
-async def test_insight_scan_pending_gift_expires_at_upcoming_date(provisioned_postgres_pool):
+async def test_insight_scan_pending_gift_expires_at_upcoming_date(postgres_container):
     """Pending gift candidate expires_at matches the associated upcoming date."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         target = _today() + timedelta(days=7)
         contact_id = await _insert_contact(pool, first_name="Sam")
@@ -1150,13 +1240,21 @@ async def test_insight_scan_pending_gift_expires_at_upcoming_date(provisioned_po
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_milestone_100th_interaction(provisioned_postgres_pool):
+async def test_insight_scan_milestone_100th_interaction(postgres_container):
     """100th interaction with a contact generates a milestone insight."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(pool, first_name="Taylor")
         # Insert exactly 100 interaction facts
@@ -1179,13 +1277,21 @@ async def test_insight_scan_milestone_100th_interaction(provisioned_postgres_poo
         assert milestone_rows[0]["cooldown_days"] == 30
 
 
-async def test_insight_scan_milestone_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_milestone_dedup_key_format(postgres_container):
     """Milestone dedup_key follows relationship:milestone:{contact-id}:{milestone-type} format."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(pool, first_name="Uma")
         for i in range(10):
@@ -1207,13 +1313,21 @@ async def test_insight_scan_milestone_dedup_key_format(provisioned_postgres_pool
         assert contact_id in dedup_key
 
 
-async def test_insight_scan_milestone_non_notable_count_excluded(provisioned_postgres_pool):
+async def test_insight_scan_milestone_non_notable_count_excluded(postgres_container):
     """Non-notable interaction counts (e.g., 7) do not generate milestones."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         contact_id = await _insert_contact(pool, first_name="Victor")
         for i in range(7):
@@ -1228,13 +1342,21 @@ async def test_insight_scan_milestone_non_notable_count_excluded(provisioned_pos
         assert len(rows) == 0
 
 
-async def test_insight_scan_first_interaction_anniversary(provisioned_postgres_pool):
+async def test_insight_scan_first_interaction_anniversary(postgres_container):
     """1-year anniversary of first interaction generates a milestone insight."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         today = _today()
         contact_id = await _insert_contact(pool, first_name="Wendy")
@@ -1268,13 +1390,21 @@ async def test_insight_scan_first_interaction_anniversary(provisioned_postgres_p
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_early_exit_verbosity_off(provisioned_postgres_pool):
+async def test_insight_scan_early_exit_verbosity_off(postgres_container):
     """Early exit when verbosity=off: job returns early_exit=True."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         # Set verbosity to 'off'
         await pool.execute("""
@@ -1300,13 +1430,21 @@ async def test_insight_scan_early_exit_verbosity_off(provisioned_postgres_pool):
         assert result["candidates_accepted"] == 0
 
 
-async def test_insight_scan_stats_keys_present(provisioned_postgres_pool):
+async def test_insight_scan_stats_keys_present(postgres_container):
     """Result dict always contains all expected statistics keys."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         result = await run_insight_scan(pool)
 
@@ -1322,13 +1460,21 @@ async def test_insight_scan_stats_keys_present(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_origin_butler_is_relationship(provisioned_postgres_pool):
+async def test_insight_scan_origin_butler_is_relationship(postgres_container):
     """All generated candidates are tagged with origin_butler='relationship'."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as pool:
         await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
 
         today = _today()
         contact_id = await _insert_contact(pool, first_name="Yara")

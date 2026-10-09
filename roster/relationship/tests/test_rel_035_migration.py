@@ -1,7 +1,6 @@
 """rel_035 executes: the effective-time expand stage (bu-h3b7t.1).
 
-The writer tests run against ``evidence_schema.apply_evidence_schema``, which
-executes this migration's own ``upgrade_statements()``. They prove the writer;
+The writer tests run against the complete real head chains. They prove the writer;
 this file proves the migration as a schema transition on real PostgreSQL:
 
 * it is additive, nullable and backfill-free, and re-running it is a no-op;
@@ -31,6 +30,8 @@ from pathlib import Path
 import asyncpg
 import pytest
 
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 from butlers.tools.relationship import fact_temporal
 from butlers.tools.relationship.fact_evidence import EvidencePacket
 from roster.relationship.tests.evidence_schema import rel_035, simulate_temporal_cutover
@@ -95,6 +96,7 @@ def test_revision_chain_and_writer_constants_agree() -> None:
     """The writer's sentinel, index name and vocabulary are the migration's."""
     mod = rel_035()
     assert (mod.revision, mod.down_revision) == ("rel_035", "rel_034")
+    assert mod.down_revision == _rel_034().revision
     assert uuid.UUID(mod.DEFAULT_OCCURRENCE_SENTINEL) == fact_temporal.DEFAULT_OCCURRENCE_SENTINEL
     assert f"relationship.{mod.LEGACY_SPO_INDEX}" == fact_temporal.LEGACY_SPO_INDEX
     assert set(mod.CONCRETE_PRECISIONS) == fact_temporal.CONCRETE_PRECISIONS
@@ -103,43 +105,16 @@ def test_revision_chain_and_writer_constants_agree() -> None:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """The pre-rel_035 schema: a deployed entity_facts plus the real rel_034 DDL."""
-    async with provisioned_postgres_pool(schema="relationship") as p:
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute("""
-            CREATE TABLE public.entities (
-                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT NOT NULL DEFAULT ''
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE relationship.entity_facts (
-                id          UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT NOT NULL,
-                object      TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                src         TEXT NOT NULL,
-                conf        FLOAT NOT NULL DEFAULT 1.0,
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                weight      INT,
-                verified    BOOL NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT NOT NULL DEFAULT 'active',
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        async with p.acquire() as conn:
-            for statement in _statements("upgrade", _rel_034()):
-                await conn.execute(statement)
+async def pool(postgres_container):
+    """Real rel034 prefix; every test still executes the rel035 subject itself."""
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("relationship", schema="relationship", revision="rel_034"),
+        ),
+        pool_schema="relationship",
+    ) as p:
         yield p
 
 

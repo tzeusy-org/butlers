@@ -61,7 +61,7 @@ async def _live_edge(
     for entity in (subject, obj):
         await pool.execute(
             "INSERT INTO public.entities(id,canonical_name,entity_type) "
-            "VALUES($1,'Traversal fixture','person') ON CONFLICT(id) DO NOTHING",
+            "VALUES($1,'Traversal fixture ' || $1::text,'person') ON CONFLICT(id) DO NOTHING",
             entity,
         )
     await pool.execute(
@@ -81,7 +81,7 @@ async def _live_edge(
 async def _withheld_edge(pool: asyncpg.Pool, *, subject: uuid.UUID) -> None:
     await pool.execute(
         "INSERT INTO public.entities(id,canonical_name,entity_type) "
-        "VALUES($1,'Traversal fixture','person') ON CONFLICT(id) DO NOTHING",
+        "VALUES($1,'Traversal fixture ' || $1::text,'person') ON CONFLICT(id) DO NOTHING",
         subject,
     )
     await pool.execute(

@@ -79,7 +79,7 @@ async def pool(postgres_container):
 async def _make_entity(pool: asyncpg.Pool, *, roles: list[str] | None = None) -> uuid.UUID:
     return await pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
-        "VALUES ('Test Person', 'person', $1) RETURNING id",
+        "VALUES ('Test Person ' || gen_random_uuid()::text, 'person', $1) RETURNING id",
         roles or [],
     )
 

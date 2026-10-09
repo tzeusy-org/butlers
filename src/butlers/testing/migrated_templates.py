@@ -17,6 +17,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -35,10 +36,85 @@ _BUILD_SECONDS = 300
 _CONTROL_SECONDS = 20
 _CACHES_LOCK = threading.RLock()
 _CACHES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_BUILD_PHASES = {"input", "create-database", "extensions", "bootstrap", "migration"}
+_FAILURE_CATEGORIES = {"database", "migration-admission", "import", "source", "unknown"}
+_SQLSTATES = {
+    "42501",
+    "23505",
+    "42P01",
+    "42703",
+    "23502",
+    "23514",
+    "42704",
+    "42P07",
+    "2BP01",
+    "42883",
+    "22023",
+    "42601",
+    "55000",
+    "57P03",
+    "UNKNOWN",
+}
 
 
 class TemplateError(RuntimeError):
     """A closed, content-free failure in owned test provisioning."""
+
+
+def _builder_failure(error: BaseException, state: dict) -> dict:
+    """Project only fixed categories; never format an exception or its operands."""
+    from sqlalchemy.exc import DBAPIError
+
+    from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError
+
+    category, sqlstate = "unknown", "UNKNOWN"
+    if isinstance(error, DBAPIError):
+        category = "database"
+        candidate = getattr(error.orig, "pgcode", None)
+        if type(candidate) is str and candidate in _SQLSTATES:
+            sqlstate = candidate
+    elif isinstance(error, BootstrapPrerequisiteError):
+        category = "migration-admission"
+    elif isinstance(error, ImportError):
+        category = "import"
+    elif isinstance(error, TemplateError):
+        category = "source"
+    return {
+        "phase": state["phase"],
+        "stage": state["stage"],
+        "category": category,
+        "sqlstate": sqlstate,
+    }
+
+
+def _read_builder_failure(path: Path) -> str:
+    """Read at most one tiny owned status file, refusing all untrusted fields."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 1024:
+                return ""
+            raw = os.read(descriptor, 1025)
+        finally:
+            os.close(descriptor)
+        value = json.loads(raw)
+    except (OSError, ValueError):
+        return ""
+    if (
+        type(value) is not dict
+        or set(value) != {"phase", "stage", "category", "sqlstate"}
+        or type(value["phase"]) is not str
+        or value["phase"] not in _BUILD_PHASES
+        or type(value["stage"]) is not int
+        or not -1 <= value["stage"] <= 64
+        or type(value["category"]) is not str
+        or value["category"] not in _FAILURE_CATEGORIES
+        or type(value["sqlstate"]) is not str
+        or value["sqlstate"] not in _SQLSTATES
+    ):
+        return ""
+    return ":" + ":".join(str(value[key]) for key in ("phase", "stage", "category", "sqlstate"))
 
 
 def _closed_failure(function):
@@ -238,7 +314,15 @@ def source_profile(root: Path = _ROOT) -> str:
             if p
             and (
                 p.startswith(("src/", "alembic/", "roster/", "tests/"))
-                or p in ("scripts/init-db.sql", "pyproject.toml", "uv.lock", "conftest.py")
+                or p
+                in (
+                    "scripts/init-db.sql",
+                    "pyproject.toml",
+                    "uv.lock",
+                    "conftest.py",
+                    "whatsapp-bridge/go.mod",
+                    "whatsapp-bridge/go.sum",
+                )
             )
         }
     )
@@ -350,52 +434,55 @@ class _Backend:
 
     def construct(self, entry: _Entry, name: str, cancel: threading.Event) -> None:
         """Join/kill the actual owning builder before releasing any cache state."""
-        payload = json.dumps(
-            {
-                "admin_url": self.admin_url,
-                "url": self.url(name, entry),
-                "name": name,
-                "role": entry.role,
-                "stages": [vars(stage) for stage in entry.stages],
-            }
-        ).encode()
-        child = subprocess.Popen(
-            [sys.executable, "-m", "butlers.testing.migrated_templates", "--build"],
-            cwd=_ROOT,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        try:
-            assert child.stdin is not None
-            child.stdin.write(payload)
-            child.stdin.close()
-            deadline = time.monotonic() + _BUILD_SECONDS
-            while child.poll() is None:
-                if cancel.is_set() or time.monotonic() >= deadline:
-                    raise TemplateError(
-                        "construction-cancelled" if cancel.is_set() else "construction-timeout"
-                    )
-                time.sleep(0.02)
-            if child.returncode != 0:
-                raise TemplateError("construction-failed")
-            if _active_group_members(child.pid):
-                raise TemplateError("construction-left-active-descendant")
-        finally:
-            # poll() reaps only the direct parent. Its descendants may still
-            # own connections even after a nominal zero exit, so always kill
-            # the owned group and prove no active member remains.
+        with tempfile.TemporaryDirectory(prefix="butlers-template-status-") as directory:
+            failure_path = Path(directory) / "failure.json"
+            payload = json.dumps(
+                {
+                    "admin_url": self.admin_url,
+                    "url": self.url(name, entry),
+                    "name": name,
+                    "role": entry.role,
+                    "stages": [vars(stage) for stage in entry.stages],
+                    "failure_path": str(failure_path),
+                }
+            ).encode()
+            child = subprocess.Popen(
+                [sys.executable, "-m", "butlers.testing.migrated_templates", "--build"],
+                cwd=_ROOT,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
             try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            child.wait(timeout=_CONTROL_SECONDS)
-            cleanup_deadline = time.monotonic() + _CONTROL_SECONDS
-            while _active_group_members(child.pid):
-                if time.monotonic() >= cleanup_deadline:
-                    raise TemplateError("construction-group-cleanup-incomplete")
-                time.sleep(0.02)
+                assert child.stdin is not None
+                child.stdin.write(payload)
+                child.stdin.close()
+                deadline = time.monotonic() + _BUILD_SECONDS
+                while child.poll() is None:
+                    if cancel.is_set() or time.monotonic() >= deadline:
+                        raise TemplateError(
+                            "construction-cancelled" if cancel.is_set() else "construction-timeout"
+                        )
+                    time.sleep(0.02)
+                if child.returncode != 0:
+                    raise TemplateError("construction-failed" + _read_builder_failure(failure_path))
+                if _active_group_members(child.pid):
+                    raise TemplateError("construction-left-active-descendant")
+            finally:
+                # poll() reaps only the direct parent. Its descendants may still
+                # own connections even after a nominal zero exit, so always kill
+                # the owned group and prove no active member remains.
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait(timeout=_CONTROL_SECONDS)
+                cleanup_deadline = time.monotonic() + _CONTROL_SECONDS
+                while _active_group_members(child.pid):
+                    if time.monotonic() >= cleanup_deadline:
+                        raise TemplateError("construction-group-cleanup-incomplete")
+                    time.sleep(0.02)
 
     def authority(self, entry: _Entry, *, complete: bool = False) -> tuple:
         with _connection(self.admin_url) as connection:
@@ -734,7 +821,12 @@ class TemplateCache:
                     self.backend.authority(entry, complete=True),
                 )
                 if frozen != actual:
-                    raise TemplateError("clone-fresh-reference-mismatch")
+                    raise TemplateError(
+                        "clone-fresh-reference-mismatch:"
+                        + ":".join(
+                            str(left == right) for left, right in zip(frozen, actual, strict=True)
+                        )
+                    )
                 return self.backend.url(reference, entry)
             except BaseException:
                 self.backend.drop_db(reference)
@@ -817,29 +909,41 @@ def close_template_cache(container: object) -> None:
                 _CACHES.pop(container)
 
 
-def _build(payload: dict) -> None:
+def _build(payload: dict, state: dict | None = None) -> None:
     from butlers.testing.migration import (
         _bootstrap_migration_prerequisites,
         _upgrade_chain_to_revision,
         bootstrap_extensions,
     )
 
+    state = state if state is not None else {}
+    state.update(phase="create-database", stage=-1)
     with _connection(payload["admin_url"]) as connection:
         connection.execute(
             text(f"CREATE DATABASE {_ident(payload['name'])} OWNER {_ident(payload['role'])}")
         )
     bootstrap_url = urlparse(payload["admin_url"])._replace(path=f"/{payload['name']}").geturl()
+    state["phase"] = "extensions"
     bootstrap_extensions(bootstrap_url)
+    state["phase"] = "bootstrap"
     _bootstrap_migration_prerequisites(bootstrap_url, payload["role"])
-    for stage in payload["stages"]:
+    for ordinal, stage in enumerate(payload["stages"]):
+        state.update(phase="migration", stage=ordinal)
         _upgrade_chain_to_revision(payload["url"], **stage)
 
 
 if __name__ == "__main__":
     if sys.argv[1:] != ["--build"]:
         raise SystemExit(2)
+    state = {"phase": "input", "stage": -1}
+    payload = None
     try:
-        _build(json.load(sys.stdin))
-    except BaseException:
-        # Never emit a SQL exception, private payload, URL or role value.
+        payload = json.load(sys.stdin)
+        _build(payload, state)
+    except BaseException as error:
+        # This path is privately created by the owning parent, not caller SQL.
+        # No raw exception, private input, URL, role or message reaches output.
+        if isinstance(payload, dict) and "failure_path" in payload:
+            with open(payload["failure_path"], "x", encoding="utf-8") as receipt:
+                json.dump(_builder_failure(error, state), receipt, sort_keys=True)
         raise SystemExit(3) from None

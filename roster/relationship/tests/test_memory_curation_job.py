@@ -35,12 +35,8 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     run_memory_curation,
     run_pending_actions_curation,
 )
-from butlers.testing.schema_standins import (
-    ENTITY_GRAPH_EDGES,
-    ENTITY_PREDICATE_REGISTRY,
-    PENDING_ACTIONS,
-)
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 # ---------------------------------------------------------------------------
 # Skip if Docker unavailable
@@ -56,51 +52,6 @@ pytestmark = [
 # Schema creation helpers
 # ---------------------------------------------------------------------------
 
-_CREATE_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name TEXT        NOT NULL DEFAULT '',
-    name           TEXT        NOT NULL DEFAULT '',
-    entity_type    TEXT        NOT NULL DEFAULT 'person',
-    aliases        TEXT[]      NOT NULL DEFAULT '{}',
-    metadata       JSONB       DEFAULT '{}'::jsonb,
-    roles          TEXT[]      NOT NULL DEFAULT '{}',
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_ENTITY_FACTS_SQL = """
-CREATE SCHEMA IF NOT EXISTS relationship;
-CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-    id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-    subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-    predicate   TEXT        NOT NULL,
-    object      TEXT        NOT NULL,
-    object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-    src         TEXT        NOT NULL,
-    conf        FLOAT       NOT NULL DEFAULT 1.0
-                    CHECK (conf >= 0.0 AND conf <= 1.0),
-    last_seen   TIMESTAMPTZ,
-    observed_at TIMESTAMPTZ,
-    metadata    JSONB,
-    weight      INT,
-    verified    BOOL        NOT NULL DEFAULT false,
-    "primary"   BOOL,
-    validity    TEXT        NOT NULL DEFAULT 'active'
-                    CHECK (validity IN ('active', 'retracted', 'superseded')),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_ENTITY_FACTS_UNIQUE_IDX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-    ON relationship.entity_facts (subject, predicate, object)
-    WHERE validity = 'active'
-"""
-
-_CREATE_PREDICATE_REGISTRY_SQL = ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship")
 
 _SEED_PREDICATES_SQL = """
 INSERT INTO relationship.entity_predicate_registry
@@ -118,51 +69,13 @@ VALUES
 ON CONFLICT (predicate) DO NOTHING
 """
 
-_CREATE_PENDING_ACTIONS_SQL = PENDING_ACTIONS.ddl()
-
-_CREATE_FACTS_SQL = """
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject          TEXT        NOT NULL DEFAULT '',
-    predicate        TEXT        NOT NULL,
-    content          TEXT        NOT NULL DEFAULT '',
-    validity         TEXT        NOT NULL DEFAULT 'active',
-    scope            TEXT        NOT NULL DEFAULT 'relationship',
-    entity_id        UUID,
-    object_entity_id UUID,
-    confidence       FLOAT       NOT NULL DEFAULT 1.0,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    metadata         JSONB       DEFAULT '{}'::jsonb
-)
-"""
-
-_CREATE_STATE_SQL = """
-CREATE TABLE IF NOT EXISTS state (
-    key        TEXT        NOT NULL PRIMARY KEY,
-    value      JSONB       NOT NULL DEFAULT '{}',
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    version    INTEGER     NOT NULL DEFAULT 1
-)
-"""
-
 
 async def _setup_schema(pool: asyncpg.Pool) -> None:
-    """Create the minimal schema needed by run_memory_curation tests."""
-    await pool.execute(_CREATE_ENTITIES_SQL)
-    await pool.execute(_CREATE_ENTITY_FACTS_SQL)
-    await pool.execute(_CREATE_ENTITY_FACTS_UNIQUE_IDX_SQL)
-    await pool.execute(_CREATE_PREDICATE_REGISTRY_SQL)
+    """Seed case data after complete real chains; no schema repair."""
     await pool.execute(_SEED_PREDICATES_SQL)
-    await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
-    await pool.execute(_CREATE_FACTS_SQL)
-    await pool.execute(_CREATE_STATE_SQL)
-    # RFC 0031 Slice 2 (bu-8cdl1.8): the central writer projects entity-kind
-    # facts here in the same transaction as the fact write.
-    await pool.execute(ENTITY_GRAPH_EDGES.ddl())
-    # rel_034: the central writer persists evidence and a coverage receipt in
-    # the same transaction as the fact, so this schema is not optional.
-    await apply_evidence_schema(pool)
+    await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +84,17 @@ async def _setup_schema(pool: asyncpg.Pool) -> None:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
+async def pool(postgres_container):
     """Fresh isolated DB with memory-curation schema."""
-    async with provisioned_postgres_pool() as p:
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+    ) as p:
         await _setup_schema(p)
         yield p
 
@@ -190,8 +111,8 @@ async def _make_entity(
     roles: list[str] | None = None,
 ) -> uuid.UUID:
     return await pool.fetchval(
-        "INSERT INTO public.entities (canonical_name, name, entity_type, roles) "
-        "VALUES ($1, $1, 'person', $2) RETURNING id",
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+        "VALUES ($1, 'person', $2) RETURNING id",
         name,
         roles or [],
     )
@@ -209,8 +130,8 @@ async def _insert_prose_fact(
     """Insert a row into the prose facts table; return the fact id."""
     return await pool.fetchval(
         """
-        INSERT INTO facts (predicate, content, entity_id, object_entity_id, validity)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO facts (subject, scope, predicate, content, entity_id, object_entity_id, validity)
+        VALUES ('fixture:' || gen_random_uuid()::text, 'relationship', $1, $2, $3, $4, $5)
         RETURNING id
         """,
         predicate,
@@ -370,7 +291,7 @@ class TestMemoryCurationNoOp:
         subject = await _make_entity(pool, name="Alice")
         # Prose fact without object_entity_id — not a candidate.
         await pool.execute(
-            "INSERT INTO facts (predicate, content, entity_id) VALUES ($1, $2, $3)",
+            "INSERT INTO facts (subject, scope, predicate, content, entity_id) VALUES ('fixture:' || gen_random_uuid()::text, 'relationship', $1, $2, $3)",
             "living_arrangement",
             "Lives with partner",
             subject,
@@ -797,8 +718,8 @@ async def _insert_relational_fact_no_oid(
     """Insert a relational fact WITHOUT object_entity_id (old authoring style)."""
     return await pool.fetchval(
         """
-        INSERT INTO facts (predicate, content, entity_id, validity)
-        VALUES ($1, $2, $3, 'active')
+        INSERT INTO facts (subject, scope, predicate, content, entity_id, validity)
+        VALUES ('fixture:' || gen_random_uuid()::text, 'relationship', $1, $2, $3, 'active')
         RETURNING id
         """,
         predicate,
@@ -884,7 +805,7 @@ class TestObjectEntityIdBackfill:
         subject = await _make_entity(pool, name="Eve")
 
         await pool.execute(
-            "INSERT INTO facts (predicate, content, entity_id, validity) VALUES ($1, $2, $3, 'active')",
+            "INSERT INTO facts (subject, scope, predicate, content, entity_id, validity) VALUES ('fixture:' || gen_random_uuid()::text, 'relationship', $1, $2, $3, 'active')",
             "birthday",
             "March 15, 1990",
             subject,
@@ -902,8 +823,7 @@ class TestObjectEntityIdBackfill:
 
         # Insert a fact WITH object_entity_id already set
         await pool.execute(
-            "INSERT INTO facts (predicate, content, entity_id, object_entity_id, validity) "
-            "VALUES ($1, $2, $3, $4, 'active')",
+            "INSERT INTO facts (subject, scope, predicate, content, entity_id, object_entity_id, validity) VALUES ('fixture:' || gen_random_uuid()::text, 'relationship', $1, $2, $3, $4, 'active')",
             "works_at",
             "Existing Org",
             subject,
@@ -920,7 +840,7 @@ class TestObjectEntityIdBackfill:
         await _make_entity(pool, name="Retracted Org")
 
         await pool.execute(
-            "INSERT INTO facts (predicate, content, entity_id, validity) VALUES ($1, $2, $3, 'retracted')",
+            "INSERT INTO facts (subject, scope, predicate, content, entity_id, validity) VALUES ('fixture:' || gen_random_uuid()::text, 'relationship', $1, $2, $3, 'retracted')",
             "works_at",
             "Retracted Org",
             subject,
@@ -1081,16 +1001,10 @@ class TestMemoryCurationWithBackfill:
 
 
 async def _setup_pending_actions_schema(pool: asyncpg.Pool) -> None:
-    """Create the minimal schema needed by run_pending_actions_curation tests.
-
-    Includes the pending_actions table, the state table (for checkpoint), and
-    the insight candidate tables (used by propose_insight_candidate).
-    """
-    from butlers.tools.switchboard.insight.broker import create_insight_tables
-
-    await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
-    await pool.execute(_CREATE_STATE_SQL)
-    await create_insight_tables(pool)
+    """Seed case data after complete real chains; no schema repair."""
+    await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+    )
 
 
 async def _insert_pending_action(
@@ -1137,9 +1051,17 @@ class TestPendingActionsCurationNoOp:
     """No-op paths for run_pending_actions_curation."""
 
     @pytest.fixture
-    async def pa_pool(self, provisioned_postgres_pool):
+    async def pa_pool(self, postgres_container):
         """Isolated DB with pending_actions + insight schema."""
-        async with provisioned_postgres_pool() as p:
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_pending_actions_schema(p)
             yield p
 
@@ -1180,8 +1102,16 @@ class TestPendingActionsCurationDetection:
     """Detection logic: approaching vs. not-approaching vs. no-expiry rows."""
 
     @pytest.fixture
-    async def pa_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def pa_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_pending_actions_schema(p)
             yield p
 
@@ -1274,8 +1204,16 @@ class TestPendingActionsCurationMessageContent:
     """Verify the insight candidate message contains the right fields."""
 
     @pytest.fixture
-    async def pa_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def pa_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_pending_actions_schema(p)
             yield p
 
@@ -1387,8 +1325,16 @@ class TestPendingActionsCurationDedup:
     """Dedup behavior: same action not proposed twice in a single run."""
 
     @pytest.fixture
-    async def pa_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def pa_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_pending_actions_schema(p)
             yield p
 
@@ -1416,41 +1362,11 @@ class TestPendingActionsCurationDedup:
 # ---------------------------------------------------------------------------
 
 
-_CREATE_MEMORY_CATALOG_SQL = """
-CREATE TABLE IF NOT EXISTS public.memory_catalog (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_schema TEXT NOT NULL,
-    source_table  TEXT NOT NULL,
-    source_id     UUID NOT NULL,
-    tenant_id     TEXT NOT NULL DEFAULT 'owner',
-    entity_id     UUID,
-    summary       TEXT NOT NULL DEFAULT '',
-    memory_type   TEXT NOT NULL DEFAULT 'fact',
-    confidence    DOUBLE PRECISION,
-    invalid_at    TIMESTAMPTZ,
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (source_schema, source_table, source_id)
-)
-"""
-
-
 async def _setup_fact_retraction_schema(pool: asyncpg.Pool) -> None:
-    """Create the minimal schema needed by run_fact_retraction_curation tests.
-
-    Includes: entities (public), facts, pending_actions, state, the insight
-    candidates tables (used by propose_insight_candidate), and the
-    memory_catalog/entity_graph_edges cascade targets (bu-9ltqm) exercised by
-    owner-fact auto-retraction.
-    """
-    from butlers.tools.switchboard.insight.broker import create_insight_tables
-
-    await pool.execute(_CREATE_ENTITIES_SQL)
-    await pool.execute(_CREATE_FACTS_SQL)
-    await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
-    await pool.execute(_CREATE_STATE_SQL)
-    await pool.execute(_CREATE_MEMORY_CATALOG_SQL)
-    await pool.execute(ENTITY_GRAPH_EDGES.ddl())
-    await create_insight_tables(pool)
+    """Seed case data after complete real chains; no schema repair."""
+    await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+    )
 
 
 async def _catalog_fact(pool: asyncpg.Pool, fact_id: uuid.UUID) -> None:
@@ -1505,11 +1421,13 @@ async def _insert_fact(
     validity: str = "active",
     confidence: float = 1.0,
 ) -> uuid.UUID:
-    """Insert a row into the facts table and return its id."""
+    """Seed an observed temporal fact; conflicting observations coexist under
+    the real property uniqueness constraint instead of dropping that guard.
+    """
     return await pool.fetchval(
         """
-        INSERT INTO facts (predicate, content, entity_id, validity, confidence)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO facts (subject, scope, valid_at, predicate, content, entity_id, validity, confidence)
+        VALUES ('fixture:' || gen_random_uuid()::text, 'relationship', clock_timestamp(), $1, $2, $3, $4, $5)
         RETURNING id
         """,
         predicate,
@@ -1551,8 +1469,16 @@ class TestFactRetractionCurationNoOp:
     """No-op paths for run_fact_retraction_curation."""
 
     @pytest.fixture
-    async def frc_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def frc_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_fact_retraction_schema(p)
             yield p
 
@@ -1599,8 +1525,16 @@ class TestFactRetractionCurationContradictions:
     """Contradiction detection: two active facts on the same entity+predicate."""
 
     @pytest.fixture
-    async def frc_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def frc_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_fact_retraction_schema(p)
             yield p
 
@@ -1686,8 +1620,16 @@ class TestFactRetractionCurationLowConfidence:
     """Low-confidence fact detection (confidence < threshold)."""
 
     @pytest.fixture
-    async def frc_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def frc_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_fact_retraction_schema(p)
             yield p
 
@@ -1768,8 +1710,16 @@ class TestFactRetractionCurationOwnerFacts:
     """
 
     @pytest.fixture
-    async def frc_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def frc_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_fact_retraction_schema(p)
             yield p
 
@@ -1839,8 +1789,16 @@ class TestFactRetractionCurationMultiValuedPredicates:
     """Multi-valued / log predicates are never treated as contradictions."""
 
     @pytest.fixture
-    async def frc_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def frc_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_fact_retraction_schema(p)
             yield p
 
@@ -1873,8 +1831,16 @@ class TestFactRetractionCurationDedup:
     """Dedup behavior: the same fact is not double-proposed."""
 
     @pytest.fixture
-    async def frc_pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
+    async def frc_pool(self, postgres_container):
+        async with migrated_pool(
+            postgres_container,
+            stages=(
+                MigrationStage("core"),
+                MigrationStage("memory"),
+                MigrationStage("relationship", schema="relationship"),
+                MigrationStage("approvals"),
+            ),
+        ) as p:
             await _setup_fact_retraction_schema(p)
             yield p
 
