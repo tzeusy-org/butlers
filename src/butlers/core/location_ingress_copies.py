@@ -117,6 +117,7 @@ class SwitchboardInputCopies:
         self._ended_inputs: set[int] = set()
         self._cleared_inputs: set[int] = set()
         self._settlers: set[asyncio.Task] = set()
+        self._structured_sdk: dict[int, Any] = {}
         self._reconcile_lock = asyncio.Lock()
         _writers[pool] = self
 

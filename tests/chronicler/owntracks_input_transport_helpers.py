@@ -895,8 +895,11 @@ async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_pro
     from butlers.core.location_ingress_copies import _processing_scope, require_ingress_closed
     from butlers.core.location_ingress_runtime import (
         capture_structured_ingress_output,
+        finish_structured_ingress_sdk,
+        prepare_structured_ingress_sdk,
         reserve_ingress_runtime,
         reserve_structured_ingress_input,
+        start_structured_ingress_sdk,
     )
     from butlers.core.sessions import session_complete, session_create
     from butlers.core.spawner import Spawner, SpawnerResult
@@ -1040,6 +1043,145 @@ async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_pro
                     structured,
                 ) == content_digest({"tools": tools})
             result_calls = [{"name": "synthetic fixed tool", "input": {"synthetic": True}}]
+            sdk_faults = []
+
+            async def sdk_claim_fault(conn, sql, *args, **kwargs):
+                result = await original_execute(conn, sql, *args, **kwargs)
+                if sql.startswith("INSERT INTO location_ingress_structured_sdk_births "):
+                    assert conn.is_in_transaction()
+                    assert await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_sdk_births "
+                        "WHERE input_generation=$1 AND task_generation=$2)",
+                        args[0],
+                        args[1],
+                    )
+                    sdk_faults.append(args[0])
+                    raise asyncpg.RaiseError("Synthetic structured SDK claim fault")
+                return result
+
+            with patch.object(asyncpg.pool.PoolConnectionProxy, "execute", new=sdk_claim_fault):
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Synthetic structured SDK claim fault"
+                ):
+                    await prepare_structured_ingress_sdk(pool, structured)
+            assert sdk_faults == [structured]
+            async with pool.acquire() as observed:
+                assert not await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_sdk_births "
+                    "WHERE input_generation=$1)",
+                    structured,
+                )
+                assert not await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_sdk_ends "
+                    "WHERE input_generation=$1)",
+                    structured,
+                )
+            sdk = await prepare_structured_ingress_sdk(pool, structured)
+            sdk_calls = []
+
+            async def sdk_callback():
+                assert asyncio.current_task() is sdk.task
+                assert asyncio.current_task() is not child.task
+                async with pool.acquire() as observed:
+                    assert await observed.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_sdk_births "
+                        "WHERE input_generation=$1 AND task_generation=$2)",
+                        structured,
+                        sdk.task_generation,
+                    )
+                sdk_calls.append(True)
+                return result_calls, "Synthetic result", None
+
+            assert not sdk.task.done() and sdk_calls == []
+            await start_structured_ingress_sdk(pool, sdk, sdk_callback)
+            assert sdk_calls == [True] and sdk.task.done() and sdk.task.result() is None
+            assert sdk.reply == (result_calls, "Synthetic result", None)
+            sdk_end_faults = []
+
+            async def sdk_end_fault(conn, sql, *args, **kwargs):
+                result = await original_execute(conn, sql, *args, **kwargs)
+                if sql.startswith("INSERT INTO location_ingress_structured_sdk_ends "):
+                    assert conn.is_in_transaction()
+                    assert await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_sdk_ends "
+                        "WHERE input_generation=$1 AND task_generation=$2)",
+                        args[0],
+                        args[1],
+                    )
+                    sdk_end_faults.append(args[0])
+                    raise asyncpg.RaiseError("Synthetic structured SDK end fault")
+                return result
+
+            with patch.object(asyncpg.pool.PoolConnectionProxy, "execute", new=sdk_end_fault):
+                with pytest.raises(asyncpg.RaiseError, match="Synthetic structured SDK end fault"):
+                    await finish_structured_ingress_sdk(pool, sdk)
+            assert sdk_end_faults == [structured]
+            assert sdk.reply == (result_calls, "Synthetic result", None)
+            async with pool.acquire() as observed:
+                assert not await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_sdk_ends "
+                    "WHERE input_generation=$1)",
+                    structured,
+                )
+            assert await finish_structured_ingress_sdk(pool, sdk) == (
+                result_calls,
+                "Synthetic result",
+                None,
+            )
+            assert sdk.reply is None and sdk.invoke is None
+            async with pool.acquire() as observed:
+                sdk_end = await observed.fetchrow(
+                    "SELECT task_generation,receipt_id FROM location_ingress_structured_sdk_ends "
+                    "WHERE input_generation=$1",
+                    structured,
+                )
+                assert sdk_end["task_generation"] == sdk.task_generation
+                assert isinstance(sdk_end["receipt_id"], UUID)
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Location source floors are permanent"
+                ):
+                    async with observed.transaction():
+                        await observed.execute(
+                            "UPDATE location_ingress_structured_sdk_ends SET receipt_id=$2 "
+                            "WHERE input_generation=$1",
+                            structured,
+                            uuid4(),
+                        )
+                assert (
+                    await observed.fetchval(
+                        "SELECT receipt_id FROM location_ingress_structured_sdk_ends "
+                        "WHERE input_generation=$1",
+                        structured,
+                    )
+                    == sdk_end["receipt_id"]
+                )
+            # A real completed failed SDK Task is not a receipt; primary frames
+            # and original identity remain held rather than clearing them by GC.
+            error_input = await reserve_structured_ingress_input(
+                pool, prompt=prompt, system_prompt=system, tools=tools
+            )
+            error_sdk = await prepare_structured_ingress_sdk(pool, error_input)
+            primary = RuntimeError("Synthetic structured SDK failure")
+
+            async def failed_sdk():
+                retained = {"synthetic": prompt}
+                assert retained["synthetic"] == prompt
+                raise primary
+
+            with pytest.raises(RuntimeError) as caught:
+                await start_structured_ingress_sdk(pool, error_sdk, failed_sdk)
+            assert caught.value is primary and error_sdk.task.exception() is primary
+            assert primary.__traceback__ is not None
+            with pytest.raises(
+                CopyFloorUnavailable, match="ingress_structured_sdk_lifetime_differs"
+            ):
+                await finish_structured_ingress_sdk(pool, error_sdk)
+            async with pool.acquire() as observed:
+                assert not await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_sdk_ends "
+                    "WHERE input_generation=$1)",
+                    error_input,
+                )
             output_faults = []
 
             async def output_fault(conn, sql, *args, **kwargs):

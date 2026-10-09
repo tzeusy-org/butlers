@@ -280,3 +280,173 @@ async def capture_structured_ingress_output(
         source["stored_digest"],
     ):
         raise CopyFloorUnavailable("ingress_structured_output_commit_unknown")
+
+
+class _StructuredSDK:
+    """Private actual SDK Task identity, never a caller terminal selector."""
+
+    def __init__(self, generation: Any, runtime: Any, child: Any) -> None:
+        from uuid import uuid4
+
+        self.generation, self.task_generation = generation, uuid4()
+        self.runtime, self.child = runtime, child
+        self.task: asyncio.Task | None = None
+        self.reply: Any = None
+        self.gate = asyncio.Event()
+        self.invoke: Any = None
+
+
+async def prepare_structured_ingress_sdk(pool: Any, generation: Any):
+    """Claim the actual SDK Task before it receives the source-derived input.
+
+    Successful Task completion ends ONLY this SDK coroutine. Its returned
+    body has separate captured output and processing/routed holder obligations.
+    Error/cancellation Tasks remain unresolved with their original exception;
+    Task.done alone must never certify traceback-held copies.
+    """
+    from butlers.core.location_ingress_copies import lock_ingress_census
+
+    captured = current_ingress_runtime_input(pool)
+    if captured is None:
+        if generation is not None:
+            raise CopyFloorUnavailable("ingress_structured_sdk_producer_differs")
+        return None
+    runtime, child = captured
+    if generation is None or len(runtime._structured_sdk) >= 1024:
+        raise CopyFloorUnavailable("ingress_structured_sdk_unavailable")
+    binding = _StructuredSDK(generation, runtime, child)
+
+    async def call():
+        await binding.gate.wait()
+        binding.reply = await binding.invoke()
+        # The Task never retains the body in Task.result(). The separate reply
+        # holder remains live until transfer to the classifier/route consumers.
+        return None
+
+    binding.task = asyncio.create_task(call())
+    runtime._structured_sdk[id(binding)] = binding
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await lock_ingress_census(conn)
+                source = await _require_ingress_runtime_source(conn, captured)
+                original = await conn.fetchrow(
+                    "SELECT copy_generation,request_id,stored_digest,envelope_digest "
+                    "FROM location_ingress_structured_inputs WHERE input_generation=$1 FOR SHARE",
+                    generation,
+                )
+                if original is None or tuple(original.values()) != (
+                    child.generation,
+                    source["request_id"],
+                    source["stored_digest"],
+                    child.envelope_digest,
+                ):
+                    raise CopyFloorUnavailable("ingress_structured_sdk_ancestry_unknown")
+                await conn.execute(
+                    "INSERT INTO location_ingress_structured_sdk_births "
+                    "(input_generation,task_generation,handler_generation,incarnation) "
+                    "VALUES($1,$2,$3,$4)",
+                    generation,
+                    binding.task_generation,
+                    child.handler,
+                    runtime.incarnation,
+                )
+        async with pool.acquire() as observed:
+            actual = await observed.fetchrow(
+                "SELECT task_generation,handler_generation,incarnation "
+                "FROM location_ingress_structured_sdk_births WHERE input_generation=$1",
+                generation,
+            )
+        if actual is None or tuple(actual.values()) != (
+            binding.task_generation,
+            child.handler,
+            runtime.incarnation,
+        ):
+            raise CopyFloorUnavailable("ingress_structured_sdk_commit_unknown")
+    except BaseException:
+        # The gated child has not copied or invoked SDK input. Its interrupted
+        # recorded claim stays pending; this cancellation grants no native end.
+        binding.task.cancel()
+        await asyncio.gather(binding.task, return_exceptions=True)
+        raise
+    return binding
+
+
+def _require_structured_sdk(pool: Any, binding: _StructuredSDK):
+    captured = current_ingress_runtime_input(pool)
+    if (
+        captured is None
+        or captured[0] is not binding.runtime
+        or captured[1] is not binding.child
+        or binding.runtime._structured_sdk.get(id(binding)) is not binding
+    ):
+        raise CopyFloorUnavailable("ingress_structured_sdk_producer_differs")
+    return captured
+
+
+async def start_structured_ingress_sdk(pool: Any, binding: _StructuredSDK, invoke: Any) -> None:
+    """Only the admitted original parent releases its own exact gated Task."""
+    _require_structured_sdk(pool, binding)
+    if binding.invoke is not None or binding.task.done() or binding.gate.is_set():
+        raise CopyFloorUnavailable("ingress_structured_sdk_lifetime_differs")
+    binding.invoke = invoke
+    binding.gate.set()
+    await binding.task  # Preserve the original SDK error/cancellation identity.
+
+
+async def finish_structured_ingress_sdk(pool: Any, binding: _StructuredSDK):
+    """Outside the SDK failure/fallback catch; transfer is not result disposal."""
+    from uuid import uuid4
+
+    from butlers.core.location_ingress_copies import lock_ingress_census
+
+    captured = _require_structured_sdk(pool, binding)
+    runtime, child = captured
+    generation = binding.generation
+    if (
+        runtime._structured_sdk.get(id(binding)) is not binding
+        or binding.task.cancelled()
+        or not binding.task.done()
+        or binding.task.exception() is not None
+        or binding.task.result() is not None
+        or binding.invoke is None
+        or not binding.gate.is_set()
+    ):
+        raise CopyFloorUnavailable("ingress_structured_sdk_lifetime_differs")
+    receipt = uuid4()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await lock_ingress_census(conn)
+            await _require_ingress_runtime_source(conn, captured)
+            actual = await conn.fetchrow(
+                "SELECT task_generation,handler_generation,incarnation "
+                "FROM location_ingress_structured_sdk_births "
+                "WHERE input_generation=$1 FOR SHARE",
+                generation,
+            )
+            if actual is None or tuple(actual.values()) != (
+                binding.task_generation,
+                child.handler,
+                runtime.incarnation,
+            ):
+                raise CopyFloorUnavailable("ingress_structured_sdk_claim_differs")
+            await conn.execute(
+                "INSERT INTO location_ingress_structured_sdk_ends "
+                "(input_generation,task_generation,receipt_id) VALUES($1,$2,$3)",
+                generation,
+                binding.task_generation,
+                receipt,
+            )
+    async with pool.acquire() as observed:
+        actual = await observed.fetchrow(
+            "SELECT task_generation,receipt_id FROM location_ingress_structured_sdk_ends "
+            "WHERE input_generation=$1",
+            generation,
+        )
+    if actual is None or tuple(actual.values()) != (binding.task_generation, receipt):
+        raise CopyFloorUnavailable("ingress_structured_sdk_end_unknown")
+    reply, binding.reply = binding.reply, None
+    binding.invoke = None
+    runtime._structured_sdk.pop(id(binding))
+    # No SDK claim/end closes the transferred result or its parent processing.
+    return reply

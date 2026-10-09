@@ -1747,3 +1747,27 @@ until its SDK/processing/result/routed descendants have separate lawful native
 dispositions. Their terminal implementation remains active SOURCE work; this
 hold cannot count as delivering erasure. All four original outcomes and full
 registered/role/browser/recovery/independent-topology acceptance remain UNMET.
+
+
+The configured structured SDK invocation now has its own actual gated Task.
+The original live processing producer records and independently reads its exact
+input/task/handler/incarnation claim before releasing that Task to invoke the
+adapter. Claim admission is outside the adapter failover catch. The Task returns
+only None; its reply remains a separate private holder. A healthy original Task
+with no exception/cancellation receives an immutable same-input/task end receipt
+and separate committed readback before its reply transfers to the classifier.
+That receipt covers only the SDK coroutine; output/result, routing and parent
+processing copies remain separate obligations. Failed or cancelled Tasks remain
+unresolved, preserving original primary exception identity and traceback-held
+input rather than treating Task.done as disposal. Neither a public UUID nor a
+caller completion field may select that private constructor-owned binding.
+
+Existing software owners exercise the actual gate/child Task, unknown claim and
+end readbacks before consumers, healthy transfer, failed traceback holder and
+cancellation refusal using modeled metadata and SDK callbacks. The existing real
+Pool species authors actual claim/end receipt INSERT faults after their writes,
+separate surviving body/absent-end readbacks, restored original producer and
+immutable receipt, plus original failed Task/no-end. These SQL extensions remain
+UNRUN until fresh exact-head hosted proof. The returned body and error holders
+are not erased by this partial lifetime proof; their lawful terminal processing,
+all original mixed/routed/log/recovery/native obligations remain active SOURCE.

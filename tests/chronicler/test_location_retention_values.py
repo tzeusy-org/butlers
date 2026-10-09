@@ -11200,6 +11200,10 @@ async def _assert_native_ingress_runtime_values():
         structured_output = None
         output_unknown = False
         output_fault = False
+        sdk_birth = None
+        sdk_end = None
+        sdk_unknown = False
+        sdk_end_unknown = False
         intent = None
         binding = None
         session = None
@@ -11220,7 +11224,15 @@ async def _assert_native_ingress_runtime_values():
         @asynccontextmanager
         async def transaction(self):
             original = copy.deepcopy(
-                (self.reserved, self.intent, self.binding, self.structured, self.structured_output)
+                (
+                    self.reserved,
+                    self.intent,
+                    self.binding,
+                    self.structured,
+                    self.structured_output,
+                    self.sdk_birth,
+                    self.sdk_end,
+                )
             )
             self.transaction_active = True
             try:
@@ -11232,6 +11244,8 @@ async def _assert_native_ingress_runtime_values():
                     self.binding,
                     self.structured,
                     self.structured_output,
+                    self.sdk_birth,
+                    self.sdk_end,
                 ) = original
                 raise
             finally:
@@ -11269,6 +11283,21 @@ async def _assert_native_ingress_runtime_values():
                     "original_digest": content_digest(canonical),
                     "reserved_session": self.intent[1],
                 }
+            if "FROM location_ingress_structured_sdk_births WHERE" in sql:
+                assert args == (self.sdk_birth[0],)
+                if self.transaction_active:
+                    assert "FOR SHARE" in sql
+                else:
+                    self.trace.append("independent structured SDK claim")
+                    if self.sdk_unknown:
+                        return None
+                return dict(zip(("task", "handler", "incarnation"), self.sdk_birth[1:]))
+            if "FROM location_ingress_structured_sdk_ends " in sql:
+                assert not self.transaction_active and args == (self.sdk_end[0],)
+                self.trace.append("independent structured SDK end")
+                if self.sdk_end_unknown:
+                    return None
+                return dict(zip(("task", "receipt"), self.sdk_end[1:]))
             if "FROM location_ingress_structured_inputs WHERE" in sql:
                 assert self.transaction_active and args == (self.structured[0],)
                 assert "FOR SHARE" in sql
@@ -11354,6 +11383,12 @@ async def _assert_native_ingress_runtime_values():
                 self.trace.append("structured full input")
                 if self.fault:
                     raise RuntimeError("synthetic same-writer structured failure")
+            elif "INSERT INTO location_ingress_structured_sdk_births" in sql:
+                self.sdk_birth = args
+                self.trace.append("structured SDK claim")
+            elif "INSERT INTO location_ingress_structured_sdk_ends" in sql:
+                self.sdk_end = args
+                self.trace.append("structured SDK end")
             elif "INSERT INTO location_ingress_structured_outputs" in sql:
                 self.structured_output = args
                 self.trace.append("structured output lineage")
@@ -11367,7 +11402,9 @@ async def _assert_native_ingress_runtime_values():
 
     pool = Pool()
     child = _Input(uuid4(), uuid4(), b"s" * 32, b"e" * 32, asyncio.current_task(), uuid4(), 3)
-    owner = SimpleNamespace(pool=pool, active=True, incarnation=uuid4(), _inputs={id(child): child})
+    owner = SimpleNamespace(
+        pool=pool, active=True, incarnation=uuid4(), _inputs={id(child): child}, _structured_sdk={}
+    )
     source = dict(
         request_id=request,
         stored_digest=content_digest(canonical),
@@ -11454,7 +11491,10 @@ async def _assert_native_ingress_runtime_values():
 
         from butlers.core.location_ingress_runtime import (
             capture_structured_ingress_output,
+            finish_structured_ingress_sdk,
+            prepare_structured_ingress_sdk,
             reserve_structured_ingress_input,
+            start_structured_ingress_sdk,
         )
         from butlers.tools.switchboard.routing import structured_classify as sc
 
@@ -11478,6 +11518,8 @@ async def _assert_native_ingress_runtime_values():
         adapter.invoke_structured = AsyncMock()
 
         async def actual_route(**kwargs):
+            assert pool.sdk_end is not None
+            assert "independent structured SDK end" in pool.trace
             assert pool.structured_output is not None
             assert "independent structured output readback" in pool.trace
             assert pool.trace.index("structured output lineage") < pool.trace.index(
@@ -11490,6 +11532,9 @@ async def _assert_native_ingress_runtime_values():
         catalog = ("api", "synthetic-model", [], uuid4(), 30, "cheap")
 
         async def actual_adapter(**kwargs):
+            assert asyncio.current_task() is not child.task
+            assert pool.sdk_birth is not None
+            assert "independent structured SDK claim" in pool.trace
             assert pool.structured is not None
             assert pool.trace.index("transaction ended") < pool.trace.index(
                 "independent structured input readback"
@@ -11518,6 +11563,26 @@ async def _assert_native_ingress_runtime_values():
                 )
             adapter.invoke_structured.assert_not_awaited()
             pool.unknown = False
+            pool.sdk_unknown = True
+            with pytest.raises(CopyFloorUnavailable, match="ingress_structured_sdk_commit_unknown"):
+                await sc.try_structured_classification(
+                    pool, mcp_server=server, prompt=prompt, include_bug_report=False
+                )
+            adapter.invoke_structured.assert_not_awaited()
+            assert pool.sdk_birth is not None and pool.sdk_end is None
+            assert all(entry.task.done() for entry in owner._structured_sdk.values())
+            pool.sdk_unknown = False
+            pool.sdk_end_unknown = True
+            with pytest.raises(CopyFloorUnavailable, match="ingress_structured_sdk_end_unknown"):
+                await sc.try_structured_classification(
+                    pool, mcp_server=server, prompt=prompt, include_bug_report=False
+                )
+            route.assert_not_awaited()
+            assert pool.sdk_end is not None  # Committed ACK unknown, not false rollback.
+            assert any(entry.reply is not None for entry in owner._structured_sdk.values())
+            pool.sdk_end_unknown = False
+            adapter.invoke_structured.reset_mock()
+            pool.sdk_birth = pool.sdk_end = None
             pool.output_unknown = True
             with pytest.raises(
                 CopyFloorUnavailable, match="ingress_structured_output_commit_unknown"
@@ -11569,6 +11634,43 @@ async def _assert_native_ingress_runtime_values():
                     "text": None,
                 }
             )
+        # A completed failed SDK Task retains its actual exception/frames.
+        # The real helper preserves primary identity and grants no SDK end.
+        sdk_input = await reserve_structured_ingress_input(
+            pool, prompt=prompt, system_prompt="Independent fixed system", tools=tools
+        )
+        primary = RuntimeError("synthetic SDK primary")
+        sdk = await prepare_structured_ingress_sdk(pool, sdk_input)
+        pool.sdk_end = None
+
+        async def failed_sdk():
+            retained_copy = {"synthetic": prompt}
+            assert retained_copy["synthetic"] == prompt
+            raise primary
+
+        with pytest.raises(RuntimeError) as caught:
+            await start_structured_ingress_sdk(pool, sdk, failed_sdk)
+        assert caught.value is primary and sdk.task.exception() is primary
+        assert sdk.reply is None and pool.sdk_end is None
+        assert sdk.task.done() and primary.__traceback__ is not None
+        with pytest.raises(CopyFloorUnavailable, match="ingress_structured_sdk_lifetime_differs"):
+            await finish_structured_ingress_sdk(pool, sdk)
+        assert pool.sdk_end is None and owner._structured_sdk[id(sdk)] is sdk
+        cancelled_input = await reserve_structured_ingress_input(
+            pool, prompt=prompt, system_prompt="Independent fixed system", tools=tools
+        )
+        cancelled = await prepare_structured_ingress_sdk(pool, cancelled_input)
+
+        async def cancel_sdk():
+            raise asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            await start_structured_ingress_sdk(pool, cancelled, cancel_sdk)
+        assert cancelled.task.cancelled() and pool.sdk_end is None
+        with pytest.raises(CopyFloorUnavailable, match="ingress_structured_sdk_lifetime_differs"):
+            await finish_structured_ingress_sdk(pool, cancelled)
+        assert pool.sdk_end is None
+
         for change in ("registry", "task", "kind", "pool"):
             original_task, original_kind = child.task, child.kind
             if change == "registry":

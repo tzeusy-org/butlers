@@ -73,6 +73,19 @@ LOCAL_COLUMNS["location_ingress_structured_outputs"] = [
     ("output_digest", "bytea", True),
     ("committed_at", "timestamp with time zone", True),
 ]
+LOCAL_COLUMNS["location_ingress_structured_sdk_births"] = [
+    ("input_generation", "uuid", True),
+    ("task_generation", "uuid", True),
+    ("handler_generation", "uuid", True),
+    ("incarnation", "uuid", True),
+    ("committed_at", "timestamp with time zone", True),
+]
+LOCAL_COLUMNS["location_ingress_structured_sdk_ends"] = [
+    ("input_generation", "uuid", True),
+    ("task_generation", "uuid", True),
+    ("receipt_id", "uuid", True),
+    ("committed_at", "timestamp with time zone", True),
+]
 LOCAL_TABLES = tuple(LOCAL_COLUMNS)
 LOCAL_CONSTRAINTS = {
     "location_ingress_server_births": {"PRIMARY KEY (server_generation)"},
@@ -149,6 +162,21 @@ LOCAL_CONSTRAINTS["location_ingress_structured_outputs"] = {
     "CHECK ((octet_length(output_digest) = 32))",
 }
 
+LOCAL_CONSTRAINTS["location_ingress_structured_sdk_births"] = {
+    "PRIMARY KEY (input_generation)",
+    "UNIQUE (task_generation)",
+    "UNIQUE (input_generation, task_generation)",
+    "FOREIGN KEY (input_generation) REFERENCES "
+    "location_ingress_structured_inputs(input_generation)",
+    "FOREIGN KEY (handler_generation) REFERENCES location_ingress_input_claims(handler_generation)",
+}
+LOCAL_CONSTRAINTS["location_ingress_structured_sdk_ends"] = {
+    "PRIMARY KEY (input_generation)",
+    "UNIQUE (receipt_id)",
+    "FOREIGN KEY (input_generation, task_generation) REFERENCES "
+    "location_ingress_structured_sdk_births(input_generation, task_generation)",
+}
+
 
 def local_schema_sql() -> str:
     """Owning schema only; ordinary backup carries these content-free rows."""
@@ -213,4 +241,18 @@ def local_schema_sql() -> str:
           input_generation UUID PRIMARY KEY REFERENCES location_ingress_structured_inputs,
           output_digest BYTEA NOT NULL CHECK(octet_length(output_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
+        CREATE TABLE IF NOT EXISTS location_ingress_structured_sdk_births (
+          input_generation UUID PRIMARY KEY REFERENCES location_ingress_structured_inputs,
+          task_generation UUID NOT NULL UNIQUE,
+          handler_generation UUID NOT NULL
+            REFERENCES location_ingress_input_claims(handler_generation),
+          incarnation UUID NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          UNIQUE(input_generation,task_generation));
+        CREATE TABLE IF NOT EXISTS location_ingress_structured_sdk_ends (
+          input_generation UUID PRIMARY KEY, task_generation UUID NOT NULL,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          FOREIGN KEY(input_generation,task_generation)
+            REFERENCES location_ingress_structured_sdk_births(input_generation,task_generation));
     """
