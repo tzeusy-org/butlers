@@ -216,6 +216,7 @@ async def test_valid_decision_executes_sync_tool_fn_without_typeerror() -> None:
 
     assert result is not None
     assert result.tool_calls[0]["result"] == {"status": "accepted", "butler": "health"}
+    await _assert_local_native_diagnostics()
 
 
 async def test_include_bug_report_offers_both_tools() -> None:
@@ -603,3 +604,48 @@ class TestValidateToolCall:
 
     def test_empty_tool_calls_list_invalid(self):
         assert sc._validate_tool_calls([]) is False
+
+
+async def _assert_local_native_diagnostics():
+    """Actual local dispatch errors with an inherited restriction-only scope."""
+    from butlers.core.location_ingress_copies import _processing_scope
+
+    sentinel = "synthetic-source-only-location-error"
+    primary = RuntimeError(sentinel)
+
+    async def fail(**kwargs):
+        raise primary
+
+    mcp = MagicMock()
+    mcp.get_tool = MagicMock(return_value=_FakeTool(fail))
+    with patch.object(sc.logger, "warning") as warning:
+        ordinary = await sc._execute_tool_call(mcp, _route_call("health"))
+        assert ordinary["result"]["error"] == f"RuntimeError: {sentinel}"
+        assert warning.call_args.args[-1] is primary
+
+    # Even a stale inherited scope can only restrict detail; it must not
+    # become native dispatch admission, actor identity or disposal authority.
+    token = _processing_scope.set((object(), object()))
+    try:
+        with patch.object(sc.logger, "warning") as warning:
+            native = await sc._execute_tool_call(mcp, _route_call("health"))
+            assert native["result"]["status"] == "error"
+            assert sentinel not in native["result"]["error"]
+            assert "category=native" in native["result"]["error"]
+            assert sentinel not in str(warning.call_args)
+            assert primary not in warning.call_args.args
+            assert not warning.call_args.kwargs.get("exc_info")
+        mcp.get_tool = MagicMock(side_effect=primary)
+        with (
+            patch.object(sc.logger, "warning") as warning,
+            patch.object(sc.logger, "exception") as exc_log,
+        ):
+            unresolved = await sc._execute_tool_call(mcp, _route_call("health"))
+            assert unresolved["result"]["status"] == "error"
+            assert sentinel not in str(unresolved)
+            assert sentinel not in str(warning.call_args)
+            exc_log.assert_not_called()
+    finally:
+        _processing_scope.reset(token)
+    assert str(primary) == sentinel
+    assert primary.__traceback__ is not None  # Preserved, unresolved holder.

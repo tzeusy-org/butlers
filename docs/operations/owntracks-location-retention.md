@@ -1771,3 +1771,40 @@ immutable receipt, plus original failed Task/no-end. These SQL extensions remain
 UNRUN until fresh exact-head hosted proof. The returned body and error holders
 are not erased by this partial lifetime proof; their lawful terminal processing,
 all original mixed/routed/log/recovery/native obligations remain active SOURCE.
+
+
+The in-process structured tool resolver and handler now restrict diagnostics
+when their actual inherited private ingress processing scope is present, even
+when that scope is stale. Only fixed category/class/validated SQLSTATE data
+reach the warning and returned error fields; ordinary unconfigured calls keep
+their original detail. This restriction grants no dispatch, source, actor or
+terminal authority. The actual handler's primary exception and traceback are
+preserved and remain unresolved copies; preventing a new log/result error copy
+cannot settle them or their processing/routed descendants. The nearest existing
+sync-tool owner executes ordinary detail and native resolver/handler companions;
+the actual prior implementation produces a planted sentinel assertion RED,
+with byte-exact restoration PASS. These are software error-copy controls, not
+registered route, role, SQL or all-holder disposal proof.
+
+
+Each actual native structured attempt now owns an immutable JSON wire of its
+complete tool schema before reservation. The owning reserve consumes one fresh
+reconstruction and the actual gated SDK consumes another reconstruction of that
+same wire; a shared nested schema mutation across claim/readback awaits cannot
+change the consumed admitted body. Prompt/system strings and original model,
+timeout, ordinary adapter parameters and schema-retry behavior are preserved.
+A source-owned software companion changes the actual shared nested tool schema
+only after the real SDK preparation/claim readback; the old classifier consumes
+the mismatched body and fails, while the restored snapshot reaches the actual
+adapter/route positive. It restores the shared schema in every outcome. This
+binds the actual invocation body at the modeled boundary, not provider or SQL
+execution proof.
+
+The actual MessagePipeline now propagates native CopyFloorUnavailable witness
+failures through both its structured-to-CLI and outer-to-general fallback
+barriers. A failed input/output/SDK-end witness cannot trigger a new unbound
+copied prompt in either lane. Original generic RuntimeError classification
+fallback remains positive. The existing fallback owner positions native
+refusal with original exception identity and no CLI/general invocation; its
+actual old producer is DIDNOTRAISE RED and restored positive. This exception
+only refuses processing and grants no source/currentness/terminal authority.

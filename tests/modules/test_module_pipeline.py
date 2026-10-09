@@ -2509,6 +2509,7 @@ class TestMessagePipelineStructuredClassificationFastLane:
             result = await pipeline.process("I have a headache")
 
         assert result.target_butler == "health"
+        await _assert_native_fast_lane_admission_failure_closed()
 
 
 # ---------------------------------------------------------------------------
@@ -4836,3 +4837,34 @@ async def _assert_owntracks_classification_diagnostic_copies(caplog):
             assert "RuntimeError" in repr(warning.call_args_list)
         assert MessagePipeline._uses_content_blind_observability("owntracks", {})
         assert not MessagePipeline._uses_content_blind_observability("telegram_bot", {})
+
+
+async def _assert_native_fast_lane_admission_failure_closed():
+    """Actual pipeline fallback barriers; admission I/O is explicitly modeled."""
+    from butlers.core.location_copy_retention import CopyFloorUnavailable
+
+    for category in (
+        "ingress_structured_commit_unknown",
+        "ingress_structured_output_commit_unknown",
+        "ingress_structured_sdk_end_unknown",
+    ):
+        primary = CopyFloorUnavailable(category)
+        cli = AsyncMock(return_value=FakeSpawnerResult(output="synthetic fallback"))
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=cli,
+            source_butler="switchboard",
+            local_tool_server_provider=lambda: MagicMock(),
+        )
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+                AsyncMock(side_effect=primary),
+            ),
+            patch("butlers.tools.switchboard.routing.route.route", AsyncMock()) as route,
+        ):
+            with pytest.raises(CopyFloorUnavailable) as refused:
+                await pipeline.process("Synthetic original source")
+            assert refused.value is primary
+            cli.assert_not_awaited()
+            route.assert_not_awaited()

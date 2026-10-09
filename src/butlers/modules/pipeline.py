@@ -3329,6 +3329,14 @@ class MessagePipeline:
                                     credential_store=self._credential_store,
                                 )
                             except Exception as exc:
+                                from butlers.core.location_copy_retention import (
+                                    CopyFloorUnavailable,
+                                )
+
+                                if isinstance(exc, CopyFloorUnavailable):
+                                    # Original native input/result/Task witness failure
+                                    # cannot become a copied prompt in the CLI lane.
+                                    raise
                                 structured_log_fields = self._log_fields(
                                     source=source,
                                     chat_id=chat_id,
@@ -4166,6 +4174,12 @@ class MessagePipeline:
                     )
 
                 except Exception as exc:
+                    from butlers.core.location_copy_retention import CopyFloorUnavailable
+
+                    if isinstance(exc, CopyFloorUnavailable):
+                        # Preserve refusal at the outer general-route fallback too.
+                        # This exception carries no terminal/admission authority.
+                        raise
                     if content_blind_observability:
                         failure_class = str(getattr(exc, "failure_class", type(exc).__name__))
                         failure_category = str(

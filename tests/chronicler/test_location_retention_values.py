@@ -11540,6 +11540,7 @@ async def _assert_native_ingress_runtime_values():
                 "independent structured input readback"
             )
             assert pool.structured[5] == hashlib.sha256(kwargs["prompt"].encode()).digest()
+            assert pool.structured[7] == content_digest({"tools": kwargs["tools"]})
             return (
                 [dict(name="route_to_butler", input=dict(butler="chronicler", prompt="synthetic"))],
                 None,
@@ -11634,6 +11635,49 @@ async def _assert_native_ingress_runtime_values():
                     "text": None,
                 }
             )
+        # Mutate the actual shared nested schema only after the actual input
+        # has committed and its SDK Task birth/readback have completed. The
+        # SDK must receive the original privately frozen body, not that alias.
+        original_tool = copy.deepcopy(sc.ROUTE_TO_BUTLER_TOOL)
+        snapshot_digest = content_digest({"tools": [original_tool]})
+
+        async def change_shared_schema(actual_pool, generation):
+            prepared = await prepare_structured_ingress_sdk(actual_pool, generation)
+            sc.ROUTE_TO_BUTLER_TOOL["input_schema"]["properties"]["prompt"]["description"] = (
+                "Synthetic schema mutation after admitted body"
+            )
+            assert content_digest({"tools": [sc.ROUTE_TO_BUTLER_TOOL]}) != snapshot_digest
+            assert pool.structured[7] == snapshot_digest
+            return prepared
+
+        try:
+            with (
+                patch(
+                    module + ".resolve_model_with_effective_tier", AsyncMock(return_value=catalog)
+                ),
+                patch(
+                    module + ".check_token_quota",
+                    AsyncMock(return_value=SimpleNamespace(allowed=True)),
+                ),
+                patch(module + ".create_adapter", return_value=adapter),
+                patch(
+                    "butlers.core.location_ingress_runtime.prepare_structured_ingress_sdk",
+                    side_effect=change_shared_schema,
+                ),
+            ):
+                adapter.invoke_structured.reset_mock()
+                decision = await sc.try_structured_classification(
+                    pool, mcp_server=server, prompt=prompt, include_bug_report=False
+                )
+                assert decision is not None and adapter.invoke_structured.await_count == 1
+                assert pool.structured[7] == snapshot_digest
+                received = adapter.invoke_structured.call_args.kwargs["tools"]
+                assert content_digest({"tools": received}) == snapshot_digest
+                assert received[0] is not sc.ROUTE_TO_BUTLER_TOOL
+        finally:
+            sc.ROUTE_TO_BUTLER_TOOL.clear()
+            sc.ROUTE_TO_BUTLER_TOOL.update(original_tool)
+        assert sc.ROUTE_TO_BUTLER_TOOL == original_tool
         # A completed failed SDK Task retains its actual exception/frames.
         # The real helper preserves primary identity and grants no SDK end.
         sdk_input = await reserve_structured_ingress_input(
