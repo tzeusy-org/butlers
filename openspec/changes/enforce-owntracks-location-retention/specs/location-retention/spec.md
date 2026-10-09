@@ -258,6 +258,8 @@ and cancellation semantics. Healthy source-owned copies SHALL retain their
 separate committed terminal readback. Logs, routed/runtime results and other
 descendants SHALL still require their own complete original disposal evidence.
 
+The actual Switchboard classifier Spawner SHALL reserve its runtime input from the original live constructor-owned ingress processing generation before copied prompt processing. The pre-context intent and immutable own-schema ingress/runtime relation SHALL commit together under ingress-control-first locks and require separate original source/body/session/prompt readback. Accepted request IDs, caller prompts and REQUEST attribution SHALL NOT mint that relation. The same session writer SHALL compare the original frozen classifier prompt before admission. Every captured runtime descendant SHALL participate in the source census until its distinct unchanged full context disposition and current reduced session/system/provenance are observed. An ended processing Task or context SHALL NOT proxy disposal; missing ancestry, changed body, unknown COMMIT, independent classifier instructions/history/Memory, routed or unclassified descendants SHALL remain held while their complete lawful owning disposition is required. No runtime relation SHALL be backfilled from a current session or source label.
+
 ID: REQ-location-retention-005
 Source: bu-s11n0s.7 original nonresurrection non-goal and S2; about/heart-and-soul/security.md Sensitive Data Categories; openspec/specs/connector-filtered-events/spec.md Full Payload Shape and Replay lineage and event payload age independently; proposed source-protocol P5
 Scope: v1-mandatory

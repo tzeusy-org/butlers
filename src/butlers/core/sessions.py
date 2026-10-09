@@ -403,6 +403,10 @@ async def session_create(
     elif runtime_context is not None:
         async with pool.acquire() as writer:
             async with writer.transaction():
+                if runtime_context.ingress_input is not None:
+                    from butlers.core.location_ingress_copies import lock_ingress_census
+
+                    await lock_ingress_census(writer)
                 await runtime_context.runtime.lock_domain(writer)
                 session_id = await insert_session(writer)
                 await bind_context_session(writer, pool, session_id, sanitized_prompt)

@@ -2377,7 +2377,7 @@ class Spawner:
 
             from butlers.chronicler.location_memory_context import begin_runtime_context
 
-            context_lifetime = await begin_runtime_context(self._pool, self)
+            context_lifetime = await begin_runtime_context(self._pool, self, prompt=final_prompt)
             memory_ctx: str | None = None
             memory_enabled = _memory_module_enabled(self._config)
             if memory_enabled:

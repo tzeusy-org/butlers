@@ -3540,6 +3540,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_receiving_task_disposition_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
+    await _assert_native_ingress_runtime_values()
 
 
 @pytest.mark.asyncio
@@ -9681,6 +9682,59 @@ async def _assert_native_ingress_census_and_actual_task_end():
     conn.rows = [complete, child]
     await require_ingress_closed(conn, request, "canonical-key", stored)
 
+    # A processing Task end does not proxy disposal of its configured
+    # classifier runtime/session. Plant the complete unchanged terminal
+    # companion, then independently break each original binding/readback.
+    import hashlib
+
+    runtime_copy = child | {
+        "copy_kind": 3,
+        "runtime_generation": uuid4(),
+        "runtime_request": request,
+        "runtime_source_digest": content_digest(stored),
+        "processing_digest": b"e" * 32,
+        "runtime_input_digest": b"e" * 32,
+        "runtime_session": request,
+        "bound_runtime_session": request,
+        "runtime_prompt_digest": b"p" * 32,
+        "bound_runtime_prompt": b"p" * 32,
+        "runtime_disposition": uuid4(),
+        "runtime_current_prompt": "[Location input forgotten]",
+        "runtime_current_result": "[Location output forgotten]",
+        "runtime_current_calls": [],
+        "runtime_current_error": None,
+        "runtime_current_system": "Synthetic preserved independent instructions",
+        "runtime_current_provenance": {"synthetic": "independent provenance"},
+        "runtime_reduced_system": hashlib.sha256(
+            b"Synthetic preserved independent instructions"
+        ).digest(),
+        "runtime_reduced_provenance": content_digest({"synthetic": "independent provenance"}),
+    }
+    conn.rows = [complete, runtime_copy]
+    await require_ingress_closed(conn, request, "canonical-key", stored)
+    for field, altered in (
+        ("copy_kind", 2),
+        ("runtime_request", uuid4()),
+        ("runtime_source_digest", b"x" * 32),
+        ("runtime_input_digest", b"x" * 32),
+        ("bound_runtime_session", None),
+        ("bound_runtime_prompt", None),
+        ("runtime_disposition", None),
+        ("runtime_current_prompt", "Synthetic retained precise input"),
+        ("runtime_current_result", "Synthetic retained precise output"),
+        ("runtime_current_calls", [{"synthetic": "retained call"}]),
+        ("runtime_current_error", "Synthetic retained diagnostic"),
+        ("runtime_current_system", "Synthetic refilled composed prompt"),
+        ("runtime_current_provenance", {"synthetic": "changed"}),
+        ("runtime_reduced_system", None),
+        ("runtime_reduced_provenance", None),
+    ):
+        conn.rows = [complete, runtime_copy | {field: altered}]
+        with pytest.raises(CopyFloorUnavailable, match="ingress_runtime_cohort_pending"):
+            await require_ingress_closed(conn, request, "canonical-key", stored)
+    conn.rows = [complete, runtime_copy]
+    await require_ingress_closed(conn, request, "canonical-key", stored)
+
     # No fake pool is claimed as a native constructor. Exercise the actual
     # observer method with a source Task whose cancellation unwind is held.
     runtime = object.__new__(SwitchboardInputCopies)
@@ -11060,3 +11114,241 @@ async def _assert_registered_direct_ingress_diagnostics(mcp):
             else:
                 assert precise in actual["error_detail"]
                 assert exceptional.called is (outcome == "error")
+
+
+async def _assert_native_ingress_runtime_values():
+    """Actual pre-context writer and active producer; metadata I/O doubles only."""
+    import asyncio
+    import copy
+    import hashlib
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_input_binding import _dispatchers, register_dispatch_runtime
+    from butlers.chronicler.location_memory_context import (
+        _context_writers,
+        begin_runtime_context,
+        bind_context_session,
+        capture_context_prompt,
+        current_runtime_context,
+        end_runtime_context,
+        register_context_writer,
+        verify_context_session,
+    )
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.core.location_copy_retention import CopyFloorUnavailable
+    from butlers.core.location_ingress_copies import _Input, _processing_scope, _writers
+    from butlers.core.location_ingress_runtime import current_ingress_runtime_input
+
+    canonical = {"raw_payload": {"synthetic": "native raw input"}, "normalized_text": "input"}
+    prompt = "Synthetic full classifier prompt with independent instructions"
+    request, parent = uuid4(), uuid4()
+
+    class Pool:
+        source = None
+        reserved = None
+        intent = None
+        binding = None
+        session = None
+        floor = False
+        unknown = False
+        fault = False
+        trace = []
+        transaction_active = False
+
+        def is_closing(self):
+            return False
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("own acquisition")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            original = copy.deepcopy((self.reserved, self.intent, self.binding))
+            self.transaction_active = True
+            try:
+                yield
+            except BaseException:
+                self.reserved, self.intent, self.binding = original
+                raise
+            finally:
+                self.transaction_active = False
+                self.trace.append("transaction ended")
+
+        async def fetchrow(self, sql, *args):
+            if sql == "SELECT current_schema(),current_user":
+                return dict(schema="switchboard", role="butler_switchboard_rw")
+            if "FROM location_ingress_input_births " in sql:
+                assert "LEFT JOIN location_ingress_input_claims" in sql
+                assert "LEFT JOIN location_ingress_input_parents" in sql
+                assert args == (child.generation,)
+                return self.source
+            if "FROM message_inbox " in sql:
+                assert "FOR SHARE" in sql and args == (request,)
+                return canonical
+            if "FROM location_ingress_runtime_inputs r " in sql:
+                assert not self.transaction_active and args == (self.intent[0],)
+                self.trace.append("independent committed ancestry readback")
+                if self.unknown:
+                    return None
+                fields = (
+                    "input_generation",
+                    "copy_generation",
+                    "receiving_session",
+                    "request_id",
+                    "stored_digest",
+                    "envelope_digest",
+                    "prompt_digest",
+                )
+                row = dict(zip(fields, self.reserved))
+                return row | {
+                    "original_request": request,
+                    "original_digest": content_digest(canonical),
+                    "reserved_session": self.intent[1],
+                }
+            assert "SELECT prompt,effective_system_prompt FROM sessions" in sql
+            return self.session
+
+        async def fetchval(self, sql, *args):
+            if "FROM location_retention_source_floors" in sql:
+                return self.floor
+            if "FROM location_runtime_context_intents" in sql:
+                assert not self.transaction_active
+                return self.intent[1]
+            if "FROM location_runtime_context_ended" in sql:
+                return self.ended[1]
+            if "FROM location_ingress_runtime_inputs " in sql:
+                return (
+                    self.reserved[0] == args[0]
+                    and self.reserved[2] == args[1]
+                    and self.reserved[6] == args[2]
+                )
+            assert "FROM location_runtime_context_bindings" in sql
+            return self.binding is not None
+
+        async def execute(self, sql, *args):
+            assert self.transaction_active
+            if "pg_advisory_xact_lock" in sql:
+                self.trace.append("ingress control first")
+            elif "INSERT INTO location_runtime_context_intents" in sql:
+                self.intent = args
+                self.trace.append("runtime intent")
+            elif "INSERT INTO location_ingress_runtime_inputs" in sql:
+                self.reserved = args
+                self.trace.append("raw descendant")
+                if self.fault:
+                    raise RuntimeError("synthetic same-writer descendant failure")
+            elif "INSERT INTO location_runtime_context_bindings" in sql:
+                self.binding = args
+            else:
+                assert "INSERT INTO location_runtime_context_ended" in sql
+                self.ended = args
+
+    pool = Pool()
+    child = _Input(uuid4(), uuid4(), b"s" * 32, b"e" * 32, asyncio.current_task(), uuid4(), 3)
+    owner = SimpleNamespace(pool=pool, active=True, incarnation=uuid4(), _inputs={id(child): child})
+    source = dict(
+        request_id=request,
+        stored_digest=content_digest(canonical),
+        envelope_digest=child.envelope_digest,
+        handler_generation=child.handler,
+        incarnation=owner.incarnation,
+        parent_generation=parent,
+        parent_request=request,
+        parent_digest=content_digest(canonical),
+    )
+    pool.source = source
+
+    async def lock_domain(conn):
+        assert conn is pool and conn.transaction_active
+        pool.trace.append("catalog lock")
+
+    runtime = SimpleNamespace(domain=pool, active=True, lock_domain=lock_domain)
+    spawner = SimpleNamespace(_pool=pool)
+    register_dispatch_runtime(spawner, object)
+    register_context_writer(runtime)
+    _writers[pool] = owner
+    token = _processing_scope.set((owner, child))
+    try:
+        assert current_ingress_runtime_input(pool) == (owner, child)
+        for bad in (
+            None,
+            source | {"parent_generation": None},
+            source | {"parent_digest": b"x" * 32},
+        ):
+            pool.source = bad
+            with pytest.raises(CopyFloorUnavailable, match="ingress_runtime_ancestry_unknown"):
+                await begin_runtime_context(pool, spawner, prompt=prompt)
+            assert pool.reserved is None and pool.intent is None
+        pool.source = source
+        pool.floor = True
+        with pytest.raises(CopyFloorUnavailable, match="ingress_runtime_source_disposed"):
+            await begin_runtime_context(pool, spawner, prompt=prompt)
+        assert pool.reserved is None and pool.intent is None
+        pool.floor = False
+        pool.fault = True
+        with pytest.raises(RuntimeError, match="synthetic same-writer descendant failure"):
+            await begin_runtime_context(pool, spawner, prompt=prompt)
+        assert pool.reserved is None and pool.intent is None
+        pool.fault = False
+        pool.unknown = True
+        with pytest.raises(CopyFloorUnavailable, match="ingress_runtime_commit_unknown"):
+            await begin_runtime_context(pool, spawner, prompt=prompt)
+        assert pool.reserved is not None and current_runtime_context() is None
+        pool.reserved = pool.intent = None  # Model a separate healthy attempt, no SQL credit.
+        pool.unknown = False
+        pool.trace.clear()
+        handle = await begin_runtime_context(pool, spawner, prompt=prompt)
+        context = handle[0]
+        try:
+            assert context.ingress_input == (owner, child)
+            assert context.generated_prompt and not context.known_context
+            assert pool.reserved[6] == hashlib.sha256(prompt.encode()).digest()
+            assert pool.trace.index("ingress control first") < pool.trace.index("catalog lock")
+            assert pool.trace.index("runtime intent") < pool.trace.index("raw descendant")
+            assert pool.trace.index("transaction ended") < pool.trace.index(
+                "independent committed ancestry readback"
+            )
+            capture_context_prompt(None, "Synthetic independent system")
+            pool.session = dict(
+                prompt=prompt, effective_system_prompt="Synthetic independent system"
+            )
+            async with pool.transaction():
+                await bind_context_session(pool, pool, context.session, prompt)
+            await verify_context_session(pool, context.session)
+            assert (
+                pool.binding[6] is False
+            )  # Captured ancestry does not assert exclusive ownership.
+            pool.session["prompt"] = prompt + " changed"
+            with pytest.raises(
+                PolicyUnavailableError, match="Native ingress composed input differs"
+            ):
+                async with pool.transaction():
+                    await bind_context_session(pool, pool, context.session, pool.session["prompt"])
+            assert pool.binding[6] is False
+        finally:
+            await end_runtime_context(handle)
+        assert current_runtime_context() is None
+        for change in ("registry", "task", "kind", "pool"):
+            original_task, original_kind = child.task, child.kind
+            if change == "registry":
+                _writers.pop(pool)
+            elif change == "task":
+                child.task = None
+            elif change == "kind":
+                child.kind = 2
+            try:
+                with pytest.raises(CopyFloorUnavailable, match="ingress_runtime_producer_differs"):
+                    current_ingress_runtime_input(object() if change == "pool" else pool)
+            finally:
+                _writers[pool] = owner
+                child.task, child.kind = original_task, original_kind
+    finally:
+        _processing_scope.reset(token)
+        _writers.pop(pool, None)
+        _context_writers.pop(pool, None)
+        _dispatchers.pop(pool, None)
+    assert current_ingress_runtime_input(pool) is None

@@ -1661,3 +1661,40 @@ Preventing new diagnostic copies does not dispose old logs, exception objects or
 runtime descendants. In particular the prior private unresolved-error marker is
 still a hold, never a terminal receipt or complete erasure claim. Full lawful
 log/error/routed/runtime/mixed closure remains active SOURCE work and UNMET.
+
+
+The raw classifier continuation captures the actual live ingress kind3 processing
+producer in the configured Spawner pre-context boundary. A new immutable owning
+`location_ingress_runtime_inputs` relation freezes its original claimed
+copy/handler/incarnation and canonical accepted body, actual runtime input/session
+and full classifier prompt digest on the SAME pre-context transaction. The ingress
+control lock precedes the configured catalog/context lock. Independent committed
+readback precedes copied prompt processing; the actual session writer rechecks the
+same original prompt. This local content-free history is installed and validated
+by the still-private core264 with its ordinary backup path and permanent-history
+trigger. No existing role, grant, principal or foreign namespace changes.
+
+The original full source census now includes every recorded runtime and requires
+its separate disposition plus unchanged current reduced session, system and
+provenance. Processing/context end cannot substitute. Captured raw classifier
+ancestry deliberately does not mark arbitrary history, routing instructions or
+Memory inputs exclusive. Full lawful classifier/Memory/routed/log/error/mixed
+reduction and independent content preservation remain mandatory active SOURCE
+work. Structured adapter invocation and actual routed target admission need their
+own further producer bindings; this relation does not attest them or model/provider
+erasure. Missing configured constructor or original ancestry fails before new
+runtime processing rather than inventing a public selector or REQUEST authority.
+
+Two existing software owners exercise the actual pre-context writer/session
+binding and source census with explicit metadata doubles, including missing or
+mismatched ancestry, disposed source, same-writer fault rollback, unknown committed
+readback, changed composed prompt, scope/Task/registry mismatch and refilled or
+unfinished runtime companions. The existing migrated TCP species authors an
+actual core-only configured Pool/constructor and registered ingress processing
+positive, actual INSERT fault/separate acquisition/restored reservation, actual
+session writer and source hold after original ingress lifetimes end. Its classifier
+body is synthetic and no model/provider or configured Memory is invoked. This new
+SQL extension remains UNRUN until exact-head hosted execution. All four original
+outcomes, all36 native scenarios and full all-holder/registered/role/browser/recovery
+acceptance remain UNMET; the published de0d and prior db730 receipts qualify only
+their separately dated scopes.

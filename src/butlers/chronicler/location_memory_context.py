@@ -34,6 +34,7 @@ class _RuntimeContext:
     prompt_digest: bytes | None = None
     admitted: bool = False
     active: bool = True
+    ingress_input: tuple | None = None
 
 
 _current_runtime_context: ContextVar[_RuntimeContext | None] = ContextVar(
@@ -50,16 +51,20 @@ def current_runtime_context(pool: Any = None):
     return binding
 
 
-async def begin_runtime_context(pool: Any, spawner: Any):
+async def begin_runtime_context(pool: Any, spawner: Any, *, prompt: str | None = None):
     from butlers.chronicler.location_input_binding import (
         _current_dispatch_input,
         registered_dispatcher,
     )
+    from butlers.core.location_ingress_runtime import current_ingress_runtime_input
 
+    ingress = current_ingress_runtime_input(pool)
     runtime = context_writer(pool)
     if runtime is not None and not runtime.active:
         raise PolicyUnavailableError("Native context constructor lifetime ended")
     if runtime is None:
+        if ingress is not None:
+            raise PolicyUnavailableError("Native ingress context constructor is unavailable")
         return None
     if not registered_dispatcher(pool, spawner):
         raise PolicyUnavailableError("Native context constructor differs")
@@ -80,6 +85,12 @@ async def begin_runtime_context(pool: Any, spawner: Any):
         or (scheduled is not None)
         or (returned is not None),
     )
+    binding.ingress_input = ingress
+    if ingress is not None:
+        # Capture the real descendant without declaring an arbitrary
+        # classifier prompt, memory or routing context exclusively disposable.
+        binding.generated_prompt = True
+        binding.known_context = False
     if returned is not None and not returned.exclusive:
         binding.known_context = False
     if scheduled is not None and not scheduled.exclusive:
@@ -92,6 +103,10 @@ async def begin_runtime_context(pool: Any, spawner: Any):
         server.contexts.append((runtime, binding.generation))
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if ingress is not None:
+                from butlers.core.location_ingress_copies import lock_ingress_census
+
+                await lock_ingress_census(conn)
             await runtime.lock_domain(conn)
             await conn.execute(
                 "INSERT INTO location_runtime_context_intents "
@@ -100,6 +115,10 @@ async def begin_runtime_context(pool: Any, spawner: Any):
                 session,
                 binding.server_request,
             )
+            if ingress is not None:
+                from butlers.core.location_ingress_runtime import reserve_ingress_runtime
+
+                await reserve_ingress_runtime(conn, ingress, binding, prompt)
             if scheduled is not None:
                 await conn.execute(
                     "INSERT INTO location_runtime_context_question_intents "
@@ -143,6 +162,10 @@ async def begin_runtime_context(pool: Any, spawner: Any):
         != returned.generation
     ):
         raise PolicyUnavailableError("Committed answer pre-context reservation is unknown")
+    if ingress is not None:
+        from butlers.core.location_ingress_runtime import verify_ingress_runtime
+
+        await verify_ingress_runtime(pool, ingress, binding, prompt)
     return binding, _current_runtime_context.set(binding)
 
 
@@ -190,6 +213,18 @@ async def bind_context_session(conn: Any, pool: Any, session: UUID, prompt: str)
     ):
         raise PolicyUnavailableError("Native runtime composed body changed")
     binding.prompt_digest = hashlib.sha256(prompt.encode()).digest()
+    if binding.ingress_input is not None:
+        if (
+            await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_ingress_runtime_inputs "
+                "WHERE input_generation=$1 AND receiving_session=$2 AND prompt_digest=$3)",
+                binding.generation,
+                session,
+                binding.prompt_digest,
+            )
+            is not True
+        ):
+            raise PolicyUnavailableError("Native ingress composed input differs")
     for loan, digest in binding.loans:
         if (
             await conn.fetchval(

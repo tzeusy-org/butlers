@@ -9,6 +9,7 @@ Interrupted/unbound history remains unavailable until its own proof closes.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -1040,7 +1041,19 @@ async def require_ingress_closed(conn: Any, request_id: UUID, key: str, stored: 
         "a.request_id,a.stored_digest,b.copy_kind,p.parent_generation,"
         "pb.copy_generation AS original_parent,pa.request_id AS parent_request,"
         "pa.stored_digest AS parent_digest,e.copy_generation AS ended,"
-        "s.server_generation AS server_ended "
+        "s.server_generation AS server_ended,"
+        "r.input_generation AS runtime_generation,r.request_id AS runtime_request,"
+        "b.envelope_digest AS processing_digest,r.envelope_digest AS runtime_input_digest,"
+        "r.stored_digest AS runtime_source_digest,r.prompt_digest AS runtime_prompt_digest,"
+        "r.receiving_session AS runtime_session,"
+        "rb.receiving_session AS bound_runtime_session,rb.prompt_digest AS bound_runtime_prompt,"
+        "rd.receipt_id AS runtime_disposition,"
+        "rs.prompt AS runtime_current_prompt,rs.result AS runtime_current_result,"
+        "rs.tool_calls AS runtime_current_calls,rs.error AS runtime_current_error,"
+        "rs.effective_system_prompt AS runtime_current_system,"
+        "rs.prompt_provenance AS runtime_current_provenance,"
+        "rd.reduced_system_digest AS runtime_reduced_system,"
+        "rd.reduced_provenance_digest AS runtime_reduced_provenance "
         "FROM location_ingress_input_births b "
         "LEFT JOIN location_ingress_input_parents p USING(copy_generation) "
         "LEFT JOIN location_ingress_input_births pb ON pb.copy_generation=p.parent_generation "
@@ -1049,6 +1062,10 @@ async def require_ingress_closed(conn: Any, request_id: UUID, key: str, stored: 
         "LEFT JOIN location_ingress_accepted_inputs a ON a.copy_generation=b.copy_generation "
         "LEFT JOIN location_ingress_input_ends e ON e.copy_generation=b.copy_generation "
         "LEFT JOIN location_ingress_server_ends s ON s.server_generation=b.server_generation "
+        "LEFT JOIN location_ingress_runtime_inputs r ON r.copy_generation=b.copy_generation "
+        "LEFT JOIN location_runtime_context_bindings rb USING(input_generation) "
+        "LEFT JOIN location_runtime_context_dispositions rd USING(input_generation) "
+        "LEFT JOIN sessions rs ON rs.id=r.receiving_session "
         "WHERE b.dedupe_digest=$1 ORDER BY b.copy_generation",
         logical_digest(key),
     )
@@ -1084,3 +1101,25 @@ async def require_ingress_closed(conn: Any, request_id: UUID, key: str, stored: 
         for row in rows
     ):
         raise CopyFloorUnavailable("ingress_input_cohort_pending")
+    for row in rows:
+        if row.get("runtime_generation") is not None and (
+            row["copy_kind"] != 3
+            or row["runtime_request"] != request_id
+            or row["runtime_source_digest"] != digest
+            or row["runtime_input_digest"] != row["processing_digest"]
+            or row["runtime_session"] != row["bound_runtime_session"]
+            or row["runtime_prompt_digest"] != row["bound_runtime_prompt"]
+            or row["runtime_disposition"] is None
+            or row["runtime_current_prompt"] != "[Location input forgotten]"
+            or row["runtime_current_result"] != "[Location output forgotten]"
+            or row["runtime_current_calls"] != []
+            or row["runtime_current_error"] is not None
+            or not isinstance(row["runtime_current_system"], str)
+            or row["runtime_reduced_system"] is None
+            or row["runtime_reduced_provenance"] is None
+            or hashlib.sha256(row["runtime_current_system"].encode()).digest()
+            != row["runtime_reduced_system"]
+            or content_digest(row["runtime_current_provenance"])
+            != row["runtime_reduced_provenance"]
+        ):
+            raise CopyFloorUnavailable("ingress_runtime_cohort_pending")

@@ -109,6 +109,7 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
     receiving = SwitchboardInputCopies(switchboard)
     entered, release = asyncio.Event(), asyncio.Event()
     actual_refs = []
+    runtime_probe = [None]
 
     async def owning_process(ref):
         # This is the actual configured buffer consumer lifetime; it proves
@@ -117,6 +118,8 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
         assert ref.message_text and ref.source["provider"] == "owntracks"
         entered.set()
         await release.wait()
+        if runtime_probe[0] is not None:
+            await runtime_probe[0](ref)
 
     buffer = DurableBuffer(
         BufferConfig(worker_count=1, scanner_interval_s=3600, scanner_grace_s=0),
@@ -530,6 +533,9 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                     assert sse_input["stored_digest"] == content_digest(dict(sse_inbox))
                 await _assert_native_no_dispatch_disposal(switchboard, point, "skip")
                 await _assert_native_no_dispatch_disposal(switchboard, sse_point, "metadata_only")
+                await _assert_native_ingress_runtime_reservation(
+                    switchboard_url, switchboard, runtime_probe
+                )
     finally:
         if connector is not None:
             await connector._shutdown()
@@ -809,3 +815,233 @@ async def _assert_native_no_dispatch_disposal(pool, point, terminal):
                 == receipt["receipt_id"]
             )
         assert await copies.forget_skipped_source(pool, decision) == receipt
+
+
+async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_probe):
+    """Actual TCP/processing and core-only constructor; classifier body is synthetic.
+
+    No provider/model invocation, configured Memory or runtime disposal is
+    credited. The copied prompt relation remains a distinct held descendant.
+    """
+    import hashlib
+    from datetime import UTC, datetime
+    from pathlib import Path
+    from unittest.mock import patch
+    from uuid import UUID
+
+    import asyncpg
+    import pytest
+    from fastmcp import Client
+
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_input_binding import _dispatchers, register_dispatch_runtime
+    from butlers.chronicler.location_memory_context import (
+        begin_runtime_context,
+        capture_context_prompt,
+        end_runtime_context,
+    )
+    from butlers.config import ButlerConfig
+    from butlers.connectors.owntracks import build_location_envelope
+    from butlers.core.location_copy_retention import CopyFloorUnavailable
+    from butlers.core.location_ingress_copies import _processing_scope, require_ingress_closed
+    from butlers.core.location_ingress_runtime import reserve_ingress_runtime
+    from butlers.core.sessions import session_complete, session_create
+    from butlers.core.spawner import Spawner, SpawnerResult
+    from butlers.location_retention import content_digest
+
+    runtime = await NativeDelegationRuntime.create(
+        domain=pool, name="switchboard", schema="switchboard", registry=None
+    )
+    spawner = Spawner(
+        ButlerConfig(name="switchboard", port=41101, modules={}),
+        Path(__file__).parents[2] / "roster/switchboard",
+        pool=pool,
+        runtime=object(),  # No external model/runtime is invoked by this SQL species.
+    )
+    register_dispatch_runtime(spawner, SpawnerResult)
+    done = asyncio.Event()
+    errors = []
+    reached = []
+    completed = []
+    prompt, system = "Synthetic full classifier input", "Synthetic independent classifier system"
+
+    async def process(ref):
+        try:
+            request_id = UUID(str(ref.request_id))
+            captured = _processing_scope.get()
+            assert captured is not None and captured[0].pool is pool
+            child = captured[1]
+            assert child.kind == 3 and child.task is asyncio.current_task()
+
+            async def fault(conn, owned, context, actual_prompt):
+                assert isinstance(conn, asyncpg.pool.PoolConnectionProxy)
+                assert conn.is_in_transaction() and owned == captured
+                await reserve_ingress_runtime(conn, owned, context, actual_prompt)
+                assert await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_runtime_inputs "
+                    "WHERE input_generation=$1 AND copy_generation=$2)",
+                    context.generation,
+                    child.generation,
+                )
+                reached.append(context.generation)
+                raise asyncpg.RaiseError("Synthetic ingress runtime reservation fault")
+
+            with patch("butlers.core.location_ingress_runtime.reserve_ingress_runtime", new=fault):
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Synthetic ingress runtime reservation fault"
+                ):
+                    await begin_runtime_context(pool, spawner, prompt=prompt)
+            assert len(reached) == 1
+            async with pool.acquire() as observed:
+                assert not await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_runtime_context_intents "
+                    "WHERE input_generation=$1)",
+                    reached[0],
+                )
+                assert not await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_runtime_inputs "
+                    "WHERE input_generation=$1)",
+                    reached[0],
+                )
+
+            handle = await begin_runtime_context(pool, spawner, prompt=prompt)
+            binding = handle[0]
+            try:
+                assert binding.ingress_input == captured
+                assert binding.generated_prompt and not binding.known_context
+                capture_context_prompt(None, system)
+                session = await session_create(
+                    pool,
+                    prompt,
+                    "classification",
+                    request_id=request_id,
+                    ingestion_event_id=request_id,
+                    effective_system_prompt=system,
+                    prompt_digest=hashlib.sha256(system.encode()).hexdigest(),
+                    prompt_provenance=[],
+                )
+                assert session == binding.session
+                await session_complete(pool, session, "Synthetic classifier result", [], 1, True)
+            finally:
+                await end_runtime_context(handle)
+            async with pool.acquire() as observed:
+                frozen = await observed.fetchrow(
+                    "SELECT r.*,b.prompt_digest AS composed_prompt,b.exclusive_input,"
+                    "e.receipt_id AS context_ended FROM location_ingress_runtime_inputs r "
+                    "LEFT JOIN location_runtime_context_bindings b USING(input_generation) "
+                    "LEFT JOIN location_runtime_context_ended e USING(input_generation) "
+                    "WHERE r.input_generation=$1",
+                    binding.generation,
+                )
+                canonical = await observed.fetchrow(
+                    "SELECT raw_payload,normalized_text,request_context FROM message_inbox WHERE id=$1",
+                    request_id,
+                )
+                assert frozen["copy_generation"] == child.generation
+                assert frozen["request_id"] == request_id
+                assert frozen["receiving_session"] == session
+                assert frozen["envelope_digest"] == child.envelope_digest
+                assert frozen["prompt_digest"] == hashlib.sha256(prompt.encode()).digest()
+                assert frozen["composed_prompt"] == frozen["prompt_digest"]
+                assert frozen["stored_digest"] == content_digest(
+                    {
+                        "raw_payload": canonical["raw_payload"],
+                        "normalized_text": canonical["normalized_text"],
+                    }
+                )
+                assert frozen["exclusive_input"] is False and frozen["context_ended"] is not None
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Location source floors are permanent"
+                ):
+                    async with observed.transaction():
+                        await observed.execute(
+                            "UPDATE location_ingress_runtime_inputs SET prompt_digest=$2 "
+                            "WHERE input_generation=$1",
+                            binding.generation,
+                            b"x" * 32,
+                        )
+                assert (
+                    await observed.fetchval(
+                        "SELECT prompt_digest FROM location_ingress_runtime_inputs "
+                        "WHERE input_generation=$1",
+                        binding.generation,
+                    )
+                    == frozen["prompt_digest"]
+                )
+                with pytest.raises(asyncpg.ForeignKeyViolationError):
+                    async with observed.transaction():
+                        await observed.execute(
+                            "INSERT INTO location_ingress_runtime_inputs "
+                            "(input_generation,copy_generation,receiving_session,request_id,"
+                            "stored_digest,envelope_digest,prompt_digest) "
+                            "VALUES($1,$2,$3,$4,$5,$6,$7)",
+                            uuid4(),
+                            uuid4(),
+                            uuid4(),
+                            request_id,
+                            frozen["stored_digest"],
+                            frozen["envelope_digest"],
+                            frozen["prompt_digest"],
+                        )
+                completed.append((request_id, session, canonical["request_context"]["dedupe_key"]))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            done.set()
+
+    runtime_probe[0] = process
+    raw = dict(
+        _type="location", tid="RC", tst=int(datetime.now(UTC).timestamp()), lat=1.2, lon=103.6
+    )
+    envelope = build_location_envelope(
+        raw, "owntracks:runtime-" + str(uuid4()), datetime.now(UTC).isoformat(), "full"
+    )
+    try:
+        async with Client(endpoint + "/mcp") as caller:
+            result = await caller.call_tool("ingest", envelope)
+            assert result.data["status"] == "accepted"
+        async with asyncio.timeout(10):
+            await done.wait()
+        if errors:
+            raise errors[0]
+        assert len(completed) == 1
+        request_id, session, key = completed[0]
+        from butlers.core.location_ingress_copies import _writers
+
+        async with asyncio.timeout(10):
+            while True:
+                await _writers[pool].reconcile_observed_ends()
+                async with pool.acquire() as observed:
+                    canonical = await observed.fetchrow(
+                        "SELECT raw_payload,normalized_text FROM message_inbox WHERE id=$1",
+                        request_id,
+                    )
+                    try:
+                        async with observed.transaction():
+                            await require_ingress_closed(observed, request_id, key, canonical)
+                    except CopyFloorUnavailable as exc:
+                        if str(exc) == "ingress_runtime_cohort_pending":
+                            break  # Every original ingress end is reached; runtime still survives.
+                        if str(exc) not in {
+                            "ingress_input_cohort_pending",
+                            "ingress_server_cohort_pending",
+                        }:
+                            raise
+                    else:
+                        raise AssertionError("Stored classifier runtime must remain held")
+                await asyncio.sleep(0.01)
+        async with pool.acquire() as observed:
+            assert (
+                await observed.fetchval("SELECT prompt FROM sessions WHERE id=$1", session)
+                == prompt
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_runtime_context_dispositions d "
+                "JOIN location_ingress_runtime_inputs r USING(input_generation) "
+                "WHERE r.receiving_session=$1)",
+                session,
+            )
+    finally:
+        runtime_probe[0] = None
+        _dispatchers.pop(pool, None)
+        runtime.close()

@@ -46,6 +46,16 @@ LOCAL_COLUMNS = {
         ("copy_generation", "uuid", True),
         ("ended_at", "timestamp with time zone", True),
     ],
+    "location_ingress_runtime_inputs": [
+        ("input_generation", "uuid", True),
+        ("copy_generation", "uuid", True),
+        ("receiving_session", "uuid", True),
+        ("request_id", "uuid", True),
+        ("stored_digest", "bytea", True),
+        ("envelope_digest", "bytea", True),
+        ("prompt_digest", "bytea", True),
+        ("committed_at", "timestamp with time zone", True),
+    ],
 }
 LOCAL_TABLES = tuple(LOCAL_COLUMNS)
 LOCAL_CONSTRAINTS = {
@@ -89,6 +99,14 @@ LOCAL_CONSTRAINTS = {
     "location_ingress_input_ends": {
         "PRIMARY KEY (copy_generation)",
         "FOREIGN KEY (copy_generation) REFERENCES location_ingress_input_claims(copy_generation)",
+    },
+    "location_ingress_runtime_inputs": {
+        "PRIMARY KEY (input_generation)",
+        "UNIQUE (receiving_session)",
+        "FOREIGN KEY (copy_generation) REFERENCES location_ingress_input_claims(copy_generation)",
+        "CHECK ((octet_length(stored_digest) = 32))",
+        "CHECK ((octet_length(envelope_digest) = 32))",
+        "CHECK ((octet_length(prompt_digest) = 32))",
     },
 }
 
@@ -134,4 +152,12 @@ def local_schema_sql() -> str:
         CREATE TABLE IF NOT EXISTS location_ingress_input_ends (
           copy_generation UUID PRIMARY KEY REFERENCES location_ingress_input_claims,
           ended_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
+        CREATE TABLE IF NOT EXISTS location_ingress_runtime_inputs (
+          input_generation UUID PRIMARY KEY,
+          copy_generation UUID NOT NULL REFERENCES location_ingress_input_claims,
+          receiving_session UUID NOT NULL UNIQUE,request_id UUID NOT NULL,
+          stored_digest BYTEA NOT NULL CHECK(octet_length(stored_digest)=32),
+          envelope_digest BYTEA NOT NULL CHECK(octet_length(envelope_digest)=32),
+          prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
     """
