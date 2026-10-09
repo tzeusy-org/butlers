@@ -245,6 +245,8 @@ def duration_order(
                 raise ValueError("phase")
             if phases["setup"]["outcome"] == "passed" and "call" not in phases:
                 raise ValueError("missing call")
+            if phases["setup"]["outcome"] == "skipped" and "call" in phases:
+                raise ValueError("call after skipped setup")
             for phase, observed in phases.items():
                 if phase not in {"setup", "call", "teardown"}:
                     raise ValueError("phase")
