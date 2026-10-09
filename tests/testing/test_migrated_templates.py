@@ -12,7 +12,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from urllib.parse import urlparse
 
 import pytest
@@ -215,6 +215,8 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
             child.wait(timeout=5)
         cache.close()
 
+    monkeypatch.setattr(migrated_templates.subprocess, "Popen", original_popen)
+
     # SQLAlchemy renders bound parameters when an exception escapes. A real
     # typed synthetic failure must become a closed category at the public API;
     # no credentials, SQL operands or formatted exception enter a receipt.
@@ -381,6 +383,93 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
         ":migration:3:database:42701:rel_002"
     )
     assert "private" not in status_file.read_text()
+
+    # Read the actual owning fixture's requested stages, then execute the real
+    # builder and rel_037 upgrade through an explicit software catalog. Separate
+    # version tables cannot make its fixed Relationship table migrate twice.
+    fixture = runpy.run_path(
+        str(migrated_templates._ROOT / "roster/relationship/tests/test_resolve_outbound_channel.py")
+    )["pool"].__wrapped__
+    captured = []
+
+    class SeedPool:
+        async def execute(self, *args):
+            return None
+
+    @asynccontextmanager
+    async def fixture_pool(container, *, stages, **kwargs):
+        captured.append(stages)
+        yield SeedPool()
+
+    async def read_fixture():
+        instance = fixture(object())
+        try:
+            await anext(instance)
+        finally:
+            await instance.aclose()
+
+    with monkeypatch.context() as patch:
+        patch.setitem(fixture.__globals__, "migrated_pool", fixture_pool)
+        asyncio.run(read_fixture())
+    assert len(captured) == 1
+    authority_migration = runpy.run_path(
+        str(
+            migrated_templates._ROOT
+            / "roster/relationship/migrations/037_fact_content_authority.py"
+        )
+    )
+    columns = set()
+    versions = set()
+
+    def apply_statement(statement):
+        # Only the real first ADD-COLUMN statement is modelled. Every actual
+        # statement still runs through op.execute; this is not PostgreSQL proof.
+        if statement == authority_migration["upgrade_statements"]()[0]:
+            if "content_authority" in columns:
+                raise ProgrammingError(
+                    "private statement", {"password": "private-value"}, DuplicateColumn()
+                )
+            columns.add("content_authority")
+
+    def apply_stage(url, chain, *, schema=None, revision=None):
+        if chain == "relationship" and schema not in versions:
+            authority_migration["upgrade"]()
+            versions.add(schema)
+
+    def build_stages(requested):
+        columns.clear()
+        versions.clear()
+        state = {}
+        payload = {
+            "admin_url": "postgresql://software",
+            "name": "software",
+            "role": "software",
+            "url": "postgresql://software",
+            "stages": [
+                {"chain": stage.chain, "schema": stage.schema, "revision": stage.revision}
+                for stage in requested
+            ],
+        }
+        with monkeypatch.context() as patch:
+            patch.setattr(migrated_templates, "_connection", build_connection)
+            patch.setattr(migration, "bootstrap_extensions", lambda *_: None)
+            patch.setattr(migration, "_bootstrap_migration_prerequisites", lambda *_: None)
+            patch.setattr(migration, "_upgrade_chain_to_revision", apply_stage)
+            patch.setattr(op, "execute", apply_statement)
+            migrated_templates._build(payload, state)
+        return state
+
+    build_stages(captured[0])
+    assert versions == {"relationship"} and columns == {"content_authority"}
+    duplicate_stages = (*captured[0][:2], MigrationStage("relationship"), *captured[0][2:])
+    with pytest.raises(ProgrammingError) as positioned:
+        build_stages(duplicate_stages)
+    receipt = migrated_templates._builder_failure(
+        positioned.value, {"phase": "migration", "stage": 3}
+    )
+    assert receipt["revision"] == "rel_037" and receipt["sqlstate"] == "42701"
+    build_stages(captured[0])
+    assert versions == {"relationship"} and columns == {"content_authority"}
 
     # Actual filesystem/Git inputs and finite ambient aliases bind the key;
     # these are software provenance controls, not a real server equivalence.

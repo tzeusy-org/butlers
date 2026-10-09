@@ -403,10 +403,10 @@ async def dunbar_pool(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as p:
         yield p
 
@@ -1672,10 +1672,10 @@ async def simple_pool(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as p:
         yield p
 

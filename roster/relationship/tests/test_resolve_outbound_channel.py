@@ -49,7 +49,6 @@ async def pool(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
@@ -74,13 +73,15 @@ async def pool(postgres_container):
 
 
 async def _new_contact(pool: asyncpg.Pool) -> tuple[uuid.UUID, uuid.UUID]:
-    """Create an entity + linked contact; return (contact_id, entity_id)."""
+    """Seed an entity and compatibility contact ID in the real bridge."""
     entity_id = await pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) "
         "VALUES ('Alice', 'person') RETURNING id"
     )
-    contact_id = await pool.fetchval(
-        "INSERT INTO public.contacts (name, entity_id) VALUES ('Alice', $1) RETURNING id",
+    contact_id = uuid.uuid4()
+    await pool.execute(
+        "INSERT INTO relationship.contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+        contact_id,
         entity_id,
     )
     return contact_id, entity_id

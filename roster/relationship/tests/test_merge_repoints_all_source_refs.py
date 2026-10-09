@@ -6,7 +6,7 @@ re-point EVERY reference to the source entity onto the survivor, not just
 Background: gifts / loans / interactions / contact-notes / life-events all live
 in the memory-module ``facts`` table keyed by ``entity_id`` (edge-facts point at
 the source via ``object_entity_id``), and linked CRM contacts live in
-``public.contacts`` keyed by ``entity_id``. The old handler moved only
+``relationship.contact_entity_map`` keyed by ``entity_id``. The old handler moved only
 ``relationship.entity_facts`` and tombstoned the source, so those narrative
 ``facts`` rows and linked contacts orphaned onto the merged-away (tombstone)
 entity and vanished from the surviving entity.
@@ -39,13 +39,12 @@ pytestmark = [
 
 @pytest.fixture
 async def pool(postgres_container):
-    """Real current chains for both the flat legacy CRM and qualified triple store."""
+    """Real current CRM/triple chain; legacy contact IDs are compatibility data."""
     async with migrated_pool(
         postgres_container,
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
         ),
         pool_schema="relationship",
@@ -97,7 +96,7 @@ async def _add_narrative_fact(
 class TestMergeRepointsAllSourceRefs:
     async def test_gifts_loans_notes_lifeevents_and_contacts_follow_survivor(self, pool):
         """A source carrying gifts/loans/interactions/notes/life-events in the
-        memory ``facts`` store AND a linked ``public.contacts`` row merges into a
+        memory ``facts`` store AND a linked ``contact_entity_map`` row merges into a
         target; every reference must move to the survivor, the source must be
         tombstoned, and NO row may reference the source entity_id afterward."""
         from butlers.api.router_discovery import discover_butler_routers
@@ -140,12 +139,9 @@ class TestMergeRepointsAllSourceRefs:
             source_id,
         )
 
-        # A linked CRM contact pointing at the source entity.
-        source_contact = await pool.fetchval(
-            "INSERT INTO public.contacts (name, entity_id) VALUES ($1, $2) RETURNING id",
-            "Alice (duplicate)",
-            source_id,
-        )
+        # A legacy contact ID is compatibility data, not a newly registered
+        # runtime identity. The current consumer reads only the real bridge.
+        source_contact = uuid.uuid4()
         # Populate contact_entity_map (rel_029) — this is what merge_entities now updates.
         await pool.execute(
             "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",

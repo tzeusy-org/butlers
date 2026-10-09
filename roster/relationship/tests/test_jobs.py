@@ -240,10 +240,10 @@ async def test_insight_scan_no_contacts_no_op(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -265,10 +265,10 @@ async def test_insight_scan_unlisted_contact_excluded(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -297,10 +297,10 @@ async def test_insight_scan_non_active_posture_excluded(postgres_container, post
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -330,10 +330,10 @@ async def test_insight_scan_upcoming_birthday_today_priority_95(postgres_contain
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -367,10 +367,10 @@ async def test_insight_scan_upcoming_birthday_3_days_priority_80(postgres_contai
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -402,10 +402,10 @@ async def test_insight_scan_upcoming_birthday_7_days_priority_70(postgres_contai
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -437,10 +437,10 @@ async def test_insight_scan_birthday_beyond_window_excluded(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -467,10 +467,10 @@ async def test_insight_scan_anniversary_dedup_key_format(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -506,10 +506,10 @@ async def test_insight_scan_birthday_dedup_key_format(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -544,10 +544,10 @@ async def test_insight_scan_birthday_cooldown_days(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -580,10 +580,10 @@ async def test_insight_scan_birthday_message_includes_contact_name(postgres_cont
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -621,10 +621,10 @@ async def test_insight_scan_contact_candidates_include_entity_and_event_metadata
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
         entity_id = str(uuid.uuid4())
@@ -703,10 +703,10 @@ async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -742,10 +742,10 @@ async def test_insight_scan_stale_contact_parks_a_prepared_reach_out(
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -818,10 +818,10 @@ async def test_insight_scan_stale_contact_concurrent_scans_park_one_prepared_act
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -883,10 +883,10 @@ async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -918,10 +918,10 @@ async def test_insight_scan_stale_contact_not_yet_overdue_excluded(postgres_cont
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -953,10 +953,10 @@ async def test_insight_scan_unmeasurable_stale_contact_suppresses_candidate(
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
         contact_id = await _insert_contact(pool, first_name="Instrument", stay_in_touch_days=7)
@@ -991,10 +991,10 @@ async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1031,10 +1031,10 @@ async def test_insight_scan_stale_contact_expires_7_days_from_now(postgres_conta
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1073,10 +1073,10 @@ async def test_insight_scan_pending_gift_with_upcoming_date_priority_60(
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1110,10 +1110,10 @@ async def test_insight_scan_pending_gift_no_upcoming_date_excluded(postgres_cont
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1135,10 +1135,10 @@ async def test_insight_scan_pending_gift_dedup_key_format(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1174,10 +1174,10 @@ async def test_insight_scan_gift_given_status_excluded(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1207,10 +1207,10 @@ async def test_insight_scan_pending_gift_expires_at_upcoming_date(postgres_conta
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1249,10 +1249,10 @@ async def test_insight_scan_milestone_100th_interaction(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1286,10 +1286,10 @@ async def test_insight_scan_milestone_dedup_key_format(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1322,10 +1322,10 @@ async def test_insight_scan_milestone_non_notable_count_excluded(postgres_contai
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1351,10 +1351,10 @@ async def test_insight_scan_first_interaction_anniversary(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1399,10 +1399,10 @@ async def test_insight_scan_early_exit_verbosity_off(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1439,10 +1439,10 @@ async def test_insight_scan_stats_keys_present(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 
@@ -1469,10 +1469,10 @@ async def test_insight_scan_origin_butler_is_relationship(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
+        pool_schema="relationship",
     ) as pool:
         await _setup_relationship_schema(pool)
 

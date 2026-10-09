@@ -48,7 +48,6 @@ async def tier_pool(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),

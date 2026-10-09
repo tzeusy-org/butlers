@@ -64,7 +64,6 @@ async def pool(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
         ),
         pool_schema="relationship",

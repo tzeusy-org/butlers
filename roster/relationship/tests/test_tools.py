@@ -51,7 +51,6 @@ async def pool(postgres_container):
         stages=(
             MigrationStage("core"),
             MigrationStage("memory"),
-            MigrationStage("relationship"),
             MigrationStage("relationship", schema="relationship"),
             MigrationStage("approvals"),
         ),
@@ -339,7 +338,7 @@ async def test_contact_get_archived_returns_stale_dunbar(pool):
     contact_row = await pool.fetchrow(
         """
         INSERT INTO contacts (name, first_name, entity_id, listed)
-        VALUES ($1, $2, $3)
+        VALUES ($1, $1, $2, $3)
         RETURNING id, listed
         """,
         "Archived",
@@ -381,7 +380,7 @@ async def test_contact_get_active_returns_not_stale_dunbar(pool):
     contact_row = await pool.fetchrow(
         """
         INSERT INTO contacts (name, first_name, entity_id, listed)
-        VALUES ($1, $2, $3)
+        VALUES ($1, $1, $2, $3)
         RETURNING id, listed
         """,
         "Active",
