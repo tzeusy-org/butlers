@@ -134,7 +134,7 @@ async def _audit_runtime(pool: asyncpg.Pool):
                 "rolreplication, rolbypassrls FROM pg_roles WHERE rolname = current_user"
             )
             assert role["name"] == "butler_switchboard_rw"
-            assert not any(role[key] for key in role if key != "name")
+            assert not any(role[key] for key in role.keys() if key != "name")
             yield writer
         finally:
             await writer.execute("RESET ROLE")
