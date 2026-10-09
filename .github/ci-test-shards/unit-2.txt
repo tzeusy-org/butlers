@@ -136,6 +136,7 @@ tests/core/test_metrics_registry.py
 tests/core/test_model_routing_quota.py
 tests/core/test_otel_metrics.py
 tests/core/test_permissions_enforcer.py
+tests/core/test_prometheus.py
 tests/core/test_provider_allowance.py
 tests/core/test_resolve_owner_entity_info.py
 tests/core/test_route_inbox.py
@@ -210,7 +211,6 @@ tests/modules/test_insight_cluster_synthesis.py
 tests/modules/test_module_approvals.py
 tests/modules/test_module_contacts.py
 tests/modules/test_module_google_health.py
-tests/modules/test_module_metrics.py
 tests/modules/test_module_pipeline.py
 tests/modules/test_module_steam.py
 tests/reconciliation/test_incident_2026_04_21_replay.py

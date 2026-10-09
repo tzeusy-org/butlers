@@ -101,7 +101,7 @@ butler starts with the remaining modules. If startup aborts, modules already sta
 
 Place the module in `src/butlers/modules/` (single file or package) and auto-discovery finds it;
 butler-specific modules go in `roster/<butler>/modules/__init__.py`. Copy the shape of a small
-existing module (for example `src/butlers/modules/metrics/`) rather than a template, and follow the
+existing module (for example `src/butlers/modules/pipeline.py`) rather than a template, and follow the
 `adding-connectors-and-modules` subskill of the `butlers-development` skill.
 
 ## Implementation Notes

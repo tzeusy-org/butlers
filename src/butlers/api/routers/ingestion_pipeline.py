@@ -9,7 +9,7 @@ Endpoints
 GET /api/ingestion/pipeline?window=24h — pipeline funnel stats (ingested, filtered, errored, etc.)
 
 Stats are sourced from Prometheus via PromQL through
-``src/butlers/modules/metrics/prometheus.py``.  Results are cached for 60
+``src/butlers/core/prometheus.py``.  Results are cached for 60
 seconds per (window) key.  On any Prometheus failure the endpoint returns
 zeros with ``aggregates_available: false`` — it NEVER returns HTTP 500.
 
@@ -43,7 +43,7 @@ from fastapi import APIRouter, Depends, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db_manager
-from butlers.modules.metrics.prometheus import async_query, async_query_range
+from butlers.core.prometheus import async_query, async_query_range
 
 logger = logging.getLogger(__name__)
 

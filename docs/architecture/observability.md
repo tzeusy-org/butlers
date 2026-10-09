@@ -186,3 +186,15 @@ curl -s "http://localhost:9090/api/v1/label/butler/values" | python3 -m json.too
 - [Butler Daemon](butler-daemon.md) — telemetry initialization during startup
 - [Spawner](../runtime/spawner.md) — trace context injection into spawned processes
 - [Session Lifecycle](../runtime/session-lifecycle.md) — session-level trace correlation
+
+## Dashboard Prometheus Queries
+
+`butlers.core.prometheus` owns `async_query(url, query, time=None)` and
+`async_query_range(url, query, start, end, step)`. They GET the instant and range
+HTTP endpoints with the supplied parameters, a 30-second timeout and a
+10-second connect timeout. Successful `data.result` values, including an empty
+list, pass through unchanged; request, HTTP, decoding and Prometheus status
+errors retain the existing single-entry error list. The Switchboard connector
+summary and ingestion-pipeline API retain their own aggregation, caching and
+degraded-response policies. This transport adds no MCP tools, storage, retries
+or authentication. Core and connector metric instrumentation remain separate.
