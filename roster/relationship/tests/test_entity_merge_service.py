@@ -15,12 +15,18 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.entity_rebind import rebind_entity_references, run_entity_rebind_listener
 from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 from butlers.testing.migrated_templates import MigrationStage
-from butlers.testing.migration import migrated_pool
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migrated_pool,
+    migration_db_name,
+)
 from butlers.tools.relationship.entity_merge import (
     AuditEntityOrderError,
     LockedGuardRejected,
@@ -49,7 +55,7 @@ def _mock_pool(lock_rows: list[dict]) -> tuple[AsyncMock, AsyncMock, AsyncMock]:
     conn = AsyncMock()
 
     async def _fetch(query, *args):
-        return lock_rows if "FOR UPDATE" in query else []
+        return lock_rows if "FROM public.entities" in query and "FOR UPDATE" in query else []
 
     conn.fetch = AsyncMock(side_effect=_fetch)
     conn.execute = AsyncMock(return_value="UPDATE 0")
@@ -109,6 +115,37 @@ async def test_locks_pair_deterministically_before_guard_and_rolls_back_rejectio
     assert conn.execute.await_count == 0
     assert conn.fetchval.await_count == 0
     assert transaction.__aexit__.await_args.args[0] is LockedGuardRejected
+
+    # Software control of the immediate singleton check. The migrated owning
+    # node below separately proves the actual index and transaction rollback.
+    source["roles"] = ["owner", "trusted"]
+    target["roles"] = ["trusted"]
+    pool, conn, _ = _mock_pool([target, source])
+    owner_released = False
+
+    async def enforce_owner_order(query, *args):
+        nonlocal owner_released
+        if "UPDATE public.entities" in query:
+            if "array_remove(roles, 'owner')" in query:
+                assert args == ({"merged_into": str(target_id)}, source_id)
+                owner_released = True
+            elif "SET aliases" in query:
+                assert owner_released
+                assert args[1] == ["trusted", "owner"]
+        return "UPDATE 0"
+
+    conn.execute.side_effect = enforce_owner_order
+    with (
+        patch("butlers.tools.relationship.entity_merge.write_merge_review", return_value=uuid4()),
+        patch("butlers.tools.relationship.entity_merge.publish_fleet_event"),
+    ):
+        await merge_entity_pair(
+            pool,
+            source_entity_id=source_id,
+            target_entity_id=target_id,
+            target_schemas=(),
+        )
+    assert owner_released
 
 
 @pytest.mark.asyncio
@@ -214,6 +251,49 @@ async def _insert_entity(pool, name: str) -> UUID:
     return await pool.fetchval(
         "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id", name
     )
+
+
+@pytest.fixture
+async def owner_merge_pools(postgres_container):
+    """Fresh main chains and bootstrap-established runtime identities.
+
+    This singleton proof does not use the unmerged migrated-template cache or
+    the separately migrated composite subscriber schema used by other scenarios.
+    """
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core", "memory", "relationship"],
+        {"relationship": "relationship"},
+    )
+
+    async def relationship_role(conn):
+        await conn.execute("SET ROLE butler_relationship_rw")
+
+    async def general_role(conn):
+        await conn.execute("SET ROLE butler_general_rw")
+
+    pools = []
+    try:
+        for setup in (relationship_role, general_role):
+            pools.append(
+                await asyncpg.create_pool(
+                    db_url,
+                    min_size=2,
+                    max_size=3,
+                    init=register_jsonb_codec,
+                    setup=setup,
+                    server_settings={"search_path": "relationship, public"},
+                )
+            )
+        yield tuple(pools)
+    finally:
+        for pool in pools:
+            try:
+                await asyncio.wait_for(pool.close(), timeout=10)
+            finally:
+                pool.terminate()
 
 
 @pytest.mark.integration
@@ -364,9 +444,14 @@ async def test_merge_rebinds_catalog_and_opens_honest_receipt_cohort(merge_pool)
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_single_authority_preserves_alias_role_and_metadata_merge_semantics(
-    merge_pool,
+    owner_merge_pools,
 ) -> None:
-    pool = merge_pool
+    pool, general_pool = owner_merge_pools
+    assert await pool.fetchval("SELECT current_user = 'butler_relationship_rw'")
+    assert await pool.fetchval(
+        "SELECT indisunique AND indisvalid FROM pg_index "
+        "WHERE indexrelid = 'public.ix_entities_owner_singleton'::regclass"
+    )
     target_id = await _insert_entity(pool, "Target identity")
     source_id = await _insert_entity(pool, "Source identity")
     await pool.execute(
@@ -388,6 +473,101 @@ async def test_single_authority_preserves_alias_role_and_metadata_merge_semantic
         source_id,
     )
 
+    # Preserve a non-owner source role without changing the original target
+    # union. The singleton applies to tombstones as well as live rows.
+    await pool.execute(
+        "UPDATE public.entities SET roles = roles || ARRAY['trusted'] WHERE id = $1", source_id
+    )
+    contact_id = uuid4()
+    await pool.execute(
+        "INSERT INTO relationship.contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+        contact_id,
+        source_id,
+    )
+
+    async def snapshot():
+        # These acquisitions are outside the merge, including failed attempts.
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, aliases, roles, metadata, updated_at FROM public.entities "
+                "WHERE id = ANY($1::uuid[]) ORDER BY id",
+                [source_id, target_id],
+            )
+            reference = await conn.fetchval(
+                "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1",
+                contact_id,
+            )
+            receipts = await conn.fetchval("SELECT count(*) FROM public.entity_rebind_log")
+            reviews = await conn.fetchval("SELECT count(*) FROM relationship.merge_reviews")
+        return rows, reference, receipts, reviews
+
+    before = await snapshot()
+    merge_kwargs = {
+        "source_entity_id": source_id,
+        "target_entity_id": target_id,
+        "target_schemas": ("relationship",),
+    }
+    # Neutralize only the early owner release. The unchanged target assignment
+    # then reaches the real immediate singleton's old-production failure.
+    original_execute = asyncpg.Connection.execute
+
+    async def old_target_first(conn, query, *args, **kwargs):
+        if "array_remove(roles, 'owner')" in query:
+            return "UPDATE 0"
+        return await original_execute(conn, query, *args, **kwargs)
+
+    with patch.object(asyncpg.Connection, "execute", new=old_target_first):
+        with pytest.raises(asyncpg.UniqueViolationError) as old_failure:
+            await merge_entity_pair(pool, **merge_kwargs)
+        assert old_failure.value.constraint_name == "ix_entities_owner_singleton"
+    assert await snapshot() == before
+
+    async def fail_after_role_movement(conn, **_kwargs):
+        assert await conn.fetchval(
+            "SELECT roles FROM public.entities WHERE id = $1", source_id
+        ) == ["trusted"]
+        assert await conn.fetchval(
+            "SELECT roles FROM public.entities WHERE id = $1", target_id
+        ) == ["trusted", "owner"]
+        assert (
+            await conn.fetchval(
+                "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1",
+                contact_id,
+            )
+            == target_id
+        )
+        async with pool.acquire() as reader:
+            assert reader.get_server_pid() != conn.get_server_pid()
+            assert (
+                await reader.fetchval("SELECT id FROM public.entities WHERE 'owner' = ANY(roles)")
+                == source_id
+            )
+            assert (
+                await reader.fetchval(
+                    "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1",
+                    contact_id,
+                )
+                == source_id
+            )
+        raise RuntimeError("controlled_downstream_failure")
+
+    with (
+        patch(
+            "butlers.tools.relationship.entity_merge.write_merge_review",
+            new=fail_after_role_movement,
+        ),
+        patch("butlers.tools.relationship.entity_merge.publish_fleet_event") as publish,
+    ):
+        with pytest.raises(RuntimeError, match="^controlled_downstream_failure$"):
+            await merge_entity_pair(pool, **merge_kwargs)
+        publish.assert_not_awaited()
+    assert await snapshot() == before
+
+    # Bootstrap's General identity receives no new merge authority.
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await merge_entity_pair(general_pool, **merge_kwargs)
+    assert await snapshot() == before
+
     result = await merge_entity_pair(
         pool,
         source_entity_id=source_id,
@@ -403,6 +583,50 @@ async def test_single_authority_preserves_alias_role_and_metadata_merge_semantic
     assert target["aliases"] == ["Target alias", "Source alias", "Source identity"]
     assert target["roles"] == ["trusted", "owner"]
     assert target["metadata"] == {"shared": "target", "source_only": True}
+    async with pool.acquire() as conn:
+        source = await conn.fetchrow(
+            "SELECT roles, metadata FROM public.entities WHERE id = $1", source_id
+        )
+        assert source["roles"] == ["trusted"]
+        assert source["metadata"]["merged_into"] == str(target_id)
+        assert (
+            await conn.fetchval("SELECT id FROM public.entities WHERE 'owner' = ANY(roles)")
+            == target_id
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1",
+                contact_id,
+            )
+            == target_id
+        )
+
+    # The other existing role-union species use the same real authority.
+    trusted_source = await _insert_entity(pool, "Trusted companion")
+    await pool.execute(
+        "UPDATE public.entities SET roles = ARRAY['trusted'] WHERE id = $1", trusted_source
+    )
+    await merge_entity_pair(
+        pool,
+        source_entity_id=trusted_source,
+        target_entity_id=target_id,
+        target_schemas=("relationship",),
+    )
+    assert await pool.fetchval("SELECT roles FROM public.entities WHERE id = $1", target_id) == [
+        "trusted",
+        "owner",
+    ]
+    empty_source = await _insert_entity(pool, "Empty source")
+    empty_target = await _insert_entity(pool, "Empty target")
+    await merge_entity_pair(
+        pool,
+        source_entity_id=empty_source,
+        target_entity_id=empty_target,
+        target_schemas=("relationship",),
+    )
+    assert (
+        await pool.fetchval("SELECT roles FROM public.entities WHERE id = $1", empty_target) == []
+    )
 
 
 @pytest.mark.integration
