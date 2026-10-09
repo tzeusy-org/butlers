@@ -208,6 +208,67 @@ def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
     for table in scoped_data_tables:
         assert any('"--exclude-table-data=${table}"' in line for line in code)
     _assert_closed_certificate_stage_diagnostic()
+    _assert_native_capture_parser()
+
+
+def _assert_native_capture_parser() -> None:
+    """Execute the actual certificate extractor, not a copied parser."""
+    from tempfile import TemporaryDirectory
+
+    script = (_REPO_ROOT / "scripts" / "pg_restore.sh").read_text()
+    start = script.index('awk -v state="$AUDIT_DIR/native_presence"')
+    program = script[start:].split(" '\n", 1)[1].split("\n  ' | LC_ALL=C sort", 1)[0]
+    native = "".join(
+        f"CREATE TABLE connectors.owntracks_filtered_copy_{name} (\n"
+        for name in ("births", "floors", "batches", "members")
+    )
+    inputs = "".join(
+        f"CREATE TABLE connectors.owntracks_input_{name} (\n"
+        for name in ("server_births", "server_ends", "copy_births", "copy_ends")
+    )
+    cohort = "COPY butlers_owntracks_copy_restore_rows FROM stdin;\nsynthetic-row\n\\.\n"
+    with TemporaryDirectory() as directory:
+        state, count = Path(directory) / "state", Path(directory) / "count"
+
+        def run(body):
+            state.unlink(missing_ok=True)
+            count.unlink(missing_ok=True)
+            return subprocess.run(
+                ["awk", "-v", f"state={state}", "-v", f"input_state={count}", program],
+                input=body,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        ordinary = run("")
+        assert ordinary.returncode == 0
+        assert state.read_text() == "absent\n"
+        assert count.read_text() == "4\n"
+        for tables, expected in ((native, "4\n"), (native + inputs, "8\n")):
+            healthy = run(tables + cohort)
+            assert healthy.returncode == 0
+            assert healthy.stdout == "synthetic-row\n"
+            assert state.read_text() == "present\n"
+            assert count.read_text() == expected
+        for malformed in (
+            native,
+            native + cohort + cohort,
+            native + cohort[:-3],
+            native + inputs.splitlines(keepends=True)[0] + cohort,
+            inputs + cohort,
+            native + native.splitlines(keepends=True)[0] + cohort,
+            native.replace("CREATE TABLE connectors.owntracks_filtered_copy_members (\n", "")
+            + cohort,
+        ):
+            refused = run(malformed)
+            assert refused.returncode == 7
+            assert not state.exists()
+            assert not count.exists()
+        restored = run(native + inputs + cohort)
+        assert restored.returncode == 0
+        assert state.read_text() == "present\n"
+        assert count.read_text() == "8\n"
 
 
 def _assert_closed_certificate_stage_diagnostic() -> None:
