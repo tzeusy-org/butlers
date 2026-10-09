@@ -208,7 +208,7 @@ async def forget_skipped_source(pool: asyncpg.Pool, decision_id: UUID) -> dict:
                         raise CopyFloorUnavailable("source_copy_cohort_pending")
                     if await conn.fetchval(
                         "SELECT EXISTS(SELECT 1 FROM sessions WHERE request_id=$1)",
-                        frozen.accepted_request_id,
+                        str(frozen.accepted_request_id),
                     ):
                         raise CopyFloorUnavailable("source_copy_cohort_pending")
                 receipt_id = uuid4()

@@ -737,8 +737,26 @@ async def _assert_native_no_dispatch_disposal(pool, point, terminal):
     terminal_row = dict(await pool.fetchrow("SELECT * FROM message_inbox WHERE id=$1", request))
     assert terminal_row["lifecycle_state"] == lifecycle
     assert terminal_row["final_state_at"] is not None
+    # Existing session provenance uses TEXT; the owning inbox/source uses
+    # UUID. Preserve that original identity and convert only this text bind.
+    from butlers.core.sessions import session_create
+
+    independent_request = str(uuid4())
+    independent_session = await session_create(
+        pool,
+        "Synthetic independent ordinary session",
+        "trigger",
+        request_id=independent_request,
+    )
+    assert await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE request_id=$1)", independent_request
+    )
+    assert (
+        await pool.fetchval("SELECT request_id FROM sessions WHERE id=$1", independent_session)
+        == independent_request
+    )
     assert not await pool.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM sessions WHERE request_id=$1)", request
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE request_id=$1)", str(request)
     )
     with patch.object(copies, "_registered_plan", AsyncMock(return_value=plan)):
         # A contradictory canonical decision cannot qualify either terminal.

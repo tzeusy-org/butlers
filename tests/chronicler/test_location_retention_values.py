@@ -10995,7 +10995,8 @@ async def _assert_native_no_dispatch_source_copy():
             return [deepcopy(self.row)]
 
         async def fetchval(self, query, *args):
-            assert "FROM sessions WHERE request_id=$1" in query and args == (request,)
+            assert "FROM sessions WHERE request_id=$1" in query and args == (str(request),)
+            assert type(args[0]) is str
             return self.session
 
         async def execute(self, query, *args):
