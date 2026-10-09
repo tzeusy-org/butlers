@@ -45,6 +45,16 @@ async def receive_question(pool: Any, canonical: dict) -> Any:
     return await reserve_received_question(writer, canonical)
 
 
+async def reject_question_receive(pool: Any, failure: Exception) -> None:
+    """Actual fixed handler stage; private exception identity, not its message."""
+    from butlers.chronicler.location_delegation_receivers import _QuestionReceiveRefusal
+    from butlers.chronicler.location_question_refusals import record_question_refusal
+
+    writer = _writers.get(pool)
+    if isinstance(failure, _QuestionReceiveRefusal) and writer is failure.writer:
+        await record_question_refusal(writer, failure)
+
+
 async def create_question_schedule(pool: Any, admission: Any, prompt: str, write: Any) -> Any:
     if admission is None:
         return await write(pool)

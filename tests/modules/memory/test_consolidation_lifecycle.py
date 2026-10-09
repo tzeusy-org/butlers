@@ -2775,6 +2775,8 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context,
         await source_question_status(runtime, decision, qreceipt["receipt_id"]) == answered_status
     )
 
+    await _assert_question_refusal_stage(domain, runtime)
+
 
 async def _assert_core_question_context_disposal(domain, runtime, binding, task, prompt):
     """Real configured core-only SQL profile; producer/source cells planted, not online proof."""
@@ -3496,3 +3498,168 @@ async def _assert_source_answer_disposal(domain, runtime):
         "UPDATE public.delegation_ledger SET answer=$2 WHERE id=$1", ledger, _REDUCED_ANSWER
     )
     assert await dispose_source_answers(runtime, plan) == receipts
+
+
+async def _assert_question_refusal_stage(domain, runtime):
+    """Real owning role/COMMIT controls; private handler cells planted, not online admission."""
+    import hashlib
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from butlers.chronicler.location_delegation_disposal import _close_question_receiver
+    from butlers.chronicler.location_delegation_receivers import _QuestionReceiveRefusal
+    from butlers.chronicler.location_question_refusals import (
+        _REFUSED_RESULT,
+        record_question_refusal,
+    )
+    from butlers.chronicler.location_question_tasks import closed_received_question_tools
+    from butlers.chronicler.location_tool_copies import (
+        _current_tool_copy,
+        _ToolCopy,
+        finish_tool_copy,
+    )
+    from butlers.core.sessions import session_create
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    generation, ledger, tool_generation, decision, question, loan = (uuid.uuid4() for _ in range(6))
+    session = await session_create(
+        domain, prompt="synthetic refused question caller", trigger_source="trigger"
+    )
+    digest = hashlib.sha256(b"synthetic refused canonical question").digest()
+    input_digest = bytes.fromhex(
+        fingerprint_tool_call_payload(
+            dict(ledger_id=str(ledger), question="synthetic", asking_butler="chronicler")
+        )
+    )
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            await conn.execute(
+                "INSERT INTO location_runtime_tool_intents "
+                "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+                "VALUES($1,$2,'delegate_receive','core',$3)",
+                tool_generation,
+                session,
+                input_digest,
+            )
+            await conn.execute(
+                "INSERT INTO location_received_delegation_attempts "
+                "(receiving_generation,ledger_id,body_digest,receiving_incarnation,receiving_session,tool_generation,source_name) "
+                "VALUES($1,$2,$3,$4,$5,$6,'chronicler')",
+                generation,
+                ledger,
+                digest,
+                runtime.incarnation,
+                session,
+                tool_generation,
+            )
+    tool = _ToolCopy(runtime, tool_generation, session, "delegate_receive", "core")
+    writer = runtime.delegation_writer
+    pending = SimpleNamespace(
+        tool=tool, ledger=ledger, source="chronicler", digest=digest, receiving=generation
+    )
+    token = _current_tool_copy.set(tool)
+    finished = False
+
+    class FaultConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def transaction(self):
+            return self.conn.transaction()
+
+        async def fetchrow(self, *args):
+            return await self.conn.fetchrow(*args)
+
+        async def fetchval(self, *args):
+            return await self.conn.fetchval(*args)
+
+        async def execute(self, sql, *args):
+            value = await self.conn.execute(sql, *args)
+            if "INSERT INTO location_received_question_refusals" in sql:
+                raise RuntimeError("planted actual rejection receipt failure")
+            return value
+
+    class FaultPool:
+        @asynccontextmanager
+        async def acquire(self):
+            async with domain.acquire() as conn:
+                yield FaultConnection(conn)
+
+    original = runtime.domain
+    try:
+        runtime.domain = FaultPool()
+        with pytest.raises(RuntimeError, match="actual rejection receipt failure"):
+            await record_question_refusal(writer, _QuestionReceiveRefusal(writer, pending, tool))
+        runtime.domain = original
+        async with domain.acquire() as observed:
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_question_refusals WHERE receiving_generation=$1)",
+                generation,
+            )
+            assert (
+                await observed.fetchval(
+                    "SELECT body_digest FROM location_received_delegation_attempts WHERE receiving_generation=$1",
+                    generation,
+                )
+                == digest
+            )
+        assert not tool.read_observed
+        stage = _QuestionReceiveRefusal(writer, pending, tool)
+        await record_question_refusal(writer, stage)
+        assert tool.read_observed and not stage.active
+        await finish_tool_copy((tool, token), _REFUSED_RESULT)
+        finished = True
+        binding = dict(
+            receiving_generation=generation,
+            decision_id=decision,
+            manifest_digest=b"m" * 32,
+            source_name="chronicler",
+            question_generation=question,
+            ledger_id=ledger,
+            loan_id=loan,
+            body_digest=digest,
+            receiving_incarnation=runtime.incarnation,
+        )
+        assert (
+            await _close_question_receiver(runtime, binding) is None
+        )  # Caller context still has no disposition.
+        plan = dict(decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+        quoted = '"' + runtime.identity[0].replace('"', '""') + '"'
+        async with domain.acquire() as observed:
+            profile = await closed_received_question_tools(observed, runtime, quoted, session, plan)
+            assert profile == [dict(tool_generation=tool_generation)]
+            row = await observed.fetchrow(
+                "SELECT * FROM location_received_question_refusals WHERE receiving_generation=$1",
+                generation,
+            )
+            assert row["body_digest"] == digest and row["tool_generation"] == tool_generation
+            assert row["result_digest"] == bytes.fromhex(
+                fingerprint_tool_call_payload(_REFUSED_RESULT)
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_dispositions WHERE receiving_generation=$1)",
+                generation,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_schedules WHERE receiving_generation=$1)",
+                generation,
+            )
+        with pytest.raises(asyncpg.RaiseError, match="permanent"):
+            await domain.execute(
+                "UPDATE location_received_question_refusals SET body_digest=$2 WHERE receiving_generation=$1",
+                generation,
+                b"x" * 32,
+            )
+        async with domain.acquire() as observed:
+            assert (
+                await observed.fetchval(
+                    "SELECT body_digest FROM location_received_question_refusals WHERE receiving_generation=$1",
+                    generation,
+                )
+                == digest
+            )
+    finally:
+        runtime.domain = original
+        if not finished:
+            _current_tool_copy.reset(token)

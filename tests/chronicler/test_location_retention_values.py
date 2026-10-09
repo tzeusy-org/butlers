@@ -7248,6 +7248,8 @@ async def _assert_receiving_task_disposition_values():
             return self.attempts
 
         async def fetchrow(self, sql, *args):
+            if '"home".location_received_question_refusals' in sql:
+                return None  # Exact installed table; no producer stage planted here.
             assert '"home".location_received_question_task_dispositions' in sql
             assert '"home".location_runtime_tool_intents' in sql
             assert "chronicler." not in sql
@@ -7317,3 +7319,270 @@ async def _assert_receiving_task_disposition_values():
     assert await closed_received_question_tools(
         profile, runtime, '"home"', session, selected_plan
     ) == [dict(tool_generation=tool)]
+    await _assert_receiving_refusal_stage_values()
+
+
+async def _assert_receiving_refusal_stage_values():
+    """Actual producer and profile; SQL/private-lifetime doubles, no PG proof."""
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_receivers import _QuestionReceiveRefusal
+    from butlers.chronicler.location_memory_context import captured_artifact_calls
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_refusals import (
+        _REFUSED_RESULT,
+        _refused_digest,
+        record_question_refusal,
+    )
+    from butlers.chronicler.location_question_tasks import closed_received_question_tools
+    from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
+    from butlers.core.delegation_source import (
+        clear_writer,
+        register_writer,
+        reject_question_receive,
+    )
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    generation, ledger, incarnation, session, decision, question, loan = (uuid4() for _ in range(7))
+
+    class Pool:
+        def __init__(self):
+            self.receipt, self.admitted, self.unknown, self.fail, self.intent = (
+                None,
+                False,
+                False,
+                False,
+                True,
+            )
+            self.trace = []
+            self.attempt = dict(
+                receiving_generation=generation,
+                ledger_id=ledger,
+                source_name="finance",
+                body_digest=b"b" * 32,
+                receiving_incarnation=incarnation,
+                receiving_session=session,
+                tool_generation=uuid4(),
+                server_request=None,
+            )
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            old = deepcopy(self.receipt)
+            self.trace.append("begin")
+            try:
+                yield
+            except BaseException:
+                self.receipt = old
+                self.trace.append("rollback")
+                raise
+            self.trace.append("commit")
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_received_delegation_attempts" in sql:
+                return self.attempt
+            assert "FROM location_received_question_refusals" in sql
+            assert args == (generation,)
+            self.trace.append("readback")
+            return None if self.unknown else self.receipt
+
+        async def fetchval(self, sql, *args):
+            if "FROM location_received_delegation_inputs" in sql:
+                assert "location_received_delegation_schedules" in sql
+                return self.admitted
+            assert "FROM location_runtime_tool_intents" in sql
+            return self.intent
+
+        async def execute(self, sql, *args):
+            assert "INSERT INTO location_received_question_refusals" in sql
+            self.receipt = dict(
+                zip(
+                    (
+                        "receiving_generation",
+                        "tool_generation",
+                        "receiving_incarnation",
+                        "body_digest",
+                        "result_digest",
+                        "receipt_id",
+                    ),
+                    args,
+                )
+            )
+            self.trace.append("stage")
+            if self.fail:
+                raise RuntimeError("planted stage INSERT failure")
+
+    pool = Pool()
+
+    async def lock(conn):
+        assert conn is pool
+        pool.trace.append("policy")
+
+    runtime = SimpleNamespace(domain=pool, incarnation=incarnation, active=True, lock_domain=lock)
+    writer = SimpleNamespace(runtime=runtime, receiving={}, pending={})
+    tool = _ToolCopy(runtime, pool.attempt["tool_generation"], session, "delegate_receive", "core")
+    pending = SimpleNamespace(
+        ledger=ledger, source="finance", digest=b"b" * 32, receiving=generation, tool=tool
+    )
+
+    def failure():
+        return _QuestionReceiveRefusal(writer, pending, tool)
+
+    token = _current_tool_copy.set(tool)
+    register_writer(pool, writer)
+    try:
+        await reject_question_receive(
+            pool, PolicyUnavailableError("Native question input is unavailable")
+        )
+        assert (
+            pool.receipt is None and not tool.read_observed
+        )  # Same text cannot mint stage authority.
+        pool.admitted = True
+        with pytest.raises(PolicyUnavailableError, match="admission is unknown"):
+            await record_question_refusal(writer, failure())
+        assert pool.receipt is None and not tool.read_observed
+        pool.admitted = False
+        pool.intent = False
+        with pytest.raises(PolicyUnavailableError, match="Tool differs"):
+            await record_question_refusal(writer, failure())
+        assert pool.receipt is None and not tool.read_observed
+        pool.intent = True
+        pool.fail = True
+        with pytest.raises(RuntimeError, match="stage INSERT"):
+            await record_question_refusal(writer, failure())
+        assert pool.receipt is None and not tool.read_observed and "rollback" in pool.trace
+        pool.fail = False
+        tool.active = False
+        with pytest.raises(PolicyUnavailableError, match="lifetime differs"):
+            await record_question_refusal(writer, failure())
+        assert pool.receipt is None
+        tool.active = True
+        old = pool.attempt["body_digest"]
+        pool.attempt["body_digest"] = b"x" * 32
+        with pytest.raises(PolicyUnavailableError, match="attempt differs"):
+            await record_question_refusal(writer, failure())
+        assert pool.receipt is None and not tool.read_observed
+        pool.attempt["body_digest"] = old
+        pool.unknown = True
+        with pytest.raises(PolicyUnavailableError, match="rejection is unknown"):
+            await record_question_refusal(writer, failure())
+        assert pool.receipt is not None and not tool.read_observed
+        pool.receipt = None  # Disposable double dataset, not production row repair.
+        pool.unknown = False
+        pool.trace.clear()
+        stage = failure()
+        tool.mixed_inputs = True
+        await reject_question_receive(pool, stage)
+        assert not stage.active and tool.read_observed and tool.mixed_inputs
+        assert pool.receipt["result_digest"] == _refused_digest()
+        assert pool.trace.index("policy") < pool.trace.index("stage") < pool.trace.index("commit")
+        assert pool.trace.index("commit") < pool.trace.index("readback")
+        with pytest.raises(PolicyUnavailableError, match="stage differs"):
+            await record_question_refusal(writer, stage)
+    finally:
+        clear_writer(pool, writer)
+        _current_tool_copy.reset(token)
+    plan = dict(decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+    row = dict(
+        receiving_generation=generation,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        source_name="finance",
+        question_generation=question,
+        loan_id=loan,
+        ledger_id=ledger,
+        body_digest=b"b" * 32,
+        receiving_incarnation=incarnation,
+        rejection_incarnation=incarnation,
+        rejection_digest=b"b" * 32,
+        rejection_result=_refused_digest(),
+        result_digest=_refused_digest(),
+        tool_generation=tool.generation,
+        tool_session=session,
+        module_name="core",
+        tool_name="delegate_receive",
+        outcome="success",
+        exclusive_inputs=True,
+    )
+
+    class Profile:
+        attempts = [pool.attempt]
+        rows = {generation: row}
+        admitted = False
+
+        async def fetch(self, sql, *args):
+            assert '"home".location_received_delegation_attempts' in sql and args == (session,)
+            return self.attempts
+
+        async def fetchrow(self, sql, *args):
+            assert "chronicler." not in sql
+            if '"home".location_received_question_task_dispositions' in sql:
+                return None
+            assert '"home".location_received_question_refusals' in sql
+            assert "NOT EXISTS" in sql and "location_received_delegation_inputs" in sql
+            assert "location_received_delegation_schedules" in sql
+            return None if self.admitted else self.rows.get(args[0])
+
+    profile = Profile()
+    assert await closed_received_question_tools(profile, runtime, '"home"', session, plan) == [
+        dict(tool_generation=tool.generation)
+    ]
+    for key, bad in [
+        ("rejection_digest", b"x" * 32),
+        ("rejection_incarnation", uuid4()),
+        ("manifest_digest", b"x" * 32),
+        ("decision_id", uuid4()),
+        ("tool_session", uuid4()),
+        ("result_digest", b"x" * 32),
+        ("rejection_result", b"x" * 32),
+        ("exclusive_inputs", False),
+        ("module_name", "memory"),
+        ("outcome", "error"),
+    ]:
+        old = row[key]
+        row[key] = bad
+        assert await closed_received_question_tools(profile, runtime, '"home"', session, plan) == []
+        row[key] = old
+    profile.admitted = True
+    assert await closed_received_question_tools(profile, runtime, '"home"', session, plan) == []
+    profile.admitted = False
+    second = uuid4()
+    profile.attempts = [pool.attempt, pool.attempt | dict(receiving_generation=second)]
+    assert await closed_received_question_tools(profile, runtime, '"home"', session, plan) == []
+    profile.rows[second] = row | dict(receiving_generation=second)
+    assert await closed_received_question_tools(profile, runtime, '"home"', session, plan) == [
+        dict(tool_generation=tool.generation)
+    ]
+    call = dict(
+        name="delegate_receive",
+        arguments={"ledger_id": str(ledger), "question": "synthetic", "asking_butler": "finance"},
+        result=_REFUSED_RESULT,
+        outcome="success",
+    )
+    call["module"] = "core"
+    call["input_fingerprint"] = fingerprint_tool_call_payload(call["arguments"])
+    witness = dict(
+        tool_generation=tool.generation,
+        tool_name="delegate_receive",
+        module_name="core",
+        input_digest=bytes.fromhex(fingerprint_tool_call_payload(call["arguments"])),
+        result_digest=_refused_digest(),
+        outcome="success",
+        exclusive_inputs=True,
+    )
+    assert not captured_artifact_calls([call], [], [witness])
+    assert captured_artifact_calls(
+        [call], [], [witness], closed_receives=[dict(tool_generation=tool.generation)]
+    )
+    witness["exclusive_inputs"] = False
+    assert not captured_artifact_calls(
+        [call], [], [witness], closed_receives=[dict(tool_generation=tool.generation)]
+    )

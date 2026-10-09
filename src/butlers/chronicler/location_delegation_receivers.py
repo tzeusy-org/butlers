@@ -28,6 +28,15 @@ class _ReceivedQuestion:
     active: bool = True
 
 
+class _QuestionReceiveRefusal(PolicyUnavailableError):
+    """Private single-handler rejection capability, never a wire verdict."""
+
+    def __init__(self, writer: Any, pending: Any, tool: Any) -> None:
+        super().__init__("Native question input is unavailable")
+        self.writer, self.pending, self.tool = writer, pending, tool
+        self.active = True
+
+
 @dataclass
 class _QuestionPending:
     ledger: UUID
@@ -550,6 +559,13 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
         admission = _ReceivedQuestion(writer, pending.receiving, ledger, digest, pending.deadline)
         writer.receiving[pending.receiving] = admission
         return admission
+    except Exception as exc:
+        # Only this actual reserve invocation, after its durable attempt birth,
+        # can reach the handler's fixed pre-schedule rejection stage. This
+        # ephemeral object is not an actor or a caller-selectable generation.
+        if tool is not None:
+            raise _QuestionReceiveRefusal(writer, pending, tool) from exc
+        raise
     finally:
         writer.pending.pop(token, None)
 

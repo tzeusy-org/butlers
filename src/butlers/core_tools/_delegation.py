@@ -574,7 +574,15 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
 
         try:
             question_input = await receive_question(pool, row)
-        except Exception:
+        except Exception as failure:
+            from butlers.core.delegation_source import reject_question_receive
+
+            try:
+                await reject_question_receive(pool, failure)
+            except Exception:
+                # The actual primary refusal stays the public outcome; failed
+                # stage COMMIT/readback creates no observed/exclusive witness.
+                pass
             return {"status": "error", "error": "Native question input is unavailable."}
         now = datetime.now(UTC)
         target_time = now + timedelta(minutes=1)

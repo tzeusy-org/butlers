@@ -688,6 +688,7 @@ async def _assert_native_received_question_schedule(monkeypatch):
             self.claims, self.ended, self.contexts, self.context_bindings = {}, {}, {}, {}
             self.witness_failure = False
             self.server_finished = {}
+            self.refusals = {}
             self.question_intents = {}
             self.transaction_active = False
             self.fenced = False
@@ -741,6 +742,8 @@ async def _assert_native_received_question_schedule(monkeypatch):
                     if self.floors[gen]["decision_id"] == args[0] and receipt == args[1]:
                         return self.floors[gen] | {"receipt_id": receipt}
                 return None
+            if "FROM location_received_question_refusals" in sql:
+                return self.refusals.get(args[0])
             if "FROM location_received_question_task_dispositions" in sql:
                 return None  # Exact newly installed table, no planted partial receipt.
             if "FROM location_received_delegation_floors" in sql:
@@ -812,6 +815,11 @@ async def _assert_native_received_question_schedule(monkeypatch):
             ]
 
         async def fetchval(self, sql, *args):
+            if (
+                "FROM location_received_delegation_inputs" in sql
+                and "location_received_delegation_schedules" in sql
+            ):
+                return args[0] in self.inputs or args[0] in self.schedules
             if "FROM location_received_delegation_dispositions" in sql:
                 return self.dispositions.get(args[0])
             if "FROM location_received_delegation_floors" in sql:
@@ -883,6 +891,21 @@ async def _assert_native_received_question_schedule(monkeypatch):
                             "tool_generation",
                             "server_request",
                             "source_name",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_question_refusals" in sql:
+                trace.append("receiver:rejection-stage")
+                self.refusals[args[0]] = dict(
+                    zip(
+                        (
+                            "receiving_generation",
+                            "tool_generation",
+                            "receiving_incarnation",
+                            "body_digest",
+                            "result_digest",
+                            "receipt_id",
                         ),
                         args,
                     )
@@ -1332,6 +1355,40 @@ async def _assert_native_received_question_schedule(monkeypatch):
         with pytest.raises(PolicyUnavailableError, match="cohort differs"):
             await receipt_tool(terminal_decision)
         question_row["complete_input"] = True
+        # The actual installed handler can attest only its fixed rejection
+        # stage after durable attempt birth and before any scheduling call.
+        # A same-message ordinary exception before birth has no such witness.
+        original_exchange = receiver_runtime.exchange
+        refusal_tool = _ToolCopy(
+            receiver_runtime, uuid.uuid4(), uuid.uuid4(), "delegate_receive", "core"
+        )
+        refusal_token = _current_tool_copy.set(refusal_tool)
+        before_inputs, before_tasks = len(receiver_pool.inputs), len(receiver_pool.tasks)
+        before_refusals = len(receiver_pool.refusals)
+
+        async def rejected_exchange(*args):
+            raise PolicyUnavailableError("planted fixed source refusal")
+
+        receiver_runtime.exchange = rejected_exchange
+        try:
+            result = await receive()
+            assert result == dict(status="error", error="Native question input is unavailable.")
+            assert len(receiver_pool.refusals) == before_refusals + 1
+            rejection = next(
+                r
+                for r in receiver_pool.refusals.values()
+                if r["tool_generation"] == refusal_tool.generation
+            )
+            assert rejection["body_digest"] == body_digest
+            assert refusal_tool.read_observed and not refusal_tool.mixed_inputs
+            assert (
+                len(receiver_pool.inputs) == before_inputs
+                and len(receiver_pool.tasks) == before_tasks
+            )
+            assert not receiver_writer.pending and not receiver_writer.receiving
+        finally:
+            receiver_runtime.exchange = original_exchange
+            _current_tool_copy.reset(refusal_token)
         # Installed constructor ordinary ingress requires a positive fixed
         # source-owned job birth. Neither missing native data nor a caller's
         # ordinary label can manufacture that classification.

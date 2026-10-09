@@ -974,3 +974,30 @@ UPDATE, a different acquisition's original-task/no-receipt survivor and restored
 actual-producer/readback/replay. These new SQL controls remain hosted-unrun.
 Failed/unaccepted CLI contexts, lawful mixed descendants and complete online,
 browser and protected/native erasure remain required continuation work.
+
+
+### Native handler rejection stage
+
+The fixed receiving handler now records a separate private rejection stage only
+when its actual source reservation has already born the immutable canonical
+attempt and then returns before admission or scheduling. The reservation passes
+a private single-use exception capability to that same configured writer and
+active Tool. A matching error string does not select a stage. The producer
+refuses an admitted row, a scheduled child, stale identity, unknown COMMIT or
+missing separate readback; it never clears a previous mixed-input flag.
+
+Caller-context qualification still requires the independently obtained original
+owning source floor, full attempt census and exact private input/result witness
+for every same-Tool sibling. The new receipt attests only this failed handler
+processing copy; caller context and final receiving lifetime close separately.
+A source preparation failure before source loan COMMIT remains an actionable
+reconciliation gap: the stage must not invent that missing loan or floor.
+
+Screened software controls exercise the actual handler and producer, same-text
+forgery, admission-unknown refusal, receipt rollback, lost readback, mixed-input
+preservation and exact floor/result/sibling profiles. The existing migrated
+species adds actual producer receipt fault and separate rollback/restored
+readbacks, immutable history, and the explicit absence of a final receiving
+receipt while its caller context remains open. Those new SQL controls are
+hosted-unrun. Full failed/routed/mixed closure, online all-holder admission,
+browser invalidation and protected/native delivery remain required work.

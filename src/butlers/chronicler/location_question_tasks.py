@@ -186,7 +186,8 @@ async def closed_received_question_tools(
 
     This breaks only the task/context receipt cycle. A floor alone, smaller
     admitted JOIN, current placeholder or another same-name Tool cannot qualify.
-    Unaccepted/error/ordinary/mixed attempts stay separate unresolved profiles.
+    Only a producer-recorded pre-admission refusal has a separate closed profile.
+    Other unaccepted/error/ordinary/mixed attempts remain unresolved.
     """
     from uuid import UUID
 
@@ -221,9 +222,16 @@ async def closed_received_question_tools(
             "WHERE i.receiving_generation=$1",
             attempt["receiving_generation"],
         )
+        if row is None:
+            from butlers.chronicler.location_question_refusals import closed_rejected_question_tool
+
+            if await closed_rejected_question_tool(conn, runtime, schema, session, plan, attempt):
+                good.add(tool)
+            else:
+                blocked.add(tool)
+            continue
         if (
-            row is None
-            or attempt["receiving_incarnation"] != runtime.incarnation
+            attempt["receiving_incarnation"] != runtime.incarnation
             or row["receiving_incarnation"] != runtime.incarnation
             or row["receiving_session"] != session
             or row["tool_generation"] != tool
