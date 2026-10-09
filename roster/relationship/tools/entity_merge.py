@@ -322,6 +322,25 @@ async def merge_entity_pair(
                 for key, value in source_metadata.items()
                 if key not in {"deleted_at", "merged_into", "unidentified"}
             }
+            # The immediate singleton index includes tombstones. Release only
+            # the source's owner role before assigning the union to the target;
+            # both locked rows and every later write share this transaction.
+            # The union above uses the original source roles, so owner is kept
+            # by the survivor and all other source roles remain on its history.
+            tombstone_metadata = {
+                **source_metadata,
+                "merged_into": str(target_entity_id),
+            }
+            await conn.execute(
+                """
+                UPDATE public.entities
+                SET metadata = $1, roles = array_remove(roles, 'owner'),
+                    updated_at = now()
+                WHERE id = $2
+                """,
+                tombstone_metadata,
+                source_entity_id,
+            )
             await conn.execute(
                 """
                 UPDATE public.entities
@@ -532,21 +551,6 @@ async def merge_entity_pair(
                     )
             except asyncpg.UndefinedTableError:
                 pass
-
-            tombstone_metadata = {
-                **source_metadata,
-                "merged_into": str(target_entity_id),
-            }
-            await conn.execute(
-                """
-                UPDATE public.entities
-                SET metadata = $1,
-                    updated_at = now()
-                WHERE id = $2
-                """,
-                tombstone_metadata,
-                source_entity_id,
-            )
 
             review_id = await write_merge_review(
                 conn,

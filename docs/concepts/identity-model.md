@@ -137,6 +137,13 @@ drain. PostgreSQL row security permits only Relationship to create a cohort
 and permits each runtime role to settle only the receipt bound to its own
 schema.
 
+Owner-source merges retain the immediate singleton index. Inside the same
+locked merge transaction, the source is tombstoned and loses only `owner`
+before the target receives the ordered role union computed from the original
+rows. Other source roles remain on its history. A downstream exception rolls
+back both identities and all moved references; no audit, receipt cohort or
+post-commit event records a successful merge.
+
 ## Verification
 
 To confirm the identity model described here matches the running system:
