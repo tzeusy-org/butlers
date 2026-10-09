@@ -1068,3 +1068,21 @@ refuse beside this positioned positive. This extension is authored but SQL/TCP
 UNRUN until exact-head hosted evidence. Original native ingest is planted, and
 independent-process deployment, arbitrary recipients, other holders, mixed/legacy
 descendants and complete source forgetting remain separately mandatory UNMET.
+
+
+### Managed browser current/archive control
+
+The authored Playwright control uses the actual Chronicles page, query hooks,
+shortening interaction and MapLibre/WebGL lifecycle. It plants old current and
+archive queries, holds fresh transport responses during invalidation, requires
+the old canvas to disconnect and its actual context to be lost, then admits a
+new generation with equal coordinates. Revisiting the old archived day must
+request the new generation and display its genuinely empty synthetic response.
+The fixture still reports incomplete dependent removal and unconfirmed deletion.
+There is no MapLibre replacement, GPU skip or widened runtime timeout. Tile
+requests are intercepted with a local blank raster and domain API replies are
+explicitly synthetic. This is authored browser evidence UNRUN until exact-head
+hosted execution; static collection/type checks cannot attest runtime erasure.
+Even a future browser PASS will establish this managed UI lifetime only, not
+upstream raw deletion, real authenticated retention policy, registered all-holder
+closure, other recipients or the whole original P1–P9/S1–S3 acceptance.
