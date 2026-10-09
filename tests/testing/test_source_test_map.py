@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from butlers.testing.source_test_map import FULL_SUITE, resolve_test_paths
+from butlers.testing.source_test_map import _PREFIX_MAP, FULL_SUITE, resolve_test_paths
 
 pytestmark = pytest.mark.unit
 
@@ -19,6 +19,14 @@ def _configured_testpaths() -> list[str]:
 
 def test_full_scope_matches_pytest_testpaths() -> None:
     assert FULL_SUITE == _configured_testpaths()
+    assert dict(_PREFIX_MAP)["src/butlers/core/prometheus.py"] == [
+        "tests/core/test_prometheus.py",
+        "tests/api/test_ingestion_pipeline.py",
+        "roster/switchboard/tests/test_connector_stats_prometheus.py",
+        "roster/switchboard/tests/test_ingestion_fanout_db_fallback.py",
+    ]
+    # The ownership map remains useful without weakening core's shared-boundary escalation.
+    assert resolve_test_paths(["src/butlers/core/prometheus.py"]) == FULL_SUITE
 
 
 @pytest.mark.parametrize(

@@ -86,6 +86,15 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     # --- Core: runtimes map to adapter tests ---
     ("src/butlers/core/runtimes/", ["tests/adapters/"]),
     # --- Core: telemetry & metrics ---
+    (
+        "src/butlers/core/prometheus.py",
+        [
+            "tests/core/test_prometheus.py",
+            "tests/api/test_ingestion_pipeline.py",
+            "roster/switchboard/tests/test_connector_stats_prometheus.py",
+            "roster/switchboard/tests/test_ingestion_fanout_db_fallback.py",
+        ],
+    ),
     ("src/butlers/core/telemetry.py", ["tests/telemetry/"]),
     ("src/butlers/core/metrics.py", ["tests/telemetry/", "tests/core/"]),
     # --- Core: skills ---
@@ -120,8 +129,6 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
         ],
     ),
     # --- Modules: mailbox ---
-    # --- Modules: metrics ---
-    ("src/butlers/modules/metrics/", ["tests/modules/"]),
     # --- Modules: calendar ---
     ("src/butlers/modules/calendar.py", ["tests/modules/"]),
     # --- Modules: catch-all ---

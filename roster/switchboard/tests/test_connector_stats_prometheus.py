@@ -365,7 +365,7 @@ async def test_get_ingestion_fanout_returns_db_matrix_when_producer_is_available
             }, []
 
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
-    with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
+    with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             sys.modules.pop("switchboard_api_models", None)
             import importlib
@@ -400,7 +400,7 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
     fake_error_result = [{"error": "bad request"}]
 
     with patch(
-        "butlers.modules.metrics.prometheus.async_query",
+        "butlers.core.prometheus.async_query",
         new=AsyncMock(return_value=fake_error_result),
     ):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
@@ -439,7 +439,7 @@ async def test_get_ingestion_fanout_availability_requires_queried_complete_sourc
             return self.results, self.failed
 
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
-    with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
+    with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             sys.modules.pop("switchboard_api_models", None)
             router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
@@ -487,7 +487,7 @@ async def test_get_ingestion_fanout_degrades_when_metric_family_is_absent():
             raise AssertionError("an absent Prometheus metric must not use DB fallback")
 
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "0"]}])
-    with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
+    with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             sys.modules.pop("switchboard_api_models", None)
             router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
