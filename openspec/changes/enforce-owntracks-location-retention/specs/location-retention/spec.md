@@ -373,6 +373,8 @@ Source: bu-s11n0s.7 original Documentation impact, Completeness gate and S1; RFC
 Scope: v1-mandatory
 
 
+Core264 own-ledger installation and retained validation SHALL use the established owner of the actual resolved core foundation state relation. A present local state SHALL take precedence and SHALL refuse malformed kind/identity; only absent local state MAY use fixed public.state in the adopted independent shared-predecessor replay topology. The target namespace SHALL exist, and the chosen state SHALL be a regular table with stored owner identity. Invocation or namespace identity, inferred role names and peer-private tables SHALL NOT substitute. Newly created ledgers MAY receive that existing owner; existing relations SHALL NOT be reassigned, and all original columns/constraints/ACL/role/populated-history controls SHALL remain enforced. Valid actual public-first health/general complete-chain replay SHALL be positioned beside malformed/missing/local-priority controls without changing any foreign migration or native scenario.
+
 #### Scenario: Full governing before after parity
 
 - **WHEN** the source change modifies retention/provenance/map contracts
@@ -395,6 +397,7 @@ Scope: v1-mandatory
 
 - **WHEN** source implementation is integrated against actual protected main
 - **THEN** no held h3/capture/custody/relationship migration or unpublished helper is imported, revisions are allocated from the actual chain and all source-holder/owner-condition hunks are serialized
+
 
 ### Requirement: Whole Original Scope and Meaningful Proof
 

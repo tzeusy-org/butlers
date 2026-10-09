@@ -620,6 +620,29 @@ async def test_native_inline_fixture_uses_complete_owning_retention_dependencies
             assert "Location retention history is permanent" in emitted
             assert "Location retention decision is immutable" in emitted
 
+    # Actual own migration classifier, with fixed catalog rows rather than
+    # invocation-identity or namespace-owner authority. SQL selection/replay is
+    # separately positioned in the existing migrated species.
+    migration = runpy.run_path(
+        str(root / "alembic/versions/core/core_264_owntracks_retention_lineage.py")
+    )
+    select = migration["_select_core_writer_owner"]
+    local = ("health", "r", 101, "stored-local-writer", True)
+    public = ("public", "r", 102, "stored-public-writer", True)
+    assert select("health", [local, public]) == (101, "stored-local-writer")
+    assert select("health", [public]) == (102, "stored-public-writer")
+    assert select("public", [public]) == (102, "stored-public-writer")
+    for rows in (
+        [],
+        [local, local, public],
+        [local[:1] + ("v",) + local[2:], public],
+        [public[:-1] + (False,)],
+        [public[:2] + (True,) + public[3:]],
+        [("foreign", *public[1:])],
+    ):
+        with pytest.raises(RuntimeError, match="core writer anchor"):
+            select("health", rows)
+
 
 async def test_native_mcp_input_birth_precedes_emission_and_unknown_commit_refuses(monkeypatch):
     """REQ-location-retention-005/006; actual producer/guard software, not SQL/MCP transport."""

@@ -183,8 +183,12 @@ full normative contract and unchecked remaining tasks.
 ## Replay and correction proof positions
 
 Empty own core264 downgrade retains inert local tables. Re-upgrade validates
-exact own table identity/columns/constraints against the same-schema core
-foundation `state` table owner, rather than the current invocation login. A newly
+exact own table identity/columns/constraints against the resolved core
+foundation `state` table owner, rather than the current invocation login. The
+local state is preferred and a malformed local relation refuses; an absent local
+state may use only the actual shared `public.state` in the adopted independently
+positioned shared-predecessor replay topology. Both table creation and replay validation use that same anchor,
+with an existing target namespace and a regular, stored-owner relation. A newly
 created own ledger is assigned to that existing migration-writer identity; an
 existing wrong-owner relation is never transferred/adopted. Managed replay may
 run under the already approved bootstrap identity while keeping the original
@@ -1150,3 +1154,34 @@ the original fact survives. These new TCP/SQL controls are hosted UNRUN until
 the exact owning node passes, and even then only attest this registered
 system-owned response-copy protocol. They do not prove remote recipient disposal,
 actual daemon/CLI ingress, READY, raw erasure or every holder's closure.
+
+
+The a791 hosted ordinary health/general core replay later reached own core264's
+same-schema-only state owner lookup and raised NoResultFound. The resolved-anchor
+correction preserves every ownership/kind/shape/ACL/populated-history refusal;
+no owner is inferred from the caller, and existing objects are never reassigned.
+The existing migrated transport species now calls the actual public core chain,
+then verifies the actual public core head and its source-defined predecessor265
+ancestry, independently stamps only that already-applied shared predecessor, and
+runs health/general through own264, asserting absent local state and ledger owner
+equality to actual public.state. It does not stamp past the failing own revision. These new complete-chain controls are hosted UNRUN until
+the exact named species executes; the older failure remains dated evidence.
+
+
+The local-state absence in this replay is not evidence that fresh core001
+`CREATE TABLE IF NOT EXISTS` skips local creation because a later search-path
+table exists. PostgreSQL 17 checks existing relations in the creation namespace
+([official namespace implementation](https://raw.githubusercontent.com/postgres/postgres/REL_17_STABLE/src/backend/catalog/namespace.c)).
+The actual protected core255 control uses an independently stamped health
+version after shared predecessors. The correction supports that established
+replay while fresh local foundations retain local-anchor priority.
+
+
+The 9850 registered terminal positive reached the full global ancestry census
+and correctly refused the preceding species' deliberately retained malformed
+artifact bundles. The same existing species now explicitly proves that global
+refusal, then uses a separate database created by the actual migration factory
+for its healthy registered cohort. No immutable history is deleted or repaired,
+and no artifact-specific filter narrows the source frontier. The registered
+positive remains hosted UNRUN at this correction; reaching a real routed body
+in the earlier failure is not a terminal receipt or all-holder success.

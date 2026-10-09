@@ -404,19 +404,25 @@ never erase floors to repair a revision. Actual migration/role controls must
 execute before reporting installed authority or recovery proof.
 
 Empty core264 rollback retains inert own ledgers. Its installer accepts only the
-exact own table columns/constraints and the established same-schema core
+exact own table columns/constraints and the established resolved core
 writer owner before
 converging functions/triggers; populated history still requires roll-forward.
 Chronicler privacy preparation preserves every contributor's original output
 generation and records monotone previous-to-reduced transitions in the same
 transaction, including contributors outside the current bounded plan.
 
-Retained core264 local ledgers use their same-schema core foundation `state`
-table's established migration-writer owner as the catalog identity anchor. A
-managed replay's invoking bootstrap login need not be that owner. Only newly
-created ledgers receive that existing owner; retained wrong-owner/kind/shape
-relations fail closed. Replay does not transfer existing objects, grant role
-membership, erase floors, or bypass populated-history refusal.
+Retained core264 local ledgers use the actual core foundation `state` relation's
+established migration-writer owner as the catalog identity anchor. A local state
+relation takes precedence; its wrong kind or identity refuses. Only when local
+state is absent may the fixed shared `public.state` anchor be used: the adopted
+shared-predecessor replay can independently position a schema version after
+public core predecessors without having run its own local foundation. The target namespace must
+exist, and the selected state must be a regular table with a stored owner. No
+invocation identity, namespace owner, inferred runtime role or peer table can
+substitute. A managed replay's invoking login need not be the retained owner.
+Only newly created ledgers receive that existing owner; retained wrong-owner,
+kind, columns and constraints still fail closed. Replay does not transfer
+existing objects, grant membership, erase floors or bypass populated refusal.
 
 
 Retention core264 is an additive successor of the actually protected core265

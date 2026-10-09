@@ -26,22 +26,60 @@ _RECEIPTS = (
 )
 
 
-def _create_local_tables(schema: str, statement: str) -> None:
-    """New own ledgers share the established core writer's owner.
+def _select_core_writer_owner(schema: str, rows: list) -> tuple[int, str]:
+    """Resolve the actual foundation state relation, never the invoking login.
 
-    The core foundation state table predates this feature in this exact schema.
-    Current invocation identity is not a retained object's permanent owner.
-    Never transfer an existing relation or grant membership to make it fit.
+    Shared-predecessor replay may have public.state without a local state.
+    A present local state always wins, including malformed local
+    kinds (which refuse). Only an absent local state permits the fixed public
+    fallback. No arbitrary peer table, namespace owner or role name is inferred.
+    """
+    if any(len(row) != 5 or row[0] not in {schema, "public"} for row in rows):
+        raise RuntimeError("Location retention core writer anchor differs")
+    local = [row for row in rows if row[0] == schema]
+    public = [row for row in rows if row[0] == "public"]
+    selected = local if local else public
+    if len(selected) != 1:
+        raise RuntimeError("Location retention core writer anchor is unavailable")
+    namespace, kind, owner_oid, owner_name, target_exists = selected[0]
+    if (
+        kind != "r"
+        or type(owner_oid) is not int
+        or owner_oid <= 0
+        or not isinstance(owner_name, str)
+        or not owner_name
+        or target_exists is not True
+    ):
+        raise RuntimeError("Location retention core writer anchor differs")
+    return owner_oid, owner_name
+
+
+def _core_writer_owner(schema: str) -> tuple[int, str]:
+    rows = (
+        op.get_bind()
+        .execute(
+            sa.text("""
+        SELECT n.nspname,s.relkind,s.relowner,pg_catalog.pg_get_userbyid(s.relowner),
+          EXISTS(SELECT 1 FROM pg_catalog.pg_namespace target WHERE target.nspname=:schema)
+        FROM pg_catalog.pg_class s JOIN pg_catalog.pg_namespace n ON n.oid=s.relnamespace
+        WHERE n.nspname IN (:schema,'public') AND s.relname='state'
+    """),
+            {"schema": schema},
+        )
+        .all()
+    )
+    return _select_core_writer_owner(schema, rows)
+
+
+def _create_local_tables(schema: str, statement: str) -> None:
+    """New own ledgers share the established resolved core writer's owner.
+
+    The actual foundation state can be local or the adopted shared public
+    fallback. Current invocation identity is not its permanent owner. Never
+    transfer an existing relation or grant membership to make it fit.
     """
     bind = op.get_bind()
-    owner = bind.execute(
-        sa.text("""
-        SELECT pg_catalog.pg_get_userbyid(s.relowner)
-        FROM pg_catalog.pg_class s JOIN pg_catalog.pg_namespace n ON n.oid=s.relnamespace
-        WHERE n.nspname=:schema AND s.relname='state' AND s.relkind='r'
-    """),
-        {"schema": schema},
-    ).scalar_one()
+    _, owner = _core_writer_owner(schema)
     present = set(
         bind.execute(
             sa.text("""
@@ -1036,19 +1074,19 @@ def _validate_local_tables(schema: str) -> None:
         }
     )
     bind = op.get_bind()
+    owner_oid, _ = _core_writer_owner(schema)
     for table, shape in expected.items():
         relation = bind.execute(
             sa.text("""
             SELECT c.oid,c.relkind,
-              c.relowner=s.relowner AND s.relkind='r',
+              c.relowner=CAST(:owner_oid AS oid),
               pg_catalog.pg_get_userbyid(c.relowner)=current_user,
               current_user=session_user,
-              pg_catalog.pg_has_role(current_user,s.relowner,'SET')
+              pg_catalog.pg_has_role(current_user,CAST(:owner_oid AS oid),'SET')
             FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-            JOIN pg_catalog.pg_class s ON s.relnamespace=n.oid AND s.relname='state'
             WHERE n.nspname=:schema AND c.relname=:table
         """),
-            {"schema": schema, "table": table},
+            {"schema": schema, "table": table, "owner_oid": owner_oid},
         ).one()
         if relation[1] != "r" or not relation[2]:
             # Fixed booleans only: no role names, OIDs, schema/raw source values.

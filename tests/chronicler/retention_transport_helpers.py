@@ -45,6 +45,46 @@ async def _own_tcp(app):
 
 
 async def assert_registered_catalog_transport(url, postgres_container, memory_pool, embedding):
+    """Keep malformed-history refusal separate from the healthy routed cohort.
+
+    The preceding species deliberately retains missing/mismatched/extra/empty
+    immutable artifact bundles. The global census must refuse them, even if
+    they appear unrelated to a new plan. A healthy positive needs its own
+    actual migration-created database, not deletion or repair of those floors.
+    """
+    import asyncpg
+    import pytest
+
+    from butlers.chronicler.location_catalog_copies import require_catalog_artifact_ancestry
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.db import register_jsonb_codec
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+        await require_catalog_artifact_ancestry(memory_pool)
+    fresh_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "chronicler", "memory"],
+        schemas={"core": "chronicler", "chronicler": "chronicler", "memory": "chronicler_mem"},
+    )
+    fresh_memory = await asyncpg.create_pool(
+        fresh_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "chronicler_mem,public"},
+    )
+    try:
+        await _assert_registered_catalog_transport(
+            fresh_url, postgres_container, fresh_memory, embedding
+        )
+    finally:
+        await fresh_memory.close()
+
+
+async def _assert_registered_catalog_transport(url, postgres_container, memory_pool, embedding):
     """Real registered consumer→Switchboard→source and online callback controls.
 
     Domain connections use the existing managed runtime identities. Chronicler's
@@ -84,6 +124,38 @@ async def assert_registered_catalog_transport(url, postgres_container, memory_po
         await run_migrations(url, chain="core", schema=name)
         await run_migrations(url, chain="memory", schema=name)
     await run_migrations(url, chain="switchboard", schema="switchboard")
+    # The adopted core255 replay positions an independent schema version
+    # after genuinely applied shared predecessors, without local foundation
+    # state. Stamp only the already-applied public predecessor, then execute
+    # our successor via the actual migration entrypoint; never stamp past it.
+    from alembic import command
+    from butlers.migrations import _build_alembic_config, get_chain_head, get_chain_revision_ids
+
+    await run_migrations(url, chain="core", schema="public")
+    ordinary = await asyncpg.connect(url)
+    try:
+        assert await ordinary.fetchval(
+            "SELECT version_num FROM public.alembic_version WHERE version_num LIKE 'core_%'"
+        ) == get_chain_head("core")
+        assert "core_265" in get_chain_revision_ids("core")
+        for name in ("health", "general"):
+            config = _build_alembic_config(url, ["core"], target_schema=name)
+            await asyncio.to_thread(command.stamp, config, "core_265")
+            await run_migrations(url, chain="core", schema=name)
+            assert await ordinary.fetchval("SELECT to_regclass($1)", name + ".state") is None
+            assert (
+                await ordinary.fetchval(
+                    "SELECT c.relkind='r' AND c.relowner=s.relowner "
+                    "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+                    "JOIN pg_class s ON s.relname='state' "
+                    "JOIN pg_namespace p ON p.oid=s.relnamespace AND p.nspname='public' "
+                    "WHERE n.nspname=$1 AND c.relname='location_retention_copy_receipts'",
+                    name,
+                )
+                is True
+            )
+    finally:
+        await ordinary.close()
     parsed = urlparse(url)
     await asyncio.to_thread(
         _bootstrap_migration_prerequisites,
