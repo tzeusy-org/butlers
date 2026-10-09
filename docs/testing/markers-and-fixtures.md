@@ -217,3 +217,15 @@ Tests can use this to skip gracefully when Docker is not installed.
 ## Related Pages
 
 - [Testing Strategy](testing-strategy.md) -- Test pyramid and quality gates
+
+## Owned migrated templates
+
+`create_migrated_test_db` and `create_migrated_test_pool` remain genuinely fresh by default. Reviewed behavior fixtures can explicitly pass `fresh=eligible_fixture_fresh()`. `--migration-fixtures=fresh` switches only those adopted callers back to independent ordinary-role bootstrap and real migrations for a compatible comparison; it never changes selectors, markers, workers, tracing or coverage. Migration/bootstrap/ACL/role subjects and production `Database.provision` stay fresh. Cache parity tests explicitly exercise cloning as their subject under either comparison policy.
+
+`MigrationStage(chain, schema, revision)` retains the full order, including repeated core stages for the thirteen-schema Concierge fleet. `migrated_at` caches only a source-resolved prerequisite; the target upgrade/downgrade still runs in each test. No stamp substitutes for execution.
+
+Each testcontainer/process owns its private key roles, immutable complete sources and distinct borrower databases. Key principals are ordinary NOCREATEDB, NOINHERIT, non-superuser logins. Builds run unchanged bootstrap through the existing disposable control login and real migrations under the key login. No per-clone catalog reownership or production privilege changes occur. Full source bytes/modes, dependency/runtime/ambient migration inputs, server/extensions and ordered resolved stages bind the key. Unknown inputs, incomplete builds, changed authority or mismatched catalog/ACL/settings refuse reuse.
+
+Construction uses an owned bounded child with private input through stdin, discarded output, cancellation/timeout kill and reap before lock release. Async callers join cancelled construction and cleanup. Container teardown drops only its owned databases and roles before stopping the container. Full reference parity freezes clone/global catalogs before independently replaying migrations with the same principal, so bootstrap cannot repair and conceal a clone defect.
+
+This is SOURCE preparation. Stand-in retirement, genuine PostgreSQL parity, actual clone-cost measurement, complete historical/current population reconciliation, three compatible merge-group comparisons and ten-run hard bounds remain separately mandatory. No wall-clock gain is claimed. The active `owned-migrated-integration-templates` change preserves the complete preparation and delivery record.

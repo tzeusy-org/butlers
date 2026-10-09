@@ -231,6 +231,7 @@ tests/scripts/test_summarize_junit_durations.py
 tests/scripts/test_tailnet_health_monitoring_contract.py
 tests/scripts/test_whatsapp_bridge_toolchain.py
 tests/smoke/test_health.py
+tests/testing/test_migrated_templates.py
 tests/testing/test_scoped_runner.py
 tests/tools/test_beads_worktree_hydration.py
 tests/tools/test_contact_entity_lifecycle.py

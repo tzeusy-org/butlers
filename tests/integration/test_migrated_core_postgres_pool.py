@@ -41,3 +41,10 @@ async def test_migrated_core_pool_uses_schema_accurate_bootstrap(monkeypatch) ->
         }
     ]
     assert pool.closed is True
+
+    # REQ-testing-052: cache eligibility is an explicit caller choice, never a
+    # filename/call-stack classifier or a fresh=True keyword with no effect.
+    calls.clear()
+    async with provision(fresh=False):
+        pass
+    assert calls[0]["fresh"] is False

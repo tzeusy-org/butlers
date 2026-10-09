@@ -513,6 +513,21 @@ def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
 
+def pytest_addoption(parser) -> None:
+    parser.addoption(
+        "--migration-fixtures",
+        choices=("cloned-eligible", "fresh"),
+        default="cloned-eligible",
+        help="Only explicitly adopted behavior fixtures: cloned setup or real fresh comparison",
+    )
+
+
+def pytest_configure(config) -> None:
+    from butlers.testing import migration
+
+    migration._ELIGIBLE_FIXTURES_FRESH = config.getoption("--migration-fixtures") == "fresh"
+
+
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
     """Shared Postgres testcontainer for all DB-backed tests in this pytest session.
@@ -524,8 +539,13 @@ def postgres_container() -> Iterator[PostgresContainer]:
     """
     from testcontainers.postgres import PostgresContainer
 
+    from butlers.testing.migrated_templates import close_template_cache
+
     with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
+        try:
+            yield pg
+        finally:
+            close_template_cache(pg)
 
 
 @pytest.fixture

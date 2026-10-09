@@ -32,7 +32,11 @@ Adding a migration column or table requires zero changes in tests — the next
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
+from collections.abc import Sequence
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -42,6 +46,40 @@ from sqlalchemy import Connection, create_engine, text
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
 _PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
+_PROVISIONING_LOCK = threading.RLock()
+_DISPOSABLE_MIGRATION_ROLES: set[str] = set()
+_ELIGIBLE_FIXTURES_FRESH = False
+
+
+def eligible_fixture_fresh() -> bool:
+    """Explicit adopted callers share the observable fresh-vs-clone comparison policy."""
+    return _ELIGIBLE_FIXTURES_FRESH
+
+
+@contextmanager
+def provisioning_lock():
+    """Serialize role/bootstrap changes during a complete parity reference."""
+    if not _PROVISIONING_LOCK.acquire(timeout=300):
+        raise RuntimeError("test provisioning owner timeout")
+    try:
+        yield
+    finally:
+        _PROVISIONING_LOCK.release()
+
+
+def disposable_migration_roles() -> frozenset[str]:
+    """Exact roles created by this process, never a role-name prefix exemption."""
+    with provisioning_lock():
+        return frozenset(_DISPOSABLE_MIGRATION_ROLES)
+
+
+def _serialized_provisioning(function):
+    @wraps(function)
+    def provision(*args, **kwargs):
+        with provisioning_lock():
+            return function(*args, **kwargs)
+
+    return provision
 
 
 def migration_db_name() -> str:
@@ -60,6 +98,7 @@ def migration_bootstrap_db_url(postgres_container: object, db_name: str) -> str:
     return parsed._replace(path=f"/{quote(db_name, safe='')}").geturl()
 
 
+@_serialized_provisioning
 def create_migration_db(postgres_container: object, db_name: str) -> str:
     """Provision a fresh bootstrapped database on *postgres_container*.
 
@@ -112,6 +151,7 @@ def _create_test_migration_role(admin_url: str, role: str, password: str) -> Non
                 ),
                 {"password": password},
             )
+            _DISPOSABLE_MIGRATION_ROLES.add(role)
     finally:
         engine.dispose()
 
@@ -333,9 +373,13 @@ def assert_at_chain_head(
 def create_migrated_test_db(
     postgres_container: object,
     db_name: str,
-    chains: list[str],
+    chains: list[str] | None = None,
     schemas: dict[str, str] | None = None,
     revisions: dict[str, str] | None = None,
+    *,
+    fresh: bool = True,
+    stages: Sequence | None = None,
+    _cancel: threading.Event | None = None,
 ) -> str:
     """Create a fresh DB and run real Alembic migrations against it.
 
@@ -395,6 +439,31 @@ def create_migrated_test_db(
                 schemas={"relationship": "relationship"},
             )
     """
+    # REQ-testing-052 / REQ-testing-054: fresh is a real rollback, never an
+    # implicit optimization of migration/role/bootstrap subjects.
+    from butlers.testing.migrated_templates import MigrationStage, template_cache
+
+    if type(fresh) is not bool:
+        raise TypeError("fresh must be a boolean")
+    if stages is not None and (chains is not None or schemas or revisions):
+        raise ValueError("ordered stages cannot be combined with chain mappings")
+    requested = (
+        tuple(stages)
+        if stages is not None
+        else tuple(
+            MigrationStage(chain, (schemas or {}).get(chain), (revisions or {}).get(chain))
+            for chain in (chains or ())
+        )
+    )
+    if any(not isinstance(stage, MigrationStage) for stage in requested):
+        raise TypeError("stages must contain MigrationStage values")
+    if not fresh:
+        if not requested:
+            raise ValueError("a template requires at least one real migration stage")
+        return template_cache(postgres_container).borrow(
+            db_name, requested, _cancel or threading.Event()
+        )
+
     # Local import avoids a circular import at module load time.
     from butlers.migrations import run_migrations
 
@@ -405,9 +474,8 @@ def create_migrated_test_db(
 
     db_url = create_migration_db(postgres_container, db_name)
 
-    for chain in chains:
-        schema = schemas.get(chain)
-        revision = revisions.get(chain)
+    for stage in requested:
+        chain, schema, revision = stage.chain, stage.schema, stage.revision
         if revision is None:
             asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
         else:
@@ -434,14 +502,36 @@ def _upgrade_chain_to_revision(
     command.upgrade(config, f"{chain}@{revision}")
 
 
+def migrated_at(
+    postgres_container: object,
+    *,
+    chain: str,
+    revision: str,
+    schema: str | None = None,
+    fresh: bool = False,
+) -> str:
+    """Cache only an explicitly reviewed prerequisite; the caller runs its subject."""
+    from butlers.testing.migrated_templates import MigrationStage
+
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        stages=(MigrationStage(chain, schema, revision),),
+        fresh=fresh,
+    )
+
+
 async def create_migrated_test_pool(
     postgres_container: object,
     *,
-    chains: list[str],
+    chains: list[str] | None = None,
     schemas: dict[str, str] | None = None,
     pool_schema: str | None = None,
     min_pool_size: int = 1,
     max_pool_size: int = 3,
+    revisions: dict[str, str] | None = None,
+    fresh: bool = True,
+    stages: Sequence | None = None,
 ) -> asyncpg.Pool:
     """Create a schema-accurate asyncpg pool without blocking an active event loop.
 
@@ -453,13 +543,43 @@ async def create_migrated_test_pool(
     """
     from butlers.db import register_jsonb_codec, schema_search_path
 
-    db_url = await asyncio.to_thread(
-        create_migrated_test_db,
-        postgres_container,
-        migration_db_name(),
-        chains,
-        schemas,
+    cancel = threading.Event()
+    construction = asyncio.create_task(
+        asyncio.to_thread(
+            create_migrated_test_db,
+            postgres_container,
+            migration_db_name(),
+            chains,
+            schemas,
+            revisions,
+            fresh=fresh,
+            stages=stages,
+            _cancel=cancel,
+        )
     )
+    try:
+        db_url = await asyncio.shield(construction)
+    except asyncio.CancelledError:
+        cancel.set()
+        # Repeated cancellation must not release ownership while the thread's
+        # builder can still mutate a database. Its child is killed/reaped first.
+        while not construction.done():
+            try:
+                await asyncio.shield(construction)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not construction.cancelled():
+            if construction.exception() is None and not fresh:
+                from butlers.testing.migrated_templates import template_cache
+
+                await _join_owned_cleanup(
+                    asyncio.to_thread(
+                        template_cache(postgres_container).discard_clone, construction.result()
+                    )
+                )
+        raise
     pool_kwargs: dict[str, object] = {
         "min_size": min_pool_size,
         "max_size": max_pool_size,
@@ -470,4 +590,34 @@ async def create_migrated_test_pool(
         assert search_path is not None
         pool_kwargs["server_settings"] = {"search_path": search_path}
 
-    return await asyncpg.create_pool(db_url, **pool_kwargs)
+    creation = asyncio.ensure_future(asyncpg.create_pool(db_url, **pool_kwargs))
+    try:
+        return await asyncio.shield(creation)
+    except BaseException:
+        while not creation.done():
+            try:
+                await asyncio.shield(creation)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not creation.cancelled() and creation.exception() is None:
+            await _join_owned_cleanup(creation.result().close())
+        if not fresh:
+            from butlers.testing.migrated_templates import template_cache
+
+            await _join_owned_cleanup(
+                asyncio.to_thread(template_cache(postgres_container).discard_clone, db_url)
+            )
+        raise
+
+
+async def _join_owned_cleanup(awaitable):
+    """Repeated cancellation cannot abandon a still-mutating cleanup owner."""
+    cleanup = asyncio.ensure_future(awaitable)
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            continue
+    return cleanup.result()

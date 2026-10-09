@@ -1,0 +1,733 @@
+"""Private, disposable migrated-template ownership for explicitly eligible tests.
+
+Nothing here provisions a production database. Each cache belongs to one
+testcontainer in one process. Credentials/catalogs remain in memory; errors
+expose categories rather than connection strings or SQL exception arguments.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import importlib.metadata
+import json
+import os
+import re
+import signal
+import stat
+import subprocess
+import sys
+import threading
+import time
+import uuid
+import weakref
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import quote, urlparse
+
+from sqlalchemy import create_engine, text
+
+_ROOT = Path(__file__).resolve().parents[3]
+_WAIT_SECONDS = 300
+_BUILD_SECONDS = 300
+_CONTROL_SECONDS = 20
+_CACHES_LOCK = threading.RLock()
+_CACHES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+class TemplateError(RuntimeError):
+    """A closed, content-free failure in owned test provisioning."""
+
+
+@dataclass(frozen=True)
+class MigrationStage:
+    """An ordered real chain target; duplicate chains in different schemas survive."""
+
+    chain: str
+    schema: str | None = None
+    revision: str | None = None
+
+    def resolved(self) -> MigrationStage:
+        from butlers.migrations import _chain_script_directory, _normalize_schema, get_chain_head
+
+        target = self.revision or get_chain_head(self.chain)
+        directory = _chain_script_directory(self.chain)
+        revision = directory.get_revision(target)
+        if revision is None or revision.revision != target:
+            raise TemplateError("unresolved-stage")
+        return MigrationStage(self.chain, _normalize_schema(self.schema), target)
+
+
+def _ident(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+@contextmanager
+def _connection(url: str):
+    engine = create_engine(
+        url,
+        isolation_level="AUTOCOMMIT",
+        connect_args={
+            "connect_timeout": 10,
+            "options": "-c statement_timeout=20000 -c lock_timeout=5000",
+        },
+    )
+    try:
+        with engine.connect() as connection:
+            yield connection
+    finally:
+        engine.dispose()
+
+
+def _environment_inputs(module: ast.Module) -> set[str]:
+    """Resolve finite os aliases; dynamic ambient migration inputs refuse."""
+    aliases = {}
+    constants = {}
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    aliases[alias.asname or alias.name] = "os"
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == "*":
+                    raise TemplateError("unbound-migration-environment")
+                aliases[alias.asname or alias.name] = f"os.{alias.name}"
+
+    def dotted(node):
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            return f"{dotted(node.value)}.{node.attr}"
+        return ""
+
+    for node in ast.walk(module):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    constants[target.id] = node.value.value
+                elif dotted(node.value).startswith("os."):
+                    aliases[target.id] = dotted(node.value)
+
+    inputs = set()
+    for node in ast.walk(module):
+        argument = None
+        if isinstance(node, ast.Call):
+            function = dotted(node.func)
+            if function in ("os.environ.get", "os.getenv"):
+                if not node.args:
+                    raise TemplateError("unbound-migration-environment")
+                argument = node.args[0] if node.args else None
+            elif function.startswith("os.environ."):
+                raise TemplateError("unbound-migration-environment")
+            elif function == "getattr" and node.args and dotted(node.args[0]) == "os":
+                raise TemplateError("unbound-migration-environment")
+        elif isinstance(node, ast.Subscript) and dotted(node.value) == "os.environ":
+            argument = node.slice
+        else:
+            continue
+        if argument is None:
+            continue
+        key = (
+            argument.value
+            if isinstance(argument, ast.Constant)
+            else constants.get(argument.id if isinstance(argument, ast.Name) else "")
+        )
+        if not isinstance(key, str):
+            raise TemplateError("unbound-migration-environment")
+        inputs.add(key)
+    return inputs
+
+
+def source_profile(root: Path = _ROOT) -> str:
+    """Bind actual bytes/modes, including dirty and new relevant working-tree inputs."""
+    git_environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=root,
+        env=git_environment,
+        capture_output=True,
+        timeout=10,
+        check=True,
+    )
+    selected = sorted(
+        {
+            p
+            for p in result.stdout.decode().split("\0")
+            if p
+            and (
+                p.startswith(("src/", "alembic/", "roster/", "tests/"))
+                or p in ("scripts/init-db.sql", "pyproject.toml", "uv.lock", "conftest.py")
+            )
+        }
+    )
+    if not selected or not {"scripts/init-db.sql", "pyproject.toml", "uv.lock"} <= set(selected):
+        raise TemplateError("incomplete-source-profile")
+    digest = hashlib.sha256()
+    digest.update(sys.version.encode())
+    for package in ("alembic", "sqlalchemy", "psycopg2-binary", "asyncpg"):
+        digest.update(package.encode() + importlib.metadata.version(package).encode())
+    for name in selected:
+        path = root / name
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            target = path.resolve(strict=True)
+            if not target.is_relative_to(root):
+                raise TemplateError("external-source-input")
+            if target.is_dir():
+                if not any(
+                    target.is_relative_to(root / prefix) for prefix in ("src", "alembic", "roster")
+                ):
+                    raise TemplateError("unbound-directory-source-input")
+                # The actual target's tracked/new files are separately bound by
+                # the same complete prefix inventory; never dereference a dir as
+                # a file or replace its Git link identity with an invented blob.
+                payload = (
+                    os.readlink(path).encode() + b"\0DIR\0" + str(target.relative_to(root)).encode()
+                )
+            else:
+                payload = os.readlink(path).encode() + b"\0" + target.read_bytes()
+        elif stat.S_ISREG(info.st_mode):
+            payload = path.read_bytes()
+        else:
+            raise TemplateError("unsupported-source-input")
+        digest.update(name.encode() + b"\0" + str(stat.S_IMODE(info.st_mode)).encode() + b"\0")
+        digest.update(hashlib.sha256(payload).digest())
+        if name.endswith(".py") and (
+            name.startswith("alembic/versions/")
+            or (name.startswith(("src/", "roster/")) and "/migrations/" in name)
+        ):
+            module = ast.parse(payload, filename=name)
+            for setting in sorted(_environment_inputs(module)):
+                # Hash only the actually referenced input; never emit its value.
+                value = os.environ.get(setting)
+                digest.update(
+                    setting.encode()
+                    + b"\0"
+                    + (b"ABSENT" if value is None else b"PRESENT\0" + value.encode())
+                )
+    return digest.hexdigest()
+
+
+@dataclass
+class _Entry:
+    source_name: str
+    role: str
+    password: str = field(repr=False)
+    stages: tuple[MigrationStage, ...]
+    profile: str
+    authority: object = None
+    database_state: object = None
+    schema: bytes = field(default=b"", repr=False)
+    ready: bool = False
+
+
+class _Backend:
+    def __init__(self, container: object):
+        self.container = container
+        self.admin_url = container.get_connection_url()
+        self.host = container.get_container_host_ip()
+        self.port = container.get_exposed_port(5432)
+
+    def url(self, name: str, entry: _Entry) -> str:
+        return (
+            f"postgresql://{quote(entry.role, safe='')}:{quote(entry.password, safe='')}"
+            f"@{self.host}:{self.port}/{quote(name, safe='')}"
+        )
+
+    def admin_db(self, name: str) -> str:
+        return urlparse(self.admin_url)._replace(path=f"/{quote(name, safe='')}").geturl()
+
+    def identity(self) -> tuple:
+        with _connection(self.admin_url) as connection:
+            server = connection.execute(
+                text("SELECT system_identifier::text FROM pg_control_system()")
+            ).scalar_one()
+            version = connection.execute(text("SHOW server_version_num")).scalar_one()
+            extensions = tuple(
+                tuple(row)
+                for row in connection.execute(
+                    text(
+                        "SELECT name,default_version FROM pg_available_extensions "
+                        "WHERE name IN ('vector','pgcrypto','uuid-ossp','pg_trgm') ORDER BY name"
+                    )
+                )
+            )
+        if len(extensions) != 4:
+            raise TemplateError("missing-server-extension")
+        return (os.getpid(), server, version, extensions, self.host, str(self.port))
+
+    def create_role(self, entry: _Entry) -> None:
+        with _connection(self.admin_url) as connection:
+            connection.execute(
+                text(
+                    f"CREATE ROLE {_ident(entry.role)} LOGIN NOINHERIT NOSUPERUSER NOCREATEROLE "
+                    "NOCREATEDB NOREPLICATION PASSWORD :password"
+                ),
+                {"password": entry.password},
+            )
+
+    def construct(self, entry: _Entry, name: str, cancel: threading.Event) -> None:
+        """Join/kill the actual owning builder before releasing any cache state."""
+        payload = json.dumps(
+            {
+                "admin_url": self.admin_url,
+                "url": self.url(name, entry),
+                "name": name,
+                "role": entry.role,
+                "stages": [vars(stage) for stage in entry.stages],
+            }
+        ).encode()
+        child = subprocess.Popen(
+            [sys.executable, "-m", "butlers.testing.migrated_templates", "--build"],
+            cwd=_ROOT,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            assert child.stdin is not None
+            child.stdin.write(payload)
+            child.stdin.close()
+            deadline = time.monotonic() + _BUILD_SECONDS
+            while child.poll() is None:
+                if cancel.is_set() or time.monotonic() >= deadline:
+                    raise TemplateError(
+                        "construction-cancelled" if cancel.is_set() else "construction-timeout"
+                    )
+                time.sleep(0.02)
+            if child.returncode != 0:
+                raise TemplateError("construction-failed")
+        finally:
+            if child.poll() is None:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            child.wait(timeout=_CONTROL_SECONDS)
+
+    def authority(self, entry: _Entry, *, complete: bool = False) -> tuple:
+        with _connection(self.admin_url) as connection:
+            roles = tuple(
+                tuple(r)
+                for r in connection.execute(
+                    text(
+                        "SELECT rolname,rolsuper,rolinherit,rolcreaterole,rolcreatedb,rolcanlogin,"
+                        "rolreplication,rolbypassrls,rolconnlimit,rolvaliduntil,rolconfig "
+                        "FROM pg_roles ORDER BY rolname"
+                    )
+                )
+            )
+            edges = tuple(
+                tuple(r)
+                for r in connection.execute(
+                    text(
+                        "SELECT parent.rolname,member.rolname,grantor.rolname,"
+                        "m.admin_option,m.inherit_option,m.set_option FROM pg_auth_members m "
+                        "JOIN pg_roles parent ON parent.oid=m.roleid "
+                        "JOIN pg_roles member ON member.oid=m.member "
+                        "JOIN pg_roles grantor ON grantor.oid=m.grantor ORDER BY 1,2,3,4,5,6"
+                    )
+                )
+            )
+        if complete:
+            return roles, edges
+
+        # Fresh tests may create other ordinary migration logins. Their edges
+        # cannot certify or alter this key's/fixed managed principals' authority.
+        from butlers.testing.migration import disposable_migration_roles
+
+        other_disposable = disposable_migration_roles() - {entry.role}
+
+        def relevant(name):
+            return name not in other_disposable
+
+        return tuple(r for r in roles if relevant(r[0])), tuple(
+            r for r in edges if all(relevant(name) for name in r[:3]) or entry.role in r[:3]
+        )
+
+    def database_state(self, name: str) -> tuple:
+        with _connection(self.admin_url) as connection:
+            owner, null_acl = connection.execute(
+                text(
+                    "SELECT pg_get_userbyid(datdba),datacl IS NULL "
+                    "FROM pg_database WHERE datname=:name"
+                ),
+                {"name": name},
+            ).one()
+            acl = tuple(
+                tuple(r)
+                for r in connection.execute(
+                    text(
+                        "SELECT pg_get_userbyid(a.grantor),a.grantee=0,"
+                        "CASE WHEN a.grantee=0 THEN NULL ELSE pg_get_userbyid(a.grantee) END,"
+                        "a.privilege_type,a.is_grantable "
+                        "FROM pg_database d CROSS JOIN LATERAL "
+                        "aclexplode(COALESCE(d.datacl,acldefault('d',d.datdba))) a "
+                        "WHERE d.datname=:name ORDER BY 1,2,3,4,5"
+                    ),
+                    {"name": name},
+                )
+            )
+            settings = tuple(
+                (r[0], tuple(r[1]))
+                for r in connection.execute(
+                    text(
+                        "SELECT CASE WHEN s.setrole=0 THEN NULL "
+                        "ELSE pg_get_userbyid(s.setrole) END,s.setconfig "
+                        "FROM pg_db_role_setting s JOIN pg_database d ON d.oid=s.setdatabase "
+                        "WHERE d.datname=:name ORDER BY s.setrole"
+                    ),
+                    {"name": name},
+                )
+            )
+        return owner, null_acl, acl, settings
+
+    def validate_stages(self, entry: _Entry, name: str) -> None:
+        from butlers.migrations import get_chain_revision_ids
+
+        with _connection(self.url(name, entry)) as connection:
+            for stage in entry.stages:
+                schema = stage.schema or "public"
+                stamped = {
+                    row[0]
+                    for row in connection.execute(
+                        text(f"SELECT version_num FROM {_ident(schema)}.alembic_version")
+                    )
+                }
+                if stamped.intersection(get_chain_revision_ids(stage.chain)) != {stage.revision}:
+                    raise TemplateError("incomplete-stage-stamps")
+
+    def validate_source_flags(self, entry: _Entry) -> None:
+        with _connection(self.admin_url) as connection:
+            row = connection.execute(
+                text(
+                    "SELECT pg_get_userbyid(datdba),datistemplate,datallowconn "
+                    "FROM pg_database WHERE datname=:name"
+                ),
+                {"name": entry.source_name},
+            ).one_or_none()
+            if row is None or tuple(row) != (entry.role, False, False):
+                raise TemplateError("source-ownership-or-connection-flags-changed")
+
+    def clone(self, entry: _Entry, name: str) -> None:
+        with _connection(self.admin_url) as connection:
+            connection.execute(
+                text(
+                    f"CREATE DATABASE {_ident(name)} OWNER {_ident(entry.role)} "
+                    f"TEMPLATE {_ident(entry.source_name)}"
+                )
+            )
+            owner, null_acl, acl, settings = entry.database_state
+            if owner != entry.role:
+                raise TemplateError("database-owner-changed")
+            if not null_acl:
+                grantees = {(True, None), (False, entry.role)}
+                grantees.update((r[1], r[2]) for r in self.database_state(name)[2])
+                for public, role in sorted(grantees, key=lambda r: (r[0], r[1] or "")):
+                    connection.execute(
+                        text(
+                            f"REVOKE ALL ON DATABASE {_ident(name)} FROM "
+                            + ("PUBLIC" if public else _ident(role))
+                        )
+                    )
+                for grantor, public, grantee, privilege, grantable in acl:
+                    if (
+                        privilege not in {"CREATE", "CONNECT", "TEMPORARY"}
+                        or type(grantable) is not bool
+                    ):
+                        raise TemplateError("unknown-database-acl")
+                    connection.execute(text(f"SET ROLE {_ident(grantor)}"))
+                    try:
+                        connection.execute(
+                            text(
+                                f"GRANT {privilege} ON DATABASE {_ident(name)} TO "
+                                + ("PUBLIC" if public else _ident(grantee))
+                                + (" WITH GRANT OPTION" if grantable else "")
+                            )
+                        )
+                    finally:
+                        connection.execute(text("RESET ROLE"))
+            for role, variables in settings:
+                for variable in variables:
+                    setting, separator, value = variable.partition("=")
+                    if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", setting):
+                        raise TemplateError("unknown-database-setting")
+                    target = f"ALTER ROLE {_ident(role)} IN DATABASE" if role else "ALTER DATABASE"
+                    connection.execute(
+                        text(f"{target} {_ident(name)} SET {_ident(setting)} TO {_literal(value)}")
+                    )
+        if self.database_state(name) != entry.database_state:
+            raise TemplateError("database-acl-settings-mismatch")
+
+    def schema_dump(self, name: str) -> bytes:
+        parsed = urlparse(self.admin_url)
+        version = self.container.get_wrapped_container().exec_run(
+            ["timeout", "20", "pg_dump", "--version"]
+        )
+        if version.exit_code != 0:
+            raise TemplateError("schema-dump-client-unavailable")
+        match = re.search(rb"PostgreSQL\) (\d+)\.", version.output)
+        with _connection(self.admin_url) as connection:
+            major = int(connection.execute(text("SHOW server_version_num")).scalar_one()) // 10000
+        if match is None or int(match[1]) != major:
+            raise TemplateError("schema-dump-client-server-mismatch")
+        result = self.container.get_wrapped_container().exec_run(
+            [
+                "timeout",
+                "20",
+                "pg_dump",
+                "--schema-only",
+                "--host=127.0.0.1",
+                "--port=5432",
+                "--no-password",
+                f"--username={parsed.username}",
+                f"--dbname={name}",
+            ],
+            environment={"PGPASSWORD": parsed.password or ""},
+        )
+        if result.exit_code != 0:
+            raise TemplateError("schema-dump-failed")
+        raw = result.output
+        # Recent matching clients may emit one unpredictable psql guard pair.
+        tokens = re.findall(rb"(?m)^\\(?:un)?restrict ([A-Za-z0-9]+)\r?\n", raw)
+        if tokens:
+            if len(tokens) != 2 or tokens[0] != tokens[1]:
+                raise TemplateError("unknown-dump-wrapper")
+            raw = re.sub(rb"(?m)^\\(?:un)?restrict [A-Za-z0-9]+\r?\n", b"", raw)
+        return raw
+
+    def allow_connections(self, name: str, allowed: bool) -> None:
+        with _connection(self.admin_url) as connection:
+            connection.execute(
+                text(
+                    f"ALTER DATABASE {_ident(name)} "
+                    f"ALLOW_CONNECTIONS {'true' if allowed else 'false'}"
+                )
+            )
+
+    def drop_db(self, name: str) -> None:
+        with _connection(self.admin_url) as connection:
+            connection.execute(text(f"DROP DATABASE IF EXISTS {_ident(name)} WITH (FORCE)"))
+
+    def drop_role(self, role: str) -> None:
+        with _connection(self.admin_url) as connection:
+            connection.execute(text(f"DROP ROLE {_ident(role)}"))
+
+
+class TemplateCache:
+    """One container/process owner, with bounded same-worker single-flight."""
+
+    def __init__(self, backend: _Backend):
+        self.backend = backend
+        self.lock = threading.Lock()
+        self.entries: dict[tuple, _Entry] = {}
+        self.databases: set[str] = set()
+        self.roles: set[str] = set()
+        self.closed = False
+
+    @contextmanager
+    def _locked(self):
+        if not self.lock.acquire(timeout=_WAIT_SECONDS):
+            raise TemplateError("cache-owner-timeout")
+        try:
+            if self.closed:
+                raise TemplateError("cache-owner-closed")
+            yield
+        finally:
+            self.lock.release()
+
+    def borrow(self, name: str, stages: tuple[MigrationStage, ...], cancel: threading.Event) -> str:
+        from butlers.testing.migration import provisioning_lock
+
+        profile = source_profile()
+        stages = tuple(stage.resolved() for stage in stages)
+        key = (self.backend.identity(), stages, profile)
+        with self._locked(), provisioning_lock():
+            if cancel.is_set():
+                raise TemplateError("borrow-cancelled")
+            entry = self.entries.get(key)
+            if entry is None:
+                entry = _Entry(
+                    f"template_{uuid.uuid4().hex[:16]}",
+                    f"migration_cache_{uuid.uuid4().hex[:16]}",
+                    uuid.uuid4().hex,
+                    stages,
+                    profile,
+                )
+                self.databases.add(entry.source_name)
+                try:
+                    self.backend.create_role(entry)
+                    self.roles.add(entry.role)
+                    from butlers.testing.migration import _DISPOSABLE_MIGRATION_ROLES
+
+                    _DISPOSABLE_MIGRATION_ROLES.add(entry.role)
+                    self.backend.construct(entry, entry.source_name, cancel)
+                    self.backend.validate_stages(entry, entry.source_name)
+                    entry.database_state = self.backend.database_state(entry.source_name)
+                    entry.authority = self.backend.authority(entry)
+                    entry.schema = self.backend.schema_dump(entry.source_name)
+                    if source_profile() != profile:
+                        raise TemplateError("source-changed-during-build")
+                    self.backend.allow_connections(entry.source_name, False)
+                    entry.ready = True
+                    self.entries[key] = entry
+                except BaseException:
+                    self.backend.drop_db(entry.source_name)
+                    self.databases.discard(entry.source_name)
+                    raise
+            if not entry.ready or self.backend.authority(entry) != entry.authority:
+                self.entries.pop(key, None)
+                raise TemplateError("principal-authority-changed")
+            try:
+                self.backend.validate_source_flags(entry)
+            except BaseException:
+                self.entries.pop(key, None)
+                raise
+            self.databases.add(name)
+            try:
+                self.backend.clone(entry, name)
+                self.backend.validate_stages(entry, name)
+                if self.backend.schema_dump(name) != entry.schema:
+                    self.entries.pop(key, None)
+                    raise TemplateError("template-catalog-changed")
+                if cancel.is_set() or source_profile() != profile:
+                    raise TemplateError("borrow-cancelled-or-source-changed")
+                if self.backend.authority(entry) != entry.authority:
+                    self.entries.pop(key, None)
+                    raise TemplateError("principal-authority-changed")
+                return self.backend.url(name, entry)
+            except BaseException:
+                self.backend.drop_db(name)
+                self.databases.discard(name)
+                raise
+
+    def fresh_reference(self, clone_url: str) -> str:
+        """Observe clone/global metadata BEFORE bootstrap can repair a defect."""
+        name = urlparse(clone_url).path.lstrip("/")
+        from butlers.testing.migration import provisioning_lock
+
+        with self._locked(), provisioning_lock():
+            entry = next(
+                (e for e in self.entries.values() if self.backend.url(name, e) == clone_url), None
+            )
+            if entry is None or name not in self.databases:
+                raise TemplateError("unowned-reference")
+            frozen = (
+                self.backend.schema_dump(name),
+                self.backend.database_state(name),
+                self.backend.authority(entry, complete=True),
+            )
+            reference = f"reference_{uuid.uuid4().hex[:16]}"
+            self.databases.add(reference)
+            try:
+                self.backend.construct(entry, reference, threading.Event())
+                self.backend.validate_stages(entry, reference)
+                actual = (
+                    self.backend.schema_dump(reference),
+                    self.backend.database_state(reference),
+                    self.backend.authority(entry, complete=True),
+                )
+                if frozen != actual:
+                    raise TemplateError("clone-fresh-reference-mismatch")
+                return self.backend.url(reference, entry)
+            except BaseException:
+                self.backend.drop_db(reference)
+                self.databases.discard(reference)
+                raise
+
+    def assert_pristine_clone(self, clone_url: str) -> None:
+        """A positioned full-catalog guard before a fixture mutates its clone."""
+        name = urlparse(clone_url).path.lstrip("/")
+        with self._locked():
+            entry = next(
+                (e for e in self.entries.values() if self.backend.url(name, e) == clone_url), None
+            )
+            if entry is None or name not in self.databases:
+                raise TemplateError("unowned-clone-parity")
+            if (
+                self.backend.schema_dump(name) != entry.schema
+                or self.backend.database_state(name) != entry.database_state
+                or self.backend.authority(entry) != entry.authority
+            ):
+                raise TemplateError("clone-catalog-parity-mismatch")
+
+    def discard_clone(self, clone_url: str) -> None:
+        name = urlparse(clone_url).path.lstrip("/")
+        with self._locked():
+            sources = {entry.source_name for entry in self.entries.values()}
+            if name not in self.databases or name in sources:
+                raise TemplateError("unowned-clone-cleanup")
+            self.backend.drop_db(name)
+            self.databases.remove(name)
+
+    def close(self) -> None:
+        with self._locked():
+            self.closed = True
+            refused = False
+            for name in sorted(self.databases):
+                try:
+                    self.backend.drop_db(name)
+                except Exception:
+                    refused = True
+            for role in sorted(self.roles):
+                try:
+                    self.backend.drop_role(role)
+                except Exception:
+                    refused = True
+            self.databases.clear()
+            self.roles.clear()
+            self.entries.clear()
+            if refused:
+                raise TemplateError("owned-cleanup-incomplete")
+
+
+def template_cache(container: object) -> TemplateCache:
+    with _CACHES_LOCK:
+        cache = _CACHES.get(container)
+        if cache is None:
+            cache = TemplateCache(_Backend(container))
+            _CACHES[container] = cache
+        return cache
+
+
+def close_template_cache(container: object) -> None:
+    with _CACHES_LOCK:
+        cache = _CACHES.pop(container, None)
+    if cache is not None:
+        cache.close()
+
+
+def _build(payload: dict) -> None:
+    from butlers.testing.migration import (
+        _bootstrap_migration_prerequisites,
+        _upgrade_chain_to_revision,
+        bootstrap_extensions,
+    )
+
+    with _connection(payload["admin_url"]) as connection:
+        connection.execute(
+            text(f"CREATE DATABASE {_ident(payload['name'])} OWNER {_ident(payload['role'])}")
+        )
+    bootstrap_url = urlparse(payload["admin_url"])._replace(path=f"/{payload['name']}").geturl()
+    bootstrap_extensions(bootstrap_url)
+    _bootstrap_migration_prerequisites(bootstrap_url, payload["role"])
+    for stage in payload["stages"]:
+        _upgrade_chain_to_revision(payload["url"], **stage)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--build"]:
+        raise SystemExit(2)
+    try:
+        _build(json.load(sys.stdin))
+    except BaseException:
+        # Never emit a SQL exception, private payload, URL or role value.
+        raise SystemExit(3) from None
