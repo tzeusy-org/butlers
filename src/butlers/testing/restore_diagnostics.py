@@ -81,6 +81,26 @@ def emit_restore_diagnostic(
         name: {code: False for code in states}
         for name in ("ordinary_dump", "cost_claim_import", "native_copy_import")
     }
+    certificate_codes = {
+        name: {code: False for code in states}
+        for name in ("posture", "filtered_read", "input_read", "point_check")
+    }
+    # These literal markers come from the checked-in certificate script, not
+    # row content or command arguments. Only its stderr stream can position a
+    # later code-only psql error; never borrow dump-stream line offsets here.
+    certificate_stage = None
+    if flags["definer_audit_passed"]:
+        for line in (result.stderr or "").splitlines():
+            marker = re.fullmatch(r"RETENTION_NATIVE_CERT_STAGE=([a-z_]+)", line)
+            if line.startswith("RETENTION_NATIVE_CERT_STAGE="):
+                certificate_stage = marker[1] if marker and marker[1] in certificate_codes else None
+                continue
+            error = re.fullmatch(
+                r"\s*(?:psql:(?:<stdin>|-):\d+:\s*)?(?:ERROR|FATAL):\s*([0-9A-Z]{5})(?:\s.*)?",
+                line,
+            )
+            if error and certificate_stage is not None and error[1] in states:
+                certificate_codes[certificate_stage][error[1]] = True
     if artifact is not None and not flags["definer_audit_started"]:
         lines = artifact.splitlines()
         cost_start = next(
@@ -120,6 +140,7 @@ def emit_restore_diagnostic(
                 "flags": flags,
                 "sqlstates": states,
                 "source_stage_codes": stage_codes,
+                "certificate_stage_codes": certificate_codes,
             },
             sort_keys=True,
         )

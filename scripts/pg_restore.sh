@@ -349,6 +349,7 @@ echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
       --set=butlers_native_copy_has_input="$NATIVE_RESTORE_HAS_INPUT" \
       > "$AUDIT_DIR/native_actual_unsorted" <<'NATIVE_RESTORE_OBSERVE' || exit 7
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+\warn RETENTION_NATIVE_CERT_STAGE=posture
 WITH native_tables AS (
   SELECT c.* FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
@@ -393,6 +394,7 @@ FROM qualified
 SET LOCAL ROLE connector_writer;
 SET LOCAL row_security=on;
 SET LOCAL TIME ZONE 'UTC';
+\warn RETENTION_NATIVE_CERT_STAGE=filtered_read
 COPY (
   SELECT 1,'owntracks_filtered_copy_births',
     encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
@@ -410,6 +412,7 @@ COPY (
 ) TO STDOUT;
 
 \if :butlers_native_copy_has_input
+\warn RETENTION_NATIVE_CERT_STAGE=input_read
 COPY (
   SELECT 5,'owntracks_input_server_births',
     encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
@@ -425,6 +428,7 @@ COPY (
     FROM connectors.owntracks_input_copy_ends t
   ORDER BY 1,2,3
 ) TO STDOUT;
+\warn RETENTION_NATIVE_CERT_STAGE=point_check
 DO $$ BEGIN
   IF EXISTS(SELECT 1 FROM connectors.owntracks_points p
     LEFT JOIN connectors.owntracks_input_copy_births b

@@ -154,6 +154,9 @@ _EXPECTED_SCOPED_DATA_TABLES = {
 _EXPECTED_NATIVE_COPY_TABLES = {
     "connectors.owntracks_filtered_copy_" + suffix
     for suffix in ("births", "floors", "batches", "members")
+} | {
+    "connectors.owntracks_input_" + suffix
+    for suffix in ("server_births", "server_ends", "copy_births", "copy_ends")
 }
 
 
@@ -204,6 +207,33 @@ def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
     assert any('--snapshot="${BACKUP_SNAPSHOT}"' in line for line in code)
     for table in scoped_data_tables:
         assert any('"--exclude-table-data=${table}"' in line for line in code)
+    _assert_closed_certificate_stage_diagnostic()
+
+
+def _assert_closed_certificate_stage_diagnostic() -> None:
+    """Actual classifier positions only fixed certificate stderr stages/codes."""
+    from contextlib import redirect_stdout
+    from io import StringIO
+
+    from butlers.testing.restore_diagnostics import emit_restore_diagnostic
+
+    output = StringIO()
+    private = "synthetic-private-stderr-not-for-diagnostic"
+    result = subprocess.CompletedProcess(
+        [],
+        1,
+        "no SECURITY DEFINER function in 'public' fell to\n",
+        "RETENTION_NATIVE_CERT_STAGE=input_read\n"
+        "psql:<stdin>:82: ERROR:  42P01\n"
+        f"RETENTION_NATIVE_CERT_STAGE={private}\nERROR:  42501 {private}\n",
+    )
+    with redirect_stdout(output):
+        emit_restore_diagnostic(result, stage="certified_restore")
+    diagnostic = json.loads(output.getvalue().split("RESTORE_COMMAND_DIAGNOSTIC ")[1])
+    assert diagnostic["certificate_stage_codes"]["input_read"]["42P01"] is True
+    assert diagnostic["certificate_stage_codes"]["point_check"]["42P01"] is False
+    assert not any(row["42501"] for row in diagnostic["certificate_stage_codes"].values())
+    assert private not in output.getvalue()
 
 
 @pytest.mark.unit

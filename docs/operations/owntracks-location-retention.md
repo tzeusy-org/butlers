@@ -1489,3 +1489,22 @@ admission. The extended eight-table SQL/restore species is currently unrun
 locally. Scoped software positives and dated hosted four-table results do not
 qualify the new input recovery, cancellation/restart reconciliation, complete
 online source frontier or whole retention outcome.
+
+
+### Eight-table certificate diagnostic continuation
+
+The current eight-table source run reached the actual configured input producer
+birth/end, real-role and receipt-fault controls. Its whole gate still failed:
+the old static inventory expected only four tables, and independent native
+restore certification returned SQLSTATE 42P01 after the definer audit passed.
+The static inventory now preserves its original four entries and includes the
+exact four new input tables. This corrects the declared inventory rather than
+omitting history or weakening the fail-loud dump contract.
+
+The certificate script emits only four fixed stage labels to stderr before
+its posture, filtered-row, input-row and point-reference queries. The existing
+disposable command classifier reports only closed stage/code booleans, never
+SQL, rows, identifiers, arbitrary exception text or command arguments. A
+missing relation's actual identity and cause remain unknown until that current
+command reaches the diagnostic. No error-stop, policy, role, full-history
+comparison or certification refusal is changed by this diagnostic increment.
