@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+import ci_route  # noqa: E402
 import ci_test_plan  # noqa: E402
 
 from butlers.testing.scoped_runner import ScopedTestPlan  # noqa: E402
@@ -22,8 +23,87 @@ def _plan(scope: str, test_paths: list[str] | None = None) -> ScopedTestPlan:
     return ScopedTestPlan(scope=scope, test_paths=test_paths or [], reason="fixture")
 
 
-def test_decide_mode_keeps_a_clean_scoped_plan_scoped() -> None:
+def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-ci-shard-assurance-004: actual route reuses only a conservative clean plan."""
     assert ci_test_plan.decide_mode(_plan("scoped", ["tests/api/test_foo.py"])) == "scoped"
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths=["tests","roster"]\n'
+    )
+    selected = tmp_path / "tests/test_selected.py"
+    selected.write_text("def test_selected(): pass\n")
+    calls = []
+
+    def planned(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _plan("scoped", ["tests/test_selected.py"])
+
+    monkeypatch.setattr(ci_route, "plan_scoped_tests", planned)
+    inputs = dict(
+        event="pull_request",
+        ref="refs/pull/1/merge",
+        files=["src/butlers/api/health.py"],
+        docs=[],
+        base="fixed-base",
+        root=tmp_path,
+    )
+    scoped = ci_route.route(**inputs)
+    assert scoped["mode"] == "scoped" and scoped["inventory"] == "false"
+    assert scoped["test_paths"] == ["tests/test_selected.py"]
+    assert calls[0][0] == ("HEAD",)
+    assert calls[0][1]["fallback_allowlist"][-1] == "tests/e2e/"
+    e2e = tmp_path / "tests/e2e/test_performance.py"
+    e2e.parent.mkdir()
+    e2e.write_text("def test_e2e(): pass\n")
+    for unsafe in (
+        ["tests/e2e/test_performance.py"],
+        ["tests/"],
+        ["roster/"],
+        ["tests/test_selected.py", "tests/test_selected.py"],
+        ["unknown/test.py"],
+        ["tests//test_selected.py"],
+    ):
+        monkeypatch.setattr(
+            ci_route, "plan_scoped_tests", lambda *_a, **_k: _plan("scoped", unsafe)
+        )
+        refused = ci_route.route(**inputs)
+        assert refused["mode"] == "full" and refused["inventory"] == "true"
+        assert refused["test_paths"] == []
+    monkeypatch.setattr(ci_route, "plan_scoped_tests", planned)
+    assert ci_route.route(**inputs)["mode"] == "scoped"
+    selected.unlink()
+    assert ci_route.route(**inputs)["mode"] == "full"
+    for changed in (
+        None,
+        [],
+        ["../escape.py"],
+        ["tests/test_selected.py"],
+        ["conftest.py"],
+        ["uv.lock"],
+        [".github/ci-test-weights.json"],
+        ["src/butlers/core/db.py"],
+    ):
+        widened = ci_route.route(**{**inputs, "files": changed})
+        assert widened["mode"] == "full" and widened["inventory"] == "true"
+        assert widened["test_paths"] == []
+    assert ci_route.route(**{**inputs, "event": "merge_group", "files": None})["mode"] == "full"
+    assert ci_route.route(**{**inputs, "event": "push", "ref": "refs/heads/main"})["mode"] == "push"
+    docs = ci_route.route(**{**inputs, "files": ["docs/guide.md"], "docs": ["docs/guide.md"]})
+    assert docs == dict(
+        backend="false", frontend="false", mode="docs", test_paths=[], inventory="false"
+    )
+    frontend = ci_route.route(**{**inputs, "files": ["frontend/src/App.tsx"]})
+    assert frontend["mode"] == "full" and frontend["frontend"] == "true"
+    with pytest.raises(ValueError):
+        ci_route.route(**{**inputs, "event": "workflow_dispatch"})
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("ordinary planner unavailable")
+
+    monkeypatch.setattr(ci_route, "plan_scoped_tests", unavailable)
+    assert ci_route.route(**inputs)["mode"] == "full"
     for paths in (
         ["tests/api/"],
         ["roster/relationship/tests/"],

@@ -47,12 +47,12 @@ from butlers.testing.source_test_map import configured_testpaths  # noqa: E402
 CI_FALLBACK_ALLOWLIST: tuple[str, ...] = FULL_SUITE_FALLBACK_ALLOWLIST + ("tests/e2e/",)
 
 
-def decide_mode(plan: ScopedTestPlan) -> str:
+def decide_mode(plan: ScopedTestPlan, *, repo_root: Path = REPO_ROOT) -> str:
     """Map a plan to the CI lane decision. Anything but a clean scope fails closed to `full`."""
     if plan.scope != "scoped" or not plan.test_paths:
         return "full"
 
-    roots = [PurePosixPath(root) for root in configured_testpaths(REPO_ROOT)]
+    roots = [PurePosixPath(root) for root in configured_testpaths(repo_root)]
     e2e = PurePosixPath("tests/e2e")
     for selector in plan.test_paths:
         if not isinstance(selector, str) or not selector:

@@ -17,7 +17,8 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from check_ci_test_shards import LANES, REPO_ROOT, _read_manifest
+from check_ci_test_shards import LANES, REPO_ROOT
+from ci_partition import assigned_files, read_json, validate_assignment
 from coverage import CoverageData
 from coverage.exceptions import CoverageException
 
@@ -40,7 +41,13 @@ def _checkout_head(repo_root: Path) -> str | None:
 
 
 def write_shard_metadata(
-    *, coverage_file: Path, repo_root: Path, lane: str, shard: int, test_files: list[str]
+    *,
+    coverage_file: Path,
+    repo_root: Path,
+    lane: str,
+    shard: int,
+    test_files: list[str],
+    assignment_digest: str | None = None,
 ) -> None:
     """Stamp existing data after pytest exits; never fabricate a missing artifact."""
     if not coverage_file.is_file():
@@ -51,6 +58,7 @@ def write_shard_metadata(
         raise ValueError("coverage producer checkout does not match the workflow head")
     metadata = {
         "schema": "ci-coverage.v1",
+        "assignment_digest": assignment_digest,
         "head": checkout,
         "run_id": os.environ.get("GITHUB_RUN_ID"),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
@@ -68,13 +76,24 @@ def write_shard_metadata(
 
 
 def validate_inputs(
-    *, input_root: Path, repo_root: Path, head: str, run_id: str, run_attempt: str
+    *,
+    input_root: Path,
+    repo_root: Path,
+    head: str,
+    run_id: str,
+    run_attempt: str,
+    inventory_dir: Path | None = None,
 ) -> list[Path]:
     """Reject a partial, stale, mixed, unreadable or incompatible ten-file report."""
     if not head or not run_id or not run_attempt or _checkout_head(repo_root) != head:
         raise ValueError("coverage reporter requires the exact checkout and workflow attempt")
     if input_root.is_symlink():
         raise ValueError("coverage input root must be an ordinary directory")
+    if inventory_dir is None:
+        raise ValueError("coverage requires generated same-run assignment")
+    inventory = read_json(inventory_dir / "inventory.json")
+    assignment = read_json(inventory_dir / "assignment.json")
+    validate_assignment(inventory, assignment, root=repo_root)
     specs = [
         (lane, index)
         for lane, config in LANES.items()
@@ -105,11 +124,10 @@ def validate_inputs(
             raise ValueError(f"{label}: coverage inputs must be ordinary files")
         try:
             metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-            files = _read_manifest(
-                manifest=repo_root / f".github/ci-test-shards/{label}.txt", repo_root=repo_root
-            )
+            files = assigned_files(inventory, assignment, lane=lane, index=index, root=repo_root)
             expected = {
                 "schema": "ci-coverage.v1",
+                "assignment_digest": assignment["digest"],
                 "head": head,
                 "run_id": run_id,
                 "run_attempt": run_attempt,
@@ -149,6 +167,7 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
+    parser.add_argument("--inventory-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
         inputs = validate_inputs(
@@ -157,6 +176,7 @@ def main() -> int:
             head=args.head,
             run_id=args.run_id,
             run_attempt=args.run_attempt,
+            inventory_dir=args.inventory_dir,
         )
     except (OSError, ValueError) as exc:
         print(f"check_ci_coverage: {exc}", file=sys.stderr)
