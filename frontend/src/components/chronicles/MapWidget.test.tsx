@@ -524,6 +524,15 @@ it("disposes planted managed map geometry during a privacy fence and renders fre
     expect(JSON.stringify(current.sources["owntracks-trail"].data)).toContain("3.14159265");
     expect(JSON.stringify(current.sources)).not.toContain("1.31415926");
     expect(cache.getQueryData(key)).toBeUndefined();
+    await act(async () => {
+      // A genuinely new allowed fix may have the same coordinates as an old
+      // one. Freshness belongs to the actual query generation, not values.
+      root.render(<MapWidget points={[]} trailPoints={old.map(point => ({ ...point }))}
+        privacyGeneration={getLocationPrivacySnapshot().generation} />);
+    });
+    expect(mapState.maps.at(-1)).toBe(current);
+    expect(current.removed).toBe(false);
+    expect(JSON.stringify(current.sources["owntracks-trail"].data)).toContain("1.31415926");
   } finally {
     await act(async () => root.unmount());
     host.remove();

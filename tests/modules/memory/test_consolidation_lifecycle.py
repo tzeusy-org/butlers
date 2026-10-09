@@ -448,6 +448,8 @@ async def native_chronicler_memory_pools(native_chronicler_memory_url):
 async def test_private_memory_claim_path_does_not_retry_failed_episodes(
     native_chronicler_memory_pools,
     monkeypatch,
+    native_chronicler_memory_url,
+    postgres_container,
 ) -> None:
     """Chronicler's live private hook claims pending work but leaves due failures untouched."""
     pool, domain = native_chronicler_memory_pools
@@ -507,6 +509,11 @@ async def test_private_memory_claim_path_does_not_retry_failed_episodes(
         assert pending_after["consolidated"] is True
         assert dict(await _episode_lifecycle(pool, failed_due)) == failed_before
         await _assert_native_memory_mutation_chain(pool, domain)
+        from tests.chronicler.retention_transport_helpers import assert_registered_catalog_transport
+
+        await assert_registered_catalog_transport(
+            native_chronicler_memory_url, postgres_container, pool, _StaticEmbeddingEngine()
+        )
     finally:
         await module.on_shutdown()
 

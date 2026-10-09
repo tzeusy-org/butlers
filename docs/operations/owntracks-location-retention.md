@@ -1048,3 +1048,23 @@ late transport result and retain a fresh-point positive. These are synthetic
 API/MapLibre managed-copy controls, not actual browser/GPU, server erasure,
 registered all-holder closure or whole acceptance. All original P7 runtime and
 other P1–P9 obligations remain mandatory.
+
+
+### Registered catalog transport control
+
+The existing migrated Memory species now includes an authored registered local
+TCP control using the actual Memory search/source tools and Switchboard route,
+normal span instrumentation, module-owned outer guards and separate configured
+Chronicler/Finance/Switchboard domain-role pools. Chronicle's configured private
+`chronicler_mem` pool keeps the existing no-SET-ROLE exception; consumers receive
+no private schema grant. Governing migrations and the existing disposable trusted
+bootstrap establish the fixture, with no copied DDL/new principal or private-peer
+query credited as receiver evidence. An actual catalog write freezes the planted
+original native artifact, and the real routed body must match its complete stored
+profile. Separate source/consumer acquisitions compare the original loan, digest
+and receiving incarnation; native server completion proves only source-owned
+response lifetime. Existing UUID-only access and invented private-header controls
+refuse beside this positioned positive. This extension is authored but SQL/TCP
+UNRUN until exact-head hosted evidence. Original native ingest is planted, and
+independent-process deployment, arbitrary recipients, other holders, mixed/legacy
+descendants and complete source forgetting remain separately mandatory UNMET.
