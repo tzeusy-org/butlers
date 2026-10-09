@@ -1287,6 +1287,14 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
             birth["filtered_received_at"],
         )
     )
+    # The earlier original species replays the actual broad bootstrap. Its
+    # default SELECT grants cannot expose this genuinely planted private
+    # generation through FORCE RLS. Trusted own installer then converges its
+    # narrow purpose ACL; runtime cannot perform that repair itself.
+    assert await own.fetchval("SELECT count(*) FROM connectors.owntracks_filtered_copy_births") == 0
+    from butlers.owntracks_copy_schema import filtered_copy_security_sql
+
+    await creator.execute(filtered_copy_security_sql())
     async with own.acquire() as restricted:
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await restricted.fetch("SELECT * FROM connectors.owntracks_filtered_copy_births")
@@ -1300,8 +1308,6 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
     # Replay the exact own installer against healthy metadata, then falsify
     # distinct complete-shape predicates in disposable savepoints. Each
     # refusal rolls back the tamper; no runtime role repairs its own catalog.
-    from butlers.owntracks_copy_schema import filtered_copy_security_sql
-
     security = filtered_copy_security_sql()
     await creator.execute(security)
     for tamper, category in (

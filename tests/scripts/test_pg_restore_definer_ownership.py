@@ -64,6 +64,7 @@ from butlers.testing.migration import (
     create_migration_db,
     migration_db_name,
 )
+from butlers.testing.owntracks_copy_history import COPY_HISTORY_TABLES, plant_copy_history
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RESTORE_SCRIPT = _REPO_ROOT / "scripts" / "pg_restore.sh"
@@ -170,6 +171,7 @@ def source_db_url(postgres_container) -> str:
                 (claim_id,),
             )
             conn.exec_driver_sql("RESET ROLE")
+            plant_copy_history(conn)
             mapping_entity = conn.exec_driver_sql(
                 "INSERT INTO public.entities (canonical_name, entity_type) "
                 "VALUES ('Restore mapping fixture', 'person') RETURNING id"
@@ -638,6 +640,59 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         )
         assert restored_posture == source_posture
         assert restored_posture[0].startswith("true/true/"), restored_posture
+
+    for relation in COPY_HISTORY_TABLES:
+        # Exact full rows, not counts alone: every native generation, digest,
+        # original timestamp, policy binding and permanent floor survives.
+        source_rows = _query(
+            source_db_url,
+            f"SELECT to_jsonb(t)::text FROM {relation} t ORDER BY to_jsonb(t)::text",
+        )
+        restored_rows = _query(
+            restored_url,
+            f"SELECT to_jsonb(t)::text FROM {relation} t ORDER BY to_jsonb(t)::text",
+        )
+        assert source_rows and restored_rows == source_rows
+        source_posture = _query(
+            source_db_url,
+            "SELECT relrowsecurity::text||'/'||relforcerowsecurity::text||'/'||"
+            "pg_get_userbyid(relowner) FROM pg_class WHERE oid="
+            f"'{relation}'::regclass",
+        )
+        restored_posture = _query(
+            restored_url,
+            "SELECT relrowsecurity::text||'/'||relforcerowsecurity::text||'/'||"
+            "pg_get_userbyid(relowner) FROM pg_class WHERE oid="
+            f"'{relation}'::regclass",
+        )
+        assert restored_posture == source_posture
+        assert restored_posture[0].startswith("true/true/")
+    boundary = create_engine(restored_url, isolation_level="AUTOCOMMIT")
+    try:
+        with boundary.connect() as conn:
+            conn.exec_driver_sql("SET ROLE connector_writer")
+            assert (
+                conn.exec_driver_sql(
+                    "SELECT count(*) FROM connectors.owntracks_filtered_copy_births"
+                ).scalar_one()
+                > 0
+            )
+            with pytest.raises(DBAPIError) as permanent:
+                conn.exec_driver_sql("DELETE FROM connectors.owntracks_filtered_copy_floors")
+            assert permanent.value.orig.sqlstate == "P0001"
+            conn.exec_driver_sql("SET ROLE butler_general_rw")
+            for relation in COPY_HISTORY_TABLES:
+                try:
+                    visible = conn.exec_driver_sql(f"SELECT count(*) FROM {relation}").scalar_one()
+                except DBAPIError as denied:
+                    assert denied.orig.sqlstate == "42501"
+                    visible = 0
+                assert visible == 0
+            with pytest.raises(DBAPIError) as denied:
+                conn.exec_driver_sql("DELETE FROM connectors.owntracks_filtered_copy_floors")
+            assert denied.value.orig.sqlstate == "42501"
+    finally:
+        boundary.dispose()
 
     restore_function_posture = _query(
         restored_url,

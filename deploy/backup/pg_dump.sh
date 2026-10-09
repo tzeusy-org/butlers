@@ -114,6 +114,14 @@
 # execute grant. tests/scripts/test_pg_dump_backup.py and
 # tests/scripts/test_pg_restore_definer_ownership.py prove row parity and the
 # restored FORCE RLS, owner, and definer posture against real PostgreSQL.
+#
+# The four permanent OwnTracks copy-history tables have a separate exact
+# staging path: the persisted actual owner reads their full rows under its
+# fixed owner-only SELECT policy from that same snapshot. Their schema and
+# immutable guards remain in the ordinary dump. Replay uses only the existing
+# connector role, checks every full row and both-direction cohort equality,
+# and commits all four tables together. This restores stored history, never
+# an active receiving/process incarnation or a current erasure admission.
 
 # NOTE: no `set -o pipefail` here. It is not POSIX, so the shebang above was a
 # lie on any host whose /bin/sh is dash — the script died on line 1 of its own
@@ -134,13 +142,10 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-# INTERMEDIATE retention SOURCE boundary: these four new FORCE RLS native
-# birth/floor/receipt tables cannot pass the ordinary row_security=off dump.
-# Exact exclusions preserve ordinary raw/Chronicler evidence availability only.
-# Their scoped export/restore, permanent-history recovery and restore admission
-# remain REQUIRED unfinished source work. This is not a merge-ready recovery
-# policy, complete backup claim, or authority to run a live backup/restore.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity connectors.owntracks_filtered_copy_births connectors.owntracks_filtered_copy_floors connectors.owntracks_filtered_copy_batches connectors.owntracks_filtered_copy_members"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
+# Exact new native history: schema stays in the dump; only table data uses
+# fixed owner-readable exported-snapshot staging and existing connector role.
+BACKUP_NATIVE_COPY_TABLES="connectors.owntracks_filtered_copy_births connectors.owntracks_filtered_copy_floors connectors.owntracks_filtered_copy_batches connectors.owntracks_filtered_copy_members"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
@@ -251,7 +256,7 @@ done
 for table in ${BACKUP_EXCLUDE_TABLES}; do
   set -- "$@" "--exclude-table=${table}"
 done
-for table in ${BACKUP_SCOPED_DATA_TABLES}; do
+for table in ${BACKUP_SCOPED_DATA_TABLES} ${BACKUP_NATIVE_COPY_TABLES}; do
   set -- "$@" "--exclude-table-data=${table}"
 done
 
@@ -264,7 +269,32 @@ SNAPSHOT_DIR="$(mktemp -d)"
 SNAPSHOT_CONTROL="${SNAPSHOT_DIR}/control"
 SNAPSHOT_ID_FILE="${SNAPSHOT_DIR}/id"
 SNAPSHOT_POLICY_COUNT_FILE="${SNAPSHOT_DIR}/policy-count"
+SNAPSHOT_NATIVE_COPY_STATE_FILE="${SNAPSHOT_DIR}/native-copy-state"
 SNAPSHOT_LOG="${SNAPSHOT_DIR}/holder.log"
+# Presence is only an availability precheck, never export admission. Lock
+# the exact present set BEFORE taking the repeatable-read snapshot. ACCESS
+# SHARE prevents policy/table DDL through the full export but allows writers.
+NATIVE_COPY_PRESENCE_FILE="${SNAPSHOT_DIR}/native-copy-presence"
+PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+  --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+  --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+  --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+  -c "SELECT count(*) FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname='connectors' AND c.relname IN (
+        'owntracks_filtered_copy_births','owntracks_filtered_copy_floors',
+        'owntracks_filtered_copy_batches','owntracks_filtered_copy_members')" \
+  > "${NATIVE_COPY_PRESENCE_FILE}" \
+  || { FAILURE_REASON="pg_dump_failed"; exit 1; }
+NATIVE_COPY_PRESENCE="$(tr -d '\r\n' < "${NATIVE_COPY_PRESENCE_FILE}")"
+case "${NATIVE_COPY_PRESENCE}" in
+  0|4) ;;
+  *)
+    FAILURE_REASON="pg_dump_failed"
+    echo "[backup] FAILED: native copy history installation is partial; not publishing" >&2
+    exit 1
+    ;;
+esac
 mkfifo "${SNAPSHOT_CONTROL}"
 PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
   --host="${POSTGRES_HOST}" \
@@ -278,7 +308,10 @@ PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
   < "${SNAPSHOT_CONTROL}" > "${SNAPSHOT_LOG}" 2>&1 &
 SNAPSHOT_HOLDER_PID=$!
 exec 9>"${SNAPSHOT_CONTROL}"
-printf 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n' >&9
+printf 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\nSET LOCAL application_name='\''butlers-native-copy-backup'\'';\n' >&9
+if [ "${NATIVE_COPY_PRESENCE}" = "4" ]; then
+  printf 'SET LOCAL lock_timeout='\''2s'\'';\nLOCK TABLE connectors.owntracks_filtered_copy_births,connectors.owntracks_filtered_copy_floors,connectors.owntracks_filtered_copy_batches,connectors.owntracks_filtered_copy_members IN ACCESS SHARE MODE;\n' >&9
+fi
 printf '\\o %s\nSELECT pg_export_snapshot();\n\\o\n' "${SNAPSHOT_ID_FILE}" >&9
 # A FOR ALL policy also applies to SELECT. Count every SELECT-applying policy,
 # then require the one admitted policy to be the exact explicit PUBLIC SELECT
@@ -311,8 +344,56 @@ printf '\\o %s\nSELECT count(*)
        );
 \\o\n' "${SNAPSHOT_POLICY_COUNT_FILE}" >&9
 
+# This proof is in the SAME exported snapshot. A pre-retention database may
+# have none of the four tables. Any partial installation, changed owner,
+# restrictive/extra policy or non-exact full owner read refuses publication.
+printf '\\o %s\n' "${SNAPSHOT_NATIVE_COPY_STATE_FILE}" >&9
+cat >&9 <<'NATIVE_COPY_PROOF'
+WITH native_tables AS (
+  SELECT c.* FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='connectors' AND c.relname IN (
+    'owntracks_filtered_copy_births','owntracks_filtered_copy_floors',
+    'owntracks_filtered_copy_batches','owntracks_filtered_copy_members')
+), qualified AS (
+  SELECT c.oid FROM native_tables c
+  WHERE c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
+    AND pg_catalog.pg_get_userbyid(c.relowner)=current_user
+    AND c.relowner=(SELECT p.relowner FROM pg_catalog.pg_class p
+      JOIN pg_catalog.pg_namespace n ON n.oid=p.relnamespace
+      WHERE n.nspname='connectors' AND p.relname='owntracks_points' AND p.relkind='r')
+    AND pg_catalog.pg_has_role(current_user,'connector_writer','MEMBER')
+    AND (SELECT count(*) FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid)=3
+    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid
+      AND (NOT p.polpermissive OR p.polroles<>ARRAY[0::oid]
+        OR p.polname NOT IN ('native_copy_read','native_copy_write','native_copy_history_owner')))
+    AND EXISTS(SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid
+      AND p.polname='native_copy_history_owner' AND p.polcmd='r'
+      AND pg_catalog.pg_get_expr(p.polqual,p.polrelid)=
+          pg_catalog.format('(CURRENT_USER = %L::name)',
+            pg_catalog.pg_get_userbyid(c.relowner)))
+    AND EXISTS(SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid
+      AND p.polname='native_copy_read' AND p.polcmd='r'
+      AND pg_catalog.pg_get_expr(p.polqual,p.polrelid)=CASE
+          WHEN c.relname IN ('owntracks_filtered_copy_batches','owntracks_filtered_copy_members')
+            THEN '((CURRENT_USER = ''connector_writer''::name) OR (CURRENT_USER = ''butler_chronicler_rw''::name))'
+          ELSE '(CURRENT_USER = ''connector_writer''::name)' END)
+    AND EXISTS(SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid
+      AND p.polname='native_copy_write' AND p.polcmd='*'
+      AND pg_catalog.pg_get_expr(p.polqual,p.polrelid)=
+          '(CURRENT_USER = ''connector_writer''::name)'
+      AND pg_catalog.pg_get_expr(p.polwithcheck,p.polrelid)=
+          '(CURRENT_USER = ''connector_writer''::name)')
+)
+SELECT CASE WHEN (SELECT count(*) FROM native_tables)=0 THEN 'absent'
+            WHEN (SELECT count(*) FROM native_tables)=4
+              AND (SELECT count(*) FROM qualified)=4 THEN 'ready'
+            ELSE 'unavailable' END;
+NATIVE_COPY_PROOF
+printf '\\o\n' >&9
+
 SNAPSHOT_WAIT=0
-while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; } \
+while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] || [ ! -s "${SNAPSHOT_NATIVE_COPY_STATE_FILE}" ]; } \
   && kill -0 "${SNAPSHOT_HOLDER_PID}" 2>/dev/null; do
   SNAPSHOT_WAIT=$((SNAPSHOT_WAIT + 1))
   if [ "${SNAPSHOT_WAIT}" -ge 100 ]; then
@@ -320,7 +401,7 @@ while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}"
   fi
   sleep 0.05
 done
-if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; then
+if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] || [ ! -s "${SNAPSHOT_NATIVE_COPY_STATE_FILE}" ]; then
   FAILURE_REASON="pg_dump_failed"
   echo "[backup] FAILED: could not establish a shared backup snapshot and policy proof; not publishing" >&2
   exit 1
@@ -339,6 +420,16 @@ if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "3" ]; then
   echo "[backup] FAILED: cost-claim backup policy is not the exact full-row contract; not publishing" >&2
   exit 1
 fi
+
+NATIVE_COPY_STATE="$(tr -d '\r\n' < "${SNAPSHOT_NATIVE_COPY_STATE_FILE}")"
+case "${NATIVE_COPY_PRESENCE}:${NATIVE_COPY_STATE}" in
+  0:absent|4:ready) ;;
+  *)
+    FAILURE_REASON="pg_dump_failed"
+    echo "[backup] FAILED: native copy history does not admit complete snapshot export; not publishing" >&2
+    exit 1
+    ;;
+esac
 
 # pg_dump writes to stdout; we pipe through gzip into a .tmp file so the
 # directory scanner in get_backup_facts() never sees a partial dump.  gzip's
@@ -419,6 +510,163 @@ SET ROLE %I;',
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
   printf "SELECT public.cost_claim_restore_row(\n  relation_name,\n  convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb\n)\nFROM butlers_cost_claim_restore_rows\nORDER BY ordinal, payload_hex;\n"
   printf 'RESET ROLE;\n\\else\n\\echo cost-claim ledger replay skipped: restore owner membership unavailable\n\\endif\nDROP TABLE butlers_cost_claim_restore_rows;\n'
+  if [ "${NATIVE_COPY_STATE}" = "ready" ]; then
+    printf '\n-- Butlers scoped OwnTracks copy history\n'
+    printf 'BEGIN;\nSET LOCAL TIME ZONE '\''UTC'\'';\nCREATE TEMP TABLE butlers_owntracks_copy_restore_rows (ordinal integer NOT NULL, relation_name text NOT NULL, payload_hex text NOT NULL);\n'
+    printf 'COPY butlers_owntracks_copy_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n'
+    PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+      --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+      --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+      --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+      -c "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+          SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+          SET LOCAL TIME ZONE 'UTC';
+          COPY (
+            SELECT 1,'owntracks_filtered_copy_births',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+              FROM connectors.owntracks_filtered_copy_births t
+            UNION ALL
+            SELECT 2,'owntracks_filtered_copy_floors',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+              FROM connectors.owntracks_filtered_copy_floors t
+            UNION ALL
+            SELECT 3,'owntracks_filtered_copy_batches',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+              FROM connectors.owntracks_filtered_copy_batches t
+            UNION ALL
+            SELECT 4,'owntracks_filtered_copy_members',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+              FROM connectors.owntracks_filtered_copy_members t
+            ORDER BY 1,2,3
+          ) TO STDOUT; COMMIT" \
+      || { echo "$?" > "${STATUSFILE}"; exit 0; }
+    printf '\\.\n'
+    cat <<'NATIVE_COPY_RESTORE'
+\set ON_ERROR_STOP on
+DO $$ BEGIN
+  IF NOT pg_catalog.pg_has_role(current_user,'connector_writer','MEMBER') THEN
+    RAISE EXCEPTION 'Native copy restoration identity is unavailable';
+  END IF;
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows WHERE
+      (ordinal,relation_name) NOT IN (
+        (1,'owntracks_filtered_copy_births'),(2,'owntracks_filtered_copy_floors'),
+        (3,'owntracks_filtered_copy_batches'),(4,'owntracks_filtered_copy_members'))) THEN
+    RAISE EXCEPTION 'Native copy restoration input differs';
+  END IF;
+END $$;
+GRANT SELECT ON butlers_owntracks_copy_restore_rows TO connector_writer;
+SET ROLE connector_writer;
+NATIVE_COPY_RESTORE
+    cat <<'NATIVE_COPY_BIRTHS'
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows s
+    CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_filtered_copy_births,
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+    WHERE s.relation_name='owntracks_filtered_copy_births' AND pg_catalog.to_jsonb(r) IS DISTINCT FROM
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) THEN
+    RAISE EXCEPTION 'Native copy restoration row differs';
+  END IF;
+END $$;
+INSERT INTO connectors.owntracks_filtered_copy_births
+SELECT r.* FROM butlers_owntracks_copy_restore_rows s
+CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_filtered_copy_births,
+  pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+WHERE s.relation_name='owntracks_filtered_copy_births' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  IF EXISTS(
+    (SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_filtered_copy_births t
+      EXCEPT ALL SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_filtered_copy_births')
+    UNION ALL
+    (SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_filtered_copy_births'
+      EXCEPT ALL SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_filtered_copy_births t)) THEN
+    RAISE EXCEPTION 'Native copy restoration cohort differs';
+  END IF;
+END $$;
+NATIVE_COPY_BIRTHS
+    cat <<'NATIVE_COPY_FLOORS'
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows s
+    CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_filtered_copy_floors,
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+    WHERE s.relation_name='owntracks_filtered_copy_floors' AND pg_catalog.to_jsonb(r) IS DISTINCT FROM
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) THEN
+    RAISE EXCEPTION 'Native copy restoration row differs';
+  END IF;
+END $$;
+INSERT INTO connectors.owntracks_filtered_copy_floors
+SELECT r.* FROM butlers_owntracks_copy_restore_rows s
+CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_filtered_copy_floors,
+  pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+WHERE s.relation_name='owntracks_filtered_copy_floors' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  IF EXISTS(
+    (SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_filtered_copy_floors t
+      EXCEPT ALL SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_filtered_copy_floors')
+    UNION ALL
+    (SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_filtered_copy_floors'
+      EXCEPT ALL SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_filtered_copy_floors t)) THEN
+    RAISE EXCEPTION 'Native copy restoration cohort differs';
+  END IF;
+END $$;
+NATIVE_COPY_FLOORS
+    cat <<'NATIVE_COPY_BATCHES'
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows s
+    CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_filtered_copy_batches,
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+    WHERE s.relation_name='owntracks_filtered_copy_batches' AND pg_catalog.to_jsonb(r) IS DISTINCT FROM
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) THEN
+    RAISE EXCEPTION 'Native copy restoration row differs';
+  END IF;
+END $$;
+INSERT INTO connectors.owntracks_filtered_copy_batches
+SELECT r.* FROM butlers_owntracks_copy_restore_rows s
+CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_filtered_copy_batches,
+  pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+WHERE s.relation_name='owntracks_filtered_copy_batches' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  IF EXISTS(
+    (SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_filtered_copy_batches t
+      EXCEPT ALL SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_filtered_copy_batches')
+    UNION ALL
+    (SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_filtered_copy_batches'
+      EXCEPT ALL SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_filtered_copy_batches t)) THEN
+    RAISE EXCEPTION 'Native copy restoration cohort differs';
+  END IF;
+END $$;
+NATIVE_COPY_BATCHES
+    cat <<'NATIVE_COPY_MEMBERS'
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows s
+    CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_filtered_copy_members,
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+    WHERE s.relation_name='owntracks_filtered_copy_members' AND pg_catalog.to_jsonb(r) IS DISTINCT FROM
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) THEN
+    RAISE EXCEPTION 'Native copy restoration row differs';
+  END IF;
+END $$;
+INSERT INTO connectors.owntracks_filtered_copy_members
+SELECT r.* FROM butlers_owntracks_copy_restore_rows s
+CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_filtered_copy_members,
+  pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+WHERE s.relation_name='owntracks_filtered_copy_members' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  IF EXISTS(
+    (SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_filtered_copy_members t
+      EXCEPT ALL SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_filtered_copy_members')
+    UNION ALL
+    (SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_filtered_copy_members'
+      EXCEPT ALL SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_filtered_copy_members t)) THEN
+    RAISE EXCEPTION 'Native copy restoration cohort differs';
+  END IF;
+END $$;
+NATIVE_COPY_MEMBERS
+    printf 'RESET ROLE;\nDROP TABLE butlers_owntracks_copy_restore_rows;\nCOMMIT;\n'
+  fi
 } | gzip > "${TMPFILE}"
 
 printf 'COMMIT;\n\\q\n' >&9

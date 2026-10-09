@@ -175,17 +175,12 @@ def filtered_copy_security_sql() -> str:
     for table in COPY_TABLES:
         relation = f"connectors.{table}"
         readers = (
-            "current_user IN ('connector_writer','butler_chronicler_rw')"
+            "current_user='connector_writer' OR current_user='butler_chronicler_rw'"
             if table.endswith(("batches", "members"))
             else "current_user='connector_writer'"
         )
         # The existing actual shared table owner can inspect metadata for
         # migration history guards; it cannot mint native source write receipt.
-        readers += (
-            " OR current_user=(SELECT pg_catalog.pg_get_userbyid(c.relowner) "
-            "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
-            "WHERE n.nspname='connectors' AND c.relname='owntracks_points' AND c.relkind='r')"
-        )
         columns = ",".join(
             "'" + name + ":" + kind + ":true'" for name, kind in sorted(_COLUMNS[table].items())
         )
@@ -249,7 +244,8 @@ def filtered_copy_security_sql() -> str:
               END IF;
               IF EXISTS(SELECT 1 FROM pg_catalog.pg_policy
                   WHERE polrelid='{relation}'::pg_catalog.regclass
-                    AND polname NOT IN ('native_copy_read','native_copy_write')) THEN
+                    AND polname NOT IN (
+                      'native_copy_read','native_copy_write','native_copy_history_owner')) THEN
                 RAISE EXCEPTION 'Native filtered-copy installed policy differs';
               END IF;
             END $native_copy_owner$;
@@ -257,6 +253,17 @@ def filtered_copy_security_sql() -> str:
             ALTER TABLE {relation} FORCE ROW LEVEL SECURITY;
             DROP POLICY IF EXISTS native_copy_read ON {relation};
             CREATE POLICY native_copy_read ON {relation} FOR SELECT USING ({readers});
+            DROP POLICY IF EXISTS native_copy_history_owner ON {relation};
+            DO $native_copy_history_owner$
+            DECLARE own_role text;
+            BEGIN
+              SELECT pg_catalog.pg_get_userbyid(c.relowner) INTO STRICT own_role
+                FROM pg_catalog.pg_class c
+                WHERE c.oid='{relation}'::pg_catalog.regclass;
+              EXECUTE pg_catalog.format(
+                'CREATE POLICY native_copy_history_owner ON {relation} '
+                'FOR SELECT USING (current_user = %L::name)', own_role);
+            END $native_copy_history_owner$;
             DROP POLICY IF EXISTS native_copy_write ON {relation};
             CREATE POLICY native_copy_write ON {relation} FOR ALL
               USING (current_user='connector_writer')
@@ -265,7 +272,18 @@ def filtered_copy_security_sql() -> str:
             CREATE TRIGGER preserve_retention_history BEFORE UPDATE OR DELETE ON {relation}
               FOR EACH ROW EXECUTE FUNCTION connectors.preserve_owntracks_retention_history();
             DO $native_copy_acl$
+            DECLARE reader text;
             BEGIN
+              REVOKE ALL ON {relation} FROM PUBLIC;
+              FOR reader IN SELECT rolname FROM pg_catalog.pg_roles
+                WHERE rolname IN (
+                  'butler_chronicler_rw','butler_concierge_rw','butler_education_rw',
+                  'butler_finance_rw','butler_general_rw','butler_health_rw','butler_home_rw',
+                  'butler_lifestyle_rw','butler_messenger_rw','butler_qa_rw',
+                  'butler_relationship_rw','butler_switchboard_rw','butler_travel_rw',
+                  'butler_calendar_rw') LOOP
+                EXECUTE pg_catalog.format('REVOKE ALL ON {relation} FROM %I',reader);
+              END LOOP;
               IF EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='connector_writer') THEN
                 GRANT SELECT,INSERT,UPDATE,DELETE ON {relation} TO connector_writer;
               END IF;

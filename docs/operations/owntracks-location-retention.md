@@ -1324,3 +1324,50 @@ scoped owner-stage export/restore, row parity, real-role policy preservation and
 restore admission are mandatory ongoing source work. Omission is not the final
 recovery fix, a full backup claim, erasure proof or merge-ready behavior. No live
 backup, restore or purge was performed or authorized by this source change.
+
+
+### Scoped native history recovery source
+
+The d30b stored-copy checkpoint's temporary four-table exclusion is dated,
+intermediate history. Current source removes that omission. The four exact
+metadata tables keep schema, ownership, constraints, FORCE RLS and immutable
+triggers in ordinary pg_dump; only their data travels through a separate
+hex-JSON staging stream in the same exported snapshot. The actual snapshot
+holder first locks those four relations in ACCESS SHARE mode, allowing ordinary
+writes while excluding policy/table DDL until both exports finish. Its presence
+precheck alone grants no admission; the locked full owner/policy proof must
+still match. A database before this
+migration may have none of the four tables. Partial installation, a different
+stored owner, absent existing connector membership, extra/restrictive policies
+or a changed owner-read expression refuses publication. The exact three
+cost-claim stream and every other fail-loud exclusion remain unchanged.
+
+The native history reader is an explicit permissive SELECT policy for only the
+actual stored table owner. Runtime source writes still require the existing
+connector role; Chronicler sees only content-free batch/member observations.
+Broad bootstrap grants cannot expose birth/floor generations through FORCE RLS.
+The trusted own installer also converges purpose-specific ACLs on these four
+new relations; runtime roles cannot install or repair them.
+
+Restore checks existing connector-role membership, uses one transaction and
+fixed relation names, rejects unknown or NULL staging selectors and validates
+full typed rows before insertion. Births precede floors, batches and FK members.
+Two-direction EXCEPT ALL checks retain multiplicity and exact full-row equality;
+an existing different or extra cohort aborts. No new role, generic importer,
+definer capability, BYPASSRLS or schema-owner transfer is introduced. JSON
+staging keeps original generations, digests, timestamps and permanent floors.
+UTC export/restore representation avoids altering timestamp interpretation.
+
+Existing real backup/restore species now plant a nonempty four-table FK-linked
+history, compare all restored rows and FORCE RLS/owner posture, preserve the
+original raw/application dump and cost-claim assertions, and position a real
+restrictive-policy refusal beside the restored actual backup producer. The
+existing race species observes the actual native snapshot-holder lock and
+requires concurrent owner-policy alteration to fail with lock-not-available
+before retaining the original distinct cost-claim policy-race refusal. Runtime
+floor DELETE and unrelated runtime read/write negatives remain. These extended
+backup/restore controls are currently SQL/sidecar UNRUN until authentic exact-head
+hosted evidence. Preservation of stored history is not admission of old active
+leases, old live server incarnations or restored remote holders. Full fresh
+source/holder reconciliation and current native restore admission remain
+mandatory; every original whole outcome stays UNMET.
