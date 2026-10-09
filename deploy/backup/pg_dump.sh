@@ -115,6 +115,12 @@
 # tests/scripts/test_pg_restore_definer_ownership.py prove row parity and the
 # restored FORCE RLS, owner, and definer posture against real PostgreSQL.
 
+# Capture rows use a DIFFERENT fixed projection: SET LOCAL ROLE butler_general_rw
+# in this same snapshot, after an exact three-table FORCE-RLS policy proof. No
+# PUBLIC SELECT exception is added. The invoker importer preserves row bindings
+# and terminal receipts, but always restores admission/dispatch disabled.
+# Ordinary General source_versions data stays in pg_dump's snapshot.
+#
 # NOTE: no `set -o pipefail` here. It is not POSIX, so the shebang above was a
 # lie on any host whose /bin/sh is dash — the script died on line 1 of its own
 # safety setup. The dump's exit status is captured explicitly below instead,
@@ -137,7 +143,7 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
-BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
+BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events public.captures public.capture_operations public.capture_service_control"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
@@ -258,6 +264,7 @@ SNAPSHOT_DIR="$(mktemp -d)"
 SNAPSHOT_CONTROL="${SNAPSHOT_DIR}/control"
 SNAPSHOT_ID_FILE="${SNAPSHOT_DIR}/id"
 SNAPSHOT_POLICY_COUNT_FILE="${SNAPSHOT_DIR}/policy-count"
+SNAPSHOT_CAPTURE_COUNT_FILE="${SNAPSHOT_DIR}/capture-count"
 SNAPSHOT_LOG="${SNAPSHOT_DIR}/holder.log"
 mkfifo "${SNAPSHOT_CONTROL}"
 PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
@@ -305,8 +312,28 @@ printf '\\o %s\nSELECT count(*)
        );
 \\o\n' "${SNAPSHOT_POLICY_COUNT_FILE}" >&9
 
+# Capture policy proof is evaluated in the exported snapshot, before any rows
+# can be filtered. Absent pre-capture schemas remain backwards compatible;
+# partial or altered policy installation refuses publication.
+printf '\\o %s\nSELECT CASE WHEN count(*) = 0 THEN 0
+    WHEN count(*) = 3 AND bool_and(c.relrowsecurity AND c.relforcerowsecurity
+        AND (SELECT count(*) = 1 FROM pg_policy AS p WHERE p.polrelid = c.oid)
+        AND EXISTS (SELECT 1 FROM pg_policy AS p WHERE p.polrelid = c.oid
+            AND p.polname = '\''capture_general_service'\'' AND p.polcmd = '\''*'\''
+            AND p.polpermissive AND p.polroles = ARRAY[0::oid]
+            AND pg_get_expr(p.polqual, p.polrelid) =
+                '\''(CURRENT_USER = '\'''\''butler_general_rw'\'''\''::name)'\''
+            AND pg_get_expr(p.polwithcheck, p.polrelid) =
+                '\''(CURRENT_USER = '\'''\''butler_general_rw'\'''\''::name)'\''))
+        AND coalesce(pg_has_role(current_user, to_regrole('\''butler_general_rw'\''), '\''MEMBER'\''), false)
+    THEN 3 ELSE -1 END
+    FROM pg_class AS c JOIN pg_namespace AS n ON n.oid=c.relnamespace
+    WHERE n.nspname='\''public'\'' AND c.relname IN
+        ('\''captures'\'', '\''capture_operations'\'', '\''capture_service_control'\'');
+\\o\n' "${SNAPSHOT_CAPTURE_COUNT_FILE}" >&9
+
 SNAPSHOT_WAIT=0
-while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; } \
+while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] || [ ! -s "${SNAPSHOT_CAPTURE_COUNT_FILE}" ]; } \
   && kill -0 "${SNAPSHOT_HOLDER_PID}" 2>/dev/null; do
   SNAPSHOT_WAIT=$((SNAPSHOT_WAIT + 1))
   if [ "${SNAPSHOT_WAIT}" -ge 100 ]; then
@@ -314,7 +341,7 @@ while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}"
   fi
   sleep 0.05
 done
-if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; then
+if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] || [ ! -s "${SNAPSHOT_CAPTURE_COUNT_FILE}" ]; then
   FAILURE_REASON="pg_dump_failed"
   echo "[backup] FAILED: could not establish a shared backup snapshot and policy proof; not publishing" >&2
   exit 1
@@ -333,6 +360,13 @@ if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "3" ]; then
   echo "[backup] FAILED: cost-claim backup policy is not the exact full-row contract; not publishing" >&2
   exit 1
 fi
+
+CAPTURE_BACKUP_POLICY_COUNT="$(tr -d '\r\n' < "${SNAPSHOT_CAPTURE_COUNT_FILE}")"
+case "${CAPTURE_BACKUP_POLICY_COUNT}" in
+  0|3) ;;
+  *) echo "[backup] FAILED: capture policy or General export role invalid; not publishing" >&2
+     exit 1 ;;
+esac
 
 # pg_dump writes to stdout; we pipe through gzip into a .tmp file so the
 # directory scanner in get_backup_facts() never sees a partial dump.  gzip's
@@ -413,6 +447,38 @@ SET ROLE %I;',
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
   printf "SELECT public.cost_claim_restore_row(\n  relation_name,\n  convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb\n)\nFROM butlers_cost_claim_restore_rows\nORDER BY ordinal, payload_hex;\n"
   printf 'RESET ROLE;\n\\else\n\\echo cost-claim ledger replay skipped: restore owner membership unavailable\n\\endif\nDROP TABLE butlers_cost_claim_restore_rows;\n'
+  if [ "${CAPTURE_BACKUP_POLICY_COUNT}" = "3" ]; then
+    printf '\n-- Butlers scoped General capture data\n'
+    printf 'CREATE TEMP TABLE butlers_capture_restore_rows (ordinal integer, relation_name text, payload_hex text);\n'
+    printf 'COPY butlers_capture_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n'
+    PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+      --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+      --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" --no-password \
+      --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+      -c "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+          SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+          SET LOCAL ROLE butler_general_rw;
+          COPY (
+            SELECT 1, 'captures', encode(convert_to(to_jsonb(t)::text, 'UTF8'),'hex')
+              FROM public.captures AS t
+            UNION ALL
+            SELECT 2, 'capture_operations', encode(convert_to(to_jsonb(t)::text, 'UTF8'),'hex')
+              FROM public.capture_operations AS t
+            UNION ALL
+            SELECT 3, 'capture_service_control', encode(convert_to(to_jsonb(t)::text, 'UTF8'),'hex')
+              FROM public.capture_service_control AS t
+            ORDER BY 1, 2, 3
+          ) TO STDOUT;
+          COMMIT" \
+      || { echo "$?" > "${STATUSFILE}"; exit 0; }
+    printf '\\.\n\\set ON_ERROR_STOP on\n'
+    printf 'GRANT SELECT ON butlers_capture_restore_rows TO butler_general_rw;\n'
+    # pg_dump leaves row_security=off in the restoring session. General FORCE
+    # RLS must apply during imports AND their deferred transaction-end checks.
+    printf 'BEGIN;\nSET LOCAL row_security=on;\nSET LOCAL ROLE butler_general_rw;\n'
+    printf "SELECT public.capture_restore_row(relation_name, convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb) FROM butlers_capture_restore_rows ORDER BY ordinal, payload_hex;\n"
+    printf 'COMMIT;\nDROP TABLE butlers_capture_restore_rows;\n\\set ON_ERROR_STOP off\n'
+  fi
 } | gzip > "${TMPFILE}"
 
 printf 'COMMIT;\n\\q\n' >&9

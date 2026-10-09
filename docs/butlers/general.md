@@ -83,3 +83,44 @@ re-upgrade picks them up again.
 
 - [Switchboard Butler](switchboard.md) -- routes messages here as the default fallback
 - [Relationship Butler](relationship.md) -- owns contact data beyond General's freeform model
+
+## Internal Capture Ledger
+
+`core_259` installs `public.captures`, `public.capture_operations`, and the fixed
+`public.capture_service_control` singleton. FORCE RLS admits only effective
+`current_user = butler_general_rw`; inherited membership and replayed public grants
+cannot admit another runtime or a role-less API/migration pool. All three reject
+TRUNCATE and deletion, and routed/refused capture receipts cannot be rewritten.
+
+`roster/general/tools/capture_service.py` is an internal service. Admission commits
+held state before returning its opaque receipt. Identical principal/source/mutation
+keys reuse it; changed payload refuses. The ingress owner must supply a server-verified
+source binding, exact digest, original occurrence time and current external epoch;
+constructing `VerifiedAuthority` does not authenticate a caller. Text is bounded to
+32 KiB UTF-8, normalized owning-source UUID reference pairs to eight, canonical
+admission to 64 KiB, and an optional nonblank mutation key to 128 UTF-8 bytes.
+
+Normalized reference intake can remain held; processing does not fetch attachments
+or route a referenced intake without a separately implemented source-eligibility
+adapter. Retained handles cannot authorize a newly private source.
+
+Only General is supported. Fixed note/fact/preference kinds require already declared
+ordinary notes/facts/preferences collections. No vocabulary is seeded. A single
+General transaction writes the item, immutable source version and exact routed
+operation receipt. The item's UUID is the server-generated capture operation UUID;
+the public item writer accepts no caller-selected capture identity. Deferred commit
+checks require both ledger rows and the matching immutable first create version,
+original input and digest before terminal finalization. Normal finalization also
+checks current ordinary eligibility. Verification locks the current ordinary parent/item and recomputes
+the live digest; stored history does not authorize private, stale, deleted or legacy
+unversioned contents. Unsupported specialist ownership refuses before any writer;
+unknown lineages retain their operation and cannot be retried into a fresh target.
+
+Admission and dispatch default **false**, independently. No capture MCP registration,
+HTTP/chat intake, classifier or processing loop is enabled. These remain later units.
+The nonsecret epoch manifest lives outside the repository and database; missing,
+malformed or mismatched epoch/control refuses admission and dispatch. Restore rotates
+its generation and original-occurrence cutoff while keeping both flags disabled.
+Exact read-only outcome verification is available during recovery, but does not
+rebase old operations or re-enable delivery. Rollback removes an empty boundary only;
+stored inputs/operations/control authority require forward remediation.

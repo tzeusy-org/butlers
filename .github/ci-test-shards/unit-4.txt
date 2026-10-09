@@ -122,6 +122,7 @@ tests/core/qa/test_severity.py
 tests/core/test_approval_callback_tokens.py
 tests/core/test_buffer.py
 tests/core/test_butler_logging.py
+tests/core/test_capture.py
 tests/core/test_compute_session_cost_usd.py
 tests/core/test_context_bus.py
 tests/core/test_core_spawner_context.py

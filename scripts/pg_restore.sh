@@ -41,6 +41,7 @@ TARGET_DB="butlers_restore_verify"
 DROP_EXISTING=false
 ENV_FILE=""
 BACKUP_FILE=""
+CAPTURE_EPOCH_FILE="${CAPTURE_EPOCH_FILE:-}"
 
 # CLI-flag overrides for connection params (empty = use env / file)
 FLAG_HOST=""
@@ -57,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --port)        FLAG_PORT="$2";       shift 2 ;;
     --user)        FLAG_USER="$2";       shift 2 ;;
     --password)    FLAG_PASSWORD="$2";   shift 2 ;;
+    --capture-epoch-file) CAPTURE_EPOCH_FILE="$2"; shift 2 ;;
     --drop-existing) DROP_EXISTING=true; shift ;;
     -*)            echo "Unknown flag: $1" >&2; exit 1 ;;
     *)
@@ -121,6 +123,25 @@ echo "WARNING: This restore targets '${TARGET_DB}', NOT the production database.
 echo "         The production database is left untouched."
 echo ""
 
+# Capture recovery authority is outside the restored database. A capture dump
+# requires an explicit persistent host path; it cannot reconstruct its epoch from
+# old rows. Rotate before importing, even if the dump lacks a newer receipt.
+HAS_CAPTURE=false
+if gunzip -c "$BACKUP_FILE" | awk '/CREATE TABLE public.capture_service_control/ { found=1 } END { exit !found }'; then
+  HAS_CAPTURE=true
+fi
+HAS_FLEET_EVIDENCE=false
+if gunzip -c "$BACKUP_FILE" | awk '/CREATE TABLE public.fleet_case_evidence/ { found=1 } END { exit !found }'; then
+  HAS_FLEET_EVIDENCE=true
+fi
+if [[ "$HAS_CAPTURE" == true ]]; then
+  if [[ "$CAPTURE_EPOCH_FILE" != /* ]]; then
+    echo "[restore] ERROR: capture restore requires --capture-epoch-file outside DB/repo" >&2
+    exit 1
+  fi
+
+fi
+
 # ── Drop existing target if requested ───────────────────────────────────
 if [[ "$DROP_EXISTING" == "true" ]]; then
   echo "[restore] Dropping existing database '${TARGET_DB}' (--drop-existing)"
@@ -149,6 +170,35 @@ PGPASSWORD="$PG_PASSWORD" createdb \
   --no-password \
   "$TARGET_DB" 2>&1 | sed 's/^/  /' || true
 
+# Disable an existing target before import. The fixed dump importer also forces
+# both flags false and recovery_required=true, so dumped enablement never wins.
+if [[ "$HAS_CAPTURE" == true ]]; then
+  PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+    --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+    -c "DO \$\$ BEGIN
+      IF to_regclass('public.capture_service_control') IS NOT NULL THEN
+        SET LOCAL ROLE butler_general_rw;
+        UPDATE public.capture_service_control SET admission_enabled=false,
+          dispatch_enabled=false,recovery_required=true;
+      END IF;
+    END \$\$;" >/dev/null
+fi
+
+if [[ "$HAS_CAPTURE" == true ]]; then
+  mkdir -p "$(dirname "$CAPTURE_EPOCH_FILE")"
+  CAPTURE_EPOCH_TMP="$(mktemp "${CAPTURE_EPOCH_FILE}.tmp.XXXXXX")"
+  if ! PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+      --username="$PG_USER" --dbname=postgres --no-password --no-align --tuples-only \
+      --set=ON_ERROR_STOP=1 -c "SELECT json_build_object('generation',gen_random_uuid(),
+          'not_before',clock_timestamp());" > "$CAPTURE_EPOCH_TMP"; then
+    rm -f "$CAPTURE_EPOCH_TMP"
+    exit 1
+  fi
+  sync
+  mv -f "$CAPTURE_EPOCH_TMP" "$CAPTURE_EPOCH_FILE"
+  sync
+fi
+
 # ── Restore ─────────────────────────────────────────────────────────────
 echo "[restore] Restoring ${BACKUP_FILE} → ${TARGET_DB} ..."
 echo "[restore] (This may take a minute for large databases)"
@@ -156,6 +206,7 @@ echo "[restore] (This may take a minute for large databases)"
 # The assignment belongs on `psql`, not on the pipeline: a prefix assignment
 # applies only to the command it prefixes, so putting it on `gunzip` left psql
 # with no password at all and the restore died at the connection.
+RESTORE_DATA_FAILED=false
 gunzip -c "$BACKUP_FILE" | PGPASSWORD="$PG_PASSWORD" psql \
   --host="$PG_HOST" \
   --port="$PG_PORT" \
@@ -164,8 +215,7 @@ gunzip -c "$BACKUP_FILE" | PGPASSWORD="$PG_PASSWORD" psql \
   --no-password \
   --quiet \
   2>&1 | sed -e '/^$/d' -e 's/^/  /' || {
-    echo "[restore] ERROR: psql restore failed" >&2
-    exit 1
+    RESTORE_DATA_FAILED=true
   }
 
 # ── Ownership audit: the fence must not invert (bu-zbybd) ───────────────
@@ -302,6 +352,87 @@ if [[ -s "$AUDIT_DIR/inverted" ]]; then
   exit 1
 fi
 echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
+# A strict scoped importer failure still cannot skip the existing ownership
+# diagnosis. Preserve that audit, then refuse certification of incomplete data.
+if [[ "$RESTORE_DATA_FAILED" == true ]]; then
+  echo "[restore] ERROR: psql restore failed; incomplete data is not certified" >&2
+  exit 1
+fi
+
+if [[ "$HAS_CAPTURE" == true ]]; then
+  PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+    --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+    -c "BEGIN; SET LOCAL ROLE butler_general_rw;
+      DO \$\$ BEGIN
+        IF EXISTS (SELECT 1 FROM public.capture_service_control WHERE admission_enabled
+                    OR dispatch_enabled OR NOT recovery_required) OR
+           (SELECT count(*) FROM pg_class WHERE oid IN
+             ('public.captures'::regclass,'public.capture_operations'::regclass,
+              'public.capture_service_control'::regclass)
+             AND relrowsecurity AND relforcerowsecurity) <> 3 OR
+           (SELECT count(*) FROM pg_policy AS p
+             WHERE p.polrelid IN ('public.captures'::regclass,
+                 'public.capture_operations'::regclass,'public.capture_service_control'::regclass)) <> 3 OR
+           (SELECT count(*) FROM pg_policy AS p
+             WHERE p.polrelid IN ('public.captures'::regclass,
+                 'public.capture_operations'::regclass,'public.capture_service_control'::regclass)
+               AND p.polname='capture_general_service' AND p.polcmd='*'
+               AND p.polpermissive AND p.polroles=ARRAY[0::oid]
+               AND pg_get_expr(p.polqual,p.polrelid) =
+                 '(CURRENT_USER = ''butler_general_rw''::name)'
+               AND pg_get_expr(p.polwithcheck,p.polrelid) =
+                 '(CURRENT_USER = ''butler_general_rw''::name)') <> 3 OR
+           (SELECT count(*) FROM pg_trigger WHERE tgrelid IN
+             ('public.captures'::regclass,'public.capture_operations'::regclass,
+              'public.capture_service_control'::regclass)
+             AND tgname IN ('capture_preserve_evidence','capture_no_truncate')
+             AND tgenabled='O') <> 6 OR
+           (SELECT count(*) FROM pg_trigger WHERE tgrelid IN
+             ('public.captures'::regclass,'public.capture_operations'::regclass)
+             AND tgname='capture_validate_commit' AND tgenabled='O'
+             AND tgdeferrable AND tginitdeferred) <> 2 THEN
+          RAISE EXCEPTION 'capture restore controls or evidence invalid';
+        END IF;
+      END \$\$; COMMIT;" >/dev/null
+  # The same complete validator used at importer transaction end covers every
+  # capture (including null operation IDs) and rejects orphan operations.
+  PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+    --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+    -c "BEGIN; SET LOCAL ROLE butler_general_rw;
+      SELECT public.capture_validate_receipt(id, false) FROM public.captures;
+      DO \$\$ BEGIN
+        IF EXISTS (SELECT 1 FROM public.capture_operations AS o
+          LEFT JOIN public.captures AS c ON c.id=o.capture_id
+          WHERE c.id IS NULL OR c.operation_id IS DISTINCT FROM o.id) THEN
+          RAISE EXCEPTION 'capture restore operation binding invalid';
+        END IF;
+      END \$\$; COMMIT;" >/dev/null
+fi
+
+if [[ "$HAS_FLEET_EVIDENCE" == true ]]; then
+  # The current backup excludes cases but includes their readable evidence.
+  # psql can otherwise swallow the missing-parent FK error and return success.
+  # Preserve the excluded data policy; never certify missing relationship proof.
+  PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+    --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+    -c "DO \$\$ DECLARE evidence_oid oid; cases_oid oid; BEGIN
+      evidence_oid:=to_regclass('public.fleet_case_evidence');
+      cases_oid:=to_regclass('public.fleet_cases');
+      IF evidence_oid IS NULL OR cases_oid IS NULL OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint AS fk
+        WHERE fk.contype='f' AND fk.conrelid=evidence_oid AND fk.confrelid=cases_oid
+          AND fk.convalidated AND fk.confdeltype='c'
+          AND fk.conkey=ARRAY[(SELECT attnum FROM pg_attribute
+              WHERE attrelid=evidence_oid AND attname='case_id' AND NOT attisdropped)]
+          AND fk.confkey=ARRAY[(SELECT attnum FROM pg_attribute
+              WHERE attrelid=cases_oid AND attname='id' AND NOT attisdropped)]
+          AND (SELECT count(*) FROM pg_trigger AS t
+              WHERE t.tgconstraint=fk.oid AND t.tgenabled='O')=4
+      ) THEN
+        RAISE EXCEPTION 'Fleet evidence restore integrity missing; excluded case recovery unsupported';
+      END IF;
+    END \$\$;" >/dev/null
+fi
 
 echo "[restore] done — '${TARGET_DB}' is populated"
 echo ""

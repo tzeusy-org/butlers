@@ -139,6 +139,7 @@ while IFS= read -r line; do
           printf 'ABCDEF-012345\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-exported' >> "${log}"
           ;;
+        */capture-count) printf '0\\n' > "${output_file}" ;;
         */policy-count)
           printf '3\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-policy-verified' >> "${log}"
