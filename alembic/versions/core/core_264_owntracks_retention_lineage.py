@@ -52,7 +52,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
            'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_ordinary_delegation_inputs','location_native_delegation_inputs',
-           'location_received_answer_dispositions','location_received_answer_qualifications','location_received_answer_server_finished','location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_question_answer_observations','location_native_answer_question_observations','location_native_question_loan_observations','location_native_answer_observations','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_question_source_floors','location_received_question_refusals','location_received_question_task_dispositions','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
+           'location_received_answer_dispositions','location_received_answer_qualifications','location_received_answer_server_finished','location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_question_answer_observations','location_native_answer_question_observations','location_native_question_loan_observations','location_native_answer_observations','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_question_recovery_dispositions','location_received_question_recoveries','location_received_question_source_floors','location_received_question_refusals','location_received_question_task_dispositions','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -104,6 +104,8 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_received_delegation_contexts",
         "location_received_delegation_claims_ended",
         "location_received_delegation_claims",
+        "location_received_question_recovery_dispositions",
+        "location_received_question_recoveries",
         "location_received_question_source_floors",
         "location_received_question_refusals",
         "location_received_question_task_dispositions",
@@ -355,6 +357,22 @@ def _validate_local_tables(schema: str) -> None:
                 ("claim_generation", "uuid", True),
                 ("receiving_session", "uuid", True),
                 ("bundle_digest", "bytea", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_question_recovery_dispositions": [
+                ("receiving_generation", "uuid", True),
+                ("receipt_id", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
+            "location_received_question_recoveries": [
+                ("receiving_generation", "uuid", True),
+                ("source_name", "text", True),
+                ("ledger_id", "uuid", True),
+                ("question_generation", "uuid", True),
+                ("body_digest", "bytea", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("receiving_incarnation", "uuid", True),
                 ("committed_at", "timestamp with time zone", True),
             ],
             "location_received_question_source_floors": [
@@ -797,6 +815,21 @@ def _validate_local_tables(schema: str) -> None:
                 "FOREIGN KEY (claim_generation) REFERENCES "
                 "location_received_delegation_claims(claim_generation)",
                 "FOREIGN KEY (receiving_session) REFERENCES sessions(id)",
+            },
+            "location_received_question_recovery_dispositions": {
+                "PRIMARY KEY (receiving_generation)",
+                "UNIQUE (receipt_id)",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_question_recoveries(receiving_generation)",
+            },
+            "location_received_question_recoveries": {
+                "PRIMARY KEY (receiving_generation)",
+                "FOREIGN KEY (receiving_generation) REFERENCES "
+                "location_received_delegation_attempts(receiving_generation)",
+                "FOREIGN KEY (source_name, ledger_id) REFERENCES "
+                "location_received_question_source_floors(source_name, ledger_id)",
+                "CHECK ((octet_length(body_digest) = 32))",
+                "CHECK ((octet_length(manifest_digest) = 32))",
             },
             "location_received_question_source_floors": {
                 "PRIMARY KEY (source_name, ledger_id)",
@@ -1519,6 +1552,23 @@ def upgrade() -> None:
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
           PRIMARY KEY(source_name,ledger_id)
         );
+        CREATE TABLE IF NOT EXISTS location_received_question_recoveries (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_delegation_attempts,
+          source_name TEXT NOT NULL,
+          ledger_id UUID NOT NULL,
+          question_generation UUID NOT NULL,
+          body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          receiving_incarnation UUID NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          FOREIGN KEY(source_name,ledger_id) REFERENCES location_received_question_source_floors
+        );
+        CREATE TABLE IF NOT EXISTS location_received_question_recovery_dispositions (
+          receiving_generation UUID PRIMARY KEY REFERENCES location_received_question_recoveries,
+          receipt_id UUID NOT NULL UNIQUE,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE IF NOT EXISTS location_received_question_refusals (
           receiving_generation UUID PRIMARY KEY REFERENCES location_received_delegation_attempts,
           tool_generation UUID NOT NULL REFERENCES location_runtime_tool_intents(tool_generation),
@@ -1689,6 +1739,8 @@ def upgrade() -> None:
         "location_received_delegation_contexts",
         "location_received_delegation_claims_ended",
         "location_received_delegation_claims",
+        "location_received_question_recovery_dispositions",
+        "location_received_question_recoveries",
         "location_received_question_source_floors",
         "location_received_question_refusals",
         "location_received_question_task_dispositions",

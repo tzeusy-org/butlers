@@ -294,6 +294,19 @@ async def observe_question_loans(runtime: Any, plan: dict) -> None:
     for question in plan["question_cohort"]:
         if question["complete_input"] is not True:
             continue
+        if question.get("target_name"):
+            from butlers.chronicler.location_question_reconciliation import require_question_census
+
+            census = await runtime.routed_tool(
+                question["target_name"],
+                "location_retention_prepare_questions",
+                {"decision_id": plan["decision_id"], "ledger_id": question["ledger_id"]},
+            )
+            require_question_census(census, plan, question, question["target_name"])
+        else:
+            # Original target missing from the owning canonical profile is
+            # unknown; a zero-loan list cannot stand in for receiving census.
+            raise PolicyUnavailableError("Native nested question original target differs")
         for loan in question["loans"]:
             prepared = await runtime.routed_tool(
                 loan["receiver_name"],

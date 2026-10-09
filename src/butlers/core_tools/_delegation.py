@@ -302,16 +302,21 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         return writer.runtime
 
     @_core_tool("delegation")
-    async def location_retention_prepare_questions(decision_id: UUID) -> dict:
+    async def location_retention_prepare_questions(
+        decision_id: UUID, ledger_id: UUID | None = None
+    ) -> dict:
         """Dispose this receiver's stored question copies for the owning source plan.
 
         A decision UUID is only a locator. The fixed constructor reads the
         actual source through Switchboard, fences late inputs and requires
-        its own finished lifetimes and separate committed readback.
+        its own finished lifetimes and separate committed readback. Optional
+        ledger selects stored canonical target/source only; that source's
+        actual native owner plan must independently prove the full generation.
+        No caller source, missing loan or stored name supplies authority.
         """
         from butlers.chronicler.location_delegation_disposal import prepare_question_receivers
 
-        return await prepare_question_receivers(receiving_runtime(), decision_id)
+        return await prepare_question_receivers(receiving_runtime(), decision_id, ledger_id)
 
     @_core_tool("delegation")
     async def location_retention_question_owner_plan(decision_id: UUID) -> dict:

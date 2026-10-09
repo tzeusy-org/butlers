@@ -3706,6 +3706,7 @@ async def _assert_question_source_floor_sql(domain, runtime):
             body_digest=digest.hex(),
             current_body_digest=digest.hex(),
             complete_input=True,
+            loans=[],
         )
         plan = dict(
             source_name="chronicler", decision_id=str(decision), manifest_digest=(b"m" * 32).hex()
@@ -3831,5 +3832,195 @@ async def _assert_question_source_floor_sql(domain, runtime):
                 "WHERE receiving_generation=$1)",
                 sibling,
             )
+        # Actual no-loan recovery producer: no ended server means no binding
+        # or terminal. This remains planted SQL-engine proof, not ASGI/online.
+        from contextlib import asynccontextmanager
+
+        from butlers.chronicler.location_delegation_receivers import finish_received_server
+        from butlers.chronicler.location_question_recovery import recover_rejected_questions
+        from butlers.core.delegation_source import _writers
+
+        assert await recover_rejected_questions(runtime, plan, question) == []
+        async with domain.acquire() as observed:
+            server_request = await observed.fetchval(
+                "SELECT server_request FROM location_received_delegation_attempts "
+                "WHERE receiving_generation=$1",
+                sibling,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_question_recoveries "
+                "WHERE receiving_generation=$1)",
+                sibling,
+            )
+        await finish_received_server(runtime, sibling, digest, server_request)
+
+        class FaultConnection:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def transaction(self):
+                return self.conn.transaction()
+
+            async def fetchrow(self, *args):
+                return await self.conn.fetchrow(*args)
+
+            async def fetchval(self, *args):
+                return await self.conn.fetchval(*args)
+
+            async def fetch(self, *args):
+                return await self.conn.fetch(*args)
+
+            async def execute(self, sql, *args):
+                value = await self.conn.execute(sql, *args)
+                if "INSERT INTO location_received_question_recovery_dispositions" in sql:
+                    raise RuntimeError("planted actual recovery receipt failure")
+                return value
+
+        class FaultPool:
+            @asynccontextmanager
+            async def acquire(self):
+                async with domain.acquire() as conn:
+                    yield FaultConnection(conn)
+
+        actual_domain = runtime.domain
+        fault_pool = FaultPool()
+        _writers[fault_pool] = runtime.delegation_writer
+        try:
+            runtime.domain = fault_pool  # Same real acquired role/connection, test-only seam.
+            with pytest.raises(RuntimeError, match="actual recovery receipt failure"):
+                await recover_rejected_questions(runtime, plan, question)
+        finally:
+            runtime.domain = actual_domain
+            _writers.pop(fault_pool, None)
+        async with domain.acquire() as observed:
+            assert await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_question_recoveries "
+                "WHERE receiving_generation=$1)",
+                sibling,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_question_recovery_dispositions "
+                "WHERE receiving_generation=$1)",
+                sibling,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_inputs "
+                "WHERE receiving_generation=$1)",
+                sibling,
+            )
+        restored = await recover_rejected_questions(runtime, plan, question)
+        assert len(restored) == 1
+        assert await recover_rejected_questions(runtime, plan, question) == restored
+        complete = await question_attempt_census(runtime, plan, question)
+        assert complete["attempt_count"] == 2 and complete["pending"] is False
+        async with domain.acquire() as observed:
+            assert (
+                await observed.fetchval(
+                    "SELECT receipt_id::text FROM location_received_question_recovery_dispositions "
+                    "WHERE receiving_generation=$1",
+                    sibling,
+                )
+                == restored[0]
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_floors "
+                "WHERE receiving_generation=$1)",
+                sibling,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_delegation_loans "
+                "WHERE receiving_generation=$1)",
+                sibling,
+            )
+        # The distinct CLI stage may qualify its removal-only binding, but
+        # an unclosed caller context MUST still keep this attempt nonterminal.
+        from types import SimpleNamespace
+
+        from butlers.chronicler.location_delegation_receivers import _QuestionReceiveRefusal
+        from butlers.chronicler.location_question_refusals import (
+            _REFUSED_RESULT,
+            closed_rejected_question_tool,
+            record_question_refusal,
+        )
+        from butlers.chronicler.location_tool_copies import _ToolCopy, finish_tool_copy
+        from butlers.core.sessions import session_create
+        from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+        caller = await session_create(
+            domain,
+            prompt="synthetic no-loan rejected caller",
+            trigger_source="trigger",
+            request_id=str(uuid.uuid4()),
+        )
+        cli, tool_generation = uuid.uuid4(), uuid.uuid4()
+        fields = dict(
+            ledger_id=str(ledger), question=canonical["question"], asking_butler="chronicler"
+        )
+        async with domain.acquire() as conn:
+            async with conn.transaction():
+                await runtime.lock_domain(conn)
+                await conn.execute(
+                    "INSERT INTO location_runtime_tool_intents "
+                    "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+                    "VALUES($1,$2,'delegate_receive','core',$3)",
+                    tool_generation,
+                    caller,
+                    bytes.fromhex(fingerprint_tool_call_payload(fields)),
+                )
+                await conn.execute(
+                    "INSERT INTO location_received_delegation_attempts "
+                    "(receiving_generation,ledger_id,body_digest,receiving_incarnation,"
+                    "receiving_session,tool_generation,source_name) "
+                    "VALUES($1,$2,$3,$4,$5,$6,'chronicler')",
+                    cli,
+                    ledger,
+                    digest,
+                    runtime.incarnation,
+                    caller,
+                    tool_generation,
+                )
+        tool = _ToolCopy(runtime, tool_generation, caller, "delegate_receive", "core")
+        cli_token = _current_tool_copy.set(tool)
+        completed_tool = False
+        try:
+            pending = SimpleNamespace(
+                tool=tool, ledger=ledger, source="chronicler", digest=digest, receiving=cli
+            )
+            await record_question_refusal(
+                runtime.delegation_writer,
+                _QuestionReceiveRefusal(runtime.delegation_writer, pending, tool),
+            )
+            await finish_tool_copy((tool, cli_token), _REFUSED_RESULT)
+            completed_tool = True
+        finally:
+            if not completed_tool:
+                _current_tool_copy.reset(cli_token)
+        assert await recover_rejected_questions(runtime, plan, question) == restored
+        async with domain.acquire() as observed:
+            attempt = await observed.fetchrow(
+                "SELECT * FROM location_received_delegation_attempts WHERE receiving_generation=$1",
+                cli,
+            )
+            schema = '"' + runtime.identity[0].replace('"', '""') + '"'
+            assert await closed_rejected_question_tool(
+                observed, runtime, schema, caller, plan, attempt
+            )
+            assert await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_question_recoveries "
+                "WHERE receiving_generation=$1)",
+                cli,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_question_recovery_dispositions "
+                "WHERE receiving_generation=$1)",
+                cli,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_delegation_loans "
+                "WHERE receiving_generation=$1)",
+                cli,
+            )
+        held = await question_attempt_census(runtime, plan, question)
+        assert held["attempt_count"] == 3 and held["pending"] is True
     finally:
         _current_tool_copy.reset(token)

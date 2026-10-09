@@ -118,12 +118,22 @@ async def question_attempt_census(runtime: Any, plan: dict, question: dict) -> d
             ):
                 raise PolicyUnavailableError("Native question attempt census floor differs")
             rows = await conn.fetch(
-                "SELECT a.*,f.question_generation AS floor_question,f.loan_id,"
-                "f.source_name AS floor_source,f.body_digest AS floor_digest,"
-                "f.receiving_incarnation AS floor_incarnation,f.decision_id,f.manifest_digest,"
-                "d.receipt_id FROM location_received_delegation_attempts a "
+                "SELECT a.*,COALESCE(f.question_generation,r.question_generation) "
+                "AS floor_question,"
+                "f.loan_id,COALESCE(f.source_name,r.source_name) AS floor_source,"
+                "COALESCE(f.body_digest,r.body_digest) AS floor_digest,"
+                "COALESCE(f.receiving_incarnation,r.receiving_incarnation) AS floor_incarnation,"
+                "COALESCE(f.decision_id,r.decision_id) AS decision_id,"
+                "COALESCE(f.manifest_digest,r.manifest_digest) AS manifest_digest,"
+                "((f.receiving_generation IS NOT NULL)::integer+"
+                "(r.receiving_generation IS NOT NULL)::integer) AS binding_count,"
+                "COALESCE(d.receipt_id,e.receipt_id) AS receipt_id "
+                "FROM location_received_delegation_attempts a "
                 "LEFT JOIN location_received_delegation_floors f USING(receiving_generation) "
                 "LEFT JOIN location_received_delegation_dispositions d USING(receiving_generation) "
+                "LEFT JOIN location_received_question_recoveries r USING(receiving_generation) "
+                "LEFT JOIN location_received_question_recovery_dispositions e "
+                "USING(receiving_generation) "
                 "WHERE a.ledger_id=$1 AND (a.source_name=$2 OR a.source_name IS NULL) "
                 "ORDER BY a.receiving_generation",
                 ledger,
@@ -131,7 +141,8 @@ async def question_attempt_census(runtime: Any, plan: dict, question: dict) -> d
             )
             for row in rows:
                 if (
-                    row["source_name"] != source
+                    row["binding_count"] != 1
+                    or row["source_name"] != source
                     or row["body_digest"] != digest
                     or row["receiving_incarnation"] != runtime.incarnation
                     or row["floor_incarnation"] != runtime.incarnation
@@ -190,3 +201,37 @@ def require_question_census(prepared: dict, plan: dict, question: dict, receiver
         raise PolicyUnavailableError(
             "Native question receiving census incarnation differs"
         ) from None
+
+
+async def selected_question_source_plan(runtime: Any, decision: UUID, ledger: UUID) -> dict:
+    """A locator selects canonical target/source, then the real owning native plan.
+
+    The public source selector routes only: its independently registered owner
+    must prove original generation/body and qualified root manifest. Neither a
+    caller source string nor an absent receiving loan can qualify this census.
+    """
+    async with runtime.domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            canonical = await conn.fetchrow(
+                "SELECT * FROM public.delegation_ledger WHERE id=$1 FOR UPDATE", ledger
+            )
+            if (
+                canonical is None
+                or canonical["target_butler"] != runtime.name
+                or not isinstance(canonical["asking_butler"], str)
+                or not canonical["asking_butler"]
+            ):
+                raise PolicyUnavailableError("Native question census target is unavailable")
+            source = canonical["asking_butler"]
+    plan = await runtime.routed_tool(
+        source, "location_retention_question_owner_plan", {"decision_id": str(decision)}
+    )
+    if plan.get("source_name") != source or plan.get("decision_id") != str(decision):
+        raise PolicyUnavailableError("Native question census owning source differs")
+    questions = [q for q in plan.get("question_cohort", ()) if q.get("ledger_id") == str(ledger)]
+    if len(questions) != 1 or questions[0].get("target_name") != runtime.name:
+        raise PolicyUnavailableError("Native question census original question differs")
+    # The actual fence producer locks and rechecks CURRENT canonical body after
+    # this network response, preserving its own transaction ordering.
+    return {**plan, "question_cohort": questions}

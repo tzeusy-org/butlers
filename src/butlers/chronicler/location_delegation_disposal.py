@@ -357,15 +357,24 @@ async def _close_question_receiver(runtime: Any, binding: dict) -> UUID | None:
     return receipt
 
 
-async def prepare_question_receivers(runtime: Any, decision: UUID) -> dict:
+async def prepare_question_receivers(
+    runtime: Any, decision: UUID, ledger_id: UUID | None = None
+) -> dict:
     """Locators select the actual Chronicle source plan over Switchboard MCP."""
     if not runtime.active:
         raise PolicyUnavailableError("Native question runtime ended")
-    plan = await runtime.routed_tool(
-        "chronicler",
-        "chronicler_location_retention_status",
-        {"decision_id": str(decision)},
-    )
+    if ledger_id is None:
+        plan = await runtime.routed_tool(
+            "chronicler",
+            "chronicler_location_retention_status",
+            {"decision_id": str(decision)},
+        )
+    else:
+        from butlers.chronicler.location_question_reconciliation import (
+            selected_question_source_plan,
+        )
+
+        plan = await selected_question_source_plan(runtime, decision, ledger_id)
     if str(plan.get("decision_id")) != str(decision):
         raise PolicyUnavailableError("Native question source plan differs")
     receipts = []
@@ -377,6 +386,9 @@ async def prepare_question_receivers(runtime: Any, decision: UUID) -> dict:
             )
 
             await seal_question_source_floor(runtime, plan, question)
+            from butlers.chronicler.location_question_recovery import recover_rejected_questions
+
+            await recover_rejected_questions(runtime, plan, question)
         for loan in question["loans"]:
             if loan.get("receiver_name") != runtime.name:
                 continue

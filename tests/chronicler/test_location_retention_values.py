@@ -6717,10 +6717,14 @@ async def _assert_recursive_question_observation_values():
         ledger_id=str(ledger),
         body_digest=(b"q" * 32).hex(),
         complete_input=True,
+        target_name="finance",
         loans=[loan_row],
     )
     plan = dict(
-        decision_id=str(decision), manifest_digest=(b"m" * 32).hex(), question_cohort=[question_row]
+        decision_id=str(decision),
+        manifest_digest=(b"m" * 32).hex(),
+        source_name="relationship",
+        question_cohort=[question_row],
     )
     status = dict(
         source_name="relationship",
@@ -6782,9 +6786,26 @@ async def _assert_recursive_question_observation_values():
         assert conn is pool and pool.in_transaction
 
     calls = []
+    census_calls = []
+    census = dict(
+        source_name="relationship",
+        ledger_id=str(ledger),
+        question_generation=str(question),
+        body_digest=(b"q" * 32).hex(),
+        decision_id=str(decision),
+        manifest_digest=(b"m" * 32).hex(),
+        receiver_name="finance",
+        receiving_incarnation=str(incarnation),
+        attempt_count=1,
+        pending=False,
+    )
 
     async def route(target, tool, args):
         assert not pool.in_transaction and target == "finance"
+        if tool == "location_retention_prepare_questions":
+            assert args == dict(decision_id=str(decision), ledger_id=str(ledger))
+            census_calls.append((target, tool, args))
+            return dict(decision_id=str(decision), source_census=[census])
         calls.append((target, tool, args))
         if tool == "location_retention_prepare_question_loan":
             assert args["receiving_generation"] == str(receiving)
@@ -6800,6 +6821,7 @@ async def _assert_recursive_question_observation_values():
     await observe_question_loans(runtime, plan)
     assert pool.committed[loan]["receiver_receipt"] == receipt
     assert len(calls) == 2 and len(pool.writes) == 1
+    assert len(census_calls) == 1 and len(calls) + len(census_calls) == 3
     pool.committed.clear()
     pool.writes.clear()
     for key, changed in [
@@ -6831,6 +6853,27 @@ async def _assert_recursive_question_observation_values():
         loan: dict(decision_id=decision, manifest_digest=b"m" * 32, receiver_receipt=receipt)
     }
     assert all(args[3] == receipt for args in pool.writes)
+
+    assert census_calls
+    # Zero own loans still invokes the actual original target's complete
+    # census; it is not evidence of no unaccepted receiving attempt.
+    calls.clear()
+    census_calls.clear()
+    saved_loans = question_row["loans"]
+    question_row["loans"] = []
+    try:
+        census["attempt_count"] = 0
+        await observe_question_loans(runtime, plan)
+        assert calls == [] and len(census_calls) == 1
+        census["pending"] = True
+        with pytest.raises(PolicyUnavailableError, match="census is pending"):
+            await observe_question_loans(runtime, plan)
+        assert calls == [] and len(census_calls) == 2
+        census["pending"] = False
+        await observe_question_loans(runtime, plan)
+        assert calls == [] and len(census_calls) == 3
+    finally:
+        question_row["loans"] = saved_loans
 
 
 async def _assert_unaccepted_question_recovery_values():
@@ -7759,6 +7802,7 @@ async def _assert_question_attempt_census_values():
     )
     row = dict(
         source_name="finance",
+        binding_count=1,
         body_digest=b"b" * 32,
         receiving_incarnation=incarnation,
         floor_incarnation=incarnation,
@@ -7821,6 +7865,8 @@ async def _assert_question_attempt_census_values():
     assert result["attempt_count"] == 1 and result["pending"] is False
     require_question_census(dict(source_census=[result]), plan, selected, "home")
     for field, bad in [
+        ("binding_count", 0),
+        ("binding_count", 2),
         ("source_name", None),
         ("body_digest", b"x" * 32),
         ("receiving_incarnation", uuid4()),
@@ -7886,3 +7932,292 @@ async def _assert_question_attempt_census_values():
             "home",
         )
     require_question_census(dict(source_census=[result]), plan, selected, "home")
+    await _assert_disposition_only_question_recovery_values()
+    await _assert_selected_question_census_plan_values()
+
+
+async def _assert_disposition_only_question_recovery_values():
+    """Real owning producer functions with strict rows; no online/SQL credit."""
+    import copy
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_recovery import recover_rejected_questions
+    from butlers.core.delegation_source import _writers
+
+    receiving, ledger, question, decision, incarnation, server = [uuid4() for _ in range(6)]
+    attempt = dict(
+        receiving_generation=receiving,
+        ledger_id=ledger,
+        source_name="finance",
+        body_digest=b"b" * 32,
+        receiving_incarnation=incarnation,
+        server_request=server,
+        receiving_session=None,
+        tool_generation=None,
+    )
+    floor = dict(
+        source_name="finance",
+        ledger_id=ledger,
+        question_generation=question,
+        body_digest=b"b" * 32,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+    )
+    plan = dict(source_name="finance", decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+    selected = dict(
+        complete_input=True,
+        target_name="home",
+        ledger_id=str(ledger),
+        question_generation=str(question),
+        body_digest=(b"b" * 32).hex(),
+        loans=[],
+    )
+
+    class Pool:
+        rows = [attempt]
+        recovery = None
+        receipt = None
+        unavailable = False
+        admission = False
+        finished = True
+        fault_binding = False
+        fault_receipt = False
+        readbacks = 0
+        stop_on_terminal_readback = False
+        in_transaction = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            previous = copy.deepcopy((self.recovery, self.receipt))
+            self.in_transaction = True
+            try:
+                yield
+            except BaseException:
+                self.recovery, self.receipt = previous
+                raise
+            finally:
+                self.in_transaction = False
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_received_question_source_floors" in sql:
+                assert self.in_transaction and args == ("finance", ledger)
+                return floor
+            assert "FROM location_received_question_recoveries" in sql and args == (receiving,)
+            if not self.in_transaction:
+                self.readbacks += 1
+                if self.unavailable:
+                    return None
+                if "JOIN location_received_question_recovery_dispositions" in sql:
+                    if self.stop_on_terminal_readback:
+                        runtime.active = False
+                    return (
+                        None
+                        if self.receipt is None
+                        else self.recovery | dict(receipt_id=self.receipt)
+                    )
+                return self.recovery
+            return self.recovery
+
+        async def fetch(self, sql, *args):
+            assert self.in_transaction and "FROM location_received_delegation_attempts" in sql
+            assert args == (ledger,)
+            return self.rows
+
+        async def fetchval(self, sql, *args):
+            if "FROM location_received_delegation_inputs" in sql:
+                assert args == (receiving,) and self.in_transaction
+                return self.admission
+            if "FROM location_received_delegation_server_finished" in sql:
+                assert args == (receiving, server, b"b" * 32) and self.in_transaction
+                return self.finished
+            assert "SELECT receipt_id FROM location_received_question_recovery_dispositions" in sql
+            assert args == (receiving,)
+            return None if self.unavailable and not self.in_transaction else self.receipt
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction
+            if "INSERT INTO location_received_question_recoveries" in sql:
+                row = dict(
+                    zip(
+                        [
+                            "receiving_generation",
+                            "source_name",
+                            "ledger_id",
+                            "question_generation",
+                            "body_digest",
+                            "decision_id",
+                            "manifest_digest",
+                            "receiving_incarnation",
+                        ],
+                        args,
+                        strict=True,
+                    )
+                )
+                if self.recovery is None:
+                    self.recovery = row
+                if self.fault_binding:
+                    raise RuntimeError("planted recovery binding failure")
+                return
+            assert "INSERT INTO location_received_question_recovery_dispositions" in sql
+            assert args[0] == receiving
+            self.receipt = args[1]
+            if self.fault_receipt:
+                raise RuntimeError("planted recovery receipt failure")
+
+    pool = Pool()
+    writer = SimpleNamespace(pending={}, receiving={})
+    runtime = SimpleNamespace(
+        domain=pool, name="home", incarnation=incarnation, active=True, delegation_writer=writer
+    )
+    writer.runtime = runtime
+
+    async def lock(conn):
+        assert conn is pool and pool.in_transaction and runtime.active
+
+    runtime.lock_domain = lock
+    _writers[pool] = writer
+    try:
+        assert (
+            await recover_rejected_questions(runtime, plan, selected | dict(complete_input=False))
+            == []
+        )
+        for field, value in [
+            ("source_name", None),
+            ("body_digest", b"x" * 32),
+            ("receiving_incarnation", uuid4()),
+        ]:
+            saved = attempt[field]
+            attempt[field] = value
+            assert await recover_rejected_questions(runtime, plan, selected) == []
+            assert pool.recovery is None and pool.receipt is None
+            attempt[field] = saved
+        writer.pending["private live cell"] = SimpleNamespace(receiving=receiving)
+        assert await recover_rejected_questions(runtime, plan, selected) == []
+        writer.pending.clear()
+        writer.receiving[receiving] = object()
+        assert await recover_rejected_questions(runtime, plan, selected) == []
+        writer.receiving.clear()
+        pool.admission = True
+        assert await recover_rejected_questions(runtime, plan, selected) == []
+        assert pool.recovery is None
+        pool.admission = False
+        pool.finished = False
+        assert await recover_rejected_questions(runtime, plan, selected) == []
+        assert pool.recovery is None
+        pool.finished = True
+        pool.fault_binding = True
+        with pytest.raises(RuntimeError, match="binding failure"):
+            await recover_rejected_questions(runtime, plan, selected)
+        assert pool.recovery is None and pool.receipt is None
+        pool.fault_binding = False
+        pool.fault_receipt = True
+        with pytest.raises(RuntimeError, match="receipt failure"):
+            await recover_rejected_questions(runtime, plan, selected)
+        assert pool.recovery is not None and pool.receipt is None
+        pool.fault_receipt = False
+        pool.unavailable = True
+        with pytest.raises(PolicyUnavailableError, match="recovery is unknown"):
+            await recover_rejected_questions(runtime, plan, selected)
+        assert pool.receipt is None
+        pool.unavailable = False
+        receipts = await recover_rejected_questions(runtime, plan, selected)
+        assert receipts == [str(pool.receipt)] and pool.readbacks > 0
+        saved = copy.deepcopy(pool.recovery), pool.receipt
+        assert await recover_rejected_questions(runtime, plan, selected) == receipts
+        assert (pool.recovery, pool.receipt) == saved
+        assert "loan_id" not in pool.recovery
+        pool.stop_on_terminal_readback = True
+        with pytest.raises(PolicyUnavailableError, match="terminal is unknown"):
+            await recover_rejected_questions(runtime, plan, selected)
+        assert (pool.recovery, pool.receipt) == saved
+        pool.stop_on_terminal_readback = False
+        runtime.active = True
+        assert await recover_rejected_questions(runtime, plan, selected) == receipts
+        floor["manifest_digest"] = b"x" * 32
+        with pytest.raises(PolicyUnavailableError, match="source floor differs"):
+            await recover_rejected_questions(runtime, plan, selected)
+        assert (pool.recovery, pool.receipt) == saved
+        floor["manifest_digest"] = b"m" * 32
+        assert await recover_rejected_questions(runtime, plan, selected) == receipts
+    finally:
+        _writers.pop(pool, None)
+
+
+async def _assert_selected_question_census_plan_values():
+    """Stored selector only routes; exact native owner plan is separately required."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_reconciliation import selected_question_source_plan
+
+    decision, ledger = uuid4(), uuid4()
+    canonical = dict(asking_butler="finance", target_butler="home")
+    question = dict(ledger_id=str(ledger), target_name="home")
+    plan = dict(source_name="finance", decision_id=str(decision), question_cohort=[question])
+    calls = []
+
+    class Pool:
+        locked = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            try:
+                yield
+            finally:
+                self.locked = False
+
+        async def fetchrow(self, sql, *args):
+            assert self.locked and "public.delegation_ledger" in sql and args == (ledger,)
+            return canonical
+
+    pool = Pool()
+
+    async def lock(conn):
+        assert conn is pool
+        pool.locked = True
+
+    async def route(target, tool, args):
+        assert not pool.locked
+        calls.append((target, tool, args))
+        assert target == "finance" and tool == "location_retention_question_owner_plan"
+        assert args == dict(decision_id=str(decision))
+        return plan
+
+    runtime = SimpleNamespace(domain=pool, name="home", lock_domain=lock, routed_tool=route)
+    assert await selected_question_source_plan(runtime, decision, ledger) == plan
+    assert len(calls) == 1
+    canonical["target_butler"] = "relationship"
+    with pytest.raises(PolicyUnavailableError, match="target is unavailable"):
+        await selected_question_source_plan(runtime, decision, ledger)
+    assert len(calls) == 1
+    canonical["target_butler"] = "home"
+    for field, bad in [("source_name", "relationship"), ("decision_id", str(uuid4()))]:
+        original = plan[field]
+        plan[field] = bad
+        with pytest.raises(PolicyUnavailableError, match="owning source differs"):
+            await selected_question_source_plan(runtime, decision, ledger)
+        plan[field] = original
+    for cohort in [
+        [],
+        [question, question],
+        [question | dict(ledger_id=str(uuid4()))],
+        [question | dict(target_name="relationship")],
+    ]:
+        plan["question_cohort"] = cohort
+        with pytest.raises(PolicyUnavailableError, match="original question differs"):
+            await selected_question_source_plan(runtime, decision, ledger)
+    plan["question_cohort"] = [question]
+    assert await selected_question_source_plan(runtime, decision, ledger) == plan
