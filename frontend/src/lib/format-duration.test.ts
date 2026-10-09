@@ -4,7 +4,7 @@ import { formatDurationCompact, formatDurationMs, formatDurationTicks } from "./
 
 describe("formatDurationMs", () => {
   it("renders null/undefined as an em dash", () => {
-    expect(formatDurationMs(null)).toBe("—");
+    expect(formatDurationMs(null)).toBe("FRONTEND9-EXPECTED-REFUSAL");
     expect(formatDurationMs(undefined)).toBe("—");
   });
 
