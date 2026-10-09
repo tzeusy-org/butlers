@@ -1246,3 +1246,30 @@ and uses only its native connection_class to execute real SQL before the fixed
 receipt-INSERT fault. It also checks actual receiver enrollment. Product pool,
 constructor, role and registry guards remain unchanged. Earlier proxy wording
 above is dated failed-fixture history, not the current installed protocol.
+
+
+Selected catalog metadata reduction
+-----------------------------------
+
+The shared catalog's tenant_id, memory_type, retention_class and sensitivity
+columns are unconstrained strings. They can carry copied source content; their
+names do not establish a content-blind authority boundary. The owning reducer
+now validates the original catalog/artifact generation and full source identity
+before touching the exact locked selected shadow. After its actual exclusive
+parent/holder conditions close, it invalidates that shadow, clears tenant_id to
+an empty value, derives type from the fixed validated facts/rules table, and
+clears class and sensitivity with text, vectors and references. The empty tenant
+belongs only to this invalidated discovery shadow; this is no active tenant,
+principal, registry or runtime-role reassignment. Source UUID/schema/table/butler
+and original receipts are preserved. Active unselected catalog generations and
+independent canonical facts remain unchanged.
+
+The current-body check rejects refilled labels, wrong source identities and an
+active profile. Existing registered SQL/rollback controls now retain full before
+and after rows, plant an active unselected complete native catalog sibling and
+an independent fact, and require both to survive unchanged while only the
+selected shadow is reduced. The same current classifier has planted refilled
+label negatives and restored healthy companions. These new SQL controls remain
+UNRUN until their exact hosted head; f1a6's genuine registered producer rollback,
+late-holder and role positives are earlier scoped evidence. Original complete
+all-holder/source/privacy/native/protected outcomes remain mandatory UNMET.

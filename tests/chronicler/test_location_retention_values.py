@@ -8469,6 +8469,10 @@ async def _assert_catalog_terminal_complete_ancestry_values():
         entity_id=None,
         object_entity_id=None,
         importance=None,
+        tenant_id="",
+        memory_type="rule",
+        retention_class=None,
+        sensitivity=None,
     )
     reduced_catalog["original_catalog_id"] = reduced_catalog["id"]
 
@@ -8477,6 +8481,8 @@ async def _assert_catalog_terminal_complete_ancestry_values():
         parents = full
         body = deepcopy(original)
         terminal = None
+        selected_catalog = None
+        generations = []
         fault = False
         unknown_ack = False
         trace = []
@@ -8488,11 +8494,11 @@ async def _assert_catalog_terminal_complete_ancestry_values():
 
         @asynccontextmanager
         async def transaction(self):
-            snapshot = deepcopy((self.body, self.terminal))
+            snapshot = deepcopy((self.body, self.terminal, self.selected_catalog))
             try:
                 yield
             except BaseException:
-                self.body, self.terminal = snapshot
+                self.body, self.terminal, self.selected_catalog = snapshot
                 raise
             else:
                 self.trace.append("commit")
@@ -8521,7 +8527,7 @@ async def _assert_catalog_terminal_complete_ancestry_values():
             if "SELECT DISTINCT a.*" in sql:
                 return [artifact] if self.terminal is None else []
             if "SELECT * FROM chronicler.location_native_catalog_generations" in sql:
-                return []
+                return self.generations
             if "location_native_memory_mutations" in sql:
                 return []
             raise AssertionError("Unmodeled catalog fetch")
@@ -8533,8 +8539,10 @@ async def _assert_catalog_terminal_complete_ancestry_values():
             if "location_retention_policy" in sql:
                 self.trace.append("policy")
                 return dict(version=1)
-            if "location_runtime_context_artifacts" in sql or "public.memory_catalog" in sql:
+            if "location_runtime_context_artifacts" in sql:
                 return None
+            if "public.memory_catalog" in sql:
+                return self.selected_catalog
             if sql.startswith("SELECT * FROM rules"):
                 self.trace.append("body_read")
                 return self.body
@@ -8576,6 +8584,31 @@ async def _assert_catalog_terminal_complete_ancestry_values():
 
         async def execute(self, sql, *args):
             if "pg_advisory_xact_lock" in sql:
+                return
+            if sql.startswith("UPDATE public.memory_catalog SET"):
+                assert args == (self.selected_catalog["id"], "rule")
+                self.trace.append("catalog_update")
+                self.selected_catalog.update(
+                    summary="",
+                    title=None,
+                    predicate=None,
+                    scope=None,
+                    valid_at=None,
+                    embedding=None,
+                    search_vector=None,
+                    entity_id=None,
+                    object_entity_id=None,
+                    confidence=0,
+                    importance=None,
+                    tenant_id="",
+                    memory_type=args[1],
+                    retention_class=None,
+                    sensitivity=None,
+                    invalid_at="reduced timestamp",
+                )
+                return
+            if "INSERT INTO chronicler.location_native_catalog_dispositions" in sql:
+                self.trace.append("catalog_receipt")
                 return
             if "INSERT INTO chronicler.location_native_memory_artifact_dispositions" in sql:
                 self.trace.append("receipt")
@@ -8626,6 +8659,57 @@ async def _assert_catalog_terminal_complete_ancestry_values():
         assert "plan_read" in pool.trace
         assert not await catalog_frontier_closed(pool, decision)
         assert (await catalog_holder_inventory(pool, decision))[0]["receipt_id"] is None
+        from butlers.chronicler.location_catalog_copies import _body
+
+        catalog_id, catalog_generation = uuid4(), uuid4()
+        native_catalog = reduced_catalog | dict(
+            id=catalog_id,
+            source_generation=catalog_generation,
+            bound_catalog_id=catalog_id,
+            bound_artifact_generation=generation,
+            summary="native rule sentinel",
+            tenant_id="shared",
+            memory_type="source-derived freeform type",
+            retention_class="source-derived freeform class",
+            sensitivity="source-derived freeform sensitivity",
+            invalid_at=None,
+            updated_at=None,
+        )
+        native_catalog["body_digest"] = content_digest({"catalog_body": _body(native_catalog)})
+        pool.generations = [dict(source_generation=catalog_generation, catalog_id=catalog_id)]
+        for drift in (
+            dict(source_butler="finance"),
+            dict(source_schema="finance_mem"),
+            dict(source_table="facts"),
+            dict(source_id=uuid4()),
+            dict(bound_catalog_id=uuid4()),
+            dict(bound_artifact_generation=uuid4()),
+            dict(source_generation=uuid4()),
+        ):
+            pool.selected_catalog = native_catalog | drift
+            # Match the stored body witness: identity must refuse independently,
+            # not merely because changing a row also changed its body digest.
+            pool.selected_catalog["body_digest"] = content_digest(
+                {"catalog_body": _body(pool.selected_catalog)}
+            )
+            snapshot = deepcopy(pool.selected_catalog)
+            pool.trace.clear()
+            await dispose_catalog_artifacts(pool, decision)
+            assert pool.body == original and pool.terminal is None
+            assert pool.selected_catalog == snapshot and "catalog_update" not in pool.trace
+        pool.selected_catalog = deepcopy(native_catalog)
+        pool.trace.clear()
+        await dispose_catalog_artifacts(pool, decision)
+        assert pool.body is None and pool.terminal is not None
+        assert pool.selected_catalog["tenant_id"] == ""
+        assert pool.selected_catalog["memory_type"] == "rule"
+        assert pool.selected_catalog["retention_class"] is None
+        assert pool.selected_catalog["sensitivity"] is None
+        for key in ("id", "source_schema", "source_table", "source_id", "source_butler"):
+            assert pool.selected_catalog[key] == native_catalog[key]
+        assert pool.trace.index("catalog_update") < pool.trace.index("delete")
+        pool.body, pool.terminal, pool.selected_catalog = deepcopy(original), None, None
+        pool.generations = []
         pool.fault = True
         with pytest.raises(RuntimeError, match="synthetic receipt fault"):
             await dispose_catalog_artifacts(pool, decision)
@@ -8663,8 +8747,16 @@ async def _assert_catalog_terminal_complete_ancestry_values():
             {"embedding": [0.1]},
             {"search_vector": "synthetic"},
             {"source_id": uuid4()},
+            {"source_schema": "finance_mem"},
+            {"source_butler": "finance"},
+            {"source_table": "facts"},
+            {"invalid_at": None},
             {"head_disposed": False},
             {"id": None},
+            {"tenant_id": "synthetic precise source copied into tenant label"},
+            {"memory_type": "synthetic precise source copied into type"},
+            {"retention_class": "synthetic precise source copied into class"},
+            {"sensitivity": "synthetic precise source copied into sensitivity"},
         ):
             pool.catalog_rows = [reduced_catalog | drift]
             assert not await catalog_frontier_closed(pool, decision)

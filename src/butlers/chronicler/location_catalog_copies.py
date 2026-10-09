@@ -1573,6 +1573,9 @@ async def current_catalog_reductions(conn: Any, decision: UUID) -> bool:
                 or row["source_id"] != row["artifact_id"]
                 or row["head_disposed"] is not True
                 or row["current_generation"] is None
+                or row["tenant_id"] != ""
+                or row["memory_table"] not in {"facts", "rules"}
+                or row["memory_type"] != ("fact" if row["memory_table"] == "facts" else "rule")
                 or row["summary"] != ""
                 or row["confidence"] != 0
                 or row["invalid_at"] is None
@@ -1588,6 +1591,8 @@ async def current_catalog_reductions(conn: Any, decision: UUID) -> bool:
                         "entity_id",
                         "object_entity_id",
                         "importance",
+                        "retention_class",
+                        "sensitivity",
                     )
                 )
             ):
@@ -1740,7 +1745,9 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
                 ):
                     continue  # Independently born/linked descendants retain their actual source.
                 catalog = await conn.fetchrow(
-                    "SELECT c.*,g.body_digest FROM public.memory_catalog c "
+                    "SELECT c.*,g.body_digest,g.catalog_id AS bound_catalog_id,"
+                    "g.artifact_generation AS bound_artifact_generation,g.source_generation "
+                    "FROM public.memory_catalog c "
                     "JOIN chronicler.location_native_catalog_heads h ON h.catalog_id=c.id "
                     "JOIN chronicler.location_native_catalog_generations g "
                     "USING(source_generation) "
@@ -1750,6 +1757,20 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
                     table,
                     artifact["artifact_id"],
                 )
+                if catalog is not None and (
+                    catalog["source_schema"] != schema
+                    or catalog["source_butler"] != "chronicler"
+                    or catalog["source_table"] != table
+                    or catalog["source_id"] != artifact["artifact_id"]
+                    or catalog["id"] != catalog["bound_catalog_id"]
+                    or catalog["bound_artifact_generation"] != artifact["artifact_generation"]
+                    or not any(
+                        g["source_generation"] == catalog["source_generation"]
+                        and g["catalog_id"] == catalog["id"]
+                        for g in generations
+                    )
+                ):
+                    continue  # No current-row lookup may substitute another source generation.
                 if generations and (
                     catalog is None
                     or content_digest({"catalog_body": _body(catalog)}) != catalog["body_digest"]
@@ -1759,9 +1780,12 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
                     await conn.execute(
                         "UPDATE public.memory_catalog SET summary='',title=NULL,predicate=NULL,"
                         "scope=NULL,valid_at=NULL,embedding=NULL,search_vector=NULL,entity_id=NULL,"
-                        "object_entity_id=NULL,confidence=0,importance=NULL,invalid_at=clock_timestamp(),"
+                        "object_entity_id=NULL,confidence=0,importance=NULL,tenant_id='',"
+                        "memory_type=$2,retention_class=NULL,sensitivity=NULL,"
+                        "invalid_at=clock_timestamp(),"
                         "updated_at=clock_timestamp() WHERE id=$1",
                         catalog["id"],
+                        "fact" if table == "facts" else "rule",
                     )
                 if table == "facts":
                     from butlers.core import entity_graph_edges

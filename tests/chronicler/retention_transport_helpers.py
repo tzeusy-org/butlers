@@ -331,6 +331,7 @@ async def _assert_registered_catalog_transport(
                 embedding=[0.0] * 384,
                 search_text=summary,
                 memory_type="fact",
+                retention_class="synthetic precise source-derived freeform classification",
                 sensitivity="normal",
             )
             catalog = await memory_pool.fetchrow(
@@ -466,6 +467,95 @@ async def _assert_registered_catalog_transport(
                 independent,
                 independent_body,
             )
+            independent_original = dict(
+                await memory_pool.fetchrow("SELECT * FROM facts WHERE id=$1", independent)
+            )
+            # A second complete native origin is NOT selected by this plan.
+            # Its active tenant/catalog body must survive the destructive producer.
+            active, active_parent, active_input, active_generation = (uuid4() for _ in range(4))
+            active_output = uuid4()
+            async with memory_pool.acquire() as active_writer:
+                async with active_writer.transaction():
+                    await active_writer.execute(
+                        "INSERT INTO facts(id,subject,predicate,content) "
+                        "VALUES($1,'registered-active-unselected','location',$2)",
+                        active,
+                        "synthetic independent current source catalog",
+                    )
+                    active_body = await active_writer.fetchrow(
+                        "SELECT * FROM facts WHERE id=$1", active
+                    )
+                    await active_writer.execute(
+                        "INSERT INTO chronicler.location_native_copy_births "
+                        "(copy_generation,output_kind,output_id,input_digest,lineage_known,"
+                        "exclusive_input,producer_kind) "
+                        "VALUES($1,'point_event',$2,$3,true,true,'native_memory')",
+                        active_parent,
+                        active_output,
+                        b"a" * 32,
+                    )
+                    await active_writer.execute(
+                        "INSERT INTO chronicler.location_native_dispatch_inputs "
+                        "(input_generation,server_request,prompt_digest,parent_count,origin_kind) "
+                        "VALUES($1,$2,$3,1,'native_memory')",
+                        active_input,
+                        uuid4(),
+                        b"c" * 32,
+                    )
+                    await active_writer.execute(
+                        "INSERT INTO chronicler.location_native_dispatch_parents "
+                        "(input_generation,copy_generation,input_digest) VALUES($1,$2,$3)",
+                        active_input,
+                        active_parent,
+                        b"a" * 32,
+                    )
+                    await active_writer.execute(
+                        "INSERT INTO chronicler.location_native_memory_bundles "
+                        "(input_generation,bundle_digest,exclusive_input) VALUES($1,$2,true)",
+                        active_input,
+                        b"d" * 32,
+                    )
+                    await active_writer.execute(
+                        "INSERT INTO chronicler.location_native_memory_artifacts "
+                        "(artifact_generation,input_generation,memory_table,artifact_id,"
+                        "body_digest,content_digest) VALUES($1,$2,'facts',$3,$4,$5)",
+                        active_generation,
+                        active_input,
+                        active,
+                        content_digest({"memory_artifact": _digest_value(dict(active_body))}),
+                        artifact_content_digest("facts", active_body),
+                    )
+            await _upsert_catalog(
+                memory_pool,
+                source_schema="chronicler_mem",
+                source_table="facts",
+                source_id=active,
+                source_butler="chronicler",
+                tenant_id="shared",
+                entity_id=None,
+                summary="synthetic independent current source catalog",
+                embedding=[0.0] * 384,
+                search_text="synthetic independent current source catalog",
+                memory_type="fact",
+                retention_class="synthetic independent active classification",
+                sensitivity="normal",
+            )
+            active_catalog_original = dict(
+                await memory_pool.fetchrow(
+                    "SELECT * FROM public.memory_catalog WHERE source_schema='chronicler_mem' "
+                    "AND source_table='facts' AND source_id=$1",
+                    active,
+                )
+            )
+            active_fact_original = dict(active_body)
+            assert active_catalog_original["invalid_at"] is None
+            assert active_catalog_original["tenant_id"] == "shared"
+            assert not await pools["chronicler"].fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_retention_plan_outputs "
+                "WHERE decision_id=$1 AND output_id=$2)",
+                decision,
+                active_output,
+            )
             # A real consumer loan without its source-owned committed terminal
             # receipt prevents actual source destruction, even after SEND ends.
             await dispose_catalog_artifacts(pools["chronicler"], decision)
@@ -556,6 +646,14 @@ async def _assert_registered_catalog_transport(
                     )
                     == expected_body["summary"]
                 )
+                assert (
+                    _body(
+                        await rollback_readback.fetchrow(
+                            "SELECT * FROM public.memory_catalog WHERE id=$1", catalog["id"]
+                        )
+                    )
+                    == expected_body
+                )
             assert not await pools["chronicler"].fetchval(
                 "SELECT EXISTS(SELECT 1 FROM location_native_memory_artifact_dispositions "
                 "WHERE artifact_generation=$1)",
@@ -567,8 +665,7 @@ async def _assert_registered_catalog_transport(
                     "SELECT EXISTS(SELECT 1 FROM facts WHERE id=$1)", artifact
                 )
                 reduced = await artifact_readback.fetchrow(
-                    "SELECT summary,title,predicate,scope,embedding,search_vector "
-                    "FROM public.memory_catalog WHERE id=$1",
+                    "SELECT * FROM public.memory_catalog WHERE id=$1",
                     catalog["id"],
                 )
                 assert reduced is not None and reduced["summary"] == ""
@@ -581,6 +678,34 @@ async def _assert_registered_catalog_transport(
                         "SELECT content FROM facts WHERE id=$1", independent
                     )
                     == independent_body
+                )
+                assert reduced["tenant_id"] == "" and reduced["memory_type"] == "fact"
+                assert reduced["retention_class"] is None and reduced["sensitivity"] is None
+                assert reduced["invalid_at"] is not None
+                for key in ("id", "source_schema", "source_table", "source_id", "source_butler"):
+                    assert reduced[key] == catalog[key]
+                assert (
+                    dict(
+                        await artifact_readback.fetchrow(
+                            "SELECT * FROM facts WHERE id=$1", independent
+                        )
+                    )
+                    == independent_original
+                )
+                assert (
+                    dict(
+                        await artifact_readback.fetchrow("SELECT * FROM facts WHERE id=$1", active)
+                    )
+                    == active_fact_original
+                )
+                assert (
+                    dict(
+                        await artifact_readback.fetchrow(
+                            "SELECT * FROM public.memory_catalog WHERE id=$1",
+                            active_catalog_original["id"],
+                        )
+                    )
+                    == active_catalog_original
                 )
             source_receipt = await pools["chronicler"].fetchval(
                 "SELECT receipt_id FROM location_native_memory_artifact_dispositions "
@@ -631,6 +756,32 @@ async def _assert_registered_catalog_transport(
                 async with restored_body.transaction():
                     await source.lock_domain(restored_body)
                     assert await catalog_frontier_closed(restored_body, decision)
+
+            for column, restored_value in (
+                ("tenant_id", ""),
+                ("memory_type", "fact"),
+                ("retention_class", None),
+                ("sensitivity", None),
+            ):
+                assert column in {"tenant_id", "memory_type", "retention_class", "sensitivity"}
+                await memory_pool.execute(
+                    f"UPDATE public.memory_catalog SET {column}=$2 WHERE id=$1",
+                    catalog["id"],
+                    "synthetic refilled precise label",
+                )
+                async with pools["chronicler"].acquire() as refilled_body:
+                    async with refilled_body.transaction():
+                        await source.lock_domain(refilled_body)
+                        assert not await catalog_frontier_closed(refilled_body, decision)
+                await memory_pool.execute(
+                    f"UPDATE public.memory_catalog SET {column}=$2 WHERE id=$1",
+                    catalog["id"],
+                    restored_value,
+                )
+                async with pools["chronicler"].acquire() as healthy_profile:
+                    async with healthy_profile.transaction():
+                        await source.lock_domain(healthy_profile)
+                        assert await catalog_frontier_closed(healthy_profile, decision)
 
             # This is the selected native/catalog/server/consumer cohort only;
             # no planted plan becomes actual OwnTracks/raw or full-fleet proof.
