@@ -52,7 +52,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
            'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_ordinary_delegation_inputs','location_native_delegation_inputs',
-           'location_received_answer_dispositions','location_received_answer_qualifications','location_received_answer_server_finished','location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_question_answer_observations','location_native_answer_question_observations','location_native_answer_observations','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
+           'location_received_answer_dispositions','location_received_answer_qualifications','location_received_answer_server_finished','location_received_answer_claims','location_received_answer_claim_parents','location_received_answer_claims_ended','location_runtime_context_answer_intents','location_received_answer_contexts','location_received_answer_schedules','location_received_answer_floors','location_native_question_answer_observations','location_native_answer_question_observations','location_native_question_loan_observations','location_native_answer_observations','location_native_answer_loans','location_received_answer_attempts','location_received_answer_inputs','location_native_delegation_answers','location_native_delegation_answer_parents','location_native_delegation_answer_dispositions','location_native_delegation_parents','location_native_delegation_loans','location_received_delegation_floors','location_received_delegation_dispositions','location_received_delegation_attempts','location_received_delegation_inputs','location_received_delegation_server_finished','location_received_delegation_schedules','location_received_delegation_claims','location_received_delegation_claims_ended','location_received_delegation_contexts','location_runtime_context_question_intents','location_native_delegation_dispositions')
     """),
             {"schema": schema},
         ).scalars()
@@ -92,6 +92,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
         "location_received_answer_attempts",
         "location_native_question_answer_observations",
         "location_native_answer_question_observations",
+        "location_native_question_loan_observations",
         "location_native_answer_observations",
         "location_native_answer_loans",
         "location_native_delegation_answer_parents",
@@ -402,6 +403,13 @@ def _validate_local_tables(schema: str) -> None:
                 ("reduced_question_digest", "bytea", True),
                 ("committed_at", "timestamp with time zone", True),
             ],
+            "location_native_question_loan_observations": [
+                ("loan_id", "uuid", True),
+                ("decision_id", "uuid", True),
+                ("manifest_digest", "bytea", True),
+                ("receiver_receipt", "uuid", True),
+                ("committed_at", "timestamp with time zone", True),
+            ],
             "location_native_answer_observations": [
                 ("loan_id", "uuid", True),
                 ("decision_id", "uuid", True),
@@ -694,7 +702,7 @@ def _validate_local_tables(schema: str) -> None:
                 "UNIQUE (loan_id)",
                 "CHECK ((octet_length(manifest_digest) = 32))",
                 "CHECK ((octet_length(body_digest) = 32))",
-                "CHECK ((source_name = 'chronicler'::text))",
+                "CHECK ((source_name <> ''::text))",
             },
             "location_received_delegation_dispositions": {
                 "PRIMARY KEY (receiving_generation)",
@@ -801,6 +809,11 @@ def _validate_local_tables(schema: str) -> None:
                 "CHECK ((octet_length(manifest_digest) = 32))",
                 "CHECK ((octet_length(original_question_digest) = 32))",
                 "CHECK ((octet_length(reduced_question_digest) = 32))",
+            },
+            "location_native_question_loan_observations": {
+                "PRIMARY KEY (loan_id)",
+                "FOREIGN KEY (loan_id) REFERENCES location_native_delegation_loans(loan_id)",
+                "CHECK ((octet_length(manifest_digest) = 32))",
             },
             "location_native_answer_observations": {
                 "PRIMARY KEY (loan_id)",
@@ -1367,7 +1380,7 @@ def upgrade() -> None:
           receiving_generation UUID PRIMARY KEY,
           decision_id UUID NOT NULL,
           manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
-          source_name TEXT NOT NULL CHECK(source_name='chronicler'),
+          source_name TEXT NOT NULL CHECK(source_name<>''),
           question_generation UUID NOT NULL,
           ledger_id UUID NOT NULL,
           loan_id UUID NOT NULL UNIQUE,
@@ -1375,6 +1388,19 @@ def upgrade() -> None:
           receiving_incarnation UUID NOT NULL,
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        DO $floor_source$
+        BEGIN
+          IF EXISTS(SELECT 1 FROM pg_catalog.pg_constraint
+            WHERE conrelid='location_received_delegation_floors'::regclass
+            AND conname='location_received_delegation_floors_source_name_check'
+            AND pg_catalog.pg_get_constraintdef(oid)=
+              'CHECK ((source_name = ''chronicler''::text))') THEN
+            ALTER TABLE location_received_delegation_floors
+              DROP CONSTRAINT location_received_delegation_floors_source_name_check;
+            ALTER TABLE location_received_delegation_floors ADD CONSTRAINT
+              location_received_delegation_floors_source_name_check CHECK(source_name<>'');
+          END IF;
+        END $floor_source$;
         CREATE TABLE IF NOT EXISTS location_received_delegation_dispositions (
           receiving_generation UUID PRIMARY KEY REFERENCES location_received_delegation_floors,
           receipt_id UUID NOT NULL UNIQUE,
@@ -1486,6 +1512,13 @@ def upgrade() -> None:
           reduced_question_digest BYTEA NOT NULL CHECK(octet_length(reduced_question_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        CREATE TABLE IF NOT EXISTS location_native_question_loan_observations (
+          loan_id UUID PRIMARY KEY REFERENCES location_native_delegation_loans(loan_id),
+          decision_id UUID NOT NULL,
+          manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
+          receiver_receipt UUID NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE IF NOT EXISTS location_catalog_copy_finished (
           loan_id UUID PRIMARY KEY REFERENCES location_catalog_copy_lifetimes(loan_id),
           body_digest BYTEA NOT NULL CHECK(octet_length(body_digest)=32),
@@ -1555,6 +1588,7 @@ def upgrade() -> None:
         "location_received_answer_attempts",
         "location_native_question_answer_observations",
         "location_native_answer_question_observations",
+        "location_native_question_loan_observations",
         "location_native_answer_observations",
         "location_native_answer_loans",
         "location_native_delegation_answer_parents",

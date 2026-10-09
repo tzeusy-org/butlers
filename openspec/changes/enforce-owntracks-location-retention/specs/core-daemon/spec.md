@@ -37,6 +37,8 @@ ID: REQ-core-daemon-004
 Source: bu-s11n0s.7 P5 registered owning receiver disposal; existing Delegation Core Tool Inventory And Admission Boundary
 Scope: v1-mandatory
 
+The group SHALL additionally register location_retention_question_owner_plan, location_retention_prepare_question_loan and location_retention_close_owned_questions in the same non-presentable delegation_control representation. These stored-state locators SHALL retain the actual owning constructor, adopted Switchboard route, full immutable original parent/body/loan/manifest binding and separate terminal readback. The source-question status reader SHALL dispatch a non-Chronicle owner only through its actual registered writer identity, not a caller name or fabricated runtime. Registration SHALL NOT infer cross-schema permission, actor authority, receiving incarnation or full source completion.
+
 #### Scenario: Non-staffer delegation inventory is explicit
 
 - **WHEN** a butler-type daemon has the delegation core group enabled by its

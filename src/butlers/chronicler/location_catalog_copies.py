@@ -1014,7 +1014,11 @@ class CatalogCopyRuntime:
                 if context_generation is not None:
                     input_generation = context_generation
                 from butlers.chronicler.location_memory_context import dispose_runtime_context
+                from butlers.chronicler.location_question_recursive import close_owned_questions
 
+                # Every own nested child closes before the context that copied
+                # it. A root/parent floor qualifies ancestry, not terminal life.
+                await close_owned_questions(self, decision)
                 await dispose_runtime_context(self, input_generation, plan)
             if source.get("complete_input") is not True:
                 continue

@@ -160,7 +160,7 @@ def _floor_binding(runtime: Any, plan: dict, question: dict, loan: dict) -> dict
             "receiving_generation": UUID(loan["receiving_generation"]),
             "decision_id": UUID(str(plan["decision_id"])),
             "manifest_digest": bytes.fromhex(plan["manifest_digest"]),
-            "source_name": "chronicler",
+            "source_name": plan.get("source_name", "chronicler"),
             "question_generation": UUID(question["question_generation"]),
             "ledger_id": UUID(question["ledger_id"]),
             "loan_id": UUID(loan["loan_id"]),
@@ -354,7 +354,9 @@ async def prepare_question_receivers(runtime: Any, decision: UUID) -> dict:
                     dispose_core_question_contexts,
                     dispose_memory_question_contexts,
                 )
+                from butlers.chronicler.location_question_recursive import close_owned_questions
 
+                await close_owned_questions(runtime, decision)
                 await dispose_core_question_contexts(runtime, binding)
                 await dispose_memory_question_contexts(runtime, binding, plan)
                 receipt = await _close_question_receiver(runtime, binding)
@@ -712,8 +714,16 @@ async def source_question_status(runtime: Any, decision: UUID, receipt: UUID) ->
     This is a ledger child receipt, not a receiving/context/answer disposition.
     Prototype NULL reduced profiles stay unknown and are never backfilled.
     """
-    if not runtime.active or runtime.name != "chronicler":
+    if not runtime.active:
         raise PolicyUnavailableError("Native source question constructor differs")
+    if runtime.name != "chronicler":
+        from butlers.chronicler.location_question_recursive import owned_question_status
+        from butlers.core.delegation_source import _writers
+
+        writer = _writers.get(runtime.domain)
+        if writer is None or writer.runtime is not runtime:
+            raise PolicyUnavailableError("Native source question constructor differs")
+        return await owned_question_status(runtime, decision, receipt)
     async with runtime.domain.acquire() as conn:
         async with conn.transaction():
             await runtime.lock_domain(conn)

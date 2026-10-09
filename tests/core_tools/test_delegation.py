@@ -796,6 +796,14 @@ async def _assert_native_received_question_schedule(monkeypatch):
             raise AssertionError("unexpected receiver/source row")
 
         async def fetch(self, sql, *args):
+            if "FROM location_native_delegation_inputs" in sql:
+                # This receiver fixture owns no outgoing question header;
+                # original source data resides in the distinct source pool.
+                assert self.name == "receiver"
+                return []
+            if "FROM location_native_question_answer_observations" in sql:
+                assert self.name == "receiver"
+                return []
             assert "location_native_delegation_parents" in sql
             return [
                 dict(parent_kind="native_copy", parent_generation=parent, parent_digest=b"p" * 32)

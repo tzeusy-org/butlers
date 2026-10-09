@@ -16,7 +16,9 @@ from butlers.chronicler.location_delegation_copies import question_digest
 from butlers.chronicler.location_policy import PolicyUnavailableError
 
 
-def answered_question_matches(canonical: Any, observed: Any, header: Any, plan: Any) -> bool:
+def answered_question_matches(
+    canonical: Any, observed: Any, header: Any, plan: Any, *, owner_name: str = "chronicler"
+) -> bool:
     """Own frozen answer identity plus the actual canonical reduced answer.
 
     This witness closes only this child. Metadata and mixed descendants remain
@@ -30,7 +32,7 @@ def answered_question_matches(canonical: Any, observed: Any, header: Any, plan: 
         and observed["question_generation"] == header["question_generation"]
         and observed["decision_id"] == plan["decision_id"]
         and observed["manifest_digest"] == plan["manifest_digest"]
-        and canonical["asking_butler"] == "chronicler"
+        and canonical["asking_butler"] == owner_name
         and canonical["status"] == "answered"
         and canonical["metadata"] in (None, {})
         and canonical.get("reason") in (None, "location_retention_expired")
@@ -54,7 +56,9 @@ async def question_disposition_profile(conn: Any, header: Any, canonical: Any, p
     return answered_question_matches(canonical, observed, header, plan)
 
 
-async def reconcile_answered_questions(domain: Any, decision: UUID) -> None:
+async def reconcile_answered_questions(
+    domain: Any, decision: UUID, *, owning_plan: dict | None = None
+) -> None:
     """Capture actual answer-owner receipts before this question's reduction.
 
     The constructor selects the source and the original canonical target selects
@@ -69,19 +73,39 @@ async def reconcile_answered_questions(domain: Any, decision: UUID) -> None:
     from butlers.core.delegation_source import _writers
 
     writer = _writers.get(domain)
-    if writer is None or not writer.runtime.active or writer.runtime.name != "chronicler":
+    if writer is None or not writer.runtime.active:
         return
     runtime = writer.runtime
+    if owning_plan is None and runtime.name != "chronicler":
+        return
+    if owning_plan is not None and (
+        owning_plan.get("source_name") != runtime.name
+        or owning_plan.get("source_incarnation") != str(runtime.incarnation)
+        or str(owning_plan.get("decision_id")) != str(decision)
+    ):
+        raise PolicyUnavailableError("Native recursive question owning plan differs")
     await acknowledge_reduced_questions(runtime, decision)
     async with domain.acquire() as conn:
         async with conn.transaction():
             await runtime.lock_domain(conn)
-            plan = await conn.fetchrow(
-                "SELECT * FROM location_retention_plans WHERE decision_id=$1", decision
-            )
-            if plan is None or plan["state"] != "holder_pending":
-                return
-            cohort = await source_question_cohort(conn, decision)
+            if owning_plan is None:
+                plan = await conn.fetchrow(
+                    "SELECT * FROM location_retention_plans WHERE decision_id=$1", decision
+                )
+                if plan is None or plan["state"] != "holder_pending":
+                    return
+                cohort = await source_question_cohort(conn, decision)
+            else:
+                from butlers.chronicler.location_question_recursive import question_owner_cohort
+
+                # The fixed root reader selected this immutable decision;
+                # actual own parent floors are rechecked in this transaction.
+                plan = {
+                    **owning_plan,
+                    "decision_id": decision,
+                    "manifest_digest": bytes.fromhex(owning_plan["manifest_digest"]),
+                }
+                cohort = await question_owner_cohort(runtime, conn, owning_plan)
     for question in cohort:
         if question["complete_input"] is not True:
             continue
@@ -102,7 +126,9 @@ async def reconcile_answered_questions(domain: Any, decision: UUID) -> None:
         if observed is not None:
             # Resume a lost acknowledgement without rereading an original body
             # which has already been lawfully reduced by this owning writer.
-            if not answered_question_matches(canonical, observed, header, plan):
+            if not answered_question_matches(
+                canonical, observed, header, plan, owner_name=runtime.name
+            ):
                 raise PolicyUnavailableError("Native observed source answer changed")
             continue
         if canonical is None or canonical["status"] != "answered":
@@ -145,9 +171,22 @@ async def reconcile_answered_questions(domain: Any, decision: UUID) -> None:
         async with domain.acquire() as conn:
             async with conn.transaction():
                 await runtime.lock_domain(conn)
-                current_plan = await conn.fetchrow(
-                    "SELECT * FROM location_retention_plans WHERE decision_id=$1", decision
-                )
+                if owning_plan is None:
+                    current_plan = await conn.fetchrow(
+                        "SELECT * FROM location_retention_plans WHERE decision_id=$1", decision
+                    )
+                else:
+                    from butlers.chronicler.location_question_recursive import question_owner_cohort
+
+                    # No peer schema or postcommit copied DTO supplies this
+                    # binding: every original parent must still qualify here.
+                    current_cohort = await question_owner_cohort(runtime, conn, owning_plan)
+                    selected = [
+                        q for q in current_cohort if q["question_generation"] == str(generation)
+                    ]
+                    if len(selected) != 1 or selected[0]["complete_input"] is not True:
+                        raise PolicyUnavailableError("Native recursive answer ancestry changed")
+                    current_plan = plan
                 current = await conn.fetchrow(
                     "SELECT * FROM public.delegation_ledger WHERE id=$1 "
                     "FOR UPDATE OF delegation_ledger",
@@ -171,11 +210,13 @@ async def reconcile_answered_questions(domain: Any, decision: UUID) -> None:
                 if (
                     current is None
                     or current_plan is None
-                    or current_plan["state"] != "holder_pending"
+                    or (owning_plan is None and current_plan["state"] != "holder_pending")
                     or current_header is None
                     or current_header["body_digest"] != header["body_digest"]
                     or question_digest(dict(current)) != header["body_digest"]
-                    or not answered_question_matches(current, values, current_header, current_plan)
+                    or not answered_question_matches(
+                        current, values, current_header, current_plan, owner_name=runtime.name
+                    )
                 ):
                     raise PolicyUnavailableError("Native source answer committed binding differs")
                 await conn.execute(
@@ -193,8 +234,9 @@ async def reconcile_answered_questions(domain: Any, decision: UUID) -> None:
             )
         if stored is None or any(stored[key] != value for key, value in values.items()):
             raise PolicyUnavailableError("Committed source answer observation is unknown")
-    await dispose_source_questions(domain, decision)
-    await acknowledge_reduced_questions(runtime, decision)
+    if owning_plan is None:
+        await dispose_source_questions(domain, decision)
+        await acknowledge_reduced_questions(runtime, decision)
 
 
 async def acknowledge_reduced_questions(runtime: Any, decision: UUID) -> None:

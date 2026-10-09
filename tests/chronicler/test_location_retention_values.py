@@ -3125,6 +3125,9 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_answered_question_reference_values()
     await _assert_answer_question_observation_values()
     await _assert_source_question_tool_values()
+    await _assert_recursive_question_values()
+    await _assert_recursive_question_cohort_values()
+    await _assert_recursive_question_observation_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
 
@@ -3843,6 +3846,15 @@ async def _assert_core_question_context_values():
                     if self.captured_extra
                     else ([captured] if self.captured_valid else [])
                 )
+            if "FROM location_runtime_tool_intents" in sql:
+                assert args == (session_id,)
+                return []
+            if '"relationship".location_native_delegation_inputs' in sql:
+                assert args == (generation,)
+                return []
+            if '"relationship".location_native_delegation_answers' in sql:
+                assert args == (generation,)
+                return []
             raise AssertionError("Unknown core context cohort")
 
         async def fetchval(self, sql, *args):
@@ -6371,3 +6383,447 @@ async def _assert_source_question_tool_values():
         )
     conn.rows = [witness]
     assert await source_question_tool_finished(conn, header, source_session, canonical)
+
+
+async def _assert_recursive_question_values():
+    """Full own nested child profiles; strict software query double, not SQL/online."""
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_delegation_disposal import _REDUCED_QUESTION, _REDUCED_REASON
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_recursive import (
+        _closing,
+        close_owned_questions,
+        closed_owned_question_tools,
+    )
+    from butlers.core.delegation_source import _writers
+
+    context, question, ledger, tool, decision = [uuid4() for _ in range(5)]
+    plan = dict(decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+    header = dict(
+        question_generation=question,
+        ledger_id=ledger,
+        tool_generation=tool,
+        parent_count=2,
+        exclusive_input=True,
+        body_digest=b"q" * 32,
+    )
+    parents = [dict(parent_kind="received_question", parent_generation=uuid4()) for _ in range(2)]
+    canonical = dict(
+        asking_butler="relationship",
+        question=_REDUCED_QUESTION,
+        target_butler="finance",
+        catalog_match_id=None,
+        catalog_score=None,
+        status="failed",
+        reason=_REDUCED_REASON,
+        metadata={},
+        wake_state="not_applicable",
+        answer=None,
+        answer_digest=None,
+        answered_at=None,
+        answering_butler=None,
+        wake_key=None,
+        wake_task_id=None,
+        wake_task_name=None,
+        wake_updated_at=None,
+    )
+    disposition = dict(
+        question_generation=question,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        body_digest=header["body_digest"],
+        reduced_question_digest=question_digest(canonical),
+    )
+
+    class Pool:
+        receipt = disposition
+        queries = []
+
+        async def fetch(self, sql, *args):
+            self.queries.append(sql)
+            if '"relationship".location_native_delegation_inputs' in sql:
+                assert args == (context,)
+                return [header]
+            if '"relationship".location_native_delegation_parents' in sql:
+                assert args == (question,)
+                return parents
+            raise AssertionError("Unknown nested child cohort")
+
+        async def fetchrow(self, sql, *args):
+            self.queries.append(sql)
+            if '"relationship".location_native_delegation_dispositions' in sql:
+                assert args == (question,)
+                return self.receipt
+            if '"relationship".location_native_question_answer_observations' in sql:
+                assert args == (question,)
+                return None
+            assert "FROM public.delegation_ledger" in sql and args == (ledger,)
+            return canonical
+
+    pool = Pool()
+    runtime = NativeDelegationRuntime(
+        domain=pool,
+        name="relationship",
+        registry=object(),
+        identity=("relationship", "fixed_own_role"),
+    )
+    try:
+        expected = [{"tool_generation": tool}]
+        assert await closed_owned_question_tools(pool, runtime, context, plan) == expected
+        saved = parents.pop()
+        assert await closed_owned_question_tools(pool, runtime, context, plan) == []
+        parents.append(saved)
+        parents.append(dict(parents[0]))
+        assert await closed_owned_question_tools(pool, runtime, context, plan) == []
+        parents.pop()
+        for key, changed in [
+            ("manifest_digest", b"x" * 32),
+            ("body_digest", b"x" * 32),
+            ("reduced_question_digest", None),
+            ("decision_id", uuid4()),
+        ]:
+            pool.receipt = disposition | {key: changed}
+            assert await closed_owned_question_tools(pool, runtime, context, plan) == []
+        pool.receipt = disposition
+        for key, changed in [
+            ("asking_butler", "finance"),
+            ("question", "unrelated replacement"),
+            ("metadata", {"independent": "preserve"}),
+        ]:
+            before = canonical[key]
+            canonical[key] = changed
+            assert await closed_owned_question_tools(pool, runtime, context, plan) == []
+            canonical[key] = before
+        assert await closed_owned_question_tools(pool, runtime, context, plan) == expected
+        assert all('"relationship".' in q or "public.delegation_ledger" in q for q in pool.queries)
+        # Reentry cannot call a peer or mint a receipt; the exact actual
+        # constructor registration is still required before this pending path.
+        with pytest.raises(PolicyUnavailableError, match="constructor ended"):
+            await close_owned_questions(runtime, decision)
+        _writers[pool] = runtime.delegation_writer
+        _closing[runtime.delegation_writer] = {decision}
+        before = len(pool.queries)
+        assert await close_owned_questions(runtime, decision) == dict(
+            decision_id=str(decision), receipt_ids=[]
+        )
+        assert len(pool.queries) == before
+    finally:
+        _closing.pop(runtime.delegation_writer, None)
+        _writers.pop(pool, None)
+        runtime.close()
+
+
+async def _assert_recursive_question_cohort_values():
+    """Complete borrowed ancestry and owning plans; software SQL/route doubles only."""
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_recursive import (
+        question_owner_cohort,
+        question_owner_plan,
+    )
+    from butlers.core.delegation_source import _writers
+
+    question, ledger, context, session, tool, decision = [uuid4() for _ in range(6)]
+    canonical = dict(
+        asking_butler="relationship",
+        question="Synthetic borrowed original question",
+        target_butler="finance",
+        catalog_match_id=None,
+        catalog_score=None,
+        metadata={},
+    )
+    header = dict(
+        question_generation=question,
+        ledger_id=ledger,
+        parent_count=2,
+        exclusive_input=True,
+        body_digest=question_digest(canonical),
+        context_generation=context,
+        tool_generation=tool,
+        receiving_session=session,
+    )
+    parents = [
+        dict(
+            parent_kind="received_question",
+            parent_generation=uuid4(),
+            parent_digest=bytes([n]) * 32,
+        )
+        for n in [1, 2]
+    ]
+    root = dict(decision_id=str(decision), manifest_digest=(b"m" * 32).hex(), catalog_loans=[])
+
+    class Pool:
+        in_transaction = False
+        floors = {}
+        routed = []
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.in_transaction = True
+            try:
+                yield
+            finally:
+                self.in_transaction = False
+
+        async def fetch(self, sql, *args):
+            if "FROM location_native_delegation_inputs" in sql:
+                return [header] if args == (None,) else []
+            if "FROM location_native_delegation_parents" in sql:
+                assert args == (question,)
+                return parents
+            assert "FROM location_native_delegation_loans" in sql and args == (question,)
+            return []
+
+        async def fetchrow(self, sql, *args):
+            if "FROM public.delegation_ledger" in sql:
+                assert args == (ledger,)
+                return canonical
+            if "FROM location_native_delegation_dispositions" in sql:
+                assert args == (question,)
+                return None
+            assert "FROM location_received_delegation_inputs i" in sql and len(args) == 1
+            return self.floors.get(args[0])
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "relationship"
+            assert sql == "SELECT current_user"
+            return "fixed_own_role"
+
+        async def execute(self, sql, *args):
+            assert "pg_advisory_xact_lock" in sql and self.in_transaction
+
+    pool = Pool()
+    runtime = NativeDelegationRuntime(
+        domain=pool,
+        name="relationship",
+        registry=object(),
+        identity=("relationship", "fixed_own_role"),
+    )
+
+    async def route(target, tool_name, args):
+        assert not pool.in_transaction
+        assert target == "chronicler" and tool_name == "chronicler_location_retention_status"
+        assert args == dict(decision_id=str(decision))
+        pool.routed.append((target, tool_name))
+        return root
+
+    runtime.routed_tool = route
+    for parent in parents:
+        q, loan = uuid4(), uuid4()
+        row = dict(
+            body_digest=parent["parent_digest"],
+            exclusive_input=True,
+            decision_id=decision,
+            manifest_digest=b"m" * 32,
+            receiving_incarnation=runtime.incarnation,
+            floor_incarnation=runtime.incarnation,
+            floor_digest=parent["parent_digest"],
+            question_generation=q,
+            floor_question=q,
+            loan_id=loan,
+            floor_loan=loan,
+            ledger_id=uuid4(),
+            source_name="chronicler",
+            floor_source="chronicler",
+        )
+        row["floor_ledger"] = row["ledger_id"]
+        pool.floors[parent["parent_generation"]] = row
+    try:
+        complete = await question_owner_cohort(runtime, pool, root)
+        assert len(complete) == 1 and complete[0]["complete_input"] is True
+        assert complete[0]["parent_count"] == 2
+        saved = parents.pop()
+        partial = await question_owner_cohort(runtime, pool, root)
+        assert len(partial) == 1 and partial[0]["complete_input"] is False
+        assert partial[0]["parent_count"] == 2
+        parents.append(saved)
+        for key, value in [
+            ("floor_digest", b"x" * 32),
+            ("floor_incarnation", uuid4()),
+            ("manifest_digest", b"x" * 32),
+            ("floor_loan", uuid4()),
+            ("floor_source", "finance"),
+        ]:
+            row = pool.floors[saved["parent_generation"]]
+            before = row[key]
+            row[key] = value
+            assert (await question_owner_cohort(runtime, pool, root))[0]["complete_input"] is False
+            row[key] = before
+        parents.append(dict(parents[0]))
+        with pytest.raises(PolicyUnavailableError, match="parent set differs"):
+            await question_owner_cohort(runtime, pool, root)
+        parents.pop()
+        canonical["question"] += " unrelated change"
+        with pytest.raises(PolicyUnavailableError, match="original body differs"):
+            await question_owner_cohort(runtime, pool, root)
+        canonical["question"] = "Synthetic borrowed original question"
+        assert await question_owner_cohort(runtime, pool, root) == complete
+        with pytest.raises(PolicyUnavailableError, match="constructor ended"):
+            await question_owner_plan(runtime, decision)
+        assert pool.routed == []
+        _writers[pool] = runtime.delegation_writer
+        plan = await question_owner_plan(runtime, decision)
+        assert plan["question_cohort"] == complete
+        assert plan["source_name"] == "relationship"
+        assert plan["source_incarnation"] == str(runtime.incarnation)
+        assert pool.routed == [("chronicler", "chronicler_location_retention_status")]
+    finally:
+        _writers.pop(pool, None)
+        runtime.close()
+
+
+async def _assert_recursive_question_observation_values():
+    """Actual own observation function/order; no real SQL or registered-route claim."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_recursive import observe_question_loans
+
+    decision, question, ledger, loan, receiving, incarnation, receipt = [uuid4() for _ in range(7)]
+    native = dict(
+        loan_id=loan,
+        question_generation=question,
+        ledger_id=ledger,
+        question_digest=b"q" * 32,
+        body_digest=b"q" * 32,
+        receiving_generation=receiving,
+        receiving_incarnation=incarnation,
+        receiver_name="finance",
+    )
+    loan_row = {
+        k: str(v)
+        for k, v in native.items()
+        if k not in {"question_generation", "ledger_id", "question_digest"}
+    }
+    loan_row["body_digest"] = (b"q" * 32).hex()
+    question_row = dict(
+        question_generation=str(question),
+        ledger_id=str(ledger),
+        body_digest=(b"q" * 32).hex(),
+        complete_input=True,
+        loans=[loan_row],
+    )
+    plan = dict(
+        decision_id=str(decision), manifest_digest=(b"m" * 32).hex(), question_cohort=[question_row]
+    )
+    status = dict(
+        source_name="relationship",
+        decision_id=str(decision),
+        manifest_digest=plan["manifest_digest"],
+        question_generation=str(question),
+        ledger_id=str(ledger),
+        receipt_id=str(receipt),
+        **{
+            k: loan_row[k]
+            for k in ["loan_id", "body_digest", "receiving_generation", "receiving_incarnation"]
+        },
+    )
+
+    class Pool:
+        in_transaction = False
+        committed = {}
+        writes = []
+        unknown = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.in_transaction = True
+            before = dict(self.committed)
+            try:
+                yield
+            except BaseException:
+                self.committed = before
+                raise
+            finally:
+                self.in_transaction = False
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_native_delegation_loans" in sql:
+                assert self.in_transaction and args == (loan,)
+                return native
+            assert "FROM location_native_question_loan_observations" in sql and args == (loan,)
+            assert not self.in_transaction
+            return None if self.unknown else self.committed.get(loan)
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction
+            assert "INSERT INTO location_native_question_loan_observations" in sql
+            assert args == (loan, decision, b"m" * 32, receipt)
+            self.writes.append(args)
+            self.committed.setdefault(
+                loan,
+                dict(decision_id=decision, manifest_digest=b"m" * 32, receiver_receipt=receipt),
+            )
+
+    pool = Pool()
+    runtime = SimpleNamespace(domain=pool, name="relationship")
+
+    async def lock(conn):
+        assert conn is pool and pool.in_transaction
+
+    calls = []
+
+    async def route(target, tool, args):
+        assert not pool.in_transaction and target == "finance"
+        calls.append((target, tool, args))
+        if tool == "location_retention_prepare_question_loan":
+            assert args == dict(decision_id=str(decision), loan_id=str(loan))
+            return dict(decision_id=str(decision), loan_id=str(loan), receipt_id=str(receipt))
+        assert tool == "location_retention_question_status"
+        assert args == dict(decision_id=str(decision), receipt_id=str(receipt))
+        return status
+
+    runtime.lock_domain = lock
+    runtime.routed_tool = route
+    await observe_question_loans(runtime, plan)
+    assert pool.committed[loan]["receiver_receipt"] == receipt
+    assert len(calls) == 2 and len(pool.writes) == 1
+    pool.committed.clear()
+    pool.writes.clear()
+    for key, changed in [
+        ("source_name", "home"),
+        ("manifest_digest", (b"x" * 32).hex()),
+        ("question_generation", str(uuid4())),
+        ("body_digest", (b"x" * 32).hex()),
+        ("receiving_incarnation", str(uuid4())),
+        ("receipt_id", str(uuid4())),
+    ]:
+        before = status[key]
+        status[key] = changed
+        with pytest.raises(PolicyUnavailableError, match="receiving status differs"):
+            await observe_question_loans(runtime, plan)
+        assert pool.writes == [] and pool.committed == {}
+        status[key] = before
+    native["body_digest"] = b"x" * 32
+    with pytest.raises(PolicyUnavailableError, match="own loan changed"):
+        await observe_question_loans(runtime, plan)
+    assert pool.writes == [] and pool.committed == {}
+    native["body_digest"] = b"q" * 32
+    pool.unknown = True
+    with pytest.raises(PolicyUnavailableError, match="observation is unknown"):
+        await observe_question_loans(runtime, plan)
+    assert pool.committed[loan]["receiver_receipt"] == receipt
+    pool.unknown = False
+    await observe_question_loans(runtime, plan)
+    assert pool.committed == {
+        loan: dict(decision_id=decision, manifest_digest=b"m" * 32, receiver_receipt=receipt)
+    }
+    assert all(args[3] == receipt for args in pool.writes)

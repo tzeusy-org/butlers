@@ -314,6 +314,40 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         return await prepare_question_receivers(receiving_runtime(), decision_id)
 
     @_core_tool("delegation")
+    async def location_retention_question_owner_plan(decision_id: UUID) -> dict:
+        """Read this actual question owner's complete original source cohort.
+
+        The fixed constructor reads the root decision through Switchboard.
+        This locator supplies no source, actor, endpoint or terminal verdict.
+        """
+        from butlers.chronicler.location_question_recursive import question_owner_plan
+
+        return await question_owner_plan(receiving_runtime(), decision_id)
+
+    @_core_tool("delegation")
+    async def location_retention_prepare_question_loan(decision_id: UUID, loan_id: UUID) -> dict:
+        """Prepare only this receiver's admitted original question loan.
+
+        Stored input selects the fixed owning source; an unknown receiving
+        association produces no receipt. Complete child and context lifetimes
+        remain mandatory before the separate committed terminal readback.
+        """
+        from butlers.chronicler.location_question_recursive import prepare_question_loan
+
+        return await prepare_question_loan(receiving_runtime(), decision_id, loan_id)
+
+    @_core_tool("delegation")
+    async def location_retention_close_owned_questions(decision_id: UUID) -> dict:
+        """Reconcile this owner's stored original receiving loans and question copies.
+
+        No caller-selected peer or copied receipt establishes closure. Each
+        original parent, receiver status and own ledger body must match.
+        """
+        from butlers.chronicler.location_question_recursive import close_owned_questions
+
+        return await close_owned_questions(receiving_runtime(), decision_id)
+
+    @_core_tool("delegation")
     async def location_retention_question_status(decision_id: UUID, receipt_id: UUID) -> dict:
         """Read this receiver's immutable generation/body/manifest-bound receipt."""
         from butlers.chronicler.location_delegation_disposal import question_receiver_status

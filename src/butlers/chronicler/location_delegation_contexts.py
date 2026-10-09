@@ -30,7 +30,9 @@ async def _dispose_core_delegated_contexts(
 
     Preparation has already committed the permanent input floor. No context
     receipt is produced for missing intents, unfinished processing, additional
-    copied input, executed tools, stored descendants or changed composed body.
+    copied input, unresolved tools/children, stored descendants or changed body.
+    Exact successful recorded/private delegate children require their own full
+    immutable reduced profiles; they do not proxy the parent context lifetime.
     An independent system prefix survives; no remote recipient is attested.
     """
     from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
@@ -181,13 +183,7 @@ async def _dispose_core_delegated_contexts(
                     "OR EXISTS(SELECT 1 FROM location_runtime_context_episodes "
                     "WHERE input_generation=$1) "
                     "OR EXISTS(SELECT 1 FROM location_runtime_context_artifacts "
-                    "WHERE input_generation=$1) "
-                    "OR EXISTS(SELECT 1 FROM location_runtime_tool_intents "
-                    "WHERE receiving_session=$2) "
-                    "OR EXISTS(SELECT 1 FROM location_native_delegation_inputs "
-                    "WHERE context_generation=$1) "
-                    "OR EXISTS(SELECT 1 FROM location_native_delegation_answers "
-                    "WHERE context_generation=$1)",
+                    "WHERE input_generation=$1)",
                     generation,
                     frozen["receiving_session"],
                 ):
@@ -199,7 +195,6 @@ async def _dispose_core_delegated_contexts(
                 if (
                     session is None
                     or session["completed_at"] is None
-                    or session["tool_calls"] != []
                     or not isinstance(session["prompt"], str)
                     or not isinstance(session["effective_system_prompt"], str)
                     or hashlib.sha256(session["prompt"].encode()).digest()
@@ -216,6 +211,43 @@ async def _dispose_core_delegated_contexts(
                         }
                     )
                     != frozen["bundle_digest"]
+                ):
+                    continue
+                from butlers.chronicler.location_answer_sources import closed_source_answer_tools
+                from butlers.chronicler.location_memory_context import (
+                    _own_schema,
+                    captured_artifact_calls,
+                )
+                from butlers.chronicler.location_question_recursive import (
+                    closed_owned_question_tools,
+                )
+
+                witnesses = await conn.fetch(
+                    "SELECT t.*,r.outcome,r.result_digest,r.exclusive_inputs "
+                    "FROM location_runtime_tool_intents t "
+                    "LEFT JOIN location_runtime_tool_results r USING(tool_generation) "
+                    "WHERE t.receiving_session=$1 ORDER BY t.tool_generation",
+                    frozen["receiving_session"],
+                )
+                plan = dict(
+                    decision_id=str(binding["decision_id"]),
+                    manifest_digest=binding["manifest_digest"].hex(),
+                )
+                questions = await closed_owned_question_tools(conn, runtime, generation, plan)
+                answers = await closed_source_answer_tools(
+                    conn,
+                    runtime,
+                    _own_schema(runtime),
+                    generation,
+                    plan,
+                )
+                if not captured_artifact_calls(
+                    session["tool_calls"],
+                    [],
+                    witnesses,
+                    [],
+                    questions,
+                    answers,
                 ):
                     continue
                 receipt = uuid4()

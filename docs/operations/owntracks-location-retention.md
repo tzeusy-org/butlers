@@ -875,3 +875,51 @@ same-name private sibling still refuses; the full matching trace has a positive
 companion. This is a source-positioned fixture correction, not current SQL or
 online proof. Recursive/borrowed question, mixed-copy and all-holder closure
 remain required source work and all original outcomes remain unfulfilled.
+
+The next recursive source increment installs `location_retention_question_owner_plan`,
+`location_retention_prepare_question_loan` and
+`location_retention_close_owned_questions` in the existing non-presentable
+`delegation_control` representation. Each selects the constructor's actual
+registered owning writer. Its root decision is read through Switchboard; its
+source name and incarnation come from that constructor and the original admitted
+input, rather than caller arguments. Every original parent participates in the
+owning cohort, including missing/different/duplicate ancestry. A received-parent
+floor qualifies that input under the exact root manifest; it does not attest a
+finished receiver or context. Each original receiving loan needs its own fixed
+registered preparation/status response, exact original identity comparison,
+immutable local observation and separate committed readback.
+
+The generic ledger child closes before its copied context. Receiving preparation
+and catalog preparation invoke the actual owning-child reconciler before their
+context disposers. Core-only and configured Memory context disposal accept an
+executed question/answer Tool only when its complete private/recorded input and
+result match and every actual same-Tool ledger child has its own full immutable
+reduced profile. A successful sibling, partial parent join, raw status, reduced
+marker or missing source history supplies no substitute. All independent
+metadata, stored artifacts, other inputs and unresolved lifetimes remain held.
+The original source question and answer identities are not reminted from reduced
+prose. Actual nested answered-question reconciliation uses the same fixed owning
+answer close/status and reciprocal original-to-reduced observation protocol.
+
+Reentrant owning reconciliation returns pending without a receipt and clears its
+constructor-owned in-process guard in `finally`; it does not wait indefinitely on
+reciprocal registered calls. A subsequent invocation recomputes the original
+cohort. The new own question-loan observation table retains immutable original
+loan/decision/manifest/receiver-receipt binding. The former fixed Chronicle-only
+receiving-floor CHECK becomes a nonempty stored source name, with narrowly exact
+old-shape evolution and full installed-column/constraint/owner verification.
+That field remains a binding value; only the actual admitted source and its fixed
+registered current reader can qualify it. No role, grant, principal or peer
+private schema is added.
+
+Current software controls exercise full borrowed siblings, missing parents,
+changed floor/digest/incarnation/body, complete reduced child profiles and
+reentrant pending behavior. The existing migrated species additionally calls the
+actual generic question reducer, faults its real receipt INSERT after its real
+body UPDATE, checks untouched original body/no receipt from another acquisition,
+and restores the same producer for reduction and replay. Receiver observations
+in that SQL engine control are explicitly planted, not online attestations.
+Those current schema/engine controls remain hosted-unrun until their exact head
+executes. Legacy/unaccepted source association recovery, lawful mixed prose and
+metadata reduction, full registered online recursive/all-holder closure and
+managed browser/protected delivery remain mandatory unfinished obligations.

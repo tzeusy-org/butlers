@@ -757,6 +757,14 @@ async def _dispose_runtime_context_once(
                 UUID(plan["decision_id"]),
                 bytes.fromhex(plan["manifest_digest"]),
             )
+            if any(row["tool_name"] == "delegate_ask" for row in tool_witnesses):
+                from butlers.chronicler.location_question_recursive import (
+                    closed_owned_question_tools,
+                )
+
+                closed_questions = await closed_owned_question_tools(
+                    conn, runtime, input_generation, plan
+                )
             closed_answers = []
             if any(row["tool_name"] == "delegate_answer" for row in tool_witnesses):
                 from butlers.chronicler.location_answer_sources import closed_source_answer_tools

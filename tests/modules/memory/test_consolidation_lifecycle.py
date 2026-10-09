@@ -2202,6 +2202,43 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context,
         "SELECT * FROM location_native_delegation_inputs WHERE ledger_id=$1",
         answered_ledger,
     )
+    # A third actual owning ask isolates the generic child engine. Its
+    # receiving receipt below is planted ENGINE evidence, not online closure.
+    nested_text, nested_tool_id = "Synthetic nested source question", uuid.uuid4()
+    nested_input = bytes.fromhex(fingerprint_tool_call_payload({"question": nested_text}))
+    await domain.execute(
+        "INSERT INTO location_runtime_tool_intents "
+        "(tool_generation,receiving_session,tool_name,module_name,input_digest) "
+        "VALUES($1,$2,'delegate_ask','core',$3)",
+        nested_tool_id,
+        session_id,
+        nested_input,
+    )
+    nested_tool = _ToolCopy(runtime, nested_tool_id, session_id, "delegate_ask", "core")
+    nested_token = _current_tool_copy.set(nested_tool)
+    try:
+        nested_ledger = uuid.UUID(
+            await record_ask(
+                domain,
+                asking_butler="chronicler",
+                question=nested_text,
+                target_butler="relationship",
+                status="pending",
+                metadata={},
+            )
+        )
+        nested_result = dict(
+            status="routed", ledger_id=str(nested_ledger), target_butler="relationship"
+        )
+        await finish_tool_copy((nested_tool, nested_token), nested_result)
+    finally:
+        if _current_tool_copy.get() is nested_tool:
+            _current_tool_copy.reset(nested_token)
+    nested_header = await domain.fetchrow(
+        "SELECT * FROM location_native_delegation_inputs WHERE ledger_id=$1",
+        nested_ledger,
+    )
+    nested_loan = uuid.uuid4()
     from butlers.chronicler.location_answer_sources import _REDUCED_ANSWER
     from butlers.core.delegation_ledger import compute_answer_digest, compute_wake_key
 
@@ -2253,6 +2290,16 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context,
                 receiver,
                 header["body_digest"],
             )
+    await domain.execute(
+        "INSERT INTO location_native_delegation_loans "
+        "(loan_id,question_generation,receiver_name,receiving_incarnation,"
+        "receiving_generation,body_digest) VALUES($1,$2,'relationship',$3,$4,$5)",
+        nested_loan,
+        nested_header["question_generation"],
+        incarnation,
+        uuid.uuid4(),
+        nested_header["body_digest"],
+    )
     # Neither a terminal-looking source nor a missing receiver receipt closes
     # the actual child; preserve the source body from a separate acquisition.
     await dispose_source_questions(domain, decision)
@@ -2285,6 +2332,13 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context,
         None,
         [
             previous_call,
+            dict(
+                name="delegate_ask",
+                module="core",
+                outcome="success",
+                input_fingerprint=nested_input.hex(),
+                result=nested_result,
+            ),
             {
                 "name": "delegate_ask",
                 "module": "core",
@@ -2373,6 +2427,110 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context,
     assert (
         await domain.fetchval("SELECT question FROM public.delegation_ledger WHERE id=$1", ledger)
         == _REDUCED_QUESTION
+    )
+
+    from contextlib import asynccontextmanager
+
+    from butlers.chronicler.location_question_recursive import (
+        dispose_owned_question_children,
+        owned_question_status,
+    )
+
+    own_plan = dict(decision_id=str(decision), manifest_digest=manifest.hex(), catalog_loans=[])
+    await dispose_owned_question_children(runtime, own_plan)
+    async with domain.acquire() as readback:
+        assert (
+            await readback.fetchval(
+                "SELECT question FROM public.delegation_ledger WHERE id=$1",
+                nested_ledger,
+            )
+            == nested_text
+        )
+        assert not await readback.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_native_delegation_dispositions "
+            "WHERE question_generation=$1)",
+            nested_header["question_generation"],
+        )
+    # The observation is planted separately; it never claims registered
+    # receiver authentication or receiving-context disposal in this engine test.
+    await domain.execute(
+        "INSERT INTO location_native_question_loan_observations "
+        "(loan_id,decision_id,manifest_digest,receiver_receipt) VALUES($1,$2,$3,$4)",
+        nested_loan,
+        decision,
+        manifest,
+        uuid.uuid4(),
+    )
+    producer_updated = []
+
+    class FaultConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+        async def execute(self, sql, *args):
+            if "UPDATE public.delegation_ledger SET question=" in sql:
+                producer_updated.append(True)
+            if "INSERT INTO location_native_delegation_dispositions" in sql:
+                raise RuntimeError("planted actual nested receipt fault")
+            return await self.conn.execute(sql, *args)
+
+    class FaultPool:
+        @asynccontextmanager
+        async def acquire(self):
+            async with domain.acquire() as conn:
+                yield FaultConnection(conn)
+
+        async def execute(self, sql, *args):
+            # A hypothetical separate pool write must reach the same real
+            # fault and survivor check, rather than fail at a missing method.
+            async with self.acquire() as conn:
+                return await conn.execute(sql, *args)
+
+    runtime.domain = FaultPool()
+    try:
+        with pytest.raises(RuntimeError, match="actual nested receipt fault"):
+            await dispose_owned_question_children(runtime, own_plan)
+    finally:
+        runtime.domain = domain
+    assert producer_updated == [True]
+    async with domain.acquire() as readback:
+        assert (
+            await readback.fetchval(
+                "SELECT question FROM public.delegation_ledger WHERE id=$1",
+                nested_ledger,
+            )
+            == nested_text
+        )
+        assert not await readback.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_native_delegation_dispositions "
+            "WHERE question_generation=$1)",
+            nested_header["question_generation"],
+        )
+    await dispose_owned_question_children(runtime, own_plan)
+    async with domain.acquire() as readback:
+        assert (
+            await readback.fetchval(
+                "SELECT question FROM public.delegation_ledger WHERE id=$1",
+                nested_ledger,
+            )
+            == _REDUCED_QUESTION
+        )
+        nested_receipt = await readback.fetchval(
+            "SELECT receipt_id FROM location_native_delegation_dispositions "
+            "WHERE question_generation=$1",
+            nested_header["question_generation"],
+        )
+        assert nested_receipt is not None
+    selected_status = await owned_question_status(runtime, decision, nested_receipt, plan=own_plan)
+    assert selected_status["question_generation"] == str(nested_header["question_generation"])
+    assert selected_status["body_digest"] == nested_header["body_digest"].hex()
+    await dispose_owned_question_children(runtime, own_plan)
+    assert (
+        await owned_question_status(runtime, decision, nested_receipt, plan=own_plan)
+        == selected_status
     )
 
     async with domain.acquire() as committed:
