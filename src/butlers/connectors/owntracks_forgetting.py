@@ -100,7 +100,7 @@ class RegisteredRetentionSource:
             self._client = None
             self._endpoint = None
 
-    async def forget_pending(self, pool: asyncpg.Pool) -> None:
+    async def forget_pending(self, pool: asyncpg.Pool, *, buffers: Sequence = ()) -> None:
         try:
             registry = await self._switchboard.call_tool("list_butlers", {"routable_only": True})
             if not isinstance(registry, list) or len(registry) > 256:
@@ -132,6 +132,18 @@ class RegisteredRetentionSource:
                     endpoint_url=endpoint, client_name="owntracks-retention"
                 )
                 self._endpoint = endpoint
+            from butlers.connectors.owntracks_copy_retention import (
+                FilteredCopyPlan,
+                prepare_filtered_copies,
+            )
+
+            copies = await self._client.call_tool(
+                "chronicler_location_retention_batches", {"phase": "copies"}
+            )
+            if not isinstance(copies, list) or len(copies) > 8:
+                raise ValueError
+            for wire in copies:
+                await prepare_filtered_copies(pool, FilteredCopyPlan.model_validate(wire), buffers)
             response = await self._client.call_tool("chronicler_location_retention_batches", {})
             if not isinstance(response, list) or len(response) > 8:
                 raise ValueError

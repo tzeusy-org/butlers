@@ -60,6 +60,7 @@ import os
 import re
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from threading import Thread
@@ -92,6 +93,8 @@ from butlers.location_retention import content_digest
 
 if TYPE_CHECKING:
     import asyncpg
+
+    from butlers.connectors.owntracks_copy_retention import NativeFilteredCopyBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -446,6 +449,7 @@ class OwnTracksRetention:
         *,
         purge_interval_s: int = RETENTION_PURGE_INTERVAL_S,
         retention_source: RegisteredRetentionSource | None = None,
+        copy_buffers: Callable[[], tuple[NativeFilteredCopyBuffer, ...]] | None = None,
     ) -> None:
         """Initialise the retention task.
 
@@ -471,6 +475,7 @@ class OwnTracksRetention:
         self._task: asyncio.Task | None = None
         self._consecutive_failures = 0
         self._retention_source = retention_source
+        self._copy_buffers = copy_buffers
 
     @property
     def retention_days(self) -> int:
@@ -545,7 +550,12 @@ class OwnTracksRetention:
         # asyncpg returns a status string like "DELETE 42"
         deleted = _parse_delete_count(result)
         if self._retention_source is not None:
-            await self._retention_source.forget_pending(self._pool)
+            if self._copy_buffers is None:
+                await self._retention_source.forget_pending(self._pool)
+            else:
+                await self._retention_source.forget_pending(
+                    self._pool, buffers=self._copy_buffers()
+                )
         return deleted
 
     async def _purge_loop(self) -> None:
@@ -949,7 +959,7 @@ class _OwnTracksDeviceState:
     endpoint_identity: str
     metrics: ConnectorMetrics
     ingestion_policy: IngestionPolicyEvaluator
-    filtered_event_buffer: FilteredEventBuffer
+    filtered_event_buffer: FilteredEventBuffer | NativeFilteredCopyBuffer
     heartbeat: ConnectorHeartbeat
     last_checkpoint_tst: int | None = None
     last_checkpoint_save: float | None = None
@@ -1117,6 +1127,9 @@ class OwnTracksConnector:
                     retention_config,
                     self._db_pool,
                     retention_source=RegisteredRetentionSource(self._mcp_client),
+                    copy_buffers=lambda: tuple(
+                        device.filtered_event_buffer for device in self._devices.values()
+                    ),
                 )
                 self._retention.start()
 
@@ -1215,10 +1228,9 @@ class OwnTracksConnector:
         metrics = ConnectorMetrics(connector_type=_CONNECTOR_TYPE, endpoint_identity=identity)
         scope = f"connector:{_CONNECTOR_TYPE}:{identity}"
         ingestion_policy = IngestionPolicyEvaluator(scope=scope, db_pool=self._db_pool)
-        filtered_event_buffer = FilteredEventBuffer(
-            connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=identity,
-        )
+        from butlers.connectors.owntracks_copy_retention import NativeFilteredCopyBuffer
+
+        filtered_event_buffer = NativeFilteredCopyBuffer(identity)
         hb_config = HeartbeatConfig.from_env(
             connector_type=_CONNECTOR_TYPE,
             endpoint_identity=identity,

@@ -264,22 +264,30 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
         for minutes in (0, 15, 90):
             raw_id = uuid4()
             raw_ids.append(raw_id)
-            source = f"retention-fixture:{minutes}:{raw_id}"
+            moment = born + timedelta(minutes=minutes)
+            native_payload = {
+                "_type": "location",
+                "tst": int(moment.timestamp()),
+                "lat": 1.31415926,
+                "lon": 103.81234567,
+            }
+            source = f"owntracks:retention-fixture:{native_payload['tst']}:location"
             # This fixture plants a native-source row. Its accepted locator is
             # test data, not proof that an online source accepted this report.
             await pool.execute(
                 """INSERT INTO connectors.owntracks_points
                    (id,idempotency_key,ts,lat,lon,endpoint_identity,recorded_at,
                     logical_source_digest,content_digest,accepted_request_id,
-                    accepted_payload_digest,accepted_normalized_digest)
+                    accepted_payload_digest,accepted_normalized_digest,raw_payload)
                    VALUES($1,$2,$3,1.31415926,103.81234567,'retention-fixture',$3,
-                     $4,$5,$6,$5,$5)""",
+                     $4,$5,$6,$5,$5,$7)""",
                 raw_id,
                 source,
                 born + timedelta(minutes=minutes),
                 logical_digest(source),
-                content_digest({"fixture": minutes}),
+                content_digest(native_payload),
                 uuid4(),
+                native_payload,
             )
         assert await pool.fetchval(
             "SELECT retention_at=ts FROM connectors.owntracks_points WHERE id=$1",
@@ -452,20 +460,27 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
         for minute in range(301):
             raw_id = uuid4()
             more_ids.append(raw_id)
-            source = f"large-native:{raw_id}"
             moment = born - timedelta(days=1) + timedelta(minutes=minute if minute < 300 else 400)
+            native_payload = {
+                "_type": "location",
+                "tst": int(moment.timestamp()),
+                "lat": 1.31415926,
+                "lon": 103.81234567,
+            }
+            source = f"owntracks:large-native:{native_payload['tst']}:location"
             await pool.execute(
                 """INSERT INTO connectors.owntracks_points
                    (id,idempotency_key,ts,lat,lon,endpoint_identity,recorded_at,
                     logical_source_digest,content_digest,accepted_request_id,
-                    accepted_payload_digest,accepted_normalized_digest)
-                   VALUES($1,$2,$3,1.31415926,103.81234567,'large-native',$3,$4,$5,$6,$5,$5)""",
+                    accepted_payload_digest,accepted_normalized_digest,raw_payload)
+                   VALUES($1,$2,$3,1.31415926,103.81234567,'large-native',$3,$4,$5,$6,$5,$5,$7)""",
                 raw_id,
                 source,
                 moment,
                 logical_digest(source),
-                content_digest({"native_fixture": minute}),
+                content_digest(native_payload),
                 uuid4(),
+                native_payload,
             )
         # These synthetic accepted locators do not prove online admission.
         for adapter in adapters:
@@ -612,6 +627,28 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
                 decision,
                 receipt,
             )
+            from butlers.chronicler.location_retention import filtered_copy_plans
+            from butlers.connectors.owntracks_copy_retention import (
+                FilteredCopyPlan,
+                prepare_filtered_copies,
+            )
+
+            async def copy_connection(connection):
+                await register_jsonb_codec(connection)
+                await connection.execute("SET ROLE connector_writer")
+
+            copy_writer = await asyncpg.create_pool(
+                migrated_db_url, min_size=1, max_size=2, init=copy_connection
+            )
+            try:
+                copies = [
+                    FilteredCopyPlan.model_validate(w) for w in await filtered_copy_plans(owning)
+                ]
+                copy_plan = next(w for w in copies if w.decision_id == decision)
+                assert await seal_native_frontier(owning, decision) is None
+                await prepare_filtered_copies(copy_writer, copy_plan)
+            finally:
+                await copy_writer.close()
             frontier = await seal_native_frontier(owning, decision)
             assert frontier is not None
             assert (
@@ -848,20 +885,27 @@ async def _assert_native_attempt_completion(url):
         # its still-unexpired point is preserved, not hidden/deleted by a test.
         for minutes in (0, 15, 90, 31 * 1440):
             raw, moment = uuid4(), now - timedelta(days=31) + timedelta(minutes=minutes)
-            source = f"completion-fixture:{raw}"
-            digest = content_digest({"completion_fixture": minutes})
+            native_payload = {
+                "_type": "location",
+                "tst": int(moment.timestamp()),
+                "lat": 1.31415926,
+                "lon": 103.81234567,
+            }
+            source = f"owntracks:completion-fixture:{native_payload['tst']}:location"
+            digest = content_digest(native_payload)
             await creator.execute(
                 "INSERT INTO connectors.owntracks_points "
                 "(id,idempotency_key,ts,lat,lon,endpoint_identity,recorded_at,"
                 "logical_source_digest,content_digest,accepted_request_id,"
-                "accepted_payload_digest,accepted_normalized_digest) "
-                "VALUES($1,$2,$3,1.31415926,103.81234567,'completion-fixture',$3,$4,$5,$6,$5,$5)",
+                "accepted_payload_digest,accepted_normalized_digest,raw_payload) "
+                "VALUES($1,$2,$3,1.31415926,103.81234567,'completion-fixture',$3,$4,$5,$6,$5,$5,$7)",
                 raw,
                 source,
                 moment,
                 logical_digest(source),
                 digest,
                 uuid4(),
+                native_payload,
             )
         for adapter in (
             OwnTracksPointAdapter(),
@@ -889,6 +933,19 @@ async def _assert_native_attempt_completion(url):
             decision,
             uuid4(),
         )
+        from butlers.chronicler.location_retention import filtered_copy_plans
+        from butlers.connectors.owntracks_copy_retention import (
+            FilteredCopyPlan,
+            prepare_filtered_copies,
+        )
+
+        copy_plan = next(
+            FilteredCopyPlan.model_validate(w)
+            for w in await filtered_copy_plans(own)
+            if w["decision_id"] == str(decision)
+        )
+        assert await seal_native_frontier(own, decision) is None
+        await prepare_filtered_copies(connector, copy_plan)
         assert await seal_native_frontier(own, decision) is not None
         disposed = await dispose_ready_point_evidence(own, decision)
         assert disposed is not None
@@ -986,6 +1043,7 @@ async def _assert_native_attempt_completion(url):
         assert first == dict(
             await creator.fetchrow("SELECT * FROM location_retention_runs WHERE run_id=$1", run)
         )
+        await _assert_native_filtered_copy_preparation(creator, own, connector)
     finally:
         await module.on_shutdown()
         await connector.close()
@@ -1145,3 +1203,231 @@ async def _assert_late_opaque_holder_refusal(pool, owning, decision, frontier, b
         )
         assert await seal_native_frontier(owning, decision) == frontier
     await pool.execute("DELETE FROM sessions WHERE id=$1", diagnostic_session)
+
+
+async def _assert_native_filtered_copy_preparation(creator, own, connector):
+    """Real configured producer/role engine; accepted UUIDs remain synthetic."""
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+    from butlers.connectors.owntracks import persist_location_point
+    from butlers.connectors.owntracks_copy_retention import (
+        FilteredCopyPlan,
+        NativeFilteredCopyBuffer,
+        prepare_filtered_copies,
+        read_filtered_receipt,
+    )
+    from butlers.connectors.owntracks_forgetting import FrozenRaw, frozen_manifest
+
+    moment = datetime.now(UTC) - timedelta(days=31)
+    stamp = int(moment.timestamp())
+    payload = {"_type": "location", "tst": stamp, "lat": 1.31415926, "lon": 103.81234567}
+    endpoint = "owntracks:copy-fixture"
+    assert await persist_location_point(
+        connector,
+        endpoint_identity=endpoint,
+        tst=stamp,
+        lat=payload["lat"],
+        lon=payload["lon"],
+        accuracy=None,
+        trigger=None,
+        raw_payload=payload,
+        accepted_request_id=uuid4(),
+        accepted_payload_digest=content_digest(payload),
+        accepted_normalized_digest=b"n" * 32,
+    )
+    source = await connector.fetchrow(
+        "SELECT * FROM connectors.owntracks_points WHERE endpoint_identity=$1", endpoint
+    )
+    frozen = FrozenRaw.model_validate(
+        {
+            key: source[key].hex() if key.endswith("digest") else source[key]
+            for key in FrozenRaw.model_fields
+        }
+    )
+    decision, cutoff = uuid4(), datetime.now(UTC) - timedelta(days=30)
+    plan = FilteredCopyPlan(
+        decision_id=decision,
+        policy_version=1,
+        cutoff=cutoff,
+        rows=(frozen,),
+        manifest_digest=frozen_manifest(decision, 1, cutoff, [frozen]).hex(),
+    )
+    buffer = NativeFilteredCopyBuffer(endpoint)
+    fields = {
+        "external_message_id": f"{stamp}:location",
+        "source_channel": "owntracks",
+        "sender_identity": endpoint,
+        "subject_or_preview": "synthetic location copy",
+        "filter_reason": "synthetic",
+        "error_detail": "synthetic copied detail",
+        "full_payload": FilteredEventBuffer.full_payload(
+            channel="owntracks",
+            provider="owntracks",
+            endpoint_identity=endpoint,
+            external_event_id=f"{stamp}:location",
+            external_thread_id=endpoint,
+            observed_at=moment.isoformat(),
+            sender_identity=endpoint,
+            raw=payload,
+        ),
+    }
+    buffer.record(**fields)
+    await buffer.flush(connector)
+    assert len(buffer) == 0
+    birth = await connector.fetchrow(
+        "SELECT * FROM connectors.owntracks_filtered_copy_births WHERE logical_source_digest=$1",
+        source["logical_source_digest"],
+    )
+    assert birth is not None and birth["raw_digest"] == source["content_digest"]
+    original = dict(
+        await connector.fetchrow(
+            "SELECT * FROM connectors.filtered_events WHERE id=$1 AND received_at=$2",
+            birth["filtered_id"],
+            birth["filtered_received_at"],
+        )
+    )
+    async with own.acquire() as restricted:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await restricted.fetch("SELECT * FROM connectors.owntracks_filtered_copy_births")
+        assert (
+            await restricted.fetchval(
+                "SELECT count(*) FROM connectors.owntracks_filtered_copy_batches WHERE decision_id=$1",
+                decision,
+            )
+            == 0
+        )
+    # Replay the exact own installer against healthy metadata, then falsify
+    # distinct complete-shape predicates in disposable savepoints. Each
+    # refusal rolls back the tamper; no runtime role repairs its own catalog.
+    from butlers.owntracks_copy_schema import filtered_copy_security_sql
+
+    security = filtered_copy_security_sql()
+    await creator.execute(security)
+    for tamper, category in (
+        ("ALTER TABLE connectors.owntracks_filtered_copy_births ADD COLUMN extra TEXT", "columns"),
+        (
+            "ALTER TABLE connectors.owntracks_filtered_copy_members ADD CONSTRAINT extra_birth "
+            "FOREIGN KEY(copy_generation) REFERENCES connectors.owntracks_filtered_copy_births",
+            "constraints",
+        ),
+        (
+            "ALTER TABLE connectors.owntracks_filtered_copy_batches "
+            "DROP CONSTRAINT owntracks_copy_batches_count",
+            "constraints",
+        ),
+        (
+            "CREATE POLICY extra_read ON connectors.owntracks_filtered_copy_floors "
+            "FOR SELECT USING(true)",
+            "policy",
+        ),
+    ):
+        async with creator.acquire() as installed:
+            with pytest.raises(asyncpg.RaiseError, match=f"installed {category} differ"):
+                async with installed.transaction():
+                    await installed.execute(tamper)
+                    await installed.execute(security)
+        await creator.execute(security)
+        assert (
+            await connector.fetchval(
+                "SELECT count(*) FROM connectors.owntracks_filtered_copy_births "
+                "WHERE copy_generation=$1",
+                birth["copy_generation"],
+            )
+            == 1
+        )
+    # Actual producer fault AFTER actual row reduction, before receipt commit.
+    await creator.execute(
+        "CREATE FUNCTION filtered_receipt_fault() RETURNS trigger LANGUAGE plpgsql AS $$ "
+        "BEGIN RAISE EXCEPTION 'planted filtered receipt failure'; END $$; "
+        "CREATE TRIGGER filtered_receipt_fault BEFORE INSERT ON "
+        "connectors.owntracks_filtered_copy_members FOR EACH ROW "
+        "EXECUTE FUNCTION filtered_receipt_fault()"
+    )
+    try:
+        with pytest.raises(asyncpg.RaiseError, match="planted filtered receipt failure"):
+            await prepare_filtered_copies(connector, plan, (buffer,))
+        async with connector.acquire() as committed:
+            assert (
+                dict(
+                    await committed.fetchrow(
+                        "SELECT * FROM connectors.filtered_events WHERE id=$1 AND received_at=$2",
+                        birth["filtered_id"],
+                        birth["filtered_received_at"],
+                    )
+                )
+                == original
+            )
+            assert (
+                await committed.fetchval(
+                    "SELECT count(*) FROM connectors.owntracks_filtered_copy_floors "
+                    "WHERE logical_source_digest=$1",
+                    source["logical_source_digest"],
+                )
+                == 0
+            )
+            assert (
+                await committed.fetchval(
+                    "SELECT count(*) FROM connectors.owntracks_filtered_copy_batches WHERE decision_id=$1",
+                    decision,
+                )
+                == 0
+            )
+    finally:
+        await creator.execute(
+            "DROP TRIGGER filtered_receipt_fault ON connectors.owntracks_filtered_copy_members; "
+            "DROP FUNCTION filtered_receipt_fault()"
+        )
+    result = await prepare_filtered_copies(connector, plan, (buffer,))
+    assert result["expected_count"] == 1 and len(result["members"]) == 1
+    assert await read_filtered_receipt(connector, plan) == result
+    assert await prepare_filtered_copies(connector, plan, (buffer,)) == result
+    assert dict(
+        await connector.fetchrow(
+            "SELECT * FROM connectors.owntracks_points WHERE id=$1",
+            source["id"],
+        )
+    ) == dict(source)  # Copy preparation is NOT a raw deletion grant.
+    reduced = await connector.fetchrow(
+        "SELECT full_payload,error_detail,status,endpoint_identity,sender_identity "
+        "FROM connectors.filtered_events WHERE id=$1 AND received_at=$2",
+        birth["filtered_id"],
+        birth["filtered_received_at"],
+    )
+    assert reduced["full_payload"] == {} and reduced["error_detail"] is None
+    assert reduced["status"] == "filtered"
+    assert reduced["endpoint_identity"] == reduced["sender_identity"] == "retention"
+    buffer.record(**fields)
+    assert len(buffer) == 0  # Actual separate floor readback installed the private buffer fence.
+    with pytest.raises(asyncpg.RaiseError, match="reductions are permanent"):
+        await connector.execute(
+            "UPDATE connectors.filtered_events SET full_payload=$3 WHERE id=$1 AND received_at=$2",
+            birth["filtered_id"],
+            birth["filtered_received_at"],
+            {"synthetic_refill": True},
+        )
+    assert await read_filtered_receipt(connector, plan) == result
+    # Deliberately neutralize this ONE disposable guard to position the
+    # independent current-body detector. This is a falsification control,
+    # not an installation repair or alternate product write path.
+    await creator.execute(
+        "DROP TRIGGER preserve_native_filtered_reduction ON connectors.filtered_events"
+    )
+    try:
+        await connector.execute(
+            "UPDATE connectors.filtered_events SET full_payload=$3 WHERE id=$1 AND received_at=$2",
+            birth["filtered_id"],
+            birth["filtered_received_at"],
+            {"synthetic_refill": True},
+        )
+        with pytest.raises(ValueError, match="committed native filtered body differs"):
+            await read_filtered_receipt(connector, plan)
+        await connector.execute(
+            "UPDATE connectors.filtered_events SET full_payload='{}'::jsonb "
+            "WHERE id=$1 AND received_at=$2",
+            birth["filtered_id"],
+            birth["filtered_received_at"],
+        )
+    finally:
+        from butlers.owntracks_copy_schema import filtered_copy_security_sql
+
+        await creator.execute(filtered_copy_security_sql())
+    assert await read_filtered_receipt(connector, plan) == result

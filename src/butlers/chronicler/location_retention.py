@@ -69,6 +69,55 @@ class PolicyUpdate(BaseModel):
     expected_version: StrictInt = Field(gt=0, le=2**63 - 1)
 
 
+async def filtered_copy_plans(pool: asyncpg.Pool) -> list[dict[str, Any]]:
+    """Owning pre-READY immutable plans, with no deletion grant or raw selector.
+
+    The constructor-registered connector validates its actual raw/copy rows
+    under its own role before any preparation receipt. This metadata read is
+    not a holder closure, and never changes plan state or lease.
+    """
+    from butlers.chronicler.storage import _lock_location_writes
+    from butlers.connectors.owntracks_copy_retention import FilteredCopyPlan
+    from butlers.connectors.owntracks_forgetting import FrozenRaw
+
+    result = []
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await _lock_location_writes(conn)
+            plans = await conn.fetch(
+                "SELECT * FROM location_retention_plans WHERE state='holder_pending' "
+                "ORDER BY prepared_at,decision_id LIMIT 8 FOR UPDATE"
+            )
+            for plan in plans:
+                rows = await conn.fetch(
+                    "SELECT * FROM location_retention_plan_rows WHERE decision_id=$1 "
+                    "ORDER BY raw_id",
+                    plan["decision_id"],
+                )
+                if not rows or len(rows) > 256:
+                    raise PolicyUnavailableError("Stored copy preparation is unavailable")
+                frozen = []
+                for row in rows:
+                    frozen.append(
+                        FrozenRaw.model_validate(
+                            {
+                                key: row[key].hex() if key.endswith("digest") else row[key]
+                                for key in FrozenRaw.model_fields
+                            }
+                        )
+                    )
+                wire = FilteredCopyPlan(
+                    decision_id=plan["decision_id"],
+                    policy_version=plan["policy_version"],
+                    cutoff=plan["cutoff"],
+                    manifest_digest=plan["manifest_digest"].hex(),
+                    rows=tuple(frozen),
+                )
+                wire.check_manifest()
+                result.append(wire.model_dump(mode="json"))
+    return result
+
+
 async def ready_batches(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     """Fixed owning MCP read of stored ready decisions; no caller raw selector.
 
@@ -1228,6 +1277,36 @@ async def _current_unclassified_holders(conn: Any) -> bool:
     )
 
 
+async def _stored_connector_copies_prepared(conn: Any, plan: Any) -> bool:
+    """Necessary own stored-copy observation, never an active-request vote.
+
+    Chronicler reads only content-free shared receipts; it cannot query a
+    connector's private birth/floor cohort or fabricate its preparation.
+    Missing/different headers or partial members keep point/raw evidence.
+    """
+    header = await conn.fetchrow(
+        "SELECT * FROM connectors.owntracks_filtered_copy_batches WHERE decision_id=$1",
+        plan["decision_id"],
+    )
+    if header is None:
+        return False
+    if (
+        header["manifest_digest"] != plan["manifest_digest"]
+        or header["policy_version"] != plan["policy_version"]
+        or header["cutoff"] != plan["cutoff"]
+        or header["expected_count"] < 0
+    ):
+        raise PolicyUnavailableError("Stored connector copy preparation differs")
+    members = await conn.fetch(
+        "SELECT copy_generation FROM connectors.owntracks_filtered_copy_members "
+        "WHERE receipt_id=$1 ORDER BY copy_generation",
+        header["receipt_id"],
+    )
+    return len(members) == header["expected_count"] and len(
+        {row["copy_generation"] for row in members}
+    ) == len(members)
+
+
 async def _all_committed_holders(conn: asyncpg.Connection, plan: Any) -> Any | None:
     """Require a nonempty native sealed cohort and exact committed readbacks.
 
@@ -1236,6 +1315,8 @@ async def _all_committed_holders(conn: asyncpg.Connection, plan: Any) -> Any | N
     empty list is a substitute. The producer binding remains an installation
     obligation; this predicate cannot manufacture it by inspecting rows.
     """
+    if not await _stored_connector_copies_prepared(conn, plan):
+        return None
     frontier = await conn.fetchrow(
         "SELECT * FROM location_retention_frontiers WHERE decision_id=$1 FOR UPDATE",
         plan["decision_id"],
@@ -2481,6 +2562,8 @@ async def seal_native_frontier(pool: asyncpg.Pool, decision_id: UUID) -> UUID | 
                 decision_id,
             )
             if plan is None or plan["state"] != "holder_pending":
+                return None
+            if not await _stored_connector_copies_prepared(conn, plan):
                 return None
             prior = await conn.fetchrow(
                 "SELECT * FROM location_retention_frontiers WHERE decision_id=$1", decision_id

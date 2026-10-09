@@ -134,7 +134,13 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
+# INTERMEDIATE retention SOURCE boundary: these four new FORCE RLS native
+# birth/floor/receipt tables cannot pass the ordinary row_security=off dump.
+# Exact exclusions preserve ordinary raw/Chronicler evidence availability only.
+# Their scoped export/restore, permanent-history recovery and restore admission
+# remain REQUIRED unfinished source work. This is not a merge-ready recovery
+# policy, complete backup claim, or authority to run a live backup/restore.
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity connectors.owntracks_filtered_copy_births connectors.owntracks_filtered_copy_floors connectors.owntracks_filtered_copy_batches connectors.owntracks_filtered_copy_members"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"

@@ -1281,3 +1281,46 @@ This increment's existing grouped migrated species uses a separately migrated he
 
 
 The `d05fa157` hosted completion extension failed before any new producer controls: its async helper invoked the synchronous migrated-database provisioning helper, whose extension bootstrap uses `asyncio.run`. The separate healthy database now provisions in a synchronous module fixture before entering the async owning node. This is fixture placement only; current policy/source/role/receipt/COMMIT producer and every original assertion stay intact. No prior producer success is inferred; successor completion SQL remains UNRUN until its exact hosted result.
+
+
+### Native filtered-copy preparation checkpoint
+
+The OwnTracks device constructor now uses a private buffer adapter. Actual
+location rows and immutable birth metadata commit on the same existing
+`connector_writer` transaction; a different acquisition checks the exact birth
+before it is credited. Transition/waypoint and other-provider behavior remains
+independent. The existing fixed Chronicler batches tool accepts an optional
+`phase="copies"` for the full immutable pre-READY plan; its default `ready`
+response keeps the existing grant shape. This is a locator/manifest transport,
+not caller identity, a grant, or an actor/ready assertion.
+
+The owning stored-copy reducer validates actual current raw generations,
+canonical endpoint/event/raw bodies, every matching filtered row and original
+birth. Missing legacy birth or changed copied metadata refuses. Reduction of
+payload, sender/device/event display, preview and error fields, permanent
+logical-source floors and full immutable member/header receipts commit together.
+Separate acquisitions verify the full original selected floor set, exact member
+count and actual current reduced row bodies. A receipt alongside a refilled body
+refuses. Native frontier sealing and point disposal now require this necessary
+stored-copy observation. The private configured buffers receive their matching
+floor only after that committed readback; independent sources remain intact.
+
+This checkpoint does not yet close the actual active webhook/request/replay or
+all routed source lifetimes. Those source-owned birth/lifetime/floor/admission
+hooks remain required SOURCE, distinct from stored-copy receipts. It cannot
+certify remote recipients or browser erasure, and all four original outcomes
+remain UNMET. New real-role birth/reducer/receipt-fault/readback and permanent
+reduction controls are positioned in the existing migrated SQL species, not run
+locally. The prior exact 3f91 hosted run37896861117 is genuinely successful,
+including completion producer27.300s and registered Memory40.156s; it does not
+qualify this new filtered-copy source.
+
+The four new shared metadata tables enforce existing-role FORCE RLS and exact
+installed table/constraint identity. Ordinary pg_dump uses row_security=off,
+which cannot dump these forced relations. A temporary exact four-table exclusion
+keeps ordinary raw and Chronicler evidence available at this intermediate SOURCE
+checkpoint. **Their permanent history is not yet exported/restored**: actual
+scoped owner-stage export/restore, row parity, real-role policy preservation and
+restore admission are mandatory ongoing source work. Omission is not the final
+recovery fix, a full backup claim, erasure proof or merge-ready behavior. No live
+backup, restore or purge was performed or authorized by this source change.

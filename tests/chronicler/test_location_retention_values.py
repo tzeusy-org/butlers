@@ -211,6 +211,130 @@ def test_frozen_source_wire_binds_rows_and_rejects_duplicate_generations():
         with pytest.raises(ValidationError):
             ReadyGrant.model_validate({**wire, **changed})
 
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+    from butlers.connectors.owntracks_copy_retention import (
+        FilteredCopyPlan,
+        NativeFilteredCopyBuffer,
+        filtered_location_binding,
+        filtered_row_digest,
+        reduced_filtered_row,
+    )
+
+    copy_wire = {
+        key: wire[key]
+        for key in ("decision_id", "policy_version", "cutoff", "rows", "manifest_digest")
+    }
+    FilteredCopyPlan.model_validate(copy_wire).check_manifest()
+    for changed in (
+        {"rows": [row, row]},
+        {"policy_version": 2},
+        {"cutoff": cutoff + timedelta(seconds=1)},
+    ):
+        with pytest.raises(ValueError):
+            FilteredCopyPlan.model_validate({**copy_wire, **changed}).check_manifest()
+    for field in ("ready", "grant_id", "actor", "endpoint"):
+        with pytest.raises(ValidationError):
+            FilteredCopyPlan.model_validate({**copy_wire, field: "synthetic"})
+    endpoint = "owntracks:synthetic"
+    payload = {"_type": "location", "tst": 1767225600, "lat": 1.31415926, "lon": 103.81234567}
+    buffer = NativeFilteredCopyBuffer(endpoint)
+    fields = {
+        "external_message_id": "1767225600:location",
+        "source_channel": "owntracks",
+        "sender_identity": endpoint,
+        "subject_or_preview": "synthetic copied precision",
+        "filter_reason": "synthetic",
+        "error_detail": "synthetic copied error",
+        "full_payload": FilteredEventBuffer.full_payload(
+            channel="owntracks",
+            provider="owntracks",
+            endpoint_identity=endpoint,
+            external_event_id="1767225600:location",
+            external_thread_id="owntracks:synthetic",
+            observed_at=cutoff.isoformat(),
+            sender_identity=endpoint,
+            raw=payload,
+        ),
+    }
+    buffer.record(**fields)
+    native_row = buffer.buffer._rows[0]
+    assert filtered_location_binding(endpoint, native_row) == (
+        logical_digest(f"owntracks:{endpoint}:1767225600:location"),
+        content_digest(payload),
+    )
+    original = filtered_row_digest(native_row)
+    for index in (2, 3, 5, 6, 7, 8, 10):
+        altered = list(native_row)
+        altered[index] = "synthetic changed field"
+        assert filtered_row_digest(tuple(altered)) != original
+    reduced = reduced_filtered_row(native_row)
+    assert reduced[9] == {} and reduced[10] is None
+    assert all("synthetic" not in str(value) for value in reduced[1:])
+    assert reduced_filtered_row(reduced) == reduced
+    assert filtered_row_digest(reduced) != original
+    for index in (1, 2, 3, 4):
+        altered = list(native_row)
+        altered[index] = "forged"
+        with pytest.raises(ValueError):
+            filtered_location_binding(endpoint, tuple(altered))
+    before = len(buffer)
+    with pytest.raises(ValueError):
+        buffer.record(**{**fields, "external_message_id": "forged"})
+    assert len(buffer) == before
+    buffer.closed_sources.add(logical_digest(f"owntracks:{endpoint}:1767225600:location"))
+    buffer.record(**fields)
+    assert len(buffer) == before  # Actual native floor cache refuses the late copy.
+    independent = NativeFilteredCopyBuffer("owntracks:independent")
+    independent_fields = {
+        **fields,
+        "full_payload": FilteredEventBuffer.full_payload(
+            channel="owntracks",
+            provider="owntracks",
+            endpoint_identity="owntracks:independent",
+            external_event_id="1767225600:location",
+            external_thread_id="owntracks:synthetic",
+            observed_at=cutoff.isoformat(),
+            sender_identity="owntracks:independent",
+            raw=payload,
+        ),
+    }
+    independent.record(**independent_fields)
+    assert len(independent) == 1  # Another actual source is preserved.
+    # Preparation may remove an older row while flush I/O yields, and a new
+    # independent record can arrive before that snapshot is acknowledged.
+    # Completing the old snapshot must preserve the genuinely newer copy.
+    older = independent.buffer._rows[0]
+    independent.buffer._rows.clear()
+    independent.record(**independent_fields)
+    newer = independent.buffer._rows[0]
+    assert newer is not older
+    independent._discard_snapshot([older])
+    assert independent.buffer._rows == [newer]
+    independent._discard_snapshot([newer])
+    assert len(independent) == 0
+    finite_float = {**payload, "tst": 1767225600.5}
+    float_buffer = NativeFilteredCopyBuffer(endpoint)
+    float_buffer.record(
+        **{
+            **fields,
+            "external_message_id": "1767225600.5:location",
+            "full_payload": FilteredEventBuffer.full_payload(
+                channel="owntracks",
+                provider="owntracks",
+                endpoint_identity=endpoint,
+                external_event_id="1767225600.5:location",
+                external_thread_id=endpoint,
+                observed_at=cutoff.isoformat(),
+                sender_identity=endpoint,
+                raw=finite_float,
+            ),
+        }
+    )
+    assert filtered_location_binding(endpoint, float_buffer.buffer._rows[0]) == (
+        logical_digest(f"owntracks:{endpoint}:1767225600:location"),
+        content_digest(finite_float),
+    )
+
 
 async def test_native_retention_failure_has_separate_completion_and_count_only_conditions(
     monkeypatch,
@@ -1067,6 +1191,9 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
             self.catalog = []
             self.unknown_commit = False
             self.frontier = None
+            self.filtered_missing = False
+            self.filtered_partial = False
+            self.filtered_changed = False
             self.expected = []
             self.raw = ["planted-exact-raw"]
             self.points = ["planted-point-body"]
@@ -1107,6 +1234,16 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
                 self.trace.append("commit")
 
         async def fetchrow(self, query, *args):
+            if "connectors.owntracks_filtered_copy_batches" in query:
+                if self.filtered_missing:
+                    return None
+                return {
+                    "receipt_id": decision,
+                    "manifest_digest": b"wrong" * 6 if self.filtered_changed else manifest,
+                    "policy_version": 1,
+                    "cutoff": datetime(2026, 1, 5, tzinfo=UTC),
+                    "expected_count": 1,
+                }
             if "location_retention_policy" in query:
                 self.trace.append("policy")
                 return {"version": 1}
@@ -1115,6 +1252,8 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
                     "decision_id": decision,
                     "state": "holder_pending",
                     "manifest_digest": manifest,
+                    "policy_version": 1,
+                    "cutoff": datetime(2026, 1, 5, tzinfo=UTC),
                 }
             if "location_retention_frontiers" in query:
                 return self.frontier
@@ -1128,6 +1267,8 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
             raise AssertionError(query)
 
         async def fetch(self, query, *args):
+            if "connectors.owntracks_filtered_copy_members" in query:
+                return [] if self.filtered_partial else [{"copy_generation": copy}]
             if query.startswith("SELECT DISTINCT g.catalog_id AS original_catalog_id"):
                 return []  # This API-holder species has no disposed catalog generations.
             if "SELECT a.artifact_generation,i.parent_count" in query:
@@ -1255,6 +1396,16 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
         assert await service.seal_native_frontier(pool, decision) is None
         assert pool.frontier is None and pool.raw and pool.points
         pool.answer_pending = False
+        for field in ("filtered_missing", "filtered_partial"):
+            setattr(pool, field, True)
+            assert await service.seal_native_frontier(pool, decision) is None
+            assert pool.frontier is None and pool.raw and pool.points
+            setattr(pool, field, False)
+        pool.filtered_changed = True
+        with pytest.raises(service.PolicyUnavailableError, match="copy preparation differs"):
+            await service.seal_native_frontier(pool, decision)
+        assert pool.frontier is None and pool.raw and pool.points
+        pool.filtered_changed = False
         pool.trace.clear()
         sealed = await service.seal_native_frontier(pool, decision)
         assert sealed == pool.frontier["frontier_generation"]

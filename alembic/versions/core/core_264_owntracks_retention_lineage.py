@@ -12,6 +12,7 @@ import sqlalchemy as sa
 
 from alembic import op
 from butlers.location_retention_schema import tool_input_dependency_sql
+from butlers.owntracks_copy_schema import filtered_copy_schema_sql, filtered_copy_security_sql
 
 revision = "core_264"
 down_revision = "core_265"
@@ -1205,6 +1206,10 @@ def upgrade() -> None:
           RAISE EXCEPTION 'OwnTracks retention history is permanent';
         END $$;
     """)
+    # Fixed connector-owned copy metadata; trusted installer only. These
+    # source floors/receipts do not certify projection or remote recipients.
+    op.execute(filtered_copy_schema_sql())
+    op.execute(filtered_copy_security_sql())
     # Per-owning-schema ledger: source-holder actions never write through a
     # peer role. Core replay also covers Switchboard-only and legacy public DBs.
     _create_local_tables(
@@ -1832,7 +1837,11 @@ def downgrade() -> None:
     # is still installed is forbidden even when the current table is empty.
     op.execute("""
         DO $$ BEGIN
-          IF EXISTS(SELECT 1 FROM connectors.owntracks_retention_tombstones)
+          IF EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_births)
+             OR EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_floors)
+             OR EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_batches)
+             OR EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_members)
+             OR EXISTS(SELECT 1 FROM connectors.owntracks_retention_tombstones)
              OR EXISTS(SELECT 1 FROM connectors.owntracks_retention_batches)
              OR EXISTS(SELECT 1 FROM connectors.owntracks_points
                        WHERE accepted_request_id IS NOT NULL)

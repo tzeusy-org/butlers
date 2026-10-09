@@ -16,7 +16,7 @@ per-source roll-up, and hard cardinality caps before returning structured JSON
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -212,14 +212,18 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
     """Register Chronicler read and bundle tools on *mcp*."""
 
     @mcp.tool()
-    async def chronicler_location_retention_batches() -> list[dict[str, Any]]:
+    async def chronicler_location_retention_batches(
+        phase: Literal["ready", "copies"] = "ready",
+    ) -> list[dict[str, Any]]:
         """Read stored ready OwnTracks decisions without caller raw selectors.
 
         Metadata locators are consumed by the native registered connector
         outside its transaction. They do not certify caller source identity.
         """
-        from butlers.chronicler.location_retention import ready_batches
+        from butlers.chronicler.location_retention import filtered_copy_plans, ready_batches
 
+        if phase == "copies":
+            return await filtered_copy_plans(module._get_pool())
         return await ready_batches(module._get_pool())
 
     @mcp.tool()
