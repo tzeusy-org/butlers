@@ -84,6 +84,43 @@ async def assert_registered_catalog_transport(url, postgres_container, memory_po
         await fresh_memory.close()
 
 
+class _ArtifactReceiptFaultPool:
+    """Configured test pool proxy; every SQL operation uses the real writer.
+
+    The constructor owns this pool before registration. The single fault runs
+    only after the actual producer's receipt INSERT and business writes, inside
+    its original transaction. It supplies no rows, verdicts or authority.
+    """
+
+    def __init__(self, pool):
+        self.pool = pool
+        self.fail_receipt = False
+        self.reached_receipt = False
+
+    def __getattr__(self, name):
+        return getattr(self.pool, name)
+
+    @asynccontextmanager
+    async def acquire(self):
+        owner = self
+        async with self.pool.acquire() as conn:
+
+            class Connection:
+                def __getattr__(self, name):
+                    return getattr(conn, name)
+
+                async def execute(self, sql, *args):
+                    result = await conn.execute(sql, *args)
+                    if owner.fail_receipt and sql.startswith(
+                        "INSERT INTO chronicler.location_native_memory_artifact_dispositions "
+                    ):
+                        owner.reached_receipt = True
+                        raise RuntimeError("planted actual artifact receipt rollback")
+                    return result
+
+            yield Connection()
+
+
 async def _assert_registered_catalog_transport(url, postgres_container, memory_pool, embedding):
     """Real registered consumer→Switchboard→source and online callback controls.
 
@@ -116,6 +153,10 @@ async def _assert_registered_catalog_transport(url, postgres_container, memory_p
         migration_bootstrap_db_url,
     )
     from butlers.tools.switchboard.registry.registry import register_butler
+
+    # Register this real-connection fault seam as the configured owning pool;
+    # every identity/role/SQL/readback still reaches the actual database.
+    memory_pool = _ArtifactReceiptFaultPool(memory_pool)
 
     # Actual chains provide every consumer/core/Memory dependency. Bootstrap is
     # replayed by the existing trusted disposable migration owner, not by the
@@ -436,6 +477,32 @@ async def _assert_registered_catalog_transport(url, postgres_container, memory_p
                     raise_on_error=False,
                 )
                 assert denied_receipt.is_error
+            from butlers.chronicler.location_catalog_copies import dispose_catalog_artifacts
+
+            independent = uuid4()
+            independent_body = "synthetic independently authored ordinary fact"
+            await memory_pool.execute(
+                "INSERT INTO facts(id,subject,predicate,content) "
+                "VALUES($1,'registered-independent','ordinary',$2)",
+                independent,
+                independent_body,
+            )
+            # A real consumer loan without its source-owned committed terminal
+            # receipt prevents actual source destruction, even after SEND ends.
+            await dispose_catalog_artifacts(pools["chronicler"], decision)
+            async with memory_pool.acquire() as unclosed_readback:
+                assert (
+                    await unclosed_readback.fetchval(
+                        "SELECT content FROM facts WHERE id=$1", artifact
+                    )
+                    == summary
+                )
+            assert not await pools["chronicler"].fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_memory_artifact_dispositions "
+                "WHERE artifact_generation=$1)",
+                source_generation,
+            )
+
             # Source requests prepare/status through its actual Switchboard
             # registry, then reads its own durable receipt on another acquisition.
             await reconcile_catalog_loans(pools["chronicler"], decision)
@@ -486,6 +553,108 @@ async def _assert_registered_catalog_transport(url, postgres_container, memory_p
                 )
                 == summary
             )
+
+            # Fault the ACTUAL source producer after its real public reduction,
+            # native DELETE and receipt INSERT, inside that producer's acquired
+            # transaction. Separate acquisitions must see original survivors.
+            memory_pool.fail_receipt = True
+            try:
+                with pytest.raises(RuntimeError, match="actual artifact receipt rollback"):
+                    await dispose_catalog_artifacts(pools["chronicler"], decision)
+            finally:
+                memory_pool.fail_receipt = False
+            assert memory_pool.reached_receipt is True
+            async with memory_pool.acquire() as rollback_readback:
+                assert (
+                    await rollback_readback.fetchval(
+                        "SELECT content FROM facts WHERE id=$1", artifact
+                    )
+                    == summary
+                )
+                assert (
+                    await rollback_readback.fetchval(
+                        "SELECT summary FROM public.memory_catalog WHERE id=$1", catalog["id"]
+                    )
+                    == expected_body["summary"]
+                )
+            assert not await pools["chronicler"].fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_native_memory_artifact_dispositions "
+                "WHERE artifact_generation=$1)",
+                source_generation,
+            )
+            await dispose_catalog_artifacts(pools["chronicler"], decision)
+            async with memory_pool.acquire() as artifact_readback:
+                assert not await artifact_readback.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM facts WHERE id=$1)", artifact
+                )
+                reduced = await artifact_readback.fetchrow(
+                    "SELECT summary,title,predicate,scope,embedding,search_vector "
+                    "FROM public.memory_catalog WHERE id=$1",
+                    catalog["id"],
+                )
+                assert reduced is not None and reduced["summary"] == ""
+                assert all(
+                    reduced[key] is None
+                    for key in ("title", "predicate", "scope", "embedding", "search_vector")
+                )
+                assert (
+                    await artifact_readback.fetchval(
+                        "SELECT content FROM facts WHERE id=$1", independent
+                    )
+                    == independent_body
+                )
+            source_receipt = await pools["chronicler"].fetchval(
+                "SELECT receipt_id FROM location_native_memory_artifact_dispositions "
+                "WHERE artifact_generation=$1 AND decision_id=$2",
+                source_generation,
+                decision,
+            )
+            assert source_receipt is not None
+            await dispose_catalog_artifacts(pools["chronicler"], decision)
+            assert (
+                await pools["chronicler"].fetchval(
+                    "SELECT receipt_id FROM location_native_memory_artifact_dispositions "
+                    "WHERE artifact_generation=$1 AND decision_id=$2",
+                    source_generation,
+                    decision,
+                )
+                == source_receipt
+            )
+            from butlers.chronicler.location_catalog_copies import catalog_holder_inventory
+
+            async with pools["chronicler"].acquire() as final_cohort:
+                async with final_cohort.transaction():
+                    await source.lock_domain(final_cohort)
+                    holders = await catalog_holder_inventory(final_cohort, decision)
+                    assert holders and all(holder["receipt_id"] is not None for holder in holders)
+            from butlers.chronicler.location_catalog_copies import catalog_frontier_closed
+
+            async with pools["chronicler"].acquire() as current_body:
+                async with current_body.transaction():
+                    await source.lock_domain(current_body)
+                    assert await catalog_frontier_closed(current_body, decision)
+            # An immutable receipt must not bless subsequently reintroduced
+            # retained public discovery text. This disposable tamper leaves
+            # original receipts/history intact and uses no production bypass.
+            await memory_pool.execute(
+                "UPDATE public.memory_catalog SET title=$2 WHERE id=$1",
+                catalog["id"],
+                "synthetic resurrected retained title",
+            )
+            async with pools["chronicler"].acquire() as changed_body:
+                async with changed_body.transaction():
+                    await source.lock_domain(changed_body)
+                    assert not await catalog_frontier_closed(changed_body, decision)
+            await memory_pool.execute(
+                "UPDATE public.memory_catalog SET title=NULL WHERE id=$1", catalog["id"]
+            )
+            async with pools["chronicler"].acquire() as restored_body:
+                async with restored_body.transaction():
+                    await source.lock_domain(restored_body)
+                    assert await catalog_frontier_closed(restored_body, decision)
+
+            # This is the selected native/catalog/server/consumer cohort only;
+            # no planted plan becomes actual OwnTracks/raw or full-fleet proof.
 
             # A real current loan UUID and a caller-invented header both refuse
             # through the actual source guard/tool; the positive above proves

@@ -1531,9 +1531,77 @@ async def catalog_holder_inventory(conn: Any, decision: UUID) -> list[Any]:
     )
 
 
+async def current_catalog_reductions(conn: Any, decision: UUID) -> bool:
+    """A receipt cannot attest a later changed retained discovery body/head.
+
+    Read only the actual shared catalog and this owner's immutable generations.
+    The complete original parent census is checked by the calling frontier;
+    these selected receipts do not classify unrelated/unknown catalogs.
+    """
+    cursor = None
+    while True:
+        rows = await conn.fetch(
+            "SELECT DISTINCT g.catalog_id AS original_catalog_id,"
+            "a.artifact_generation AS original_artifact_generation,a.artifact_id,a.memory_table,"
+            "c.*,h.source_generation AS current_generation,"
+            "EXISTS(SELECT 1 FROM location_native_catalog_generations current_g "
+            "JOIN location_native_catalog_dispositions current_d USING(source_generation) "
+            "WHERE current_g.source_generation=h.source_generation "
+            "AND current_g.artifact_generation=a.artifact_generation "
+            "AND current_g.catalog_id=g.catalog_id AND current_d.decision_id=$1) AS head_disposed "
+            "FROM location_native_catalog_generations g "
+            "JOIN location_native_memory_artifacts a USING(artifact_generation) "
+            "JOIN location_native_dispatch_parents i USING(input_generation) "
+            "JOIN location_native_copy_births b USING(copy_generation,input_digest) "
+            "JOIN location_retention_plan_outputs p USING(output_kind,output_id) "
+            "JOIN location_native_catalog_dispositions d USING(source_generation) "
+            "LEFT JOIN public.memory_catalog c ON c.id=g.catalog_id "
+            "LEFT JOIN location_native_catalog_heads h ON h.catalog_id=g.catalog_id "
+            "WHERE p.decision_id=$1 AND d.decision_id=$1 "
+            "AND ($2::uuid IS NULL OR (g.catalog_id,a.artifact_generation)>($2::uuid,$3::uuid)) "
+            "ORDER BY original_catalog_id,original_artifact_generation LIMIT 64",
+            decision,
+            None if cursor is None else cursor[0],
+            None if cursor is None else cursor[1],
+        )
+        for row in rows:
+            if (
+                row["id"] != row["original_catalog_id"]
+                or row["source_schema"] != "chronicler_mem"
+                or row["source_butler"] != "chronicler"
+                or row["source_table"] != row["memory_table"]
+                or row["source_id"] != row["artifact_id"]
+                or row["head_disposed"] is not True
+                or row["current_generation"] is None
+                or row["summary"] != ""
+                or row["confidence"] != 0
+                or row["invalid_at"] is None
+                or any(
+                    row[column] is not None
+                    for column in (
+                        "title",
+                        "predicate",
+                        "scope",
+                        "valid_at",
+                        "embedding",
+                        "search_vector",
+                        "entity_id",
+                        "object_entity_id",
+                        "importance",
+                    )
+                )
+            ):
+                return False
+        if len(rows) < 64:
+            return True
+        cursor = (rows[-1]["original_catalog_id"], rows[-1]["original_artifact_generation"])
+
+
 async def catalog_frontier_closed(conn: Any, decision: UUID) -> bool:
     """Actual source catalog/loan census; no absence-only terminal witness."""
     await require_catalog_artifact_ancestry(conn)
+    if not await current_catalog_reductions(conn, decision):
+        return False
     if await conn.fetchval(
         "SELECT EXISTS(SELECT 1 FROM public.memory_catalog c "
         "WHERE c.source_schema='chronicler_mem' AND (c.summary<>'' OR c.title IS NOT NULL "

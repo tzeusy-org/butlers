@@ -1185,3 +1185,35 @@ for its healthy registered cohort. No immutable history is deleted or repaired,
 and no artifact-specific filter narrows the source frontier. The registered
 positive remains hosted UNRUN at this correction; reaching a real routed body
 in the earlier failure is not a terminal receipt or all-holder success.
+
+
+## Current registered native artifact closure controls
+
+The source uses the actual fixed configured Memory writer to remove an unchanged
+exclusive native artifact only after every assigned original catalog loan has
+its server lifetime and registered consumer receipt. The same transaction
+reduces the retained shared discovery body/vectors, deletes the native artifact
+and commits immutable source receipts. A retained receipt alone cannot certify
+a changed current discovery body or head: the frontier independently reads the
+actual selected catalog rows in complete 64-row keyset pages, their exact
+source/artifact identity and current disposed head, and requires the fixed empty/null reduced profile. Missing rows,
+raw summary/title/vector restoration and unqualified current heads keep closure
+unknown. No later body or receipt is inferred from absence.
+
+The existing registered transport species now calls this actual producer before
+consumer reconciliation and requires the original native fact to survive. After
+actual routed consumer prepare/status and separate receipts, its constructor-
+configured pool proxy forwards every query to the actual acquired writer and
+faults only after the producer's real source receipt INSERT. Separate
+acquisitions must find the original fact/catalog body and no source receipt.
+The restored same producer must delete the selected native fact, reduce the
+catalog, preserve a separately planted ordinary fact and return the same source
+receipt on replay. A disposable retained-title tamper must make the actual
+frontier refuse; restoring its exact reduced profile must qualify again.
+
+These new SQL/TCP controls are unexecuted until the exact hosted owning node
+passes. Their origin/retention plan is explicitly synthetic; even a PASS attests
+only this native artifact/catalog/server/consumer cohort and real atomic writer.
+It does not certify actual OwnTracks acceptance, independent mixed prose,
+raw-point deletion, every runtime/legacy holder, remote-recipient erasure or
+whole retention delivery. All original obligations remain mandatory.

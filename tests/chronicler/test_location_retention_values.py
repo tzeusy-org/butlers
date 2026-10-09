@@ -1061,6 +1061,8 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
             raise AssertionError(query)
 
         async def fetch(self, query, *args):
+            if query.startswith("SELECT DISTINCT g.catalog_id AS original_catalog_id"):
+                return []  # This API-holder species has no disposed catalog generations.
             if "SELECT a.artifact_generation,i.parent_count" in query:
                 return []  # This frontier fixture has no native Memory artifacts.
             if "WITH artifacts AS" in query:
@@ -8431,7 +8433,34 @@ async def _assert_catalog_terminal_complete_ancestry_values():
         for _ in range(2)
     ]
 
+    reduced_catalog = dict(
+        id=uuid4(),
+        source_schema="chronicler_mem",
+        source_butler="chronicler",
+        source_table="rules",
+        source_id=identifier,
+        artifact_id=identifier,
+        memory_table="rules",
+        original_artifact_generation=uuid4(),
+        current_generation=uuid4(),
+        head_disposed=True,
+        summary="",
+        confidence=0,
+        invalid_at="fixed software timestamp",
+        title=None,
+        predicate=None,
+        scope=None,
+        valid_at=None,
+        embedding=None,
+        search_vector=None,
+        entity_id=None,
+        object_entity_id=None,
+        importance=None,
+    )
+    reduced_catalog["original_catalog_id"] = reduced_catalog["id"]
+
     class Pool:
+        catalog_rows = []
         parents = full
         body = deepcopy(original)
         terminal = None
@@ -8459,6 +8488,21 @@ async def _assert_catalog_terminal_complete_ancestry_values():
             if "SELECT a.artifact_generation,i.parent_count" in sql:
                 self.trace.append("ancestry")
                 return self.parents
+            if sql.startswith("SELECT DISTINCT g.catalog_id AS original_catalog_id"):
+                self.trace.append("current_catalog_read")
+                cursor = None if args[1] is None else (args[1], args[2])
+                return [
+                    row
+                    for row in sorted(
+                        self.catalog_rows,
+                        key=lambda row: (
+                            row["original_catalog_id"],
+                            row["original_artifact_generation"],
+                        ),
+                    )
+                    if cursor is None
+                    or (row["original_catalog_id"], row["original_artifact_generation"]) > cursor
+                ][:64]
             if sql.startswith("WITH artifacts AS"):
                 return [dict(holder_generation=generation, receipt_id=self.terminal)]
             if "SELECT DISTINCT a.*" in sql:
@@ -8595,6 +8639,46 @@ async def _assert_catalog_terminal_complete_ancestry_values():
         assert pool.trace.index("ancestry") < pool.trace.index("body_read")
         assert pool.trace.index("delete") < pool.trace.index("receipt") < pool.trace.index("commit")
         assert pool.trace.index("commit") < pool.trace.index("receipt_readback")
+        assert await catalog_frontier_closed(pool, decision)
+        # Planted retained body/head beside exact reduced-profile positive;
+        # no missing rows can make these drift controls vacuous.
+        pool.catalog_rows = [deepcopy(reduced_catalog)]
+        assert await catalog_frontier_closed(pool, decision)
+        for drift in (
+            {"summary": "synthetic resurrected source"},
+            {"title": "synthetic resurrected title"},
+            {"embedding": [0.1]},
+            {"search_vector": "synthetic"},
+            {"source_id": uuid4()},
+            {"head_disposed": False},
+            {"id": None},
+        ):
+            pool.catalog_rows = [reduced_catalog | drift]
+            assert not await catalog_frontier_closed(pool, decision)
+        pool.catalog_rows = [deepcopy(reduced_catalog)]
+        assert await catalog_frontier_closed(pool, decision)
+        many = []
+        for _ in range(65):
+            catalog_id, artifact_id = uuid4(), uuid4()
+            many.append(
+                reduced_catalog
+                | dict(
+                    id=catalog_id,
+                    original_catalog_id=catalog_id,
+                    original_artifact_generation=uuid4(),
+                    source_id=artifact_id,
+                    artifact_id=artifact_id,
+                )
+            )
+        many.sort(key=lambda row: (row["original_catalog_id"], row["original_artifact_generation"]))
+        pool.catalog_rows = many
+        pool.trace.clear()
+        assert await catalog_frontier_closed(pool, decision)
+        complete_pages = pool.trace.count("current_catalog_read")
+        pool.catalog_rows = [*many[:-1], many[-1] | {"title": "planted later-page source"}]
+        assert not await catalog_frontier_closed(pool, decision)
+        assert complete_pages == 2
+        pool.catalog_rows = [deepcopy(reduced_catalog)]
         assert await catalog_frontier_closed(pool, decision)
         receipt = pool.terminal
         await dispose_catalog_artifacts(pool, decision)
