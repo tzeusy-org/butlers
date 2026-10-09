@@ -54,6 +54,6 @@ The pipeline uses per-task `ContextVar` isolation for routing context, preventin
 ## Related Pages
 
 - [Connector Interface](../connectors/overview.md) -- How connectors submit messages to the pipeline
-- [Metrics Module](metrics.md) -- Butler-level Prometheus integration
+- [Observability](../architecture/observability.md) -- Shared Prometheus query transport
 - [Telegram Module](telegram.md) -- Telegram ingestion feeds the pipeline
 - [Email Module](email.md) -- Email ingestion feeds the pipeline

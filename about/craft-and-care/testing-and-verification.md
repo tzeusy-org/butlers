@@ -69,25 +69,73 @@ past its headroom condenses tests in the same PR or raises the budget with a
 stated net test delta and reason. Tests are production code with a run-time
 cost on every merge; more of them is not free.
 
-A pull request whose diff clears the docs filter gets one more layer of narrowing before it reaches
-the ten-shard matrix: `scripts/ci_test_plan.py` (a CI-only wrapper around
-`butlers.testing.scoped_runner.plan_scoped_tests`) plans the affected test paths for the diff. When
-the plan is a clean, bounded scope (no escalation trigger, no empty plan, no reach into
-`tests/e2e/`) the `check-affected` job runs only those test paths and the ten-shard matrix is
-skipped; the `check` fan-in enforces that pairing (either the shards ran, or `check-affected` ran
-and the shards were skipped -- never both, never neither). Any planner uncertainty reports
-`mode=full`, which leaves the shard matrix running exactly as it always has: the lane only ever
-narrows away from that default, never replaces or widens it on its own authority. The merge queue's
-`merge_group` run is unaffected either way -- it always runs the full matrix, unabridged, against
-the tree about to land.
+A pull request whose diff clears the docs filter uses the stdlib-only `route` job.
+It reuses the established affected-test planner with more conservative omission admission:
+only proven unchanged collection inputs may use a fresh scoped subset without full inventory.
+All test, conftest, dependency/config, CI and unknown changes widen to full collection and
+execution. Merge-group always uses fresh complete inventory and all eleven5+6 children.
+Push to main collects/budget-checks fresh inventory but skips heavy execution after protected
+validation. Docs-only skips remain explicit. The required `check` verifies exact event/mode
+pairings from prerequisite verdicts only, with no checkout, installation or report work.
 
-The required `check` evaluates needed-job verdicts without checkout or dependency installation.
-The visible, non-required `coverage` job runs only after all ten merge-group shards succeed.
-It validates each database and its same-checkout/run/attempt shard metadata before combining
-and publishing the existing report/badge. PRs run the same selected corpus without coverage;
-merge-group shards and direct standalone shard calls retain coverage. A reporting failure is
-visible independently of required test verdicts. Source/fixture controls do not establish hosted
-upload success or timing improvements; those need their named actual merge-group observations.
+Test support modules and package markers with unproved import ownership escalate to every
+configured pytest root, including both `tests/` and `roster/`; adjacent test files cannot prove
+that a helper has no consumers elsewhere. CI validates the selected scope independently of the
+changed-file list. Empty, unsupported, outside-root or root-wide selections, and any selected
+ancestor or descendant of `tests/e2e/`, fall back to the complete matrix. Known small API scopes,
+direct test edits and pytest-governed nested conftest scopes remain eligible.
+
+The conditional affected job accepts canonical selected Python files only, excluding E2E.
+It freshly collects the actual default-selected item identities, runs the unchanged affected
+pytest flags and independently recollects after execution. Its source/run/attempt/config/nonce
+bound receipt must prove exact item multiplicity, logical starts and all actual setup/call/teardown
+phases, including named skips. Count-only JUnit cannot authorize it. The job uploads minimized
+reference, execution and independently verified proof carriers; required check also demands
+its explicit successful verifier output. Each subprocess belongs to the same finite affected
+job envelope and cleans up only its own process group. No cached inventory or full-lane evidence
+is borrowed to certify a scoped execution.
+Completion/exit/count/start fields require their exact JSON boolean or integer representations.
+A boolean is never an integer count/exit, and an equal floating-point number is never a count.
+Both scoped and full-matrix consumers reject malformed representations without coercion;
+finite nonnegative integer or floating-point phase timers remain valid numeric durations.
+
+Guards performs one actual installed `pytest tests/ roster/ --collect-only -q -n0 -m ""`
+collection. Exact inherited markers establish both populations; advisory weights never do.
+Missing, malformed, nonobject or duplicate-key advisory weight files fall back to the same
+finite deterministic costs and set assignment degradation; inventory, assignment and execution
+evidence still use strict JSON admission in every entrypoint. Both unchanged lane budgets consume this inventory. Deterministic LPT assigns whole files to
+five unit and six integration children. Each child independently recollects its assignment;
+preflight reconciles complete nonce-hashed identity multiplicity, logical starts and phases
+across all eleven children. Missing/extra/stale receipts cannot hide behind a matrix aggregate.
+Raw parameter identities stay in RAM; public nonces limit linkability, not guessing or trust.
+
+The read-only scheduled weight observer retains closed provenance for both CANDIDATE and
+UNKNOWN: known selected run/attempt/head, completed and unavailable bounded index reads,
+required artifact identifiers, download digests, archive-member attempts and the failing stage.
+Unselected and partial reads remain explicit; unknown identity fields stay null. Failure kinds
+come from fixed categories, never raw exception arguments, child output or arbitrary API fields.
+These diagnostics do not admit missing evidence, install weights or change test membership.
+
+Full-mode smoke may use exact successful child identities only. An uncovered item runs the
+original dedicated command. Derived release evidence names actual child commands, selector
+provenance and maximum actual child elapsed time; it never invents a dedicated smoke timer.
+The non-required `coverage` job verifies all eleven actual CoverageData databases, source
+population, tracing, digest and same-checkout/run/attempt/computed assignment before combine.
+PRs still run without coverage; merge-group and ordinary standalone shard calls retain it.
+Reporting integrity remains separate from required check/guards/frontend verdicts.
+
+Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
+survivors run in guards. Two locked Vitest children independently prove complete disjoint
+actual test membership. Required frontend fails if guards or either child fails. Browser
+reuses only the source/attempt/content-bound build and retains locked browser version,
+mandatory OS dependencies on cache hits/misses, three bounded attempts and ordinary cleanup.
+No source control or inferred setup saving establishes current timing or hosted upload proof.
+
+The frontend verifier compares configuration booleans, module error counters and reconstructed
+count/multiplicity/outcome summaries with exact JSON types; equal integers, floats and booleans
+cannot substitute for one another in these declarations or counters.
+The optional PATH Node/CPU diagnostic may be UNKNOWN without blocking those mandatory installed
+collector/configuration and population proofs; it never substitutes for their admission.
 
 All workflow jobs have finite positive watchdogs. Pytest defaults to 300 seconds per item;
 existing finite overrides and frontend test defaults remain. An item timer does not bound
@@ -163,7 +211,7 @@ the repo notes first.
 
 ## CI fixed-overhead observations
 
-The unchanged ten-shard runner records private hashed selected identities and
+The preserved runner within the computed eleven-child topology records private hashed selected identities and
 real phase/worker/tracer observations. Advisory duration ordering never changes
 membership; unavailable or incompatible timings fall back lexically with
 UNKNOWN. Environment caches always run frozen editable repair and verify the

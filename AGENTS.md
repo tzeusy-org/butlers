@@ -54,7 +54,7 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    push the exact head after targeted tests, collection, and hygiene checks,
    then use one terminal hosted CI run as the broad evidence. These
    receipt-producing targets mirror the pytest and coverage portions of CI's
-   `check-unit-N` and `check-integration-N` shard jobs when a local reproduction
+   `check-unit (N)` and `check-integration (N)` matrix children when a local reproduction
    is genuinely needed:
 
    ```bash
@@ -62,7 +62,8 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    make test-ci-integration
    ```
 
-   CI also runs `check-preflight` for static checks and smoke/release evidence,
+   CI also runs `guards` for static checks and fresh inventory/budgets, and
+   `check-preflight` for complete-identity reconciliation and smoke/release evidence,
    plus the fail-closed `check` fan-in, so these targets alone are not a full
    hosted Python gate claim. Run only one broad
    Docker-backed lane at a time, and only one owner may run a broad local lane
@@ -76,16 +77,16 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    every shard, `guards`, and `frontend` against the exact tree about to land
    (enforced by the `main-merge-queue` ruleset from
    `scripts/setup_main_ruleset.sh`). A PR's own CI run is deliberately
-   narrower: the `changes` job classifies the diff fail-closed, and a
+   narrower: the stdlib `route` job classifies the diff fail-closed, and a
    docs/spec-only PR skips the backend shards and frontend jobs on purpose,
    while `push` to `main` skips the shards because the queue already validated
-   that tree. On a backend-touching PR the `plan` job (`scripts/ci_test_plan.py`)
-   may narrow further: a clean scoped plan runs only those test paths in
+   that tree. On a backend-touching PR `route` consumes the existing conservative
+   planner; a clean scoped plan runs only those test paths in
    `check-affected`; any planner uncertainty (escalation trigger, empty plan, or
-   a plan reaching into `tests/e2e/`) reports `mode=full` and the ten shards run.
+   a plan reaching into `tests/e2e/`) reports `mode=full` and all eleven children run.
    Measured precision is in `about/craft-and-care/testing-and-verification.md`.
-   `check-preflight` also runs `scripts/check_test_budget.py`, a per-lane
-   collected-test budget (`scripts/test-budget-baseline.json`): a PR that
+   `guards` enforces the freshly collected inventory against the per-lane
+   collected-test budget in `scripts/test-budget-baseline.json`: a PR that
    pushes a lane over budget condenses tests in the same PR, or raises the
    budget with `--update-baseline` and states the net test delta
    (`Tests: +a ~b -c`) and why in the PR body. `make check-guards` runs every
@@ -149,8 +150,9 @@ No local gate command matches CI's scope; check which command produced a number.
 
 ### Frontend CI gate order (knip masks build and test)
 
-The `frontend` job in `.github/workflows/ci.yml` runs lint, em-dash copy gate, query-result
-coercion gate, **Import graph (knip)**, build, test. A knip failure skips build and test, so a local
+The frontend steps in `guards` run lint, em-dash copy gate, query-result coercion gate,
+**Import graph (knip)**, then one build. Two `frontend-vitest` children run the tests;
+the required `frontend` verdict checks both children and `guards`. A knip failure skips build, so a local
 green vitest run is not evidence the job will pass. Run `npm run knip` from `frontend/` before
 pushing. Treat "unused export" as a question: it covers both dead code and a helper whose wiring was
 forgotten, so check the bead's acceptance criteria before deleting. Never add an import just to
@@ -167,7 +169,7 @@ separate `playwright install --with-deps chromium`.
 ### Cheap standing pre-push checks
 
 ```bash
-make check-ci-test-shards     # new or moved test files must be listed exactly once in .github/ci-test-shards/
+make check-ci-test-shards     # fresh actual pytest inventory, exact whole-file5+6 assignment and unchanged budgets
 make check-guards             # every `guards` CI step (dashes, spec, names, frontend-copy inventory, ...)
 ```
 
@@ -359,19 +361,19 @@ it before changing the subsystem.
     report done early.
   - A CONFLICTING PR runs no CI, so its rollup stays frozen green. Never treat a non-`MERGEABLE`
     PR as settled.
-  - The job set varies by design (the `changes` filter skips shards or frontend jobs as neutral).
+  - The job set varies by design (`route` explicitly skips shards or frontend jobs as neutral).
     Judge completeness by the required contexts (`check`, `guards`, `frontend`), not a job count.
-- CI fan-out: `check-preflight`, five `check-unit-N` and five `check-integration-N` shard jobs, then
+- CI fan-out: route→guards→five unit/six integration matrix children→complete-identity `check-preflight`, then
   the `check` fan-in, which uses `always()` and reads every declared job through `NEEDS_JSON`.
-  `always()` alone does not enforce prerequisites: changes, guards and backend-PR plan verdicts
+  `always()` alone does not enforce prerequisites: route and guards verdicts
   must succeed, and preflight is checked independently of the heavy-shard consistency state.
   Preflight never counts as a heavy shard; a scoped PR requires preflight and check-affected
   success with every heavy shard skipped. Docs-only PR and main-push skips require the exact
   classifier/event/ref policy; full PR and merge_group require all heavy shards. New needed jobs
   accept success and deny skips until an explicit policy is added. Malformed or missing results,
   classifier outputs or planner paths fail closed.
-  Lock, lint, format and SQL safety run in guards with their original scopes; exact-once,
-  budget and smoke/release evidence remain in preflight. `make check-guards` includes the same
+  Lock, lint, format, SQL safety and fresh inventory/budgets run in guards with their original scopes;
+  exact-once and smoke/release evidence remain in preflight. `make check-guards` includes the same
   nonmutating static checks (`check-lock`, `lint`, `check-format`, `check-for-update-joins`).
   Never add `!cancelled()` to it (a skipped check can read green to branch protection). Never use
   `--cov-append` across jobs, and give artifact uploads `overwrite: true`.

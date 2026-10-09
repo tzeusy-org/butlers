@@ -46,7 +46,12 @@ The optional CI_SHARD_TIMINGS input must have complete phase/node identity,
 source/run/attempt and no more than fourteen days of age, exact files/current
 Python-source+dependency topology, and an independently re-collected selected
 population. Duplicate, malformed, negative/nonfinite, missing or mismatched data
-retains the lexical schedule and an explicit UNKNOWN. Compatible data schedules
+retains the lexical schedule and an explicit UNKNOWN. Completion must be a JSON
+boolean, and exit, selected-count and shard fields must be JSON integers;
+booleans or floats cannot stand in for those integers. A passed setup requires
+a call phase; a skipped setup must have no call phase. A skipped call after a
+passed setup remains valid. Finite integer and float durations remain valid.
+Compatible data schedules
 the same files by descending total setup/call/teardown duration with lexical ties.
 Pytest always receives lexical file argv: installed pytest 9.1 can orphan
 directory-scoped fixtures when explicit package paths are interleaved. The

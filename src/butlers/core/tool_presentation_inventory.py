@@ -216,7 +216,6 @@ TOOL_PRESENTATION_INVENTORY = (
         "dashboard_read_spend_daily dashboard_read_spend_summary dashboard_read_spend_top_sessions",
     ),
     *_declare("dashboard_read", "insights", "dashboard_read_insight_delivery_state"),
-    *_declare("document_renderer", "render", "render_chart render_document"),
     *_declare("email", "read", "email_read_message email_search_inbox"),
     *_declare("email", "write", "email_reply_to_thread email_send_message"),
     *_declare(
@@ -261,11 +260,6 @@ TOOL_PRESENTATION_INVENTORY = (
         "memory_entity_neighbors memory_entity_resolve memory_entity_update",
     ),
     *_declare("memory", "preferences", "memory_get_preferences memory_set_preference"),
-    *_declare(
-        "metrics",
-        "metrics",
-        "metrics_define metrics_emit metrics_list metrics_query metrics_query_range",
-    ),
     *_declare("pipeline", "routing", "pipeline.process", presentable=False, posture="eager"),
     *_declare("qa", "control", "force_patrol get_qa_status report_finding", presentable=False),
     *_declare(

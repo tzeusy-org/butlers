@@ -228,7 +228,7 @@ async def test_db_fallback_prometheus_error_triggers_db():
     fake_error = [{"error": "upstream timeout"}]
 
     with patch(
-        "butlers.modules.metrics.prometheus.async_query",
+        "butlers.core.prometheus.async_query",
         new=AsyncMock(return_value=fake_error),
     ):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):

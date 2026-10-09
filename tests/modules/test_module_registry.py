@@ -214,6 +214,13 @@ def test_explicit_discovery_and_router_load_failures_are_visible(monkeypatch, tm
     import butlers.modules.registry as registry_module
     from butlers.api.router_discovery import _load_router_module, discover_butler_routers
 
+    discovered = registry_module.default_registry()
+    assert {"metrics", "document_renderer"}.isdisjoint(discovered.available_modules)
+    assert {"pipeline", "calendar"}.issubset(discovered.available_modules)
+    for retired in ("metrics", "document_renderer"):
+        with pytest.raises(ValueError, match="Unknown module"):
+            discovered.load_from_config({retired: {}})
+
     real_import = importlib.import_module
     monkeypatch.setattr(
         registry_module.pkgutil,

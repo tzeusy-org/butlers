@@ -25,7 +25,6 @@ _CONFIG_OVERRIDES = {
     "calendar": {"provider": "google"},
     "contacts": {"provider": "google"},
     "email": {"send_tools": True},
-    "metrics": {"prometheus_query_url": "http://example.invalid"},
     "spotify": {"playback_tools": True},
     "whatsapp": {"send_tools": True},
 }
@@ -84,6 +83,20 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
 
     validate_presentation_inventory(owners, TOOL_PRESENTATION_INVENTORY)
     by_name = {item.canonical_name: item for item in TOOL_PRESENTATION_INVENTORY}
+    retired = {
+        "metrics_define",
+        "metrics_emit",
+        "metrics_list",
+        "metrics_query",
+        "metrics_query_range",
+        "render_chart",
+        "render_document",
+    }
+    assert retired.isdisjoint(owners)
+    assert retired.isdisjoint(by_name)
+    assert {"metrics", "document_renderer"}.isdisjoint(owners.values())
+    assert owners["pipeline.process"] == "pipeline"
+    assert owners["get_attachment"] == "core"
     assert all(
         by_name[name].group_name == (group if group is not None else "direct")
         for name, group in core_groups.items()
