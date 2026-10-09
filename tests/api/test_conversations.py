@@ -2409,14 +2409,21 @@ async def test_stream_fallback_emits_exactly_one_token_event_without_a_producer(
 
 
 async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch):
-    """A chat-stream NOTIFY wake (conversation_reply_create's reply_ready,
-    here faked at the listener seam) delivers message_complete far faster
-    than the fixed poll interval; with NOTIFY suppressed (no listener), the
-    safety-net poll still delivers it within that same configured window
-    (bu-0ynlk.7 AC3)."""
-    monkeypatch.setattr(conversations_router, "_POLL_INTERVAL_S", 0.2)
+    """NOTIFY delivers below the old500ms bound; suppressed delivery keeps
+    its configured200ms poll/600ms window (bu-0ynlk.7 AC3). Time begins at
+    the empty persisted read and queued wake, after unrelated dispatch setup.
+    """
+    notify_bound_s = 0.5
+    fallback_interval_s = 0.2
 
     async def _run(*, use_listener: bool) -> float:
+        # A forced full wait must violate the governing500ms NOTIFY bound.
+        # The suppressed companion retains its original faster test window.
+        monkeypatch.setattr(
+            conversations_router,
+            "_POLL_INTERVAL_S",
+            notify_bound_s if use_listener else fallback_interval_s,
+        )
         request_id = str(uuid4())
         mock_client = MagicMock()
         mock_client.call_tool = AsyncMock(
@@ -2430,16 +2437,45 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
             )
         )
         mgr = _make_mcp_manager(mock_client)
-        reply_row = _make_reply_row()
+        reply_row = _make_reply_row(
+            session_id=uuid4(),
+            routed_butler="finance",
+            citations=[{"label": "Stored reply", "target": "/conversations", "kind": "internal"}],
+        )
+        listener = _FakeChatStreamListener([]) if use_listener else None
+        observed: list[str] = []
+        ready_at = complete_at = None
+
+        async def read_reply(*args, **kwargs):
+            nonlocal ready_at
+            if ready_at is None:
+                observed.append("empty_read")
+                ready_at = time.monotonic()
+                # Simulate a reply committing just after this empty read.
+                # NOTIFY is only a wake; the next persisted read supplies it.
+                if listener is not None:
+                    listener._queue.put_nowait({"type": "reply_ready", "data": {}})
+                    observed.append("notify_queued")
+                return None
+            observed.append("persisted_recheck")
+            return reply_row
+
+        if listener is not None:
+            queued_get = listener.get
+
+            async def receive_wake(timeout):
+                observed.append("listener_wait")
+                event = await queued_get(timeout)
+                observed.append("listener_wake" if event is not None else "listener_timeout")
+                return event
+
+            monkeypatch.setattr(listener, "get", AsyncMock(side_effect=receive_wake))
+
         shared_pool = AsyncMock()
-        shared_pool.fetchrow = AsyncMock(side_effect=[None, reply_row])
+        shared_pool.fetchrow = AsyncMock(side_effect=read_reply)
         shared_pool.execute = AsyncMock(return_value=None)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = shared_pool
-
-        listener = (
-            _FakeChatStreamListener([{"type": "reply_ready", "data": {}}]) if use_listener else None
-        )
         monkeypatch.setattr(
             conversations_router, "open_chat_stream_listener", AsyncMock(return_value=listener)
         )
@@ -2447,9 +2483,8 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
         envelope = build_dashboard_envelope(
             conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
         )
-
-        start = time.monotonic()
-        async for _ in _stream_conversation_response(
+        events: list[str] = []
+        async for chunk in _stream_conversation_response(
             request=_FakeRequest(),
             butler_name=_SWITCHBOARD_BUTLER,
             conversation_id=_CONV_ID,
@@ -2458,14 +2493,45 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
             db=mock_db,
             mcp_mgr=mgr,
         ):
-            pass
-        return time.monotonic() - start
+            events.append(chunk)
+            if chunk.startswith("event: message_complete"):
+                complete_at = time.monotonic()
+                observed.append("message_complete")
+
+        assert ready_at is not None and complete_at is not None
+        assert shared_pool.fetchrow.await_count == 2
+        completions = [
+            json.loads(event.split("data: ", 1)[1])
+            for event in events
+            if event.startswith("event: message_complete")
+        ]
+        assert len(completions) == 1
+        assert completions[0]["message_id"] == str(reply_row["id"])
+        assert completions[0]["session_id"] == str(reply_row["session_id"])
+        assert completions[0]["citations"] == reply_row["citations"]
+        assert completions[0]["routed_butler"] == reply_row["routed_butler"]
+        assert "".join(token["content"] for token in _token_events(events)) == reply_row["content"]
+        assert events[-1].startswith("event: done")
+        if listener is not None:
+            listener.get.assert_awaited_once_with(timeout=notify_bound_s)
+            assert listener.closed
+            assert observed == [
+                "empty_read",
+                "notify_queued",
+                "listener_wait",
+                "listener_wake",
+                "persisted_recheck",
+                "message_complete",
+            ]
+        else:
+            assert observed == ["empty_read", "persisted_recheck", "message_complete"]
+        return complete_at - ready_at
 
     notify_elapsed = await _run(use_listener=True)
     poll_elapsed = await _run(use_listener=False)
 
     poll_interval = conversations_router._POLL_INTERVAL_S
-    assert notify_elapsed < poll_interval / 2
+    assert notify_elapsed < notify_bound_s
     assert poll_interval <= poll_elapsed < poll_interval * 3
 
 
