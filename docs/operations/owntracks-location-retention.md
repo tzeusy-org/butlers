@@ -1720,3 +1720,30 @@ objects and existing logs still require their own lawful disposition. Existing
 adapter owners exercise both actual paths with synthetic SDK errors, prior
 production source red/restored positives, ordinary companions and successful
 metadata reset. No provider or SQL invocation supplies proof in that scope.
+
+
+The actual structured classifier reserves every SDK attempt before invocation,
+including schema retries, under the same constructor-owned original ingress
+processing source. Its complete prompt/system/tool-schema digests and accepted
+canonical generation/body commit under the policy-first writer and receive
+independent readback before the SDK is called. The actual returned tool-call
+body and text then receive immutable input-bound output capture and separate
+committed readback before any local route/tool executes. Admission or output
+readback failure cannot be converted to the ordinary fallback catch. Ordinary
+unconfigured nonlocation classification keeps its existing path. These
+content-free own-schema relations use the existing owner and permanent-history
+installer; no source label, caller verdict, returned locator or REQUEST context
+creates producer authority.
+
+The owning software companion models missing original ancestry, same-writer
+input/output faults, unknown durable readback, a refused SDK/route and a restored
+actual classifier positive with metadata/SDK doubles. The same existing real
+Pool species authors actual input/output INSERT faults after the real writes,
+rollback survival from a separate acquisition, restored producers and immutable
+body companions; those new SQL controls remain UNRUN until exact-head hosted
+execution. Input or result capture is ancestry, not SDK disposal or a routing
+receipt. Every captured attempt remains held in the original source census
+until its SDK/processing/result/routed descendants have separate lawful native
+dispositions. Their terminal implementation remains active SOURCE work; this
+hold cannot count as delivering erasure. All four original outcomes and full
+registered/role/browser/recovery/independent-topology acceptance remain UNMET.

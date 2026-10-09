@@ -49,10 +49,10 @@ def current_ingress_runtime_input(pool: Any):
     return captured
 
 
-async def reserve_ingress_runtime(conn: Any, captured: tuple, context: Any, prompt: str) -> None:
-    """Same pre-context transaction, complete original claimed source read."""
+async def _require_ingress_runtime_source(conn: Any, captured: tuple):
+    """Complete fixed owning source validation shared by both runtime paths."""
     runtime, child = captured
-    if current_ingress_runtime_input(runtime.pool) != captured or not isinstance(prompt, str):
+    if current_ingress_runtime_input(runtime.pool) != captured:
         raise CopyFloorUnavailable("ingress_runtime_input_differs")
     if tuple((await conn.fetchrow("SELECT current_schema(),current_user")).values()) != (
         "switchboard",
@@ -94,6 +94,15 @@ async def reserve_ingress_runtime(conn: Any, captured: tuple, context: Any, prom
         child.dedupe_digest,
     ):
         raise CopyFloorUnavailable("ingress_runtime_source_disposed")
+    return source
+
+
+async def reserve_ingress_runtime(conn: Any, captured: tuple, context: Any, prompt: str) -> None:
+    """Same pre-context transaction, complete original claimed source read."""
+    if not isinstance(prompt, str):
+        raise CopyFloorUnavailable("ingress_runtime_input_differs")
+    _, child = captured
+    source = await _require_ingress_runtime_source(conn, captured)
     await conn.execute(
         "INSERT INTO location_ingress_runtime_inputs "
         "(input_generation,copy_generation,receiving_session,request_id,stored_digest,"
@@ -133,3 +142,141 @@ async def verify_ingress_runtime(pool: Any, captured: tuple, context: Any, promp
         or actual["stored_digest"] != actual["original_digest"]
     ):
         raise CopyFloorUnavailable("ingress_runtime_commit_unknown")
+
+
+async def reserve_structured_ingress_input(
+    pool: Any, *, prompt: str, system_prompt: str, tools: list[dict[str, Any]]
+):
+    """Actual structured classifier reserves before copying its input to the SDK.
+
+    This is not a session or terminal witness. Ordinary unconfigured processing
+    has no private ingress producer and retains the existing adapter contract.
+    Each actual retry captures its own complete body, never a reduced parent set.
+    """
+    captured = current_ingress_runtime_input(pool)
+    if captured is None:
+        return None
+    if (
+        not isinstance(prompt, str)
+        or not isinstance(system_prompt, str)
+        or not isinstance(tools, list)
+    ):
+        raise CopyFloorUnavailable("ingress_structured_input_differs")
+    from uuid import uuid4
+
+    from butlers.core.location_ingress_copies import lock_ingress_census
+
+    _, child = captured
+    generation = uuid4()
+    prompt_digest = hashlib.sha256(prompt.encode()).digest()
+    system_digest = hashlib.sha256(system_prompt.encode()).digest()
+    tools_digest = content_digest({"tools": tools})
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await lock_ingress_census(conn)
+            source = await _require_ingress_runtime_source(conn, captured)
+            await conn.execute(
+                "INSERT INTO location_ingress_structured_inputs "
+                "(input_generation,copy_generation,request_id,stored_digest,envelope_digest,"
+                "prompt_digest,system_digest,tools_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+                generation,
+                child.generation,
+                source["request_id"],
+                source["stored_digest"],
+                child.envelope_digest,
+                prompt_digest,
+                system_digest,
+                tools_digest,
+            )
+    async with pool.acquire() as observed:
+        actual = await observed.fetchrow(
+            "SELECT s.copy_generation,s.request_id,s.stored_digest,s.envelope_digest,"
+            "s.prompt_digest,s.system_digest,s.tools_digest,a.request_id AS original_request,"
+            "a.stored_digest AS original_digest FROM location_ingress_structured_inputs s "
+            "LEFT JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+            "WHERE s.input_generation=$1",
+            generation,
+        )
+    if actual is None or tuple(actual.values()) != (
+        child.generation,
+        source["request_id"],
+        source["stored_digest"],
+        child.envelope_digest,
+        prompt_digest,
+        system_digest,
+        tools_digest,
+        source["request_id"],
+        source["stored_digest"],
+    ):
+        raise CopyFloorUnavailable("ingress_structured_commit_unknown")
+    # The stored input generation supplies ancestry only. No adapter return,
+    # handler status, label or this locator may close its processing/SDK copies.
+    return generation
+
+
+async def capture_structured_ingress_output(
+    pool: Any, generation: Any, *, tool_calls: list[dict[str, Any]], text: str | None
+) -> None:
+    """Freeze original SDK result lineage BEFORE executing copied tool inputs.
+
+    The private processing producer and the original committed input supply
+    authority. This records a descendant, not an SDK/route terminal verdict.
+    Even invalid-schema output stays bound to its actual captured attempt.
+    """
+    captured = current_ingress_runtime_input(pool)
+    if captured is None:
+        if generation is not None:
+            raise CopyFloorUnavailable("ingress_structured_output_producer_differs")
+        return
+    if (
+        generation is None
+        or not isinstance(tool_calls, list)
+        or (text is not None and not isinstance(text, str))
+    ):
+        raise CopyFloorUnavailable("ingress_structured_output_differs")
+    from butlers.core.location_ingress_copies import lock_ingress_census
+
+    _, child = captured
+    output_digest = content_digest({"tool_calls": tool_calls, "text": text})
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await lock_ingress_census(conn)
+            source = await _require_ingress_runtime_source(conn, captured)
+            original = await conn.fetchrow(
+                "SELECT copy_generation,request_id,stored_digest,envelope_digest "
+                "FROM location_ingress_structured_inputs WHERE input_generation=$1 FOR SHARE",
+                generation,
+            )
+            if original is None or tuple(original.values()) != (
+                child.generation,
+                source["request_id"],
+                source["stored_digest"],
+                child.envelope_digest,
+            ):
+                raise CopyFloorUnavailable("ingress_structured_output_ancestry_unknown")
+            await conn.execute(
+                "INSERT INTO location_ingress_structured_outputs "
+                "(input_generation,output_digest) VALUES($1,$2)",
+                generation,
+                output_digest,
+            )
+    async with pool.acquire() as observed:
+        actual = await observed.fetchrow(
+            "SELECT o.output_digest,s.copy_generation,s.request_id,s.stored_digest,"
+            "s.envelope_digest,a.request_id AS original_request,"
+            "a.stored_digest AS original_digest FROM location_ingress_structured_outputs o "
+            "LEFT JOIN location_ingress_structured_inputs s USING(input_generation) "
+            "LEFT JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+            "WHERE o.input_generation=$1",
+            generation,
+        )
+    if actual is None or tuple(actual.values()) != (
+        output_digest,
+        child.generation,
+        source["request_id"],
+        source["stored_digest"],
+        child.envelope_digest,
+        source["request_id"],
+        source["stored_digest"],
+    ):
+        raise CopyFloorUnavailable("ingress_structured_output_commit_unknown")

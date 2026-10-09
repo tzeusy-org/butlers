@@ -893,7 +893,11 @@ async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_pro
     from butlers.connectors.owntracks import build_location_envelope
     from butlers.core.location_copy_retention import CopyFloorUnavailable
     from butlers.core.location_ingress_copies import _processing_scope, require_ingress_closed
-    from butlers.core.location_ingress_runtime import reserve_ingress_runtime
+    from butlers.core.location_ingress_runtime import (
+        capture_structured_ingress_output,
+        reserve_ingress_runtime,
+        reserve_structured_ingress_input,
+    )
     from butlers.core.sessions import session_complete, session_create
     from butlers.core.spawner import Spawner, SpawnerResult
     from butlers.location_retention import content_digest
@@ -973,6 +977,135 @@ async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_pro
                 await session_complete(pool, session, "Synthetic classifier result", [], 1, True)
             finally:
                 await end_runtime_context(handle)
+            # Independent structured adapter inputs share the actual original
+            # processing source, but never invent a session or SDK end witness.
+            structured_faults = []
+            original_execute = asyncpg.pool.PoolConnectionProxy.execute
+
+            async def structured_fault(conn, sql, *args, **kwargs):
+                result = await original_execute(conn, sql, *args, **kwargs)
+                if sql.startswith("INSERT INTO location_ingress_structured_inputs "):
+                    assert conn.is_in_transaction()
+                    assert await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_inputs "
+                        "WHERE input_generation=$1 AND copy_generation=$2)",
+                        args[0],
+                        child.generation,
+                    )
+                    structured_faults.append(args[0])
+                    raise asyncpg.RaiseError("Synthetic structured input reservation fault")
+                return result
+
+            tools = [{"name": "synthetic fixed tool", "input_schema": {"type": "object"}}]
+            with patch.object(asyncpg.pool.PoolConnectionProxy, "execute", new=structured_fault):
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Synthetic structured input reservation fault"
+                ):
+                    await reserve_structured_ingress_input(
+                        pool, prompt=prompt, system_prompt=system, tools=tools
+                    )
+            assert len(structured_faults) == 1
+            async with pool.acquire() as observed:
+                assert not await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_inputs "
+                    "WHERE input_generation=$1)",
+                    structured_faults[0],
+                )
+            structured = await reserve_structured_ingress_input(
+                pool, prompt=prompt, system_prompt=system, tools=tools
+            )
+            async with pool.acquire() as observed:
+                structured_row = await observed.fetchrow(
+                    "SELECT * FROM location_ingress_structured_inputs WHERE input_generation=$1",
+                    structured,
+                )
+                assert structured_row["copy_generation"] == child.generation
+                assert structured_row["request_id"] == request_id
+                assert structured_row["prompt_digest"] == hashlib.sha256(prompt.encode()).digest()
+                assert structured_row["system_digest"] == hashlib.sha256(system.encode()).digest()
+                assert structured_row["tools_digest"] == content_digest({"tools": tools})
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Location source floors are permanent"
+                ):
+                    async with observed.transaction():
+                        await observed.execute(
+                            "UPDATE location_ingress_structured_inputs SET tools_digest=$2 "
+                            "WHERE input_generation=$1",
+                            structured,
+                            b"x" * 32,
+                        )
+                assert await observed.fetchval(
+                    "SELECT tools_digest FROM location_ingress_structured_inputs "
+                    "WHERE input_generation=$1",
+                    structured,
+                ) == content_digest({"tools": tools})
+            result_calls = [{"name": "synthetic fixed tool", "input": {"synthetic": True}}]
+            output_faults = []
+
+            async def output_fault(conn, sql, *args, **kwargs):
+                result = await original_execute(conn, sql, *args, **kwargs)
+                if sql.startswith("INSERT INTO location_ingress_structured_outputs "):
+                    assert conn.is_in_transaction()
+                    assert await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_outputs "
+                        "WHERE input_generation=$1 AND output_digest=$2)",
+                        *args,
+                    )
+                    output_faults.append(args[0])
+                    raise asyncpg.RaiseError("Synthetic structured output reservation fault")
+                return result
+
+            with patch.object(asyncpg.pool.PoolConnectionProxy, "execute", new=output_fault):
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Synthetic structured output reservation fault"
+                ):
+                    await capture_structured_ingress_output(
+                        pool, structured, tool_calls=result_calls, text="Synthetic result"
+                    )
+            assert output_faults == [structured]
+            async with pool.acquire() as observed:
+                assert not await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_outputs "
+                    "WHERE input_generation=$1)",
+                    structured,
+                )
+                assert await observed.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_inputs "
+                    "WHERE input_generation=$1 AND copy_generation=$2)",
+                    structured,
+                    child.generation,
+                )
+            await capture_structured_ingress_output(
+                pool, structured, tool_calls=result_calls, text="Synthetic result"
+            )
+            async with pool.acquire() as observed:
+                digest = content_digest({"tool_calls": result_calls, "text": "Synthetic result"})
+                assert (
+                    await observed.fetchval(
+                        "SELECT output_digest FROM location_ingress_structured_outputs "
+                        "WHERE input_generation=$1",
+                        structured,
+                    )
+                    == digest
+                )
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Location source floors are permanent"
+                ):
+                    async with observed.transaction():
+                        await observed.execute(
+                            "UPDATE location_ingress_structured_outputs SET output_digest=$2 "
+                            "WHERE input_generation=$1",
+                            structured,
+                            b"x" * 32,
+                        )
+                assert (
+                    await observed.fetchval(
+                        "SELECT output_digest FROM location_ingress_structured_outputs "
+                        "WHERE input_generation=$1",
+                        structured,
+                    )
+                    == digest
+                )
             async with pool.acquire() as observed:
                 frozen = await observed.fetchrow(
                     "SELECT r.*,b.prompt_digest AS composed_prompt,b.exclusive_input,"

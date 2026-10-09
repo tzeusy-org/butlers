@@ -479,6 +479,16 @@ async def try_structured_classification(
         attempt_exc: Exception | None = None
 
         for schema_attempt in range(2):  # one retry on schema-invalid output only
+            from butlers.core.location_ingress_runtime import (
+                capture_structured_ingress_output,
+                reserve_structured_ingress_input,
+            )
+
+            # Native admission is outside the adapter's retry/fallback catch.
+            # Unknown input COMMIT cannot be converted to an untracked SDK call.
+            native_input = await reserve_structured_ingress_input(
+                pool, prompt=effective_prompt, system_prompt=system_prompt, tools=tools
+            )
             try:
                 tool_calls, text, usage = await adapter.invoke_structured(
                     prompt=effective_prompt,
@@ -491,6 +501,13 @@ async def try_structured_classification(
             except Exception as exc:  # classified below, after the retry loop
                 attempt_exc = exc
                 break
+
+            # The actual result must have committed original input lineage
+            # before any local route/tool consumes a copied SDK decision.
+            # A failed witness cannot turn into an untracked fallback call.
+            await capture_structured_ingress_output(
+                pool, native_input, tool_calls=tool_calls, text=text
+            )
 
             if usage:
                 input_tokens = usage.get("input_tokens")

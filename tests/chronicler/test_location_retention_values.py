@@ -9636,6 +9636,9 @@ async def _assert_native_ingress_census_and_actual_task_end():
             assert "pg_advisory_xact_lock" in sql
 
         async def fetchval(self, sql, *args):
+            if "FROM location_ingress_structured_inputs" in sql:
+                assert "LEFT JOIN location_ingress_input_births" in sql
+                return getattr(self, "structured_pending", False)
             assert "location_ingress_server_births" in sql
             return self.pending
 
@@ -9771,6 +9774,12 @@ async def _assert_native_ingress_census_and_actual_task_end():
         with pytest.raises(CopyFloorUnavailable, match="ingress_runtime_cohort_pending"):
             await require_ingress_closed(conn, request, "canonical-key", stored)
     conn.rows = [complete, runtime_copy]
+    await require_ingress_closed(conn, request, "canonical-key", stored)
+
+    conn.structured_pending = True
+    with pytest.raises(CopyFloorUnavailable, match="ingress_structured_cohort_pending"):
+        await require_ingress_closed(conn, request, "canonical-key", stored)
+    conn.structured_pending = False
     await require_ingress_closed(conn, request, "canonical-key", stored)
 
     # No fake pool is claimed as a native constructor. Exercise the actual
@@ -11187,6 +11196,10 @@ async def _assert_native_ingress_runtime_values():
     class Pool:
         source = None
         reserved = None
+        structured = None
+        structured_output = None
+        output_unknown = False
+        output_fault = False
         intent = None
         binding = None
         session = None
@@ -11206,12 +11219,20 @@ async def _assert_native_ingress_runtime_values():
 
         @asynccontextmanager
         async def transaction(self):
-            original = copy.deepcopy((self.reserved, self.intent, self.binding))
+            original = copy.deepcopy(
+                (self.reserved, self.intent, self.binding, self.structured, self.structured_output)
+            )
             self.transaction_active = True
             try:
                 yield
             except BaseException:
-                self.reserved, self.intent, self.binding = original
+                (
+                    self.reserved,
+                    self.intent,
+                    self.binding,
+                    self.structured,
+                    self.structured_output,
+                ) = original
                 raise
             finally:
                 self.transaction_active = False
@@ -11248,6 +11269,54 @@ async def _assert_native_ingress_runtime_values():
                     "original_digest": content_digest(canonical),
                     "reserved_session": self.intent[1],
                 }
+            if "FROM location_ingress_structured_inputs WHERE" in sql:
+                assert self.transaction_active and args == (self.structured[0],)
+                assert "FOR SHARE" in sql
+                return dict(zip(("copy", "request", "stored", "envelope"), self.structured[1:5]))
+            if "FROM location_ingress_structured_outputs o " in sql:
+                assert not self.transaction_active and args == (self.structured_output[0],)
+                assert "LEFT JOIN location_ingress_structured_inputs" in sql
+                assert "LEFT JOIN location_ingress_accepted_inputs" in sql
+                self.trace.append("independent structured output readback")
+                if self.output_unknown:
+                    return None
+                fields = (
+                    "output",
+                    "copy",
+                    "request",
+                    "stored",
+                    "envelope",
+                    "original_request",
+                    "original_digest",
+                )
+                return dict(
+                    zip(
+                        fields,
+                        (
+                            self.structured_output[1],
+                            *self.structured[1:5],
+                            request,
+                            content_digest(canonical),
+                        ),
+                    )
+                )
+            if "FROM location_ingress_structured_inputs s " in sql:
+                assert not self.transaction_active and args == (self.structured[0],)
+                self.trace.append("independent structured input readback")
+                if self.unknown:
+                    return None
+                fields = (
+                    "copy_generation",
+                    "request_id",
+                    "stored_digest",
+                    "envelope_digest",
+                    "prompt_digest",
+                    "system_digest",
+                    "tools_digest",
+                    "original_request",
+                    "original_digest",
+                )
+                return dict(zip(fields, (*self.structured[1:], request, content_digest(canonical))))
             assert "SELECT prompt,effective_system_prompt FROM sessions" in sql
             return self.session
 
@@ -11280,6 +11349,16 @@ async def _assert_native_ingress_runtime_values():
                 self.trace.append("raw descendant")
                 if self.fault:
                     raise RuntimeError("synthetic same-writer descendant failure")
+            elif "INSERT INTO location_ingress_structured_inputs" in sql:
+                self.structured = args
+                self.trace.append("structured full input")
+                if self.fault:
+                    raise RuntimeError("synthetic same-writer structured failure")
+            elif "INSERT INTO location_ingress_structured_outputs" in sql:
+                self.structured_output = args
+                self.trace.append("structured output lineage")
+                if self.output_fault:
+                    raise RuntimeError("synthetic same-writer output failure")
             elif "INSERT INTO location_runtime_context_bindings" in sql:
                 self.binding = args
             else:
@@ -11371,6 +11450,125 @@ async def _assert_native_ingress_runtime_values():
         finally:
             await end_runtime_context(handle)
         assert current_runtime_context() is None
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from butlers.core.location_ingress_runtime import (
+            capture_structured_ingress_output,
+            reserve_structured_ingress_input,
+        )
+        from butlers.tools.switchboard.routing import structured_classify as sc
+
+        tools = [sc.ROUTE_TO_BUTLER_TOOL]
+        for bad in (None, source | {"parent_digest": b"x" * 32}):
+            pool.source = bad
+            with pytest.raises(CopyFloorUnavailable, match="ingress_runtime_ancestry_unknown"):
+                await reserve_structured_ingress_input(
+                    pool, prompt=prompt, system_prompt="Independent fixed system", tools=tools
+                )
+            assert pool.structured is None
+        pool.source = source
+        pool.fault = True
+        with pytest.raises(RuntimeError, match="synthetic same-writer structured failure"):
+            await reserve_structured_ingress_input(
+                pool, prompt=prompt, system_prompt="Independent fixed system", tools=tools
+            )
+        assert pool.structured is None
+        pool.fault = False
+        adapter = MagicMock()
+        adapter.invoke_structured = AsyncMock()
+
+        async def actual_route(**kwargs):
+            assert pool.structured_output is not None
+            assert "independent structured output readback" in pool.trace
+            assert pool.trace.index("structured output lineage") < pool.trace.index(
+                "independent structured output readback"
+            )
+            return {}
+
+        route = AsyncMock(side_effect=actual_route)
+        server = SimpleNamespace(get_tool=lambda name: SimpleNamespace(fn=route))
+        catalog = ("api", "synthetic-model", [], uuid4(), 30, "cheap")
+
+        async def actual_adapter(**kwargs):
+            assert pool.structured is not None
+            assert pool.trace.index("transaction ended") < pool.trace.index(
+                "independent structured input readback"
+            )
+            assert pool.structured[5] == hashlib.sha256(kwargs["prompt"].encode()).digest()
+            return (
+                [dict(name="route_to_butler", input=dict(butler="chronicler", prompt="synthetic"))],
+                None,
+                None,
+            )
+
+        adapter.invoke_structured.side_effect = actual_adapter
+        module = "butlers.tools.switchboard.routing.structured_classify"
+        with (
+            patch(module + ".resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+            patch(
+                module + ".check_token_quota", AsyncMock(return_value=SimpleNamespace(allowed=True))
+            ),
+            patch(module + ".create_adapter", return_value=adapter),
+        ):
+            pool.trace.clear()
+            pool.unknown = True
+            with pytest.raises(CopyFloorUnavailable, match="ingress_structured_commit_unknown"):
+                await sc.try_structured_classification(
+                    pool, mcp_server=server, prompt=prompt, include_bug_report=False
+                )
+            adapter.invoke_structured.assert_not_awaited()
+            pool.unknown = False
+            pool.output_unknown = True
+            with pytest.raises(
+                CopyFloorUnavailable, match="ingress_structured_output_commit_unknown"
+            ):
+                await sc.try_structured_classification(
+                    pool, mcp_server=server, prompt=prompt, include_bug_report=False
+                )
+            route.assert_not_awaited()
+            assert pool.structured_output is not None  # Unknown ACK does not undo COMMIT.
+            pool.output_unknown = False
+            preserved = pool.structured_output
+            pool.output_fault = True
+            with pytest.raises(RuntimeError, match="synthetic same-writer output failure"):
+                await capture_structured_ingress_output(
+                    pool, pool.structured[0], tool_calls=[], text="synthetic output"
+                )
+            assert pool.structured_output == preserved
+            pool.output_fault = False
+            pool.source = source | {"parent_generation": None}
+            with pytest.raises(CopyFloorUnavailable, match="ingress_runtime_ancestry_unknown"):
+                await capture_structured_ingress_output(
+                    pool, pool.structured[0], tool_calls=[], text=None
+                )
+            assert pool.structured_output == preserved
+            pool.source = source
+            adapter.invoke_structured.reset_mock()
+            pool.structured_output = None
+            # Model a separate healthy attempt, never SQL history repair credit.
+            pool.unknown = False
+            pool.structured = None
+            pool.trace.clear()
+            decision = await sc.try_structured_classification(
+                pool, mcp_server=server, prompt=prompt, include_bug_report=False
+            )
+            assert decision is not None and adapter.invoke_structured.await_count == 1
+            assert pool.structured[1] == child.generation
+            assert pool.structured[6] == hashlib.sha256(b"").digest()
+            assert pool.structured[7] == content_digest({"tools": tools})
+            assert route.await_count == 1
+            assert pool.structured_output[0] == pool.structured[0]
+            assert pool.structured_output[1] == content_digest(
+                {
+                    "tool_calls": [
+                        dict(
+                            name="route_to_butler",
+                            input=dict(butler="chronicler", prompt="synthetic"),
+                        )
+                    ],
+                    "text": None,
+                }
+            )
         for change in ("registry", "task", "kind", "pool"):
             original_task, original_kind = child.task, child.kind
             if change == "registry":
@@ -11391,3 +11589,7 @@ async def _assert_native_ingress_runtime_values():
         _context_writers.pop(pool, None)
         _dispatchers.pop(pool, None)
     assert current_ingress_runtime_input(pool) is None
+    assert (
+        await reserve_structured_ingress_input(pool, prompt=prompt, system_prompt="", tools=tools)
+        is None
+    )

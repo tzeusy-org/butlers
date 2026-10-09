@@ -1123,3 +1123,13 @@ async def require_ingress_closed(conn: Any, request_id: UUID, key: str, stored: 
             != row["runtime_reduced_provenance"]
         ):
             raise CopyFloorUnavailable("ingress_runtime_cohort_pending")
+    # Every actually captured structured attempt remains a distinct input
+    # holder until its native SDK/result/routed descendants are disposed.
+    # This stage captures it; no model return or parent Task end is its receipt.
+    if await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_inputs s "
+        "LEFT JOIN location_ingress_input_births b USING(copy_generation) "
+        "WHERE b.dedupe_digest=$1 OR b.copy_generation IS NULL)",
+        logical_digest(key),
+    ):
+        raise CopyFloorUnavailable("ingress_structured_cohort_pending")

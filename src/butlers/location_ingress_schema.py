@@ -57,6 +57,22 @@ LOCAL_COLUMNS = {
         ("committed_at", "timestamp with time zone", True),
     ],
 }
+LOCAL_COLUMNS["location_ingress_structured_inputs"] = [
+    ("input_generation", "uuid", True),
+    ("copy_generation", "uuid", True),
+    ("request_id", "uuid", True),
+    ("stored_digest", "bytea", True),
+    ("envelope_digest", "bytea", True),
+    ("prompt_digest", "bytea", True),
+    ("system_digest", "bytea", True),
+    ("tools_digest", "bytea", True),
+    ("committed_at", "timestamp with time zone", True),
+]
+LOCAL_COLUMNS["location_ingress_structured_outputs"] = [
+    ("input_generation", "uuid", True),
+    ("output_digest", "bytea", True),
+    ("committed_at", "timestamp with time zone", True),
+]
 LOCAL_TABLES = tuple(LOCAL_COLUMNS)
 LOCAL_CONSTRAINTS = {
     "location_ingress_server_births": {"PRIMARY KEY (server_generation)"},
@@ -111,6 +127,29 @@ LOCAL_CONSTRAINTS = {
 }
 
 
+LOCAL_CONSTRAINTS["location_ingress_structured_inputs"] = {
+    "PRIMARY KEY (input_generation)",
+    "FOREIGN KEY (copy_generation) REFERENCES location_ingress_input_claims(copy_generation)",
+    *(
+        f"CHECK ((octet_length({column}) = 32))"
+        for column in (
+            "stored_digest",
+            "envelope_digest",
+            "prompt_digest",
+            "system_digest",
+            "tools_digest",
+        )
+    ),
+}
+
+LOCAL_CONSTRAINTS["location_ingress_structured_outputs"] = {
+    "PRIMARY KEY (input_generation)",
+    "FOREIGN KEY (input_generation) REFERENCES "
+    "location_ingress_structured_inputs(input_generation)",
+    "CHECK ((octet_length(output_digest) = 32))",
+}
+
+
 def local_schema_sql() -> str:
     """Owning schema only; ordinary backup carries these content-free rows."""
     return """
@@ -159,5 +198,19 @@ def local_schema_sql() -> str:
           stored_digest BYTEA NOT NULL CHECK(octet_length(stored_digest)=32),
           envelope_digest BYTEA NOT NULL CHECK(octet_length(envelope_digest)=32),
           prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
+        CREATE TABLE IF NOT EXISTS location_ingress_structured_inputs (
+          input_generation UUID PRIMARY KEY,
+          copy_generation UUID NOT NULL REFERENCES location_ingress_input_claims,
+          request_id UUID NOT NULL,
+          stored_digest BYTEA NOT NULL CHECK(octet_length(stored_digest)=32),
+          envelope_digest BYTEA NOT NULL CHECK(octet_length(envelope_digest)=32),
+          prompt_digest BYTEA NOT NULL CHECK(octet_length(prompt_digest)=32),
+          system_digest BYTEA NOT NULL CHECK(octet_length(system_digest)=32),
+          tools_digest BYTEA NOT NULL CHECK(octet_length(tools_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
+        CREATE TABLE IF NOT EXISTS location_ingress_structured_outputs (
+          input_generation UUID PRIMARY KEY REFERENCES location_ingress_structured_inputs,
+          output_digest BYTEA NOT NULL CHECK(octet_length(output_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
     """
