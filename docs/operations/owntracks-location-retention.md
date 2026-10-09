@@ -1434,3 +1434,58 @@ native-import 42501 refusal, then retains the full original healthy restore and
 row/posture controls. Those new causal controls still require exact-head hosted
 execution; this source correction does not claim the ordinary missing-relation
 cause or certify recovery.
+
+
+The current input continuation extends the scoped history family to eight
+connector-owned metadata tables. The four new tables contain content-free
+server generations and exact canonical input digests, bundle counts/kinds,
+producer incarnations, and immutable ended receipts. The fixed OwnTracks
+constructor reserves the server lifetime before authenticated body receive;
+webhook processing has its own original generation. Native replay reserves its
+reader lifetime before stored payload selection and releases the source/row
+transaction before transport. The ordinary non-native test adapter remains an
+explicit compatibility path and produces no native admission evidence.
+
+The original immutable point INSERT freezes `source_input_generation`; it never
+backfills an old point. Preparation and deletion read that stored generation,
+every original same-source bundle and applicable server header under the source
+mutex. Inner ASGI return, a client ACK, elapsed time or a process restart is not
+an end. End observers retain the same private identities through unknown ACK
+and retry only actually observed ends. Interrupted/restarted source lifetimes
+remain an unresolved source obligation; current stored history cannot certify
+the restored active incarnation. Remote recipients are outside this server
+lifetime receipt's authority.
+
+The native processing observer follows the actual main-loop Task, including
+its cancellation unwind. Completing or cancelling the cross-thread transport
+Future cannot end that Task's copy. The submitting source reserves its private
+processing hold before publishing the coroutine; only a definite submission
+failure after closing the never-issued coroutine clears that hold. Shutdown
+first closes new admission, joins its own server off the owning event loop and
+allows actual processing Tasks to unwind while that loop and pool remain live.
+Its finite waits or cancellation requests never certify an end. The original
+private binding and every unresolved durable birth remain pending on an
+interrupted shutdown; only actually observed Task ends and separate committed
+readbacks can settle them. Missing restart reconciliation is still an unmet
+source obligation, not a timeout-based disposal policy.
+
+The point reference is checked at the original immutable INSERT and by the
+post-import current generation/body checks; it is not a nullable-history FK
+installed ahead of ordinary raw-table COPY. The eight metadata tables retain
+their actual foreign keys, FORCE RLS and existing owning-role policies. Backup
+locks the complete installed family before exporting the snapshot, then
+imports full row history under the fixed constrained role and explicitly
+applied policies. Four-table predecessor compatibility never silently omits an
+installed input family. Certification rejects partial families, duplicate or
+changed rows, and differing non-NULL point/input lineage. No NULL legacy
+reference is filled and no restored receipt creates runtime admission.
+
+The grouped real-Postgres species now authors actual input producer birth and
+end faults, separate committed readbacks, private binding/body refusals and
+actual Task-end harness positives under the configured connector Pool. Existing
+synthetic projection/deletion fixtures carry clearly labelled completed engine
+cells at their original INSERT; those cells do not attest actual source/online
+admission. The extended eight-table SQL/restore species is currently unrun
+locally. Scoped software positives and dated hosted four-table results do not
+qualify the new input recovery, cancellation/restart reconciliation, complete
+online source frontier or whole retention outcome.

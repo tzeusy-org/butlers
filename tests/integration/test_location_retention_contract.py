@@ -272,15 +272,18 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
                 "lon": 103.81234567,
             }
             source = f"owntracks:retention-fixture:{native_payload['tst']}:location"
+            input_generation = await _plant_closed_input_engine_history(
+                pool, logical_digest(source), content_digest(native_payload)
+            )
             # This fixture plants a native-source row. Its accepted locator is
             # test data, not proof that an online source accepted this report.
             await pool.execute(
                 """INSERT INTO connectors.owntracks_points
                    (id,idempotency_key,ts,lat,lon,endpoint_identity,recorded_at,
                     logical_source_digest,content_digest,accepted_request_id,
-                    accepted_payload_digest,accepted_normalized_digest,raw_payload)
+                    accepted_payload_digest,accepted_normalized_digest,raw_payload,source_input_generation)
                    VALUES($1,$2,$3,1.31415926,103.81234567,'retention-fixture',$3,
-                     $4,$5,$6,$5,$5,$7)""",
+                     $4,$5,$6,$5,$5,$7,$8)""",
                 raw_id,
                 source,
                 born + timedelta(minutes=minutes),
@@ -288,6 +291,7 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
                 content_digest(native_payload),
                 uuid4(),
                 native_payload,
+                input_generation,
             )
         assert await pool.fetchval(
             "SELECT retention_at=ts FROM connectors.owntracks_points WHERE id=$1",
@@ -468,12 +472,15 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
                 "lon": 103.81234567,
             }
             source = f"owntracks:large-native:{native_payload['tst']}:location"
+            input_generation = await _plant_closed_input_engine_history(
+                pool, logical_digest(source), content_digest(native_payload)
+            )
             await pool.execute(
                 """INSERT INTO connectors.owntracks_points
                    (id,idempotency_key,ts,lat,lon,endpoint_identity,recorded_at,
                     logical_source_digest,content_digest,accepted_request_id,
-                    accepted_payload_digest,accepted_normalized_digest,raw_payload)
-                   VALUES($1,$2,$3,1.31415926,103.81234567,'large-native',$3,$4,$5,$6,$5,$5,$7)""",
+                    accepted_payload_digest,accepted_normalized_digest,raw_payload,source_input_generation)
+                   VALUES($1,$2,$3,1.31415926,103.81234567,'large-native',$3,$4,$5,$6,$5,$5,$7,$8)""",
                 raw_id,
                 source,
                 moment,
@@ -481,6 +488,7 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
                 content_digest(native_payload),
                 uuid4(),
                 native_payload,
+                input_generation,
             )
         # These synthetic accepted locators do not prove online admission.
         for adapter in adapters:
@@ -879,6 +887,7 @@ async def _assert_native_attempt_completion(url):
         assert (await retention_status(own))["status"] == "unknown"
         assert (await retention_status(own))["unknown_count"] is None
         assert await creator.fetchval("SELECT count(*) FROM location_retention_plans") == 0
+        await _assert_native_input_producer(creator, own, connector)
         await seed_source_registry(creator)
         now = datetime.now(UTC)
         # Last fresh boundary closes the old native movement/place carry;
@@ -892,13 +901,16 @@ async def _assert_native_attempt_completion(url):
                 "lon": 103.81234567,
             }
             source = f"owntracks:completion-fixture:{native_payload['tst']}:location"
+            input_generation = await _plant_closed_input_engine_history(
+                creator, logical_digest(source), content_digest(native_payload)
+            )
             digest = content_digest(native_payload)
             await creator.execute(
                 "INSERT INTO connectors.owntracks_points "
                 "(id,idempotency_key,ts,lat,lon,endpoint_identity,recorded_at,"
                 "logical_source_digest,content_digest,accepted_request_id,"
-                "accepted_payload_digest,accepted_normalized_digest,raw_payload) "
-                "VALUES($1,$2,$3,1.31415926,103.81234567,'completion-fixture',$3,$4,$5,$6,$5,$5,$7)",
+                "accepted_payload_digest,accepted_normalized_digest,raw_payload,source_input_generation) "
+                "VALUES($1,$2,$3,1.31415926,103.81234567,'completion-fixture',$3,$4,$5,$6,$5,$5,$7,$8)",
                 raw,
                 source,
                 moment,
@@ -906,6 +918,7 @@ async def _assert_native_attempt_completion(url):
                 digest,
                 uuid4(),
                 native_payload,
+                input_generation,
             )
         for adapter in (
             OwnTracksPointAdapter(),
@@ -1271,12 +1284,16 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
     # existing connector role and actual immutable trigger. This is synthetic
     # historical input, not live authoritative clock/accepted-source evidence.
     endpoint += ":aged"
+    input_generation = await _plant_closed_input_engine_history(
+        connector, logical_digest(f"owntracks:{endpoint}:{stamp}:location"), content_digest(payload)
+    )
     source = await connector.fetchrow(
         "INSERT INTO connectors.owntracks_points "
         "(idempotency_key,ts,lat,lon,accuracy,trigger,endpoint_identity,raw_payload,"
         "recorded_at,retention_at,logical_source_digest,content_digest,"
-        "accepted_request_id,accepted_payload_digest,accepted_normalized_digest) "
-        "VALUES($1,$2,$3,$4,NULL,NULL,$5,$6,$2,$2,$7,$8,$9,$10,$11) RETURNING *",
+        "accepted_request_id,accepted_payload_digest,accepted_normalized_digest,"
+        "source_input_generation) "
+        "VALUES($1,$2,$3,$4,NULL,NULL,$5,$6,$2,$2,$7,$8,$9,$10,$11,$12) RETURNING *",
         f"owntracks:{endpoint}:{stamp}:location",
         moment,
         payload["lat"],
@@ -1288,6 +1305,7 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
         uuid4(),
         content_digest(payload),
         b"n" * 32,
+        input_generation,
     )
     assert source["retention_at"] < cutoff
     frozen = FrozenRaw.model_validate(
@@ -1508,3 +1526,323 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
 
         await creator.execute(filtered_copy_security_sql())
     assert await read_filtered_receipt(connector, plan) == result
+
+
+async def _plant_closed_input_engine_history(pool, logical, raw_digest):
+    """Explicit synthetic completed-copy engine cells, NOT runtime/end authority.
+
+    Existing synthetic accepted/raw fixtures need complete matching ancestry to
+    position the downstream roles/coarsening/delete controls. No immutable source
+    is updated/backfilled. The actual owning producer/lifetime proof is separate.
+    """
+    generation, incarnation, bundle = uuid4(), uuid4(), uuid4()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SET LOCAL ROLE connector_writer")
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "owntracks:retention:source"
+            )
+            await conn.execute(
+                "INSERT INTO connectors.owntracks_input_copy_births"
+                "(copy_generation,incarnation,copy_bundle,bundle_count,logical_source_digest,"
+                "raw_digest,copy_kind,producer_contract,server_generation) "
+                "VALUES($1,$2,$3,1,$4,$5,3,1,NULL)",
+                generation,
+                incarnation,
+                bundle,
+                logical,
+                raw_digest,
+            )
+            await conn.execute(
+                "INSERT INTO connectors.owntracks_input_copy_ends(copy_generation,raw_digest) "
+                "VALUES($1,$2)",
+                generation,
+                raw_digest,
+            )
+    async with pool.acquire() as committed:
+        assert (
+            await committed.fetchval(
+                "SELECT raw_digest FROM connectors.owntracks_input_copy_ends WHERE copy_generation=$1",
+                generation,
+            )
+            == raw_digest
+        )
+    return generation
+
+
+async def _assert_native_input_producer(creator, own, connector):
+    """Actual configured Pool/producer transactions; no online receiver claim.
+
+    The source-owned Task observer here is a fixed harness for the same private
+    producer. The separate ASGI software node tests the production callback.
+    Neither synthetic engine cells nor this harness attest a remote recipient.
+    """
+    import asyncio
+    from dataclasses import replace
+
+    from butlers.connectors.owntracks import persist_location_point
+    from butlers.connectors.owntracks_input_copies import OwnTracksInputCopies, require_inputs_ended
+
+    runtime = OwnTracksInputCopies(connector)
+    raw = {
+        "_type": "location",
+        "tst": int(datetime.now(UTC).timestamp()),
+        "lat": 1.25,
+        "lon": 103.75,
+    }
+    endpoint = f"owntracks:native-input-{uuid4()}"
+    server = runtime.allocate_server()
+    await runtime.commit_server(server)
+    async with connector.acquire() as committed:
+        assert (
+            await committed.fetchval(
+                "SELECT incarnation FROM connectors.owntracks_input_server_births WHERE copy_generation=$1",
+                server.generation,
+            )
+            == runtime.incarnation
+        )
+    with pytest.raises(ValueError, match="server birth is unavailable"):
+        await runtime.reserve(endpoint, raw, server=replace(server))
+
+    # The real configured Chronicler role cannot become this input producer.
+    wrong_writer = OwnTracksInputCopies(own)
+    with pytest.raises(ValueError, match="writer differs"):
+        await wrong_writer.commit_server(wrong_writer.allocate_server())
+    from butlers.owntracks_copy_schema import INPUT_TABLES, filtered_copy_security_sql
+
+    await creator.execute(filtered_copy_security_sql())
+    for table in INPUT_TABLES:
+        async with own.acquire() as restricted:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await restricted.fetch(f"SELECT * FROM connectors.{table}")
+        # Disposable SELECT grants position the unchanged forced-RLS predicate
+        # against the planted header; the production installer then revokes
+        # only these exact new relations, not a broader runtime privilege.
+        await creator.execute(f"GRANT SELECT ON connectors.{table} TO butler_chronicler_rw")
+        assert await own.fetchval(f"SELECT count(*) FROM connectors.{table}") == 0
+    await creator.execute(filtered_copy_security_sql())
+    assert await connector.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM connectors.owntracks_input_server_births WHERE copy_generation=$1)",
+        server.generation,
+    )
+
+    # Fail after the actual first birth INSERT, inside the actual producer's
+    # transaction. The separate acquisition must see neither bundle member.
+    await creator.execute("""
+        CREATE FUNCTION connectors.test_input_second_birth_fault() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.copy_kind=2 THEN RAISE EXCEPTION 'planted input birth fault'; END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER test_input_second_birth_fault BEFORE INSERT
+          ON connectors.owntracks_input_copy_births FOR EACH ROW
+          EXECUTE FUNCTION connectors.test_input_second_birth_fault()
+    """)
+    try:
+        with pytest.raises(asyncpg.RaiseError, match="planted input birth fault"):
+            await runtime.reserve(endpoint, raw, server=server)
+        async with connector.acquire() as committed:
+            assert (
+                await committed.fetchval(
+                    "SELECT count(*) FROM connectors.owntracks_input_copy_births WHERE copy_bundle=$1",
+                    server.generation,
+                )
+                == 0
+            )
+            assert not await committed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM connectors.owntracks_input_server_ends WHERE copy_generation=$1)",
+                server.generation,
+            )
+    finally:
+        await creator.execute(
+            "DROP TRIGGER test_input_second_birth_fault ON connectors.owntracks_input_copy_births; DROP FUNCTION connectors.test_input_second_birth_fault()"
+        )
+
+    # Settle the SAME never-issued failed allocation at an actual native Task
+    # end; the positive is a genuinely separate server admission, not a retry
+    # that replaces an unknown original child capability.
+    async def failed_server_finished():
+        return None
+
+    failed_end = asyncio.Event()
+
+    def failed_server_ended(task):
+        assert not task.cancelled() and task.exception() is None
+        runtime.observed_server_end(server)
+        failed_end.set()
+
+    task = asyncio.create_task(failed_server_finished())
+    task.add_done_callback(failed_server_ended)
+    await task
+    await failed_end.wait()
+    await runtime.finish_server(server)
+    async with connector.acquire() as committed:
+        assert await committed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM connectors.owntracks_input_server_ends WHERE copy_generation=$1)",
+            server.generation,
+        )
+    server = runtime.allocate_server()
+    await runtime.commit_server(server)
+    binding = await runtime.reserve(endpoint, raw, server=server)
+    assert binding is not None
+    with pytest.raises(ValueError, match="bundle was already captured"):
+        await runtime.reserve(endpoint, raw, server=server)
+    generation = runtime.processing_generation(binding)
+    runtime.require_body(binding, endpoint, raw)
+    with pytest.raises(ValueError, match="body changed"):
+        runtime.require_body(binding, endpoint, {**raw, "lat": 1.5})
+    with pytest.raises(ValueError, match="body changed"):
+        runtime.require_body(replace(binding), endpoint, raw)
+    with pytest.raises(ValueError, match="still active"):
+        await runtime.finish(binding, "webhook_processing")
+    async with connector.acquire() as committed:
+        assert (
+            await committed.fetchval(
+                "SELECT count(*) FROM connectors.owntracks_input_copy_births WHERE copy_bundle=$1",
+                binding.bundle,
+            )
+            == 2
+        )
+        with pytest.raises(ValueError, match="server cohort is still active"):
+            await require_inputs_ended(
+                committed, generation, binding.logical_digest, binding.raw_digest
+            )
+    assert await persist_location_point(
+        connector,
+        endpoint_identity=endpoint,
+        tst=raw["tst"],
+        lat=raw["lat"],
+        lon=raw["lon"],
+        accuracy=None,
+        trigger=None,
+        raw_payload=raw,
+        accepted_request_id=uuid4(),
+        accepted_payload_digest=content_digest(raw),
+        accepted_normalized_digest=b"n" * 32,
+        _native_input_generation=generation,
+    )
+    async with connector.acquire() as committed:
+        point = await committed.fetchrow(
+            "SELECT * FROM connectors.owntracks_points WHERE endpoint_identity=$1", endpoint
+        )
+        assert point["source_input_generation"] == generation
+        assert point["content_digest"] == binding.raw_digest
+
+    # Only actual successfully ended Task callbacks mark these private ends.
+    async def ended_task():
+        return None
+
+    observed = asyncio.Event()
+
+    def processing_ended(task):
+        assert not task.cancelled() and task.exception() is None
+        runtime.observed_end(binding, "webhook_processing")
+        observed.set()
+
+    task = asyncio.create_task(ended_task())
+    runtime.processing_started(binding)
+    task.add_done_callback(processing_ended)
+    await task
+    await observed.wait()
+    await creator.execute("""
+        CREATE FUNCTION connectors.test_input_end_fault() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'planted input end fault'; END $$;
+        CREATE TRIGGER test_input_end_fault BEFORE INSERT
+          ON connectors.owntracks_input_copy_ends FOR EACH ROW
+          EXECUTE FUNCTION connectors.test_input_end_fault()
+    """)
+    try:
+        with pytest.raises(asyncpg.RaiseError, match="planted input end fault"):
+            await runtime.finish(binding, "webhook_processing")
+        async with connector.acquire() as committed:
+            assert not await committed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM connectors.owntracks_input_copy_ends WHERE copy_generation=$1)",
+                generation,
+            )
+            assert (
+                await committed.fetchval(
+                    "SELECT raw_digest FROM connectors.owntracks_input_copy_births WHERE copy_generation=$1",
+                    generation,
+                )
+                == binding.raw_digest
+            )
+    finally:
+        await creator.execute(
+            "DROP TRIGGER test_input_end_fault ON connectors.owntracks_input_copy_ends; DROP FUNCTION connectors.test_input_end_fault()"
+        )
+    await runtime.finish(binding, "webhook_processing")
+    async with connector.acquire() as committed:
+        with pytest.raises(ValueError, match="server cohort is still active"):
+            await require_inputs_ended(
+                committed, generation, binding.logical_digest, binding.raw_digest
+            )
+    observed.clear()
+
+    def server_ended(task):
+        assert not task.cancelled() and task.exception() is None
+        runtime.observed_server_end(server)
+        observed.set()
+
+    task = asyncio.create_task(ended_task())
+    task.add_done_callback(server_ended)
+    await task
+    await observed.wait()
+    await runtime.finish_server(server)
+    async with connector.acquire() as committed:
+        await require_inputs_ended(
+            committed, generation, binding.logical_digest, binding.raw_digest
+        )
+        assert (
+            await committed.fetchval(
+                "SELECT count(*) FROM connectors.owntracks_input_copy_ends e JOIN connectors.owntracks_input_copy_births b USING(copy_generation) WHERE b.copy_bundle=$1",
+                binding.bundle,
+            )
+            == 2
+        )
+        assert await committed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM connectors.owntracks_input_server_ends WHERE copy_generation=$1)",
+            server.generation,
+        )
+        assert dict(
+            await committed.fetchrow(
+                "SELECT * FROM connectors.owntracks_points WHERE id=$1", point["id"]
+            )
+        ) == dict(point)
+    # A separately admitted same-source replay is an actual live sibling,
+    # not erased by the earlier webhook's complete terminal receipts.
+    replay = await runtime.reserve(endpoint, raw, replay=True)
+    assert replay is not None
+    replay_generation = runtime.processing_generation(replay)
+    async with connector.acquire() as committed:
+        with pytest.raises(ValueError, match="source cohort is still active"):
+            await require_inputs_ended(
+                committed, generation, binding.logical_digest, binding.raw_digest
+            )
+    observed.clear()
+
+    def replay_ended(task):
+        assert not task.cancelled() and task.exception() is None
+        runtime.observed_end(replay, "replay_processing")
+        observed.set()
+
+    task = asyncio.create_task(ended_task())
+    runtime.processing_started(replay)
+    task.add_done_callback(replay_ended)
+    await task
+    await observed.wait()
+    await runtime.finish(replay, "replay_processing")
+    async with connector.acquire() as committed:
+        await require_inputs_ended(
+            committed, generation, binding.logical_digest, binding.raw_digest
+        )
+        assert (
+            await committed.fetchval(
+                "SELECT raw_digest FROM connectors.owntracks_input_copy_ends WHERE copy_generation=$1",
+                replay_generation,
+            )
+            == binding.raw_digest
+        )
+
+    # Remove ONLY this fresh synthetic fixture point after proving its actual
+    # immutable producer readback. This test cleanup is not an erasure receipt.
+    await creator.execute("DELETE FROM connectors.owntracks_points WHERE id=$1", point["id"])

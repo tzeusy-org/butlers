@@ -10,6 +10,9 @@ from uuid import uuid4
 COPY_HISTORY_TABLES = tuple(
     "connectors.owntracks_filtered_copy_" + suffix
     for suffix in ("births", "floors", "batches", "members")
+) + tuple(
+    "connectors.owntracks_input_" + suffix
+    for suffix in ("server_births", "server_ends", "copy_births", "copy_ends")
 )
 
 
@@ -18,6 +21,30 @@ def plant_copy_history(connection) -> None:
     generation, raw_id, filtered_id, decision, receipt = (uuid4() for _ in range(5))
     connection.exec_driver_sql("SET ROLE connector_writer")
     try:
+        server, processing, incarnation = uuid4(), uuid4(), uuid4()
+        connection.exec_driver_sql(
+            "INSERT INTO connectors.owntracks_input_server_births(copy_generation,incarnation) "
+            "VALUES(%s,%s)",
+            (server, incarnation),
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO connectors.owntracks_input_server_ends(copy_generation) VALUES(%s)",
+            (server,),
+        )
+        for captured, kind in ((server, 1), (processing, 2)):
+            connection.exec_driver_sql(
+                "INSERT INTO connectors.owntracks_input_copy_births"
+                "(copy_generation,incarnation,copy_bundle,bundle_count,logical_source_digest,"
+                "raw_digest,copy_kind,producer_contract,server_generation) "
+                "VALUES(%s,%s,%s,2,decode(repeat('ab',32),'hex'),"
+                "decode(repeat('cd',32),'hex'),%s,1,%s)",
+                (captured, incarnation, server, kind, server),
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO connectors.owntracks_input_copy_ends(copy_generation,raw_digest) "
+                "VALUES(%s,decode(repeat('cd',32),'hex'))",
+                (captured,),
+            )
         connection.exec_driver_sql(
             "INSERT INTO connectors.owntracks_filtered_copy_births "
             "(copy_generation,filtered_id,filtered_received_at,logical_source_digest,"

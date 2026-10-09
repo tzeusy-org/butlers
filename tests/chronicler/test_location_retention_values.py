@@ -840,6 +840,11 @@ async def test_native_mcp_input_birth_precedes_emission_and_unknown_commit_refus
     from types import SimpleNamespace
     from uuid import uuid4
 
+    await _assert_owntracks_input_complete_cohort_and_server_lifetime()
+    await _assert_native_owntracks_replay_reader_lifetime()
+    await _assert_native_input_dispatch_submission_fence()
+    await _assert_native_input_shutdown_preserves_actual_lifetimes()
+
     from butlers.chronicler import location_retention, storage
     from butlers.core import fact_authority
     from butlers.guards import _McpRuntimeSessionGuard
@@ -9010,3 +9015,490 @@ async def _assert_catalog_terminal_complete_ancestry_values():
             _receivers.pop(domain, None)
         else:
             _receivers[domain] = previous
+
+
+async def _assert_owntracks_input_complete_cohort_and_server_lifetime():
+    """REQ-location-retention-005/006; source/task software, no real SQL/role proof."""
+    import asyncio
+    from copy import deepcopy
+    from uuid import uuid4
+
+    from butlers.connectors.owntracks_input_copies import (
+        OwnTracksInputMiddleware,
+        require_inputs_ended,
+    )
+
+    logical, raw = b"L" * 32, b"R" * 32
+    incarnation, bundle, server, processing = (uuid4() for _ in range(4))
+    rows = [
+        dict(
+            copy_generation=generation,
+            incarnation=incarnation,
+            copy_bundle=bundle,
+            bundle_count=2,
+            logical_source_digest=logical,
+            raw_digest=raw,
+            copy_kind=kind,
+            producer_contract=1,
+            ended_digest=raw,
+            server_generation=bundle,
+        )
+        for generation, kind in ((server, 1), (processing, 2))
+    ]
+
+    class Connection:
+        captured = rows
+        pending_server = False
+
+        async def fetchval(self, sql, actual):
+            assert "owntracks_input_server_births" in sql and actual == logical
+            return self.pending_server
+
+        async def fetch(self, sql, actual):
+            assert "LEFT JOIN" in sql and "owntracks_input_copy_ends" in sql
+            assert actual == logical
+            return self.captured
+
+    connection = Connection()
+    await require_inputs_ended(connection, processing, logical, raw)
+    connection.pending_server = True
+    with pytest.raises(ValueError, match="server cohort is still active"):
+        await require_inputs_ended(connection, processing, logical, raw)
+    connection.pending_server = False
+    with pytest.raises(ValueError, match="original source birth"):
+        await require_inputs_ended(connection, None, logical, raw)
+    for changed in (
+        rows[1:],  # Full original two-member bundle cannot become one closed input.
+        [rows[0]],  # Missing selected processing birth is not an empty positive.
+        [*rows, {**rows[0], "copy_generation": uuid4()}],
+        [{**rows[0], "ended_digest": None}, rows[1]],
+        [{**rows[0], "raw_digest": b"X" * 32}, rows[1]],
+        [{**rows[0], "incarnation": uuid4()}, rows[1]],
+    ):
+        connection.captured = deepcopy(changed)
+        with pytest.raises(ValueError):
+            await require_inputs_ended(connection, processing, logical, raw)
+    connection.captured = rows
+    await require_inputs_ended(connection, processing, logical, raw)
+
+    observed, binding, header = [], object(), object()
+
+    class Connector:
+        committed = False
+        commit_gate = None
+        commit_failed = False
+
+        def _native_server_authorized(self, scope):
+            return True
+
+        def _allocate_native_server(self):
+            return header
+
+        async def _commit_native_server(self, actual):
+            assert actual is header
+            if self.commit_gate is not None:
+                await self.commit_gate.wait()
+            if self.commit_failed:
+                raise ValueError("synthetic admission readback unavailable")
+            self.committed = True
+
+        def _observe_native_server_end(self, actual):
+            assert actual is header
+            observed.append("webhook_server")
+
+    connector = Connector()
+
+    entered = []
+
+    async def application(scope, receive, send):
+        entered.append(True)
+        assert connector.committed
+        assert scope["_owntracks_native_input"] == [header]
+        scope["_owntracks_native_input"].append(binding)
+
+    wrapper = OwnTracksInputMiddleware(application, connector=connector)
+    inner_ended, finish_server = asyncio.Event(), asyncio.Event()
+
+    async def actual_server_task():
+        await wrapper({"type": "http", "path": "/owntracks/webhook"}, None, None)
+        inner_ended.set()
+        await finish_server.wait()  # Source-owned server task still retains its lifetime.
+
+    task = asyncio.create_task(actual_server_task())
+    try:
+        await inner_ended.wait()
+        assert observed == []  # Inner ASGI return alone is not actual server-task completion.
+        finish_server.set()
+        await task
+        await asyncio.sleep(0)  # Execute actual Task done callbacks, not a duration witness.
+        assert observed == ["webhook_server"]
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    observed.clear()
+    inner_ended.clear()
+    finish_server.clear()
+    cancelled = asyncio.create_task(actual_server_task())
+    await inner_ended.wait()
+    cancelled.cancel()
+    await asyncio.gather(cancelled, return_exceptions=True)
+    await asyncio.sleep(0)
+    assert observed == []  # Cancelled server task does not manufacture terminal history.
+
+    observed.clear()
+    entered.clear()
+    connector.committed = False
+    connector.commit_gate = asyncio.Event()
+    admitted = asyncio.create_task(
+        wrapper({"type": "http", "path": "/owntracks/webhook"}, None, None)
+    )
+    await asyncio.sleep(0)
+    assert entered == [] and observed == []
+    connector.commit_gate.set()
+    await admitted
+    await asyncio.sleep(0)
+    assert entered == [True] and observed == ["webhook_server"]
+
+    observed.clear()
+    entered.clear()
+    connector.commit_gate = None
+    connector.commit_failed = True
+    connector.committed = False
+    messages = []
+
+    async def send_refusal(message):
+        messages.append(message)
+
+    refused = asyncio.create_task(
+        wrapper({"type": "http", "path": "/owntracks/webhook"}, None, send_refusal)
+    )
+    await refused
+    await asyncio.sleep(0)
+    assert entered == [] and not connector.committed
+    assert messages[0]["status"] == 503 and messages[1]["type"] == "http.response.body"
+    assert observed == ["webhook_server"]
+
+
+async def _assert_native_owntracks_replay_reader_lifetime():
+    """Actual native reader order/network lifetime; SQL selectors doubled only."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.connectors.owntracks import OwnTracksConnector
+
+    trace, terminal = [], []
+    row_id, header, binding = uuid4(), object(), object()
+    endpoint = "owntracks:synthetic"
+    payload = {
+        "source": {"channel": "owntracks", "provider": "owntracks", "endpoint_identity": endpoint},
+        "payload": {"raw": {"_type": "location", "tst": 1700000000, "tid": "synthetic"}},
+    }
+
+    class Connection:
+        transaction_open = False
+        status = "replay_pending"
+
+        @asynccontextmanager
+        async def transaction(self):
+            assert not self.transaction_open
+            self.transaction_open = True
+            try:
+                yield
+            finally:
+                self.transaction_open = False
+                trace.append("commit")
+
+        async def fetch(self, sql, actual):
+            assert actual == endpoint and "SELECT id,received_at" in sql
+            assert "header_readback" in trace
+            trace.append("stored_read")
+            return [{"id": row_id, "received_at": datetime(2026, 1, 1, tzinfo=UTC)}]
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_user":
+                return "connector_writer"
+            if "pg_try_advisory_lock" in sql:
+                return True
+            if "SELECT full_payload" in sql:
+                assert self.transaction_open
+                trace.append("payload_read")
+                return payload
+            if "UPDATE connectors.filtered_events" in sql:
+                assert self.transaction_open and args[0] == "replay_complete"
+                assert args[-1] == payload
+                self.status = args[0]
+                return self.status
+            assert "SELECT status FROM connectors.filtered_events" in sql
+            assert not self.transaction_open
+            trace.append("status_readback")
+            return self.status
+
+        async def execute(self, sql, *args):
+            assert sql.startswith("SET LOCAL") or "pg_advisory" in sql
+            if "pg_advisory_unlock" in sql:
+                trace.append("claim_release")
+
+    conn = Connection()
+
+    class Pool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield conn
+
+    class Runtime:
+        pool = Pool()
+
+        def allocate_server(self):
+            return header
+
+        async def commit_server(self, actual):
+            assert actual is header
+            trace.append("header_readback")
+
+        async def reserve(self, actual, raw, *, replay):
+            assert actual == endpoint and raw == payload["payload"]["raw"] and replay
+            assert not conn.transaction_open
+            trace.append("birth_readback")
+            return binding
+
+        def require_body(self, actual, source, raw):
+            assert actual is binding and source == endpoint and raw == payload["payload"]["raw"]
+
+        def processing_started(self, actual):
+            assert actual is binding
+
+    connector = OwnTracksConnector.__new__(OwnTracksConnector)
+    connector._input_copies = Runtime()
+    connector._db_pool = connector._input_copies.pool
+    connector._observe_native_server_end = lambda actual: terminal.append((actual, "server"))
+    connector._observe_native_input_end = lambda actual, kind: terminal.append((actual, kind))
+
+    async def submit(envelope):
+        assert not conn.transaction_open  # Domain locks never surround provider I/O.
+        assert trace.index("payload_read") < trace.index("birth_readback")
+        assert "birth_readback" in trace and terminal == []
+        trace.append("send")
+
+    connector._submit_envelope = submit
+    inner_ended, finish = asyncio.Event(), asyncio.Event()
+
+    async def native_task():
+        await connector._drain_native_replay(endpoint)
+        inner_ended.set()
+        await finish.wait()
+
+    task = asyncio.create_task(native_task())
+    try:
+        await asyncio.wait_for(inner_ended.wait(), 2)
+        assert terminal == [] and conn.status == "replay_complete"
+        assert trace.index("header_readback") < trace.index("stored_read")
+        assert trace.index("send") < trace.index("status_readback") < trace.index("claim_release")
+        finish.set()
+        await task
+        await asyncio.sleep(0)
+        assert terminal == [(header, "server"), (binding, "replay_processing")]
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def _assert_native_input_dispatch_submission_fence():
+    """Actual dispatch ordering under a positioned cross-loop scheduler double."""
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from butlers.connectors.owntracks import OwnTracksConnector
+
+    binding = object()
+    trace = []
+
+    class Runtime:
+        pending = False
+
+        def reserve_processing(self, actual):
+            assert actual is binding
+            self.pending = True
+            trace.append("reserved")
+
+        def processing_started(self, actual):
+            assert actual is binding and self.pending
+            self.pending = False
+            trace.append("issued")
+
+        def processing_not_issued(self, actual):
+            assert actual is binding
+            self.pending = False
+            trace.append("not-issued")
+
+    runtime = Runtime()
+    connector = object.__new__(OwnTracksConnector)
+    connector._main_loop = SimpleNamespace(is_closed=lambda: False)
+    connector._input_copies = runtime
+    connector._observe_native_input_end = lambda actual, kind: trace.append("ended")
+
+    def run_now(coroutine, loop):
+        # Position the main-loop work before the submitting server can mark
+        # the returned Future. Without its prior hold, server completion could
+        # misclassify this actual issued child as never issued.
+        coroutine.close()
+        assert runtime.pending, "processing could run before submission hold"
+        trace.append("published")
+        future = Future()
+        future.set_result(None)
+        return future
+
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
+        connector._dispatch_event_to_main_loop({"_type": "location"}, _binding=binding)
+    assert trace == ["reserved", "published", "issued"]
+    assert runtime.pending is False
+    trace.clear()
+    captured = []
+
+    def refuse_submission(coroutine, loop):
+        assert runtime.pending
+        captured.append(coroutine)
+        raise RuntimeError("synthetic submission refused")
+
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=refuse_submission):
+        with pytest.raises(RuntimeError, match="synthetic submission refused"):
+            connector._dispatch_event_to_main_loop({"_type": "location"}, _binding=binding)
+    assert trace == ["reserved", "not-issued"] and runtime.pending is False
+    assert len(captured) == 1 and captured[0].cr_frame is None
+
+    # Actual source Task cancellation may take time to unwind. Its caught
+    # cancellation still settles only AFTER that Task ends, never at wrapper
+    # return/finally or when a transport Future reports cancelled.
+    import asyncio
+
+    entered, releasing, unwinding = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    connector._native_processing_tasks = set()
+    trace.clear()
+
+    async def processing(body, *, _native_binding):
+        assert _native_binding is binding
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            unwinding.set()
+            await releasing.wait()
+
+    connector._process_webhook_event = processing
+    task = asyncio.create_task(connector._process_native_input({"_type": "location"}, binding))
+    await entered.wait()
+    assert task in connector._native_processing_tasks and trace == []
+    task.cancel()
+    await unwinding.wait()
+    assert not task.done() and trace == []
+    releasing.set()
+    await task
+    await asyncio.sleep(0)
+    assert task not in connector._native_processing_tasks and trace == ["ended"]
+
+
+async def _assert_native_input_shutdown_preserves_actual_lifetimes():
+    """Actual shutdown/Task ordering; software only, no SQL disposition credit."""
+    import asyncio
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.connectors.owntracks import OwnTracksConnector
+    from butlers.connectors.owntracks_input_copies import (
+        OwnTracksInputCopies,
+        OwnTracksInputMiddleware,
+    )
+
+    # Exercise the real allocation fence without a fake constructor identity:
+    # its constructor/Pool authority is separately positioned in the PG species.
+    runtime = object.__new__(OwnTracksInputCopies)
+    runtime.incarnation = uuid4()
+    runtime._closing, runtime._servers, runtime._bindings = False, {}, {}
+    admitted = runtime.allocate_server()
+    runtime.close_admission()
+    with pytest.raises(ValueError, match="capacity is unavailable"):
+        runtime.allocate_server()
+    assert runtime._servers[id(admitted)] is admitted  # Old lifetime was not disposed.
+    messages = []
+
+    async def no_body(*args):
+        raise AssertionError("closed admission received or dispatched a body")
+
+    async def send(message):
+        messages.append(message)
+
+    closed_connector = SimpleNamespace(
+        _native_server_authorized=lambda scope: True,
+        _allocate_native_server=runtime.allocate_server,
+    )
+    await OwnTracksInputMiddleware(no_body, connector=closed_connector)(
+        {"type": "http", "path": "/owntracks/webhook"}, no_body, send
+    )
+    assert messages[0]["status"] == 503 and messages[-1]["type"] == "http.response.body"
+    assert runtime._servers[id(admitted)] is admitted
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    trace = []
+    connector = object.__new__(OwnTracksConnector)
+    connector._native_processing_tasks = set()
+    connector._health_server = SimpleNamespace(should_exit=False)
+    connector._devices = {}
+    connector._db_pool = None
+    binding = object()
+
+    async def processing(body, *, _native_binding):
+        assert _native_binding is binding
+        entered.set()
+        await release.wait()
+        trace.append("body-released")
+
+    connector._process_webhook_event = processing
+    connector._observe_native_input_end = lambda actual, kind: trace.append("actual-task-ended")
+
+    class Source:
+        closed = False
+
+        def close_admission(self):
+            self.closed = True
+            trace.append("admission-closed")
+
+        async def reconcile_observed_ends(self):
+            assert connector._native_processing_tasks == set()
+            assert "actual-task-ended" in trace
+            trace.append("readback")
+
+    source = Source()
+    connector._input_copies = source
+    loop = asyncio.get_running_loop()
+
+    class Server:
+        def join(self, bound):
+            assert source.closed and connector._health_server.should_exit
+            assert bound == 5 and "actual-task-ended" not in trace
+            # Join work runs off the owning event loop. Its pool/Task remains
+            # able to unwind while the actual source server is being joined.
+            loop.call_soon_threadsafe(release.set)
+
+    class Retention:
+        async def stop(self):
+            assert trace.index("body-released") < trace.index("actual-task-ended")
+            assert trace.index("actual-task-ended") < trace.index("readback")
+            trace.append("retention-stopped")
+
+    connector._health_thread, connector._retention = Server(), Retention()
+    task = asyncio.create_task(connector._process_native_input({}, binding))
+    await entered.wait()
+    assert task in connector._native_processing_tasks and trace == []
+    await connector._shutdown()
+    assert task.done() and connector._native_processing_tasks == set()
+    assert trace == [
+        "admission-closed",
+        "body-released",
+        "actual-task-ended",
+        "readback",
+        "retention-stopped",
+    ]

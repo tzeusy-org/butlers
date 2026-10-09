@@ -407,6 +407,14 @@ async def prepare_filtered_copies(
                         or content_digest(payload) != bytes.fromhex(expected.content_digest)
                     ):
                         raise ValueError("native filtered raw input binding differs")
+                    from butlers.connectors.owntracks_input_copies import require_inputs_ended
+
+                    await require_inputs_ended(
+                        conn,
+                        source["source_input_generation"],
+                        source["logical_source_digest"],
+                        source["content_digest"],
+                    )
                     candidates = await conn.fetch(
                         "SELECT id," + _FILTERED_COLUMNS + " FROM connectors.filtered_events "
                         "WHERE connector_type='owntracks' AND endpoint_identity=$1 "

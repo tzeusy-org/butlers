@@ -54,6 +54,7 @@ import asyncio
 import base64
 import binascii
 import hmac
+import json
 import logging
 import math
 import os
@@ -450,6 +451,7 @@ class OwnTracksRetention:
         purge_interval_s: int = RETENTION_PURGE_INTERVAL_S,
         retention_source: RegisteredRetentionSource | None = None,
         copy_buffers: Callable[[], tuple[NativeFilteredCopyBuffer, ...]] | None = None,
+        input_copies: Any = None,
     ) -> None:
         """Initialise the retention task.
 
@@ -476,6 +478,7 @@ class OwnTracksRetention:
         self._consecutive_failures = 0
         self._retention_source = retention_source
         self._copy_buffers = copy_buffers
+        self._input_copies = input_copies
 
     @property
     def retention_days(self) -> int:
@@ -544,6 +547,8 @@ class OwnTracksRetention:
             Exception: Re-raises any database exceptions so that ``_purge_loop``
                 can catch and log them without crashing the connector.
         """
+        if self._input_copies is not None:
+            await self._input_copies.reconcile_observed_ends()
         async with self._pool.acquire() as conn:
             result = await conn.execute(_PURGE_SQL, self._config.retention_days)
 
@@ -861,6 +866,7 @@ async def persist_location_point(
     accepted_request_id: UUID | None = None,
     accepted_payload_digest: bytes | None = None,
     accepted_normalized_digest: bytes | None = None,
+    _native_input_generation: UUID | None = None,
 ) -> bool:
     """Write a location point to the durable evidence table.
 
@@ -907,14 +913,29 @@ async def persist_location_point(
             )
             if forgotten:
                 return False
+            if _native_input_generation is not None:
+                source = await conn.fetchrow(
+                    "SELECT logical_source_digest,raw_digest,copy_kind,producer_contract "
+                    "FROM connectors.owntracks_input_copy_births WHERE copy_generation=$1",
+                    _native_input_generation,
+                )
+                if (
+                    await conn.fetchval("SELECT current_user") != "connector_writer"
+                    or source is None
+                    or source["logical_source_digest"] != logical
+                    or source["raw_digest"] != body_digest
+                    or source["copy_kind"] not in {2, 3}
+                    or source["producer_contract"] != 1
+                ):
+                    raise ValueError("native point input birth differs")
             recorded_at = await conn.fetchval("SELECT clock_timestamp()")
             result = await conn.fetchval(
                 f"""
                 INSERT INTO {_LOCATION_EVIDENCE_TABLE} (
                     idempotency_key,ts,lat,lon,accuracy,trigger,endpoint_identity,raw_payload,
                     recorded_at,retention_at,logical_source_digest,content_digest,accepted_request_id,
-                    accepted_payload_digest,accepted_normalized_digest
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                    accepted_payload_digest,accepted_normalized_digest,source_input_generation
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                 ON CONFLICT (idempotency_key) DO NOTHING RETURNING id
                 """,
                 idempotency_key,
@@ -932,6 +953,7 @@ async def persist_location_point(
                 accepted_request_id,
                 accepted_payload_digest,
                 accepted_normalized_digest,
+                _native_input_generation,
             )
     return result is not None
 
@@ -1004,6 +1026,14 @@ class OwnTracksConnector:
         self._db_pool = db_pool
         self._cursor_pool = cursor_pool
 
+        import asyncpg
+
+        from butlers.connectors.owntracks_input_copies import OwnTracksInputCopies
+
+        self._input_copies = (
+            OwnTracksInputCopies(db_pool) if isinstance(db_pool, asyncpg.Pool) else None
+        )
+
         # Placeholder/primary identity: fixed for the life of the process when
         # OWNTRACKS_TRACKER_ID is set; otherwise a startup placeholder that is
         # never mutated (see self._devices for the real, per-device identities
@@ -1046,6 +1076,7 @@ class OwnTracksConnector:
         # so webhook handlers hop back to this loop before touching asyncpg / MCP
         # state — otherwise asyncio.Lock raises "bound to a different event loop".
         self._main_loop: asyncio.AbstractEventLoop | None = None
+        self._native_processing_tasks: set[asyncio.Task] = set()
 
         # Retention purge (OwnTracksRetention; initialized in start() when db_pool is available)
         self._retention: OwnTracksRetention | None = None
@@ -1130,6 +1161,7 @@ class OwnTracksConnector:
                     copy_buffers=lambda: tuple(
                         device.filtered_event_buffer for device in self._devices.values()
                     ),
+                    input_copies=self._input_copies,
                 )
                 self._retention.start()
 
@@ -1154,6 +1186,29 @@ class OwnTracksConnector:
         """Graceful shutdown: persist checkpoint, final heartbeat, clean up."""
         logger.info("OwnTracksConnector: shutting down")
         self._running = False
+
+        if self._input_copies is not None:
+            # Stop admitting NEW bodies before joining the owning server. The
+            # existing source loop/pool remains available for actual Task ends.
+            self._input_copies.close_admission()
+            if self._health_server is not None:
+                self._health_server.should_exit = True
+            if self._health_thread is not None:
+                await asyncio.to_thread(self._health_thread.join, 5)
+            tasks = tuple(self._native_processing_tasks)
+            if tasks:
+                _, pending = await asyncio.wait(tasks, timeout=5)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    # Cancellation REQUEST is not a disposition. Only the
+                    # actual task observer can record an end after unwinding.
+                    await asyncio.wait(pending, timeout=5)
+            await asyncio.sleep(0)  # Run actual done observers; not an age proof.
+            try:
+                await self._input_copies.reconcile_observed_ends()
+            except Exception:
+                logger.warning("OwnTracks native shutdown disposition unavailable")
 
         # Stop retention purge task
         if self._retention is not None:
@@ -1338,7 +1393,9 @@ class OwnTracksConnector:
     # Webhook event processing
     # ------------------------------------------------------------------
 
-    async def _process_webhook_event(self, body: dict[str, Any]) -> None:
+    async def _process_webhook_event(
+        self, body: dict[str, Any], *, _native_binding: Any = None
+    ) -> None:
         """Process a single OwnTracks webhook payload.
 
         Dispatches by _type, normalizes to ingest.v1, applies policy gate,
@@ -1383,6 +1440,10 @@ class OwnTracksConnector:
                 )
                 return
             identity = f"owntracks:{tid}"
+        if self._input_copies is not None and payload_type == "location":
+            if _native_binding is None:
+                raise RuntimeError("OwnTracks native processing birth unavailable")
+            self._input_copies.require_body(_native_binding, identity, body)
         device = await self._get_or_create_device(identity)
 
         # Track event counter for today (task 6.3). Aggregate across all
@@ -1526,6 +1587,11 @@ class OwnTracksConnector:
                     accepted_normalized_digest=content_digest(
                         {"text": envelope["payload"]["normalized_text"]}
                     ),
+                    _native_input_generation=(
+                        self._input_copies.processing_generation(_native_binding)
+                        if self._input_copies is not None and _native_binding is not None
+                        else None
+                    ),
                 )
             except Exception:
                 logger.warning(
@@ -1539,13 +1605,7 @@ class OwnTracksConnector:
             except Exception:
                 logger.warning("OwnTracksConnector: filtered event flush failed")
             try:
-                await drain_replay_pending(
-                    pool=self._db_pool,
-                    connector_type=_CONNECTOR_TYPE,
-                    endpoint_identity=device.endpoint_identity,
-                    submit_fn=self._submit_envelope,
-                    drain_logger=logger,
-                )
+                await self._drain_native_replay(device.endpoint_identity)
             except Exception:
                 logger.warning("OwnTracksConnector: replay queue drain failed")
 
@@ -1639,7 +1699,245 @@ class OwnTracksConnector:
     # FastAPI application builder (webhook + health + metrics)
     # ------------------------------------------------------------------
 
-    def _dispatch_event_to_main_loop(self, body: dict[str, Any]) -> None:
+    def _native_server_authorized(self, scope: dict[str, Any]) -> bool:
+        if self._input_copies is None:
+            return False
+        authorization = next(
+            (
+                value.decode("latin1")
+                for key, value in scope.get("headers", ())
+                if key.lower() == b"authorization"
+            ),
+            "",
+        )
+        return _verify_webhook_auth(authorization, self._webhook_token)
+
+    async def _drain_native_replay(self, endpoint: str) -> None:
+        """Reserve this native reader before any stored replay payload is read.
+
+        The content-free header fences unknown input globally until the actual
+        owning task ends. Each actual location body then gets its immutable
+        classified birth before submission; callback success is not task end.
+        A caller-supplied endpoint/envelope cannot create a terminal witness.
+        """
+        runtime = self._input_copies
+        if runtime is None:
+            await drain_replay_pending(
+                pool=self._db_pool,
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity=endpoint,
+                submit_fn=self._submit_envelope,
+                drain_logger=logger,
+            )
+            return  # Explicit unconfigured/mocked legacy runtime only.
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("OwnTracks native replay task unavailable")
+        header = runtime.allocate_server()
+        births = []
+
+        def reader_ended(completed: asyncio.Task) -> None:
+            if completed.cancelled() or completed.exception() is not None:
+                return  # No false disposal from a retained exception/context.
+            self._observe_native_server_end(header)
+            for binding in births:
+                self._observe_native_input_end(binding, "replay_processing")
+
+        task.add_done_callback(reader_ended)
+        await runtime.commit_server(header)  # Separate committed readback BEFORE SELECT.
+
+        from butlers.connectors.filtered_event_buffer import _sanitize_replay_payload
+        from butlers.connectors.owntracks_input_copies import _lock_writer
+
+        # Native session locks claim exact stored rows without holding a domain
+        # transaction across network I/O. SOURCE mutex always precedes row locks;
+        # callbacks cannot acquire it behind a row lock held by this reader.
+        async with runtime.pool.acquire() as conn:
+            candidates = await conn.fetch(
+                "SELECT id,received_at FROM connectors.filtered_events "
+                "WHERE connector_type='owntracks' AND endpoint_identity=$1 "
+                "AND status='replay_pending' ORDER BY received_at,id LIMIT 10",
+                endpoint,
+            )
+            for candidate in candidates:
+                key = f"owntracks:native-replay:{candidate['id']}:{candidate['received_at']}"
+                if not await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtextextended($1,0))", key
+                ):
+                    continue
+                try:
+                    async with conn.transaction():
+                        await _lock_writer(conn)
+                        stored = await conn.fetchval(
+                            "SELECT full_payload FROM connectors.filtered_events "
+                            "WHERE id=$1 AND received_at=$2 AND connector_type='owntracks' "
+                            "AND endpoint_identity=$3 AND status='replay_pending' FOR UPDATE",
+                            candidate["id"],
+                            candidate["received_at"],
+                            endpoint,
+                        )
+                    if stored is None:
+                        continue
+                    try:
+                        original = json.loads(stored) if isinstance(stored, str) else stored
+                        if not isinstance(original, dict):
+                            raise ValueError("native replay payload differs")
+                        source, payload = original.get("source"), original.get("payload")
+                        if (
+                            not isinstance(source, dict)
+                            or source.get("endpoint_identity") != endpoint
+                            or source.get("channel") != _CONNECTOR_CHANNEL
+                            or source.get("provider") != _CONNECTOR_PROVIDER
+                            or not isinstance(payload, dict)
+                            or not isinstance(payload.get("raw"), dict)
+                        ):
+                            raise ValueError("native replay source differs")
+                        body = payload["raw"]
+                        binding = await runtime.reserve(endpoint, body, replay=True)
+                        if binding is not None:
+                            births.append(binding)
+                            runtime.require_body(binding, endpoint, body)
+                            runtime.processing_started(binding)
+                        # Sanitize a separate envelope; the immutable original
+                        # stored body remains the status-write comparison witness.
+                        import copy
+
+                        envelope = copy.deepcopy(original)
+                        _sanitize_replay_payload(envelope)
+                        envelope = {"schema_version": "ingest.v1", **envelope}
+                        await self._submit_envelope(envelope)  # No SQL transaction is open.
+                        status, failure = "replay_complete", None
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        status, failure = "replay_failed", "OwnTracks native replay unavailable"
+                        logger.warning("OwnTracks native replay unavailable")
+                    async with conn.transaction():
+                        await _lock_writer(conn)
+                        result = await conn.fetchval(
+                            "UPDATE connectors.filtered_events SET status=$1,error_detail=$2,"
+                            "replay_completed_at=clock_timestamp() WHERE id=$3 AND received_at=$4 "
+                            "AND connector_type='owntracks' AND endpoint_identity=$5 "
+                            "AND status='replay_pending' AND full_payload=$6::jsonb "
+                            "RETURNING status",
+                            status,
+                            failure,
+                            candidate["id"],
+                            candidate["received_at"],
+                            endpoint,
+                            json.loads(stored) if isinstance(stored, str) else stored,
+                        )
+                        if result != status:
+                            raise RuntimeError("OwnTracks native replay committed source differs")
+                    async with runtime.pool.acquire() as observed:
+                        actual = await observed.fetchval(
+                            "SELECT status FROM connectors.filtered_events WHERE id=$1 "
+                            "AND received_at=$2 AND connector_type='owntracks' "
+                            "AND endpoint_identity=$3 AND full_payload=$4::jsonb",
+                            candidate["id"],
+                            candidate["received_at"],
+                            endpoint,
+                            json.loads(stored) if isinstance(stored, str) else stored,
+                        )
+                        if actual != status:
+                            raise RuntimeError("OwnTracks native replay readback is unknown")
+                finally:
+                    await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1,0))", key)
+
+    def _allocate_native_server(self):
+        if self._input_copies is None:
+            return None
+        return self._input_copies.allocate_server()
+
+    async def _commit_native_server(self, binding: Any) -> None:
+        runtime, loop = self._input_copies, self._main_loop
+        if runtime is None or loop is None or loop.is_closed():
+            raise RuntimeError("OwnTracks native server loop unavailable")
+        if asyncio.get_running_loop() is loop:
+            await runtime.commit_server(binding)
+        else:
+            await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(runtime.commit_server(binding), loop)
+            )
+
+    def _observe_native_server_end(self, binding: Any) -> None:
+        runtime, loop = self._input_copies, self._main_loop
+        if runtime is None or loop is None or loop.is_closed():
+            return
+
+        async def ended() -> None:
+            try:
+                runtime.observed_server_end(binding)
+                await runtime.finish_server(binding)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("OwnTracks native server end readback unavailable")
+
+        asyncio.run_coroutine_threadsafe(ended(), loop)
+
+    async def _capture_native_input(self, body: dict[str, Any], *, _server: Any = None):
+        runtime = self._input_copies
+        if runtime is None or extract_event_type(body) != "location":
+            return None
+        tid = extract_tid(body)
+        if not self._config.tracker_id_override and tid is None:
+            return None  # Actual ignored protocol input, never a point source.
+        endpoint = (
+            self._endpoint_identity if self._config.tracker_id_override else f"owntracks:{tid}"
+        )
+        loop = self._main_loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("OwnTracks native input loop unavailable")
+        if asyncio.get_running_loop() is loop:
+            return await runtime.reserve(endpoint, body, server=_server)
+        future = asyncio.run_coroutine_threadsafe(
+            runtime.reserve(endpoint, body, server=_server), loop
+        )
+        return await asyncio.wrap_future(future)
+
+    def _observe_native_input_end(self, binding: Any, kind: str) -> None:
+        runtime, loop = self._input_copies, self._main_loop
+        if runtime is None or loop is None or loop.is_closed():
+            return  # Missing observer remains an unresolved durable birth.
+
+        async def ended() -> None:
+            try:
+                runtime.observed_end(binding, kind)
+                await runtime.finish(binding, kind)
+            except asyncio.CancelledError:
+                raise  # Cancellation cannot be turned into a successful receipt.
+            except Exception:
+                logger.warning("OwnTracks native input end readback unavailable")
+
+        asyncio.run_coroutine_threadsafe(ended(), loop)
+
+    async def _process_native_input(self, body: dict[str, Any], binding: Any) -> None:
+        # Observe the actual main-loop Task, not its cross-thread Future. A
+        # cancelled transport Future can complete while its coroutine is still
+        # unwinding; only this source-owned Task end can settle the input.
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("OwnTracks native processing task unavailable")
+        self._native_processing_tasks.add(task)
+
+        def actual_processing_ended(completed: asyncio.Task) -> None:
+            self._native_processing_tasks.discard(completed)
+            if not completed.cancelled() and completed.exception() is None:
+                self._observe_native_input_end(binding, "webhook_processing")
+
+        task.add_done_callback(actual_processing_ended)
+        # Failed/cancelled processing reports a closed category and does not
+        # retain its raw frame in an exception. The actual Task must still end
+        # before the observer can commit a disposition.
+        try:
+            await self._process_webhook_event(body, _native_binding=binding)
+        except asyncio.CancelledError:
+            logger.warning("OwnTracks native processing cancelled")
+        except Exception:
+            logger.warning("OwnTracks native processing unavailable")
+
+    def _dispatch_event_to_main_loop(self, body: dict[str, Any], *, _binding: Any = None) -> None:
         """Schedule ``_process_webhook_event`` on the connector's main loop.
 
         The webhook handler runs inside uvicorn's thread-local event loop, but
@@ -1653,7 +1951,25 @@ class OwnTracksConnector:
             logger.warning("OwnTracksConnector: main loop unavailable, dropping event")
             return
 
-        future = asyncio.run_coroutine_threadsafe(self._process_webhook_event(body), loop)
+        processing = (
+            self._process_webhook_event(body)
+            if _binding is None
+            else self._process_native_input(body, _binding)
+        )
+        if _binding is not None:
+            # The server loop and main-loop task may advance concurrently.
+            # Hold the original processing allocation BEFORE publishing the
+            # coroutine, so server completion cannot infer never-issued work.
+            self._input_copies.reserve_processing(_binding)
+        try:
+            future = asyncio.run_coroutine_threadsafe(processing, loop)
+        except Exception:
+            processing.close()  # No abandoned coroutine frame may keep the body.
+            if _binding is not None:
+                self._input_copies.processing_not_issued(_binding)
+            raise
+        if _binding is not None:
+            self._input_copies.processing_started(_binding)
 
         def _log_if_failed(f: Any) -> None:
             try:
@@ -1662,10 +1978,15 @@ class OwnTracksConnector:
                 logger.warning("OwnTracksConnector: background event processing failed")
 
         future.add_done_callback(_log_if_failed)
+        # Native disposition is installed inside the actual main-loop Task.
+        # This transport Future's done/cancelled state never authorizes an end.
 
     def _build_app(self) -> FastAPI:
         """Build the FastAPI application serving webhook, health, and metrics."""
         app = FastAPI(title="owntracks-connector")
+        from butlers.connectors.owntracks_input_copies import OwnTracksInputMiddleware
+
+        app.add_middleware(OwnTracksInputMiddleware, connector=self)
 
         @app.post("/owntracks/webhook")
         async def webhook(request: Request) -> JSONResponse:
@@ -1690,7 +2011,21 @@ class OwnTracksConnector:
             # and return immediately. Awaiting inline from uvicorn's thread loop
             # deadlocks asyncpg with "Lock bound to a different event loop", and
             # OwnTracks mobile clients drop slow responses as SocketTimeoutException.
-            self._dispatch_event_to_main_loop(body)
+            try:
+                binding = await self._capture_native_input(
+                    body, _server=(request.scope.get("_owntracks_native_input") or [None])[0]
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise HTTPException(
+                    status_code=503, detail={"error": "Source unavailable"}
+                ) from None
+            if binding is None:
+                self._dispatch_event_to_main_loop(body)
+            else:
+                request.scope["_owntracks_native_input"].append(binding)
+                self._dispatch_event_to_main_loop(body, _binding=binding)
 
             # OwnTracks protocol requires 200 with empty JSON array on success
             return JSONResponse(content=[])

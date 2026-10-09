@@ -263,6 +263,19 @@ async def forget_ready_batch(pool: asyncpg.Pool, grant: ReadyGrant) -> dict:
                             or source["retention_at"] >= grant.cutoff
                         ):
                             raise ForgettingRefusedError("source_revision_mismatch")
+                        from butlers.connectors.owntracks_input_copies import require_inputs_ended
+
+                        try:
+                            await require_inputs_ended(
+                                conn,
+                                source["source_input_generation"],
+                                source["logical_source_digest"],
+                                source["content_digest"],
+                            )
+                        except ValueError:
+                            raise ForgettingRefusedError(
+                                "source_input_cohort_unavailable"
+                            ) from None
                         deleting.append(expected.raw_id)
                         await conn.execute(
                             """INSERT INTO connectors.owntracks_retention_tombstones

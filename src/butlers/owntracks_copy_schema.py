@@ -16,6 +16,13 @@ COPY_TABLES = (
 )
 
 
+INPUT_TABLES = (
+    "owntracks_input_server_births",
+    "owntracks_input_server_ends",
+    "owntracks_input_copy_births",
+    "owntracks_input_copy_ends",
+)
+
 _COLUMNS = {
     "owntracks_filtered_copy_births": {
         "copy_generation": "uuid",
@@ -54,6 +61,36 @@ _COLUMNS = {
     },
 }
 
+_COLUMNS.update(
+    {
+        "owntracks_input_server_births": {
+            "copy_generation": "uuid",
+            "incarnation": "uuid",
+            "committed_at": "timestamp with time zone",
+        },
+        "owntracks_input_server_ends": {
+            "copy_generation": "uuid",
+            "ended_at": "timestamp with time zone",
+        },
+        "owntracks_input_copy_births": {
+            "copy_generation": "uuid",
+            "incarnation": "uuid",
+            "copy_bundle": "uuid",
+            "bundle_count": "smallint",
+            "logical_source_digest": "bytea",
+            "raw_digest": "bytea",
+            "copy_kind": "smallint",
+            "producer_contract": "smallint",
+            "server_generation": "uuid",
+            "committed_at": "timestamp with time zone",
+        },
+        "owntracks_input_copy_ends": {
+            "copy_generation": "uuid",
+            "raw_digest": "bytea",
+            "ended_at": "timestamp with time zone",
+        },
+    }
+)
 
 _CONSTRAINTS = {
     "owntracks_filtered_copy_births": [
@@ -87,9 +124,87 @@ _CONSTRAINTS = {
     ],
 }
 
+_CONSTRAINTS.update(
+    {
+        "owntracks_input_server_births": [("pkey", "p", [1], None, None, None)],
+        "owntracks_input_server_ends": [
+            ("pkey", "p", [1], None, None, None),
+            ("birth_fk", "f", [1], None, "owntracks_input_server_births", [1]),
+        ],
+        "owntracks_input_copy_births": [
+            ("pkey", "p", [1], None, None, None),
+            ("kind_key", "u", [3, 7], None, None, None),
+            ("bundle_count", "c", [4], "bundle_count>=1ANDbundle_count<=2", None, None),
+            ("logical_len", "c", [5], "octet_lengthlogical_source_digest=32", None, None),
+            ("raw_len", "c", [6], "octet_lengthraw_digest=32", None, None),
+            ("kind", "c", [7], "copy_kind>=1ANDcopy_kind<=3", None, None),
+            ("contract", "c", [8], "producer_contract=1", None, None),
+            ("server_fk", "f", [9], None, "owntracks_input_server_births", [1]),
+            (
+                "server_kind",
+                "c",
+                [7, 9, 3],
+                "copy_kind=3ANDserver_generationISNULLORcopy_kind>=1ANDcopy_kind<=2ANDserver_generationISNOTNULLANDserver_generation=copy_bundle",
+                None,
+                None,
+            ),
+        ],
+        "owntracks_input_copy_ends": [
+            ("pkey", "p", [1], None, None, None),
+            ("birth_fk", "f", [1], None, "owntracks_input_copy_births", [1]),
+            ("raw_len", "c", [2], "octet_lengthraw_digest=32", None, None),
+        ],
+    }
+)
+
 
 def filtered_copy_schema_sql() -> str:
     return """
+        CREATE TABLE IF NOT EXISTS connectors.owntracks_input_server_births (
+          copy_generation UUID CONSTRAINT owntracks_input_server_births_pkey PRIMARY KEY,
+          incarnation UUID NOT NULL,
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS connectors.owntracks_input_server_ends (
+          copy_generation UUID CONSTRAINT owntracks_input_server_ends_pkey PRIMARY KEY
+            CONSTRAINT owntracks_input_server_ends_birth_fk
+            REFERENCES connectors.owntracks_input_server_births(copy_generation),
+          ended_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE IF NOT EXISTS connectors.owntracks_input_copy_births (
+          copy_generation UUID CONSTRAINT owntracks_input_births_pkey PRIMARY KEY,
+          incarnation UUID NOT NULL,
+          copy_bundle UUID NOT NULL,
+          bundle_count SMALLINT NOT NULL CONSTRAINT owntracks_input_births_bundle_count
+            CHECK(bundle_count>=1 AND bundle_count<=2),
+          logical_source_digest BYTEA NOT NULL
+            CONSTRAINT owntracks_input_births_logical_len
+            CHECK(octet_length(logical_source_digest)=32),
+          raw_digest BYTEA NOT NULL CONSTRAINT owntracks_input_births_raw_len
+            CHECK(octet_length(raw_digest)=32),
+          copy_kind SMALLINT NOT NULL CONSTRAINT owntracks_input_births_kind
+            CHECK(copy_kind>=1 AND copy_kind<=3),
+          producer_contract SMALLINT NOT NULL CONSTRAINT owntracks_input_births_contract
+            CHECK(producer_contract=1),
+          server_generation UUID CONSTRAINT owntracks_input_births_server_fk
+            REFERENCES connectors.owntracks_input_server_births(copy_generation),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          CONSTRAINT owntracks_input_births_kind_key UNIQUE(copy_bundle,copy_kind),
+          CONSTRAINT owntracks_input_births_server_kind CHECK(
+            (copy_kind=3 AND server_generation IS NULL)
+            OR (copy_kind>=1 AND copy_kind<=2 AND server_generation IS NOT NULL
+                AND server_generation=copy_bundle))
+        );
+        CREATE INDEX IF NOT EXISTS ix_owntracks_input_copy_source
+          ON connectors.owntracks_input_copy_births(logical_source_digest,copy_generation);
+        CREATE TABLE IF NOT EXISTS connectors.owntracks_input_copy_ends (
+          copy_generation UUID CONSTRAINT owntracks_input_ends_pkey PRIMARY KEY
+            CONSTRAINT owntracks_input_ends_birth_fk
+            REFERENCES connectors.owntracks_input_copy_births(copy_generation),
+          raw_digest BYTEA NOT NULL CONSTRAINT owntracks_input_ends_raw_len
+            CHECK(octet_length(raw_digest)=32),
+          ended_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         CREATE TABLE IF NOT EXISTS connectors.owntracks_filtered_copy_births (
           copy_generation UUID
             CONSTRAINT owntracks_copy_births_pkey PRIMARY KEY,
@@ -172,7 +287,7 @@ def filtered_copy_schema_sql() -> str:
 def filtered_copy_security_sql() -> str:
     """Fixed existing-role policies; bootstrap grants cannot expose a floor."""
     statements = []
-    for table in COPY_TABLES:
+    for table in COPY_TABLES + INPUT_TABLES:
         relation = f"connectors.{table}"
         readers = (
             "current_user='connector_writer' OR current_user='butler_chronicler_rw'"
@@ -182,10 +297,25 @@ def filtered_copy_security_sql() -> str:
         # The existing actual shared table owner can inspect metadata for
         # migration history guards; it cannot mint native source write receipt.
         columns = ",".join(
-            "'" + name + ":" + kind + ":true'" for name, kind in sorted(_COLUMNS[table].items())
+            "'"
+            + name
+            + ":"
+            + kind
+            + ":"
+            + (
+                "false"
+                if table == "owntracks_input_copy_births" and name == "server_generation"
+                else "true"
+            )
+            + "'"
+            for name, kind in sorted(_COLUMNS[table].items())
         )
         constraints = []
-        prefix = "owntracks_copy_" + table.removeprefix("owntracks_filtered_copy_")
+        prefix = (
+            "owntracks_input_" + table.removeprefix("owntracks_input_").removeprefix("copy_")
+            if table in INPUT_TABLES
+            else "owntracks_copy_" + table.removeprefix("owntracks_filtered_copy_")
+        )
         for suffix, kind, keys, expression, foreign, foreign_keys in _CONSTRAINTS[table]:
             name = prefix + "_" + suffix
             key_array = ",".join(map(str, keys))

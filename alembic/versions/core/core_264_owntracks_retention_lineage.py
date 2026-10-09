@@ -1142,7 +1142,8 @@ def upgrade() -> None:
             CHECK (octet_length(accepted_payload_digest)=32),
           ADD COLUMN IF NOT EXISTS accepted_normalized_digest BYTEA
             CHECK (octet_length(accepted_normalized_digest)=32),
-          ADD COLUMN IF NOT EXISTS accepted_request_id UUID;
+          ADD COLUMN IF NOT EXISTS accepted_request_id UUID,
+          ADD COLUMN IF NOT EXISTS source_input_generation UUID;
         UPDATE connectors.owntracks_points SET retention_at =
           CASE WHEN abs(extract(epoch FROM (ts-recorded_at))) <= 14400
                THEN ts ELSE recorded_at END
@@ -1153,6 +1154,14 @@ def upgrade() -> None:
         SET search_path=pg_catalog,pg_temp AS $$
         BEGIN
           IF TG_OP='INSERT' THEN
+            IF NEW.source_input_generation IS NOT NULL AND NOT EXISTS(
+                SELECT 1 FROM connectors.owntracks_input_copy_births b
+                WHERE b.copy_generation=NEW.source_input_generation
+                  AND b.logical_source_digest=NEW.logical_source_digest
+                  AND b.raw_digest=NEW.content_digest
+                  AND b.copy_kind IN (2,3) AND b.producer_contract=1) THEN
+              RAISE EXCEPTION 'Native point input birth differs';
+            END IF;
             IF NEW.retention_at IS NULL THEN
               NEW.retention_at := CASE
                 WHEN abs(extract(epoch FROM (NEW.ts-NEW.recorded_at))) <= 14400
@@ -1209,6 +1218,11 @@ def upgrade() -> None:
     # Fixed connector-owned copy metadata; trusted installer only. These
     # source floors/receipts do not certify projection or remote recipients.
     op.execute(filtered_copy_schema_sql())
+    # Native point source bindings are validated by the actual INSERT trigger
+    # and remain immutable thereafter; input history itself cannot be deleted.
+    # A raw-point FK would be replayed by ordinary pg_dump before scoped input
+    # histories arrive. Restore admission separately validates every complete
+    # source reference after the exact staged history is installed.
     op.execute(filtered_copy_security_sql())
     # Per-owning-schema ledger: source-holder actions never write through a
     # peer role. Core replay also covers Switchboard-only and legacy public DBs.
@@ -1837,7 +1851,11 @@ def downgrade() -> None:
     # is still installed is forbidden even when the current table is empty.
     op.execute("""
         DO $$ BEGIN
-          IF EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_births)
+          IF EXISTS(SELECT 1 FROM connectors.owntracks_input_server_births)
+             OR EXISTS(SELECT 1 FROM connectors.owntracks_input_server_ends)
+             OR EXISTS(SELECT 1 FROM connectors.owntracks_input_copy_births)
+             OR EXISTS(SELECT 1 FROM connectors.owntracks_input_copy_ends)
+             OR EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_births)
              OR EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_floors)
              OR EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_batches)
              OR EXISTS(SELECT 1 FROM connectors.owntracks_filtered_copy_members)

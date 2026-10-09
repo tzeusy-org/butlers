@@ -145,7 +145,7 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
 # Exact new native history: schema stays in the dump; only table data uses
 # fixed owner-readable exported-snapshot staging and existing connector role.
-BACKUP_NATIVE_COPY_TABLES="connectors.owntracks_filtered_copy_births connectors.owntracks_filtered_copy_floors connectors.owntracks_filtered_copy_batches connectors.owntracks_filtered_copy_members"
+BACKUP_NATIVE_COPY_TABLES="connectors.owntracks_filtered_copy_births connectors.owntracks_filtered_copy_floors connectors.owntracks_filtered_copy_batches connectors.owntracks_filtered_copy_members connectors.owntracks_input_server_births connectors.owntracks_input_server_ends connectors.owntracks_input_copy_births connectors.owntracks_input_copy_ends"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
@@ -279,16 +279,20 @@ PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
   --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
   --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
   --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
-  -c "SELECT count(*) FROM pg_catalog.pg_class c
+  -c "SELECT CASE
+        WHEN count(*)=4 AND count(*) FILTER (WHERE c.relname LIKE 'owntracks_filtered_copy_%')=4 THEN 4
+        WHEN count(*) IN (0,8) THEN count(*) ELSE -1 END
+      FROM pg_catalog.pg_class c
       JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
       WHERE n.nspname='connectors' AND c.relname IN (
         'owntracks_filtered_copy_births','owntracks_filtered_copy_floors',
-        'owntracks_filtered_copy_batches','owntracks_filtered_copy_members')" \
+        'owntracks_filtered_copy_batches','owntracks_filtered_copy_members',
+        'owntracks_input_server_births','owntracks_input_server_ends','owntracks_input_copy_births','owntracks_input_copy_ends')" \
   > "${NATIVE_COPY_PRESENCE_FILE}" \
   || { FAILURE_REASON="pg_dump_failed"; exit 1; }
 NATIVE_COPY_PRESENCE="$(tr -d '\r\n' < "${NATIVE_COPY_PRESENCE_FILE}")"
 case "${NATIVE_COPY_PRESENCE}" in
-  0|4) ;;
+  0|4|8) ;;
   *)
     FAILURE_REASON="pg_dump_failed"
     echo "[backup] FAILED: native copy history installation is partial; not publishing" >&2
@@ -309,8 +313,11 @@ PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
 SNAPSHOT_HOLDER_PID=$!
 exec 9>"${SNAPSHOT_CONTROL}"
 printf 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\nSET LOCAL application_name='\''butlers-native-copy-backup'\'';\n' >&9
-if [ "${NATIVE_COPY_PRESENCE}" = "4" ]; then
+if [ "${NATIVE_COPY_PRESENCE}" != "0" ]; then
   printf 'SET LOCAL lock_timeout='\''2s'\'';\nLOCK TABLE connectors.owntracks_filtered_copy_births,connectors.owntracks_filtered_copy_floors,connectors.owntracks_filtered_copy_batches,connectors.owntracks_filtered_copy_members IN ACCESS SHARE MODE;\n' >&9
+fi
+if [ "${NATIVE_COPY_PRESENCE}" = "8" ]; then
+  printf 'LOCK TABLE connectors.owntracks_input_server_births,connectors.owntracks_input_server_ends,connectors.owntracks_input_copy_births,connectors.owntracks_input_copy_ends IN ACCESS SHARE MODE;\n' >&9
 fi
 printf '\\o %s\nSELECT pg_export_snapshot();\n\\o\n' "${SNAPSHOT_ID_FILE}" >&9
 # A FOR ALL policy also applies to SELECT. Count every SELECT-applying policy,
@@ -354,7 +361,8 @@ WITH native_tables AS (
   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='connectors' AND c.relname IN (
     'owntracks_filtered_copy_births','owntracks_filtered_copy_floors',
-    'owntracks_filtered_copy_batches','owntracks_filtered_copy_members')
+    'owntracks_filtered_copy_batches','owntracks_filtered_copy_members',
+    'owntracks_input_server_births','owntracks_input_server_ends','owntracks_input_copy_births','owntracks_input_copy_ends')
 ), qualified AS (
   SELECT c.oid FROM native_tables c
   WHERE c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
@@ -386,8 +394,10 @@ WITH native_tables AS (
           '(CURRENT_USER = ''connector_writer''::name)')
 )
 SELECT CASE WHEN (SELECT count(*) FROM native_tables)=0 THEN 'absent'
-            WHEN (SELECT count(*) FROM native_tables)=4
-              AND (SELECT count(*) FROM qualified)=4 THEN 'ready'
+            WHEN (SELECT count(*) FROM native_tables) IN (4,8)
+              AND (SELECT count(*) FROM native_tables
+                WHERE relname LIKE 'owntracks_filtered_copy_%')=4
+              AND (SELECT count(*) FROM qualified)=(SELECT count(*) FROM native_tables) THEN 'ready'
             ELSE 'unavailable' END;
 NATIVE_COPY_PROOF
 printf '\\o\n' >&9
@@ -423,7 +433,7 @@ fi
 
 NATIVE_COPY_STATE="$(tr -d '\r\n' < "${SNAPSHOT_NATIVE_COPY_STATE_FILE}")"
 case "${NATIVE_COPY_PRESENCE}:${NATIVE_COPY_STATE}" in
-  0:absent|4:ready) ;;
+  0:absent|4:ready|8:ready) ;;
   *)
     FAILURE_REASON="pg_dump_failed"
     echo "[backup] FAILED: native copy history does not admit complete snapshot export; not publishing" >&2
@@ -514,6 +524,13 @@ SET ROLE %I;',
     printf '\n-- Butlers scoped OwnTracks copy history\n'
     printf 'SET TIME ZONE '\''UTC'\'';\nCREATE TEMP TABLE butlers_owntracks_copy_restore_rows (ordinal integer NOT NULL, relation_name text NOT NULL, payload_hex text NOT NULL);\n'
     printf 'COPY butlers_owntracks_copy_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n'
+    NATIVE_INPUT_EXPORT=""
+    if [ "${NATIVE_COPY_PRESENCE}" = "8" ]; then
+      NATIVE_INPUT_EXPORT="            UNION ALL SELECT 5,'owntracks_input_server_births',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex') FROM connectors.owntracks_input_server_births t
+            UNION ALL SELECT 6,'owntracks_input_server_ends',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex') FROM connectors.owntracks_input_server_ends t
+            UNION ALL SELECT 7,'owntracks_input_copy_births',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex') FROM connectors.owntracks_input_copy_births t
+            UNION ALL SELECT 8,'owntracks_input_copy_ends',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex') FROM connectors.owntracks_input_copy_ends t"
+    fi
     PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
       --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
       --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
@@ -533,6 +550,7 @@ SET ROLE %I;',
             UNION ALL
             SELECT 4,'owntracks_filtered_copy_members',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
               FROM connectors.owntracks_filtered_copy_members t
+            ${NATIVE_INPUT_EXPORT}
             ORDER BY 1,2,3
           ) TO STDOUT; COMMIT" \
       || { echo "$?" > "${STATUSFILE}"; exit 0; }
@@ -549,7 +567,8 @@ DO $$ BEGIN
   IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows WHERE
       (ordinal,relation_name) NOT IN (
         (1,'owntracks_filtered_copy_births'),(2,'owntracks_filtered_copy_floors'),
-        (3,'owntracks_filtered_copy_batches'),(4,'owntracks_filtered_copy_members'))) THEN
+        (3,'owntracks_filtered_copy_batches'),(4,'owntracks_filtered_copy_members'),
+        (5,'owntracks_input_server_births'),(6,'owntracks_input_server_ends'),(7,'owntracks_input_copy_births'),(8,'owntracks_input_copy_ends'))) THEN
     RAISE EXCEPTION 'Native copy restoration input differs';
   END IF;
 END $$;
@@ -668,6 +687,125 @@ DO $$ BEGIN
   END IF;
 END $$;
 NATIVE_COPY_MEMBERS
+    if [ "${NATIVE_COPY_PRESENCE}" = "8" ]; then
+      cat <<'NATIVE_INPUT_RESTORE'
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows s
+    CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_input_server_births,
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+    WHERE s.relation_name='owntracks_input_server_births' AND pg_catalog.to_jsonb(r) IS DISTINCT FROM
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) THEN
+    RAISE EXCEPTION 'Native copy restoration row differs';
+  END IF;
+END $$;
+INSERT INTO connectors.owntracks_input_server_births
+SELECT r.* FROM butlers_owntracks_copy_restore_rows s
+CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_input_server_births,
+  pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+WHERE s.relation_name='owntracks_input_server_births' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  IF EXISTS(
+    (SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_input_server_births t
+      EXCEPT ALL SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_input_server_births')
+    UNION ALL
+    (SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_input_server_births'
+      EXCEPT ALL SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_input_server_births t)) THEN
+    RAISE EXCEPTION 'Native copy restoration cohort differs';
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows s
+    CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_input_server_ends,
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+    WHERE s.relation_name='owntracks_input_server_ends' AND pg_catalog.to_jsonb(r) IS DISTINCT FROM
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) THEN
+    RAISE EXCEPTION 'Native copy restoration row differs';
+  END IF;
+END $$;
+INSERT INTO connectors.owntracks_input_server_ends
+SELECT r.* FROM butlers_owntracks_copy_restore_rows s
+CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_input_server_ends,
+  pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+WHERE s.relation_name='owntracks_input_server_ends' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  IF EXISTS(
+    (SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_input_server_ends t
+      EXCEPT ALL SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_input_server_ends')
+    UNION ALL
+    (SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_input_server_ends'
+      EXCEPT ALL SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_input_server_ends t)) THEN
+    RAISE EXCEPTION 'Native copy restoration cohort differs';
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows s
+    CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_input_copy_births,
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+    WHERE s.relation_name='owntracks_input_copy_births' AND pg_catalog.to_jsonb(r) IS DISTINCT FROM
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) THEN
+    RAISE EXCEPTION 'Native copy restoration row differs';
+  END IF;
+END $$;
+INSERT INTO connectors.owntracks_input_copy_births
+SELECT r.* FROM butlers_owntracks_copy_restore_rows s
+CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_input_copy_births,
+  pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+WHERE s.relation_name='owntracks_input_copy_births' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  IF EXISTS(
+    (SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_input_copy_births t
+      EXCEPT ALL SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_input_copy_births')
+    UNION ALL
+    (SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_input_copy_births'
+      EXCEPT ALL SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_input_copy_births t)) THEN
+    RAISE EXCEPTION 'Native copy restoration cohort differs';
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows s
+    CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_input_copy_ends,
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+    WHERE s.relation_name='owntracks_input_copy_ends' AND pg_catalog.to_jsonb(r) IS DISTINCT FROM
+      pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) THEN
+    RAISE EXCEPTION 'Native copy restoration row differs';
+  END IF;
+END $$;
+INSERT INTO connectors.owntracks_input_copy_ends
+SELECT r.* FROM butlers_owntracks_copy_restore_rows s
+CROSS JOIN LATERAL pg_catalog.jsonb_populate_record(NULL::connectors.owntracks_input_copy_ends,
+  pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb) r
+WHERE s.relation_name='owntracks_input_copy_ends' ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  IF EXISTS(
+    (SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_input_copy_ends t
+      EXCEPT ALL SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_input_copy_ends')
+    UNION ALL
+    (SELECT pg_catalog.convert_from(pg_catalog.decode(s.payload_hex,'hex'),'UTF8')::jsonb
+        FROM butlers_owntracks_copy_restore_rows s WHERE s.relation_name='owntracks_input_copy_ends'
+      EXCEPT ALL SELECT pg_catalog.to_jsonb(t) FROM connectors.owntracks_input_copy_ends t)) THEN
+    RAISE EXCEPTION 'Native copy restoration cohort differs';
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM connectors.owntracks_points p
+    LEFT JOIN connectors.owntracks_input_copy_births b
+      ON b.copy_generation=p.source_input_generation
+    WHERE p.source_input_generation IS NOT NULL AND
+      (b.copy_generation IS NULL OR b.copy_kind NOT IN (2,3) OR b.producer_contract<>1
+        OR b.logical_source_digest IS DISTINCT FROM p.logical_source_digest
+        OR b.raw_digest IS DISTINCT FROM p.content_digest)) THEN
+    RAISE EXCEPTION 'Native point restoration input differs';
+  END IF;
+END $$;
+NATIVE_INPUT_RESTORE
+    fi
     printf 'RESET ROLE;\nCOMMIT;\n\\else\n\\echo Native copy history replay unavailable; restore certification required\n\\endif\nDROP TABLE butlers_owntracks_copy_restore_rows;\n'
   fi
 } | gzip > "${TMPFILE}"
