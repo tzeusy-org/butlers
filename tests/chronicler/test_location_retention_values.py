@@ -1038,6 +1038,8 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
             raise AssertionError(query)
 
         async def fetch(self, query, *args):
+            if "SELECT a.artifact_generation,i.parent_count" in query:
+                return []  # This frontier fixture has no native Memory artifacts.
             if "WITH artifacts AS" in query:
                 return self.catalog
             if "FROM location_native_cache_heads" in query:
@@ -3090,6 +3092,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     assert update[3] == [{"source": "base", "sha": "retained"}]
     assert any("location_catalog_copy_finished" in sql for sql, _ in pool.writes)
     await _assert_closed_native_mutation_copy_disposal()
+    await _assert_catalog_terminal_complete_ancestry_values()
     # A replay never refills its immutable reduced-body witnesses from current rows.
     assert await dispose_runtime_context(runtime, generation, plan)
     original_reduced = session["effective_system_prompt"]
@@ -8221,3 +8224,210 @@ async def _assert_selected_question_census_plan_values():
             await selected_question_source_plan(runtime, decision, ledger)
     plan["question_cohort"] = [question]
     assert await selected_question_source_plan(runtime, decision, ledger) == plan
+
+
+async def _assert_catalog_terminal_complete_ancestry_values():
+    """Actual terminal producer under a strict software writer, no SQL credit."""
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from uuid import uuid4
+
+    from butlers.chronicler.location_catalog_copies import (
+        catalog_frontier_closed,
+        catalog_holder_inventory,
+        dispose_catalog_artifacts,
+        require_catalog_artifact_ancestry,
+    )
+    from butlers.chronicler.location_memory_copies import _receivers, artifact_content_digest
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_projection import _digest_value
+
+    decision, generation, identifier, bundle = (uuid4() for _ in range(4))
+    original = dict(id=identifier, content="native rule sentinel", metadata={})
+    artifact = dict(
+        artifact_generation=generation,
+        artifact_id=identifier,
+        input_generation=bundle,
+        memory_table="rules",
+        body_digest=content_digest({"memory_artifact": _digest_value(original)}),
+        content_digest=artifact_content_digest("rules", original),
+    )
+    full = [
+        dict(
+            artifact_generation=generation,
+            parent_count=2,
+            copy_generation=uuid4(),
+            input_digest=b"p" * 32,
+            birth_digest=b"p" * 32,
+            output_id=uuid4(),
+        )
+        for _ in range(2)
+    ]
+
+    class Pool:
+        parents = full
+        body = deepcopy(original)
+        terminal = None
+        fault = False
+        unknown_ack = False
+        trace = []
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            snapshot = deepcopy((self.body, self.terminal))
+            try:
+                yield
+            except BaseException:
+                self.body, self.terminal = snapshot
+                raise
+            else:
+                self.trace.append("commit")
+
+        async def fetch(self, sql, *args):
+            if "SELECT a.artifact_generation,i.parent_count" in sql:
+                self.trace.append("ancestry")
+                return self.parents
+            if sql.startswith("WITH artifacts AS"):
+                return [dict(holder_generation=generation, receipt_id=self.terminal)]
+            if "SELECT DISTINCT a.*" in sql:
+                return [artifact] if self.terminal is None else []
+            if "SELECT * FROM chronicler.location_native_catalog_generations" in sql:
+                return []
+            if "location_native_memory_mutations" in sql:
+                return []
+            if sql.startswith("WITH artifacts AS"):
+                return [dict(holder_generation=generation, receipt_id=self.terminal)]
+            raise AssertionError("Unmodeled catalog fetch")
+
+        async def fetchrow(self, sql, *args):
+            if "location_retention_policy" in sql:
+                self.trace.append("policy")
+                return dict(version=1)
+            if "location_runtime_context_artifacts" in sql or "public.memory_catalog" in sql:
+                return None
+            if sql.startswith("SELECT * FROM rules"):
+                self.trace.append("body_read")
+                return self.body
+            raise AssertionError("Unmodeled catalog row read")
+
+        async def fetchval(self, sql, *args):
+            if sql == "SELECT current_schema()":
+                return "chronicler_mem"
+            if sql == "SELECT current_user":
+                return "own-role-double"
+            if sql.startswith("DELETE FROM rules"):
+                self.trace.append("delete")
+                self.body = None
+                return identifier
+            if sql.startswith("SELECT EXISTS(SELECT 1 FROM rules"):
+                self.trace.append("body_readback")
+                return self.body is not None
+            if sql.startswith(
+                "SELECT receipt_id FROM location_native_memory_artifact_dispositions"
+            ):
+                self.trace.append("receipt_readback")
+                return None if self.unknown_ack else self.terminal
+            if sql.startswith("SELECT EXISTS(SELECT 1 FROM location_native_memory_artifacts"):
+                return self.terminal is None
+            if any(
+                part in sql
+                for part in (
+                    "SELECT NOT EXISTS(SELECT 1 FROM chronicler.location_native_dispatch_parents",
+                    "location_native_processing_parents",
+                    "location_native_catalog_loans",
+                    "memory_links",
+                    "public.memory_catalog",
+                    "location_native_catalog_generations",
+                    "location_native_memory_artifacts",
+                )
+            ):
+                return False  # All modeled candidate lifetime/selection blockers are closed.
+            raise AssertionError("Unmodeled catalog value read")
+
+        async def execute(self, sql, *args):
+            if "pg_advisory_xact_lock" in sql:
+                return
+            if "INSERT INTO chronicler.location_native_memory_artifact_dispositions" in sql:
+                self.trace.append("receipt")
+                if self.fault:
+                    raise RuntimeError("synthetic receipt fault")
+                self.terminal = args[3]
+                return
+            raise AssertionError("Unmodeled catalog write")
+
+    pool, domain = Pool(), object()
+    previous = _receivers.get(domain)
+    _receivers[domain] = (pool, "chronicler_mem", "own-role-double")
+    # The actual producer uses the domain for candidates/readback; same fixed
+    # strict writer is registered here, with identity supplied by _lock.
+    _receivers[pool] = _receivers[domain]
+    try:
+        malformed = [
+            full[:1],
+            [full[0], full[1] | dict(birth_digest=b"x" * 32)],
+            [*full, full[0] | dict(copy_generation=uuid4(), output_id=uuid4())],
+            [
+                full[0]
+                | dict(copy_generation=None, input_digest=None, birth_digest=None, output_id=None)
+            ],
+            [full[0] | dict(parent_count=None)],
+        ]
+        for parents in malformed:
+            pool.parents = parents
+            pool.trace.clear()
+            with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                await dispose_catalog_artifacts(pool, decision)
+            assert pool.body == original and pool.terminal is None
+            assert "delete" not in pool.trace and "receipt" not in pool.trace
+            assert pool.trace.index("policy") < pool.trace.index("ancestry")
+            with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                await catalog_frontier_closed(pool, decision)
+            with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                await catalog_holder_inventory(pool, decision)
+        pool.parents = []
+        with pytest.raises(PolicyUnavailableError, match="ancestry is unavailable"):
+            await require_catalog_artifact_ancestry(pool, generation)
+        pool.parents = full
+        assert not await catalog_frontier_closed(pool, decision)
+        assert (await catalog_holder_inventory(pool, decision))[0]["receipt_id"] is None
+        pool.fault = True
+        with pytest.raises(RuntimeError, match="synthetic receipt fault"):
+            await dispose_catalog_artifacts(pool, decision)
+        assert pool.body == original and pool.terminal is None
+        assert "delete" in pool.trace and "receipt" in pool.trace
+        pool.fault = False
+        pool.unknown_ack = True
+        with pytest.raises(
+            PolicyUnavailableError, match="Committed artifact disposition is unknown"
+        ):
+            await dispose_catalog_artifacts(pool, decision)
+        assert pool.body is None and pool.terminal is not None
+        assert "receipt_readback" in pool.trace
+        # This immutable receipt is durable despite the deliberately lost ACK.
+        # Reset only this software fixture's original data for the separately
+        # positioned actual producer positive; do not infer terminal erasure
+        # from the failed business return.
+        pool.unknown_ack = False
+        pool.body, pool.terminal = deepcopy(original), None
+        pool.trace.clear()
+        await dispose_catalog_artifacts(pool, decision)
+        assert pool.body is None and pool.terminal is not None
+        assert pool.trace.index("policy") < pool.trace.index("ancestry")
+        assert pool.trace.index("ancestry") < pool.trace.index("body_read")
+        assert pool.trace.index("delete") < pool.trace.index("receipt") < pool.trace.index("commit")
+        assert pool.trace.index("commit") < pool.trace.index("receipt_readback")
+        assert await catalog_frontier_closed(pool, decision)
+        receipt = pool.terminal
+        await dispose_catalog_artifacts(pool, decision)
+        assert pool.terminal == receipt
+    finally:
+        _receivers.pop(pool, None)
+        if previous is None:
+            _receivers.pop(domain, None)
+        else:
+            _receivers[domain] = previous

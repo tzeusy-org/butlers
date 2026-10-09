@@ -1460,6 +1460,7 @@ async def _assert_native_memory_mutation_chain(pool, domain):
 
 async def _assert_two_parent_native_mutation_inputs(pool, domain, runtime, session_id):
     """Declared ancestry SQL controls; private receiving/source bindings planted."""
+    from butlers.chronicler.location_catalog_copies import require_catalog_artifact_ancestry
     from butlers.chronicler.location_memory_copies import artifact_content_digest
     from butlers.chronicler.location_memory_derivation import _captured_bundle_parents
     from butlers.chronicler.location_projection import _digest_value
@@ -1542,12 +1543,25 @@ async def _assert_two_parent_native_mutation_inputs(pool, domain, runtime, sessi
                 if species != "complete":
                     with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
                         await _captured_bundle_parents(observed, [], selected, [])
+                    # Actual owning catalog reader retains the original header,
+                    # every declared parent and each birth without a digest join.
+                    with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                        await require_catalog_artifact_ancestry(observed, generation)
+                    assert (
+                        dict(await observed.fetchrow("SELECT * FROM facts WHERE id=$1", artifact))
+                        == selected[0]
+                    )
                 else:
                     captured_parents, exclusive = await _captured_bundle_parents(
                         observed, [], selected, []
                     )
                     assert exclusive is True and len(captured_parents) == 2
                     assert {p["copy_generation"] for p in captured_parents} == set(parents)
+                    await require_catalog_artifact_ancestry(observed, generation)
+                    assert (
+                        dict(await observed.fetchrow("SELECT * FROM facts WHERE id=$1", artifact))
+                        == selected[0]
+                    )
         await domain.execute(
             "INSERT INTO location_runtime_tool_intents "
             "(tool_generation,receiving_session,tool_name,module_name,input_digest) "

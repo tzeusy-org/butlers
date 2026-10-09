@@ -691,6 +691,7 @@ class CatalogCopyRuntime:
                     artifact["input_generation"],
                 ):
                     raise PolicyUnavailableError("Native catalog input has been fenced")
+                await require_catalog_artifact_ancestry(conn, artifact["artifact_generation"])
                 from butlers.chronicler.location_memory_mutations import (
                     current_artifact_body_matches,
                 )
@@ -1223,6 +1224,7 @@ async def bind_catalog(conn: Any, pool: Any, schema: str, table: str, artifact: 
         return
     if row is None:
         raise PolicyUnavailableError("Native catalog persisted body is unavailable")
+    await require_catalog_artifact_ancestry(conn, binding["artifact_generation"])
     if await conn.fetchval(
         "SELECT EXISTS(SELECT 1 FROM chronicler.location_native_copy_births b "
         "JOIN chronicler.location_native_dispatch_parents i "
@@ -1335,12 +1337,46 @@ async def reconcile_catalog_loans(domain: Any, decision: UUID) -> None:
                 raise PolicyUnavailableError("Committed catalog receipt is unknown")
 
 
+async def require_catalog_artifact_ancestry(conn: Any, artifact: UUID | None = None) -> None:
+    """Full original header/parent/birth census on the actual owning writer.
+
+    A native artifact with no surviving header/parents must still be a row.
+    Global frontier reads check every native artifact, because an incomplete
+    bundle cannot safely be classified as unrelated to the selected decision.
+    No prose, model citation or current catalog projection supplies ancestry.
+    """
+    from butlers.chronicler.location_memory_ancestry import require_complete_parents
+
+    rows = await conn.fetch(
+        "SELECT a.artifact_generation,i.parent_count,p.copy_generation,p.input_digest,"
+        "b.output_id,b.input_digest AS birth_digest "
+        "FROM chronicler.location_native_memory_artifacts a "
+        "LEFT JOIN chronicler.location_native_dispatch_inputs i USING(input_generation) "
+        "LEFT JOIN chronicler.location_native_dispatch_parents p USING(input_generation) "
+        "LEFT JOIN chronicler.location_native_copy_births b "
+        "ON b.copy_generation=p.copy_generation "
+        "WHERE ($1::uuid IS NULL OR a.artifact_generation=$1) "
+        "ORDER BY a.artifact_generation,p.copy_generation,b.output_id",
+        artifact,
+    )
+    if artifact is not None and not rows:
+        raise PolicyUnavailableError("Native catalog artifact ancestry is unavailable")
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["artifact_generation"], []).append(row)
+    if artifact is not None and set(groups) != {artifact}:
+        raise PolicyUnavailableError("Native catalog artifact ancestry differs")
+    for parents in groups.values():
+        require_complete_parents(parents)
+
+
 async def catalog_holder_inventory(conn: Any, decision: UUID) -> list[Any]:
     """Census actual immutable generations, with their own terminal readbacks.
 
     Include historic loans too: replacing a catalog head cannot dispose a
     previous receiver. A NULL receipt is an unfinished holder, never absence.
     """
+    await require_catalog_artifact_ancestry(conn)
     return await conn.fetch(
         "WITH artifacts AS (SELECT DISTINCT a.* FROM location_native_memory_artifacts a "
         "JOIN location_native_dispatch_parents i USING(input_generation) "
@@ -1386,6 +1422,7 @@ async def catalog_holder_inventory(conn: Any, decision: UUID) -> list[Any]:
 
 async def catalog_frontier_closed(conn: Any, decision: UUID) -> bool:
     """Actual source catalog/loan census; no absence-only terminal witness."""
+    await require_catalog_artifact_ancestry(conn)
     if await conn.fetchval(
         "SELECT EXISTS(SELECT 1 FROM public.memory_catalog c "
         "WHERE c.source_schema='chronicler_mem' AND (c.summary<>'' OR c.title IS NOT NULL "
@@ -1451,6 +1488,7 @@ async def dispose_catalog_artifacts(domain: Any, decision: UUID) -> None:
         async with memory.acquire() as conn:
             async with conn.transaction():
                 await _lock(conn, schema, role)
+                await require_catalog_artifact_ancestry(conn, artifact["artifact_generation"])
                 if await conn.fetchval(
                     "SELECT NOT EXISTS(SELECT 1 FROM chronicler.location_native_dispatch_parents "
                     "WHERE input_generation=$1) OR EXISTS("

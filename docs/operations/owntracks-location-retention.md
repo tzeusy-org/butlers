@@ -1019,3 +1019,17 @@ Recursive source owners now call the existing hidden receiving preparation tool 
 `location_received_question_recoveries` is a separate removal-only binding for an actual unaccepted receiving birth, qualified by its committed source fence and native rejection-stage or ended-server witness. It contains no loan ID and cannot authorize delivery or scheduling. The separate recovery-terminal ledger still requires the caller/server/context lifetime to have ended; the floor alone is not a terminal receipt. Admitted or uncertain input, existing task, active private work, legacy source and stale incarnation remain unavailable. Caller qualification still compares the complete actual Tool input/result and same-Tool attempt census. The original source compares the fixed target's census; there is no source-loan absence shortcut.
 
 The existing migrated species adds an actual recovery-producer receipt fault after its real INSERT on the same acquired connection, with separate surviving binding/no-terminal readback and restored replay/census positive. The server-ended witness and input rows are planted for SQL-engine coverage, not actual online ASGI proof. Current extended SQL remains unexecuted until exact-head hosted evidence. Current software source-fence/recovery and recursive target controls are separate from complete registered online, mixed/legacy/runtime, managed browser/cache, all-holder raw deletion and protected/native outcomes; all original obligations remain mandatory.
+
+
+Catalog publication, native loan-body delivery and artifact disposal now reread
+the original artifact dispatch header, every declared parent and each actual
+birth on the same owning writer. Full artifact/catalog holder and frontier
+reads validate all native artifact headers first; a missing parent or digest
+mismatch cannot disappear through the selected-output join. The current
+software control invokes the actual terminal producer, refuses partial/extra
+ancestry before deletion, faults its receipt write and verifies restored replay.
+The existing migrated two-parent species extends the same query with healthy
+and partial ancestry readbacks; that new SQL extension remains unrun until
+its exact-head hosted receipt. Freeform mixed annotations remain preserved;
+this ancestry guard is no substitute for their lawful own-copy reduction,
+registered online admission, complete all-holder erasure or protected delivery.
