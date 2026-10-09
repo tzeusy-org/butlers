@@ -69,59 +69,39 @@ async def assert_registered_catalog_transport(url, postgres_container, memory_po
         chains=["core", "chronicler", "memory"],
         schemas={"core": "chronicler", "chronicler": "chronicler", "memory": "chronicler_mem"},
     )
+    fault = SimpleNamespace(fail_receipt=False, reached_receipt=False)
+
+    class ArtifactReceiptFaultConnection(asyncpg.Connection):
+        """Actual configured driver connection; no pool/registry impersonation."""
+
+        async def execute(self, sql, *args, **kwargs):
+            result = await super().execute(sql, *args, **kwargs)
+            if fault.fail_receipt and sql.startswith(
+                "INSERT INTO chronicler.location_native_memory_artifact_dispositions "
+            ):
+                fault.reached_receipt = True
+                raise RuntimeError("planted actual artifact receipt rollback")
+            return result
+
     fresh_memory = await asyncpg.create_pool(
         fresh_url,
         min_size=1,
         max_size=3,
         init=register_jsonb_codec,
+        connection_class=ArtifactReceiptFaultConnection,
         server_settings={"search_path": "chronicler_mem,public"},
     )
     try:
         await _assert_registered_catalog_transport(
-            fresh_url, postgres_container, fresh_memory, embedding
+            fresh_url, postgres_container, fresh_memory, embedding, fault
         )
     finally:
         await fresh_memory.close()
 
 
-class _ArtifactReceiptFaultPool:
-    """Configured test pool proxy; every SQL operation uses the real writer.
-
-    The constructor owns this pool before registration. The single fault runs
-    only after the actual producer's receipt INSERT and business writes, inside
-    its original transaction. It supplies no rows, verdicts or authority.
-    """
-
-    def __init__(self, pool):
-        self.pool = pool
-        self.fail_receipt = False
-        self.reached_receipt = False
-
-    def __getattr__(self, name):
-        return getattr(self.pool, name)
-
-    @asynccontextmanager
-    async def acquire(self):
-        owner = self
-        async with self.pool.acquire() as conn:
-
-            class Connection:
-                def __getattr__(self, name):
-                    return getattr(conn, name)
-
-                async def execute(self, sql, *args):
-                    result = await conn.execute(sql, *args)
-                    if owner.fail_receipt and sql.startswith(
-                        "INSERT INTO chronicler.location_native_memory_artifact_dispositions "
-                    ):
-                        owner.reached_receipt = True
-                        raise RuntimeError("planted actual artifact receipt rollback")
-                    return result
-
-            yield Connection()
-
-
-async def _assert_registered_catalog_transport(url, postgres_container, memory_pool, embedding):
+async def _assert_registered_catalog_transport(
+    url, postgres_container, memory_pool, embedding, fault
+):
     """Real registered consumer→Switchboard→source and online callback controls.
 
     Domain connections use the existing managed runtime identities. Chronicler's
@@ -153,10 +133,6 @@ async def _assert_registered_catalog_transport(url, postgres_container, memory_p
         migration_bootstrap_db_url,
     )
     from butlers.tools.switchboard.registry.registry import register_butler
-
-    # Register this real-connection fault seam as the configured owning pool;
-    # every identity/role/SQL/readback still reaches the actual database.
-    memory_pool = _ArtifactReceiptFaultPool(memory_pool)
 
     # Actual chains provide every consumer/core/Memory dependency. Bootstrap is
     # replayed by the existing trusted disposable migration owner, not by the
@@ -283,6 +259,9 @@ async def _assert_registered_catalog_transport(url, postgres_container, memory_p
             source = modules["chronicler"]._location_catalog_runtime
             receiver = modules["finance"]._location_catalog_runtime
             assert source.memory is memory_pool and receiver.domain is pools["finance"]
+            from butlers.chronicler.location_memory_copies import _receivers
+
+            assert _receivers[source.domain][0] is memory_pool
             # Consumer cannot read the source's private Memory table. Its body
             # must cross the actual owning registered tool, never peer SQL.
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
@@ -557,13 +536,13 @@ async def _assert_registered_catalog_transport(url, postgres_container, memory_p
             # Fault the ACTUAL source producer after its real public reduction,
             # native DELETE and receipt INSERT, inside that producer's acquired
             # transaction. Separate acquisitions must see original survivors.
-            memory_pool.fail_receipt = True
+            fault.fail_receipt = True
             try:
                 with pytest.raises(RuntimeError, match="actual artifact receipt rollback"):
                     await dispose_catalog_artifacts(pools["chronicler"], decision)
             finally:
-                memory_pool.fail_receipt = False
-            assert memory_pool.reached_receipt is True
+                fault.fail_receipt = False
+            assert fault.reached_receipt is True
             async with memory_pool.acquire() as rollback_readback:
                 assert (
                     await rollback_readback.fetchval(

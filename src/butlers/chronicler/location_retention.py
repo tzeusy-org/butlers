@@ -1000,6 +1000,33 @@ async def _current_cache_bindings(conn: Any) -> bool:
     return True
 
 
+async def _current_unclassified_holders(conn: Any) -> bool:
+    """Recheck actual own opaque bodies, including writers after a sealed snapshot.
+
+    No timestamp, empty native ledger, source label or caller classification
+    supplies lineage. This predicate never deletes or reclassifies a holder.
+    Its caller holds the same owning policy/producer fence as disposal.
+    """
+    return bool(
+        await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM sessions s WHERE "
+            "(COALESCE(s.prompt,'')<>'' OR COALESCE(s.result,'')<>'' "
+            "OR COALESCE(s.error,'')<>'' OR COALESCE(s.effective_system_prompt,'')<>'' "
+            "OR COALESCE(s.tool_calls,'[]'::jsonb)<>'[]'::jsonb OR EXISTS("
+            "SELECT 1 FROM session_process_logs l WHERE l.session_id=s.id "
+            "AND (COALESCE(l.command,'')<>'' OR COALESCE(l.stderr,'')<>''))) AND NOT EXISTS ("
+            "SELECT 1 FROM location_native_copy_births b WHERE b.receiving_session=s.id))"
+        )
+        or await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM tier2_cache c WHERE NOT EXISTS("
+            "SELECT 1 FROM location_native_cache_heads h WHERE h.cache_key=c.cache_key)) "
+            "OR EXISTS(SELECT 1 FROM location_legacy_cache_observations o WHERE NOT EXISTS("
+            "SELECT 1 FROM location_legacy_cache_replacements r "
+            "WHERE r.observation_id=o.observation_id))"
+        )
+    )
+
+
 async def _all_committed_holders(conn: asyncpg.Connection, plan: Any) -> Any | None:
     """Require a nonempty native sealed cohort and exact committed readbacks.
 
@@ -1020,6 +1047,8 @@ async def _all_committed_holders(conn: asyncpg.Connection, plan: Any) -> Any | N
         or frontier["expected_count"] <= 0
     ):
         raise PolicyUnavailableError("Holder frontier changed")
+    if await _current_unclassified_holders(conn):
+        return None
     # A copy born after the sealed snapshot must be in that exact cohort too.
     # This query uses actual producer-captured output lineage, not a citation
     # or temporal overlap. Missing receiving-holder closure remains unknown.
@@ -2284,22 +2313,9 @@ async def seal_native_frontier(pool: asyncpg.Pool, decision_id: UUID) -> UUID | 
             # actual owning classification/disposition exists. Empty content
             # contributes no stored copy; native input/output births bind the
             # full receiving holder, even after its body has been disposed.
-            if await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM sessions s WHERE "
-                "(COALESCE(s.prompt,'')<>'' OR COALESCE(s.result,'')<>'' "
-                "OR COALESCE(s.tool_calls,'[]'::jsonb)<>'[]'::jsonb) AND NOT EXISTS ("
-                "SELECT 1 FROM location_native_copy_births b WHERE b.receiving_session=s.id))"
-            ):
-                return None
             # Census current legacy bodies as well as prior classified bodies.
             # A bounded scan cursor is progress, never complete coverage.
-            if await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM tier2_cache c WHERE NOT EXISTS("
-                "SELECT 1 FROM location_native_cache_heads h WHERE h.cache_key=c.cache_key)) "
-                "OR EXISTS(SELECT 1 FROM location_legacy_cache_observations o WHERE NOT EXISTS("
-                "SELECT 1 FROM location_legacy_cache_replacements r "
-                "WHERE r.observation_id=o.observation_id))"
-            ):
+            if await _current_unclassified_holders(conn):
                 return None
             from butlers.chronicler.location_delegation_copies import delegation_frontier_closed
 

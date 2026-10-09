@@ -992,6 +992,8 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
             self.role = "butler_chronicler_rw"
             self.trace = []
             self.legacy = False
+            self.late_session = False
+            self.late_cache = False
             self.changed = False
             self.catalog_unknown = False
             self.catalog_pending = False
@@ -1095,8 +1097,10 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
                 return self.artifact_pending
             if "FROM location_native_memory_parents" in query:
                 return False
-            if "FROM sessions" in query or "FROM tier2_cache" in query:
-                return self.legacy
+            if "FROM sessions" in query:
+                return self.legacy or self.late_session
+            if "FROM tier2_cache" in query:
+                return self.legacy or self.late_cache
             if "FROM location_native_copy_births" in query:
                 return self.changed
             if "FROM location_legacy_cache_observations" in query:
@@ -1198,6 +1202,15 @@ async def test_native_frontier_requires_planted_current_holder_and_committed_inv
         assert pool.trace.index("policy") < pool.trace.index("seal") < pool.trace.index("commit")
         assert pool.trace.index("commit") < pool.trace.index("committed_readback")
         assert pool.raw == ["planted-exact-raw"] and pool.points == ["planted-point-body"]
+        # Actual unknown own bodies can arrive after the immutable snapshot.
+        # Reuse must census them again, preserving the original sealed cohort.
+        for field in ("late_session", "late_cache"):
+            setattr(pool, field, True)
+            assert await service.seal_native_frontier(pool, decision) is None
+            assert pool.frontier["frontier_generation"] == sealed
+            assert pool.raw == ["planted-exact-raw"] and pool.points == ["planted-point-body"]
+            setattr(pool, field, False)
+            assert await service.seal_native_frontier(pool, decision) == sealed
         # This frontier producer itself has no deletion side effect. The real
         # role/point/raw action and separate readbacks are distinct controls.
         pool.question_pending = True

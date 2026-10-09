@@ -1217,3 +1217,32 @@ only this native artifact/catalog/server/consumer cohort and real atomic writer.
 It does not certify actual OwnTracks acceptance, independent mixed prose,
 raw-point deletion, every runtime/legacy holder, remote-recipient erasure or
 whole retention delivery. All original obligations remain mandatory.
+
+## Current frontier reuse and faithful artifact fault seam
+
+The current predicate rechecks actual opaque own session/cache rows even when
+an immutable frontier was sealed earlier. A later unknown body preserves point
+and raw source evidence. The configured ordinary Chronicler session writer now
+uses the same policy-first producer fence before INSERT, including its existing
+FK fallback savepoints; it does not classify that input or mint native lineage.
+Unconfigured unrelated session behavior retains its existing contract.
+
+The existing hosted SQL species positions a real blocked owning session writer
+behind the actual policy holder, checks its missing pre-COMMIT row from another
+acquisition, and then plants its committed opaque body after a sealed frontier.
+Both that body and a separately planted late opaque cache must prevent reuse
+and point deletion while raw/point counts and the original frontier remain.
+Only the disposable test owner removes those synthetic sentinels to restore
+the healthy engine companion; that is fixture cleanup, not a legacy-erasure
+producer or receipt. The new current SQL controls remain unexecuted until their
+exact hosted node passes. Permanent refusal does not fulfill the full original
+legacy/mixed/runtime closure obligation.
+
+The preceding 7d722 artifact fixture used a forwarding pool proxy. The actual
+strict CatalogCopyRuntime constructor refused that non-asyncpg pool at
+wire_runtime before the producer fault controls; none received SQL credit.
+The corrected fixture retains a genuine constructor-configured asyncpg.Pool
+and uses only its native connection_class to execute real SQL before the fixed
+receipt-INSERT fault. It also checks actual receiver enrollment. Product pool,
+constructor, role and registry guards remain unchanged. Earlier proxy wording
+above is dated failed-fixture history, not the current installed protocol.

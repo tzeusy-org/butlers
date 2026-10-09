@@ -38,6 +38,78 @@ async def test_session_create_strips_untranslatable_prompt_chars() -> None:
     assert pool.fetchval_calls
     _query, args = pool.fetchval_calls[0]
     assert args[0] == "helloworld"
+    await _assert_opaque_session_policy_first()
+
+
+async def _assert_opaque_session_policy_first():
+    """Actual configured branch, software only; no row/string mints lineage."""
+    from contextlib import asynccontextmanager
+
+    from butlers.chronicler.location_copy_pools import _copy_pools
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+
+    class Pool:
+        role = "butler_chronicler_rw"
+
+        def __init__(self):
+            self.trace = []
+            self.row = uuid.uuid4()
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.trace.append("begin")
+            yield
+            self.trace.append("commit")
+
+        async def fetchval(self, query, *args):
+            if "current_user" in query:
+                return self.role
+            if "INSERT INTO sessions" in query:
+                self.trace.append("insert")
+                return self.row
+            raise AssertionError(query)
+
+        async def fetchrow(self, query, *args):
+            if "FROM location_retention_policy" in query:
+                self.trace.append("policy")
+                return {"version": 1}
+            raise AssertionError(query)
+
+        async def execute(self, query, *args):
+            if "pg_advisory_xact_lock" in query:
+                self.trace.append("producer")
+            elif "pg_notify" not in query:
+                raise AssertionError(query)
+            return "SELECT 1"
+
+    pool = Pool()
+    _copy_pools.add(pool)  # Explicit constructor registry double, not SQL authority.
+    try:
+        assert (
+            await session_create(
+                pool, "opaque ordinary input", "tick", request_id=str(uuid.uuid4())
+            )
+            == pool.row
+        )
+        assert "policy" in pool.trace and "producer" in pool.trace
+        assert (
+            pool.trace.index("policy") < pool.trace.index("producer") < pool.trace.index("insert")
+        )
+        assert pool.trace.index("insert") < pool.trace.index("commit")
+        pool.trace.clear()
+        pool.role = "other_role"
+        with pytest.raises(PolicyUnavailableError, match="identity differs"):
+            await session_create(
+                pool, "opaque ordinary input", "tick", request_id=str(uuid.uuid4())
+            )
+        assert "insert" not in pool.trace
+    finally:
+        _copy_pools.discard(pool)
 
 
 @pytest.mark.asyncio

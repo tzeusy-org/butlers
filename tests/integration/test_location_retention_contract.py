@@ -610,6 +610,9 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
                 )
                 == frontier
             )
+            await _assert_late_opaque_holder_refusal(
+                pool, owning, decision, frontier, before_points
+            )
             disposed = await dispose_ready_point_evidence(owning, decision)
             assert disposed is not None
             assert (
@@ -761,3 +764,157 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
             await owning.close()
     finally:
         await pool.close()
+
+
+async def _assert_late_opaque_holder_refusal(pool, owning, decision, frontier, before_points):
+    """Current-census engine proof; opaque fixture cleanup is NOT erasure authority."""
+    import asyncio
+    from contextlib import suppress
+
+    from butlers.chronicler.location_retention import (
+        dispose_ready_point_evidence,
+        seal_native_frontier,
+    )
+    from butlers.chronicler.storage import _lock_location_writes, upsert_tier2_cache
+    from butlers.core.sessions import session_create
+    from butlers.core.utils import generate_uuid7_string
+
+    # This actual ordinary configured producer has no native ancestry. Its
+    # opaque stored input must block reuse of the already committed snapshot.
+    request = generate_uuid7_string()
+    task = None
+    try:
+        async with owning.acquire() as holder:
+            async with holder.transaction():
+                await _lock_location_writes(holder)
+                holder_pid = await holder.fetchval("SELECT pg_backend_pid()")
+                task = asyncio.create_task(
+                    session_create(
+                        owning,
+                        prompt="synthetic opaque late fixture input",
+                        trigger_source="tick",
+                        request_id=request,
+                    )
+                )
+                waiting = False
+                for _ in range(100):
+                    waiting = await pool.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity a "
+                        "WHERE $1=ANY(pg_blocking_pids(a.pid)) "
+                        "AND a.query LIKE '%FROM location_retention_policy%')",
+                        holder_pid,
+                    )
+                    if waiting or task.done():
+                        break
+                    await asyncio.sleep(0.01)
+                assert waiting and not task.done()
+                assert not await pool.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE request_id=$1)", request
+                )
+        session = await task
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+    async with pool.acquire() as committed:
+        assert await committed.fetchval("SELECT prompt FROM sessions WHERE id=$1", session)
+        assert not await committed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_native_copy_births WHERE receiving_session=$1)",
+            session,
+        )
+    assert await seal_native_frontier(owning, decision) is None
+    assert await dispose_ready_point_evidence(owning, decision) is None
+    async with pool.acquire() as committed:
+        assert await committed.fetchval("SELECT count(*) FROM point_events") == before_points
+        assert await committed.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 304
+        assert (
+            await committed.fetchval(
+                "SELECT frontier_generation FROM location_retention_frontiers WHERE decision_id=$1",
+                decision,
+            )
+            == frontier
+        )
+    # Disposable test-owner cleanup of ONLY the planted fixture. This is not a
+    # product classification/disposal path and supplies no legacy-holder receipt.
+    await pool.execute("DELETE FROM sessions WHERE id=$1", session)
+    assert await seal_native_frontier(owning, decision) == frontier
+
+    key = f"synthetic-late-opaque:{uuid4()}"
+    async with owning.acquire() as writer:
+        async with writer.transaction():
+            await _lock_location_writes(writer)
+            await upsert_tier2_cache(
+                writer,
+                cache_key=key,
+                start_at=datetime.now(UTC) - timedelta(hours=1),
+                end_at=datetime.now(UTC),
+                prose="synthetic opaque late cache fixture",
+                provenance_refs=[],
+            )
+    async with pool.acquire() as committed:
+        assert await committed.fetchval("SELECT prose FROM tier2_cache WHERE cache_key=$1", key)
+        assert not await committed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_native_cache_heads WHERE cache_key=$1)", key
+        )
+    assert await seal_native_frontier(owning, decision) is None
+    assert await dispose_ready_point_evidence(owning, decision) is None
+    async with pool.acquire() as committed:
+        assert await committed.fetchval("SELECT count(*) FROM point_events") == before_points
+        assert await committed.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 304
+    await pool.execute("DELETE FROM tier2_cache WHERE cache_key=$1", key)
+    assert await seal_native_frontier(owning, decision) == frontier
+
+    # Empty prompt/result must not hide an opaque composed-system or process
+    # diagnostic body. Use each actual configured writer; no native receipt is
+    # fabricated from a session locator or the absence of normal prompt bytes.
+    import hashlib
+
+    from butlers.core.session_process_logs import write as write_process_log
+
+    system_body = "synthetic opaque composed system fixture"
+    system_session = await session_create(
+        owning,
+        prompt="",
+        trigger_source="tick",
+        request_id=generate_uuid7_string(),
+        effective_system_prompt=system_body,
+        prompt_digest=hashlib.sha256(system_body.encode()).hexdigest(),
+        prompt_provenance=[],
+    )
+    async with pool.acquire() as committed:
+        assert (
+            await committed.fetchval(
+                "SELECT effective_system_prompt FROM sessions WHERE id=$1", system_session
+            )
+            == system_body
+        )
+    assert await seal_native_frontier(owning, decision) is None
+    assert await dispose_ready_point_evidence(owning, decision) is None
+    assert await pool.fetchval("SELECT count(*) FROM point_events") == before_points
+    await pool.execute("DELETE FROM sessions WHERE id=$1", system_session)
+    assert await seal_native_frontier(owning, decision) == frontier
+
+    diagnostic_session = await session_create(
+        owning, prompt="", trigger_source="tick", request_id=generate_uuid7_string()
+    )
+    assert await seal_native_frontier(owning, decision) == frontier
+    for field in ("command", "stderr"):
+        await write_process_log(
+            owning, diagnostic_session, **{field: "synthetic opaque process fixture"}
+        )
+        async with pool.acquire() as committed:
+            diagnostic = await committed.fetchrow(
+                "SELECT command,stderr FROM session_process_logs WHERE session_id=$1",
+                diagnostic_session,
+            )
+            assert diagnostic[field] == "synthetic opaque process fixture"
+        assert await seal_native_frontier(owning, decision) is None
+        assert await dispose_ready_point_evidence(owning, decision) is None
+        assert await pool.fetchval("SELECT count(*) FROM point_events") == before_points
+        assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 304
+        await pool.execute(
+            "DELETE FROM session_process_logs WHERE session_id=$1", diagnostic_session
+        )
+        assert await seal_native_frontier(owning, decision) == frontier
+    await pool.execute("DELETE FROM sessions WHERE id=$1", diagnostic_session)

@@ -407,7 +407,29 @@ async def session_create(
                 session_id = await insert_session(writer)
                 await bind_context_session(writer, pool, session_id, sanitized_prompt)
     else:
-        session_id = await insert_session(pool)
+        from butlers.chronicler.location_copy_pools import native_copy_pool
+
+        if native_copy_pool(pool):
+            from butlers.chronicler.location_policy import PolicyUnavailableError
+            from butlers.chronicler.storage import _lock_location_writes
+
+            # An opaque ordinary body is UNKNOWN, not a claimed native copy.
+            # Its actual configured writer must still serialize with the
+            # current frontier/deletion census, before the session row exists.
+            async with pool.acquire() as writer:
+                async with writer.transaction():
+                    if await writer.fetchval("SELECT current_user") != "butler_chronicler_rw":
+                        raise PolicyUnavailableError("Owning session writer identity differs")
+                    await _lock_location_writes(writer)
+
+                    class SavepointWriter:
+                        async def fetchval(self, *args):
+                            async with writer.transaction():
+                                return await writer.fetchval(*args)
+
+                    session_id = await insert_session(SavepointWriter())
+        else:
+            session_id = await insert_session(pool)
     await verify_context_session(pool, session_id)
     logger.info("Session created: %s (trigger=%s, model=%s)", session_id, trigger_source, model)
 
