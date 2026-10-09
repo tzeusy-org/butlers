@@ -1808,3 +1808,25 @@ fallback remains positive. The existing fallback owner positions native
 refusal with original exception identity and no CLI/general invocation; its
 actual old producer is DIDNOTRAISE RED and restored positive. This exception
 only refuses processing and grants no source/currentness/terminal authority.
+
+
+The actual classifier now propagates a start-witness refusal before its generic
+SDK invocation-error catch. The existing owning software control removes only
+the original private binding at the actual start seam: the real producer refuses
+with its original exception, before SDK invocation or routing. Restoring that
+binding and cancelling the still-gated test Task is test cleanup, never an end
+receipt. Ordinary generic SDK invocation-error fallback remains compatible.
+
+A healthy original SDK producer whose end committed but independent ACK is
+unknown may revalidate its complete original input/task/handler/incarnation birth
+and reuse that same committed end receipt. It must independently observe that
+receipt before transferring its unchanged reply; a changed Task, handler,
+incarnation or end binding refuses without another receipt or body transfer.
+Successful transfer removes the private binding, so public identifiers, restarted
+Tasks and a second completed transfer cannot reuse this recovery path. The
+existing real-Pool species authors a lost ACK after observing the actual commit,
+then separately reads the surviving original receipt and recovers through the
+same original producer. This current extension remains hosted UNRUN. Receipt
+recovery closes only the SDK coroutine, not copied result, route, processing,
+provider, retained exception or any other descendant. Their lawful terminal
+mechanisms and all four original outcomes remain active SOURCE work.

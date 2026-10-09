@@ -11292,6 +11292,11 @@ async def _assert_native_ingress_runtime_values():
                     if self.sdk_unknown:
                         return None
                 return dict(zip(("task", "handler", "incarnation"), self.sdk_birth[1:]))
+            if "FROM location_ingress_structured_sdk_ends " in sql and "FOR SHARE" in sql:
+                assert self.transaction_active
+                if self.sdk_end is None or args != (self.sdk_end[0],):
+                    return None
+                return dict(zip(("task_generation", "receipt_id"), self.sdk_end[1:]))
             if "FROM location_ingress_structured_sdk_ends " in sql:
                 assert not self.transaction_active and args == (self.sdk_end[0],)
                 self.trace.append("independent structured SDK end")
@@ -11387,6 +11392,10 @@ async def _assert_native_ingress_runtime_values():
                 self.sdk_birth = args
                 self.trace.append("structured SDK claim")
             elif "INSERT INTO location_ingress_structured_sdk_ends" in sql:
+                if self.sdk_end is not None and self.sdk_end[0] == args[0]:
+                    import asyncpg
+
+                    raise asyncpg.UniqueViolationError("Synthetic duplicate SDK receipt")
                 self.sdk_end = args
                 self.trace.append("structured SDK end")
             elif "INSERT INTO location_ingress_structured_outputs" in sql:
@@ -11564,6 +11573,36 @@ async def _assert_native_ingress_runtime_values():
                 )
             adapter.invoke_structured.assert_not_awaited()
             pool.unknown = False
+            refused_starts = []
+
+            async def refuse_actual_start(actual_pool, binding, invoke):
+                original = owner._structured_sdk.pop(id(binding))
+                try:
+                    try:
+                        await start_structured_ingress_sdk(actual_pool, binding, invoke)
+                    except CopyFloorUnavailable as refusal:
+                        refused_starts.append(refusal)
+                        raise
+                finally:
+                    owner._structured_sdk[id(binding)] = original
+                    # The test owns the still-gated Task cleanup. Cancellation
+                    # cannot publish an SDK end or attest original-copy disposal.
+                    binding.task.cancel()
+                    await asyncio.gather(binding.task, return_exceptions=True)
+
+            with patch(
+                "butlers.core.location_ingress_runtime.start_structured_ingress_sdk",
+                side_effect=refuse_actual_start,
+            ):
+                with pytest.raises(CopyFloorUnavailable) as refused:
+                    await sc.try_structured_classification(
+                        pool, mcp_server=server, prompt=prompt, include_bug_report=False
+                    )
+                assert refused.value is refused_starts[0]
+                assert "ingress_structured_sdk_producer_differs" == str(refused.value)
+            adapter.invoke_structured.assert_not_awaited()
+            route.assert_not_awaited()
+            assert pool.sdk_end is None
             pool.sdk_unknown = True
             with pytest.raises(CopyFloorUnavailable, match="ingress_structured_sdk_commit_unknown"):
                 await sc.try_structured_classification(
@@ -11582,6 +11621,39 @@ async def _assert_native_ingress_runtime_values():
             assert pool.sdk_end is not None  # Committed ACK unknown, not false rollback.
             assert any(entry.reply is not None for entry in owner._structured_sdk.values())
             pool.sdk_end_unknown = False
+            same_sdk = next(
+                entry
+                for entry in owner._structured_sdk.values()
+                if entry.generation == pool.sdk_end[0]
+            )
+            committed_end = pool.sdk_end
+            body = same_sdk.reply
+            writes = pool.trace.count("structured SDK end")
+            original_birth = pool.sdk_birth
+            for field in (1, 2, 3):  # Original Task, handler and incarnation.
+                changed_birth = list(original_birth)
+                changed_birth[field] = uuid4()
+                pool.sdk_birth = tuple(changed_birth)
+                with pytest.raises(
+                    CopyFloorUnavailable, match="ingress_structured_sdk_claim_differs"
+                ):
+                    await finish_structured_ingress_sdk(pool, same_sdk)
+                assert same_sdk.reply is body and pool.trace.count("structured SDK end") == writes
+            pool.sdk_birth = original_birth
+            # A planted differing claim must not reuse another Task's receipt.
+            pool.sdk_end = (committed_end[0], uuid4(), committed_end[2])
+            with pytest.raises(
+                CopyFloorUnavailable, match="ingress_structured_sdk_receipt_differs"
+            ):
+                await finish_structured_ingress_sdk(pool, same_sdk)
+            assert same_sdk.reply is body and pool.trace.count("structured SDK end") == writes
+            pool.sdk_end = committed_end
+            assert await finish_structured_ingress_sdk(pool, same_sdk) is body
+            assert (
+                pool.sdk_end == committed_end and pool.trace.count("structured SDK end") == writes
+            )
+            assert same_sdk.reply is None and same_sdk.invoke is None
+            assert id(same_sdk) not in owner._structured_sdk
             adapter.invoke_structured.reset_mock()
             pool.sdk_birth = pool.sdk_end = None
             pool.output_unknown = True

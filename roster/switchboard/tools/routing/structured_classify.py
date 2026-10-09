@@ -501,6 +501,7 @@ async def try_structured_classification(
         attempt_exc: Exception | None = None
 
         for schema_attempt in range(2):  # one retry on schema-invalid output only
+            from butlers.core.location_copy_retention import CopyFloorUnavailable
             from butlers.core.location_ingress_runtime import (
                 capture_structured_ingress_output,
                 current_ingress_runtime_input,
@@ -514,8 +515,6 @@ async def try_structured_classification(
             # Unknown input COMMIT cannot be converted to an untracked SDK call.
             native_tools_wire = None
             if current_ingress_runtime_input(pool) is not None:
-                from butlers.core.location_copy_retention import CopyFloorUnavailable
-
                 try:
                     # The immutable owning wire is the same body hashed for
                     # admission and reconstructed inside the gated SDK Task.
@@ -558,6 +557,10 @@ async def try_structured_classification(
                     tool_calls, text, usage = await invoke()
                 else:
                     await start_structured_ingress_sdk(pool, native_sdk, invoke)
+            except CopyFloorUnavailable:
+                # A start/claim witness refusal is not an SDK invocation error.
+                # Preserve it so neither this loop nor its caller can fall back.
+                raise
             except Exception as exc:  # classified below, after the retry loop
                 attempt_exc = exc
                 break

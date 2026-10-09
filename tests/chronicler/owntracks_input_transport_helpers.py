@@ -1123,6 +1123,48 @@ async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_pro
                     "WHERE input_generation=$1)",
                     structured,
                 )
+            original_fetchrow = asyncpg.pool.PoolConnectionProxy.fetchrow
+            lost_ack = []
+
+            async def sdk_ack_unknown(conn, sql, *args, **kwargs):
+                row = await original_fetchrow(conn, sql, *args, **kwargs)
+                if (
+                    sql.startswith(
+                        "SELECT task_generation,receipt_id FROM location_ingress_structured_sdk_ends "
+                    )
+                    and "FOR SHARE" not in sql
+                    and args == (structured,)
+                ):
+                    assert not conn.is_in_transaction() and row is not None
+                    lost_ack.append(row["receipt_id"])
+                    return None  # Actual committed receipt observed; caller ACK unknown.
+                return row
+
+            with patch.object(asyncpg.pool.PoolConnectionProxy, "fetchrow", new=sdk_ack_unknown):
+                with pytest.raises(
+                    CopyFloorUnavailable, match="ingress_structured_sdk_end_unknown"
+                ):
+                    await finish_structured_ingress_sdk(pool, sdk)
+            assert len(lost_ack) == 1
+            assert sdk.reply == (result_calls, "Synthetic result", None)
+            async with pool.acquire() as observed:
+                assert (
+                    await observed.fetchval(
+                        "SELECT receipt_id FROM location_ingress_structured_sdk_ends "
+                        "WHERE input_generation=$1 AND task_generation=$2",
+                        structured,
+                        sdk.task_generation,
+                    )
+                    == lost_ack[0]
+                )
+                assert (
+                    await observed.fetchval(
+                        "SELECT count(*) FROM location_ingress_structured_sdk_ends "
+                        "WHERE input_generation=$1",
+                        structured,
+                    )
+                    == 1
+                )
             assert await finish_structured_ingress_sdk(pool, sdk) == (
                 result_calls,
                 "Synthetic result",
@@ -1137,6 +1179,15 @@ async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_pro
                 )
                 assert sdk_end["task_generation"] == sdk.task_generation
                 assert isinstance(sdk_end["receipt_id"], UUID)
+                assert sdk_end["receipt_id"] == lost_ack[0]
+                assert (
+                    await observed.fetchval(
+                        "SELECT count(*) FROM location_ingress_structured_sdk_ends "
+                        "WHERE input_generation=$1",
+                        structured,
+                    )
+                    == 1
+                )
                 with pytest.raises(
                     asyncpg.RaiseError, match="Location source floors are permanent"
                 ):

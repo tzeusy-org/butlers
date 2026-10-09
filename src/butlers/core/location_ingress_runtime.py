@@ -430,13 +430,29 @@ async def finish_structured_ingress_sdk(pool: Any, binding: _StructuredSDK):
                 runtime.incarnation,
             ):
                 raise CopyFloorUnavailable("ingress_structured_sdk_claim_differs")
-            await conn.execute(
-                "INSERT INTO location_ingress_structured_sdk_ends "
-                "(input_generation,task_generation,receipt_id) VALUES($1,$2,$3)",
+            prior = await conn.fetchrow(
+                "SELECT task_generation,receipt_id FROM location_ingress_structured_sdk_ends "
+                "WHERE input_generation=$1 FOR SHARE",
                 generation,
-                binding.task_generation,
-                receipt,
             )
+            if prior is not None:
+                from uuid import UUID
+
+                if prior["task_generation"] != binding.task_generation or not isinstance(
+                    prior["receipt_id"], UUID
+                ):
+                    raise CopyFloorUnavailable("ingress_structured_sdk_receipt_differs")
+                # Only this same original eligible producer can recover its
+                # committed ACK; no new receipt/body or Task authority is made.
+                receipt = prior["receipt_id"]
+            else:
+                await conn.execute(
+                    "INSERT INTO location_ingress_structured_sdk_ends "
+                    "(input_generation,task_generation,receipt_id) VALUES($1,$2,$3)",
+                    generation,
+                    binding.task_generation,
+                    receipt,
+                )
     async with pool.acquire() as observed:
         actual = await observed.fetchrow(
             "SELECT task_generation,receipt_id FROM location_ingress_structured_sdk_ends "
