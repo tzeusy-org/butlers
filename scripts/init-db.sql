@@ -50,7 +50,7 @@ DECLARE
     _amendment_target TEXT := COALESCE(
         NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
     );
-    _amendment_oid OID := to_regclass('public.insight_amendments');
+    _amendment_oid OID;
     _amendment_owner OID;
     _amendment_kind "char";
     _amendment_persistence "char";
@@ -78,6 +78,7 @@ BEGIN
         RAISE EXCEPTION 'restore-drill admin bootstrap requires a cluster superuser';
     END IF;
 
+    _amendment_oid := to_regclass('public.insight_amendments');
     -- AMENDMENT_OWNER_READ_ONLY_PREFLIGHT: no ownership or ACL side effects.
     -- Keep exact text lookup: casting a configured name first can truncate it.
     IF _amendment_oid IS NOT NULL THEN
@@ -722,7 +723,7 @@ DECLARE
     _target TEXT := COALESCE(
         NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
     );
-    _oid OID := to_regclass('public.insight_amendments');
+    _oid OID;
     _owner OID;
     _kind "char";
     _persistence "char";
@@ -738,6 +739,7 @@ BEGIN
     IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) THEN
         RAISE EXCEPTION 'amendment ownership requires the original privileged bootstrap identity';
     END IF;
+    _oid := to_regclass('public.insight_amendments');
     IF current_setting('butlers.bootstrap_amendment_oid', true) IS NULL
        OR _oid IS DISTINCT FROM _expected_oid
        OR _target IS DISTINCT FROM current_setting('butlers.bootstrap_amendment_target', true) THEN
