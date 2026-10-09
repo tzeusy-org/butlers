@@ -28,6 +28,9 @@ _MUTEX = "location:switchboard-ingress"
 _writers: dict[asyncpg.Pool, SwitchboardInputCopies] = {}
 _HTTP_CELL = "butlers.location.ingress_input"
 _scanner_scope: ContextVar[tuple | None] = ContextVar("location_ingress_scanner", default=None)
+_processing_scope: ContextVar[tuple | None] = ContextVar(
+    "location_ingress_processing", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,7 @@ class _Input:
     task: asyncio.Task | None
     handler: UUID | None = None
     kind: int = 1
+    unresolved_failure: bool = False
 
 
 @dataclass(eq=False)
@@ -108,6 +112,7 @@ class SwitchboardInputCopies:
         self._headers: dict[int, _Header] = {}
         self._inputs: dict[int, _Input] = {}
         self._ended_headers: set[int] = set()
+        self._unresolved_headers: set[int] = set()
         self._ended_inputs: set[int] = set()
         self._cleared_inputs: set[int] = set()
         self._settlers: set[asyncio.Task] = set()
@@ -138,6 +143,20 @@ class SwitchboardInputCopies:
         def ended(task: asyncio.Task) -> None:
             if task is not binding.task or not task.done():
                 return
+            if header and id(binding) in getattr(self, "_unresolved_headers", ()):
+                return
+            # A completed Task can still own copied input in its cached
+            # result, exception or traceback. Preserve the primary exception
+            # and cancellation semantics; no Task-done receipt may proxy
+            # disposal of those unresolved holders. Queued-object clearing
+            # remains a distinct fixed producer below.
+            if not header:
+                if binding.unresolved_failure:
+                    return
+                if binding.kind == 3 and (
+                    task.cancelled() or task.exception() is not None or task.result() is not None
+                ):
+                    return
             target = self._ended_headers if header else self._ended_inputs
             target.add(id(binding))
             settling = asyncio.create_task(self.reconcile_observed_ends())
@@ -178,6 +197,15 @@ class SwitchboardInputCopies:
             ):
                 raise CopyFloorUnavailable("ingress_server_commit_unknown")
         return binding
+
+    def retain_server_failure(self, binding: _Header) -> None:
+        """Only the original ASGI producer can hold its failed server copy."""
+        if (
+            self._headers.get(id(binding)) is not binding
+            or binding.task is not asyncio.current_task()
+        ):
+            raise CopyFloorUnavailable("ingress_server_scope_differs")
+        self._unresolved_headers.add(id(binding))
 
     async def reserve_queued_input(self, header: _Header, envelope: dict) -> _Input:
         from butlers.tools.switchboard.ingestion.ingest import _compute_dedupe_key
@@ -679,7 +707,16 @@ class IngressServerLifetime:
                         cell.queued = await self.runtime.reserve_queued_input(header, envelope)
             return message
 
-        await self.app({**scope, _HTTP_CELL: cell}, native_receive, send)
+        try:
+            await self.app({**scope, _HTTP_CELL: cell}, native_receive, send)
+        except BaseException:
+            # A traceback can retain the native receive closure/body even
+            # after this Task completes. This only withholds its own end.
+            try:
+                self.runtime.retain_server_failure(header)
+            except Exception:
+                logger.warning("Location ingress server failure binding remains unresolved")
+            raise
 
 
 async def reserve_ingest_input(pool: Any, envelope: dict) -> tuple | None:
@@ -720,11 +757,22 @@ def install_ingress_middleware(mcp: Any, runtime: SwitchboardInputCopies) -> Non
 
     class InputClaims(Middleware):
         async def on_call_tool(self, context, call_next):
-            if context.message.name == "ingest":
-                envelope = _ingest_envelope(context.message.arguments)
-                if envelope and _owntracks(envelope):
-                    await runtime.claim_queued_input(_current_request_input(runtime), envelope)
-            return await call_next(context)
+            captured = None
+            try:
+                if context.message.name == "ingest":
+                    envelope = _ingest_envelope(context.message.arguments)
+                    if envelope and _owntracks(envelope):
+                        cell = _current_request_input(runtime)
+                        captured = cell.queued
+                        await runtime.claim_queued_input(cell, envelope)
+                return await call_next(context)
+            except BaseException:
+                if isinstance(captured, _Input) and runtime._inputs.get(id(captured)) is captured:
+                    # The SDK may catch this outside the middleware and finish
+                    # its Task normally while retaining the error's input copy.
+                    # This marker only withholds the original input end.
+                    captured.unresolved_failure = True
+                raise
 
     mcp.add_middleware(InputClaims())
     mcp._location_ingress_owner = runtime
@@ -748,9 +796,32 @@ async def spawn_ingest_processing(captured: tuple | None, body: dict, invoke: An
         # The frozen actual copied arguments, not request_id or a caller flag,
         # bind this separate Task. A changed bundle cannot enter processing.
         await runtime.claim_queued_input(cell, body)
-        return await invoke()
+        token = _processing_scope.set((runtime, child))
+        try:
+            return await invoke()
+        finally:
+            _processing_scope.reset(token)
 
     return asyncio.create_task(process())
+
+
+def retain_ingress_processing_failure() -> None:
+    """Fixed owning callbacks hold their actual copy after a caught failure.
+
+    This private scope can only withhold disposition. It cannot close a copy
+    or attest disposal of a pipeline result, log, runtime or routed descendant.
+    """
+    captured = _processing_scope.get()
+    if captured is None:
+        return
+    runtime, binding = captured
+    if (
+        runtime._inputs.get(id(binding)) is not binding
+        or binding.kind != 3
+        or binding.task is not asyncio.current_task()
+    ):
+        raise CopyFloorUnavailable("ingress_processing_scope_differs")
+    binding.unresolved_failure = True
 
 
 def _buffer_body(ref: Any) -> dict:

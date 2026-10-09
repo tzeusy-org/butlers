@@ -1607,3 +1607,24 @@ Current 808 hosted failure reached registration, so it proves neither the later
 column read nor queued/processing SQL. All original four outcomes/P1–P9 remain
 mandatory UNMET; interrupted histories and routed target/runtime/loan holders remain
 independent source and proof obligations.
+
+The continuing source distinguishes a completed processing Task from disposal
+of its retained error/result. An actual Task may keep an independently copied
+payload in its exception traceback or cached result. Such a Task now withholds
+its kind-3 processing end; the separately cleared kind-2 queue object can still
+settle. The configured pipeline callback also marks its original processing
+copy unresolved after a caught failure or failed pipeline result, even though
+that callback returns `None`. The real SDK middleware holds a failed input
+before an outer SDK handler can catch its error, and the actual ASGI producer
+holds its failed server scope. These constructor-owned markers can only
+withhold an end. They neither prove cleanup nor close a log, remote runtime,
+routed result or another descendant, and primary error identity is preserved.
+
+Existing owning software controls use real Tasks, the configured callback,
+actual FastMCP middleware and actual ASGI wrapper, with metadata/claim I/O
+explicitly modeled. Healthy companions close their own copy; planted retained
+tracebacks/results and caught failures remain pending. Neutralizing the actual
+Task, callback or SDK hold reproduces semantic failures. This is software
+evidence only, without configured-role SQL or registered HTTP qualification.
+The full lawful error/log/runtime disposal path remains required source work;
+permanent refusal does not fulfill the original four outcomes.

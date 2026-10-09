@@ -118,7 +118,11 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
         entered.set()
         await release.wait()
 
-    buffer = DurableBuffer(BufferConfig(worker_count=1), None, owning_process)
+    buffer = DurableBuffer(
+        BufferConfig(worker_count=1, scanner_interval_s=3600, scanner_grace_s=0),
+        switchboard,
+        owning_process,
+    )
     await buffer.start()
     try:
         mcp = FastMCP("switchboard")
@@ -153,9 +157,32 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
             connector._main_loop = asyncio.get_running_loop()
             runtime = connector._input_copies
             assert runtime is not None and runtime.pool is connector_pool
-            before = await connector_pool.fetchval(
-                "SELECT count(*) FROM connectors.owntracks_input_server_births"
+            actual_replay_headers = []
+            native_replay_reader = connector._drain_native_replay
+
+            async def witnessed_native_replay(endpoint_identity):
+                original_headers = set(runtime._servers)
+                await native_replay_reader(endpoint_identity)
+                # The actual reader has returned, but its original processing
+                # Task has not ended yet. Observe its real constructor binding
+                # before the Task-end callback can settle/remove that header.
+                born = [
+                    binding
+                    for key, binding in runtime._servers.items()
+                    if key not in original_headers
+                ]
+                assert len(born) == 1
+                actual_replay_headers.extend(born)
+
+            connector._drain_native_replay = witnessed_native_replay
+            webhook_header_count = (
+                "SELECT count(DISTINCT h.copy_generation) "
+                "FROM connectors.owntracks_input_server_births h "
+                "JOIN connectors.owntracks_input_copy_births b "
+                "ON b.copy_generation=h.copy_generation AND b.server_generation=h.copy_generation "
+                "WHERE b.copy_kind=1 AND b.incarnation=h.incarnation AND h.incarnation=$1"
             )
+            before = await connector_pool.fetchval(webhook_header_count, runtime.incarnation)
             from datetime import UTC, datetime
 
             raw = {
@@ -321,7 +348,90 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                     )
                     == 2
                 )
+                # Invoke the actual configured scanner, rather than forge a
+                # recovery parent or manually mark a receiving copy closed.
+                entered.clear()
+                release.clear()
+                assert await buffer._run_scanner_sweep() == 1
+                await asyncio.wait_for(entered.wait(), timeout=10)
+                cold_ref = actual_refs[-1]
+                assert cold_ref.message_text == inbox["normalized_text"]
+                assert cold_ref._native_ingress is not None
+                async with switchboard.acquire() as committed:
+                    cold_parent = await committed.fetchrow(
+                        "SELECT p.parent_generation,s.copy_generation AS first_generation,"
+                        "a.stored_digest,e.copy_generation AS ended "
+                        "FROM location_ingress_input_parents p "
+                        "JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+                        "JOIN location_ingress_inbox_sources s ON s.request_id=a.request_id "
+                        "LEFT JOIN location_ingress_input_ends e ON e.copy_generation=p.copy_generation "
+                        "WHERE p.copy_generation=$1",
+                        cold_ref._native_ingress[1].generation,
+                    )
+                    assert cold_parent is not None and cold_parent["ended"] is None
+                    assert cold_parent["parent_generation"] == cold_parent["first_generation"]
+                    assert cold_parent["stored_digest"] == current["stored_digest"]
+                    with pytest.raises(CopyFloorUnavailable):
+                        await require_ingress_closed(
+                            committed, point["accepted_request_id"], key, inbox
+                        )
+                release.set()
+                async with asyncio.timeout(10):
+                    while True:
+                        await receiving.reconcile_observed_ends()
+                        cold_copies = await switchboard.fetch(
+                            "SELECT b.copy_kind,e.copy_generation IS NOT NULL AS ended "
+                            "FROM location_ingress_input_births b "
+                            "JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+                            "LEFT JOIN location_ingress_input_ends e USING(copy_generation) "
+                            "WHERE a.request_id=$1 ORDER BY b.copy_kind",
+                            point["accepted_request_id"],
+                        )
+                        if len(cold_copies) == 5 and all(row["ended"] for row in cold_copies):
+                            break
+                        await asyncio.sleep(0.01)
+                assert [row["copy_kind"] for row in cold_copies] == [1, 2, 2, 3, 3]
+                assert cold_ref.message_text == "" and cold_ref._native_ingress is None
+                async with switchboard.acquire() as committed:
+                    await require_ingress_closed(
+                        committed, point["accepted_request_id"], key, inbox
+                    )
                 await _assert_native_first_source_atomicity(switchboard_url, switchboard)
+                # The real successful webhook also invokes an independent
+                # native replay reader, even when its source query is empty.
+                # Its header is not the original webhook's kind-1 birth.
+                async with connector_pool.acquire() as committed:
+                    webhook = await committed.fetchrow(
+                        "SELECT h.copy_generation,h.incarnation,b.logical_source_digest,b.raw_digest,"
+                        "e.copy_generation AS ended FROM connectors.owntracks_input_server_births h "
+                        "JOIN connectors.owntracks_input_copy_births b "
+                        "ON b.copy_generation=h.copy_generation AND b.server_generation=h.copy_generation "
+                        "JOIN connectors.owntracks_input_copy_births processing "
+                        "ON processing.copy_bundle=b.copy_bundle AND processing.copy_kind=2 "
+                        "LEFT JOIN connectors.owntracks_input_server_ends e "
+                        "ON e.copy_generation=h.copy_generation "
+                        "WHERE processing.copy_generation=$1 AND b.copy_kind=1",
+                        point["source_input_generation"],
+                    )
+                    assert webhook is not None and webhook["ended"] == webhook["copy_generation"]
+                    assert webhook["incarnation"] == runtime.incarnation
+                    assert webhook["logical_source_digest"] == point["logical_source_digest"]
+                    assert webhook["raw_digest"] == point["content_digest"]
+                    assert len(actual_replay_headers) == 1
+                    replay_headers = await committed.fetch(
+                        "SELECT h.copy_generation,e.copy_generation AS ended "
+                        "FROM connectors.owntracks_input_server_births h "
+                        "LEFT JOIN connectors.owntracks_input_server_ends e USING(copy_generation) "
+                        "WHERE h.incarnation=$1 AND h.copy_generation=$2",
+                        runtime.incarnation,
+                        actual_replay_headers[0].generation,
+                    )
+                    assert len(replay_headers) == 1
+                    assert replay_headers[0]["copy_generation"] != webhook["copy_generation"]
+                    assert replay_headers[0]["ended"] == replay_headers[0]["copy_generation"]
+                    before_shutdown = await committed.fetchval(
+                        "SELECT count(*) FROM connectors.owntracks_input_server_births"
+                    )
                 runtime.close_admission()
                 async with httpx.AsyncClient(timeout=10) as phone:
                     held = await phone.post(
@@ -331,16 +441,21 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                     )
                     assert held.status_code == 503
                 assert (
+                    await connector_pool.fetchval(webhook_header_count, runtime.incarnation)
+                    == before + 1
+                )
+                assert (
                     await connector_pool.fetchval(
                         "SELECT count(*) FROM connectors.owntracks_input_server_births"
                     )
-                    == before + 1
+                    == before_shutdown
                 )
                 assert dict(
                     await connector_pool.fetchrow(
                         "SELECT * FROM connectors.owntracks_points WHERE id=$1", point["id"]
                     )
                 ) == dict(point)
+                connector._drain_native_replay = native_replay_reader
 
                 # A second actual configured constructor exercises the adopted
                 # SSE client route. Ending its POST/202 cannot settle the SDK

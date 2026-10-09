@@ -435,6 +435,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 request_id,
             )
 
+        if routing_failed:
+            from butlers.core.location_ingress_copies import retain_ingress_processing_failure
+
+            retain_ingress_processing_failure()
+
         # Mark the ingestion event as failed/replay_failed, or complete a
         # pending replay back to ingested. Shielded (see
         # ingestion_event_reconcile_after_processing) so cancelling this

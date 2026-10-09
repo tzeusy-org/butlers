@@ -9743,6 +9743,60 @@ async def _assert_native_ingress_census_and_actual_task_end():
     await app({"type": "http", "method": "POST", "path": "/mcp"}, receive, send)
     assert trace == ["birth-readback", "http.response.start", "http.response.body"]
 
+    # Actual ASGI failure keeps its own body/closure in the original traceback.
+    # A healthy sibling completes; the failed scope cannot be settled by done.
+    runtime._headers, runtime._unresolved_headers = {}, set()
+    actual_headers = []
+
+    async def captured_header():
+        captured = _Header(uuid4(), asyncio.current_task())
+        runtime._headers[id(captured)] = captured
+        actual_headers.append(captured)
+        runtime._observe(captured, header=True)
+        return captured
+
+    runtime.reserve_header = captured_header
+    server_primary = RuntimeError("synthetic server failure")
+
+    async def server(scope, receive, send):
+        independent_copy = {"body": (await receive())["body"]}
+        assert independent_copy["body"] == b"synthetic"
+        if scope.get("synthetic_failure"):
+            raise server_primary
+
+    for failed_scope in (False, True):
+        native_server = IngressServerLifetime(server, runtime)
+        actual_server = asyncio.create_task(
+            native_server(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/mcp",
+                    "synthetic_failure": failed_scope,
+                },
+                receive,
+                send,
+            )
+        )
+        if failed_scope:
+            with pytest.raises(RuntimeError) as caught:
+                await actual_server
+            assert caught.value is server_primary
+        else:
+            await actual_server
+        await asyncio.sleep(0)
+        captured = actual_headers[-1]
+        assert captured.task is actual_server and actual_server.done()
+        assert (id(captured) in runtime._ended_headers) is not failed_scope
+        assert (id(captured) in runtime._unresolved_headers) is failed_scope
+    tb, retained_server_copy = server_primary.__traceback__, False
+    while tb:
+        copied = tb.tb_frame.f_locals.get("independent_copy")
+        if isinstance(copied, dict) and copied.get("body") == b"synthetic":
+            retained_server_copy = True
+        tb = tb.tb_next
+    assert retained_server_copy
+
     # Queue before final SDK delivery; actual HTTP Task may end before the
     # receiving SDK Task starts. No POST/202 end stands in for that holder.
     from unittest.mock import patch
@@ -9907,6 +9961,117 @@ async def _assert_native_ingress_census_and_actual_task_end():
     with patch("fastmcp.server.dependencies.get_http_request", return_value=missing_request):
         with pytest.raises(CopyFloorUnavailable, match="ingress_queued_input_differs"):
             await sdk.call_tool("ingest", envelope)
+    assert received == ["owntracks", "ordinary"]
+
+    # The real SDK can catch a failed tool outside our middleware and return
+    # normally. That Task(None) must not certify its retained input/error copy.
+    failing_sdk = FastMCP("synthetic ingress error holder")
+    install_ingress_middleware(failing_sdk, pending)
+    retained_sdk_errors = []
+    primary_sdk_error = RuntimeError("synthetic SDK primary")
+
+    @failing_sdk.tool(name="ingest")
+    async def failed_ingest(
+        schema_version: str, source: dict, event: dict, sender: dict, payload: dict
+    ):
+        independent_copy = dict(payload)
+        assert independent_copy["raw"]["synthetic"] == "location"
+        raise primary_sdk_error
+
+    failed_input = _Input(
+        uuid4(), cell.header.generation, b"f" * 32, content_digest(envelope), None
+    )
+    pending._inputs[id(failed_input)] = failed_input
+    failed_cell = _RequestInput(pending, cell.header, failed_input)
+    failed_request = Request({**sdk_request.scope, "butlers.location.ingress_input": failed_cell})
+
+    async def failed_handler():
+        from fastmcp.exceptions import ToolError
+
+        with patch("fastmcp.server.dependencies.get_http_request", return_value=failed_request):
+            try:
+                await failing_sdk.call_tool("ingest", envelope)
+            except ToolError as error:
+                retained_sdk_errors.append(error)
+
+    failed_task = asyncio.create_task(failed_handler())
+    await failed_task
+    await asyncio.sleep(0)
+    assert failed_task.result() is None and failed_input.task is failed_task
+    assert id(failed_input) not in pending._ended_inputs
+    assert failed_input.unresolved_failure and retained_sdk_errors
+    tb, retained_sdk_copy = primary_sdk_error.__traceback__, False
+    while tb:
+        copied = tb.tb_frame.f_locals.get("independent_copy")
+        if isinstance(copied, dict) and copied.get("raw", {}).get("synthetic") == "location":
+            retained_sdk_copy = True
+        tb = tb.tb_next
+    assert retained_sdk_copy
+
+    # Cancellation caught outside the SDK has the same unresolved-copy rule,
+    # without changing the actual cancellation's identity or ordinary behavior.
+    cancelled_sdk = FastMCP("synthetic cancelled ingress holder")
+    install_ingress_middleware(cancelled_sdk, pending)
+    primary_cancel = asyncio.CancelledError()
+    caught_cancellations = []
+
+    @cancelled_sdk.tool(name="ingest")
+    async def cancelled_ingest(
+        schema_version: str, source: dict, event: dict, sender: dict, payload: dict
+    ):
+        raise primary_cancel
+
+    cancelled_input = _Input(
+        uuid4(), cell.header.generation, b"c" * 32, content_digest(envelope), None
+    )
+    pending._inputs[id(cancelled_input)] = cancelled_input
+    cancelled_cell = _RequestInput(pending, cell.header, cancelled_input)
+    cancelled_request = Request(
+        {**sdk_request.scope, "butlers.location.ingress_input": cancelled_cell}
+    )
+
+    async def caught_cancel_handler():
+        with patch("fastmcp.server.dependencies.get_http_request", return_value=cancelled_request):
+            try:
+                await cancelled_sdk.call_tool("ingest", envelope)
+            except asyncio.CancelledError as error:
+                caught_cancellations.append(error)
+
+    cancelled_task = asyncio.create_task(caught_cancel_handler())
+    await cancelled_task
+    await asyncio.sleep(0)
+    assert cancelled_task.result() is None and cancelled_input.task is cancelled_task
+    assert caught_cancellations == [primary_cancel]
+    assert id(cancelled_input) not in pending._ended_inputs
+    assert cancelled_input.unresolved_failure
+
+    # Claim readback failure happens before FunctionTool invocation but can
+    # also be caught by the SDK. Hold that same actual input, not a remint.
+    unknown_input = _Input(
+        uuid4(), cell.header.generation, b"u" * 32, content_digest(envelope), None
+    )
+    pending._inputs[id(unknown_input)] = unknown_input
+    unknown_cell = _RequestInput(pending, cell.header, unknown_input)
+    unknown_request = Request({**sdk_request.scope, "butlers.location.ingress_input": unknown_cell})
+    caught_unknowns = []
+
+    async def caught_unknown_handler():
+        with patch("fastmcp.server.dependencies.get_http_request", return_value=unknown_request):
+            try:
+                await sdk.call_tool("ingest", envelope)
+            except CopyFloorUnavailable as error:
+                caught_unknowns.append(error)
+
+    claims.unavailable = True
+    try:
+        unknown_task = asyncio.create_task(caught_unknown_handler())
+        await unknown_task
+        await asyncio.sleep(0)
+    finally:
+        claims.unavailable = False
+    assert unknown_task.result() is None and unknown_input.task is unknown_task
+    assert id(unknown_input) not in pending._ended_inputs
+    assert unknown_input.unresolved_failure and len(caught_unknowns) == 1
     assert received == ["owntracks", "ordinary"]
 
     retry = _Input(
@@ -10141,6 +10306,7 @@ async def _assert_native_ingress_census_and_actual_task_end():
     assert offered.message_text == "synthetic changed queue payload" and frozen
     assert changed.task is None and id(changed) not in pending._cleared_inputs
     await _assert_native_cold_ingress_values()
+    await _assert_native_ingress_completed_task_holders()
 
 
 async def _assert_native_cold_ingress_values():
@@ -10362,3 +10528,285 @@ async def _assert_native_cold_ingress_values():
             _writers.pop(pool)
         else:
             _writers[pool] = previous
+
+
+async def _assert_native_ingress_completed_task_holders():
+    """Actual Task observer/reconciler; modeled metadata I/O, never SQL proof."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from butlers.core.buffer import _MessageRef
+    from butlers.core.location_ingress_copies import (
+        SwitchboardInputCopies,
+        _buffer_body,
+        _Input,
+        process_buffer_input,
+    )
+
+    marker = "synthetic independent processing copy"
+
+    class Connection:
+        def __init__(self, runtime):
+            self.runtime, self.ends = runtime, set()
+            self.at_insert = []
+
+        async def execute(self, sql, generation, *args):
+            if "INSERT INTO location_ingress_input_claims" in sql:
+                return
+            assert "INSERT INTO location_ingress_input_ends" in sql
+            binding = next(b for b in self.runtime._inputs.values() if b.generation == generation)
+            retained = False
+            if binding.task.done() and not binding.task.cancelled():
+                error = binding.task.exception()
+                tb = error.__traceback__ if error else None
+                while tb:
+                    local = tb.tb_frame.f_locals.get("independent_copy")
+                    if isinstance(local, dict) and local.get("marker") == marker:
+                        retained = True
+                    tb = tb.tb_next
+            self.at_insert.append((binding.kind, retained))
+            self.ends.add(generation)
+
+        async def fetchrow(self, sql, generation):
+            binding = next(b for b in self.runtime._inputs.values() if b.generation == generation)
+            if "location_ingress_input_claims" in sql:
+                return {
+                    "handler_generation": binding.handler,
+                    "incarnation": self.runtime.incarnation,
+                }
+            assert "location_ingress_input_births" in sql
+            return {
+                "server_generation": binding.server,
+                "dedupe_digest": binding.dedupe_digest,
+                "envelope_digest": binding.envelope_digest,
+                "copy_kind": binding.kind,
+            }
+
+        async def fetchval(self, sql, generation):
+            assert "location_ingress_input_ends" in sql
+            return generation in self.ends
+
+    class Runtime(SwitchboardInputCopies):
+        def __init__(self):
+            self.incarnation = uuid4()
+            self._inputs, self._headers = {}, {}
+            self._ended_inputs, self._ended_headers = set(), set()
+            self._cleared_inputs, self._settlers = set(), set()
+            self._reconcile_lock = asyncio.Lock()
+            self.conn = Connection(self)
+            self.pool = self
+
+        @asynccontextmanager
+        async def writer(self):
+            yield self.conn
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self.conn
+
+        async def reserve_child(self, parent, body):
+            assert self._inputs.get(id(parent)) is parent and parent.kind == 2
+            child = _Input(
+                uuid4(), parent.server, parent.dedupe_digest, content_digest(body), None, kind=3
+            )
+            self._inputs[id(child)] = child
+            self.processing = child
+            return child
+
+    for outcome in (
+        "healthy",
+        "error",
+        "result",
+        "cancel",
+        "configured_healthy",
+        "configured_error",
+        "configured_result",
+        "configured_reconcile_error",
+    ):
+        runtime = Runtime()
+        ref = _MessageRef(
+            request_id="synthetic holder",
+            message_inbox_id=uuid4(),
+            message_text="synthetic source",
+            source={"provider": "owntracks", "marker": marker, "endpoint_identity": marker},
+            event={"external_event_id": marker},
+            sender={},
+            enqueued_at=datetime.now(UTC),
+        )
+        body = _buffer_body(ref)
+        queued = _Input(uuid4(), uuid4(), b"q" * 32, content_digest(body), None, kind=2)
+        runtime._inputs[id(queued)] = queued
+        ref._native_ingress = (runtime, queued, body)
+        primary = RuntimeError("synthetic primary")
+
+        from butlers.core import fact_authority
+        from butlers.switchboard_wiring import wire_pipelines
+
+        retained_errors = []
+
+        async def pipeline_process(**kwargs):
+            independent_copy = {"marker": marker, "message": kwargs["message_text"]}
+            assert independent_copy["message"] == "synthetic source"
+            if outcome == "configured_error":
+                try:
+                    raise primary
+                except RuntimeError as error:
+                    retained_errors.append(error)
+                    raise
+            return SimpleNamespace(
+                classification_error=marker if outcome == "configured_result" else None,
+                routing_error=None,
+                failed_targets=[],
+            )
+
+        daemon = SimpleNamespace(
+            config=SimpleNamespace(name="switchboard", buffer=None),
+            spawner=SimpleNamespace(trigger=AsyncMock()),
+            _active_modules=[],
+            _credential_store=None,
+            mcp=None,
+        )
+        previous_registry = fact_authority.source_registry()
+        with (
+            patch(
+                "butlers.modules.pipeline.MessagePipeline",
+                return_value=SimpleNamespace(process=pipeline_process),
+            ),
+            patch(
+                "butlers.core.buffer.DurableBuffer",
+                side_effect=lambda **kwargs: SimpleNamespace(_process_fn=kwargs["process_fn"]),
+            ),
+        ):
+            try:
+                wire_pipelines(daemon, runtime)
+            finally:
+                fact_authority._source_registry = previous_registry
+
+        async def invoke(actual):
+            if outcome.startswith("configured_"):
+                with (
+                    patch(
+                        "butlers.core.ingestion_events.ingestion_event_reconcile_after_processing",
+                        new=AsyncMock(
+                            side_effect=primary if outcome == "configured_reconcile_error" else None
+                        ),
+                    ),
+                    patch("butlers.switchboard_wiring.logger.warning") as warning,
+                ):
+                    result = await daemon._buffer._process_fn(actual)
+                    assert result is None
+                    assert all("exc_info" not in call.kwargs for call in warning.call_args_list)
+                return
+            independent_copy = dict(actual.source)
+            assert independent_copy["marker"] == marker
+            if outcome == "error":
+                raise primary
+            if outcome == "cancel":
+                raise asyncio.CancelledError()
+            if outcome == "result":
+                return independent_copy
+
+        if outcome in ("error", "configured_reconcile_error"):
+            with pytest.raises(RuntimeError) as caught:
+                await process_buffer_input(ref, invoke)
+            assert caught.value is primary
+        elif outcome == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await process_buffer_input(ref, invoke)
+        else:
+            await process_buffer_input(ref, invoke)
+        await asyncio.sleep(0)
+        while runtime._settlers:
+            await asyncio.gather(*tuple(runtime._settlers))
+            await asyncio.sleep(0)
+        assert ref.message_text == "" and ref.source == {} and body == {}
+        assert queued.generation in runtime.conn.ends
+        processing = runtime.processing
+        assert processing.task.done()
+        if outcome in ("healthy", "configured_healthy"):
+            assert processing.generation in runtime.conn.ends
+            assert {kind for kind, _ in runtime.conn.at_insert} == {2, 3}
+        else:
+            assert processing.generation not in runtime.conn.ends
+            assert {kind for kind, _ in runtime.conn.at_insert} == {2}
+            assert id(processing) not in runtime._ended_inputs
+        assert not any(retained for _, retained in runtime.conn.at_insert)
+        if outcome == "error":
+            tb, retained = primary.__traceback__, False
+            while tb:
+                copied = tb.tb_frame.f_locals.get("independent_copy")
+                if isinstance(copied, dict) and copied.get("marker") == marker:
+                    retained = True
+                tb = tb.tb_next
+            assert retained  # The primary traceback survives; its copy remains held.
+        if outcome == "result":
+            assert processing.task.result()["marker"] == marker
+        if outcome in ("configured_error", "configured_result"):
+            assert processing.task.result() is None
+            assert processing.unresolved_failure
+        if outcome == "configured_error":
+            assert retained_errors == [primary]
+            tb, retained = primary.__traceback__, False
+            while tb:
+                copied = tb.tb_frame.f_locals.get("independent_copy")
+                if isinstance(copied, dict) and copied.get("marker") == marker:
+                    retained = True
+                tb = tb.tb_next
+            assert retained
+        if outcome == "configured_reconcile_error":
+            assert processing.task.exception() is primary
+            tb, retained = primary.__traceback__, False
+            while tb:
+                copied = tb.tb_frame.f_locals.get("_buf_tool_args")
+                if isinstance(copied, dict) and copied.get("source_identity") == marker:
+                    retained = True
+                tb = tb.tb_next
+            assert retained
+
+    # Execute the actual native replay reader with an empty owning source
+    # query. Its content-free birth is separate from the webhook allocation;
+    # an empty replay query does not make that real lifetime disappear.
+    from butlers.connectors.owntracks import OwnTracksConnector
+    from butlers.connectors.owntracks_input_copies import OwnTracksInputCopies
+
+    native_inputs = object.__new__(OwnTracksInputCopies)
+    native_inputs.incarnation = uuid4()
+    native_inputs._closing = False
+    native_inputs._servers, native_inputs._bindings = {}, {}
+    original_webhook = native_inputs.allocate_server()
+    committed_headers, ended_headers = [], []
+
+    async def commit_header(binding):
+        assert native_inputs._servers[id(binding)] is binding
+        committed_headers.append(binding)
+
+    class EmptyReplay:
+        async def fetch(self, sql, endpoint):
+            assert "FROM connectors.filtered_events" in sql
+            assert "status='replay_pending'" in sql and endpoint == "synthetic native endpoint"
+            return []
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+    native_inputs.pool = EmptyReplay()
+    native_inputs.commit_server = commit_header
+    native_connector = SimpleNamespace(
+        _input_copies=native_inputs,
+        _observe_native_server_end=ended_headers.append,
+    )
+    reader = asyncio.create_task(
+        OwnTracksConnector._drain_native_replay(
+            native_connector,
+            "synthetic native endpoint",
+        )
+    )
+    await reader
+    await asyncio.sleep(0)
+    assert len(committed_headers) == 1 and len(native_inputs._servers) == 2
+    assert committed_headers[0].generation != original_webhook.generation
+    assert ended_headers == committed_headers

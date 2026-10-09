@@ -246,6 +246,18 @@ The native OwnTracks processing producer SHALL reserve its private processing ho
 
 The actual configured Switchboard receiving constructor SHALL freeze its original server header before body forwarding and SHALL commit and independently read the canonical OwnTracks input queue generation, full envelope/dedupe digests and original server binding before releasing the final SDK body frame. Constructor-owned SDK middleware SHALL commit and independently read a separate immutable original handler generation/incarnation claim before FunctionTool validation or processing. HTTP 202, POST completion, accepted UUID, caller fields and a connector end SHALL NOT settle the queued or SDK handler holder. Only the actual original handler Task end and corresponding original committed claim/birth/readback may settle that holder. The canonical accepted row SHALL be bound by the owning writer and separately read back before routing. Source reduction SHALL require the complete nonempty original queue/claim/accepted-body/handler-end/server-end census under the same control-first source mutex. Unknown, missing, partial, changed or legacy lineage SHALL preserve source evidence; generic nonlocation input SHALL preserve its existing transport behavior without native proof. Restart, cancellation request or new incarnation SHALL NOT certify an original end. This boundary SHALL NOT attest any remote recipient, routed descendant or all-holder completion.
 
+An actual completed processing Task SHALL NOT attest disposal while its cached
+result, exception, cancellation or traceback retains an unresolved copy. The
+fixed owning pipeline callback SHALL withhold its original input end when it
+catches an error or classifies a failed result; returning `None` SHALL NOT erase
+that failure. The actual SDK middleware and ASGI producer SHALL similarly retain
+their own failed-input bindings even if an outer handler catches the error and
+finishes normally. These private markers SHALL only withhold disposition, SHALL
+NOT grant terminal authority, and SHALL preserve the original primary failure
+and cancellation semantics. Healthy source-owned copies SHALL retain their
+separate committed terminal readback. Logs, routed/runtime results and other
+descendants SHALL still require their own complete original disposal evidence.
+
 ID: REQ-location-retention-005
 Source: bu-s11n0s.7 original nonresurrection non-goal and S2; about/heart-and-soul/security.md Sensitive Data Categories; openspec/specs/connector-filtered-events/spec.md Full Payload Shape and Replay lineage and event payload age independently; proposed source-protocol P5
 Scope: v1-mandatory
