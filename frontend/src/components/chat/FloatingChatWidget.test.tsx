@@ -322,7 +322,7 @@ describe("FloatingChatWidget — trigger and open/close", () => {
   });
 
   it("opens the panel without a ref-forwarding warning", () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, "error");
 
     try {
       renderWidget();
@@ -1509,7 +1509,12 @@ describe("FloatingChatWidget — axe", () => {
     renderWidget();
     fireEvent.click(screen.getByTestId("floating-chat-trigger"));
     const panel = screen.getByTestId("floating-chat-panel");
-    const results = await axe(panel, { rules: { "color-contrast": { enabled: false } } });
+    // The real pricing query may notify while axe yields. Keep the complete
+    // mounted audit and those actual observer updates inside awaited act.
+    let results!: Awaited<ReturnType<typeof axe>>;
+    await act(async () => {
+      results = await axe(panel, { rules: { "color-contrast": { enabled: false } } });
+    });
     expect(results).toHaveNoViolations();
   });
 
@@ -1519,7 +1524,12 @@ describe("FloatingChatWidget — axe", () => {
     fireEvent.click(screen.getByTestId("floating-chat-trigger"));
     const panel = screen.getByTestId("floating-chat-panel");
     expect(screen.getByText("New conversation")).toBeDefined();
-    const results = await axe(panel, { rules: { "color-contrast": { enabled: false } } });
+    // The real pricing query may notify while axe yields. Keep the complete
+    // mounted audit and those actual observer updates inside awaited act.
+    let results!: Awaited<ReturnType<typeof axe>>;
+    await act(async () => {
+      results = await axe(panel, { rules: { "color-contrast": { enabled: false } } });
+    });
     expect(results).toHaveNoViolations();
   });
 });

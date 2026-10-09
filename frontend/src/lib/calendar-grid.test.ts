@@ -1,4 +1,7 @@
-import { addDays, addWeeks, format, startOfWeek } from "date-fns";
+import { addDays } from "date-fns/addDays";
+import { addWeeks } from "date-fns/addWeeks";
+import { format } from "date-fns/format";
+import { startOfWeek } from "date-fns/startOfWeek";
 import { describe, expect, it } from "vitest";
 
 import {

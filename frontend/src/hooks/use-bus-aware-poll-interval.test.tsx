@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, cleanup } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { EventBusHealth } from "@/hooks/use-event-stream";
 
 let mockStatus: "connecting" | "open" | "reconnecting" | "closed" = "open";
@@ -71,6 +72,10 @@ describe("useBusAwarePollInterval", () => {
   });
 
   it("throws when used outside an EventBusProvider (wiring-bug guard)", () => {
-    expect(() => renderHook(() => useBusAwarePollInterval())).toThrow(/EventBusProvider/);
+    // The real hook still executes outside its provider. Server rendering
+    // propagates the expected wiring error without jsdom's uncaught-error
+    // reporter, while the mounted provider-positive cases above stay intact.
+    function MissingProvider() { useBusAwarePollInterval(); return null; }
+    expect(() => renderToStaticMarkup(<MissingProvider />)).toThrow(/EventBusProvider/);
   });
 });

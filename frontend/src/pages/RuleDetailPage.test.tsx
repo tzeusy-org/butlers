@@ -18,7 +18,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 
 import RuleDetailPage from "@/pages/RuleDetailPage";
 import { useRetireRule, useRule } from "@/hooks/use-memory";
@@ -75,9 +75,9 @@ function setRule(rule: MemoryRule | null, opts: Partial<UseRuleResult> = {}) {
 
 function html(): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <RuleDetailPage />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

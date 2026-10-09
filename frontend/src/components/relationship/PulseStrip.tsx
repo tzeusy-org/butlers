@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronDown, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "date-fns/formatDistanceToNow";
 
 import type { EntityGift, EntityLoan, EntityTimelineItem } from "@/api/types";
 import {

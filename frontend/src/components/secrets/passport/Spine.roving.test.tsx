@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 
 import { Spine } from "./Spine.tsx";
 import type { SpineEntry } from "./types.ts";
@@ -89,7 +89,7 @@ describe("Spine roving keyboard navigation", () => {
     expect(rows[0].tabIndex).toBe(0);
     expect(rows[1].tabIndex).toBe(-1);
 
-    rows[0].focus();
+    act(() => rows[0].focus());
     fireEvent.keyDown(rows[0], { key: "ArrowDown" });
 
     expect(document.activeElement).toBe(rows[1]);

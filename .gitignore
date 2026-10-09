@@ -114,3 +114,6 @@ bu-*/
 # Pursuit working files (dossier retention policy)
 docs/redesigns/*-harvest.json
 docs/redesigns/*-state.json
+
+# Private per-worktree successful ESLint content cache
+frontend/.eslintcache/

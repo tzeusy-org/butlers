@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for the calendar duplicate-review client (bu-fol6y):
  *  - `getCalendarWorkspaceDuplicates` — view/range/filter param serialization

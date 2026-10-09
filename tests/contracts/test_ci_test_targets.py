@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -537,6 +539,235 @@ if mode == "exhaust" or (mode == "fail-once" and len(data["calls"]) == 1):
                     os.kill(pid, 9)
 
 
+def _main_reuse_controls(root: Path, pair: list[dict], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real miniature collection/ZIP transport, synthetic GitHub status envelopes.
+
+    This executes the production qualifier and verifier, never claims provider
+    execution, actual protected lineage or browser/compiler outcomes.
+    """
+    import ci_main_reuse as reuse
+    import ci_partition as partition
+
+    (root / "tests").mkdir()
+    (root / "roster").mkdir()
+    (root / "scripts").mkdir()
+    (root / "scripts/test-budget-baseline.json").write_bytes(
+        (REPO_ROOT / "scripts/test-budget-baseline.json").read_bytes()
+    )
+    (root / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\nmarkers=["integration","smoke","e2e","nightly","bench","perf"]\n'
+    )
+    for index in range(6):
+        (root / f"tests/test_control_{index}.py").write_text(
+            "import pytest\ndef test_unit(): pass\n"
+            "@pytest.mark.integration\ndef test_integration(): pass\n"
+            "@pytest.mark.smoke\ndef test_smoke(): pass\n"
+        )
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root).decode().strip()
+    tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root).decode().strip()
+    for name, value in {
+        "GITHUB_REPOSITORY": reuse.REPOSITORY,
+        "GITHUB_WORKFLOW": "CI",
+        "GITHUB_RUN_ID": "10",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_EVENT_NAME": "merge_group",
+    }.items():
+        monkeypatch.setenv(name, value)
+    data = partition.collect_inventory(root=root)
+    assignment = partition.partition(data, {}, root=root)
+    receipts = {}
+    for lane, bins in assignment["shards"].items():
+        for item in bins:
+            nodes = {node: name for name in item["files"] for node in data["lanes"][lane][name]}
+            receipts[f"{lane}-{item['index']}"] = {
+                "complete": True,
+                "pytest_exit": 0,
+                "lane": lane,
+                "shard": item["index"],
+                "inventory_digest": data["digest"],
+                "assignment_digest": assignment["digest"],
+                "inventory_identity": data["identity"],
+                "nonce": data["nonce"],
+                "selected_count": len(nodes),
+                "selected_node_digest": partition.digest(sorted(nodes)),
+                "nodes": {
+                    node: {
+                        phase: {"outcome": "passed", "duration_s": 0.0, "completed_s": 0.0}
+                        for phase in ("setup", "call", "teardown")
+                    }
+                    for node in nodes
+                },
+                "logical_starts": {node: 1 for node in nodes},
+                "node_files": nodes,
+                "node_classes": {
+                    node: name.removesuffix(".py").replace("/", ".") for node, name in nodes.items()
+                },
+                "test_step_elapsed_s": 0.0,
+                "actual_tracers": ["CTracer"],
+                "file_durations_s": {name: 0.0 for name in item["files"]},
+                "command": [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-m",
+                    partition.SELECTORS[lane],
+                    "--",
+                    *item["files"],
+                ],
+            }
+    front = reuse.frontend_identity(root)
+    historical_pair = copy.deepcopy(pair)
+    for child in historical_pair:
+        child["identity"] = front
+    build = {
+        "schema": "ci-frontend-build.v1",
+        "identity": front,
+        "files": {"index.html": hashlib.sha256(b"stand-in compiler bytes").hexdigest()},
+    }
+
+    def zipped(members):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            for name, value in members.items():
+                archive.writestr(name, value if type(value) is bytes else json.dumps(value))
+        return output.getvalue()
+
+    blobs = {
+        "ci-inventory": zipped({"inventory.json": data, "assignment.json": assignment}),
+        "ci-frontend-build": zipped(
+            {"receipt.json": build, "dist/index.html": b"stand-in compiler bytes"}
+        ),
+        **{
+            f"ci-vitest-{i}": zipped({"receipt.json": child})
+            for i, child in enumerate(historical_pair, 1)
+        },
+        **{
+            f"ci-{name}-test-evidence": zipped({"shard-observation.json": child})
+            for name, child in receipts.items()
+        },
+    }
+    artifacts = [
+        {
+            "name": name,
+            "id": i,
+            "size_in_bytes": len(blob),
+            "expired": False,
+            "digest": "sha256:" + hashlib.sha256(blob).hexdigest(),
+        }
+        for i, (name, blob) in enumerate(blobs.items(), 1)
+    ]
+    by_id = {row["id"]: blobs[row["name"]] for row in artifacts}
+    protected = {
+        "id": 10,
+        "run_attempt": 1,
+        "workflow_id": 7,
+        "name": "CI",
+        "event": "merge_group",
+        "head_sha": head,
+        "head_commit": {"tree_id": tree},
+        "status": "completed",
+        "conclusion": "success",
+        "repository": {"full_name": reuse.REPOSITORY},
+    }
+    main = {**protected, "id": 11, "event": "push", "head_branch": "main"}
+
+    class Transport:
+        def api(self, suffix, *, binary=False):
+            if suffix == "actions/workflows/ci.yml":
+                return {"id": 7, "path": ".github/workflows/ci.yml"}
+            if suffix == "actions/runs/11/attempts/1":
+                return main
+            if suffix == "actions/runs/10/attempts/1":
+                return protected
+            if suffix.startswith("git/commits/"):
+                return {"sha": head, "tree": {"sha": tree}}
+            if suffix.startswith("commits/"):
+                return [
+                    {
+                        "number": 5,
+                        "merged_at": "2026-01-01T00:00:00Z",
+                        "merge_commit_sha": head,
+                        "base": {"ref": "main", "repo": {"full_name": reuse.REPOSITORY}},
+                    }
+                ]
+            if suffix.startswith("actions/artifacts/"):
+                return by_id[int(suffix.split("/")[2])]
+            raise AssertionError("unexpected public endpoint")
+
+        def rows(self, suffix, field, **kwargs):
+            if field == "workflow_runs":
+                return [protected]
+            if field == "jobs":
+                return [
+                    {"name": name, "status": "completed", "conclusion": "success"}
+                    for name in reuse.REQUIRED_JOBS
+                ]
+            if field == "artifacts":
+                return artifacts
+            raise AssertionError("unexpected bounded list")
+
+    event = root / "event.json"
+    event.write_text(
+        json.dumps(
+            {"ref": "refs/heads/main", "after": head, "repository": {"full_name": reuse.REPOSITORY}}
+        )
+    )
+    for name, value in {
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_RUN_ID": "11",
+        "GITHUB_EVENT_PATH": str(event),
+    }.items():
+        monkeypatch.setenv(name, value)
+    transport = Transport()
+    package = reuse.qualify(root=root, api=transport)
+    fresh = partition.collect_inventory(root=root)
+    reuse.verify_fresh(package, fresh, root=root)
+    for mutation in (
+        "tree",
+        "run",
+        "attempt",
+        "event",
+        "repo",
+        "missing-child",
+        "failed-browser",
+        "float-artifact",
+        "build",
+    ):
+        corrupt = copy.deepcopy(package)
+        if mutation == "tree":
+            corrupt["protected_tree"] = "0" * 40
+        elif mutation == "run":
+            corrupt["protected"]["run"] = False
+        elif mutation == "attempt":
+            corrupt["protected"]["attempt"] = 2
+        elif mutation == "event":
+            corrupt["protected"]["event"] = "pull_request"
+        elif mutation == "repo":
+            corrupt["protected"]["repository"] = "unknown/repo"
+        elif mutation == "missing-child":
+            corrupt["children"].pop("unit-1")
+        elif mutation == "failed-browser":
+            corrupt["jobs"]["frontend-e2e"]["conclusion"] = "failure"
+        elif mutation == "float-artifact":
+            corrupt["artifacts"]["ci-inventory"]["id"] = 1.0
+        else:
+            corrupt["verified_build_files"]["index.html"] = "0" * 64
+        with pytest.raises(ValueError):
+            reuse.validate_package(corrupt, partition.checkout_identity(root), root=root)
+    original_blob = by_id[artifacts[0]["id"]]
+    by_id[artifacts[0]["id"]] += b"corrupt"
+    with pytest.raises(ValueError):
+        reuse.qualify(root=root, api=transport)
+    by_id[artifacts[0]["id"]] = original_blob
+    with pytest.raises(ValueError):
+        reuse.verify_build_archive(
+            zipped({"receipt.json": build, "dist/index.html": b"wrong bytes"}), build
+        )
+    reuse.verify_fresh(reuse.qualify(root=root, api=transport), fresh, root=root)
+
+
+# REQ-frontend-lane-efficiency-001; REQ-frontend-lane-efficiency-005; REQ-frontend-lane-efficiency-006.
 def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -576,7 +807,14 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     # static guard script in one job with nothing upstream of it.
     changes = jobs["route"]
     assert "needs" not in changes and "if" not in changes
-    assert set(changes["outputs"]) == {"backend", "frontend", "mode", "test_paths", "inventory"}
+    assert set(changes["outputs"]) == {
+        "backend",
+        "frontend",
+        "mode",
+        "test_paths",
+        "inventory",
+        "frontend_reuse",
+    }
     path_filter = _workflow_step(job=changes, name="Filter changed paths")
     assert path_filter["uses"].startswith("dorny/paths-filter@")
     assert path_filter["if"] == "github.event_name == 'pull_request'"
@@ -584,7 +822,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     classify = _workflow_step(job=changes, name="Classify and conservatively plan with stdlib only")
     assert classify["id"] == "classify"
     guards = jobs["guards"]
-    assert guards["needs"] == ["route"] and "if" not in guards
+    assert guards["needs"] == ["route"] and guards["if"] == "always()"
     guard_outcomes = _workflow_step(job=guards, name="Fail if any guard failed")["env"][
         "GUARD_OUTCOMES"
     ]
@@ -689,20 +927,26 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     check_affected = jobs["check-affected"]
     assert check_affected["needs"] == ["route", "guards"]
     assert "mode == 'scoped'" in check_affected["if"]
-    assert jobs["frontend-e2e"]["needs"] == ["route", "guards"]
-    assert jobs["frontend"]["needs"] == ["route", "guards", "frontend-vitest"]
+    assert jobs["frontend-e2e"]["needs"] == ["route", "frontend-static"]
+    assert jobs["frontend"]["needs"] == ["route", "guards", "frontend-static", "frontend-vitest"]
+    assert jobs["frontend-static"]["needs"] == jobs["frontend-vitest"]["needs"] == ["route"]
     assert jobs["frontend"]["if"] == "always()"
     assert jobs["frontend-vitest"]["strategy"]["matrix"]["shard"] == [1, 2]
     frontend_gate = jobs["frontend"]["steps"][0]
     fe_needs = {name: {"result": "success", "outputs": {}} for name in jobs["frontend"]["needs"]}
     fe_needs["route"]["outputs"] = {"frontend": "true"}
-    for failed in (None, "guards", "frontend-vitest", "route"):
+    for failed in (None, "guards", "frontend-static", "frontend-vitest", "route"):
         actual = copy.deepcopy(fe_needs)
         if failed:
             actual[failed]["result"] = "failure"
         result = subprocess.run(
             ["bash", "-e", "-c", frontend_gate["run"]],
-            env={**os.environ, "NEEDS_JSON": json.dumps(actual)},
+            env={
+                **os.environ,
+                "NEEDS_JSON": json.dumps(actual),
+                "EVENT_NAME": "pull_request",
+                "REF": "refs/pull/1/merge",
+            },
             capture_output=True,
             timeout=10,
         )
@@ -716,13 +960,60 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         actual = copy.deepcopy(fe_needs)
         actual["route"]["outputs"]["frontend"] = flag
         actual["frontend-vitest"]["result"] = child
+        actual["frontend-static"]["result"] = child
         result = subprocess.run(
             ["bash", "-e", "-c", frontend_gate["run"]],
-            env={**os.environ, "NEEDS_JSON": json.dumps(actual)},
+            env={
+                **os.environ,
+                "NEEDS_JSON": json.dumps(actual),
+                "EVENT_NAME": "pull_request",
+                "REF": "refs/pull/1/merge",
+            },
             capture_output=True,
             timeout=10,
         )
         assert (result.returncode == 0) == accepted
+    # Main has always-run contexts plus genuinely fresh inventory. Reuse is
+    # event-specific, never permission to hide an applicable PR/MG child.
+    for event, ref, reuse, fresh, expected in (
+        ("push", "refs/heads/main", "true", "true", 0),
+        ("push", "refs/heads/main", "", "true", 1),
+        ("push", "refs/heads/main", "true", "false", 1),
+        ("merge_group", "refs/heads/main", "true", "true", 1),
+        ("pull_request", "refs/pull/1/merge", "true", "true", 1),
+    ):
+        actual = copy.deepcopy(fe_needs)
+        actual["route"]["outputs"]["frontend_reuse"] = reuse
+        actual["guards"]["outputs"]["fresh_inventory"] = fresh
+        for name in ("frontend-static", "frontend-vitest"):
+            actual[name]["result"] = "skipped"
+        result = subprocess.run(
+            ["bash", "-e", "-c", frontend_gate["run"]],
+            env={**os.environ, "NEEDS_JSON": json.dumps(actual), "EVENT_NAME": event, "REF": ref},
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode == expected
+    assert changes["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+        "actions": "read",
+    }
+    assert "frontend_reuse" in guards["outputs"]["fresh_inventory"] or (
+        "steps.inventory.outcome" in guards["outputs"]["fresh_inventory"]
+        and "steps.inventory-upload.outcome" in guards["outputs"]["fresh_inventory"]
+    )
+    assert (
+        jobs["frontend-static"]["timeout-minutes"]
+        == jobs["frontend-vitest"]["timeout-minutes"]
+        == 18
+    )
+    assert _workflow_step(job=jobs["frontend-static"], name="Build")["run"] == "npm run build"
+    assert (
+        _workflow_step(job=jobs["frontend-static"], name="Import graph (knip)")["run"]
+        == "npm run knip"
+    )
+    assert not any(step.get("name") == "Build" for step in guards["steps"])
     # Synthetic dist bytes exercise actual seal/consume/tamper protocol only,
     # never claim an actual compiler/browser or hosted upload.
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -1002,6 +1293,60 @@ else:
             with pytest.raises(ValueError):
                 vitest.reconcile(buildroot, corrupted)
         vitest.reconcile(buildroot, pair)
+        # Actual per-file clock diagnostics remain separate from item authority.
+        # Every reported file and phase must still have a finite exact numeric
+        # value; differing physical timings never change the selected multiset.
+        measured = copy.deepcopy(pair)
+        timer_fields = (
+            "environmentSetupDuration",
+            "prepareDuration",
+            "collectDuration",
+            "setupDuration",
+            "duration",
+        )
+        for child in measured:
+            child["reference"]["file_metrics"] = {
+                file: dict.fromkeys(timer_fields, 0) for file in child["reference"]["files"]
+            }
+            child["execution"]["file_metrics"] = {
+                file: dict.fromkeys(timer_fields, 0.5) for file in child["execution"]["modules"]
+            }
+        vitest.reconcile(buildroot, measured)
+        for section in ("reference", "execution"):
+            for malformed in (
+                "missing-file",
+                "extra-file",
+                "missing-phase",
+                "extra-phase",
+                "boolean",
+                "nonfinite",
+                "negative",
+                "text",
+            ):
+                corrupted = copy.deepcopy(measured)
+                metrics = corrupted[0][section]["file_metrics"]
+                file = next(iter(metrics))
+                if malformed == "missing-file":
+                    del metrics[file]
+                elif malformed == "extra-file":
+                    metrics["frontend/uncollected.test.ts"] = dict.fromkeys(timer_fields, 0)
+                elif malformed == "missing-phase":
+                    del metrics[file]["collectDuration"]
+                elif malformed == "extra-phase":
+                    metrics[file]["unobserved"] = 0
+                else:
+                    metrics[file]["collectDuration"] = {
+                        "boolean": False,
+                        "nonfinite": float("inf"),
+                        "negative": -1,
+                        "text": "0",
+                    }[malformed]
+                with pytest.raises(ValueError):
+                    vitest.reconcile(buildroot, corrupted)
+        vitest.reconcile(buildroot, measured)
+        vitest.reconcile(buildroot, pair)
+        with monkeypatch.context() as main_controls:
+            _main_reuse_controls(buildroot, pair, main_controls)
         for declared_mode in ("skip", "todo"):
             reference = copy.deepcopy(pair[0]["reference"])
             execution = copy.deepcopy(pair[0]["execution"])

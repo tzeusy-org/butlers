@@ -415,6 +415,23 @@
       "installed_timeout_minutes": 60,
       "diagnostic_execution_bound_s": 1800,
       "review_policy": "Existing 25 watchdogs unchanged. New isolated job covers 640s UV installer + 640s frozen preparation + 1800s whole diagnostic + 520s checkout/cleanup/artifact reserve; actual healthy duration/calibration remains unknown."
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "frontend-static",
+      "installed_timeout_minutes": 18,
+      "existing_timeout_minutes": 18,
+      "successful_sample_n": 0,
+      "state": "provisional relocated original frontend18 static envelope; no natural current timing or gain credited",
+      "sample_source": "original frontend18 provenance retained in guards combined35 row; actual new current static timing pending",
+      "reviewed_job_name": "frontend-static",
+      "review_uv_nominal_envelope_s": 0,
+      "review_browser_hard_retry_interval_s": 0,
+      "retry_extra_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 18,
+      "review_conservative_before_only_candidate_minutes": 18
     }
   ],
   "tests": [

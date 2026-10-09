@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // Tests for WorkScheduleSettings (bu-whhll.11)
 //

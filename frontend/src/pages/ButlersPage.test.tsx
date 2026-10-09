@@ -17,7 +17,7 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import ButlersPage from "@/pages/ButlersPage";
 import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board";
@@ -114,9 +114,9 @@ const mockMutate = vi.fn();
 
 function renderPage(): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <ButlersPage />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

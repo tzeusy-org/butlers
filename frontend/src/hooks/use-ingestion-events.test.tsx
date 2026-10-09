@@ -250,6 +250,9 @@ it("reconciles active drawer and aggregate reads every 30 seconds without bus ev
     expect.any(AbortSignal),
   );
   expect(secondWindow.to.localeCompare(firstWindow.to)).toBeGreaterThan(0);
+  // TanStack queues its observer notification on the next timer tick.
+  // Flush that actual tick inside act before checking the rendered readers.
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
   await vi.waitFor(() => {
     expect(result.current.rollup.data?.events).toBe(1);
     expect(result.current.histogram.data?.buckets).toHaveLength(1);

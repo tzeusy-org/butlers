@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // atoms.test.tsx — unit tests for shared butler-detail atom primitives
 // (bu-iuol4.13, bu-hdavr.3)

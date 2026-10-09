@@ -15,7 +15,8 @@
  */
 
 import { useMemo, useState } from "react";
-import { format, parseISO } from "date-fns";
+import { format } from "date-fns/format";
+import { parseISO } from "date-fns/parseISO";
 
 import type { ConflictIssue } from "@/api/types.ts";
 import { FetchingDim } from "@/components/ui/fetching-dim";

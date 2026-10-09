@@ -13,7 +13,10 @@
 
 import { useCallback, useMemo } from "react"
 import { useSearchParams } from "react-router"
-import { format, isValid, parseISO, subDays } from "date-fns"
+import { format } from "date-fns/format";
+import { isValid } from "date-fns/isValid";
+import { parseISO } from "date-fns/parseISO";
+import { subDays } from "date-fns/subDays";
 import { startOfDayInTz, endOfDayInTz } from "@/lib/tz-format"
 
 /** Default owner timezone — matches the briefing.py SGT constant. */

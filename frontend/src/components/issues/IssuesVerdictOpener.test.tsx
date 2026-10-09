@@ -1,13 +1,13 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { IssuesVerdictOpener } from "@/components/issues/IssuesVerdictOpener";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 const criticalIssue = {

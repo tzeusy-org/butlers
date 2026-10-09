@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for <QaVerdictOpener> (bu-qvnce.9, JARVIS pursuit move 9 slice 2).
  *
@@ -10,13 +10,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { QaVerdictOpener } from "@/components/qa/QaVerdictOpener";
 import type { QaSummary } from "@/api/types";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

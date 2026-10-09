@@ -1039,6 +1039,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Temporarily disabled. A safer implementation is in progress.
 - Wipe everything
 - Copy your signing secret
+- Save this signing secret now; it cannot be retrieved later.
 - This secret is shown
 - X-Butler-Signature
 - HMAC.
@@ -1046,11 +1047,14 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Copy secret
 - Done
 - Add webhook
+- Choose the endpoint and events for this webhook.
 - Endpoint URL
 - Events (comma-separated)
 - A signing secret is generated automatically and shown once after creation.
 - Copy your new signing secret
+- Save the new signing secret now; it cannot be retrieved later.
 - Edit webhook
+- Update the endpoint, events, and delivery settings for this webhook.
 - Enabled
 - Max attempts
 - Backoff (s)
@@ -4838,6 +4842,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/ui/shortcut-hints.tsx`
 
 - Keyboard Shortcuts
+- Keyboard shortcuts for global navigation and this page.
 - On this page
 - Keyboard shortcuts
 - Open command menu
@@ -4859,4 +4864,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3867*
+*Total strings: 3872*

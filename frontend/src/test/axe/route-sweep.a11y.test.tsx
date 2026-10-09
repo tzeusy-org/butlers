@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Route-registry-driven axe completeness sweep (bu-qvnce.10, JARVIS pursuit
  * move 10).

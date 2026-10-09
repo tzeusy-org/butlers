@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import QaPatrolDetailPage from "@/pages/QaPatrolDetailPage";
@@ -69,9 +69,9 @@ function renderPage(): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <StaticRouter location="/">
         <QaPatrolDetailPage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }

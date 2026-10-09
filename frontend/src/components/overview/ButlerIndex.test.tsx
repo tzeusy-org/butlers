@@ -11,7 +11,7 @@
 
 import { cleanup, render as renderDom, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ButlerIndex } from "./ButlerIndex";
@@ -34,9 +34,9 @@ function row(overrides: Partial<OverviewButlerIndexRow> = {}): OverviewButlerInd
 
 function render(butlers: OverviewButlerIndexRow[], butlersError = false): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <ButlerIndex butlers={butlers} butlersError={butlersError} />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

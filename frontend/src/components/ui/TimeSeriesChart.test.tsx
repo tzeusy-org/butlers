@@ -8,8 +8,8 @@ import { TimeSeriesChart } from "./TimeSeriesChart";
 vi.mock("recharts", () => {
   const Wrap = ({ children }: { children?: ReactNode }) => createElement("div", null, children);
   return {
-    LineChart: Wrap,
-    AreaChart: Wrap,
+    LineChart: ({ children }: { children?: ReactNode }) => createElement("svg", null, children),
+    AreaChart: ({ children }: { children?: ReactNode }) => createElement("svg", null, children),
     ResponsiveContainer: Wrap,
     CartesianGrid: () => null,
     Tooltip: () => null,

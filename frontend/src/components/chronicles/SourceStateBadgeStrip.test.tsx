@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // Tests for SourceStateBadgeStrip — bu-ig72b.22
 //

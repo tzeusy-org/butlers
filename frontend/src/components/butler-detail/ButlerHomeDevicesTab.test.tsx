@@ -33,7 +33,7 @@ vi.mock("recharts", () => {
   }: {
     data?: Array<Record<string, unknown>>;
     children?: ReactNode;
-  }) => createElement("div", { "data-testid": "recharts-area-chart" }, children);
+  }) => createElement("svg", { "data-testid": "recharts-area-chart" }, children);
 
   const Area = ({ dataKey }: { dataKey: string }) =>
     createElement("div", { "data-testid": `recharts-area-${dataKey}` });

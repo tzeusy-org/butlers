@@ -351,7 +351,7 @@ describe("EpisodesRegister — the daybook", () => {
       'a[href="/memory/episodes/ep-nav"]',
     )!;
     act(() => {
-      openLink.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      openLink.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     // Navigation does not throw and the row link points at the detail route.
     expect(openLink.getAttribute("href")).toBe("/memory/episodes/ep-nav");

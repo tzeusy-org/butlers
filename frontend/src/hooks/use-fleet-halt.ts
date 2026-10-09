@@ -24,7 +24,7 @@
  * halt" (fleet degraded-source convention: never fabricate calm).
  */
 
-import { fromZonedTime } from "date-fns-tz";
+import { fromZonedTime } from "date-fns-tz/fromZonedTime";
 import { useQuery } from "@tanstack/react-query";
 
 import { getDispatchAttempts, getFleetHaltAttention } from "@/api/client";

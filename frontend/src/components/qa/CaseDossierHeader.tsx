@@ -4,7 +4,7 @@ import { useDismissQaIssue, useRemoveDismissal, useRetryHealingAttempt } from "@
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useTimezone } from "@/components/ui/timezone-context";
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 
 import { StateTrack, type QaStateTrackStage } from "./StateTrack";
 import { formatQaDetectedTime, qaSeverityClassName } from "./utils";

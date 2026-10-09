@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for <SpendVerdictOpener> (bu-qvnce.9, JARVIS pursuit move 9 slice 2).
  *
@@ -11,13 +11,13 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener";
 import type { ForecastData } from "@/lib/spend-forecast";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 const FORECAST: ForecastData = {

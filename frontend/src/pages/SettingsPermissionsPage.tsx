@@ -811,6 +811,7 @@ function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
           <>
             <DialogHeader>
               <DialogTitle className="font-medium">Copy your signing secret</DialogTitle>
+              <DialogDescription className="sr-only">Save this signing secret now; it cannot be retrieved later.</DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-2">
               <p className="text-sm text-muted-foreground">
@@ -840,6 +841,7 @@ function AddWebhookModal({ open, onClose, onCreated }: AddWebhookModalProps) {
           <>
             <DialogHeader>
               <DialogTitle className="font-medium">Add webhook</DialogTitle>
+              <DialogDescription className="sr-only">Choose the endpoint and events for this webhook.</DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-2">
               <div className="space-y-1">
@@ -999,6 +1001,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
           <>
             <DialogHeader>
               <DialogTitle className="font-medium">Copy your new signing secret</DialogTitle>
+              <DialogDescription className="sr-only">Save the new signing secret now; it cannot be retrieved later.</DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-2">
               <p className="text-sm text-muted-foreground">
@@ -1028,6 +1031,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
           <>
             <DialogHeader>
               <DialogTitle className="font-medium">Edit webhook</DialogTitle>
+              <DialogDescription className="sr-only">Update the endpoint, events, and delivery settings for this webhook.</DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-2">
               <div className="space-y-1">

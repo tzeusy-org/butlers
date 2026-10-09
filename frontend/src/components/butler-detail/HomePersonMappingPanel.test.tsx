@@ -33,7 +33,9 @@ let consoleCalls: ReturnType<typeof vi.spyOn>[];
 beforeEach(() => {
   queryClient = new QueryClient();
   consoleCalls = (["log", "info", "warn", "error", "debug"] as const).map((method) =>
-    vi.spyOn(console, method).mockImplementation(() => {}),
+    method === "warn" || method === "error"
+      ? vi.spyOn(console, method)
+      : vi.spyOn(console, method).mockImplementation(() => {}),
   );
 });
 

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // Pill tests — bu-ec2wb, updated bu-86c4c.16
 //

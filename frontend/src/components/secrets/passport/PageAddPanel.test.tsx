@@ -16,10 +16,10 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ function renderInRouter(element: React.ReactElement): string {
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>{element}</MemoryRouter>
+      <StaticRouter location="/">{element}</StaticRouter>
     </QueryClientProvider>,
   );
 }
@@ -443,11 +443,21 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
     expect(document.querySelector('[data-user-raw-form="true"]')).toBeFalsy();
   });
 
-  it("clicking connect Google in the user family calls reauthorizeUserCredential(google, ownerEntityId)", () => {
-    mockReauth.mockResolvedValue({ data: { redirect_url: "/oauth/google/start" }, meta: {} } as never);
-    renderUserFamily("entity-uuid-123");
-    fireEvent.click(screen.getByText(/connect google/i));
-    expect(mockReauth).toHaveBeenCalledWith("google", "entity-uuid-123");
+  it("clicking connect Google in the user family calls reauthorizeUserCredential(google, ownerEntityId)", async () => {
+    const locationDescriptor = Object.getOwnPropertyDescriptor(window, "location");
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true, value: { ...window.location, assign },
+    });
+    try {
+      mockReauth.mockResolvedValue({ data: { redirect_url: "/oauth/google/start" }, meta: {} } as never);
+      renderUserFamily("entity-uuid-123");
+      await act(async () => fireEvent.click(screen.getByText(/connect google/i)));
+      expect(mockReauth).toHaveBeenCalledWith("google", "entity-uuid-123");
+      expect(assign).toHaveBeenCalledWith(expect.stringContaining("/oauth/google/start"));
+    } finally {
+      if (locationDescriptor) Object.defineProperty(window, "location", locationDescriptor);
+    }
   });
 
   // handleOAuthConnect catch branch (bu-umk50): the reauthorize call can reject
@@ -579,11 +589,16 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
     expect(mockTelegramSendCode).not.toHaveBeenCalled();
   });
 
-  it("returns focus to the Telegram setup trigger when the inline drawer is dismissed", () => {
+  it("returns focus to the Telegram setup trigger when the inline drawer is dismissed", async () => {
+    mockTelegramSessionStatus.mockResolvedValue({
+      has_api_id: false, has_api_hash: false, has_session: false,
+      has_scope_consent: false, ready: false,
+    });
     renderUserFamily("entity-uuid-123");
     const trigger = screen.getByText(/set up telegram/i).closest("button") as HTMLButtonElement;
 
     fireEvent.click(trigger);
+    await waitFor(() => expect(screen.getByLabelText("Telegram API hash")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Dismiss Telegram setup" }));
 
     expect(document.activeElement).toBe(trigger);

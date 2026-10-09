@@ -11,16 +11,16 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { OperationsNowList } from "./OperationsNowList";
 import type { OverviewNowRow } from "./model";
 
 function render(rows: OverviewNowRow[], includeInternal = false): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <OperationsNowList rows={rows} includeInternal={includeInternal} />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

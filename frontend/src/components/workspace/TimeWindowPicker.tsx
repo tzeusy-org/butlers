@@ -5,7 +5,8 @@
 // State and URL sync live in useTimeWindow (src/hooks/use-time-window.ts).
 // ---------------------------------------------------------------------------
 
-import { isValid, parseISO } from "date-fns"
+import { isValid } from "date-fns/isValid";
+import { parseISO } from "date-fns/parseISO";
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

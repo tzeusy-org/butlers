@@ -17,7 +17,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -109,11 +109,11 @@ function renderTab(butlerName = "general") {
 function renderTabStatic(butlerName = "general") {
   const queryClient = makeQueryClient();
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <QueryClientProvider client={queryClient}>
         <ButlerSessionsTab butlerName={butlerName} />
       </QueryClientProvider>
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

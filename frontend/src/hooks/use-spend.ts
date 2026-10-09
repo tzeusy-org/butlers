@@ -5,7 +5,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { getCostSummary, getDailyCosts, getTopSessions, getCostsBySchedule } from "@/api/index.ts";
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 

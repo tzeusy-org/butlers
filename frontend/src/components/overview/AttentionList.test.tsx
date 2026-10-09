@@ -15,15 +15,15 @@ import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 
 import { AttentionList, type AttentionListItem } from "./AttentionList";
 
 function render(items: AttentionListItem[]): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <AttentionList items={items} />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 
@@ -174,7 +174,7 @@ describe("AttentionList -- inline approve/deny/defer verbs (bu-86c4c.14)", () =>
 
   it("renders verb-labeled Approve/Deny/Defer buttons when handlers are provided", () => {
     const html = renderToStaticMarkup(
-      <MemoryRouter>
+      <StaticRouter location="/">
         <AttentionList
           items={[
             {
@@ -189,7 +189,7 @@ describe("AttentionList -- inline approve/deny/defer verbs (bu-86c4c.14)", () =>
             },
           ]}
         />
-      </MemoryRouter>,
+      </StaticRouter>,
     );
     expect(html).toContain(">Approve<");
     expect(html).toContain(">Deny<");

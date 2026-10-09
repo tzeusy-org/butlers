@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // StampGlyph tests — bu-qo3sf, repointed bu-sd0l7.2
 //

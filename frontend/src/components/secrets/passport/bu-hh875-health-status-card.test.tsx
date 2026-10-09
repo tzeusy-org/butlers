@@ -18,7 +18,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { GoogleHealthStatusResponse } from "@/api/types.ts";
@@ -151,7 +151,7 @@ function renderInRouter(element: React.ReactElement): string {
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/secrets"]}>{element}</MemoryRouter>
+      <StaticRouter location={(["/secrets"])[0] ?? "/"}>{element}</StaticRouter>
     </QueryClientProvider>,
   );
 }

@@ -23,7 +23,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot, type Root } from "react-dom/client";
 import * as React from "react";
 import { act } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import SecretsPage from "./SecretsPage";
@@ -75,7 +75,7 @@ function renderInRouter(
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
+      <StaticRouter location={(initialEntries)[0] ?? "/"}>{element}</StaticRouter>
     </QueryClientProvider>,
   );
 }

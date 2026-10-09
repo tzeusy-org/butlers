@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for the declarative event -> cache-patch registry
  * (bu-86c4c.8, §JARVIS audit move 5).

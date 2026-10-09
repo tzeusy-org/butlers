@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 
 /**
  * Tests for the Scrubber component (bu-ig72b.23).

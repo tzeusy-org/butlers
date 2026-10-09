@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import AuditLogPage from "@/pages/AuditLogPage";
@@ -67,9 +67,9 @@ function renderPage(initialPath = "/audit-log"): string {
   const qc = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[initialPath]}>
+      <StaticRouter location={([initialPath])[0] ?? "/"}>
         <AuditLogPage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }

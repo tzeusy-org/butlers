@@ -30,7 +30,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 import { toast } from "sonner";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 

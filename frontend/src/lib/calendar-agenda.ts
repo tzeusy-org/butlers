@@ -5,7 +5,7 @@
  * so the component file only exports components (react-refresh constraint).
  */
 
-import { format } from "date-fns";
+import { format } from "date-fns/format";
 
 import type { UnifiedCalendarEntry } from "@/api/types.ts";
 

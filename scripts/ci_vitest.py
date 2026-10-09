@@ -201,11 +201,34 @@ def same_json_value(observed, expected) -> bool:
     return observed == expected
 
 
+def validate_metrics(metrics: dict, files: list[str]) -> None:
+    """Optional diagnostic timers never substitute for occurrence admission."""
+    fields = {
+        "environmentSetupDuration",
+        "prepareDuration",
+        "collectDuration",
+        "setupDuration",
+        "duration",
+    }
+    if type(metrics) is not dict or set(metrics) != set(files):
+        raise ValueError("Vitest per-file diagnostics cover invalid")
+    for values in metrics.values():
+        if (
+            type(values) is not dict
+            or set(values) != fields
+            or any(
+                type(value) not in (int, float) or not math.isfinite(value) or value < 0
+                for value in values.values()
+            )
+        ):
+            raise ValueError("Vitest per-file diagnostics invalid")
+
+
 def validate_reference(reference: dict, root: Path) -> dict:
     """Validate genuine current unsharded declarations, not cached file counts."""
     if (
         not isinstance(reference, dict)
-        or set(reference)
+        or set(reference).difference({"file_metrics"})
         != {
             "schema",
             "config",
@@ -225,6 +248,8 @@ def validate_reference(reference: dict, root: Path) -> dict:
     ):
         raise ValueError("current full Vitest reference incomplete")
     files, halves, modules = reference["files"], reference["halves"], reference["modules"]
+    if "file_metrics" in reference:
+        validate_metrics(reference["file_metrics"], files)
     if not isinstance(files, list) or not files or len(files) != len(set(files)):
         raise ValueError("current full Vitest files invalid")
     if files != sorted(files) or set(modules) != set(files) or set(halves) != {"1", "2"}:
@@ -340,7 +365,7 @@ def validate_execution(reference: dict, execution: dict, shard: int) -> dict:
     }
     if (
         not isinstance(execution, dict)
-        or set(execution) != fields
+        or set(execution).difference({"file_metrics"}) != fields
         or execution["schema"] != "ci-vitest-execution.v2"
         or not same_json_value(execution["config"], reference["config"])
         or execution["complete"] is not True
@@ -353,6 +378,8 @@ def validate_execution(reference: dict, execution: dict, shard: int) -> dict:
     ):
         raise ValueError("Vitest execution controller incomplete")
     selected = reference["halves"][str(shard)]
+    if "file_metrics" in execution:
+        validate_metrics(execution["file_metrics"], selected)
     for name in ("modules", "queued", "starts", "ends"):
         if not isinstance(execution[name], dict) or set(execution[name]) != set(selected):
             raise ValueError("Vitest selected module cover differs")
@@ -412,6 +439,17 @@ def validate_execution(reference: dict, execution: dict, shard: int) -> dict:
 
 def reconcile(root: Path, receipts: list[dict]) -> None:
     """Required frontend's independent, current-head two-artifact verifier."""
+    reconcile_identity(root, receipts, identity(root))
+
+
+def reconcile_identity(root: Path, receipts: list[dict], expected_identity: dict) -> None:
+    """Same strict protocol for a separately authenticated protected identity.
+
+    The ordinary CLI always derives CURRENT identity through reconcile(). Only
+    the main lineage verifier may bind a prior protected run after checking its
+    exact tree, workflow, attempt, source and genuine merged-main relationship.
+    This does not turn prior receipts into current execution or population.
+    """
     if (
         not isinstance(receipts, list)
         or len(receipts) != 2
@@ -419,7 +457,6 @@ def reconcile(root: Path, receipts: list[dict]) -> None:
         or {r.get("shard") for r in receipts} != {1, 2}
     ):
         raise ValueError("both exact Vitest children required")
-    expected_identity = identity(root)
     full = None
     populations = []
     for receipt in receipts:
@@ -449,7 +486,10 @@ def reconcile(root: Path, receipts: list[dict]) -> None:
         reference = validate_reference(receipt["reference"], root)
         if full is None:
             full = reference
-        elif not same_json_value(full, reference):
+        elif not same_json_value(
+            {k: v for k, v in full.items() if k != "file_metrics"},
+            {k: v for k, v in reference.items() if k != "file_metrics"},
+        ):
             raise ValueError("independent current full Vitest references differ")
         proof = validate_execution(reference, receipt["execution"], receipt["shard"])
         if any(not same_json_value(receipt.get(key), value) for key, value in proof.items()):

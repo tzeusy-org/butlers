@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // Sliver tests — bu-qo3sf, repointed bu-sd0l7.2
 //
