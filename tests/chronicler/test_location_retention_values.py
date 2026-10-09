@@ -277,6 +277,71 @@ async def test_native_retention_failure_has_separate_completion_and_count_only_c
     )
     assert calls[0]["snapshot_complete"] is True and calls[0]["observations"] == []
 
+    # The real deterministic entry must reach the actual completion seam.
+    # This software call-order control makes no role/SQL/receipt claim.
+    class EntryPool:
+        async def fetch(self, query):
+            assert "state='holder_pending'" in query
+            return []
+
+        async def fetchval(self, query):
+            assert "count(*) FROM location_projection_privacy_transitions" in query
+            return 0
+
+    async def completed_entry(pool, actual_run):
+        assert actual_run == run
+        trace.append("native_completion")
+
+    async def completed_status(pool):
+        assert trace == ["durable_start", "native_completion"]
+        return {"status": "complete", "unknown_count": 0, "holder_pending_count": 0}
+
+    trace.clear()
+    monkeypatch.setattr(retention, "prepare_batch", AsyncMock(return_value=None))
+    monkeypatch.setattr(retention, "complete_native_attempt", completed_entry)
+    monkeypatch.setattr(retention, "retention_status", completed_status)
+    assert (await retention.run_retention(EntryPool()))["status"] == "complete"
+
+    # Actual full keyset predicate, not a first-page/empty success. These
+    # doubles prove paging/refusal software only; actual source/roles below
+    # stay in the existing migrated integration species.
+    from uuid import UUID
+
+    class Cohort:
+        def __init__(self, size):
+            self.plans = [{"decision_id": UUID(int=i + 1)} for i in range(size)]
+            self.pages = []
+
+        async def fetch(self, query, cursor):
+            assert "ORDER BY decision_id LIMIT 64" in query
+            self.pages.append(cursor)
+            return [p for p in self.plans if cursor is None or p["decision_id"] > cursor][:64]
+
+    absent = None
+    invalid = None
+
+    async def frontier(conn, plan):
+        return (
+            None if plan["decision_id"] == absent else {"frontier_generation": plan["decision_id"]}
+        )
+
+    async def receipt(conn, plan, actual_frontier):
+        assert actual_frontier["frontier_generation"] == plan["decision_id"]
+        return plan["decision_id"] != invalid
+
+    monkeypatch.setattr(retention, "_all_committed_holders", frontier)
+    monkeypatch.setattr(retention, "_committed_raw_plan", receipt)
+    assert not await retention._complete_attempt_cohort(Cohort(0))
+    cohort = Cohort(65)
+    assert await retention._complete_attempt_cohort(cohort)
+    assert cohort.pages == [None, UUID(int=64)]
+    absent = UUID(int=65)
+    assert not await retention._complete_attempt_cohort(Cohort(65))
+    absent, invalid = None, UUID(int=65)
+    assert not await retention._complete_attempt_cohort(Cohort(65))
+    invalid = None
+    assert await retention._complete_attempt_cohort(Cohort(65))
+
 
 def test_source_copy_readback_binds_exact_committed_holder_and_refuses_partial_ack():
     """REQ-location-retention-005/006; metadata control, not actual MCP/SQL proof."""

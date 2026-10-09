@@ -757,6 +757,20 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
                     assert await committed.fetchval(
                         "SELECT deleted_count FROM location_retention_runs WHERE run_id=$1", run
                     ) == len(frozen_ids)
+                from butlers.chronicler.location_retention import complete_native_attempt
+
+                incomplete_run = await start_attempt(owning)
+                await complete_native_attempt(owning, incomplete_run)
+                async with pool.acquire() as committed:
+                    incomplete = await committed.fetchrow(
+                        "SELECT * FROM location_retention_runs WHERE run_id=$1", incomplete_run
+                    )
+                assert incomplete["status"] == "unknown" and incomplete["completion_at"] is not None
+                assert incomplete["overdue_count"] == 304 - len(frozen_ids)
+                assert incomplete["holder_pending_count"] == (
+                    incomplete["overdue_count"] - incomplete["blocked_count"]
+                )
+                assert (await retention_status(owning))["unknown_count"] is None
             finally:
                 await connector.close()
         finally:
@@ -764,6 +778,212 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
             await owning.close()
     finally:
         await pool.close()
+    await _assert_native_attempt_completion(postgres_container)
+
+
+async def _assert_native_attempt_completion(container):
+    """Actual migrated producer/role/COMMIT; planted remote receipt is not online proof."""
+    from types import SimpleNamespace
+
+    from butlers.chronicler.location_retention import (
+        complete_native_attempt,
+        dispose_ready_point_evidence,
+        issue_ready_grant,
+        reconcile_raw_batches,
+        seal_native_frontier,
+    )
+    from butlers.connectors.owntracks_forgetting import ReadyGrant, forget_ready_batch
+    from roster.chronicler.modules import ChroniclerModule
+
+    # A separate genuinely migrated healthy database: never delete the other
+    # species' incomplete permanent history to manufacture a zero inventory.
+    url = create_migrated_test_db(
+        container,
+        migration_db_name(),
+        chains=["core", "chronicler"],
+        schemas={"core": "chronicler", "chronicler": "chronicler"},
+    )
+    creator = await asyncpg.create_pool(
+        url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "chronicler,public"},
+    )
+
+    async def own_connection(conn):
+        await register_jsonb_codec(conn)
+        await conn.execute("SET ROLE butler_chronicler_rw")
+
+    async def connector_connection(conn):
+        await register_jsonb_codec(conn)
+        await conn.execute("SET ROLE connector_writer")
+
+    own = await asyncpg.create_pool(
+        url,
+        min_size=1,
+        max_size=2,
+        init=own_connection,
+        server_settings={"search_path": "chronicler,public"},
+    )
+    connector = await asyncpg.create_pool(url, min_size=1, max_size=2, init=connector_connection)
+    module = ChroniclerModule()
+    await module.on_startup(None, SimpleNamespace(schema="chronicler", pool=own))
+    try:
+        empty = await start_attempt(own)
+        await complete_native_attempt(own, empty)
+        assert (await retention_status(own))["status"] == "unknown"
+        assert (await retention_status(own))["unknown_count"] is None
+        assert await creator.fetchval("SELECT count(*) FROM location_retention_plans") == 0
+        await seed_source_registry(creator)
+        now = datetime.now(UTC)
+        # Last fresh boundary closes the old native movement/place carry;
+        # its still-unexpired point is preserved, not hidden/deleted by a test.
+        for minutes in (0, 15, 90, 31 * 1440):
+            raw, moment = uuid4(), now - timedelta(days=31) + timedelta(minutes=minutes)
+            source = f"completion-fixture:{raw}"
+            digest = content_digest({"completion_fixture": minutes})
+            await creator.execute(
+                "INSERT INTO connectors.owntracks_points "
+                "(id,idempotency_key,ts,lat,lon,endpoint_identity,recorded_at,"
+                "logical_source_digest,content_digest,accepted_request_id,"
+                "accepted_payload_digest,accepted_normalized_digest) "
+                "VALUES($1,$2,$3,1.31415926,103.81234567,'completion-fixture',$3,$4,$5,$6,$5,$5)",
+                raw,
+                source,
+                moment,
+                logical_digest(source),
+                digest,
+                uuid4(),
+            )
+        for adapter in (
+            OwnTracksPointAdapter(),
+            OwnTracksPlaceClusterAdapter(),
+            OwnTracksSsidPresenceAdapter(ssid_places={}),
+        ):
+            result = await adapter.run(pool=creator, chronicler_pool=creator)
+            assert result.error is None and not result.skipped
+        run = await start_attempt(own)
+        decision = await prepare_batch(own, run)
+        assert decision is not None
+        assert (
+            await creator.fetchval(
+                "SELECT count(*) FROM location_retention_plan_rows WHERE decision_id=$1", decision
+            )
+            == 3
+        )
+        # Real source-owned engine reads this planted terminal remote receipt;
+        # this remains synthetic engine proof, not a registered sender verdict.
+        await creator.execute(
+            "INSERT INTO location_retention_holder_receipts "
+            "(decision_id,owning_butler,holder_kind,holder_generation,source_digest,receipt_id) "
+            "SELECT decision_id,'switchboard','switchboard_skipped',decision_id,manifest_digest,$2 "
+            "FROM location_retention_plans WHERE decision_id=$1",
+            decision,
+            uuid4(),
+        )
+        assert await seal_native_frontier(own, decision) is not None
+        disposed = await dispose_ready_point_evidence(own, decision)
+        assert disposed is not None
+        await issue_ready_grant(own, decision, disposed)
+        wire = ReadyGrant.model_validate((await ready_batches(own))[0])
+        from butlers.chronicler.location_retention import _committed_raw_plan
+
+        async with own.acquire() as witness:
+            original_plan = await witness.fetchrow(
+                "SELECT * FROM location_retention_plans WHERE decision_id=$1", decision
+            )
+            original_frontier = await witness.fetchrow(
+                "SELECT * FROM location_retention_frontiers WHERE decision_id=$1", decision
+            )
+            assert original_plan is not None and original_frontier is not None
+            assert not await _committed_raw_plan(witness, original_plan, original_frontier)
+        result = await forget_ready_batch(connector, wire)
+        assert result["deleted_count"] == 3
+        await reconcile_raw_batches(own)
+        async with own.acquire() as witness:
+            assert await _committed_raw_plan(witness, original_plan, original_frontier)
+        assert await creator.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 1
+        before = dict(
+            await creator.fetchrow("SELECT * FROM location_retention_runs WHERE run_id=$1", run)
+        )
+        # Disposable trigger fails the ACTUAL producer's completion UPDATE.
+        # Independent readback falsifies separate-commit/regression behavior.
+        await creator.execute(
+            "CREATE FUNCTION completion_fault() RETURNS trigger LANGUAGE plpgsql AS $$ "
+            "BEGIN IF NEW.completion_at IS NOT NULL AND NEW.status IN ('complete','no_work') "
+            "THEN RAISE EXCEPTION 'planted completion failure'; END IF; RETURN NEW; END $$; "
+            "CREATE TRIGGER completion_fault AFTER UPDATE ON location_retention_runs "
+            "FOR EACH ROW EXECUTE FUNCTION completion_fault()"
+        )
+        try:
+            with pytest.raises(asyncpg.RaiseError, match="planted completion failure"):
+                await complete_native_attempt(own, run)
+            async with creator.acquire() as committed:
+                assert (
+                    dict(
+                        await committed.fetchrow(
+                            "SELECT * FROM location_retention_runs WHERE run_id=$1", run
+                        )
+                    )
+                    == before
+                )
+        finally:
+            await creator.execute(
+                "DROP TRIGGER completion_fault ON location_retention_runs; DROP FUNCTION completion_fault()"
+            )
+        await complete_native_attempt(own, run)
+        status = await retention_status(own)
+        assert status["status"] == "complete" and status["unknown_count"] == 0
+        assert (
+            status["overdue_count"]
+            == status["blocked_count"]
+            == status["holder_pending_count"]
+            == 0
+        )
+        assert status["deleted_count"] == 3 and status["completion_at"] is not None
+        first = dict(
+            await creator.fetchrow("SELECT * FROM location_retention_runs WHERE run_id=$1", run)
+        )
+        await complete_native_attempt(own, run)
+        assert (
+            dict(
+                await creator.fetchrow("SELECT * FROM location_retention_runs WHERE run_id=$1", run)
+            )
+            == first
+        )
+        assert await creator.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 1
+        idle = await start_attempt(own)
+        await complete_native_attempt(own, idle)
+        idle_status = await retention_status(own)
+        assert idle_status["status"] == "no_work" and idle_status["unknown_count"] == 0
+        assert idle_status["prepared_count"] == idle_status["deleted_count"] == 0
+        assert first == dict(
+            await creator.fetchrow("SELECT * FROM location_retention_runs WHERE run_id=$1", run)
+        )
+        # A new actual opaque owning session invalidates a later attempt's
+        # census. An earlier timestamp/complete plan cannot refresh green.
+        from butlers.core.sessions import session_create
+        from butlers.core.utils import generate_uuid7_string
+
+        await session_create(
+            own,
+            prompt="synthetic opaque input",
+            trigger_source="trigger",
+            request_id=generate_uuid7_string(),
+        )
+        later = await start_attempt(own)
+        await complete_native_attempt(own, later)
+        current = await retention_status(own)
+        assert current["status"] == "unknown" and current["unknown_count"] is None
+        assert first == dict(
+            await creator.fetchrow("SELECT * FROM location_retention_runs WHERE run_id=$1", run)
+        )
+    finally:
+        await module.on_shutdown()
+        await connector.close()
+        await own.close()
+        await creator.close()
 
 
 async def _assert_late_opaque_holder_refusal(pool, owning, decision, frontier, before_points):

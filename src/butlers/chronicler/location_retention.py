@@ -329,6 +329,222 @@ async def fail_attempt(pool: asyncpg.Pool, run_id: UUID, *, cancelled: bool = Fa
     )
 
 
+async def _projection_blocked_count(conn: Any, cutoff: Any) -> int:
+    """Same native coverage count at preparation and final observation, not erasure."""
+    return await conn.fetchval(
+        """SELECT count(*) FROM connectors.owntracks_points p
+       WHERE p.retention_at<$1 AND NOT (
+         p.accepted_request_id IS NOT NULL
+         AND p.logical_source_digest IS NOT NULL AND p.content_digest IS NOT NULL
+         AND p.accepted_payload_digest IS NOT NULL
+         AND p.accepted_normalized_digest IS NOT NULL
+         AND (SELECT count(DISTINCT c.adapter_name)
+             FROM location_projection_coverage c
+             JOIN location_projection_heads h ON h.adapter_name=c.adapter_name
+               AND h.mapping_revision=c.mapping_revision
+             WHERE c.raw_id=p.id AND c.source_revision=p.source_revision
+               AND c.logical_source_digest=p.logical_source_digest
+               AND c.content_digest=p.content_digest
+               AND c.adapter_name=ANY($2::text[])
+               AND c.disposition IN ('complete','terminal_no_output'))=3)""",
+        cutoff,
+        list(ADAPTER_NAMES),
+    )
+
+
+async def _committed_raw_plan(conn: Any, plan: Any, frontier: Any) -> bool:
+    """Read full source/own receipts; a mutable complete-state flag is insufficient."""
+    from butlers.connectors.owntracks_forgetting import FrozenRaw, ReadyGrant, _receipt_matches
+
+    disposal = await conn.fetchrow(
+        "SELECT * FROM location_retention_disposal_receipts WHERE decision_id=$1",
+        plan["decision_id"],
+    )
+    grant = await conn.fetchrow(
+        "SELECT * FROM location_retention_grants WHERE decision_id=$1", plan["decision_id"]
+    )
+    if (
+        disposal is None
+        or grant is None
+        or disposal["manifest_digest"] != plan["manifest_digest"]
+        or disposal["frontier_generation"] != frontier["frontier_generation"]
+        or grant["manifest_digest"] != plan["manifest_digest"]
+    ):
+        return False
+    rows = await conn.fetch(
+        "SELECT * FROM location_retention_plan_rows WHERE decision_id=$1 ORDER BY raw_id",
+        plan["decision_id"],
+    )
+    if not 1 <= len(rows) <= 256:
+        return False
+    frozen = tuple(
+        FrozenRaw.model_validate(
+            {
+                **{
+                    key: row[key]
+                    for key in ("raw_id", "source_revision", "retention_at", "accepted_request_id")
+                },
+                **{
+                    key: row[key].hex()
+                    for key in (
+                        "logical_source_digest",
+                        "content_digest",
+                        "accepted_payload_digest",
+                        "accepted_normalized_digest",
+                    )
+                },
+            }
+        )
+        for row in rows
+    )
+    wire = ReadyGrant.model_validate(
+        {
+            **{
+                key: grant[key]
+                for key in ("grant_id", "decision_id", "batch_id", "lease_version", "lease_until")
+            },
+            "policy_version": plan["policy_version"],
+            "cutoff": plan["cutoff"],
+            "manifest_digest": plan["manifest_digest"].hex(),
+            "rows": frozen,
+        }
+    )
+    wire.check_manifest()  # Original immutable set; expired lease is not renewed here.
+    header = await conn.fetchrow(
+        "SELECT * FROM connectors.owntracks_retention_batches WHERE batch_id=$1", wire.batch_id
+    )
+    if header is None:
+        return False
+    members = await conn.fetch(
+        "SELECT * FROM connectors.owntracks_retention_batch_rows WHERE batch_id=$1 "
+        "ORDER BY raw_id,source_revision",
+        wire.batch_id,
+    )
+    if not _receipt_matches({**dict(header), "rows": [dict(row) for row in members]}, wire):
+        return False
+    return not await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM connectors.owntracks_points WHERE id=ANY($1::uuid[]))",
+        [row.raw_id for row in frozen],
+    )
+
+
+async def _complete_attempt_cohort(conn: Any) -> bool:
+    """Every historical plan has its full original current source/copy receipts."""
+    known, cursor, observed = True, None, 0
+    # Full bounded-memory keyset census, not a single-page success.
+    while known:
+        plans = await conn.fetch(
+            "SELECT * FROM location_retention_plans "
+            "WHERE ($1::uuid IS NULL OR decision_id>$1) ORDER BY decision_id LIMIT 64",
+            cursor,
+        )
+        for plan in plans:
+            frontier = await _all_committed_holders(conn, plan)
+            if frontier is None or not await _committed_raw_plan(conn, plan, frontier):
+                known = False
+                break
+            observed += 1
+        if len(plans) < 64 or not known:
+            break
+        cursor = plans[-1]["decision_id"]
+    return known and observed > 0  # Empty tables do not certify an all-source frontier.
+
+
+async def complete_native_attempt(pool: asyncpg.Pool, run_id: UUID) -> None:
+    """Finish the actual bounded job without upgrading an empty/partial census.
+
+    Only a nonempty original complete cohort, current bodies and full raw
+    receipts can report observed zero unknown holders. Unclassified/unfinished
+    scopes finish UNKNOWN; this does not delete, grant or attest a recipient.
+    """
+    from butlers.chronicler.storage import _lock_location_writes
+
+    if not native_copy_pool(pool):
+        raise PolicyUnavailableError("Native attempt producer is unavailable")
+    async with asyncio.timeout(5):
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if await conn.fetchval("SELECT current_user") != "butler_chronicler_rw":
+                    raise PolicyUnavailableError("Native attempt writer identity differs")
+                await conn.execute("SET LOCAL lock_timeout='2s'")
+                await conn.execute("SET LOCAL statement_timeout='5s'")
+                await _lock_location_writes(conn)
+                policy = _policy(
+                    await conn.fetchrow("SELECT * FROM location_retention_policy WHERE singleton")
+                )
+                run = await conn.fetchrow(
+                    "SELECT * FROM location_retention_runs WHERE run_id=$1 FOR UPDATE", run_id
+                )
+                if run is None:
+                    raise PolicyUnavailableError("Native attempt is unavailable")
+                if run["completion_at"] is not None:
+                    return  # Never replace an independently committed failure/earlier receipt.
+                if run["policy_version"] != policy["version"]:
+                    raise PolicyConflictError("Native attempt policy changed")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                    "owntracks:retention:source",
+                )
+                reachable = await conn.fetchval(
+                    "SELECT COALESCE((SELECT has_schema_privilege(oid,'USAGE') "
+                    "FROM pg_namespace WHERE nspname='connectors'),false)"
+                )
+                if not reachable or not await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema='connectors' AND table_name='owntracks_points')"
+                ):
+                    raise PolicyUnavailableError("Native attempt source is unavailable")
+                overdue = await conn.fetchval(
+                    "SELECT count(*) FROM connectors.owntracks_points WHERE retention_at<$1",
+                    run["cutoff"],
+                )
+                blocked = await _projection_blocked_count(conn, run["cutoff"])
+                pending = await conn.fetchval(
+                    "SELECT count(*) FROM location_retention_plans WHERE state<>'complete'"
+                )
+                known = (
+                    overdue == 0 and pending == 0 and not await _current_unclassified_holders(conn)
+                )
+                known = known and await _complete_attempt_cohort(conn)
+                outcome = (
+                    ("complete" if run["prepared_count"] or run["deleted_count"] else "no_work")
+                    if known
+                    else "unknown"
+                )
+                recorded = await conn.fetchrow(
+                    "UPDATE location_retention_runs SET status=$2,reason_code=$3,"
+                    "completion_at=clock_timestamp(),overdue_count=$4::integer,"
+                    "holder_pending_count=$4::integer-$5::integer,blocked_count=$5::integer,"
+                    "counts_observed_at=clock_timestamp() "
+                    "WHERE run_id=$1 AND completion_at IS NULL RETURNING *",
+                    run_id,
+                    outcome,
+                    None if known else "receipt_unknown",
+                    overdue,
+                    blocked,
+                )
+                if recorded is None:
+                    raise PolicyUnavailableError("Native attempt completion changed")
+    async with asyncio.timeout(5):
+        async with pool.acquire() as readback:
+            committed = await readback.fetchrow(
+                "SELECT * FROM location_retention_runs WHERE run_id=$1", run_id
+            )
+    if committed is None or any(
+        committed[key] != recorded[key]
+        for key in (
+            "status",
+            "reason_code",
+            "completion_at",
+            "overdue_count",
+            "blocked_count",
+            "holder_pending_count",
+            "counts_observed_at",
+        )
+    ):
+        raise PolicyUnavailableError("Committed native attempt completion is unknown")
+
+
 async def _output_generation_cohort(
     conn: asyncpg.Connection, episode_ids: list[UUID], event_ids: list[UUID]
 ) -> list:
@@ -502,25 +718,7 @@ async def _prepare_batch(pool: asyncpg.Pool, run_id: UUID) -> UUID | None:
                 "SELECT count(*) FROM connectors.owntracks_points WHERE retention_at<$1",
                 run["cutoff"],
             )
-            blocked = await conn.fetchval(
-                """SELECT count(*) FROM connectors.owntracks_points p
-                   WHERE p.retention_at<$1 AND NOT (
-                     p.accepted_request_id IS NOT NULL
-                     AND p.logical_source_digest IS NOT NULL AND p.content_digest IS NOT NULL
-                     AND p.accepted_payload_digest IS NOT NULL
-                     AND p.accepted_normalized_digest IS NOT NULL
-                     AND (SELECT count(DISTINCT c.adapter_name)
-                         FROM location_projection_coverage c
-                         JOIN location_projection_heads h ON h.adapter_name=c.adapter_name
-                           AND h.mapping_revision=c.mapping_revision
-                         WHERE c.raw_id=p.id AND c.source_revision=p.source_revision
-                           AND c.logical_source_digest=p.logical_source_digest
-                           AND c.content_digest=p.content_digest
-                           AND c.adapter_name=ANY($2::text[])
-                           AND c.disposition IN ('complete','terminal_no_output'))=3)""",
-                run["cutoff"],
-                list(ADAPTER_NAMES),
-            )
+            blocked = await _projection_blocked_count(conn, run["cutoff"])
             await conn.execute(
                 """UPDATE location_retention_runs SET overdue_count=$2::integer,
                    blocked_count=$3::integer,holder_pending_count=$2::integer-$3::integer,
@@ -824,9 +1022,11 @@ async def retention_status(pool: asyncpg.Pool) -> dict[str, Any]:
         "prepared_count": row["prepared_count"],
         "deleted_count": row["deleted_count"],
         "blocked_count": row["blocked_count"] if row["counts_observed_at"] else None,
-        # No complete all-holder frontier has been implemented or observed.
-        # The internal bounded-plan transport counter cannot stand in for it.
-        "unknown_count": None,
+        # Only the final producer's nonempty/full committed cohort qualifies
+        # zero unknown holders. An internal source-transport counter cannot.
+        "unknown_count": (
+            0 if outcome in {"complete", "no_work"} and row["counts_observed_at"] else None
+        ),
         "overdue_count": row["overdue_count"],
         "holder_pending_count": row["holder_pending_count"],
         "counts_observed_at": row["counts_observed_at"],
@@ -950,6 +1150,7 @@ async def run_retention(pool: asyncpg.Pool, *, switchboard_client: Any = None) -
             disposed = await dispose_ready_point_evidence(pool, decision["decision_id"])
             if disposed is not None:
                 await issue_ready_grant(pool, decision["decision_id"], disposed)
+        await complete_native_attempt(pool, run_id)
     except asyncio.CancelledError:
         try:
             await asyncio.shield(fail_attempt(pool, run_id, cancelled=True))

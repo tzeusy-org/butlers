@@ -305,6 +305,8 @@ Source: bu-s11n0s.7 original Behavior matrix and S2; openspec/specs/connector-ow
 Scope: v1-mandatory
 
 
+The actual configured owning scheduled producer SHALL complete its durable attempt under current policy-first and connector-source fences, and separately read back that committed outcome. Zero unknown holders SHALL require a nonempty full keyset census of every stored original plan, its current nonempty all-holder frontier, exact immutable disposition/grant/source batch header and every original batch member, and actual raw-source absence; a complete-state flag, first page, empty ledger, transport counter or expired lease SHALL NOT substitute. Outstanding plans, overdue raw rows, late opaque own sessions/cache, missing or differing receipts, changed policy, inaccessible source and unknown COMMIT/readback SHALL remain unresolved. Counter observations SHALL retain their point units: overdue and projection-blocked points at the original cutoff, and their difference as holder-pending candidates; plan count SHALL NOT replace point count. A completion receipt describes its committed as-of census, never future writes or external recipient erasure. Replay SHALL preserve an already committed completion or failure, and a later attempt SHALL reobserve the current census rather than refresh a prior green. Grouped migrated-role controls SHALL invoke this actual producer, prove rollback/independent readback and a restored nonempty completion positive, and separately preserve genuine empty/incomplete/late-holder unknowns; planted source admission or remote closure SHALL remain engine-only proof.
+
 #### Scenario: Committed counts dedupe
 
 - **WHEN** an eligible source batch commits then the same run repeats
