@@ -1287,10 +1287,26 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
             birth["filtered_received_at"],
         )
     )
-    # The earlier original species replays the actual broad bootstrap. Its
-    # default SELECT grants cannot expose this genuinely planted private
-    # generation through FORCE RLS. Trusted own installer then converges its
-    # narrow purpose ACL; runtime cannot perform that repair itself.
+    # Observe actual ACLs rather than assume bootstrap widens this newly
+    # purpose-restricted relation. Both denied ACL and zero-visible forced RLS
+    # are valid privacy boundaries, but an unrelated SQL error is not a denial.
+    selectable = await own.fetchval(
+        "SELECT has_table_privilege(current_user,"
+        "'connectors.owntracks_filtered_copy_births','SELECT')"
+    )
+    if selectable:
+        assert (
+            await own.fetchval("SELECT count(*) FROM connectors.owntracks_filtered_copy_births")
+            == 0
+        )
+    else:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await own.fetchval("SELECT count(*) FROM connectors.owntracks_filtered_copy_births")
+    # Disposable existing-role SELECT grant positions the RLS predicate against
+    # the already planted birth. This test-only grant is not production authority.
+    await creator.execute(
+        "GRANT SELECT ON connectors.owntracks_filtered_copy_births TO butler_chronicler_rw"
+    )
     assert await own.fetchval("SELECT count(*) FROM connectors.owntracks_filtered_copy_births") == 0
     from butlers.owntracks_copy_schema import filtered_copy_security_sql
 

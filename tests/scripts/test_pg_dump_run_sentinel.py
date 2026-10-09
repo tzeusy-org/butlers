@@ -112,6 +112,11 @@ done
 
 if [ -n "${command}" ]; then
   case "${command}" in
+    *"owntracks_filtered_copy_births"*)
+      # This DB-free ordinary-backup fixture models a pre-retention DB.
+      # Presence is an availability precheck, not native export authority.
+      printf '0\\n'
+      ;;
     *"SET TRANSACTION SNAPSHOT"*)
       printf '%s\\n' 'scoped-export' >> "${log}"
       ;;
@@ -138,6 +143,9 @@ while IFS= read -r line; do
         */id)
           printf 'ABCDEF-012345\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-exported' >> "${log}"
+          ;;
+        */native-copy-state)
+          printf 'absent\\n' > "${output_file}"
           ;;
         */policy-count)
           printf '3\\n' > "${output_file}"

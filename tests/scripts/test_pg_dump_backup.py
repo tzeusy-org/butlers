@@ -723,7 +723,7 @@ def test_scoped_export_rejects_a_policy_changed_between_precheck_and_snapshot(
                         "ALTER POLICY native_copy_history_owner ON "
                         "connectors.owntracks_filtered_copy_births USING(false)"
                     )
-                assert blocked.value.orig.sqlstate == "55P03"
+                assert blocked.value.orig.pgcode == "55P03"
             finally:
                 conn.exec_driver_sql("RESET lock_timeout")
 

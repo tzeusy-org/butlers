@@ -1371,3 +1371,34 @@ hosted evidence. Preservation of stored history is not admission of old active
 leases, old live server incarnations or restored remote holders. Full fresh
 source/holder reconciliation and current native restore admission remain
 mandatory; every original whole outcome stays UNMET.
+
+
+### Raw diagnostic restore and native recovery certification
+
+The appended native stream preserves the caller's psql error-stop mode. It
+uses an existing-role membership conditional and starts its native import
+transaction only after staging and positive membership. A deliberately bare,
+unfenced raw restore may therefore continue its ordinary diagnostic path while
+reporting unavailable native replay; that is not native recovery certification.
+The original SECURITY DEFINER ownership audit remains first and unchanged.
+
+The supported restore script independently reads this artifact's one complete
+native staging block, then acquires a separate read-only snapshot under the
+existing connector role after actual owner/FORCE RLS/exact policy checks.
+It compares the complete hex-JSON row cohort in both directions, with original
+timestamps, every field and multiplicity preserved. Missing staging for present
+native schemas, missing rows, duplicate source/target rows, changed fields or
+unavailable posture cannot certify recovery, including for an empty source
+cohort. No artifact selector reaches SQL text and the guard never prints rows.
+This certifies stored metadata recovery only; current active source/holder
+admission remains required and every whole original outcome remains UNMET.
+
+Actual 254d hosted role instrumentation failed before installer repair because
+its new count probe lacked SELECT permission. It did not demonstrate a copied
+birth leak or actual bootstrap widening. Current controls observe actual ACL
+posture; a disposable test-only existing-role SELECT grant then positions forced
+RLS against the already planted birth before trusted installation restores the
+original ACL refusal. The new psycopg2-backed snapshot/restore controls use the
+actual driver's pgcode, preserving exact 55P03/P0001/42501 expectations. These
+new SQL corrections await current exact-head hosted execution; no local Docker
+access, backup, restore or authority widening is inferred.

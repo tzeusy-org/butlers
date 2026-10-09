@@ -512,7 +512,7 @@ SET ROLE %I;',
   printf 'RESET ROLE;\n\\else\n\\echo cost-claim ledger replay skipped: restore owner membership unavailable\n\\endif\nDROP TABLE butlers_cost_claim_restore_rows;\n'
   if [ "${NATIVE_COPY_STATE}" = "ready" ]; then
     printf '\n-- Butlers scoped OwnTracks copy history\n'
-    printf 'BEGIN;\nSET LOCAL TIME ZONE '\''UTC'\'';\nCREATE TEMP TABLE butlers_owntracks_copy_restore_rows (ordinal integer NOT NULL, relation_name text NOT NULL, payload_hex text NOT NULL);\n'
+    printf 'SET TIME ZONE '\''UTC'\'';\nCREATE TEMP TABLE butlers_owntracks_copy_restore_rows (ordinal integer NOT NULL, relation_name text NOT NULL, payload_hex text NOT NULL);\n'
     printf 'COPY butlers_owntracks_copy_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n'
     PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
       --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
@@ -538,11 +538,13 @@ SET ROLE %I;',
       || { echo "$?" > "${STATUSFILE}"; exit 0; }
     printf '\\.\n'
     cat <<'NATIVE_COPY_RESTORE'
-\set ON_ERROR_STOP on
+SELECT coalesce(pg_catalog.pg_has_role(current_user,
+  pg_catalog.to_regrole('connector_writer'),'MEMBER'),false)
+  AS butlers_native_copy_restore_authorized \gset
+\if :butlers_native_copy_restore_authorized
+BEGIN;
+SET LOCAL TIME ZONE 'UTC';
 DO $$ BEGIN
-  IF NOT pg_catalog.pg_has_role(current_user,'connector_writer','MEMBER') THEN
-    RAISE EXCEPTION 'Native copy restoration identity is unavailable';
-  END IF;
   IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows WHERE
       (ordinal,relation_name) NOT IN (
         (1,'owntracks_filtered_copy_births'),(2,'owntracks_filtered_copy_floors'),
@@ -665,7 +667,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 NATIVE_COPY_MEMBERS
-    printf 'RESET ROLE;\nDROP TABLE butlers_owntracks_copy_restore_rows;\nCOMMIT;\n'
+    printf 'RESET ROLE;\nCOMMIT;\n\\else\n\\echo Native copy history replay unavailable; restore certification required\n\\endif\nDROP TABLE butlers_owntracks_copy_restore_rows;\n'
   fi
 } | gzip > "${TMPFILE}"
 

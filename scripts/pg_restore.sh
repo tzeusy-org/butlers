@@ -303,6 +303,106 @@ if [[ -s "$AUDIT_DIR/inverted" ]]; then
 fi
 echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
 
+
+# Raw recovery intentionally continues ownership errors for the audit above.
+# It may likewise leave the scoped native import unavailable. Certification
+# must independently compare this artifact's complete fixed staging cohort
+# under the actual constrained connector reader before claiming success.
+# Nothing from the artifact becomes SQL text; private metadata rows stay in
+# the existing temporary audit directory and are never printed by this guard.
+(
+  umask 077
+  gunzip -c "$BACKUP_FILE" | awk -v state="$AUDIT_DIR/native_presence" '
+    /^CREATE TABLE connectors\.owntracks_filtered_copy_/ { native=1 }
+    /^COPY butlers_owntracks_copy_restore_rows / {
+      blocks++; active=1; next
+    }
+    active && $0 == "\\." { active=0; next }
+    active { print }
+    END {
+      if (blocks > 1 || active || (native && blocks != 1)) exit 7
+      print (blocks == 1 ? "present" : "absent") > state
+    }
+  ' | LC_ALL=C sort > "$AUDIT_DIR/native_expected" || exit 7
+  if [[ "$(cat "$AUDIT_DIR/native_presence")" == "present" ]]; then
+    PGPASSWORD="$PG_PASSWORD" psql \
+      --host="$PG_HOST" --port="$PG_PORT" --username="$PG_USER" \
+      --dbname="$TARGET_DB" --no-password --quiet --no-align --tuples-only \
+      --set=ON_ERROR_STOP=1 > "$AUDIT_DIR/native_actual_unsorted" <<'NATIVE_RESTORE_OBSERVE' || exit 7
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+WITH native_tables AS (
+  SELECT c.* FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='connectors' AND c.relname IN (
+    'owntracks_filtered_copy_births','owntracks_filtered_copy_floors',
+    'owntracks_filtered_copy_batches','owntracks_filtered_copy_members')
+), qualified AS (
+  SELECT c.oid FROM native_tables c
+  WHERE c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
+    AND c.relowner=(SELECT p.relowner FROM pg_catalog.pg_class p
+      JOIN pg_catalog.pg_namespace n ON n.oid=p.relnamespace
+      WHERE n.nspname='connectors' AND p.relname='owntracks_points' AND p.relkind='r')
+    AND pg_catalog.pg_has_role(current_user,'connector_writer','MEMBER')
+    AND (SELECT count(*) FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid)=3
+    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid
+      AND (NOT p.polpermissive OR p.polroles<>ARRAY[0::oid]
+        OR p.polname NOT IN ('native_copy_read','native_copy_write','native_copy_history_owner')))
+    AND EXISTS(SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid
+      AND p.polname='native_copy_history_owner' AND p.polcmd='r'
+      AND pg_catalog.pg_get_expr(p.polqual,p.polrelid)=
+          pg_catalog.format('(CURRENT_USER = %L::name)',
+            pg_catalog.pg_get_userbyid(c.relowner)))
+    AND EXISTS(SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid
+      AND p.polname='native_copy_read' AND p.polcmd='r'
+      AND pg_catalog.pg_get_expr(p.polqual,p.polrelid)=CASE
+          WHEN c.relname IN ('owntracks_filtered_copy_batches','owntracks_filtered_copy_members')
+            THEN '((CURRENT_USER = ''connector_writer''::name) OR (CURRENT_USER = ''butler_chronicler_rw''::name))'
+          ELSE '(CURRENT_USER = ''connector_writer''::name)' END)
+    AND EXISTS(SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid
+      AND p.polname='native_copy_write' AND p.polcmd='*'
+      AND pg_catalog.pg_get_expr(p.polqual,p.polrelid)=
+          '(CURRENT_USER = ''connector_writer''::name)'
+      AND pg_catalog.pg_get_expr(p.polwithcheck,p.polrelid)=
+          '(CURRENT_USER = ''connector_writer''::name)')
+)
+SELECT count(*)=4 AS butlers_native_copy_restore_posture
+FROM qualified
+\gset
+\if :butlers_native_copy_restore_posture
+SET LOCAL ROLE connector_writer;
+SET LOCAL TIME ZONE 'UTC';
+COPY (
+  SELECT 1,'owntracks_filtered_copy_births',
+    encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+    FROM connectors.owntracks_filtered_copy_births t
+  UNION ALL SELECT 2,'owntracks_filtered_copy_floors',
+    encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+    FROM connectors.owntracks_filtered_copy_floors t
+  UNION ALL SELECT 3,'owntracks_filtered_copy_batches',
+    encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+    FROM connectors.owntracks_filtered_copy_batches t
+  UNION ALL SELECT 4,'owntracks_filtered_copy_members',
+    encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+    FROM connectors.owntracks_filtered_copy_members t
+  ORDER BY 1,2,3
+) TO STDOUT;
+COMMIT;
+\else
+\echo Native copy restore posture is unavailable
+\quit 7
+\endif
+NATIVE_RESTORE_OBSERVE
+    LC_ALL=C sort "$AUDIT_DIR/native_actual_unsorted" > "$AUDIT_DIR/native_actual" || exit 7
+    if ! cmp -s "$AUDIT_DIR/native_expected" "$AUDIT_DIR/native_actual"; then
+      echo "[restore] SECURITY FAILURE: native copy history did not restore exactly." >&2
+      exit 7
+    fi
+  fi
+) || {
+  echo "[restore] ERROR: native copy history restoration is not certified." >&2
+  exit 1
+}
+
 echo "[restore] done — '${TARGET_DB}' is populated"
 echo ""
 echo "Next step: verify integrity with:"

@@ -524,7 +524,7 @@ def test_restore_script_refuses_to_certify_a_laundered_restore(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
-    backup_artifact: Path, source_db_url: str, postgres_container
+    backup_artifact: Path, source_db_url: str, postgres_container, tmp_path: Path
 ) -> None:
     """A restore the script certifies has no definer function on the restorer.
 
@@ -679,20 +679,49 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
             )
             with pytest.raises(DBAPIError) as permanent:
                 conn.exec_driver_sql("DELETE FROM connectors.owntracks_filtered_copy_floors")
-            assert permanent.value.orig.sqlstate == "P0001"
+            assert permanent.value.orig.pgcode == "P0001"
             conn.exec_driver_sql("SET ROLE butler_general_rw")
             for relation in COPY_HISTORY_TABLES:
                 try:
                     visible = conn.exec_driver_sql(f"SELECT count(*) FROM {relation}").scalar_one()
                 except DBAPIError as denied:
-                    assert denied.orig.sqlstate == "42501"
+                    assert denied.orig.pgcode == "42501"
                     visible = 0
                 assert visible == 0
             with pytest.raises(DBAPIError) as denied:
                 conn.exec_driver_sql("DELETE FROM connectors.owntracks_filtered_copy_floors")
-            assert denied.value.orig.sqlstate == "42501"
+            assert denied.value.orig.pgcode == "42501"
     finally:
         boundary.dispose()
+
+    # Neutralize only the actual scoped import while retaining its original
+    # nonempty staging cohort and every schema/ownership statement. The actual
+    # supported script must refuse even though the old ownership audit passes.
+    # Its normal counterpart above proves all original rows really restored.
+    dump = gzip.decompress(backup_artifact.read_bytes()).decode("utf-8")
+    admission = (
+        "SELECT coalesce(pg_catalog.pg_has_role(current_user,\n"
+        "  pg_catalog.to_regrole('connector_writer'),'MEMBER'),false)\n"
+        "  AS butlers_native_copy_restore_authorized \\gset"
+    )
+    assert dump.count(admission) == 1
+    withheld = tmp_path / "native-import-withheld.sql.gz"
+    withheld.write_bytes(
+        gzip.compress(
+            dump.replace(
+                admission, "SELECT false AS butlers_native_copy_restore_authorized \\gset"
+            ).encode("utf-8")
+        )
+    )
+    withheld_name = "butlers_restore_native_withheld"
+    rejected = _run_restore_script(withheld, target, withheld_name)
+    assert rejected.returncode != 0
+    assert "native copy history restoration is not certified" in rejected.stderr
+    assert _query(
+        target.url(withheld_name),
+        "SELECT count(*)::text FROM connectors.owntracks_filtered_copy_births",
+    ) == ["0"]
+    assert _query(target.url(withheld_name), _DEFINER_FUNCTIONS_OWNED_BY_SQL, login=login) == []
 
     restore_function_posture = _query(
         restored_url,
