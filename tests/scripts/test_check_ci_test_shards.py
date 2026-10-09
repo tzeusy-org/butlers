@@ -451,6 +451,49 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
             receipt=receipt,
             repo_root=tmp_path,
         ) == (["tests/test_b.py", "tests/test_a.py"], "compatible")
+        # These are protocol mutations, not evidence of skipped test bodies.
+        # A skipped setup cannot have a call; a dynamic call skip can.
+        representatives = {
+            filename: min(node for node, owner in record["node_files"].items() if owner == filename)
+            for filename in ("tests/test_a.py", "tests/test_b.py")
+        }
+        for filename, node in representatives.items():
+            for species in (
+                "setup-skip-with-call",
+                "setup-skip-without-call",
+                "dynamic-call-skip",
+                "restored",
+            ):
+                observed = copy.deepcopy(record)
+                phases = observed["nodes"][node]
+                if species.startswith("setup-skip"):
+                    phases["setup"]["outcome"] = "skipped"
+                if species == "setup-skip-without-call":
+                    observed["file_durations_s"][filename] -= phases.pop("call")["duration_s"]
+                if species == "dynamic-call-skip":
+                    phases["call"]["outcome"] = "skipped"
+                receipt.write_text(json.dumps(observed))
+                # A retains two calls; B loses its only ten-second call and
+                # becomes zero. Both are valid, with different honest orders.
+                compatible_order = (
+                    ["tests/test_a.py", "tests/test_b.py"]
+                    if species == "setup-skip-without-call" and filename == "tests/test_b.py"
+                    else ["tests/test_b.py", "tests/test_a.py"]
+                )
+                expected = (
+                    (["tests/test_a.py", "tests/test_b.py"], "unknown:invalid")
+                    if species == "setup-skip-with-call"
+                    else (compatible_order, "compatible")
+                )
+                assert (
+                    shards.duration_order(
+                        ["tests/test_a.py", "tests/test_b.py"],
+                        context=context,
+                        receipt=receipt,
+                        repo_root=tmp_path,
+                    )
+                    == expected
+                ), species
         for disable in (False, True):
             output = tmp_path / f"scheduler-{disable}.xml"
             args = [
