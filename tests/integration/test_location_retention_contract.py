@@ -1239,7 +1239,9 @@ async def _assert_native_filtered_copy_preparation(creator, own, connector):
     )
     frozen = FrozenRaw.model_validate(
         {
-            key: source[key].hex() if key.endswith("digest") else source[key]
+            key: source[key].hex()
+            if key.endswith("digest")
+            else source["id" if key == "raw_id" else key]
             for key in FrozenRaw.model_fields
         }
     )
