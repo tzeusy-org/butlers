@@ -49,8 +49,19 @@ def migrated_db_url(postgres_container):
     )
 
 
+@pytest.fixture(scope="module")
+def completion_db_url(postgres_container):
+    """Provision the separate healthy DB before entering the async test loop."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "chronicler"],
+        schemas={"core": "chronicler", "chronicler": "chronicler"},
+    )
+
+
 async def test_native_projection_policy_rollback_and_real_role_fences(
-    migrated_db_url, postgres_container
+    migrated_db_url, postgres_container, completion_db_url
 ):
     """REQ-location-retention-001/002/003/006; genuine SQL, not full source authority."""
     # Bounded own migration replay before planting permanent history; this
@@ -778,10 +789,10 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
             await owning.close()
     finally:
         await pool.close()
-    await _assert_native_attempt_completion(postgres_container)
+    await _assert_native_attempt_completion(completion_db_url)
 
 
-async def _assert_native_attempt_completion(container):
+async def _assert_native_attempt_completion(url):
     """Actual migrated producer/role/COMMIT; planted remote receipt is not online proof."""
     from types import SimpleNamespace
 
@@ -797,12 +808,8 @@ async def _assert_native_attempt_completion(container):
 
     # A separate genuinely migrated healthy database: never delete the other
     # species' incomplete permanent history to manufacture a zero inventory.
-    url = create_migrated_test_db(
-        container,
-        migration_db_name(),
-        chains=["core", "chronicler"],
-        schemas={"core": "chronicler", "chronicler": "chronicler"},
-    )
+    # The synchronous fixture provisions this actual fresh chain before the
+    # async node starts; no nested asyncio.run occurs inside this helper.
     creator = await asyncpg.create_pool(
         url,
         min_size=1,
