@@ -152,6 +152,12 @@ async def plan_status(pool: asyncpg.Pool, decision_id: UUID) -> dict[str, Any]:
 
 
 async def _plan_status_on_conn(pool: asyncpg.Connection, decision_id: UUID) -> dict[str, Any]:
+    from butlers.chronicler.location_catalog_copies import require_catalog_artifact_ancestry
+
+    # The owning prepare/status response can authorize a consumer terminal
+    # receipt. It must not derive a smaller cohort from an inner join after an
+    # original header, parent or birth disappeared; locators certify nothing.
+    await require_catalog_artifact_ancestry(pool)
     row = await pool.fetchrow(
         """SELECT decision_id,state,policy_version,cutoff,prepared_at
            FROM location_retention_plans WHERE decision_id=$1""",

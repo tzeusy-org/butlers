@@ -67,6 +67,7 @@ async def assert_registered_catalog_transport(url, postgres_container, memory_po
     from butlers.location_retention import content_digest
     from butlers.mcp_wrappers import _SpanWrappingMCP
     from butlers.migrations import run_migrations
+    from butlers.modules._roster_chronicler import ChroniclerModule
     from butlers.modules._roster_switchboard import SwitchboardModule
     from butlers.modules.memory import MemoryModule, MemoryModuleConfig
     from butlers.modules.memory.storage import _upsert_catalog
@@ -133,6 +134,14 @@ async def assert_registered_catalog_transport(url, postgres_container, memory_po
                     module._db,
                     name,
                 )
+                if name == "chronicler":
+                    chronicler = ChroniclerModule()
+                    await chronicler.register_tools(
+                        _SpanWrappingMCP(mcp, name, module_name="chronicler"),
+                        None,
+                        module._db,
+                        name,
+                    )
                 if name == "switchboard":
                     routing = SwitchboardModule()
                     await routing.register_tools(
@@ -276,6 +285,136 @@ async def assert_registered_catalog_transport(url, postgres_container, memory_po
                 loan["loan_id"],
                 loan["body_digest"],
             )
+            # This stored source plan is explicitly synthetic engine input;
+            # the owning registered source/consumer protocol and durable role
+            # readbacks below are real. It is not actual OwnTracks acceptance,
+            # connector disposal, READY or complete all-holder erasure.
+            from datetime import UTC, datetime, timedelta
+
+            from butlers.chronicler.location_catalog_copies import reconcile_catalog_loans
+            from butlers.connectors.owntracks_forgetting import FrozenRaw, frozen_manifest
+
+            decision, run = uuid4(), uuid4()
+            cutoff = datetime.now(UTC)
+            frozen = FrozenRaw(
+                raw_id=uuid4(),
+                source_revision=1,
+                logical_source_digest=(b"l" * 32).hex(),
+                content_digest=(b"c" * 32).hex(),
+                retention_at=cutoff - timedelta(days=31),
+                accepted_request_id=uuid4(),
+                accepted_payload_digest=(b"a" * 32).hex(),
+                accepted_normalized_digest=(b"z" * 32).hex(),
+            )
+            manifest = frozen_manifest(decision, 1, cutoff, [frozen])
+            async with pools["chronicler"].acquire() as conn:
+                async with conn.transaction():
+                    await source.lock_domain(conn)
+                    await conn.execute(
+                        "INSERT INTO location_retention_runs "
+                        "(run_id,policy_version,cutoff,lease_until,status) "
+                        "VALUES($1,1,$2,$3,'pending')",
+                        run,
+                        cutoff,
+                        cutoff + timedelta(minutes=5),
+                    )
+                    await conn.execute(
+                        "INSERT INTO location_retention_plans "
+                        "(decision_id,run_id,policy_version,cutoff,manifest_digest,state) "
+                        "VALUES($1,$2,1,$3,$4,'holder_pending')",
+                        decision,
+                        run,
+                        cutoff,
+                        manifest,
+                    )
+                    await conn.execute(
+                        "INSERT INTO location_retention_plan_rows "
+                        "(decision_id,raw_id,source_revision,logical_source_digest,content_digest,"
+                        "retention_at,accepted_request_id,accepted_payload_digest,"
+                        "accepted_normalized_digest) VALUES($1,$2,1,$3,$4,$5,$6,$7,$8)",
+                        decision,
+                        frozen.raw_id,
+                        bytes.fromhex(frozen.logical_source_digest),
+                        bytes.fromhex(frozen.content_digest),
+                        frozen.retention_at,
+                        frozen.accepted_request_id,
+                        bytes.fromhex(frozen.accepted_payload_digest),
+                        bytes.fromhex(frozen.accepted_normalized_digest),
+                    )
+                    await conn.execute(
+                        "INSERT INTO location_retention_plan_outputs "
+                        "(decision_id,raw_id,source_revision,adapter_name,mapping_revision,"
+                        "output_kind,output_id) VALUES($1,$2,1,'synthetic_source',$3,'point_event',$4)",
+                        decision,
+                        frozen.raw_id,
+                        b"m" * 32,
+                        output,
+                    )
+            # A locator without a stored source decision cannot mint closure.
+            async with Client(endpoints["finance"] + "/mcp") as owning:
+                denied_plan = await owning.call_tool(
+                    "location_retention_prepare_copy",
+                    {"decision_id": str(uuid4())},
+                    raise_on_error=False,
+                )
+                assert denied_plan.is_error
+                denied_receipt = await owning.call_tool(
+                    "location_retention_copy_status",
+                    {"decision_id": str(decision), "receipt_id": str(uuid4())},
+                    raise_on_error=False,
+                )
+                assert denied_receipt.is_error
+            # Source requests prepare/status through its actual Switchboard
+            # registry, then reads its own durable receipt on another acquisition.
+            await reconcile_catalog_loans(pools["chronicler"], decision)
+            async with pools["finance"].acquire() as consumer_readback:
+                disposition = await consumer_readback.fetchrow(
+                    "SELECT * FROM location_catalog_copy_dispositions "
+                    "WHERE loan_id=$1 AND decision_id=$2",
+                    loan["loan_id"],
+                    decision,
+                )
+            assert disposition is not None and disposition["manifest_digest"] == manifest
+            async with pools["chronicler"].acquire() as source_readback:
+                observed = await source_readback.fetchrow(
+                    "SELECT * FROM location_retention_holder_receipts "
+                    "WHERE decision_id=$1 AND owning_butler='finance' "
+                    "AND holder_kind='catalog_consumer' AND holder_generation=$2",
+                    decision,
+                    loan["loan_id"],
+                )
+            assert observed is not None and observed["receipt_id"] == disposition["receipt_id"]
+            assert observed["source_digest"] == loan["body_digest"]
+            await reconcile_catalog_loans(pools["chronicler"], decision)
+            assert (
+                await pools["finance"].fetchval(
+                    "SELECT count(*) FROM location_catalog_copy_dispositions "
+                    "WHERE loan_id=$1 AND decision_id=$2",
+                    loan["loan_id"],
+                    decision,
+                )
+                == 1
+            )
+            assert (
+                await pools["chronicler"].fetchval(
+                    "SELECT count(*) FROM location_retention_holder_receipts "
+                    "WHERE decision_id=$1 AND holder_kind='catalog_consumer' "
+                    "AND holder_generation=$2",
+                    decision,
+                    loan["loan_id"],
+                )
+                == 1
+            )
+            # Keep the planted fact intact: terminal response-copy disposal does
+            # not delete its source or claim a remote recipient was erased.
+            assert (
+                await memory_pool.fetchval(
+                    "SELECT content FROM facts WHERE id=$1",
+                    artifact,
+                )
+                == summary
+            )
+
             # A real current loan UUID and a caller-invented header both refuse
             # through the actual source guard/tool; the positive above proves
             # this is not an absent source or an always-failing native helper.

@@ -1130,3 +1130,23 @@ actual client/server `expected_version` field. Its earlier `version` assertion
 was a fixture mismatch, retained as a dated failed control. The current version
 value, shortening interaction, old/fresh geometry, cancellation and all archive
 assertions remain; no browser/runtime success is inferred from this correction.
+
+
+### Registered catalog terminal receipt control
+
+The source prepare/status reader now runs the same complete original artifact
+ancestry census before deriving its loan cohort. A missing original parent,
+birth or digest cannot be converted by an inner join into a smaller complete
+consumer input. This runs within the existing policy-first source transaction,
+without caller authority, peer private SQL or a new grant.
+
+The existing migrated registered transport helper additionally registers the
+actual Chronicler source-status tool beside Memory, then exercises source to
+Switchboard to owning consumer prepare/status and independent committed receipt
+readbacks. Its source plan/raw metadata and native origin are explicitly planted
+engine inputs, not accepted OwnTracks evidence. Missing decision and receipt
+locators refuse beside the intended complete owning-copy positive and replay;
+the original fact survives. These new TCP/SQL controls are hosted UNRUN until
+the exact owning node passes, and even then only attest this registered
+system-owned response-copy protocol. They do not prove remote recipient disposal,
+actual daemon/CLI ingress, READY, raw erasure or every holder's closure.

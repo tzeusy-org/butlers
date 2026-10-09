@@ -8384,6 +8384,7 @@ async def _assert_catalog_terminal_complete_ancestry_values():
     from butlers.chronicler.location_memory_copies import _receivers, artifact_content_digest
     from butlers.chronicler.location_policy import PolicyUnavailableError
     from butlers.chronicler.location_projection import _digest_value
+    from butlers.chronicler.location_retention import _plan_status_on_conn
 
     decision, generation, identifier, bundle = (uuid4() for _ in range(4))
     original = dict(id=identifier, content="native rule sentinel", metadata={})
@@ -8446,6 +8447,9 @@ async def _assert_catalog_terminal_complete_ancestry_values():
             raise AssertionError("Unmodeled catalog fetch")
 
         async def fetchrow(self, sql, *args):
+            if "FROM location_retention_plans" in sql:
+                self.trace.append("plan_read")
+                return None  # Deliberately absent locator, after ancestry validation.
             if "location_retention_policy" in sql:
                 self.trace.append("policy")
                 return dict(version=1)
@@ -8530,10 +8534,16 @@ async def _assert_catalog_terminal_complete_ancestry_values():
                 await catalog_frontier_closed(pool, decision)
             with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
                 await catalog_holder_inventory(pool, decision)
+            with pytest.raises(PolicyUnavailableError, match="complete input ancestry"):
+                await _plan_status_on_conn(pool, decision)
+            assert "plan_read" not in pool.trace
         pool.parents = []
         with pytest.raises(PolicyUnavailableError, match="ancestry is unavailable"):
             await require_catalog_artifact_ancestry(pool, generation)
         pool.parents = full
+        with pytest.raises(PolicyUnavailableError, match="Stored retention decision"):
+            await _plan_status_on_conn(pool, decision)
+        assert "plan_read" in pool.trace
         assert not await catalog_frontier_closed(pool, decision)
         assert (await catalog_holder_inventory(pool, decision))[0]["receipt_id"] is None
         pool.fault = True
