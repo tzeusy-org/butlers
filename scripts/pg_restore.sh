@@ -329,9 +329,9 @@ echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
       native_count=0; input_count=0
       for (name in native_tables) { if (native_tables[name] != 1) exit 7; native_count++ }
       for (name in input_tables) { if (input_tables[name] != 1) exit 7; input_count++ }
-      if (blocks > 1 || active || (native && blocks != 1)
-          || (native && native_count != 4) || (input_count != 0 && input_count != 4)
-          || (input_count && !native)) exit 7
+      if (blocks > 1 || active || (native && blocks != 1) ||
+           (native && native_count != 4) || (input_count != 0 && input_count != 4) ||
+           (input_count && !native)) exit 7
       print (blocks == 1 ? "present" : "absent") > state
       print (input_count == 4 ? 8 : 4) > input_state
     }
