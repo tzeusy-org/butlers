@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import math
@@ -688,3 +689,150 @@ def test_reconciliation_requires_complete_node_identity(
     assert candidates.main() == 2
     assert json.loads((tmp_path / "unknown/receipt.json").read_text())["state"] == "UNKNOWN"
     assert not (tmp_path / "unknown/candidate.json").exists()
+
+    # P12: actual reader stages retain closed attempted/selected provenance,
+    # including partial and unselected refusals. These API/archive wrappers and
+    # tracer declarations are synthetic; they are not hosted merge_group proof.
+    unknown = json.loads((tmp_path / "unknown/receipt.json").read_text())
+    assert unknown.get("provenance", {}).get("selected_run") == {
+        "run": "123",
+        "attempt": "1",
+        "head": historical["identity"]["head"],
+    }
+    assert unknown["provenance"]["failure"] == {
+        "stage": "tracing-species",
+        "kind": "evidence-refused",
+    }
+    original_tracers = receipts[first]["actual_tracers"]
+    historic_receipts[first]["actual_tracers"] = original_tracers
+    payloads[1] = archive({"shard-observation.json": historic_receipts[first]})
+    run_record = {
+        "id": 123,
+        "head_sha": historical["identity"]["head"],
+        "run_attempt": 1,
+        "event": "merge_group",
+        "conclusion": "success",
+    }
+    private_error = "synthetic-private-error-must-not-be-exported"
+
+    def observed_api(mode):
+        def read(path, *, binary=False):
+            if "/workflows/" in path:
+                if mode == "run-read":
+                    raise OSError(private_error)
+                if mode == "run-partial":
+                    if "page=2" in path:
+                        raise ValueError(private_error)
+                    return {"workflow_runs": [run_record] * 50}
+                if mode == "unselected":
+                    return {"workflow_runs": []}
+                row = copy.deepcopy(run_record)
+                if mode == "partial-head":
+                    row.pop("head_sha")
+                return {"workflow_runs": [row]}
+            if not binary:
+                if mode == "artifact-read":
+                    raise subprocess.TimeoutExpired("synthetic-private-command", 30)
+                rows = copy.deepcopy(artifacts)
+                if mode == "expired":
+                    rows[0]["expired"] = True
+                elif mode == "missing":
+                    rows.pop()
+                elif mode == "duplicate":
+                    rows.append(dict(rows[0]))
+                return {"artifacts": rows}
+            index = int(path.split("/")[-2])
+            if mode == "download" and index != 0:
+                raise ValueError(private_error)
+            if mode == "member" and index == 0:
+                return b"synthetic-invalid-archive"
+            return payloads[index]
+
+        return read
+
+    def observer(mode):
+        directory = tmp_path / f"provenance-{mode}"
+        monkeypatch.setattr(candidates, "api", observed_api(mode))
+        monkeypatch.setattr(sys, "argv", ["observer", "--output", str(directory)])
+        code = candidates.main()
+        body = (directory / "receipt.json").read_text()
+        assert private_error not in body
+        assert "synthetic-private-command" not in body
+        return code, json.loads(body), directory
+
+    healthy_code, healthy_receipt, _ = observer("healthy")
+    assert healthy_code == 0 and healthy_receipt["state"] == "CANDIDATE"
+    assert healthy_receipt["provenance"]["failure"] is None
+    assert healthy_receipt["provenance"]["selected_run"] == unknown["provenance"]["selected_run"]
+    attempted = healthy_receipt["provenance"]["attempted_inputs"]
+    downloads = [row for row in attempted if row["kind"] == "artifact-download"]
+    assert len(downloads) == 12
+    assert all(row["state"] == "available" and len(row["sha256"]) == 64 for row in downloads)
+    assert {row["artifact"] for row in downloads} == set(artifact_names)
+    assert all(
+        row["bytes"] == len(payloads[int(row["id"])])
+        and row["sha256"] == hashlib.sha256(payloads[int(row["id"])]).hexdigest()
+        for row in downloads
+    )
+    for mode, stage, kind in (
+        ("run-read", "run-index", "io-unavailable"),
+        ("run-partial", "run-index", "evidence-refused"),
+        ("unselected", "run-selection", "evidence-refused"),
+        ("partial-head", "inventory-binding", "missing-field"),
+        ("artifact-read", "artifact-index", "read-timeout"),
+        ("expired", "artifact-selection", "evidence-refused"),
+        ("missing", "artifact-population", "evidence-refused"),
+        ("duplicate", "artifact-selection", "evidence-refused"),
+        ("download", "artifact-download", "evidence-refused"),
+        ("member", "artifact-member", "invalid-archive"),
+    ):
+        code, receipt, directory = observer(mode)
+        assert code == 2 and receipt["state"] == "UNKNOWN"
+        assert not (directory / "candidate.json").exists()
+        provenance = receipt["provenance"]
+        assert provenance["failure"] == {"stage": stage, "kind": kind}
+        assert provenance["repository"] == "fixture/repo"
+        assert provenance["attempted_inputs"]
+        if mode in {"run-read", "run-partial", "unselected"}:
+            assert provenance["selection"] == "unselected" and provenance["selected_run"] is None
+        else:
+            assert provenance["selection"] == "selected"
+            assert provenance["selected_run"]["run"] == "123"
+            assert provenance["selected_run"]["attempt"] == "1"
+            assert provenance["selected_run"]["head"] == (
+                None if mode == "partial-head" else historical["identity"]["head"]
+            )
+        if mode == "run-partial":
+            assert provenance["attempted_inputs"] == [
+                {
+                    "kind": "run-index",
+                    "page": 1,
+                    "state": "available",
+                    "rows": 50,
+                    "body_sha256": hashlib.sha256(
+                        json.dumps(
+                            {"workflow_runs": [run_record] * 50},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest(),
+                },
+                {"kind": "run-index", "page": 2, "state": "unavailable"},
+            ]
+        if mode in {"expired", "duplicate"}:
+            assert provenance["attempted_inputs"][-1]["reason"] == (
+                "expired" if mode == "expired" else "duplicate"
+            )
+            assert provenance["attempted_inputs"][-1]["artifact"] == "ci-inventory"
+        if mode in {"download", "member"}:
+            assert provenance["attempted_inputs"][-1]["state"] == "unavailable"
+    monkeypatch.delenv("GITHUB_REPOSITORY")
+    code, receipt, directory = observer("configuration")
+    assert code == 2 and not (directory / "candidate.json").exists()
+    assert receipt["provenance"]["failure"] == {"stage": "configuration", "kind": "missing-field"}
+    assert receipt["provenance"]["selected_run"] is None
+    assert receipt["provenance"]["attempted_inputs"] == []
+    monkeypatch.setenv("GITHUB_REPOSITORY", "fixture/repo")
+    restored_code, restored_receipt, _ = observer("restored")
+    assert restored_code == 0 and restored_receipt["state"] == "CANDIDATE"
+    assert restored_receipt["provenance"] == healthy_receipt["provenance"]

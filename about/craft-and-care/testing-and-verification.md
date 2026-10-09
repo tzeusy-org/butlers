@@ -109,6 +109,13 @@ preflight reconciles complete nonce-hashed identity multiplicity, logical starts
 across all eleven children. Missing/extra/stale receipts cannot hide behind a matrix aggregate.
 Raw parameter identities stay in RAM; public nonces limit linkability, not guessing or trust.
 
+The read-only scheduled weight observer retains closed provenance for both CANDIDATE and
+UNKNOWN: known selected run/attempt/head, completed and unavailable bounded index reads,
+required artifact identifiers, download digests, archive-member attempts and the failing stage.
+Unselected and partial reads remain explicit; unknown identity fields stay null. Failure kinds
+come from fixed categories, never raw exception arguments, child output or arbitrary API fields.
+These diagnostics do not admit missing evidence, install weights or change test membership.
+
 Full-mode smoke may use exact successful child identities only. An uncovered item runs the
 original dedicated command. Derived release evidence names actual child commands, selector
 provenance and maximum actual child elapsed time; it never invents a dedicated smoke timer.
