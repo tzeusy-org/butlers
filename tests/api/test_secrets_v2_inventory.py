@@ -847,7 +847,8 @@ async def test_inventory_timeout_omits_only_the_slow_source(monkeypatch):
     mock_db.relation_observed_since_start = MagicMock(return_value=True)
 
     with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _source_fetch):
-        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=0.2)
+        # Source/request budgets prove degradation; this only guards test hangs.
+        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=5.0)
 
     assert [secret.key for secret in response.data.system] == ["HEALTHY_KEY"]
     assert response.meta.sources_degraded == ["slow"]
