@@ -781,6 +781,10 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+      - name: Controlled child failure after genuine execution
+        if: ${{ success() && matrix.shard == 1 }}
+        run: exit 1
+
   check-integration:
     timeout-minutes: 36
     runs-on: ubuntu-latest
