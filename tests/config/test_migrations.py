@@ -1338,6 +1338,136 @@ def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
     fresh_db_url = create_migration_db(postgres_container, fresh_db_name)
     asyncio.run(run_migrations(fresh_db_url, chain="core"))
 
+    def serving_catalog_witness(url):
+        # Fixed source-owned identities and booleans only. Never report role
+        # names, connection strings, SQL values or arbitrary catalog contents.
+        expected_columns = {
+            "model_dispatch_attempts": {"id", "served_identity", "receipt_sha256", "attempt_key"},
+            "model_served_usage": {
+                "attempt_id",
+                "execution_index",
+                "model_ordinal",
+                "model_id",
+                "identity_authority",
+                "provenance",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "reported_cost_usd",
+                "cost_scope",
+                "usage_source",
+                "evidence_state",
+                "recorded_at",
+            },
+        }
+        catalog = {}
+        witness_engine = create_engine(url)
+        try:
+            with witness_engine.connect() as conn:
+                for relation, columns in expected_columns.items():
+                    row = (
+                        conn.execute(
+                            text("""
+                        SELECT c.oid IS NOT NULL AS present,
+                          current_user = session_user AS current_equals_session_user,
+                          COALESCE(c.relowner = parent.relowner, false) AS owner_equals_parent,
+                          COALESCE(c.relowner = current_user::regrole, false)
+                            AS owner_equals_current_user,
+                          COALESCE(c.relowner = session_user::regrole, false)
+                            AS owner_equals_session_user,
+                          COALESCE(pg_has_role(current_user, c.relowner, 'MEMBER'), false)
+                            AS current_is_owner_member,
+                          COALESCE(pg_has_role(current_user, c.relowner, 'USAGE'), false)
+                            AS current_inherits_owner,
+                          COALESCE(has_schema_privilege(current_user, n.oid, 'USAGE'), false)
+                            AS schema_usage,
+                          COALESCE(has_table_privilege(current_user, c.oid, 'SELECT'), false)
+                            AS effective_select,
+                          COALESCE(has_table_privilege(current_user, c.oid, 'INSERT'), false)
+                            AS effective_insert,
+                          COALESCE(has_table_privilege(current_user, c.oid, 'UPDATE'), false)
+                            AS effective_update,
+                          COALESCE(has_table_privilege(current_user, c.oid, 'DELETE'), false)
+                            AS effective_delete,
+                          COALESCE(c.relrowsecurity, false) AS rls_enabled,
+                          COALESCE(c.relforcerowsecurity, false) AS rls_forced,
+                          EXISTS(SELECT 1 FROM pg_default_acl d
+                            WHERE d.defaclrole = c.relowner AND d.defaclobjtype = 'r'
+                              AND d.defaclnamespace IN (0, n.oid)) AS owner_defaults_present,
+                          EXISTS(SELECT 1 FROM pg_default_acl d
+                            WHERE d.defaclrole = current_user::regrole AND d.defaclobjtype = 'r'
+                              AND d.defaclnamespace IN (0, n.oid)) AS current_defaults_present
+                        FROM (SELECT :relation AS name) target
+                        LEFT JOIN pg_namespace n ON n.nspname = 'public'
+                        LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = target.name
+                        LEFT JOIN pg_class parent ON parent.relnamespace = n.oid
+                          AND parent.relname = 'model_dispatch_attempts'
+                    """),
+                            {"relation": relation},
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    catalog_columns = set(
+                        conn.execute(
+                            text("""
+                        SELECT a.attname FROM pg_attribute a
+                        JOIN pg_class c ON c.oid = a.attrelid
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = 'public' AND c.relname = :relation
+                          AND a.attnum > 0 AND NOT a.attisdropped
+                    """),
+                            {"relation": relation},
+                        ).scalars()
+                    )
+                    visible_columns = set(
+                        conn.execute(
+                            text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = :relation
+                    """),
+                            {"relation": relation},
+                        ).scalars()
+                    )
+                    catalog[relation] = {
+                        **{key: bool(value) for key, value in row.items()},
+                        "catalog_columns_complete": columns <= catalog_columns,
+                        "visible_columns_complete": columns <= visible_columns,
+                    }
+        finally:
+            witness_engine.dispose()
+        return catalog
+
+    # Keep the original schema-equivalence assertion. These positive catalog
+    # witnesses diagnose genuine object loss separately from metadata filtered
+    # by the established ordinary login's effective privileges after managed DDL.
+    serving_catalog = {
+        "fresh": serving_catalog_witness(fresh_db_url),
+        "managed_round_trip": serving_catalog_witness(db_url),
+    }
+    for path in serving_catalog.values():
+        assert all(row["present"] and row["catalog_columns_complete"] for row in path.values()), (
+            f"Serving catalog positive witnesses: {serving_catalog!r}"
+        )
+    assert all(
+        row["current_equals_session_user"] and row["schema_usage"] and row["effective_select"]
+        for row in serving_catalog["fresh"].values()
+    ), f"Fresh ordinary-login effective-privilege positives: {serving_catalog!r}"
+    assert all(
+        row["owner_equals_parent"]
+        and row["owner_equals_current_user"]
+        and row["current_is_owner_member"]
+        and row["current_inherits_owner"]
+        and row["owner_defaults_present"]
+        and row["visible_columns_complete"]
+        and all(
+            row[f"effective_{privilege}"] for privilege in ("select", "insert", "update", "delete")
+        )
+        for path in serving_catalog.values()
+        for row in path.values()
+    ), f"Fresh and managed ordinary-login owner/default-ACL/DML positives: {serving_catalog!r}"
+
     round_trip_tables = _get_table_columns_sql(db_url)
     fresh_tables = _get_table_columns_sql(fresh_db_url)
     only_round_trip = set(round_trip_tables) - set(fresh_tables)
@@ -1349,5 +1479,6 @@ def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
         "This is the ordinary login's privilege-filtered metadata inventory. "
         "Check qualified object presence, ownership, effective/inherited privileges and "
         "per-creator default ACLs in a disposable database before attributing absence "
-        "to asymmetric downgrade/upgrade teardown."
+        "to asymmetric downgrade/upgrade teardown. "
+        f"Fixed serving catalog/effective-privilege witnesses: {serving_catalog!r}"
     )

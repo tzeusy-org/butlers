@@ -1,7 +1,8 @@
 """Real-Postgres coverage for the atomic runtime-attention producers.
 
 REQ-model-catalog-001; REQ-runtime-attention-outbox-001;
-REQ-dashboard-spend-dashboard-001.
+REQ-dashboard-spend-dashboard-001; REQ-dashboard-spend-dashboard-004;
+REQ-dashboard-spend-dashboard-005; REQ-model-catalog-006; REQ-model-catalog-007.
 """
 
 from __future__ import annotations
@@ -64,6 +65,10 @@ class _RolePool:
         async with self.acquire() as connection:
             return await connection.fetchrow(statement, *args)
 
+    async def fetch(self, statement: str, *args: object):
+        async with self.acquire() as connection:
+            return await connection.fetch(statement, *args)
+
 
 class _FailAfterAttemptConnection:
     """Delegate a real connection but fail the producer after its insert."""
@@ -115,6 +120,23 @@ class _FailUsageAcquire(_RoleAcquire):
 class _FailUsagePool(_RolePool):
     def acquire(self) -> _FailUsageAcquire:
         return _FailUsageAcquire(self._pool, self._role)
+
+
+class _FailServedConnection(_FailUsageConnection):
+    async def execute(self, statement: str, *args: object) -> str:
+        if "INSERT INTO public.model_served_usage" in statement:
+            raise RuntimeError("synthetic serving insert failure")
+        return await self._connection.execute(statement, *args)
+
+
+class _FailServedAcquire(_RoleAcquire):
+    async def __aenter__(self):
+        return _FailServedConnection(await super().__aenter__())
+
+
+class _FailServedPool(_RolePool):
+    def acquire(self):
+        return _FailServedAcquire(self._pool, self._role)
 
 
 class _DelayBeforeBreakerLockConnection:
@@ -452,6 +474,7 @@ async def test_closed_breaker_runtime_failures_append_no_episode(
 
 async def test_skipped_and_suppressed_do_not_qualify_and_failed_recorder_rolls_back(
     migrated_core_postgres_pool,
+    postgres_container,
 ) -> None:
     async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as admin_pool:
         runtime_pool = _RolePool(admin_pool)
@@ -484,6 +507,106 @@ async def test_skipped_and_suppressed_do_not_qualify_and_failed_recorder_rolls_b
             == 0
         )
 
+    # Actual bounded migration/bootstrap variants, still within this existing
+    # real-SQL species. No handwritten table substitute or provider input.
+    import importlib.util
+    from pathlib import Path
+
+    from alembic import command
+    from butlers.db import register_jsonb_codec
+    from butlers.migrations import _build_alembic_config
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    path = Path("alembic/versions/core/core_263_served_identity_evidence.py")
+    spec = importlib.util.spec_from_file_location("serving_migration_control", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    variant_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core"],
+        revisions={"core": migration.revision},
+    )
+    config = _build_alembic_config(variant_url, ["core"])
+    await asyncio.to_thread(command.downgrade, config, migration.down_revision)
+    variant = await asyncpg.connect(variant_url)
+    try:
+        assert await variant.fetchval("SELECT to_regclass('public.model_served_usage')") is None
+    finally:
+        await variant.close()
+    await asyncio.to_thread(command.upgrade, config, migration.revision)
+    variant = await asyncpg.create_pool(variant_url, init=register_jsonb_codec)
+    try:
+        role_pool = _RolePool(variant)
+        assert await role_pool.fetchval("SELECT current_user") == "butler_general_rw"
+        entry = await _seed_catalog(variant, "serving-downgrade-positive")
+        from butlers.core.runtimes.served_identity import unknown
+
+        key = uuid.uuid4()
+        fields = dict(
+            catalog_entry_id=entry,
+            butler="general",
+            outcome="success",
+            attempt_index=0,
+            attempt_key=key,
+            served_identity=unknown("codex"),
+            usage_evidence=DispatchUsageEvidence(
+                None, None, None, None, usage_source="unmeasurable"
+            ),
+        )
+        attempt = await record_dispatch_attempt(role_pool, **fields)
+        assert isinstance(attempt, int)
+        observer = _RolePool(variant, "butler_switchboard_rw")
+        before = await observer.fetchrow(
+            "SELECT id,served_identity,receipt_sha256,ts FROM public.model_dispatch_attempts WHERE attempt_key=$1",
+            key,
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT usage_source FROM public.token_usage_ledger WHERE attempt_id=$1", attempt
+            )
+            == "unmeasurable"
+        )
+        with pytest.raises(Exception, match="serving evidence exists"):
+            await asyncio.to_thread(command.downgrade, config, migration.down_revision)
+        after = await observer.fetchrow(
+            "SELECT id,served_identity,receipt_sha256,ts FROM public.model_dispatch_attempts WHERE attempt_key=$1",
+            key,
+        )
+        assert tuple(after) == tuple(before)
+        assert await observer.fetchval("SELECT count(*) FROM public.model_served_usage") == 0
+        # Ordinary multi-schema core replay shares the public evidence image.
+        replay_config = _build_alembic_config(variant_url, ["core"], target_schema="switchboard")
+        await asyncio.to_thread(command.upgrade, replay_config, migration.revision)
+        await asyncio.to_thread(command.downgrade, replay_config, migration.down_revision)
+        assert (
+            await observer.fetchrow(
+                "SELECT id,served_identity,receipt_sha256,ts FROM public.model_dispatch_attempts WHERE attempt_key=$1",
+                key,
+            )
+            == after
+        )
+        assert (
+            await observer.fetchval("SELECT to_regclass('public.model_served_usage')") is not None
+        )
+        async with role_pool.acquire() as connection:
+            with pytest.raises(asyncpg.CheckViolationError):
+                async with connection.transaction():
+                    await connection.execute(
+                        "INSERT INTO public.model_dispatch_attempts(catalog_entry_id,butler,outcome,served_identity) VALUES($1,'general','success',$2)",
+                        entry,
+                        {"schema_version": 1},
+                    )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE attempt_key=$1", key
+            )
+            == 1
+        )
+    finally:
+        await variant.close()
+
 
 async def test_attempt_usage_pair_rolls_back_atomically_and_retry_writes_one_pair(
     migrated_core_postgres_pool,
@@ -505,6 +628,16 @@ async def test_attempt_usage_pair_rolls_back_atomically_and_retry_writes_one_pai
             "logical_session_id": "atomic-attempt-usage-request",
             "usage_evidence": evidence,
         }
+        # Synthetic normalized inputs to actual migrated SQL. No provider-origin credit.
+        from butlers.core.runtimes.served_identity import stream_evidence
+
+        served = stream_evidence(
+            "claude",
+            '{"type":"result","modelUsage":'
+            '{"claude-opus-4-6":{"inputTokens":5,"outputTokens":3,"cacheReadInputTokens":100,"cacheCreationInputTokens":20,"costUSD":0.05},'
+            '"claude-sonnet-4-6":{"inputTokens":2,"outputTokens":1,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0}}}',
+        )
+        fields.update(served_identity=served, attempt_key=uuid.uuid4())
 
         failed_id = await record_dispatch_attempt(
             _FailUsagePool(admin_pool),  # type: ignore[arg-type]
@@ -541,6 +674,140 @@ async def test_attempt_usage_pair_rolls_back_atomically_and_retry_writes_one_pai
             entry_id,
         )
         assert tuple(row) == (attempt_id, attempt_id, 12, 3)
+        failed_fields = {**fields, "attempt_key": uuid.uuid4()}
+        assert await record_dispatch_attempt(_FailServedPool(admin_pool), **failed_fields) is None
+        assert (
+            await admin_pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE attempt_key=$1",
+                failed_fields["attempt_key"],
+            )
+            == 0
+        )
+        observer = _RolePool(admin_pool, "butler_switchboard_rw")
+        assert await observer.fetchval("SELECT current_user") == "butler_switchboard_rw"
+        stored = await observer.fetchval(
+            "SELECT served_identity FROM public.model_dispatch_attempts WHERE id=$1", attempt_id
+        )
+        assert stored == served
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.model_served_usage WHERE attempt_id=$1", attempt_id
+            )
+            == 2
+        )
+        replay = await asyncio.gather(
+            *(record_dispatch_attempt(_RolePool(admin_pool), **fields) for _ in range(2))
+        )
+        assert replay == [attempt_id, attempt_id]
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.token_usage_ledger WHERE attempt_id=$1", attempt_id
+            )
+            == 1
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.model_served_usage WHERE attempt_id=$1", attempt_id
+            )
+            == 2
+        )
+        assert (
+            await record_dispatch_attempt(
+                _RolePool(admin_pool), **{**fields, "outcome": "runtime_failure"}
+            )
+            is None
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT outcome FROM public.model_dispatch_attempts WHERE id=$1", attempt_id
+            )
+            == "success"
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE attempt_key=$1",
+                fields["attempt_key"],
+            )
+            == 1
+        )
+        # Compare the actually persisted cumulative snapshot through the real route.
+        # It must not become incremental spend or be added to aggregate ledger totals.
+        from types import SimpleNamespace
+
+        import httpx
+        from fastapi import FastAPI
+
+        from butlers.api.deps import get_butler_configs, get_pricing
+        from butlers.api.routers import spend as spend_router
+        from butlers.core.pricing import ModelPricing, PricingConfig
+
+        app = FastAPI()
+        app.include_router(spend_router.router)
+        manager = SimpleNamespace(
+            pool=lambda _name: observer, credential_shared_pool=lambda: observer
+        )
+        app.dependency_overrides[spend_router._get_db_manager] = lambda: manager
+        app.dependency_overrides[get_butler_configs] = lambda: []
+        app.dependency_overrides[get_pricing] = lambda: PricingConfig(
+            models={
+                "claude-opus-4-6": ModelPricing(0.00001, 0.00002, 0.000001, 0.000012),
+                "claude-sonnet-4-6": ModelPricing(0, 0, billing_class="subscription"),
+            }
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://synthetic"
+        ) as client:
+            response = await client.get("/api/spend?period=today")
+        assert response.status_code == 200
+        payload = response.json()["data"]
+        assert payload["served_source_error"] is False
+        assert len(payload["reported_cost_comparisons"]) == 2
+        assert all(
+            item["comparison_state"] == "unknown" for item in payload["reported_cost_comparisons"]
+        )
+        assert all(item["difference_usd"] is None for item in payload["reported_cost_comparisons"])
+        # Positioned comparison conformance: trusted SYNTHETIC incremental basis,
+        # never credit it as a genuine CLI recording or provider bill.
+        from copy import deepcopy
+
+        comparable = deepcopy(served)
+        for model in comparable["executions"][0]["model_usage"]:
+            model.update(cost_scope="invocation", evidence_state="observed")
+        compared_id = await record_dispatch_attempt(
+            _RolePool(admin_pool),
+            **{
+                **fields,
+                "served_identity": comparable,
+                "attempt_key": uuid.uuid4(),
+            },
+        )
+        assert isinstance(compared_id, int)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://synthetic"
+        ) as client:
+            response = await client.get("/api/spend?period=today")
+        assert response.status_code == 200
+        compared = [
+            item
+            for item in response.json()["data"]["reported_cost_comparisons"]
+            if item["attempt_id"] == compared_id
+        ]
+        opus = next(item for item in compared if item["model_id"] == "claude-opus-4-6")
+        assert opus["comparison_state"] == "comparable"
+        assert opus["computed_served_cost_usd"] == pytest.approx(0.00045)
+        assert opus["difference_usd"] == pytest.approx(0.04955)
+        assert opus["finding"] == "provider_vs_computed_cost"
+        zero = next(item for item in compared if item["model_id"] == "claude-sonnet-4-6")
+        assert zero["computed_served_cost_usd"] == 0 and zero["difference_ratio"] is None
+        # Operational aggregate stays exactly one old-basis row per invocation,
+        # not one extra charge per reported model.
+        assert (
+            await observer.fetchval(
+                "SELECT sum(input_tokens) FROM public.token_usage_ledger WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+            == 24
+        )
 
 
 async def test_fleet_halt_first_new_denial_creates_one_month_episode_without_backfill(

@@ -437,3 +437,10 @@ their separate authority contract or equate the trusted migration owner with run
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
 - [State Store](state-store.md) -- The `state` table created by core migrations
+
+
+## Served identity evidence (proposed bu-s11n0s.6)
+
+Serving evidence is additive core-owned data. Do not edit historical revisions, reserve the next core number during PRIMARY, chain private drafts or backfill serving from requested labels. Multiple schema replays must preserve the public table checks and exact data. Keep existing one aggregate partitioned ledger record; per-model usage belongs in a separate evidence table so every quota/ceiling read does not double count. A populated downgrade refuses instead of deleting serving receipts; prove refusal with planted sentinels and separate readback. Replaying bootstrap/runtime roles is required for SQL evidence; a mock and a role string are not grant/RLS proof.
+
+Managed reapplication creates `public.model_served_usage` as the actual established owner of `public.model_dispatch_attempts`, using that owner's existing per-creator default ACLs and then restoring the calling role. This preserves ordinary writer visibility after privileged empty downgrade/re-upgrade without adding a grant profile or principal. Discretion's pool fixtures must install the same `register_jsonb_codec` initializer as runtime pools: the atomic attempt/usage recorder binds structured JSONB evidence. An unconfigured-pool refusal is a fixture diagnostic, not permission to stringify evidence, weaken atomicity or change the runtime outcome.

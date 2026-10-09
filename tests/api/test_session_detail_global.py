@@ -200,7 +200,11 @@ async def test_global_session_detail_includes_linked_message_when_present() -> N
 
 
 async def test_global_session_detail_includes_recorded_model_resolution() -> None:
-    """Session detail returns stored evidence, not a re-derived current decision."""
+    """REQ-dashboard-visibility-004; REQ-dashboard-visibility-005.
+
+    Session detail returns stored evidence, not a re-derived current decision.
+    These are API/software projections; migrated readback has its own species.
+    """
     session_id = uuid4()
     app = _make_app(owning_butler="general", row=_make_detail_row(session_id))
     mock_db = app.dependency_overrides[_sessions_get_db]()
@@ -216,6 +220,27 @@ async def test_global_session_detail_includes_recorded_model_resolution() -> Non
         return receipt if "resolution_receipt" in sql else 0
 
     owning_pool.fetchval = AsyncMock(side_effect=_fetchval)
+    from types import SimpleNamespace
+
+    from butlers.core.runtimes.served_identity import api_evidence
+
+    served = api_evidence(
+        SimpleNamespace(model="claude-opus-4-6"),
+        {"input_tokens": 5, "output_tokens": 3},
+        configured="claude-sonnet",
+    )
+    stored = {**served, "raw_content": "synthetic-private-sentinel"}
+    owning_pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": 41,
+                "attempt_index": 0,
+                "outcome": "success",
+                "requested_model_id": "claude-sonnet",
+                "served_identity": stored,
+            }
+        ]
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -223,6 +248,36 @@ async def test_global_session_detail_includes_recorded_model_resolution() -> Non
 
     assert response.status_code == 200
     assert response.json()["data"]["resolution_receipt"] == receipt
+    assert response.json()["data"]["served_attempts"][0]["served_identity"] == served
+    assert response.json()["data"]["served_source_state"] == "observed"
+    assert "synthetic-private-sentinel" not in response.text
+    owning_pool.fetch.return_value = [
+        {
+            "id": 40,
+            "attempt_index": 0,
+            "outcome": "success",
+            "requested_model_id": "claude-sonnet",
+            "served_identity": None,
+        }
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/sessions/{session_id}")
+    assert (
+        response.status_code == 200
+        and response.json()["data"]["served_source_state"] == "historical"
+    )
+    owning_pool.fetch.side_effect = RuntimeError("synthetic source failure")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/sessions/{session_id}")
+    assert (
+        response.status_code == 200
+        and response.json()["data"]["served_source_state"] == "unavailable"
+    )
+    assert response.json()["data"]["served_attempts"] == []
 
 
 async def test_global_session_detail_omits_linked_message_when_absent() -> None:

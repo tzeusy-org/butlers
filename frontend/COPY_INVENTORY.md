@@ -1172,6 +1172,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Forecast
 - No forecast data is available yet.
 - Daily Spend
+- Operational totals are computed requested-route estimates. CLI estimates are separate comparison evidence.
+- Served cost evidence unavailable.
 - MTD Spend
 - Projected EOM
 - Monthly Ceiling
@@ -1207,6 +1209,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Forecast actuals
 - Monthly ceiling
 - Forecast attribution
+- Reported runtime cost
 - Add spend rule
 - Change window: today
 - Change window: this week
@@ -4323,6 +4326,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Why this model?
 - Winner:
 - No receipt recorded.
+- Serving evidence
+- Served evidence unavailable.
+- Model evidence truncated.
+- No served identity recorded.
 - Prompt
 - Result
 - Error
@@ -4344,6 +4351,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Resolution Source
 - Complexity
 - Runtime Type
+- Served identity
 - Exit Code
 - Input Tokens
 - Output Tokens

@@ -128,6 +128,7 @@ tests/core/qa/test_infra_state.py
 tests/core/qa/test_investigation_notes.py
 tests/core/qa/test_label_sanitization_gate.py
 tests/core/qa/test_patrol_status.py
+tests/core/runtimes/test_claude_served_identity.py
 tests/core/test_audit.py
 tests/core/test_blob_storage.py
 tests/core/test_calendar_event_prompt.py

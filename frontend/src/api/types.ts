@@ -240,6 +240,44 @@ export interface SessionSummary {
   cost_usd?: number | null;
 }
 
+export interface ServedAttempt {
+  attempt_id: number;
+  attempt_index: number;
+  outcome: string;
+  requested_model_id: string | null;
+  served_identity: {
+    schema_version: number;
+    runtime_type: string;
+    observation_state: string;
+    finding_codes: string[];
+    expected_toolchain: { state: string; versions?: Record<string, string> };
+    executions: {
+      execution_index: number;
+      configured_model_id?: string | null;
+      completion_state: string;
+      served_models: string[];
+      reported_models: { model_id: string; provenance: string; source: string }[];
+      identity_authority: string;
+      cli_version_reported: string | null;
+      models_truncated?: boolean;
+    }[];
+  } | null;
+}
+
+export interface ServedCostComparison {
+  attempt_id: number;
+  execution_index: number;
+  model_id: string;
+  identity_authority: string;
+  provenance: string;
+  reported_cost_usd: number | null;
+  computed_served_cost_usd: number | null;
+  difference_usd: number | null;
+  comparison_state: "comparable" | "unpriced" | "unknown";
+  cost_source: "cli_estimate";
+  finding: "provider_vs_computed_cost" | null;
+}
+
 /** Full session detail returned by the single-session endpoint. */
 export interface SessionDetail {
   id: string;
@@ -265,6 +303,8 @@ export interface SessionDetail {
   purpose_lane?: "standard" | "private_content" | null;
   /** Durable, prompt-free explanation of the model selected for this attempt. */
   resolution_receipt?: ModelResolutionReceipt | null;
+  served_source_state?: "observed" | "historical" | "unavailable";
+  served_attempts?: ServedAttempt[];
   /** The dashboard chat message this session was invoked from, if any. */
   linked_message?: {
     conversation_id: string;
@@ -842,6 +882,9 @@ export interface SpendDivergence {
 
 /** Aggregate spend summary across all butlers. */
 export interface SpendSummary {
+  served_source_error?: boolean;
+  reported_cost_comparisons?: ServedCostComparison[];
+  served_breakdown?: { model_id: string; identity_authority: string; provenance: string }[];
   total_cost_usd: number;
   /** Priced subtotal from attempts with parseable provider usage. */
   measured_usd?: number;

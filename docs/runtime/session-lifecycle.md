@@ -119,3 +119,8 @@ curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.to
 - [Tool Call Capture](tool-call-capture.md) --- how tool call records are collected for the `tool_calls` field
 - [Model Routing](model-routing.md) --- how the `model`, `complexity`, and `resolution_source` fields are populated
 - [Scheduler Execution](scheduler-execution.md) --- how `schedule:<name>` trigger sources originate
+
+
+## Served identity evidence (proposed bu-s11n0s.6)
+
+Dossier detail shows Requested and ordered serving attempts separately. Authoritative response identity earns Served; CLI usage metadata with unproven/fallback provenance says CLI-reported usage models and actual serving unknown. Historical absence says No served identity recorded; query failure says Serving evidence unavailable. A multiple-model task is not duplicated into successful quality credit for every helper model. Reported and expected CLI versions compare only when both are valid, with drift diagnostic and no deployed-fleet inference. Existing prompts/results/tools are separate established session content, never copied into serving records.

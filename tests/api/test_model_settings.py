@@ -15,6 +15,7 @@ import asyncio
 import json
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -987,6 +988,11 @@ async def test_model_attempts_returns_real_rows(app):
     adapter = MagicMock()
     adapter.invoke = AsyncMock(side_effect=RuntimeError(sentinel))
     adapter.last_process_info = None
+    # The dispatcher owns a fresh worker per call; this factory double has no
+    # process metadata, but keeps the original private failure behavior.
+    adapter.create_worker.side_effect = lambda: SimpleNamespace(
+        invoke=AsyncMock(side_effect=RuntimeError(sentinel)), last_process_info=None
+    )
     dispatcher = DiscretionDispatcher(
         pool=MagicMock(),
         purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,

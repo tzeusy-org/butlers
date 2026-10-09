@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// REQ-dashboard-visibility-004; REQ-dashboard-visibility-005.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react-dom/test-utils";
@@ -161,6 +162,26 @@ describe("SessionDossier", () => {
   it("states honestly when a legacy session has no model receipt", () => {
     renderDossier(BASE_SESSION);
     expect(document.body.textContent).toContain("No receipt recorded.");
+    expect(document.body.textContent).toContain("No served identity recorded.");
+    renderDossier({ ...BASE_SESSION, served_source_state: "unavailable" });
+    expect(document.body.textContent).toContain("Served evidence unavailable.");
+    expect(document.body.textContent).not.toContain("No served identity recorded.");
+    renderDossier({ ...BASE_SESSION, served_source_state: "observed", served_attempts: [{
+      attempt_id: 41, attempt_index: 0, outcome: "runtime_failure", requested_model_id: "claude-sonnet-4-6",
+      served_identity: {
+        schema_version: 1, runtime_type: "claude", observation_state: "partial",
+        finding_codes: ["cli_version_drift"], expected_toolchain: { state: "unknown" },
+        executions: [{ execution_index: 0, completion_state: "error", configured_model_id: "claude-sonnet-4-6",
+          served_models: [], reported_models: [{ model_id: "claude-opus-4-6", source: "result.modelUsage", provenance: "cli_reported_unproven" }],
+          identity_authority: "cli_usage_breakdown", cli_version_reported: "2.1.179", models_truncated: true }],
+      },
+    }] });
+    expect(document.body.textContent).toContain("Requested: claude-sonnet-4-6");
+    expect(document.body.textContent).toContain("Served: Unknown");
+    expect(document.body.textContent).toContain("CLI-reported usage models: claude-opus-4-6");
+    expect(document.body.textContent).toContain("Actual serving is unproven.");
+    expect(document.body.textContent).toContain("Model evidence truncated.");
+    expect(document.body.textContent).toContain("cli version drift");
   });
 
   it("links Request ID to /sessions?request=", () => {

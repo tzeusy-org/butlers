@@ -308,3 +308,10 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
 - [Model Routing](model-routing.md) --- catalog structure, quota system, same-tier failover candidate selection, and adapter signal details
 - [Tool Call Capture](tool-call-capture.md) --- how tool execution is tracked (feeds the side-effect gate)
 - [Observability](../architecture/observability.md) --- trace context propagation through the spawner
+
+
+## Served identity evidence (proposed bu-s11n0s.6)
+
+Every invoke resets and exposes a bounded served record. Snapshot actual internal subprocess executions before retry metadata is rewritten, retaining previous marker/recovery/cancellation behavior. Strict result is_error or equivalent terminal failure at exit0 is not success; usage is retained, runtime_failure is recorded and retry eligibility remains separately closed unless existing safety gates prove it. The recorder commits stable attempt key, serving receipt, aggregate usage and per-model evidence together; exact retries return the same bundle and conflicting replay is zero effect. Diagnostic persistence remains best effort and never changes the runtime verdict. All recorded evidence is content free and cannot create another model invocation or broaden capabilities.
+
+Discretion caches adapter configuration factories and allocates the existing create_worker() per actual invocation. The spawner retains exclusive pooled workers through finalization. Copy bounded serving evidence from that owned worker before persistence awaits or reuse, including typed errors, cancellation and early failures. Resetting shared metadata or releasing a subprocess-only semaphore is insufficient. Concurrent/delayed/cancelled calls cannot borrow each other's evidence.

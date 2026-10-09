@@ -77,6 +77,8 @@ def _resolver_with_receipt(catalog):
 
 def _make_adapter(result_text: str = "FORWARD", usage: dict | None = None) -> MagicMock:
     adapter = MagicMock()
+    adapter.create_worker.return_value = adapter
+    adapter.last_process_info = None
     adapter.invoke = AsyncMock(
         return_value=(
             result_text,
@@ -174,7 +176,7 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi", identity="tg:12345")
 
@@ -185,11 +187,11 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
     assert adapter.invoke.await_args.kwargs["mcp_servers"] == {}
     mock_record.assert_awaited_once()
     _, kwargs = mock_record.call_args
-    assert kwargs["butler_name"] == "tg:12345"
-    assert kwargs["purpose"] == "discretion"
-    assert kwargs["session_id"] is None
+    assert kwargs["usage_evidence"].butler_name == "tg:12345"
+    assert kwargs["usage_evidence"].purpose == "discretion"
+    assert kwargs.get("session_id") is None
     # bu-hz0g0: the discretion lane never composes a layered prompt, so it
-    # passes none of record_token_usage()'s composition/resume kwargs -- the
+    # passes none of record_dispatch_attempt()'s composition/resume kwargs -- the
     # ledger columns land honestly NULL rather than a fabricated 0.
     for composition_kwarg in (
         "base_prompt_tokens",
@@ -199,7 +201,122 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
         "memory_context_tokens",
         "resume_outcome",
     ):
-        assert kwargs.get(composition_kwarg) is None
+        assert getattr(kwargs["usage_evidence"], composition_kwarg) is None
+
+    # REQ-model-catalog-007: attribution belongs to the invocation worker.
+    # This is controlled software scheduling, not recorded provider or SQL proof.
+    import asyncio
+
+    from butlers.core.runtimes.served_identity import stream_evidence
+
+    first_emitted = asyncio.Event()
+    second_finished = asyncio.Event()
+    first_persisting = asyncio.Event()
+    release_persistence = asyncio.Event()
+    captured = []
+
+    class Worker:
+        last_process_info = None
+
+        async def invoke(self, **arguments):
+            name = arguments["prompt"]
+            if name == "cancelled":
+                raise asyncio.CancelledError()
+            if name == "early_failure":
+                raise RuntimeError("controlled pre-spawn failure")
+            receipt = stream_evidence(
+                "codex",
+                '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":2}}',
+                configured="gpt-first" if name == "first" else "gpt-second",
+            )
+            self.last_process_info = {"runtime_type": "claude", "served": receipt}
+            if name == "first":
+                first_emitted.set()
+                await second_finished.wait()
+            else:
+                await first_emitted.wait()
+                second_finished.set()
+            return "FORWARD", [], {"input_tokens": 5 if name == "first" else 7, "output_tokens": 2}
+
+    class Factory(Worker):
+        def create_worker(self):
+            return Worker()
+
+    async def persist(_pool, **arguments):
+        captured.append(arguments)
+        if arguments["usage_evidence"].input_tokens == 5:
+            first_persisting.set()
+            await release_persistence.wait()
+        elif arguments["usage_evidence"].input_tokens == 7:
+            await first_persisting.wait()
+            release_persistence.set()
+        await asyncio.sleep(0)
+        return len(captured)
+
+    factory = Factory()
+    with (
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            _resolver_with_receipt(_catalog_result()),
+        ),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=factory),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_dispatch_attempt", side_effect=persist),
+    ):
+        assert await asyncio.gather(dispatcher.call("first"), dispatcher.call("second")) == [
+            "FORWARD",
+            "FORWARD",
+        ]
+        with pytest.raises(asyncio.CancelledError):
+            await dispatcher.call("cancelled")
+        with pytest.raises(RuntimeError, match="controlled pre-spawn failure"):
+            await dispatcher.call("early_failure")
+    assert len({row["attempt_key"] for row in captured}) == 4
+    paired = {
+        row["usage_evidence"].input_tokens: row["served_identity"]["executions"][0][
+            "configured_model_id"
+        ]
+        for row in captured
+        if row["usage_evidence"].input_tokens is not None
+    }
+    assert paired == {5: "gpt-first", 7: "gpt-second"}
+    assert all(
+        row["served_identity"]["executions"] == []
+        for row in captured
+        if row["usage_evidence"].input_tokens is None
+    )
+    assert factory.last_process_info is None
+    # Causal control: reusing the cached mutable factory recreates the prior
+    # ownership defect under the SAME interleaving. It borrows the second
+    # projection for the first call; no SQL or provider-origin claim.
+    captured.clear()
+    first_emitted.clear()
+    second_finished.clear()
+    first_persisting.clear()
+    release_persistence.clear()
+    with (
+        patch.object(Factory, "create_worker", lambda self: self),
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            _resolver_with_receipt(_catalog_result()),
+        ),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=factory),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_dispatch_attempt", side_effect=persist),
+    ):
+        assert await asyncio.gather(dispatcher.call("first"), dispatcher.call("second")) == [
+            "FORWARD",
+            "FORWARD",
+        ]
+    borrowed = {
+        row["usage_evidence"].input_tokens: row["served_identity"]["executions"][0][
+            "configured_model_id"
+        ]
+        for row in captured
+    }
+    assert borrowed == {5: "gpt-second", 7: "gpt-second"}
 
 
 async def test_private_content_uses_normal_catalog_and_content_blind_attribution() -> None:
@@ -228,7 +345,6 @@ async def test_private_content_uses_normal_catalog_and_content_blind_attribution
         patch.object(
             dispatcher, "_resolve_provider_config", AsyncMock(return_value=provider_config)
         ) as provider_lookup,
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as record_usage,
         patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("private fixture", identity="synthetic-chat")
@@ -237,9 +353,11 @@ async def test_private_content_uses_normal_catalog_and_content_blind_attribution
     get_adapter.assert_called_once_with(remote[0], provider_config)
     provider_lookup.assert_awaited_once_with(remote[1])
     assert adapter.invoke.await_args.kwargs["model"] == remote[1]
-    assert record_usage.await_args.kwargs["purpose"] == PURPOSE_LANE_PRIVATE_CONTENT
-    assert record_usage.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
-    assert record_usage.await_args.kwargs["butler_name"] == "__discretion__"
+    assert (
+        record_attempt.await_args.kwargs["usage_evidence"].purpose == PURPOSE_LANE_PRIVATE_CONTENT
+    )
+    assert record_attempt.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert record_attempt.await_args.kwargs["usage_evidence"].butler_name == "__discretion__"
     assert record_attempt.await_args.kwargs["outcome"] == "success"
     assert record_attempt.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
     receipt = record_attempt.await_args.kwargs["resolution_receipt"]
@@ -264,13 +382,13 @@ async def test_call_without_identity_falls_back_to_constructor_butler_name() -> 
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         await dispatcher.call("hi")
 
     _, kwargs = mock_record.call_args
-    assert kwargs["butler_name"] == "__discretion__"
-    assert kwargs["purpose"] == "discretion"
+    assert kwargs["usage_evidence"].butler_name == "__discretion__"
+    assert kwargs["usage_evidence"].purpose == "discretion"
 
 
 async def test_call_keeps_declared_adapter_setup_allowance_outside_model_timeout() -> None:
@@ -303,7 +421,7 @@ async def test_call_keeps_declared_adapter_setup_allowance_outside_model_timeout
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()),
     ):
         result = await dispatcher.call("hi")
 
@@ -326,12 +444,12 @@ async def test_call_with_explicit_butler_name_and_no_identity_uses_butler_name()
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         await dispatcher.call("hi")
 
     _, kwargs = mock_record.call_args
-    assert kwargs["butler_name"] == "briefing-runtime"
+    assert kwargs["usage_evidence"].butler_name == "briefing-runtime"
 
 
 async def test_evaluator_forwards_source_name_as_identity() -> None:
@@ -355,7 +473,7 @@ async def test_resolve_model_none_raises_before_any_ledger_write() -> None:
 
     with (
         patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         with pytest.raises(RuntimeError, match="No specialty model configured"):
             await dispatcher.call("hi", identity="tg:1")
@@ -395,8 +513,7 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as mock_get,
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
-        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi", identity="tg:1")
 
@@ -423,10 +540,10 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
     # purpose="discretion" and the per-connector identity.
     mock_record.assert_awaited_once()
     _, record_kwargs = mock_record.call_args
-    assert record_kwargs["purpose"] == "discretion"
-    assert record_kwargs["butler_name"] == "tg:1"
+    assert record_kwargs["usage_evidence"].purpose == "discretion"
+    assert record_kwargs["usage_evidence"].butler_name == "tg:1"
     assert record_kwargs["catalog_entry_id"] == rerouted.resolved[3]
-    receipt = record_attempt.await_args.kwargs["resolution_receipt"]
+    receipt = mock_record.await_args.kwargs["resolution_receipt"]
     assert receipt["winner"]["catalog_entry_id"] == str(rerouted.resolved[3])
     assert receipt["winner"]["reason"] == "spend_rule_override"
     assert receipt["selection_override"] == {"reason": "spend_rule_override"}
@@ -450,7 +567,7 @@ async def test_call_no_matching_rule_keeps_tier_resolved_model() -> None:
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi")
 
@@ -479,7 +596,7 @@ async def test_call_spend_rule_evaluation_failure_fails_open() -> None:
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi")
 
@@ -505,7 +622,7 @@ async def test_call_unpatched_apply_spend_routing_rules_fails_open_on_mock_pool(
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi")
 
