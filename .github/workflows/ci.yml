@@ -619,7 +619,7 @@ jobs:
           print(json.dumps(evidence, indent=2))
           PYEOF
 
-          exit $SMOKE_EXIT
+          exit "$SMOKE_EXIT"
 
       - name: Prepare smoke test duration evidence
         if: ${{ always() && steps.smoke.outcome != 'skipped' }}
@@ -1301,17 +1301,17 @@ jobs:
             --head "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT"
           uv run coverage combine --data-file="$COMBINED_COVERAGE" \
-            $UNIT_1_COVERAGE \
-            $UNIT_2_COVERAGE \
-            $UNIT_3_COVERAGE \
-            $UNIT_4_COVERAGE \
-            $UNIT_5_COVERAGE \
-            $INTEGRATION_1_COVERAGE \
-            $INTEGRATION_2_COVERAGE \
-            $INTEGRATION_3_COVERAGE \
-            $INTEGRATION_4_COVERAGE \
-            $INTEGRATION_5_COVERAGE \
-            $INTEGRATION_6_COVERAGE
+            "$UNIT_1_COVERAGE" \
+            "$UNIT_2_COVERAGE" \
+            "$UNIT_3_COVERAGE" \
+            "$UNIT_4_COVERAGE" \
+            "$UNIT_5_COVERAGE" \
+            "$INTEGRATION_1_COVERAGE" \
+            "$INTEGRATION_2_COVERAGE" \
+            "$INTEGRATION_3_COVERAGE" \
+            "$INTEGRATION_4_COVERAGE" \
+            "$INTEGRATION_5_COVERAGE" \
+            "$INTEGRATION_6_COVERAGE"
           uv run coverage json --data-file="$COMBINED_COVERAGE" -o "$COMBINED_REPORT"
           uv run coverage report --data-file="$COMBINED_COVERAGE" --show-missing
           export COMBINED_REPORT

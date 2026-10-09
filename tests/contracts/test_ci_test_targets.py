@@ -1155,6 +1155,71 @@ else:
     smoke = _workflow_step(job=preflight, name="Smoke tests (fast gate + release evidence)")
     assert smoke["env"]["TESTCONTAINERS_RYUK_DISABLED"] == "true"
     assert smoke["env"]["SMOKE_EVIDENCE_DIR"].endswith("ci-artifacts/smoke")
+    # Execute the installed shell fragments with a command-boundary receiver.
+    # This proves argv, not a smoke run or a combined coverage report.
+    argv_bin = tmp_path / "argv-bin"
+    argv_bin.mkdir()
+    receiver = argv_bin / "uv"
+    receiver.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['ARGV_RECEIPT'], 'w') as output:\n"
+        "    json.dump(sys.argv[1:], output)\n"
+    )
+    receiver.chmod(0o755)
+    coverage_inputs = {
+        f"{lane}_{index}_COVERAGE": str(tmp_path / f"{lane} {index} coverage.data")
+        for lane, count in (("UNIT", 5), ("INTEGRATION", 6))
+        for index in range(1, count + 1)
+    }
+    argv_receipt = tmp_path / "argv.json"
+    shell_env = {
+        **os.environ,
+        "PATH": f"{argv_bin}{os.pathsep}{os.environ['PATH']}",
+        "ARGV_RECEIPT": str(argv_receipt),
+        "COMBINED_COVERAGE": str(tmp_path / "combined coverage.data"),
+        "SMOKE_EVIDENCE_DIR": str(tmp_path / "smoke evidence"),
+        **coverage_inputs,
+    }
+    fragments = (
+        (
+            "smoke",
+            smoke["run"].split("SMOKE_EXIT=${PIPESTATUS[0]}", 1)[0],
+            [
+                "run",
+                "pytest",
+                "tests/",
+                "--ignore=tests/e2e",
+                "-m",
+                "smoke",
+                "-q",
+                "--tb=short",
+                f"--junit-xml={shell_env['SMOKE_EVIDENCE_DIR']}/raw-junit.xml",
+            ],
+        ),
+        (
+            "coverage",
+            re.search(
+                r"(?ms)^uv run coverage combine.*?(?=^uv run coverage json)", combine["run"]
+            ).group(),
+            [
+                "run",
+                "coverage",
+                "combine",
+                f"--data-file={shell_env['COMBINED_COVERAGE']}",
+                *coverage_inputs.values(),
+            ],
+        ),
+    )
+    for name, fragment, expected_argv in fragments:
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", fragment],
+            env=shell_env,
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, name
+        assert json.loads(argv_receipt.read_text()) == expected_argv, name
     assert "--durations" not in smoke["run"]
     smoke_artifact = artifact_steps["smoke-release-evidence"]
     assert smoke_artifact["with"]["path"].endswith("smoke/release-evidence.json")
