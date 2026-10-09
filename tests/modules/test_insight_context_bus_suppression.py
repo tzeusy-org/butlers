@@ -68,9 +68,17 @@ class TestSignalCoverage:
         result = await _get_signal([_signal("traveling", set_at=_NOW - timedelta(hours=2))])
         assert result == "traveling"
 
+    # REQ-proactive-insight-engine-001: existing behavioral controls below; SQL credit is separate.
     async def test_irrelevant_signal_type_does_not_suppress(self):
         result = await _get_signal([_signal("exercising", set_at=_NOW - timedelta(minutes=5))])
         assert result is None
+
+        for kind in ("away", "focused", "working_location"):
+            assert await _get_signal([_signal(kind, set_at=_NOW - timedelta(minutes=5))]) is None
+            assert (
+                await _get_signal([_signal(kind, set_at=_NOW), _signal("meeting", set_at=_NOW)])
+                == "meeting"
+            )
 
     async def test_no_active_signals_returns_none(self):
         result = await _get_signal([])

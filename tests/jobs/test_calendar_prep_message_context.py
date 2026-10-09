@@ -112,6 +112,7 @@ def _thread_row(
     }
 
 
+# REQ-calendar-overlay-aggregation-006: existing behavioral controls below; SQL credit is separate.
 async def test_populated_writes_message_context():
     """An attendee with recent email threads gets a message_context panel."""
     event_id = uuid4()
@@ -168,6 +169,25 @@ async def test_populated_writes_message_context():
     # The email envelope only carries the message-context slot for attendees.
     assert attendees[0]["notes"] == []
     assert attendees[0]["last_met"] is None
+
+    ordinary = dict(pool._events[0])
+    for kind in ("outOfOffice", "workingLocation"):
+        status_id = uuid4()
+        status = {**ordinary, "event_id": status_id, "event_type": kind}
+        pool._events = [status, ordinary]
+        cap.store[prep_key(str(status_id))] = {"old": True}
+        with _patch_state(cap):
+            result = await run_messenger_calendar_prep_contribution(pool, None)
+        assert result["events_written"] == 1
+        assert prep_key(str(status_id)) not in cap.store
+        assert prep_key(str(event_id)) in cap.store
+
+    from butlers.jobs.calendar_prep import run_travel_calendar_prep_contribution
+
+    with _patch_state(cap):
+        actual = await run_travel_calendar_prep_contribution(pool, None)
+    assert actual["events_written"] == 1
+    assert cap.store[prep_key(str(event_id))]["butler"] == "travel"
 
 
 async def test_event_with_no_threads_is_skipped():

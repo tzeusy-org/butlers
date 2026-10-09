@@ -57,6 +57,7 @@ class ConflictCandidate:
     timezone: str
     status: str = "confirmed"
     all_day: bool = False
+    counts_toward_day_load: bool = True
 
 
 @dataclass
@@ -165,7 +166,11 @@ def detect_conflict_issues(
     issues: list[DetectedIssue] = []
     issues.extend(_detect_overlaps(timed, display_tz))
     issues.extend(_detect_back_to_back(timed, display_tz, max(0, int(back_to_back_gap_minutes))))
-    issues.extend(_detect_overloaded_days(timed, display_tz, float(overloaded_day_hours)))
+    issues.extend(
+        _detect_overloaded_days(
+            [c for c in timed if c.counts_toward_day_load], display_tz, float(overloaded_day_hours)
+        )
+    )
 
     issues.sort(
         key=lambda i: (

@@ -171,3 +171,54 @@ None. The calendar module is a leaf module. When the approvals module is co-load
 
 - [Module System](module-system.md)
 - [Approvals Module](approvals.md)
+
+
+## Declared calendar context
+
+Read-side `CalendarEvent` payloads preserve a bounded `event_type` (default
+`default`) and nullable, minimized `working_location`. Google list requests omit
+`eventTypes`, so supported status types and future unknown types remain visible.
+Only the matching working-location discriminant and bounded label are retained;
+auto-decline messages, chat status, building/floor/desk identifiers and addresses
+are not added to this declaration. Create/update tools retain their existing
+provider write contract.
+
+The registered General `context_producer_calendar` job still runs every ten
+minutes. One scoped transaction lock precedes its projection read, and one
+database wall clock captured after that lock governs every set and clear in the transition. It excludes generated events,
+self-declines and transparent meeting/focus/OOO entries; guest declines,
+tentative/needsAction and missing or malformed RSVP retain prior compatibility.
+Eligible timed `outOfOffice` asserts fixed `away="out of office"` before any
+meeting/focus, with the existing 30-day cap and periodic reassertion. Timed
+`focusTime` asserts fixed `focused="focus time"` without a title heuristic; its context metadata omits the source title. Other types retain the
+ordinary title fallback and all-day/provenance filters.
+
+`workingLocation` is a separate General-owned qualifier, including a valid
+single-local-day date-only declaration. It may coexist with meeting/focused or
+away and does not assert physical presence. Its label is quoted as data in the
+context preamble. Expiry is the earliest of event end, the next local midnight,
+and 24 hours; invalid timezone or missing/mismatched location properties do not
+create a location assertion. Transparent location declarations remain eligible.
+Successful absence retracts only calendar-marked away/location assertions;
+failed reads and failed transitions roll back without pretending absence.
+Non-calendar General assertions and other writers are preserved on retraction.
+
+Status-only OOO/location rows are excluded from Relationship and message-owner
+meeting-prep selectors and normal/restart synthesized starting-soon notices,
+before idempotency marking. Raw provider change ingestion stays intact. The
+insight broker's suppression set remains DND, meeting, sleeping and traveling;
+away/location add no new suppression policy. Radar day-load hours exclude
+OOO/location, while opaque timed conflicts, free/busy and workspace visibility
+retain their existing eligibility contracts.
+
+Core 262 adds `calendar_events.event_type` and `working_location`. Legacy rows
+receive default/NULL, and provider updates replace or remove declarations. Its
+downgrade retains the columns, shape constraint and source evidence while
+returning the Alembic marker to its adopted predecessor core 261; it does not recreate the predecessor's
+physical schema or make an older runtime understand typed OOO. Replay and
+re-upgrade preserve data. No bootstrap grants or runtime roles change.
+
+Verification distinguishes synthetic schema-valid payload controls from genuine
+recorded, sanitized Google responses. A recorded-response corpus has not yet
+been established for this change; synthetic inputs cannot satisfy that acceptance
+obligation. SQL outcomes require actual disposable PostgreSQL and hosted proof.

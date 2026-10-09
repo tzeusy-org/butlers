@@ -6,8 +6,7 @@ level for all non-DND context signals. Each signal type SHALL have a defined
 set of authorized writer butlers, and the normal `set_context()` path SHALL
 validate `(butler_name, signal_type)` against that mapping before writing.
 Unauthorized non-DND writes SHALL raise `PermissionError`.
-
-The permission mapping SHALL remain:
+- The permission mapping SHALL remain:
 - `traveling`: travel, general
 - `sleeping`: health, general
 - `meeting`: general
@@ -19,17 +18,16 @@ The permission mapping SHALL remain:
 - `at_home`: travel, home, general
 - `in_space`: home, general
 - `away`: general
+- `working_location`: general
 - `dnd`: general, switchboard
-
-`dnd` is the safety-critical exception to the otherwise application-enforced
+- `dnd` is the safety-critical exception to the otherwise application-enforced
 model. General and Switchboard SHALL use the canonical DND mutation operation
 instead of direct generic DML. The database SHALL reject direct DND DML even
 when a runtime role retains the existing broad table grant required for
 non-DND context writes. The ordinary non-DND mapping remains an application
 authorization rule; this change does not turn it into a generic row-level
 permission system.
-
-The canonical DND operation SHALL enter through a pinned `SECURITY INVOKER`
+- The canonical DND operation SHALL enter through a pinned `SECURITY INVOKER`
 gateway that checks `current_user` as the active General/Switchboard runtime
 role before it calls the private pinned `SECURITY DEFINER` mutation operation.
 The private operation SHALL independently check the active `SET ROLE` setting,
@@ -37,10 +35,14 @@ because its `current_user` is the NOLOGIN owner. Neither layer may trust a
 caller-supplied writer, `session_user`, an absent role, or a shared-role
 development fallback. A runtime role may mutate only its own DND row; a
 cross-writer operation SHALL fail before it changes a row, guard, or receipt.
-
-The DND database policy constrains writes only. Every butler retains the public
+- The DND database policy constrains writes only. Every butler retains the public
 read path for active DND state and guarded snapshots; the implementation SHALL
 not use a blanket RLS policy that hides DND rows from those readers.
+- `working_location` SHALL be writable only by General through the ordinary non-DND application permission boundary. Existing DND mutation, role, guard and receipt requirements SHALL remain intact.
+
+ID: REQ-context-bus-002
+Source: RFC 0009; RFC 0020; vision.md shared situational awareness; approved bu-s11n0s.4 Outcome
+Scope: v1-mandatory
 
 #### Scenario: Authorized non-DND write remains application-authorized
 - **WHEN** Health calls the normal context path with
@@ -79,6 +81,17 @@ not use a blanket RLS policy that hides DND rows from those readers.
 #### Scenario: General butler has broad write access
 - **WHEN** the general butler calls `set_context()` with any signal type
 - **THEN** the write succeeds because general is authorized for all signal types
+
+
+#### Scenario: General owns the working-location writer slot
+- **WHEN** General writes `working_location` through the normal context path
+- **THEN** the ordinary permission mapping permits it without reading or advancing the DND guard
+
+
+#### Scenario: Other butler cannot write working location
+- **WHEN** Finance requests `working_location` through the normal context path
+- **THEN** PermissionError occurs before a database write
+
 ## ADDED Requirements
 
 ### Requirement: Canonical DND Mutation and Durable Generation

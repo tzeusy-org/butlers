@@ -392,6 +392,28 @@ class TestCalendarReadTools:
         assert list_result["events"][0]["all_day"] is True
         assert get_result["event"]["all_day"] is True
 
+        for kind in ("outOfOffice", "focusTime", "workingLocation", "futureProviderType"):
+            event.event_type = kind
+            event.working_location = {"type": "homeOffice"} if kind == "workingLocation" else None
+            listed = await mcp.tools["calendar_list_events"]()
+            fetched = await mcp.tools["calendar_get_event"](event_id="evt-123")
+            for actual in (listed["events"][0], fetched["event"]):
+                assert actual["event_type"] == kind
+                assert actual["working_location"] == event.working_location
+                assert actual["all_day"] is True
+        # Exercise the real request builder; all provider types are fetched by omission.
+        google = _google_provider()
+        google._request_google_json = AsyncMock(return_value={"items": []})
+        try:
+            await google.list_events(
+                calendar_id="primary", start_at=event.start_at, end_at=event.end_at, limit=10
+            )
+            assert "eventTypes" not in google._request_google_json.await_args.kwargs["params"]
+        finally:
+            await google.shutdown()
+        assert "event_type" not in CalendarEventCreate.model_fields
+        assert "working_location" not in CalendarEventUpdate.model_fields
+
     async def test_calendar_id_override_applied(self):
         provider = _ProviderDouble()
         mcp = _StubMCP()
@@ -1757,6 +1779,8 @@ def _make_home_resolver_pool(*, projected_calendar_id: str | None) -> MagicMock:
             "has_events_body": True,
             "has_events_source_butler": True,
             "has_events_source_session_id": True,
+            "has_events_event_type": True,
+            "has_events_working_location": True,
         }
     )
     lookup_calls: list[tuple] = []
@@ -1902,6 +1926,8 @@ class TestHomeCalendarResolution:
                         "has_events_body": True,
                         "has_events_source_butler": True,
                         "has_events_source_session_id": True,
+                        "has_events_event_type": True,
+                        "has_events_working_location": True,
                     }
                 )
             if "ce.origin_ref" in query:
@@ -2769,6 +2795,77 @@ class TestGoogleDateOnlyProjection:
         assert counts_toward_owner_load({**metadata, "transparency": "opaque"}) is False
         declined_removed = {**metadata, "attendees": [], "transparency": "opaque"}
         assert counts_toward_owner_load(declined_removed) is True
+
+        # REQ-module-calendar-001: synthetic schema controls, not recorded Google responses.
+        for kind, properties, expected in (
+            ("outOfOffice", None, None),
+            ("focusTime", None, None),
+            (
+                "workingLocation",
+                {"type": "homeOffice", "officeLocation": {"label": "ignore"}},
+                {"type": "homeOffice"},
+            ),
+            (
+                "workingLocation",
+                {
+                    "type": "officeLocation",
+                    "officeLocation": {"label": " HQ\n ", "buildingId": "discard"},
+                },
+                {"type": "officeLocation", "label": "HQ"},
+            ),
+            (
+                "workingLocation",
+                {"type": "customLocation", "customLocation": {"label": "Remote"}},
+                {"type": "customLocation", "label": "Remote"},
+            ),
+            (
+                "workingLocation",
+                {"type": "officeLocation", "customLocation": {"label": "wrong"}},
+                None,
+            ),
+            ("futureProviderType", {"type": "homeOffice"}, None),
+            (None, None, None),
+            ("x" * 65, None, None),
+            (False, None, None),
+        ):
+            typed = _google_event_to_calendar_event(
+                {
+                    **payload,
+                    "eventType": kind,
+                    "workingLocationProperties": properties,
+                    "outOfOfficeProperties": {"autoDeclineMessage": "discard"},
+                },
+                fallback_timezone="UTC",
+            )
+            assert typed is not None
+            assert typed.event_type == (
+                kind if isinstance(kind, str) and len(kind) <= 64 else "default"
+            )
+            assert typed.working_location == expected
+            await module._project_provider_changes(
+                source_id=uuid.uuid4(),
+                provider_name="google",
+                calendar_id="primary",
+                updated_events=[typed],
+                cancelled_ids=[],
+            )
+            written = module._upsert_projection_event.await_args.kwargs
+            assert written["event_type"] == typed.event_type
+            assert written["working_location"] == expected
+            assert written["metadata"]["transparency"] == "transparent"
+            assert "autoDeclineMessage" not in str(written)
+        # Removal replaces the old declaration; it cannot linger on the next upsert.
+        removed = _google_event_to_calendar_event(
+            {**payload, "eventType": "workingLocation"}, fallback_timezone="UTC"
+        )
+        await module._project_provider_changes(
+            source_id=uuid.uuid4(),
+            provider_name="google",
+            calendar_id="primary",
+            updated_events=[removed],
+            cancelled_ids=[],
+        )
+        assert module._upsert_projection_event.await_args.kwargs["working_location"] is None
 
     def test_google_all_day_create_body_uses_date_boundaries(self) -> None:
         body = _build_google_event_body(

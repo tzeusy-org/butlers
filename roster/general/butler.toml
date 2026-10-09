@@ -93,6 +93,7 @@ job_name = "collect_briefing_contributions"
 # Publishes meeting/focused from the live calendar every 10 minutes so
 # spawned-session preambles and the notify gate see real context.
 [[butler.schedule]]
+# Owner-eligible calendar meeting/focus, typed away and declared working location.
 name = "context_producer_calendar"
 cron = "*/10 * * * *"
 dispatch_mode = "job"

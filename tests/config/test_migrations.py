@@ -862,7 +862,10 @@ def test_core_calendar_tables_and_constraints(postgres_container):
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    from butlers.migrations import _build_alembic_config
+
+    config = _build_alembic_config(db_url, ["core"])
+    command.upgrade(config, "core@core_258")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -943,6 +946,96 @@ def test_core_calendar_tables_and_constraints(postgres_container):
                 )
             }
             assert "idx_calendar_event_entities_entity" in junction_idxs
+        # REQ-module-calendar-002: a planted predecessor row survives upgrade.
+        command.upgrade(config, "core@core_262")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT event_type FROM calendar_events WHERE id=:id"), {"id": event_id}
+                ).scalar_one()
+                == "default"
+            )
+            assert (
+                conn.execute(
+                    text("SELECT working_location FROM calendar_events WHERE id=:id"),
+                    {"id": event_id},
+                ).scalar_one()
+                is None
+            )
+            conn.execute(
+                text(
+                    "UPDATE calendar_events SET event_type='workingLocation', working_location=CAST(:location AS jsonb) WHERE id=:id"
+                ),
+                {"id": event_id, "location": '{"type":"officeLocation","label":"Synthetic HQ"}'},
+            )
+            retained = conn.execute(
+                text(
+                    "SELECT id,event_type,working_location,title,source_butler FROM calendar_events WHERE id=:id"
+                ),
+                {"id": event_id},
+            ).one()
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text("UPDATE calendar_events SET working_location='[]'::jsonb WHERE id=:id"),
+                    {"id": event_id},
+                )
+            conn.execute(
+                text("UPDATE calendar_events SET event_type='futureProviderType' WHERE id=:id"),
+                {"id": event_id},
+            )
+            assert (
+                conn.execute(
+                    text("SELECT event_type FROM calendar_events WHERE id=:id"), {"id": event_id}
+                ).scalar_one()
+                == "futureProviderType"
+            )
+            conn.execute(
+                text("UPDATE calendar_events SET event_type='workingLocation' WHERE id=:id"),
+                {"id": event_id},
+            )
+        command.downgrade(config, "core@core_261")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT version_num FROM alembic_version WHERE version_num LIKE 'core_%'")
+                ).scalar_one()
+                == "core_261"  # pinned-revision: core262 retains data while moving only to its adopted predecessor
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT id,event_type,working_location,title,source_butler FROM calendar_events WHERE id=:id"
+                    ),
+                    {"id": event_id},
+                ).one()
+                == retained
+            )
+        command.upgrade(config, "core@core_262")
+        command.upgrade(config, "core@core_262")
+        _replay_init_db(postgres_container, db_name, db_url)
+        # A second schema's full core replay remains separate from public-only proof.
+        asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT id,event_type,working_location,title,source_butler FROM calendar_events WHERE id=:id"
+                    ),
+                    {"id": event_id},
+                ).one()
+                == retained
+            )
+            for schema in ("public", "general"):
+                cols = {
+                    r[0]
+                    for r in conn.execute(
+                        text(
+                            "SELECT column_name FROM information_schema.columns WHERE table_schema=:s AND table_name='calendar_events'"
+                        ),
+                        {"s": schema},
+                    )
+                }
+                assert {"event_type", "working_location"} <= cols
     finally:
         engine.dispose()
 

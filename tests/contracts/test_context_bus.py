@@ -31,6 +31,7 @@ class TestContextSignalVocabulary:
             "at_home",
             "in_space",
             "away",
+            "working_location",
             "dnd",
         }
         assert {s.value for s in ContextSignal} == expected
@@ -51,6 +52,7 @@ class TestWritePermissionsMatrix:
             ("general", "traveling"),
             ("health", "exercising"),
             ("general", "meeting"),
+            ("general", "working_location"),
             ("general", "dnd"),
             ("switchboard", "dnd"),
             ("health", "sleeping"),
@@ -70,6 +72,8 @@ class TestWritePermissionsMatrix:
             ("finance", "traveling"),
             ("general", "exercising"),
             ("health", "meeting"),
+            ("health", "working_location"),
+            ("travel", "working_location"),
             ("health", "dnd"),
             ("travel", "sleeping"),
             ("health", "at_home"),
@@ -99,6 +103,7 @@ class TestTtlClamping:
             ("sleeping", timedelta(hours=24), timedelta(hours=12)),
             ("traveling", timedelta(days=60), timedelta(days=30)),
             ("meeting", timedelta(hours=8), timedelta(hours=4)),
+            ("working_location", timedelta(hours=48), timedelta(hours=24)),
         ]
         for signal, request_delta, max_delta in cases:
             clamped = _clamp_ttl(signal, now, now + request_delta)

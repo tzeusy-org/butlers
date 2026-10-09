@@ -101,6 +101,11 @@ def test_only_the_self_attendee_decides_attendance_and_malformed_metadata_is_att
         is_owner_attending('{"attendees": [{"self": true, "responseStatus": "declined"}]}') is False
     )
 
+    for key in ("response_status", "responseStatus"):
+        for status in ("accepted", "tentative", "needsAction", "needs_action", None, 1):
+            assert is_owner_attending({"attendees": [{"self": True, key: status}]}) is True
+        assert is_owner_attending({"attendees": [{"self": False, key: "declined"}]}) is True
+
 
 def test_transparency_transparent_is_free_time_everything_else_is_busy() -> None:
     assert is_transparent({"transparency": "transparent"}) is True

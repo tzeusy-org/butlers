@@ -32,6 +32,7 @@ class ContextSignal(StrEnum):
     at_home = "at_home"
     in_space = "in_space"
     away = "away"
+    working_location = "working_location"
     dnd = "dnd"
 
 
@@ -83,6 +84,7 @@ _WRITE_PERMISSIONS: dict[str, frozenset[str]] = {
     "at_home": frozenset({"travel", "home", "general"}),
     "in_space": frozenset({"home", "general"}),
     "away": frozenset({"general"}),
+    "working_location": frozenset({"general"}),
     "dnd": frozenset({"general", "switchboard"}),
 }
 
@@ -102,6 +104,7 @@ _TTL_CONFIG: dict[str, tuple[timedelta, timedelta]] = {
     "at_home": (timedelta(hours=12), timedelta(hours=24)),
     "in_space": (timedelta(hours=12), timedelta(hours=24)),
     "away": (timedelta(hours=12), timedelta(days=30)),
+    "working_location": (timedelta(hours=12), timedelta(hours=24)),
     "dnd": (timedelta(hours=2), timedelta(hours=24)),
 }
 
@@ -370,6 +373,7 @@ async def set_context(
     confidence: float = 1.0,
     metadata: dict[str, Any] | None = None,
     mutation_id: UUID | None = None,
+    _observed_at: datetime | None = None,
 ) -> DndMutationReceipt | None:
     """Write or update a context signal.
 
@@ -401,6 +405,9 @@ async def set_context(
         Optional JSONB metadata dict.
     mutation_id:
         Stable UUID created once for the routed DND action. Required for DND.
+
+    ``_observed_at`` is the producer-internal database clock captured inside
+    its transaction; it does not change the DND gateway clock or expose a tool field.
 
     Raises
     ------
@@ -438,7 +445,7 @@ async def set_context(
             metadata=metadata,
         )
 
-    now = datetime.now(tz=UTC)
+    now = _observed_at if _observed_at is not None else datetime.now(tz=UTC)
 
     # Apply default TTL if not provided
     if expires_at is None:
@@ -479,6 +486,7 @@ async def clear_context(
     signal_type: str,
     *,
     mutation_id: UUID | None = None,
+    _observed_at: datetime | None = None,
 ) -> DndMutationReceipt | None:
     """Explicitly clear a signal before its TTL expires.
 
@@ -498,6 +506,9 @@ async def clear_context(
     mutation_id:
         Stable UUID created once for the routed DND clear action. Required only
         for DND.
+    _observed_at:
+        Internal database observation captured after a producer serialization lock.
+        Reused for ordinary clears; DND continues through its unchanged gateway.
     """
     if signal_type == ContextSignal.dnd:
         _check_write_permission(butler_name, signal_type)
@@ -507,6 +518,18 @@ async def clear_context(
             operation="clear",
             mutation_id=mutation_id,
         )
+
+    if _observed_at is not None:
+        await pool.execute(
+            """
+            UPDATE public.user_context SET superseded_at = $3
+            WHERE signal_type = $1 AND set_by_butler = $2 AND superseded_at IS NULL
+            """,
+            signal_type,
+            butler_name,
+            _observed_at,
+        )
+        return None
 
     await pool.execute(
         """
@@ -563,7 +586,13 @@ def format_context_preamble(signals: list[ContextEntry]) -> str:
     for entry in signals:
         label = _confidence_label(entry.confidence)
         if entry.value is not None:
-            parts.append(f"{entry.signal_type} ({entry.value}, {label})")
+            value = entry.value
+            if entry.signal_type == ContextSignal.working_location:
+                # A provider label is quoted data, not instructions or physical presence.
+                import json
+
+                value = json.dumps(value[:256], ensure_ascii=False)
+            parts.append(f"{entry.signal_type} ({value}, {label})")
         else:
             parts.append(f"{entry.signal_type} ({label})")
 
