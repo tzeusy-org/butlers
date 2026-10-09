@@ -677,6 +677,7 @@ async def test_decomposition_route_exception_is_content_blind_in_result_and_pers
 
 async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_boundary(
     caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
 ):
     """Conversation-history dispatch failures expose only stable category/class."""
     sentinel = (
@@ -730,7 +731,9 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
     )
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -755,6 +758,9 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
             message_inbox_id="11111111-1111-4111-8111-111111111111",
         )
 
+        assert fact_authority.source_registry() is None
+
+    assert fact_authority.source_registry() is prior_registry
     lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
     assert lifecycle["decomposition_output"] == {
         "error": {
@@ -792,6 +798,12 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
     assert "auto_exception" not in decision_span
     assert decision_span["attributes"]["error.class"] == "RuntimeError"
     assert decision_span["attributes"]["error.category"] == "classification_dispatch_failed"
+
+    with pytest.raises(RuntimeError, match="active span scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("active span scenario failed")
+    assert fact_authority.source_registry() is prior_registry
 
 
 async def test_decomposition_ingress_dedupe_failure_is_content_blind(
