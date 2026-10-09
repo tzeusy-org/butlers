@@ -207,23 +207,7 @@ def test_load_all_returns_new_instances_each_call():
 
 
 def test_explicit_discovery_and_router_load_failures_are_visible(monkeypatch, tmp_path, caplog):
-    """REQ-core-modules-004, REQ-dashboard-api-066: no partial cached success.
-
-    Retirement preparation coverage (actual whole-module absence):
-    REQ-module-metrics-001
-    REQ-module-metrics-002
-    REQ-module-metrics-003
-    REQ-module-metrics-004
-    REQ-module-metrics-005
-    REQ-module-metrics-006
-    REQ-module-metrics-007
-    REQ-module-metrics-008
-    REQ-module-metrics-009
-    REQ-module-metrics-010
-    REQ-module-document-renderer-001
-    REQ-module-document-renderer-002
-    Retired definitions/citations leave together during native administration.
-    """
+    """REQ-core-modules-004, REQ-dashboard-api-066: no partial cached success."""
     import importlib
     import sys
 

@@ -11,7 +11,7 @@ SOURCE preparation: check only genuinely completed preparation records. Check on
 - [x] 4.1 Allocate/validate full owned REMOVED/core helper bodies and retirement metadata; prepare the exact nine-separator ledger and whole before/proposed/inverse/native/foreign maps.
 - [x] 4.2 Run actual affected/owning/neutralized/restored controls, full tests/roster collection, planner/budget/shard/lint/format/spec/guards and retain measured Tests delta.
 - [x] 5.1 Publish coherent SOURCE-preparation checkpoint and complete disposable read-only installed builder/Validator/retirement-predicate rehearsal, full rebuilt-body and inverse proof; retain exact checkpoint source/tests without claiming future final-head delivery.
-- [ ] 5.2 Obtain genuine independent completion-scope review confirming these preparation tasks and full preservation are actually complete and eligible for normal own native administration; retain its exact source/body identity.
+- [x] 5.2 Obtain genuine independent completion-scope review confirming these preparation tasks and full preservation are actually complete and eligible for normal own native administration; retain its exact source/body identity.
 
 ## Mandatory administrative delivery tail (outside prearchive checkboxes)
 
@@ -23,3 +23,11 @@ All of the following remain mandatory original delivery obligations; preparation
 4. Verify actual squash/public landing and complete all original four plus expanded criteria. ROOT alone owns lifecycle/queue/closure. Revert restores packages/discovery/tools/docs/specs/dependency lock/both imports and explicit inverse native bodies without stored-data cleanup or stale foreign delta resurrection.
 
 None of these future obligations is ticked, waived or claimed executed by this preparation checkpoint. Actual archive/readback and resulting-head delivery never gate a checkbox that must already be complete to permit that same archive.
+
+Dated preparation completion record (2026-10-09): task5.2 is supported by
+the genuine independent c03e SOURCE-preparation review, retained manifest
+SHA2568238839b0f2621ef7bf35bb095fced16caaf125791f72f7cea8c50b320540b24, and ROOT's explicit
+retirement24-c03e-root-explicit-native-administration-release.json. All ten
+checkboxes describe completed preparation at their stated source identities.
+Ordinary native administration and resulting-head normal/non-author/protected
+delivery remain the separate mandatory administrative tail above.

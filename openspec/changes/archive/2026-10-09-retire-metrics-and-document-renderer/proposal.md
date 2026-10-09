@@ -10,7 +10,7 @@ Both asynchronous instant and range HTTP query functions move unchanged to `butl
 
 The owned native change declares `schema: spec-driven` and `retire_capabilities: true`, removes all10 Metrics requirements/27 scenarios and both Renderer requirements/3 scenarios, and adds REQ-core-telemetry-015/seven scenarios. ONLY nine exact Metrics formatting separators are accounted in the retained guarded input/inverse; no normative text or arbitrary leftover is suppressed.
 
-The ROOT-bound published a9 checkpoint174170f9500bc4bdc23ce962d38fc29c05812fa3 supplies the complete aggregate5REQ23SC and twelve preparation tasks (six checked/six unchecked). Its prospective union changes exactly two helper namespace tokens, with every foreign body/flag preserved. Native integration is serialized by ROOT against the actual current published/adopted artifact; no private WIP or foreign task completion is taken here.
+The c03e SOURCE preparation used ROOT-bound published a9 checkpoint174170f9500bc4bdc23ce962d38fc29c05812fa3 (aggregate5REQ23SC, twelve flags six checked/six unchecked); that witness remains dated provenance. Actual a9 now landed as e17c0ceb844e31c577a843a48d834774840151a8 after protected37903239686. Its complete canonical aggregate7REQ32SC has SHA256794ab377863fc8c9c99dc1e3fad9e0fff2a940d37be642cdb0ad8ef911241df5. The owned full MODIFIED requirement changes ONLY its two helper namespace tokens. The dated archive5REQ23SC and all twelve genuinely completed foreign tasks remain byte-exact with their old namespace. Complete before/after/inverse bodies bind this public composition; no private WIP, foreign feature adoption or task tick occurs here.
 
 ## Delivery Status
 

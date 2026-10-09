@@ -7,7 +7,7 @@
 Core SHALL own the existing asynchronous instant and range HTTP query functions at `butlers.core.prometheus`. `async_query(url, query, time=None)` SHALL GET `<url>/api/v1/query` with `query` and with `time` only when supplied. `async_query_range(url, query, start, end, step)` SHALL GET `<url>/api/v1/query_range` with those four query parameters. Both SHALL retain the existing 30-second HTTP timeout and 10-second connect timeout, return the exact successful `data.result` list including an empty list, and represent HTTP, network, JSON/decode or unexpected in-try failures and Prometheus non-success status using the existing single-element error list. No module registration, metric-definition persistence, emission, database work, authentication mechanism, retry, alias or additional cache SHALL be introduced by relocation. A payload outside the existing success extraction contract SHALL retain its current behavior; relocation SHALL NOT claim broader schema validation. API-owned parsing, aggregation, cache and degradation contracts remain authoritative and unchanged.
 
 ID: REQ-core-telemetry-015
-Source: Applied owner decision bu-lsxqb0.5 option A (2026-10-04), bu-lsxqb0.24; original module-metrics instant/range query requirements; current src/butlers/modules/metrics/prometheus.py; RFC 0005.
+Source: Applied owner decision bu-lsxqb0.5 option A (2026-10-04), bu-lsxqb0.24; original module-metrics instant/range query requirements; historical src/butlers/modules/metrics/prometheus.py at public1491926f17fcdebb69779bf0e359bf7459dcb47c; current src/butlers/core/prometheus.py; RFC 0005.
 Scope: v1-mandatory
 
 #### Scenario: Instant query preserves its vector and parameters

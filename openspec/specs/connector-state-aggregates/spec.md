@@ -100,7 +100,7 @@ SHALL be ignored rather than coerced into a measurement.
 ### Requirement: Prometheus PromQL is the aggregate source of truth
 
 The funnel aggregates SHALL be sourced from Prometheus over its HTTP query API
-through `butlers.modules.metrics.prometheus` (`async_query` for instant
+through `butlers.core.prometheus` (`async_query` for instant
 queries, `async_query_range` for the sparkline). `routed_pct` SHALL be derived
 arithmetically from the funnel counters rather than queried, as
 `routed_total / (ingested + filtered + errored) * 100.0`, and SHALL be `0.0`
@@ -113,7 +113,7 @@ justifies changing the Prometheus-only aggregate contract.
 - **WHEN** the pipeline endpoint computes `ingested`, `filtered`, `errored`,
   `rate1h`, or `filtered24h`
 - **THEN** the handler issues an instant PromQL query through
-  `butlers.modules.metrics.prometheus.async_query`
+  `butlers.core.prometheus.async_query`
 - **AND** no SQL rollup table is read for those values
 
 #### Scenario: Sparkline uses a range query pinned to 24 hours
