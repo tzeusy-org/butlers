@@ -533,6 +533,7 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
 )
 async def test_decomposition_observability_omits_message_and_transport_identifiers(
     caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
     source_channel: str,
     sentinel_identity: str,
     sentinel_chat: str,
@@ -571,7 +572,9 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
     pipeline._load_decomp_conversation_messages = AsyncMock(return_value=None)  # type: ignore[method-assign]
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -579,6 +582,7 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
         patch("butlers.modules.pipeline.trace.get_tracer", return_value=_Tracer()),
         caplog.at_level(logging.DEBUG),
     ):
+        assert fact_authority.source_registry() is None
         await pipeline.process(
             sentinel_message,
             tool_args={
@@ -595,6 +599,7 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
             message_inbox_id=inbox_uuid,
         )
 
+    assert fact_authority.source_registry() is prior_registry
     observability = (
         caplog.text + repr([record.__dict__ for record in caplog.records]) + repr(span_attributes)
     )
@@ -603,6 +608,12 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
     assert sentinel_chat not in observability
     assert request_uuid not in observability
     assert inbox_uuid not in observability
+
+    with pytest.raises(RuntimeError, match="observability scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("observability scenario failed")
+    assert fact_authority.source_registry() is prior_registry
 
 
 async def test_decomposition_route_exception_is_content_blind_in_result_and_persistence(
