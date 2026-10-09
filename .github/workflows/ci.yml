@@ -1380,6 +1380,10 @@ jobs:
           retention-days: 14
           overwrite: true
 
+      - name: Controlled Vitest child 1 failure after real receipt upload
+        if: ${{ success() && matrix.shard == 1 }}
+        run: exit 1
+
   frontend:
     timeout-minutes: 18
     runs-on: ubuntu-latest
