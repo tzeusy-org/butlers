@@ -56,13 +56,22 @@ def run(command: list[str], timeout: float) -> subprocess.CompletedProcess:
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout)
-    except BaseException:
+    finally:
         # Signal only the process group this invocation owns, including its
-        # descendants. Raw Docker output never becomes a retained diagnostic.
+        # descendants, even when the direct parent has already returned. A
+        # DEVNULL descendant cannot keep communicate() waiting for the group.
+        # Raw Docker output never becomes a retained diagnostic.
         try:
             os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
             process.communicate(timeout=1)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            # Parent completion is not group completion: a descendant may
+            # ignore TERM after the parent closes both output pipes.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -74,7 +83,6 @@ def run(command: list[str], timeout: float) -> subprocess.CompletedProcess:
                 process.stdout.close()
                 process.stderr.close()
                 process.wait(timeout=1)
-        raise
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 

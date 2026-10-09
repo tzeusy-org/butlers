@@ -106,15 +106,18 @@ integration, affected, smoke and nightly pytest jobs, including direct container
 fixtures. Mock-only scopes, collection-only and docs-only jobs acquire nothing.
 Ryuk reaches this same boundary only under its unchanged enabled/disabled policy.
 The standalone owner-auth browser runner preloads its existing
-`postgres:16-alpine` and, when enabled, Ryuk images on GitHub Actions. That
+`postgres:16-alpine` and, when enabled with the pinned default alias, Ryuk images on GitHub Actions. That
 standalone helper is separate from the ordinary frontend Playwright jobs.
 
 The script pins the original aliases to independently resolved Linux/amd64
 manifest and configuration digests. It inspects the actual local image content,
 platform and PostgreSQL major before reusing the ordinary Docker image store.
-Otherwise it pulls that exact content from Google's [public Docker Hub
+Otherwise it attempts that exact content from Google's [public Docker Hub
 mirror](https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images),
 then tries the original Docker Hub repository once if the mirror is unavailable.
+Google documents daemon-configured mirror use. This direct content-verified
+preload is an optional implementation attempt, not that documented integration;
+no daemon configuration is changed and availability is not assumed.
 There are no registry logins, daemon mirror settings, new accounts, generic error
 retries or saved test/container data. Docker's [digest
 pull](https://docs.docker.com/reference/cli/docker/image/pull/) fixes the version;
@@ -124,6 +127,10 @@ Wrong/corrupt content, failed alias installation and unavailable required images
 remain failures. The total preparation envelope is 360 seconds, including its
 own-child cleanup reserve, inside the unchanged job watchdog. Closed diagnostics
 report the attempted source and fixed failure category without raw Docker output.
+Each CLI invocation terminates its own process group on success and failure;
+direct-parent completion cannot leave a TERM-ignoring descendant running. The
+owner-browser preload requests pinned default Ryuk only when that exact image is
+enabled in the SDK. Custom reaper images keep their ordinary acquisition behavior.
 This does not certify migrations, roles, SQL outcomes or a test population. Those
 still require the ordinary exact-head gates and independent receipts. Pin updates
 must independently resolve the same upstream alias, manifest/configuration and

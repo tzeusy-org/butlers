@@ -61,7 +61,10 @@ def main() -> int:
             "--image",
             "owner-browser",
         ]
-        if not testcontainers_config.ryuk_disabled:
+        if (
+            not testcontainers_config.ryuk_disabled
+            and testcontainers_config.ryuk_image == "testcontainers/ryuk:0.8.1"
+        ):
             command.append("--ryuk")
         subprocess.run(command, check=True, timeout=365)
     # Avoid forwarding ambient owner/provider credentials to synthetic children.

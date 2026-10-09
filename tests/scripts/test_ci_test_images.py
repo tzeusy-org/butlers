@@ -7,8 +7,10 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from docker.errors import APIError, ImageNotFound
@@ -183,6 +185,47 @@ def test_preload_positions_real_docker_sdk_missing_image_and_preserves_local_con
     monkeypatch.setattr(container_module.c, "ryuk_disabled", True)
     assert subject.start() is subject
     assert starts == [container], "disabled Ryuk must not start or acquire an image"
+    # The actual browser entrypoint must preload only an image the configured
+    # SDK will consume. Stop at its original constructor: no SQL/browser runs.
+    from testcontainers.core.config import testcontainers_config
+
+    import scripts.test_owner_auth_browser as browser
+
+    class ReachedOriginalContainer(Exception):
+        pass
+
+    for hosted, disabled, image, expected_ryuk in [
+        (True, False, ryuk, True),
+        (True, False, "synthetic/custom-reaper:1", False),
+        (True, True, ryuk, False),
+        (False, False, "synthetic/custom-reaper:1", False),
+        (True, False, ryuk, True),
+    ]:
+        calls = []
+
+        def preload(command, **kwargs):
+            calls.append(command)
+            assert kwargs == {"check": True, "timeout": 365}
+            if image != ryuk and "--ryuk" in command:
+                raise AssertionError("unused default Ryuk must not block a custom consumer")
+            return subprocess.CompletedProcess(command, 0)
+
+        def stop_container(*args, **kwargs):
+            raise ReachedOriginalContainer()
+
+        with (
+            patch.dict(os.environ, {"GITHUB_ACTIONS": "true" if hosted else "false"}),
+            patch.object(testcontainers_config, "ryuk_image", image),
+            patch.object(testcontainers_config, "_ryuk_disabled", disabled),
+            patch.object(browser.subprocess, "run", preload),
+            patch.object(browser, "PostgresContainer", stop_container),
+            patch.object(browser.secrets, "token_urlsafe", lambda *args: "synthetic-unused"),
+            pytest.raises(ReachedOriginalContainer),
+        ):
+            browser.main()
+        assert len(calls) == int(hosted)
+        if calls:
+            assert ("--ryuk" in calls[0]) is expected_ryuk
 
 
 def test_preload_refuses_corrupt_incompatible_unavailable_inputs_and_bounds_fallback(monkeypatch):
@@ -258,9 +301,67 @@ def test_preload_timeout_reaps_only_its_owned_process_group(tmp_path):
     pid = int(pid_file.read_text())
     # A terminated orphan may briefly be a zombie awaiting the host's reaper;
     # it cannot remain a running pipe holder or extend this invocation's bound.
-    state_file = Path(f"/proc/{pid}/stat")
-    if state_file.exists():
-        assert state_file.read_text().split()[2] == "Z"
+    assert not _process_is_running(pid)
     assert os.getpid() != pid
     healthy = images.run([sys.executable, "-c", "print('healthy-owned-child')"], timeout=2)
     assert healthy.returncode == 0 and healthy.stdout == b"healthy-owned-child\n"
+    # A real unrelated session remains alive across both owned-group outcomes.
+    unrelated = subprocess.Popen(
+        [sys.executable, "-c", "import time;time.sleep(30)"], start_new_session=True
+    )
+    try:
+        for mode in ("success", "timeout"):
+            descendant_pid = tmp_path / (mode + "-descendant.pid")
+            ready = tmp_path / (mode + "-ready")
+            child = (
+                "import signal,time,sys;from pathlib import Path;"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                "Path(sys.argv[1]).write_text('ready');time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time;from pathlib import Path;"
+                "p=subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[3]],"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+                "deadline=time.monotonic()+3;"
+                'exec("while not Path(sys.argv[3]).exists():\\n'
+                ' if time.monotonic()>deadline: raise SystemExit(2)\\n time.sleep(.01)");'
+                "Path(sys.argv[1]).write_text(str(p.pid));"
+                + ("sys.exit(0)" if mode == "success" else "time.sleep(30)")
+            )
+            command = [sys.executable, "-c", parent, str(descendant_pid), child, str(ready)]
+            try:
+                if mode == "success":
+                    assert images.run(command, timeout=0.5).returncode == 0
+                else:
+                    with pytest.raises(subprocess.TimeoutExpired):
+                        images.run(command, timeout=0.5)
+                assert ready.is_file()
+                descendant = int(descendant_pid.read_text())
+                # SIGKILL delivery may precede the final kernel state change.
+                # This only observes termination; it never retries acquisition
+                # or extends the actual helper's unchanged timeout/reserve.
+                deadline = time.monotonic() + 1
+                while _process_is_running(descendant) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert not _process_is_running(descendant)
+                assert unrelated.poll() is None
+            finally:
+                if descendant_pid.is_file():
+                    descendant = int(descendant_pid.read_text())
+                    if _process_is_running(descendant):
+                        # Failed/neutralized controls clean only their own
+                        # descendant, so a falsification cannot leak a child.
+                        os.kill(descendant, 9)
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=2)
+
+
+def _process_is_running(pid):
+    # Read once. A concurrent reaper can remove /proc between any two calls;
+    # disappearance is a terminated process, while other read errors remain red.
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    return state not in {"Z", "X"}
