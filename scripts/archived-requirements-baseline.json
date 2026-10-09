@@ -2659,100 +2659,12 @@
       "excerpt": "\"Degraded mode when Prometheus unreachable\" is not in the block"
     }
   ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Audit emission for all lifecycle actions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "1bd376ebcf0d",
-      "excerpt": "Audit emission for all lifecycle actions"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Connector soft-delete semantics": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a3e5c02a97e2",
-      "excerpt": "Connector soft-delete semantics"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Credential masking on rotate-token": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c2c2dd879fb1",
-      "excerpt": "Credential masking on rotate-token"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/No credentials in lifecycle API responses": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "4aca669a5492",
-      "excerpt": "No credentials in lifecycle API responses"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Per-action lifecycle gate matrix": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b918ea8578d3",
-      "excerpt": "Per-action lifecycle gate matrix"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Run-now semantics": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2a048cec3577",
-      "excerpt": "Run-now semantics"
-    }
-  ],
   "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/90-day replay history retention": [
     {
       "kind": "requirement",
       "scenario": null,
       "digest": "c83ce8735e0f",
       "excerpt": "90-day replay history retention"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/Audit emission on bulk replay": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2523eded0e4e",
-      "excerpt": "Audit emission on bulk replay"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/Bulk replay concurrency contract": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9001d5b0fe68",
-      "excerpt": "Bulk replay concurrency contract"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/HTTP 409 on unsafe-channel replay attempt": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "e1b8485cb3d3",
-      "excerpt": "HTTP 409 on unsafe-channel replay attempt"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/Per-channel replay safety classification": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c894bca9c705",
-      "excerpt": "Per-channel replay safety classification"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/connector_registry.replay_safe column": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "623e44cb7067",
-      "excerpt": "connector_registry.replay_safe column"
     }
   ],
   "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-queue/Bulk Replay Endpoint": [
@@ -2769,46 +2681,6 @@
       "scenario": null,
       "digest": "492e0076bb42",
       "excerpt": "Replay History Endpoint"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/60-second TTL cache": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9c4f617dd74c",
-      "excerpt": "60-second TTL cache"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/Aggregate response field shape": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c2a4e3212df7",
-      "excerpt": "Aggregate response field shape"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/Degraded-mode response shape": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "bf95644d090d",
-      "excerpt": "Degraded-mode response shape"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/Pipeline endpoint uses TTL cache or materialized view": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "fc19df2869ce",
-      "excerpt": "Pipeline endpoint uses TTL cache or materialized view"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/Prometheus PromQL is the aggregate source of truth": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2c0e0c48484a",
-      "excerpt": "Prometheus PromQL is the aggregate source of truth"
     }
   ],
   "2026-05-19-redesign-ingestion-dispatch-console/ingestion-event-registry/Available Connectors Discovery Endpoint": [
@@ -2907,22 +2779,6 @@
       "excerpt": "\"Audit log entry on mutation\" is not in the block"
     }
   ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Audit emission for priority contact mutations": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "4dc1a17aa7f3",
-      "excerpt": "Audit emission for priority contact mutations"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Cascade-delete emits audit entry": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b67dd5b9cc65",
-      "excerpt": "Cascade-delete emits audit entry"
-    }
-  ],
   "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/GMAIL_KNOWN_CONTACTS_PATH deprecation": [
     {
       "kind": "requirement",
@@ -2937,38 +2793,6 @@
       "scenario": null,
       "digest": "ec953a5b8990",
       "excerpt": "GmailPolicyEvaluator wiring"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Indefinite retention": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b56507b9421a",
-      "excerpt": "Indefinite retention"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/No credentials in priority-contact API responses": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c58f73f1e355",
-      "excerpt": "No credentials in priority-contact API responses"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Priority contacts REST API": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "7746e5d1f225",
-      "excerpt": "Priority contacts REST API"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Priority contacts data model": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "ed0c7fe533a4",
-      "excerpt": "Priority contacts data model"
     }
   ],
   "2026-05-19-redesign-ingestion-dispatch-console/ingestion-ui-information-architecture/301 redirects from legacy tab parameters": [

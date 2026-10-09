@@ -1,7 +1,6 @@
-# Connector Replay Idempotency Policy
+# connector-replay-idempotency-policy Specification
 
 ## Purpose
-
 Defines the per-channel replay-safety classification for ingestion events and
 the batch, atomicity, and audit contract for the bulk-replay handler. Replay is
 a privileged operator action that re-injects a previously filtered or errored
@@ -12,7 +11,7 @@ classification, the `replay_safe` registry flag, and the bulk-handler
 contract. It complements `connector-replay-queue`, which owns the drain
 mechanics, and `connector-filtered-events`, which owns the event rows.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Per-channel replay safety classification
 
@@ -77,6 +76,13 @@ not be confirmed.
   check and the state transition
 - **THEN** the transition does not mark the event for replay
 - **AND** the event is reported as a conflict rather than silently replayed
+
+#### Scenario: Bulk classification outage refuses the whole request
+
+- **WHEN** the bulk replay pre-flight classification query raises
+- **THEN** the handler returns HTTP 503 with the fixed safety-unavailable reason
+- **AND** no event is transitioned and an unknown classification does not pass
+  the batch safety gate
 
 ### Requirement: connector_registry.replay_safe column
 
@@ -209,10 +215,3 @@ logged and SHALL NOT fail the request.
 - **WHEN** an audit append raises
 - **THEN** the failure is logged as a warning
 - **AND** the replay result returned to the caller is unchanged
-
-## Source References
-
-- Non-Negotiable Rule 7 (transport is connector responsibility — replay safety
-  is a property of the channel, decided at the ingestion boundary)
-- RFC 0003 (Switchboard routing and ingestion)
-- RFC 0017 (Owner routing safety and incident reconciliation)
