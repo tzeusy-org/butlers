@@ -466,3 +466,134 @@ async def finish_structured_ingress_sdk(pool: Any, binding: _StructuredSDK):
     runtime._structured_sdk.pop(id(binding))
     # No SDK claim/end closes the transferred result or its parent processing.
     return reply
+
+
+def _require_completed_processing(runtime: Any, child: Any) -> None:
+    """Original registered observer only; no Task-done exception/result proxy."""
+    from butlers.core.location_ingress_copies import _writers
+
+    if (
+        _writers.get(runtime.pool) is not runtime
+        or runtime._inputs.get(id(child)) is not child
+        or child.kind != 3
+        or child.handler is None
+        or child.unresolved_failure
+        or child.task is None
+        or not child.task.done()
+        or child.task.cancelled()
+        or child.task.exception() is not None
+        or child.task.result() is not None
+        or any(sdk.child is child for sdk in runtime._structured_sdk.values())
+    ):
+        raise CopyFloorUnavailable("ingress_structured_processing_still_held")
+
+
+async def _structured_processing_cohort(conn: Any, child: Any) -> list:
+    # The LEFT JOIN starts with EVERY original attempt; a missing output or
+    # SDK end cannot turn into an apparently smaller completed cohort.
+    return await conn.fetch(
+        "SELECT s.input_generation,s.copy_generation,s.request_id,s.stored_digest,"
+        "s.envelope_digest,a.request_id AS original_request,a.stored_digest AS original_digest,"
+        "b.task_generation,b.handler_generation,b.incarnation,"
+        "e.task_generation AS ended_task,e.receipt_id AS sdk_receipt,o.output_digest,"
+        "l.task_generation AS local_task,l.handler_generation AS local_handler,"
+        "l.incarnation AS local_incarnation,l.output_digest AS local_output,l.receipt_id "
+        "FROM location_ingress_structured_inputs s "
+        "LEFT JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+        "LEFT JOIN location_ingress_structured_sdk_births b USING(input_generation) "
+        "LEFT JOIN location_ingress_structured_sdk_ends e USING(input_generation) "
+        "LEFT JOIN location_ingress_structured_outputs o USING(input_generation) "
+        "LEFT JOIN location_ingress_structured_local_ends l USING(input_generation) "
+        "WHERE s.copy_generation=$1",
+        child.generation,
+    )
+
+
+def _validate_structured_processing_row(runtime: Any, child: Any, row: Any):
+    from uuid import UUID
+
+    if (
+        row["copy_generation"] != child.generation
+        or not isinstance(row["input_generation"], UUID)
+        or not isinstance(row["request_id"], UUID)
+        or row["request_id"] != row["original_request"]
+        or not isinstance(row["stored_digest"], bytes)
+        or len(row["stored_digest"]) != 32
+        or row["stored_digest"] != row["original_digest"]
+        or row["envelope_digest"] != child.envelope_digest
+        or not isinstance(row["task_generation"], UUID)
+        or row["handler_generation"] != child.handler
+        or row["incarnation"] != runtime.incarnation
+        or row["ended_task"] != row["task_generation"]
+        or not isinstance(row["sdk_receipt"], UUID)
+        or not isinstance(row["output_digest"], bytes)
+        or len(row["output_digest"]) != 32
+    ):
+        raise CopyFloorUnavailable("ingress_structured_processing_cohort_differs")
+    expected = (row["task_generation"], child.handler, runtime.incarnation, row["output_digest"])
+    if row["receipt_id"] is not None and (
+        not isinstance(row["receipt_id"], UUID)
+        or tuple(
+            row[k] for k in ("local_task", "local_handler", "local_incarnation", "local_output")
+        )
+        != expected
+    ):
+        raise CopyFloorUnavailable("ingress_structured_processing_receipt_differs")
+    return expected
+
+
+async def close_structured_processing_copies(runtime: Any, child: Any, conn: Any) -> None:
+    """Actual healthy parent unwind closes only local classifier frame copies.
+
+    Called by the fixed original Task observer under its owning writer lock.
+    No routed/receiving/provider or cached external copy is attested here.
+    Unknown ACK can retry while that same original private observer survives.
+    """
+    from uuid import uuid4
+
+    _require_completed_processing(runtime, child)
+    rows = await _structured_processing_cohort(conn, child)
+    expected = [_validate_structured_processing_row(runtime, child, row) for row in rows]
+    if len({row["input_generation"] for row in rows}) != len(rows):
+        raise CopyFloorUnavailable("ingress_structured_processing_cohort_differs")
+    prior = runtime._structured_local_closures.get(id(child))
+    planned = {entry[0]: entry for entry in prior or ()}
+    if prior is not None and {
+        (row["input_generation"], *binding) for row, binding in zip(rows, expected, strict=True)
+    } != {entry[:-1] for entry in prior}:
+        raise CopyFloorUnavailable("ingress_structured_processing_receipt_differs")
+    committed = []
+    for row, binding in zip(rows, expected, strict=True):
+        original_receipt = planned.get(row["input_generation"])
+        if original_receipt is not None and row["receipt_id"] not in (None, original_receipt[-1]):
+            raise CopyFloorUnavailable("ingress_structured_processing_receipt_differs")
+        receipt = row["receipt_id"] or (original_receipt[-1] if original_receipt else uuid4())
+        committed.append((row["input_generation"], *binding, receipt))
+        if row["receipt_id"] is None:
+            await conn.execute(
+                "INSERT INTO location_ingress_structured_local_ends "
+                "(input_generation,task_generation,handler_generation,incarnation,"
+                "output_digest,receipt_id) VALUES($1,$2,$3,$4,$5,$6)",
+                row["input_generation"],
+                *binding,
+                receipt,
+            )
+    runtime._structured_local_closures[id(child)] = tuple(committed)
+
+
+async def verify_structured_processing_copies(runtime: Any, child: Any) -> None:
+    """Separate actual owning acquisition before releasing original binding."""
+    _require_completed_processing(runtime, child)
+    async with runtime.pool.acquire() as observed:
+        rows = await _structured_processing_cohort(observed, child)
+    expected = runtime._structured_local_closures.get(id(child))
+    if expected is None or len(rows) != len(expected):
+        raise CopyFloorUnavailable("ingress_structured_processing_end_unknown")
+    actual = []
+    for row in rows:
+        binding = _validate_structured_processing_row(runtime, child, row)
+        if row["receipt_id"] is None:
+            raise CopyFloorUnavailable("ingress_structured_processing_end_unknown")
+        actual.append((row["input_generation"], *binding, row["receipt_id"]))
+    if len(set(actual)) != len(actual) or set(actual) != set(expected):
+        raise CopyFloorUnavailable("ingress_structured_processing_end_unknown")

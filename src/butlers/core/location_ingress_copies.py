@@ -118,6 +118,7 @@ class SwitchboardInputCopies:
         self._cleared_inputs: set[int] = set()
         self._settlers: set[asyncio.Task] = set()
         self._structured_sdk: dict[int, Any] = {}
+        self._structured_local_closures: dict[int, tuple] = {}
         self._reconcile_lock = asyncio.Lock()
         _writers[pool] = self
 
@@ -595,6 +596,7 @@ class SwitchboardInputCopies:
                         )
                     ):
                         raise CopyFloorUnavailable("ingress_observed_lifetime_differs")
+                    local_pending = False
                     async with self.writer() as conn:
                         birth_table = table.replace("_ends", "_births")
                         columns = (
@@ -629,6 +631,19 @@ class SwitchboardInputCopies:
                                 self.incarnation,
                             ):
                                 raise CopyFloorUnavailable("ingress_original_claim_unknown")
+                        if born and isinstance(binding, _Input) and binding.kind == 3:
+                            from butlers.core.location_ingress_runtime import (
+                                close_structured_processing_copies,
+                            )
+
+                            try:
+                                await close_structured_processing_copies(self, binding, conn)
+                            except CopyFloorUnavailable:
+                                # This original healthy parent lifetime can
+                                # end independently of an SDK/result holder.
+                                # No local receipt/binding release is allowed
+                                # while that separate cohort remains pending.
+                                local_pending = True
                         if born:
                             await conn.execute(
                                 f"INSERT INTO {table}({key}) VALUES($1) ON CONFLICT DO NOTHING",
@@ -641,6 +656,15 @@ class SwitchboardInputCopies:
                         )
                     if not terminal:
                         raise CopyFloorUnavailable("ingress_end_commit_unknown")
+                    if local_pending:
+                        continue  # Keep the original private observer for retry.
+                    if isinstance(binding, _Input) and binding.kind == 3:
+                        from butlers.core.location_ingress_runtime import (
+                            verify_structured_processing_copies,
+                        )
+
+                        await verify_structured_processing_copies(self, binding)
+                        self._structured_local_closures.pop(identity)
                     bindings.pop(identity)
                     ended.discard(identity)
                     self._cleared_inputs.discard(identity)

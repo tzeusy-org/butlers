@@ -3541,6 +3541,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
     await _assert_native_ingress_runtime_values()
+    await _assert_structured_local_processing_disposition_values()
 
 
 @pytest.mark.asyncio
@@ -11811,3 +11812,262 @@ async def _assert_native_ingress_runtime_values():
         await reserve_structured_ingress_input(pool, prompt=prompt, system_prompt="", tools=tools)
         is None
     )
+
+
+async def _assert_structured_local_processing_disposition_values():
+    """Actual original Task/control/census engine; modeled metadata, not SQL."""
+    import asyncio
+    import copy
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.core.location_copy_retention import CopyFloorUnavailable
+    from butlers.core.location_ingress_copies import SwitchboardInputCopies, _Input, _writers
+    from butlers.core.location_ingress_runtime import (
+        close_structured_processing_copies,
+        verify_structured_processing_copies,
+    )
+
+    gate = asyncio.Event()
+
+    async def process():
+        owned_local = {"synthetic": "original classifier result"}
+        await gate.wait()
+        owned_local.clear()
+        return None
+
+    task = asyncio.create_task(process())
+    child = _Input(uuid4(), uuid4(), b"d" * 32, b"e" * 32, task, uuid4(), 3)
+    request, incarnation = uuid4(), uuid4()
+    healthy = {
+        "input_generation": uuid4(),
+        "copy_generation": child.generation,
+        "request_id": request,
+        "stored_digest": b"s" * 32,
+        "envelope_digest": child.envelope_digest,
+        "original_request": request,
+        "original_digest": b"s" * 32,
+        "task_generation": uuid4(),
+        "handler_generation": child.handler,
+        "incarnation": incarnation,
+        "sdk_receipt": uuid4(),
+        "output_digest": b"o" * 32,
+        "local_task": None,
+        "local_handler": None,
+        "local_incarnation": None,
+        "local_output": None,
+        "receipt_id": None,
+    }
+    healthy["ended_task"] = healthy["task_generation"]
+
+    class Pool:
+        rows = [healthy]
+        transaction_active = False
+        unknown = False
+        fault = False
+        commit_unknown = False
+        input_end = False
+        writes = 0
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        async def fetch(self, sql, *args):
+            assert "FROM location_ingress_structured_inputs s " in sql
+            assert "LEFT JOIN location_ingress_structured_sdk_births" in sql
+            assert "LEFT JOIN location_ingress_structured_sdk_ends" in sql
+            assert "LEFT JOIN location_ingress_structured_outputs" in sql
+            assert args == (child.generation,)
+            return copy.deepcopy([] if self.unknown and not self.transaction_active else self.rows)
+
+        async def fetchrow(self, sql, *args):
+            assert self.transaction_active and args == (child.generation,)
+            if "location_ingress_input_births" in sql:
+                return dict(
+                    server=child.server,
+                    dedupe=child.dedupe_digest,
+                    envelope=child.envelope_digest,
+                    kind=3,
+                )
+            assert "location_ingress_input_claims" in sql
+            return dict(handler=child.handler, incarnation=incarnation)
+
+        async def fetchval(self, sql, *args):
+            assert not self.transaction_active
+            assert "location_ingress_input_ends" in sql and args == (child.generation,)
+            return self.input_end
+
+        async def execute(self, sql, *args):
+            assert self.transaction_active
+            if "INSERT INTO location_ingress_input_ends" in sql:
+                assert args == (child.generation,)
+                self.input_end = True
+                return
+            assert "INSERT INTO location_ingress_structured_local_ends" in sql
+            selected = next(row for row in self.rows if row["input_generation"] == args[0])
+            selected.update(
+                zip(
+                    (
+                        "local_task",
+                        "local_handler",
+                        "local_incarnation",
+                        "local_output",
+                        "receipt_id",
+                    ),
+                    args[1:],
+                )
+            )
+            self.writes += 1
+            if self.fault:
+                raise RuntimeError("synthetic actual local receipt fault")
+
+    pool = Pool()
+    owner = SimpleNamespace(
+        pool=pool,
+        incarnation=incarnation,
+        _inputs={id(child): child},
+        _headers={},
+        _ended_inputs={id(child)},
+        _ended_headers=set(),
+        _cleared_inputs=set(),
+        _structured_sdk={},
+        _structured_local_closures={},
+        _reconcile_lock=asyncio.Lock(),
+    )
+
+    @asynccontextmanager
+    async def writer():
+        before = copy.deepcopy(pool.rows), pool.input_end, pool.writes
+        pool.transaction_active = True
+        try:
+            yield pool
+            if pool.commit_unknown:
+                raise RuntimeError("synthetic actual commit ACK unknown")
+        except BaseException:
+            pool.rows, pool.input_end, pool.writes = before
+            raise
+        finally:
+            pool.transaction_active = False
+
+    owner.writer = writer
+    previous = _writers.get(pool)
+    _writers[pool] = owner
+    try:
+        async with writer():
+            with pytest.raises(CopyFloorUnavailable, match="processing_still_held"):
+                await close_structured_processing_copies(owner, child, pool)
+        assert pool.writes == 0
+        gate.set()
+        await task
+        assert task.done() and task.result() is None
+        retained_result = {"synthetic": "cached copied result"}
+
+        async def result_holder():
+            return retained_result
+
+        primary = RuntimeError("synthetic original processing error")
+
+        async def error_holder():
+            retained_input = {"synthetic": "traceback copied input"}
+            assert retained_input
+            raise primary
+
+        result_task = asyncio.create_task(result_holder())
+        error_task = asyncio.create_task(error_holder())
+        await result_task
+        with pytest.raises(RuntimeError) as original_error:
+            await error_task
+        assert original_error.value is primary and error_task.exception() is primary
+        for held_task in (result_task, error_task):
+            child.task = held_task
+            async with writer():
+                with pytest.raises(CopyFloorUnavailable, match="processing_still_held"):
+                    await close_structured_processing_copies(owner, child, pool)
+            assert pool.writes == 0 and child.task is held_task
+        assert result_task.result() is retained_result and primary.__traceback__ is not None
+        child.task = task
+        child.unresolved_failure = True
+        async with writer():
+            with pytest.raises(CopyFloorUnavailable, match="processing_still_held"):
+                await close_structured_processing_copies(owner, child, pool)
+        child.unresolved_failure = False
+        owner._structured_sdk[1] = SimpleNamespace(child=child, reply={"synthetic": "held"})
+        async with writer():
+            with pytest.raises(CopyFloorUnavailable, match="processing_still_held"):
+                await close_structured_processing_copies(owner, child, pool)
+        assert pool.writes == 0
+        owner._structured_sdk.clear()
+        original = copy.deepcopy(healthy)
+        for change in (
+            {"ended_task": None},
+            {"sdk_receipt": None},
+            {"output_digest": None},
+            {"handler_generation": uuid4()},
+            {"incarnation": uuid4()},
+            {"original_digest": b"x" * 32},
+            {"copy_generation": uuid4()},
+        ):
+            pool.rows = [original | change]
+            async with writer():
+                with pytest.raises(CopyFloorUnavailable, match="cohort_differs"):
+                    await close_structured_processing_copies(owner, child, pool)
+            assert pool.writes == 0 and not pool.input_end
+        sibling = original | {
+            "input_generation": uuid4(),
+            "task_generation": uuid4(),
+            "sdk_receipt": uuid4(),
+            "output_digest": b"b" * 32,
+        }
+        sibling["ended_task"] = sibling["task_generation"]
+        pool.rows = [copy.deepcopy(original), sibling | {"ended_task": None}]
+        async with writer():
+            with pytest.raises(CopyFloorUnavailable, match="cohort_differs"):
+                await close_structured_processing_copies(owner, child, pool)
+        assert pool.writes == 0 and not pool.input_end
+        full_original = [copy.deepcopy(original), copy.deepcopy(sibling)]
+        pool.rows = copy.deepcopy(full_original)
+        pool.fault = True
+        with pytest.raises(RuntimeError, match="synthetic actual local receipt fault"):
+            await SwitchboardInputCopies.reconcile_observed_ends(owner)
+        assert pool.writes == 0 and pool.rows == full_original and not pool.input_end
+        assert owner._inputs[id(child)] is child
+        pool.fault = False
+        pool.commit_unknown = True
+        with pytest.raises(RuntimeError, match="synthetic actual commit ACK unknown"):
+            await SwitchboardInputCopies.reconcile_observed_ends(owner)
+        assert pool.writes == 0 and pool.rows == full_original and not pool.input_end
+        planned = owner._structured_local_closures[id(child)]
+        assert len(planned) == 2 and all(entry[-1] is not None for entry in planned)
+        pool.commit_unknown = False
+        pool.unknown = True
+        with pytest.raises(CopyFloorUnavailable, match="processing_end_unknown"):
+            await SwitchboardInputCopies.reconcile_observed_ends(owner)
+        assert pool.input_end and pool.writes == 2 and owner._inputs[id(child)] is child
+        receipt = pool.rows[0]["receipt_id"]
+        assert {row["receipt_id"] for row in pool.rows} == {entry[-1] for entry in planned}
+        pool.unknown = False
+        full_committed = copy.deepcopy(pool.rows)
+        pool.rows = pool.rows[:1]
+        with pytest.raises(CopyFloorUnavailable, match="processing_end_unknown"):
+            await verify_structured_processing_copies(owner, child)
+        pool.rows = full_committed
+        pool.rows[0]["local_output"] = b"x" * 32
+        with pytest.raises(CopyFloorUnavailable, match="receipt_differs"):
+            await verify_structured_processing_copies(owner, child)
+        pool.rows[0]["local_output"] = original["output_digest"]
+        await SwitchboardInputCopies.reconcile_observed_ends(owner)
+        assert pool.writes == 2 and pool.rows[0]["receipt_id"] == receipt
+        assert id(child) not in owner._inputs and id(child) not in owner._ended_inputs
+        assert id(child) not in owner._structured_local_closures
+        # This receipt settles local frame copies only. It does not create a
+        # routed receiver, remote provider or SDK error-holder disposition.
+    finally:
+        if not task.done():
+            gate.set()
+            await task
+        if previous is None:
+            _writers.pop(pool, None)
+        else:
+            _writers[pool] = previous

@@ -1416,6 +1416,117 @@ async def _assert_native_ingress_runtime_reservation(endpoint, pool, runtime_pro
                 "WHERE r.receiving_session=$1)",
                 session,
             )
+        # Distinct actual owning processing Task: no provider/route is invoked.
+        # The producer itself runs through the registered ingress processing
+        # boundary; only local frame disposition is credited here.
+        local_done = asyncio.Event()
+        local_errors, local_attempts, local_faults = [], [], []
+        local_tools = [{"name": "synthetic fixed tool", "input_schema": {"type": "object"}}]
+        local_execute = asyncpg.pool.PoolConnectionProxy.execute
+
+        async def healthy_local_process(ref):
+            try:
+                captured = _processing_scope.get()
+                assert captured is not None and captured[0].pool is pool
+                original_child = captured[1]
+                assert original_child.task is asyncio.current_task()
+                attempt = await reserve_structured_ingress_input(
+                    pool, prompt=prompt, system_prompt=system, tools=local_tools
+                )
+                sdk = await prepare_structured_ingress_sdk(pool, attempt)
+
+                async def local_reply():
+                    return [], "Synthetic classifier-only output", None
+
+                await start_structured_ingress_sdk(pool, sdk, local_reply)
+                calls, text, usage = await finish_structured_ingress_sdk(pool, sdk)
+                assert calls == [] and usage is None
+                await capture_structured_ingress_output(pool, attempt, tool_calls=calls, text=text)
+                local_attempts.append((original_child, attempt, sdk.task_generation))
+                # Locals disappear on actual original healthy Task unwind.
+            except BaseException as exc:
+                local_errors.append(exc)
+            finally:
+                local_done.set()
+
+        async def local_receipt_fault(conn, sql, *args, **kwargs):
+            result = await local_execute(conn, sql, *args, **kwargs)
+            if sql.startswith("INSERT INTO location_ingress_structured_local_ends "):
+                assert conn.is_in_transaction()
+                assert await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_local_ends "
+                    "WHERE input_generation=$1 AND receipt_id=$2)",
+                    args[0],
+                    args[5],
+                )
+                local_faults.append(args[0])
+                raise asyncpg.RaiseError("Synthetic local classifier receipt fault")
+            return result
+
+        runtime_probe[0] = healthy_local_process
+        second = build_location_envelope(
+            raw, "owntracks:local-frame-" + str(uuid4()), datetime.now(UTC).isoformat(), "full"
+        )
+        with patch.object(asyncpg.pool.PoolConnectionProxy, "execute", new=local_receipt_fault):
+            async with Client(endpoint + "/mcp") as caller:
+                accepted = await caller.call_tool("ingest", second)
+                assert accepted.data["status"] == "accepted"
+            async with asyncio.timeout(10):
+                await local_done.wait()
+                while not local_faults:
+                    await asyncio.sleep(0.01)
+                await asyncio.gather(*tuple(_writers[pool]._settlers), return_exceptions=True)
+        if local_errors:
+            raise local_errors[0]
+        assert len(local_attempts) == 1
+        original_child, attempt, task_generation = local_attempts[0]
+        assert local_faults and all(value == attempt for value in local_faults)
+        assert original_child.task.done() and original_child.task.result() is None
+        async with pool.acquire() as observed:
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_ingress_structured_local_ends "
+                "WHERE input_generation=$1)",
+                attempt,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_ingress_input_ends WHERE copy_generation=$1)",
+                original_child.generation,
+            )
+        assert _writers[pool]._inputs[id(original_child)] is original_child
+        await _writers[pool].reconcile_observed_ends()
+        async with pool.acquire() as observed:
+            terminal = await observed.fetchrow(
+                "SELECT * FROM location_ingress_structured_local_ends WHERE input_generation=$1",
+                attempt,
+            )
+            assert terminal["task_generation"] == task_generation
+            assert terminal["handler_generation"] == original_child.handler
+            assert terminal["incarnation"] == _writers[pool].incarnation
+            assert terminal["output_digest"] == content_digest(
+                {"tool_calls": [], "text": "Synthetic classifier-only output"}
+            )
+            assert isinstance(terminal["receipt_id"], UUID)
+            assert await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_ingress_input_ends WHERE copy_generation=$1)",
+                original_child.generation,
+            )
+            with pytest.raises(asyncpg.RaiseError, match="Location source floors are permanent"):
+                async with observed.transaction():
+                    await observed.execute(
+                        "UPDATE location_ingress_structured_local_ends SET output_digest=$2 "
+                        "WHERE input_generation=$1",
+                        attempt,
+                        b"x" * 32,
+                    )
+            assert (
+                await observed.fetchval(
+                    "SELECT receipt_id FROM location_ingress_structured_local_ends "
+                    "WHERE input_generation=$1",
+                    attempt,
+                )
+                == terminal["receipt_id"]
+            )
+        assert id(original_child) not in _writers[pool]._inputs
     finally:
         runtime_probe[0] = None
         _dispatchers.pop(pool, None)

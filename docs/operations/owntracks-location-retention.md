@@ -1830,3 +1830,40 @@ same original producer. This current extension remains hosted UNRUN. Receipt
 recovery closes only the SDK coroutine, not copied result, route, processing,
 provider, retained exception or any other descendant. Their lawful terminal
 mechanisms and all four original outcomes remain active SOURCE work.
+
+
+The fixed original processing observer now has a separate local structured-frame
+receipt path. It starts from every captured input with LEFT JOINs to its original
+accepted source, SDK birth/end and output, validates the complete cohort before
+writing, and records its unchanged input/task/handler/incarnation/output binding.
+Only the actual original healthy parent Task with no cached result, exception or
+cancellation, no retained failure marker and no private SDK reply/failed holder
+may qualify that local receipt. Missing original SDK ends, output or source
+bindings refuse; a smaller surviving cohort cannot replace the original set.
+Unknown independent readback retains the original private observer. Its same
+receipt set is revalidated on retry before releasing that observer. If the
+original COMMIT ACK is lost and the write did not persist, only that same
+original private observer may retry the complete unchanged set with its original
+planned receipt UUIDs; a different stored receipt refuses. No historical
+completion timestamp or replacement receipt is inferred.
+
+This is local classifier-frame disposition only. The original healthy processing
+Task's own end remains separate from a pending SDK/result holder; it cannot proxy
+that holder's end. A pending local cohort retains the original observer while
+the distinct parent end may commit. SQL failure rolls back both new local and
+parent receipts. No local receipt attests an adapter/provider cache, remote
+receiver, routed runtime, persisted result or error/log descendant. The final
+source census still withholds all-copy closure until those actual distinct
+profiles are installed and proven. This refusal is an intermediate enforcement
+state, not delivery of the original erasure obligation.
+
+The existing software owner uses actual Tasks with planted cached-result and
+traceback holders, a complete two-attempt positive, missing original SDK end,
+held SDK reply, partial independent readback, changed receipt and same-receipt
+retry. Its receipt INSERT fault models rollback and restored positive through
+the actual reconciler. A separate registered ingress helper authors a genuinely
+new healthy owning processing Task and injects failure after its actual local
+receipt INSERT on a real Connection, then requires separate surviving original
+bindings/absent receipt and restored same-producer committed readbacks. Current
+new SQL/registered lifetime and whole erasure evidence remain UNRUN until exact
+head hosted proof; these controls do not invoke a provider or routed receiver.
