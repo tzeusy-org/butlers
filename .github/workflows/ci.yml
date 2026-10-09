@@ -738,6 +738,22 @@ jobs:
           CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
         run: uv run python scripts/check_ci_test_shards.py run --lane unit --shard ${{ matrix.shard }} --inventory-dir "${RUNNER_TEMP}/ci-inventory"
 
+      - name: Controlled same-count wrong parameter identity
+        run: |
+          uv run --no-sync python scripts/ci_wrong_parameter_canary.py \
+            --receipt "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json" \
+            --control-dir "${RUNNER_TEMP}/wrong-parameter-${{ matrix.shard }}"
+
+      - name: Upload controlled identity and healthy companion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-controlled-wrong-parameter-${{ matrix.shard }}
+          path: ${{ runner.temp }}/wrong-parameter-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+
       - name: Save complete shard timings
         if: success()
         uses: actions/cache/save@v4
