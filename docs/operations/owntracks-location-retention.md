@@ -1551,3 +1551,24 @@ observer). Artifact-capture failure and earlier ordinary-stream SQL errors must
 not be attributed to a certificate query without its actual marker. SQL,
 roles, stop policy, restored cohort comparisons and original success/refusal
 controls are unchanged; relation/stage/cause remain unknown until actual evidence.
+
+
+The receiving continuation now distinguishes three private input kinds: SDK queue,
+actual buffer queued object, and separate processing Task. Direct fallback reserves
+and reads back its copied bundle before Task publication. Hot buffer enqueue reserves
+its original parent and full queued fields before publication; the worker claims that
+object and a separate processing input before invoking the existing consumer. After
+that processing Task unwinds, the fixed producer clears the actual queued payload
+references and retains a private cleared-object witness while committed end readback
+is retried. A long-lived worker's completion is never the queued object's receipt.
+Secondary receipt failure preserves the primary handler error or cancellation;
+successful processing still fails if its disposition witness cannot be read back.
+The full census rejects missing or changed parent/body/handler bindings.
+
+These are ongoing SOURCE mechanisms. Cold scanner recovery, refused/full-queue copies,
+interrupted unbound generations and actual routed target/runtime descendants still need
+their own original binding and lawful terminal producer; this increment does not mark
+them closed or grant READY. The existing real-role HTTP helper now positions a held
+actual buffer/processing pair beside committed end readbacks and an unchanged live
+worker. That authored extension is SQL/registered-transport UNRUN until exact hosted
+evidence. All original four outcomes and complete P1–P9 obligations remain mandatory.

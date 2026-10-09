@@ -94,6 +94,7 @@ class _MessageRef:
     triage_target: str | None = field(default=None)
     attachments: list[dict[str, Any]] | None = field(default=None)
     payload_type: str | None = field(default=None)
+    _native_ingress: Any = field(default=None, repr=False, compare=False)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +302,7 @@ class DurableBuffer:
         triage_target: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         payload_type: str | None = None,
+        _native_ingress: Any = None,
     ) -> bool:
         """Attempt to enqueue a message reference (non-blocking, hot path).
 
@@ -334,6 +336,7 @@ class DurableBuffer:
             triage_target=triage_target,
             attachments=attachments,
             payload_type=payload_type,
+            _native_ingress=_native_ingress,
         )
 
         queue = self._tier_queues[policy_tier]
@@ -492,7 +495,9 @@ class DurableBuffer:
                     starvation_override=starvation_override,
                 )
 
-                await self._process_fn(ref)
+                from butlers.core.location_ingress_copies import process_buffer_input
+
+                await process_buffer_input(ref, self._process_fn)
 
             except asyncio.CancelledError:
                 raise

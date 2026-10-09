@@ -530,6 +530,26 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             )
             if normalized_text or _attachments:
                 if buffer is not None:
+                    native_queue = {}
+                    if captured_input is not None:
+                        runtime, parent = captured_input
+                        queue_body = {
+                            "request_id": str(result.request_id),
+                            "message_text": normalized_text,
+                            "source": source,
+                            "event": event,
+                            "sender": sender,
+                            "attachments": _attachments,
+                            "payload_type": _payload_type,
+                            "triage_decision": result.triage_decision,
+                            "triage_target": result.triage_target,
+                        }
+                        queued_copy = await runtime.reserve_child(parent, queue_body, kind=2)
+                        # This constructor-owned reservation survives SDK end
+                        # and backpressure. Its worker/disposal producer must
+                        # settle the exact original allocation; absence never
+                        # qualifies an unknown queued processing holder.
+                        native_queue["_native_ingress"] = (runtime, queued_copy, queue_body)
                     buffer.enqueue(
                         request_id=str(result.request_id),
                         message_inbox_id=result.request_id,
@@ -542,11 +562,26 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                         attachments=_attachments,
                         payload_type=_payload_type,
                         policy_tier=_policy_tier,
+                        **native_queue,
                     )
                 else:
                     # Fallback: unbounded create_task (buffer not wired)
-                    asyncio.create_task(
-                        _process_ingested_message(
+                    from butlers.core.location_ingress_copies import spawn_ingest_processing
+
+                    copied = {
+                        "request_id": str(result.request_id),
+                        "message_text": normalized_text,
+                        "source": source,
+                        "event": event,
+                        "sender": sender,
+                        "message_inbox_id": str(result.request_id),
+                        "triage_decision": result.triage_decision,
+                        "triage_target": result.triage_target,
+                        "attachments": _attachments,
+                    }
+
+                    async def process_native_copy():
+                        return await _process_ingested_message(
                             pipeline=pipeline,
                             request_id=str(result.request_id),
                             message_text=normalized_text,
@@ -557,9 +592,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                             triage_decision=result.triage_decision,
                             triage_target=result.triage_target,
                             attachments=_attachments,
-                        ),
-                        name=f"ingest-route-{result.request_id}",
+                        )
+
+                    processing = await spawn_ingest_processing(
+                        captured_input, copied, process_native_copy
                     )
+                    processing.set_name(f"ingest-route-{result.request_id}")
 
         return result.model_dump(mode="json")
 

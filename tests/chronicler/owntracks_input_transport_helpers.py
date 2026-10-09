@@ -50,9 +50,12 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
     import httpx
     from fastmcp import FastMCP
 
+    from butlers.config import BufferConfig
     from butlers.connectors.owntracks import OwnTracksConnector, OwnTracksConnectorConfig
     from butlers.connectors.owntracks_input_copies import require_inputs_ended
-    from butlers.core.location_ingress_copies import SwitchboardInputCopies
+    from butlers.core.buffer import DurableBuffer
+    from butlers.core.location_copy_retention import CopyFloorUnavailable
+    from butlers.core.location_ingress_copies import SwitchboardInputCopies, require_ingress_closed
     from butlers.core_tools._base import ToolContext
     from butlers.core_tools._switchboard import register_switchboard_tools
     from butlers.daemon import ButlerDaemon
@@ -95,10 +98,23 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
     assert await connector_pool.fetchval("SELECT current_user") == "connector_writer"
     connector = None
     receiving = SwitchboardInputCopies(switchboard)
+    entered, release = asyncio.Event(), asyncio.Event()
+    actual_refs = []
+
+    async def owning_process(ref):
+        # This is the actual configured buffer consumer lifetime; it proves
+        # queue/processing SQL only, not routing or target-model completion.
+        actual_refs.append(ref)
+        assert ref.message_text and ref.source["provider"] == "owntracks"
+        entered.set()
+        await release.wait()
+
+    buffer = DurableBuffer(BufferConfig(worker_count=1), None, owning_process)
+    await buffer.start()
     try:
         mcp = FastMCP("switchboard")
         context = ToolContext(
-            daemon=SimpleNamespace(_pipeline=None, _buffer=None),
+            daemon=SimpleNamespace(_pipeline=object(), _buffer=buffer),
             pool=switchboard,
             spawner=None,
             butler_name="switchboard",
@@ -206,6 +222,34 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                 assert str(inbox["request_context"]["request_id"]) == str(
                     point["accepted_request_id"]
                 )
+                # The real SDK birth cannot proxy either the actual queued
+                # object or the separate processing Task. Neither receipt may
+                # appear while the configured owning consumer still holds it.
+                await asyncio.wait_for(entered.wait(), timeout=10)
+                assert actual_refs[-1].message_text
+                async with switchboard.acquire() as committed:
+                    pending_queue = await committed.fetchrow(
+                        "SELECT b.copy_generation,c.handler_generation,e.copy_generation AS ended "
+                        "FROM location_ingress_input_births b "
+                        "JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+                        "LEFT JOIN location_ingress_input_claims c USING(copy_generation) "
+                        "LEFT JOIN location_ingress_input_ends e USING(copy_generation) "
+                        "WHERE a.request_id=$1 AND b.copy_kind=2",
+                        point["accepted_request_id"],
+                    )
+                    assert pending_queue is not None and pending_queue["ended"] is None
+                    assert pending_queue["handler_generation"] is not None
+                    key = await committed.fetchval(
+                        "SELECT dedupe_key FROM message_inbox WHERE id=$1",
+                        point["accepted_request_id"],
+                    )
+                    import pytest
+
+                    with pytest.raises(CopyFloorUnavailable):
+                        await require_ingress_closed(
+                            committed, point["accepted_request_id"], key, inbox
+                        )
+                release.set()
                 # Connector completion cannot proxy its actual recipient.
                 # SDK handler Tasks and HTTP Tasks must independently end.
                 async with asyncio.timeout(10):
@@ -225,6 +269,28 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                         if current and current["handler_ended"] and current["server_ended"]:
                             break
                         await asyncio.sleep(0.01)
+                async with asyncio.timeout(10):
+                    while True:
+                        await receiving.reconcile_observed_ends()
+                        copies = await switchboard.fetch(
+                            "SELECT b.copy_kind,e.copy_generation IS NOT NULL AS ended "
+                            "FROM location_ingress_input_births b "
+                            "JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+                            "LEFT JOIN location_ingress_input_ends e USING(copy_generation) "
+                            "WHERE a.request_id=$1 ORDER BY b.copy_kind",
+                            point["accepted_request_id"],
+                        )
+                        if len(copies) == 3 and all(row["ended"] for row in copies):
+                            break
+                        await asyncio.sleep(0.01)
+                assert [row["copy_kind"] for row in copies] == [1, 2, 3]
+                assert actual_refs[-1].message_text == "" and actual_refs[-1].source == {}
+                assert actual_refs[-1]._native_ingress is None
+                assert not buffer._worker_tasks[0].done()
+                async with switchboard.acquire() as committed:
+                    await require_ingress_closed(
+                        committed, point["accepted_request_id"], key, inbox
+                    )
                 assert current["stored_digest"] == content_digest(
                     {
                         "raw_payload": inbox["raw_payload"],
@@ -341,6 +407,8 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
         if connector is not None:
             await connector._shutdown()
             await connector._mcp_client.aclose()
+        release.set()
+        await buffer.stop()
         await asyncio.sleep(0)
         await receiving.stop()
         await switchboard.close()

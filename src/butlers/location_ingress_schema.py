@@ -15,6 +15,12 @@ LOCAL_COLUMNS = {
         ("server_generation", "uuid", True),
         ("dedupe_digest", "bytea", True),
         ("envelope_digest", "bytea", True),
+        ("copy_kind", "smallint", True),
+        ("committed_at", "timestamp with time zone", True),
+    ],
+    "location_ingress_input_parents": [
+        ("copy_generation", "uuid", True),
+        ("parent_generation", "uuid", True),
         ("committed_at", "timestamp with time zone", True),
     ],
     "location_ingress_input_claims": [
@@ -48,6 +54,13 @@ LOCAL_CONSTRAINTS = {
         "location_ingress_server_births(server_generation)",
         "CHECK ((octet_length(dedupe_digest) = 32))",
         "CHECK ((octet_length(envelope_digest) = 32))",
+        "CHECK ((copy_kind = ANY (ARRAY[1, 2, 3])))",
+    },
+    "location_ingress_input_parents": {
+        "PRIMARY KEY (copy_generation)",
+        "FOREIGN KEY (copy_generation) REFERENCES location_ingress_input_births(copy_generation)",
+        "FOREIGN KEY (parent_generation) REFERENCES location_ingress_input_births(copy_generation)",
+        "CHECK ((copy_generation <> parent_generation))",
     },
     "location_ingress_input_claims": {
         "PRIMARY KEY (copy_generation)",
@@ -80,9 +93,15 @@ def local_schema_sql() -> str:
           server_generation UUID NOT NULL REFERENCES location_ingress_server_births,
           dedupe_digest BYTEA NOT NULL CHECK(octet_length(dedupe_digest)=32),
           envelope_digest BYTEA NOT NULL CHECK(octet_length(envelope_digest)=32),
+          copy_kind SMALLINT NOT NULL CHECK(copy_kind IN (1,2,3)),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
         CREATE INDEX IF NOT EXISTS ix_location_ingress_source
           ON location_ingress_input_births(dedupe_digest,copy_generation);
+        CREATE TABLE IF NOT EXISTS location_ingress_input_parents (
+          copy_generation UUID PRIMARY KEY REFERENCES location_ingress_input_births,
+          parent_generation UUID NOT NULL REFERENCES location_ingress_input_births(copy_generation),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          CHECK(copy_generation<>parent_generation));
         CREATE TABLE IF NOT EXISTS location_ingress_input_claims (
           copy_generation UUID PRIMARY KEY REFERENCES location_ingress_input_births,
           handler_generation UUID NOT NULL UNIQUE,incarnation UUID NOT NULL,

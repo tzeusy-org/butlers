@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,8 @@ import asyncpg
 
 from butlers.core.location_copy_retention import CopyFloorUnavailable
 from butlers.location_retention import content_digest, logical_digest
+
+logger = logging.getLogger(__name__)
 
 _MUTEX = "location:switchboard-ingress"
 _writers: dict[asyncpg.Pool, SwitchboardInputCopies] = {}
@@ -39,6 +42,7 @@ class _Input:
     envelope_digest: bytes
     task: asyncio.Task | None
     handler: UUID | None = None
+    kind: int = 1
 
 
 @dataclass(eq=False)
@@ -103,6 +107,7 @@ class SwitchboardInputCopies:
         self._inputs: dict[int, _Input] = {}
         self._ended_headers: set[int] = set()
         self._ended_inputs: set[int] = set()
+        self._cleared_inputs: set[int] = set()
         self._settlers: set[asyncio.Task] = set()
         self._reconcile_lock = asyncio.Lock()
         _writers[pool] = self
@@ -204,7 +209,7 @@ class SwitchboardInputCopies:
                 raise CopyFloorUnavailable("ingress_source_is_forgotten")
             await conn.execute(
                 "INSERT INTO location_ingress_input_births(copy_generation,server_generation,"
-                "dedupe_digest,envelope_digest) VALUES($1,$2,$3,$4)",
+                "dedupe_digest,envelope_digest,copy_kind) VALUES($1,$2,$3,$4,1)",
                 binding.generation,
                 binding.server,
                 binding.dedupe_digest,
@@ -212,7 +217,7 @@ class SwitchboardInputCopies:
             )
         async with self.pool.acquire() as observed:
             row = await observed.fetchrow(
-                "SELECT server_generation,dedupe_digest,envelope_digest "
+                "SELECT server_generation,dedupe_digest,envelope_digest,copy_kind "
                 "FROM location_ingress_input_births WHERE copy_generation=$1",
                 binding.generation,
             )
@@ -220,6 +225,7 @@ class SwitchboardInputCopies:
             binding.server,
             binding.dedupe_digest,
             binding.envelope_digest,
+            binding.kind,
         ):
             raise CopyFloorUnavailable("ingress_input_commit_unknown")
         return binding
@@ -238,7 +244,8 @@ class SwitchboardInputCopies:
             raise CopyFloorUnavailable("ingress_queued_input_differs")
         if binding.task is None:
             binding.task, binding.handler = task, uuid4()
-            self._observe(binding, header=False)
+            if binding.kind != 2:
+                self._observe(binding, header=False)
             async with self.writer() as conn:
                 await conn.execute(
                     "INSERT INTO location_ingress_input_claims "
@@ -256,6 +263,77 @@ class SwitchboardInputCopies:
             if actual is None or tuple(actual.values()) != (binding.handler, self.incarnation):
                 raise CopyFloorUnavailable("ingress_handler_commit_unknown")
         return binding
+
+    async def reserve_child(self, parent: _Input, body: dict, *, kind: int = 3) -> _Input:
+        """Fixed owning producer forks its actual copied input before publication."""
+        if (
+            not self.active
+            or self._inputs.get(id(parent)) is not parent
+            or parent.task is not asyncio.current_task()
+            or parent.kind not in (1, 2)
+            or kind not in (2, 3)
+            or (parent.kind == 2 and kind != 3)
+            or len(self._inputs) >= 1024
+        ):
+            raise CopyFloorUnavailable("ingress_child_parent_differs")
+        child = _Input(
+            uuid4(), parent.server, parent.dedupe_digest, content_digest(body), None, kind=kind
+        )
+        self._inputs[id(child)] = child
+        async with self.writer() as conn:
+            accepted = await conn.fetchrow(
+                "SELECT request_id,stored_digest FROM location_ingress_accepted_inputs "
+                "WHERE copy_generation=$1",
+                parent.generation,
+            )
+            if accepted is None or await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_retention_source_floors "
+                "WHERE dedupe_digest=$1)",
+                parent.dedupe_digest,
+            ):
+                raise CopyFloorUnavailable("ingress_child_source_unavailable")
+            await conn.execute(
+                "INSERT INTO location_ingress_input_births(copy_generation,server_generation,"
+                "dedupe_digest,envelope_digest,copy_kind) VALUES($1,$2,$3,$4,$5)",
+                child.generation,
+                child.server,
+                child.dedupe_digest,
+                child.envelope_digest,
+                child.kind,
+            )
+            await conn.execute(
+                "INSERT INTO location_ingress_input_parents(copy_generation,parent_generation) "
+                "VALUES($1,$2)",
+                child.generation,
+                parent.generation,
+            )
+            await conn.execute(
+                "INSERT INTO location_ingress_accepted_inputs "
+                "(copy_generation,request_id,stored_digest) "
+                "VALUES($1,$2,$3)",
+                child.generation,
+                accepted["request_id"],
+                accepted["stored_digest"],
+            )
+        async with self.pool.acquire() as observed:
+            actual = await observed.fetchrow(
+                "SELECT b.server_generation,b.dedupe_digest,b.envelope_digest,p.parent_generation,"
+                "a.request_id,a.stored_digest FROM location_ingress_input_births b "
+                "JOIN location_ingress_input_parents p USING(copy_generation) "
+                "JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+                "WHERE b.copy_generation=$1",
+                child.generation,
+            )
+        if actual is None or tuple(actual.values()) != (
+            child.server,
+            child.dedupe_digest,
+            child.envelope_digest,
+            parent.generation,
+            accepted["request_id"],
+            accepted["stored_digest"],
+        ):
+            raise CopyFloorUnavailable("ingress_child_commit_unknown")
+        return child
 
     async def bind_accepted(self, binding: _Input, request_id: UUID) -> None:
         if (
@@ -310,14 +388,26 @@ class SwitchboardInputCopies:
             ):
                 for identity in tuple(ended):
                     binding = bindings.get(identity)
-                    if binding is None or binding.task is None or not binding.task.done():
+                    if (
+                        binding is None
+                        or binding.task is None
+                        or (
+                            isinstance(binding, _Input)
+                            and binding.kind == 2
+                            and identity not in self._cleared_inputs
+                        )
+                        or (
+                            not (isinstance(binding, _Input) and binding.kind == 2)
+                            and not binding.task.done()
+                        )
+                    ):
                         raise CopyFloorUnavailable("ingress_observed_lifetime_differs")
                     async with self.writer() as conn:
                         birth_table = table.replace("_ends", "_births")
                         columns = (
                             "incarnation"
                             if isinstance(binding, _Header)
-                            else "server_generation,dedupe_digest,envelope_digest"
+                            else "server_generation,dedupe_digest,envelope_digest,copy_kind"
                         )
                         born = await conn.fetchrow(
                             f"SELECT {columns} FROM {birth_table} WHERE {key}=$1",
@@ -330,6 +420,7 @@ class SwitchboardInputCopies:
                                 binding.server,
                                 binding.dedupe_digest,
                                 binding.envelope_digest,
+                                binding.kind,
                             )
                         )
                         if born is not None and tuple(born.values()) != expected:
@@ -359,6 +450,7 @@ class SwitchboardInputCopies:
                         raise CopyFloorUnavailable("ingress_end_commit_unknown")
                     bindings.pop(identity)
                     ended.discard(identity)
+                    self._cleared_inputs.discard(identity)
 
     async def stop(self) -> None:
         """No new input; retry only real observed ends before pool shutdown."""
@@ -479,6 +571,84 @@ async def bind_accepted_input(binding: tuple | None, request_id: UUID) -> None:
         await runtime.bind_accepted(captured, request_id)
 
 
+async def spawn_ingest_processing(captured: tuple | None, body: dict, invoke: Any) -> asyncio.Task:
+    """Actual fixed ingest producer reserves copied fields before Task publication."""
+    if captured is None:
+        return asyncio.create_task(invoke())
+    runtime, parent = captured
+    child = await runtime.reserve_child(parent, body)
+    cell = _RequestInput(runtime, _Header(child.server, parent.task), child)
+
+    async def process():
+        # The frozen actual copied arguments, not request_id or a caller flag,
+        # bind this separate Task. A changed bundle cannot enter processing.
+        await runtime.claim_queued_input(cell, body)
+        return await invoke()
+
+    return asyncio.create_task(process())
+
+
+def _buffer_body(ref: Any) -> dict:
+    return {
+        "request_id": ref.request_id,
+        "message_text": ref.message_text,
+        "source": ref.source,
+        "event": ref.event,
+        "sender": ref.sender,
+        "attachments": ref.attachments,
+        "payload_type": ref.payload_type,
+        "triage_decision": ref.triage_decision,
+        "triage_target": ref.triage_target,
+    }
+
+
+async def process_buffer_input(ref: Any, invoke: Any) -> None:
+    """Own queued object is disposed only after its separate processing Task ends."""
+    captured = ref._native_ingress
+    if captured is None:
+        await invoke(ref)
+        return
+    runtime, queued, body = captured
+    if queued.kind != 2 or content_digest(_buffer_body(ref)) != queued.envelope_digest:
+        raise CopyFloorUnavailable("ingress_buffer_copy_differs")
+    cell = _RequestInput(runtime, _Header(queued.server, asyncio.current_task()), queued)
+    await runtime.claim_queued_input(cell, body)
+    task = await spawn_ingest_processing((runtime, queued), body, lambda: invoke(ref))
+
+    async def finish() -> None:
+        # Requested cancellation is not an end. The awaited Task must have
+        # finished its actual unwind before this fixed object loses payloads.
+        if not task.done():
+            raise CopyFloorUnavailable("ingress_processing_still_active")
+        if ref._native_ingress is not captured:
+            raise CopyFloorUnavailable("ingress_buffer_binding_differs")
+        ref.message_text = ""
+        ref.source, ref.event, ref.sender = {}, {}, {}
+        ref.attachments, ref.payload_type = None, None
+        ref.triage_decision, ref.triage_target = None, None
+        ref._native_ingress = None
+        body.clear()
+        # This private cleared-object witness is separate from Task-end;
+        # the long-lived worker cannot attest an untouched queued payload.
+        runtime._cleared_inputs.add(id(queued))
+        runtime._ended_inputs.add(id(queued))
+        await runtime.reconcile_observed_ends()
+
+    try:
+        await task
+    except BaseException:
+        try:
+            await finish()
+        except Exception:
+            # Preserve the primary handler error/cancellation, never its args.
+            # The original binding remains pending for committed-readback retry.
+            logger.warning("Location ingress buffer disposition remains unresolved")
+        raise
+    else:
+        # A successful business result cannot escape a failed end witness.
+        await finish()
+
+
 async def lock_ingress_census(conn: Any) -> None:
     """Control-first lock order matches birth, binding and end producers."""
     await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", _MUTEX)
@@ -495,13 +665,18 @@ async def require_ingress_closed(conn: Any, request_id: UUID, key: str, stored: 
         raise CopyFloorUnavailable("ingress_server_cohort_pending")
     rows = await conn.fetch(
         "SELECT b.copy_generation,b.server_generation,c.handler_generation,"
-        "a.request_id,a.stored_digest,"
-        "e.copy_generation AS ended,s.server_generation AS server_ended "
+        "a.request_id,a.stored_digest,b.copy_kind,p.parent_generation,"
+        "pb.copy_generation AS original_parent,pa.request_id AS parent_request,"
+        "pa.stored_digest AS parent_digest,e.copy_generation AS ended,"
+        "s.server_generation AS server_ended "
         "FROM location_ingress_input_births b "
-        "LEFT JOIN location_ingress_input_claims c USING(copy_generation) "
-        "LEFT JOIN location_ingress_accepted_inputs a USING(copy_generation) "
-        "LEFT JOIN location_ingress_input_ends e USING(copy_generation) "
-        "LEFT JOIN location_ingress_server_ends s USING(server_generation) "
+        "LEFT JOIN location_ingress_input_parents p USING(copy_generation) "
+        "LEFT JOIN location_ingress_input_births pb ON pb.copy_generation=p.parent_generation "
+        "LEFT JOIN location_ingress_accepted_inputs pa ON pa.copy_generation=pb.copy_generation "
+        "LEFT JOIN location_ingress_input_claims c ON c.copy_generation=b.copy_generation "
+        "LEFT JOIN location_ingress_accepted_inputs a ON a.copy_generation=b.copy_generation "
+        "LEFT JOIN location_ingress_input_ends e ON e.copy_generation=b.copy_generation "
+        "LEFT JOIN location_ingress_server_ends s ON s.server_generation=b.server_generation "
         "WHERE b.dedupe_digest=$1 ORDER BY b.copy_generation",
         logical_digest(key),
     )
@@ -510,6 +685,17 @@ async def require_ingress_closed(conn: Any, request_id: UUID, key: str, stored: 
     )
     if not rows or any(
         row["handler_generation"] is None
+        or row["copy_kind"] not in (1, 2, 3)
+        or (row["copy_kind"] == 1 and row["parent_generation"] is not None)
+        or (
+            row["copy_kind"] in (2, 3)
+            and (
+                row["parent_generation"] is None
+                or row["original_parent"] != row["parent_generation"]
+                or row["parent_request"] != request_id
+                or row["parent_digest"] != digest
+            )
+        )
         or row["request_id"] != request_id
         or row["stored_digest"] != digest
         or row["ended"] != row["copy_generation"]

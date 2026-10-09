@@ -9548,6 +9548,11 @@ async def _assert_native_ingress_census_and_actual_task_end():
     complete = {
         "copy_generation": generation,
         "handler_generation": uuid4(),
+        "copy_kind": 1,
+        "parent_generation": None,
+        "original_parent": None,
+        "parent_request": None,
+        "parent_digest": None,
         "server_generation": server,
         "request_id": request,
         "stored_digest": content_digest(stored),
@@ -9576,6 +9581,8 @@ async def _assert_native_ingress_census_and_actual_task_end():
         [],
         [complete | {"request_id": None}],
         [complete | {"handler_generation": None}],
+        [complete | {"copy_kind": 2}],
+        [complete | {"copy_kind": 1, "parent_generation": uuid4()}],
         [complete | {"stored_digest": b"changed"}],
         [complete | {"ended": None}],
         [complete | {"server_ended": None}],
@@ -9589,6 +9596,29 @@ async def _assert_native_ingress_census_and_actual_task_end():
     with pytest.raises(CopyFloorUnavailable, match="ingress_server_cohort_pending"):
         await require_ingress_closed(conn, request, "canonical-key", stored)
     conn.pending = False
+    await require_ingress_closed(conn, request, "canonical-key", stored)
+    original_parent = complete["copy_generation"]
+    child = complete | {
+        "copy_generation": uuid4(),
+        "copy_kind": 2,
+        "parent_generation": original_parent,
+        "original_parent": original_parent,
+        "parent_request": request,
+        "parent_digest": content_digest(stored),
+    }
+    child["ended"] = child["copy_generation"]
+    conn.rows = [complete, child]
+    await require_ingress_closed(conn, request, "canonical-key", stored)
+    for damaged in (
+        child | {"original_parent": None},
+        child | {"parent_digest": b"different"},
+        child | {"parent_request": uuid4()},
+        child | {"ended": None},
+    ):
+        conn.rows = [complete, damaged]
+        with pytest.raises(CopyFloorUnavailable, match="ingress_input_cohort_pending"):
+            await require_ingress_closed(conn, request, "canonical-key", stored)
+    conn.rows = [complete, child]
     await require_ingress_closed(conn, request, "canonical-key", stored)
 
     # No fake pool is claimed as a native constructor. Exercise the actual
@@ -9685,6 +9715,7 @@ async def _assert_native_ingress_census_and_actual_task_end():
     ).encode()
     pending = object.__new__(SwitchboardInputCopies)
     pending._inputs, pending._ended_inputs, pending._settlers = {}, set(), set()
+    pending._cleared_inputs = set()
     pending.reconcile_observed_ends = AsyncMock()
     from contextlib import asynccontextmanager
 
@@ -9817,3 +9848,147 @@ async def _assert_native_ingress_census_and_actual_task_end():
         with pytest.raises(CopyFloorUnavailable, match="ingress_queued_input_differs"):
             await sdk.call_tool("ingest", envelope)
     assert received == ["owntracks", "ordinary"]
+
+    from butlers.core.location_ingress_copies import spawn_ingest_processing
+
+    business = []
+    copied = {"message_text": "synthetic location input"}
+    parent = _Input(
+        uuid4(), cell.header.generation, b"p" * 32, content_digest(envelope), asyncio.current_task()
+    )
+
+    async def reserve_child(actual_parent, body):
+        assert actual_parent is parent
+        child_input = _Input(
+            uuid4(),
+            actual_parent.server,
+            actual_parent.dedupe_digest,
+            content_digest(body),
+            None,
+            kind=3,
+        )
+        pending._inputs[id(child_input)] = child_input
+        claim_trace.append("child-commit-readback")
+        return child_input
+
+    pending.reserve_child = reserve_child
+
+    async def process():
+        assert claim_trace == ["child-commit-readback", "claim-commit", "claim-readback"]
+        business.append(copied["message_text"])
+        return "processed"
+
+    claim_trace.clear()
+    child_task = await spawn_ingest_processing((pending, parent), copied, process)
+    assert claim_trace == ["child-commit-readback"] and business == []
+    assert await child_task == "processed"
+    assert business == ["synthetic location input"]
+    await asyncio.sleep(0)
+    await asyncio.gather(*pending._settlers)
+    claim_trace.clear()
+    business.clear()
+    tampered = await spawn_ingest_processing((pending, parent), copied, process)
+    copied["message_text"] = "changed after reservation"
+    with pytest.raises(CopyFloorUnavailable, match="ingress_queued_input_differs"):
+        await tampered
+    assert business == [] and claim_trace == ["child-commit-readback"]
+    # Explicit unconfigured generic fallback remains a real ordinary Task,
+    # with no source birth, private claim or retention authority.
+    generic = await spawn_ingest_processing(None, {}, lambda: asyncio.sleep(0, result="ordinary"))
+    assert await generic == "ordinary"
+
+    # The actual queued object is cleared only after its separate processing
+    # Task ends. Secondary witness failure cannot replace its primary error.
+    from datetime import UTC, datetime
+
+    from butlers.core.buffer import _MessageRef
+    from butlers.core.location_ingress_copies import _buffer_body, process_buffer_input
+
+    for outcome, metadata_fails in (
+        ("success", False),
+        ("success", True),
+        ("error", False),
+        ("error", True),
+        ("cancel", False),
+        ("cancel", True),
+    ):
+        ref = _MessageRef(
+            request_id="synthetic-buffer-id",
+            message_inbox_id=uuid4(),
+            message_text="synthetic buffer location",
+            source={"provider": "owntracks"},
+            event={"id": "synthetic-event"},
+            sender={"id": "synthetic-sender"},
+            enqueued_at=datetime.now(UTC),
+            attachments=[{"name": "synthetic"}],
+            payload_type="text",
+            triage_decision="route",
+            triage_target="chronicler",
+        )
+        body = _buffer_body(ref)
+        queued = _Input(
+            uuid4(), cell.header.generation, b"q" * 32, content_digest(body), None, kind=2
+        )
+        pending._inputs[id(queued)] = queued
+        parent = queued
+        ref._native_ingress = (pending, queued, body)
+        pending.reconcile_observed_ends = AsyncMock(
+            side_effect=RuntimeError("synthetic witness") if metadata_fails else None,
+            return_value=None,
+        )
+        entered, release = asyncio.Event(), asyncio.Event()
+        primary = RuntimeError("synthetic primary")
+
+        async def handle(actual):
+            assert actual is ref and actual.message_text == "synthetic buffer location"
+            assert id(queued) not in pending._ended_inputs
+            entered.set()
+            await release.wait()
+            if outcome == "error":
+                raise primary
+
+        processing = asyncio.create_task(process_buffer_input(ref, handle))
+        await entered.wait()
+        assert ref.message_text == "synthetic buffer location"
+        assert id(queued) not in pending._cleared_inputs
+        if outcome == "cancel":
+            processing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await processing
+        else:
+            release.set()
+            if outcome == "error":
+                with pytest.raises(RuntimeError) as failure:
+                    await processing
+                assert failure.value is primary
+            elif metadata_fails:
+                with pytest.raises(RuntimeError, match="synthetic witness"):
+                    await processing
+            else:
+                await processing
+        assert ref.message_text == "" and ref.source == {} and ref.sender == {}
+        assert ref.event == {} and ref.attachments is None and ref.payload_type is None
+        assert ref.triage_decision is None and ref.triage_target is None
+        assert ref._native_ingress is None and body == {}
+        assert id(queued) in pending._cleared_inputs and id(queued) in pending._ended_inputs
+        # Even a finished worker Task cannot settle an untouched queued
+        # object. The actual reconciler rejects without entering its writer.
+        if outcome == "success" and not metadata_fails:
+            saved_ends = pending._ended_inputs
+            pending._ended_inputs = {id(queued)}
+            pending._cleared_inputs.remove(id(queued))
+            queued.task = processing
+            pending._reconcile_lock = asyncio.Lock()
+            pending._headers, pending._ended_headers = {}, set()
+            assert processing.done()
+            with pytest.raises(CopyFloorUnavailable, match="ingress_observed_lifetime_differs"):
+                await SwitchboardInputCopies.reconcile_observed_ends(pending)
+            pending._cleared_inputs.add(id(queued))
+            pending._ended_inputs = saved_ends
+        await asyncio.sleep(0)
+        settlements = await asyncio.gather(*pending._settlers, return_exceptions=True)
+        assert (
+            all(isinstance(value, RuntimeError) for value in settlements)
+            if metadata_fails
+            else all(value is None for value in settlements)
+        )
