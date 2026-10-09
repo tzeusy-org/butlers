@@ -593,6 +593,12 @@ class ButlerDaemon:
                 registry=client,
             )
             location_routes.append(self._location_delegation_runtime.route())
+        ingress_runtime = None
+        if self.config.name == "switchboard":
+            from butlers.core.location_ingress_copies import SwitchboardInputCopies
+
+            ingress_runtime = SwitchboardInputCopies(self.db.pool)
+            self._location_ingress_runtime = ingress_runtime
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -608,6 +614,7 @@ class ButlerDaemon:
                 if callable(getattr(mod, "location_retention_admission", None))
             ],
             location_retention_routes=location_routes,
+            location_ingress_runtime=ingress_runtime,
         )
         config = uvicorn.Config(
             app,
@@ -741,8 +748,20 @@ class ButlerDaemon:
         fact_receiver_registry: Any | None = None,
         location_retention_routes: list[Any] | None = None,
         location_retention_adapters: list[Any] | None = None,
+        location_ingress_runtime: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
+        if location_ingress_runtime is not None:
+            from butlers.core.location_ingress_copies import (
+                SwitchboardInputCopies,
+                install_ingress_middleware,
+            )
+
+            if butler_name != "switchboard" or not isinstance(
+                location_ingress_runtime, SwitchboardInputCopies
+            ):
+                raise RuntimeError("Native ingress constructor differs")
+            install_ingress_middleware(mcp, location_ingress_runtime)
         apply_streamable_http_disconnect_patch()
         # Codex and other modern MCP clients use streamable HTTP at /mcp.
         streamable_app = mcp.http_app(path="/mcp", transport="streamable-http")
@@ -846,9 +865,21 @@ class ButlerDaemon:
 
         from butlers.chronicler.location_catalog_copies import CatalogServerCopyLifetime
 
-        return _McpSseDisconnectGuard(
+        app = _McpSseDisconnectGuard(
             CatalogServerCopyLifetime(guarded_app, butler_name=butler_name), butler_name=butler_name
         )
+        if location_ingress_runtime is not None:
+            from butlers.core.location_ingress_copies import (
+                IngressServerLifetime,
+                SwitchboardInputCopies,
+            )
+
+            if butler_name != "switchboard" or not isinstance(
+                location_ingress_runtime, SwitchboardInputCopies
+            ):
+                raise RuntimeError("Native ingress constructor differs")
+            app = IngressServerLifetime(app, location_ingress_runtime)
+        return app
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.

@@ -834,10 +834,10 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
             await owning.close()
     finally:
         await pool.close()
-    await _assert_native_attempt_completion(completion_db_url)
+    await _assert_native_attempt_completion(completion_db_url, postgres_container)
 
 
-async def _assert_native_attempt_completion(url):
+async def _assert_native_attempt_completion(url, postgres_container):
     """Actual migrated producer/role/COMMIT; planted remote receipt is not online proof."""
     from types import SimpleNamespace
 
@@ -887,7 +887,7 @@ async def _assert_native_attempt_completion(url):
         assert (await retention_status(own))["status"] == "unknown"
         assert (await retention_status(own))["unknown_count"] is None
         assert await creator.fetchval("SELECT count(*) FROM location_retention_plans") == 0
-        await _assert_native_input_producer(creator, own, connector)
+        await _assert_native_input_producer(postgres_container, creator, own, connector)
         await seed_source_registry(creator)
         now = datetime.now(UTC)
         # Last fresh boundary closes the old native movement/place carry;
@@ -1570,7 +1570,7 @@ async def _plant_closed_input_engine_history(pool, logical, raw_digest):
     return generation
 
 
-async def _assert_native_input_producer(creator, own, connector):
+async def _assert_native_input_producer(postgres_container, creator, own, connector):
     """Actual configured Pool/producer transactions; no online receiver claim.
 
     The source-owned Task observer here is a fixed harness for the same private
@@ -1846,3 +1846,11 @@ async def _assert_native_input_producer(creator, own, connector):
     # Remove ONLY this fresh synthetic fixture point after proving its actual
     # immutable producer readback. This test cleanup is not an erasure receipt.
     await creator.execute("DELETE FROM connectors.owntracks_points WHERE id=$1", point["id"])
+
+    from tests.chronicler.owntracks_input_transport_helpers import (
+        assert_native_owntracks_input_transport,
+    )
+
+    # Separate native HTTP/registered ingest proof, without a planted accepted
+    # UUID or proxy receipt. Both private owners observe only their own pools.
+    await assert_native_owntracks_input_transport(postgres_container)

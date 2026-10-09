@@ -844,6 +844,8 @@ async def test_native_mcp_input_birth_precedes_emission_and_unknown_commit_refus
     await _assert_native_owntracks_replay_reader_lifetime()
     await _assert_native_input_dispatch_submission_fence()
     await _assert_native_input_shutdown_preserves_actual_lifetimes()
+    _assert_native_input_closed_diagnostics()
+    await _assert_native_ingress_census_and_actual_task_end()
 
     from butlers.chronicler import location_retention, storage
     from butlers.core import fact_authority
@@ -9502,3 +9504,316 @@ async def _assert_native_input_shutdown_preserves_actual_lifetimes():
         "readback",
         "retention-stopped",
     ]
+
+
+def _assert_native_input_closed_diagnostics():
+    """Actual closed formatter preserves classification without copying error args."""
+    from unittest.mock import patch
+
+    import asyncpg
+
+    from butlers.connectors.owntracks_input_copies import _log_input_failure
+
+    private = "synthetic-private-body-should-not-be-recorded"
+    with patch("butlers.connectors.owntracks_input_copies._logger.warning") as warning:
+        _log_input_failure("point_write", asyncpg.InsufficientPrivilegeError(private))
+        _log_input_failure(private, ValueError(private))
+    formatted = [call.args[0] % call.args[1:] for call in warning.call_args_list]
+    assert formatted == [
+        "OwnTracks input failure stage=point_write category=postgres "
+        "sqlstate=42501 class=insufficient_privilege",
+        "OwnTracks input failure stage=unknown category=native sqlstate=unknown class=value_error",
+    ]
+    assert all(private not in message for message in formatted)
+
+
+async def _assert_native_ingress_census_and_actual_task_end():
+    """Actual task/guard software; SQL selection and configured roles are hosted-only."""
+    import asyncio
+    import json
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from butlers.core.location_copy_retention import CopyFloorUnavailable
+    from butlers.core.location_ingress_copies import (
+        IngressServerLifetime,
+        SwitchboardInputCopies,
+        _Header,
+        require_ingress_closed,
+    )
+    from butlers.location_retention import content_digest
+
+    request, generation, server = uuid4(), uuid4(), uuid4()
+    stored = {"raw_payload": {"synthetic": "source"}, "normalized_text": "synthetic text"}
+    complete = {
+        "copy_generation": generation,
+        "handler_generation": uuid4(),
+        "server_generation": server,
+        "request_id": request,
+        "stored_digest": content_digest(stored),
+        "ended": generation,
+        "server_ended": server,
+    }
+
+    class Conn:
+        pending = False
+        rows = [complete]
+
+        async def execute(self, sql, *args):
+            assert "pg_advisory_xact_lock" in sql
+
+        async def fetchval(self, sql, *args):
+            assert "location_ingress_server_births" in sql
+            return self.pending
+
+        async def fetch(self, sql, *args):
+            assert "LEFT JOIN location_ingress_accepted_inputs" in sql
+            return self.rows
+
+    conn = Conn()
+    await require_ingress_closed(conn, request, "canonical-key", stored)
+    for rows in (
+        [],
+        [complete | {"request_id": None}],
+        [complete | {"handler_generation": None}],
+        [complete | {"stored_digest": b"changed"}],
+        [complete | {"ended": None}],
+        [complete | {"server_ended": None}],
+        [complete, complete | {"copy_generation": uuid4(), "ended": None}],
+    ):
+        conn.rows = rows
+        with pytest.raises(CopyFloorUnavailable, match="ingress_input_cohort_pending"):
+            await require_ingress_closed(conn, request, "canonical-key", stored)
+    conn.rows = [complete]
+    conn.pending = True
+    with pytest.raises(CopyFloorUnavailable, match="ingress_server_cohort_pending"):
+        await require_ingress_closed(conn, request, "canonical-key", stored)
+    conn.pending = False
+    await require_ingress_closed(conn, request, "canonical-key", stored)
+
+    # No fake pool is claimed as a native constructor. Exercise the actual
+    # observer method with a source Task whose cancellation unwind is held.
+    runtime = object.__new__(SwitchboardInputCopies)
+    runtime._ended_headers, runtime._ended_inputs, runtime._settlers = set(), set(), set()
+    runtime.reconcile_observed_ends = AsyncMock()
+    entered, unwind, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def owner():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            unwind.set()
+            await release.wait()
+
+    task = asyncio.create_task(owner())
+    await entered.wait()
+    binding = _Header(uuid4(), task)
+    runtime._observe(binding, header=True)
+    task.cancel()
+    await unwind.wait()
+    assert runtime._ended_headers == set() and not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+    assert runtime._ended_headers == {id(binding)}
+    await asyncio.gather(*runtime._settlers)
+    assert runtime.reconcile_observed_ends.await_count == 1
+
+    trace = []
+
+    class Source:
+        failed = False
+
+        async def reserve_header(self):
+            trace.append("birth-readback")
+            if self.failed:
+                raise CopyFloorUnavailable("unavailable")
+            return binding
+
+    source = Source()
+
+    async def receive():
+        trace.append("body")
+        return {"type": "http.request", "body": b"synthetic", "more_body": False}
+
+    async def send(message):
+        trace.append(message["type"])
+
+    async def sdk(scope, receive, send):
+        cell = scope["butlers.location.ingress_input"]
+        assert cell.runtime is source and cell.header is binding
+        assert trace == ["birth-readback"]
+        assert (await receive())["body"] == b"synthetic"
+
+    app = IngressServerLifetime(sdk, source)
+    await app({"type": "http", "method": "POST", "path": "/mcp"}, receive, send)
+    assert trace == ["birth-readback", "body"]
+    trace.clear()
+    source.failed = True
+    await app({"type": "http", "method": "POST", "path": "/mcp"}, receive, send)
+    assert trace == ["birth-readback", "http.response.start", "http.response.body"]
+
+    # Queue before final SDK delivery; actual HTTP Task may end before the
+    # receiving SDK Task starts. No POST/202 end stands in for that holder.
+    from unittest.mock import patch
+
+    from fastmcp import FastMCP
+    from starlette.requests import Request
+
+    from butlers.core.location_ingress_copies import (
+        _Input,
+        _RequestInput,
+        install_ingress_middleware,
+    )
+
+    envelope = {
+        "schema_version": "ingest.v1",
+        "source": {"provider": "owntracks"},
+        "event": {},
+        "sender": {},
+        "payload": {"raw": {"synthetic": "location"}},
+    }
+    wire = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "ingest", "arguments": envelope},
+        }
+    ).encode()
+    pending = object.__new__(SwitchboardInputCopies)
+    pending._inputs, pending._ended_inputs, pending._settlers = {}, set(), set()
+    pending.reconcile_observed_ends = AsyncMock()
+    from contextlib import asynccontextmanager
+
+    pending.incarnation = uuid4()
+    claim_trace = []
+
+    class Claims:
+        row = None
+
+        async def execute(self, sql, generation, handler, incarnation):
+            assert sql.startswith("INSERT INTO location_ingress_input_claims ")
+            self.row = {"handler_generation": handler, "incarnation": incarnation}
+            claim_trace.append("claim-commit")
+
+        async def fetchrow(self, sql, generation):
+            assert "FROM location_ingress_input_claims " in sql
+            claim_trace.append("claim-readback")
+            return self.row
+
+    claims = Claims()
+
+    @asynccontextmanager
+    async def writer():
+        yield claims
+
+    @asynccontextmanager
+    async def acquired():
+        yield claims
+
+    pending.writer = writer
+    pending.pool = type("Readback", (), {"acquire": staticmethod(acquired)})()
+    cells, events = [], []
+
+    async def birth_header():
+        return _Header(uuid4(), asyncio.current_task())
+
+    async def queued(header, actual):
+        assert actual == envelope
+        captured = _Input(uuid4(), header.generation, b"d" * 32, content_digest(actual), None)
+        pending._inputs[id(captured)] = captured
+        events.append("queue-commit-readback")
+        return captured
+
+    pending.reserve_header, pending.reserve_queued_input = birth_header, queued
+
+    async def queue_sdk(scope, receive, send):
+        assert events == []
+        cells.append(scope["butlers.location.ingress_input"])
+        assert await receive() == {"type": "http.request", "body": wire, "more_body": False}
+        assert events == ["queue-commit-readback"]
+        await send({"type": "http.response.start", "status": 202})
+        events.append("sdk-queued")
+
+    async def body():
+        return {"type": "http.request", "body": wire, "more_body": False}
+
+    async def sent(message):
+        assert message["status"] == 202
+
+    http = asyncio.create_task(
+        IngressServerLifetime(queue_sdk, pending)(
+            {"type": "http", "method": "POST", "path": "/messages/"}, body, sent
+        )
+    )
+    await http
+    cell = cells[0]
+    assert cell.header.task.done()
+    assert cell.queued.task is None and pending._ended_inputs == set()
+    assert events == ["queue-commit-readback", "sdk-queued"]
+    assert isinstance(cell, _RequestInput)
+
+    sdk = FastMCP("synthetic ingress SDK claim")
+    install_ingress_middleware(sdk, pending)
+    received = []
+
+    @sdk.tool
+    async def ingest(
+        schema_version: str,
+        source: dict,
+        event: dict,
+        sender: dict,
+        payload: dict,
+        control: dict | None = None,
+    ):
+        received.append(source["provider"])
+        if source["provider"] == "owntracks":
+            assert cell.queued.task is asyncio.current_task()
+            assert claim_trace == ["claim-commit", "claim-readback"]
+        return {"accepted": True}
+
+    sdk_request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/messages/",
+            "headers": [],
+            "butlers.location.ingress_input": cell,
+        }
+    )
+
+    async def invoke():
+        with patch("fastmcp.server.dependencies.get_http_request", return_value=sdk_request):
+            await sdk.call_tool("ingest", envelope)
+
+    handler = asyncio.create_task(invoke())
+    await handler
+    await asyncio.sleep(0)
+    assert cell.queued.task is handler and id(cell.queued) in pending._ended_inputs
+    await asyncio.gather(*pending._settlers)
+    assert received == ["owntracks"]
+    with patch("fastmcp.server.dependencies.get_http_request", return_value=sdk_request):
+        await sdk.call_tool("ingest", envelope | {"source": {"provider": "ordinary"}})
+    assert received == ["owntracks", "ordinary"]
+
+    altered = _Input(uuid4(), cell.header.generation, b"d" * 32, content_digest(envelope), None)
+    pending._inputs[id(altered)] = altered
+    changed_cell = _RequestInput(pending, cell.header, altered)
+    changed_request = Request({**sdk_request.scope, "butlers.location.ingress_input": changed_cell})
+    changed = envelope | {"payload": {"raw": {"synthetic": "changed"}}}
+    with patch("fastmcp.server.dependencies.get_http_request", return_value=changed_request):
+        with pytest.raises(CopyFloorUnavailable, match="ingress_queued_input_differs"):
+            await sdk.call_tool("ingest", changed)
+    assert altered.task is None
+    assert received == ["owntracks", "ordinary"]
+
+    # A valid native argument alone never supplies a birth or a claim.
+    missing = _RequestInput(pending, cell.header)
+    missing_request = Request({**sdk_request.scope, "butlers.location.ingress_input": missing})
+    with patch("fastmcp.server.dependencies.get_http_request", return_value=missing_request):
+        with pytest.raises(CopyFloorUnavailable, match="ingress_queued_input_differs"):
+            await sdk.call_tool("ingest", envelope)
+    assert received == ["owntracks", "ordinary"]

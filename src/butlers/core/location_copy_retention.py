@@ -103,6 +103,9 @@ async def forget_skipped_source(pool: asyncpg.Pool, decision_id: UUID) -> dict:
         async with conn.transaction():
             await conn.execute("SET LOCAL lock_timeout='2s'")
             await conn.execute("SET LOCAL statement_timeout='5s'")
+            from butlers.core.location_ingress_copies import lock_ingress_census
+
+            await lock_ingress_census(conn)
             # A genuine earlier disposition can outlive the inbox partition.
             # Resume only its full immutable plan/floor binding; absence of an
             # original row alone never becomes a successful empty disposition.
@@ -174,6 +177,9 @@ async def forget_skipped_source(pool: asyncpg.Pool, decision_id: UUID) -> dict:
                     raise CopyFloorUnavailable("accepted_source_unknown")
                 for key, frozen in source_rows:
                     stored = by_id[frozen.accepted_request_id]
+                    from butlers.core.location_ingress_copies import require_ingress_closed
+
+                    await require_ingress_closed(conn, frozen.accepted_request_id, key, stored)
                     raw = stored["raw_payload"] or {}
                     context = stored["request_context"] or {}
                     payload = raw.get("payload") or {}

@@ -11,6 +11,12 @@ unknown; this migration does not certify projection or delete any evidence.
 import sqlalchemy as sa
 
 from alembic import op
+from butlers.location_ingress_schema import (
+    LOCAL_COLUMNS,
+    LOCAL_CONSTRAINTS,
+    LOCAL_TABLES,
+    local_schema_sql,
+)
 from butlers.location_retention_schema import tool_input_dependency_sql
 from butlers.owntracks_copy_schema import filtered_copy_schema_sql, filtered_copy_security_sql
 
@@ -87,7 +93,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
         SELECT c.relname FROM pg_catalog.pg_class c
         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname=:schema AND c.relname IN
-          ('location_retention_copy_receipts','location_retention_source_floors',
+          ('location_ingress_server_births','location_ingress_server_ends','location_ingress_input_births','location_ingress_accepted_inputs','location_ingress_input_ends','location_retention_copy_receipts','location_retention_source_floors',
            'location_catalog_copy_loans','location_catalog_copy_dispositions',
            'location_catalog_copy_lifetimes','location_catalog_copy_finished',
            'location_runtime_context_intents','location_runtime_context_bindings','location_runtime_context_ended','location_runtime_context_server_finished','location_runtime_context_episodes','location_runtime_context_artifacts','location_runtime_context_dispositions','location_runtime_tool_intents','location_runtime_tool_inputs','location_runtime_tool_results','location_ordinary_delegation_inputs','location_native_delegation_inputs',
@@ -99,6 +105,7 @@ def _create_local_tables(schema: str, statement: str) -> None:
     op.execute(statement)
     quote = bind.dialect.identifier_preparer.quote
     for table in (
+        *LOCAL_TABLES,
         "location_retention_copy_receipts",
         "location_retention_source_floors",
         "location_catalog_copy_loans",
@@ -1076,6 +1083,8 @@ def _validate_local_tables(schema: str) -> None:
     )
     bind = op.get_bind()
     owner_oid, _ = _core_writer_owner(schema)
+    expected.update(LOCAL_COLUMNS)
+    expected_constraints.update(LOCAL_CONSTRAINTS)
     for table, shape in expected.items():
         relation = bind.execute(
             sa.text("""
@@ -1228,7 +1237,8 @@ def upgrade() -> None:
     # peer role. Core replay also covers Switchboard-only and legacy public DBs.
     _create_local_tables(
         schema,
-        """
+        local_schema_sql()
+        + """
         CREATE TABLE IF NOT EXISTS location_retention_copy_receipts (
           decision_id UUID PRIMARY KEY,
           manifest_digest BYTEA NOT NULL CHECK(octet_length(manifest_digest)=32),
@@ -1754,6 +1764,7 @@ def upgrade() -> None:
           EXECUTE FUNCTION {quoted_schema}.preserve_location_copy_history();
     """)
     for table in (
+        *LOCAL_TABLES,
         "location_catalog_copy_loans",
         "location_catalog_copy_dispositions",
         "location_catalog_copy_lifetimes",
@@ -1863,6 +1874,7 @@ def downgrade() -> None:
              OR EXISTS(SELECT 1 FROM connectors.owntracks_retention_batches)
              OR EXISTS(SELECT 1 FROM connectors.owntracks_points
                        WHERE accepted_request_id IS NOT NULL)
+             OR EXISTS(SELECT 1 FROM location_ingress_server_births)
              OR EXISTS(SELECT 1 FROM location_retention_copy_receipts)
              OR EXISTS(SELECT 1 FROM location_catalog_copy_loans)
              OR EXISTS(SELECT 1 FROM location_runtime_context_intents)

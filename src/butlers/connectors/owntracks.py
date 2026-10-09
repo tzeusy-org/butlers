@@ -1593,10 +1593,10 @@ class OwnTracksConnector:
                         else None
                     ),
                 )
-            except Exception:
-                logger.warning(
-                    "OwnTracksConnector: location evidence persistence unavailable",
-                )
+            except Exception as exc:
+                from butlers.connectors.owntracks_input_copies import _log_input_failure
+
+                _log_input_failure("point_write", exc)
 
         # Flush filtered event buffer (task 6.4) and drain replay queue (task 6.5)
         if self._db_pool is not None:
@@ -1871,8 +1871,10 @@ class OwnTracksConnector:
                 await runtime.finish_server(binding)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning("OwnTracks native server end readback unavailable")
+            except Exception as exc:
+                from butlers.connectors.owntracks_input_copies import _log_input_failure
+
+                _log_input_failure("server_end", exc)
 
         asyncio.run_coroutine_threadsafe(ended(), loop)
 
@@ -1907,8 +1909,10 @@ class OwnTracksConnector:
                 await runtime.finish(binding, kind)
             except asyncio.CancelledError:
                 raise  # Cancellation cannot be turned into a successful receipt.
-            except Exception:
-                logger.warning("OwnTracks native input end readback unavailable")
+            except Exception as exc:
+                from butlers.connectors.owntracks_input_copies import _log_input_failure
+
+                _log_input_failure("input_end", exc)
 
         asyncio.run_coroutine_threadsafe(ended(), loop)
 
@@ -1934,8 +1938,10 @@ class OwnTracksConnector:
             await self._process_webhook_event(body, _native_binding=binding)
         except asyncio.CancelledError:
             logger.warning("OwnTracks native processing cancelled")
-        except Exception:
-            logger.warning("OwnTracks native processing unavailable")
+        except Exception as exc:
+            from butlers.connectors.owntracks_input_copies import _log_input_failure
+
+            _log_input_failure("processing", exc)
 
     def _dispatch_event_to_main_loop(self, body: dict[str, Any], *, _binding: Any = None) -> None:
         """Schedule ``_process_webhook_event`` on the connector's main loop.
@@ -2017,7 +2023,10 @@ class OwnTracksConnector:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                from butlers.connectors.owntracks_input_copies import _log_input_failure
+
+                _log_input_failure("input_birth", exc)
                 raise HTTPException(
                     status_code=503, detail={"error": "Source unavailable"}
                 ) from None

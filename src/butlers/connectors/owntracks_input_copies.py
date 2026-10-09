@@ -9,6 +9,7 @@ Switchboard receiver, another runtime or the server's remote recipient.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -20,6 +21,30 @@ from butlers.location_retention import content_digest, logical_digest
 InputKind = Literal["webhook_server", "webhook_processing", "replay_processing"]
 _KIND_CODE = {"webhook_server": 1, "webhook_processing": 2, "replay_processing": 3}
 _MUTEX = "owntracks:retention:source"
+_logger = logging.getLogger(__name__)
+
+
+def _log_input_failure(stage: str, exc: Exception) -> None:
+    """Fixed producer stage/class/code only; no bodies, rows or exception args."""
+    from butlers.chronicler.location_policy import closed_failure
+
+    if stage not in {
+        "server_birth",
+        "input_birth",
+        "processing",
+        "point_write",
+        "server_end",
+        "input_end",
+    }:
+        stage = "unknown"
+    category, label, state = closed_failure(exc)
+    _logger.warning(
+        "OwnTracks input failure stage=%s category=%s sqlstate=%s class=%s",
+        stage,
+        category,
+        state,
+        label,
+    )
 
 
 @dataclass(frozen=True)
@@ -550,7 +575,8 @@ class OwnTracksInputMiddleware:
             await self.connector._commit_native_server(server)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            _log_input_failure("server_birth", exc)
             # No body receive/parse was ever admitted. Fixed refusal contains
             # no raw argument/exception and leaves actual Task-end recovery.
             await send(

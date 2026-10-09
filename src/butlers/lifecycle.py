@@ -621,6 +621,9 @@ async def run_shutdown(daemon: Any) -> None:
         daemon._boot_registration_task = None
 
     # 1. Stop MCP server
+    ingress_runtime = getattr(daemon, "_location_ingress_runtime", None)
+    if ingress_runtime is not None:
+        ingress_runtime.active = False  # Stops new receiving reservations, never ends an old one.
     if daemon._server is not None:
         daemon._server.should_exit = True
     if daemon._server_task is not None:
@@ -630,6 +633,15 @@ async def run_shutdown(daemon: Any) -> None:
             logger.exception("Error while stopping MCP server")
         daemon._server_task = None
         daemon._server = None
+    if ingress_runtime is not None:
+        # Server/handler done callbacks observe their real Tasks. A timeout or
+        # shutdown request cannot substitute for either original disposition.
+        await asyncio.sleep(0)
+        try:
+            await ingress_runtime.stop()
+        except Exception:
+            logger.warning("Native ingress ended readback remains unavailable")
+        daemon._location_ingress_runtime = None
     if daemon._mcp_socket is not None:
         try:
             daemon._mcp_socket.close()

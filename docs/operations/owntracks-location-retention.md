@@ -1508,3 +1508,46 @@ SQL, rows, identifiers, arbitrary exception text or command arguments. A
 missing relation's actual identity and cause remain unknown until that current
 command reaches the diagnostic. No error-stop, policy, role, full-history
 comparison or certification refusal is changed by this diagnostic increment.
+
+
+### Switchboard receiving queue and handler lifetime
+
+The fixed Switchboard daemon now installs its own configured pool/role input
+writer before serving. It commits and independently reads a content-free server
+header before forwarding POST bytes on both supported MCP transports. A bounded
+classification buffer forwards generic bytes unchanged. For a canonical
+OwnTracks `ingest` call it commits and reads the original full envelope/dedup
+queue binding before delivering the final body frame to the SDK. Unclassified,
+duplicate-key or over-cap native input cannot create a later birth; ordinary
+nonlocation SDK calls retain their original behavior.
+
+The constructor-installed SDK middleware claims that same private queued
+allocation before FunctionTool validation and delegation. Its separate immutable
+handler generation/incarnation and committed readback precede processing. An
+SSE HTTP 202, POST completion, connector end, accepted UUID or public request
+field cannot close the queued SDK holder. The actual original SDK Task's end
+must commit its own receipt against the original queued birth and handler claim;
+cancellation requests, restart and missing/readback-unknown history do not end it.
+The canonical accepted row is independently bound before routing, including its
+full envelope/normalized digest. The owning source reducer takes the same
+control-first mutex and requires the complete nonempty original binding/claim/
+handler-end/server-end cohort; legacy, unbound, changed or partial history holds.
+
+Focused software positions final-frame reservation, HTTP-ended-before-handler
+SSE ordering, actual FastMCP middleware claim, missing claim refusal and ordinary
+nonlocation compatibility. Configured real-role migration, registered loopback
+webhook through both streamable HTTP and SSE, canonical acceptance and separate
+readbacks are authored extensions of the existing engine species and remain
+UNRUN for this unpublished increment. They do not attest a phone, remote user,
+actual fleet routed runtime, all-holder erasure or full original completion.
+
+### Certificate diagnostic boundary after 0000aff
+
+The actual 0000aff normal run failed only the certified restore species. Its
+closed 42P01 flag and post-audit refusal did not identify a failing query: all
+query-stage maps were empty. The next classifier reports only fixed stderr
+marker-presence booleans and shell capture boundaries (begin, validated,
+observer). Artifact-capture failure and earlier ordinary-stream SQL errors must
+not be attributed to a certificate query without its actual marker. SQL,
+roles, stop policy, restored cohort comparisons and original success/refusal
+controls are unchanged; relation/stage/cause remain unknown until actual evidence.

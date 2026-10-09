@@ -485,8 +485,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         }
         if control is not None:
             envelope["control"] = control
+        from butlers.core.location_ingress_copies import bind_accepted_input, reserve_ingest_input
+
         try:
+            captured_input = await reserve_ingest_input(pool, envelope)
             result = await ingest_v1(pool, envelope, policy_evaluator=_global_policy_evaluator)
+            await bind_accepted_input(captured_input, result.request_id)
         except ValueError as exc:
             return {"status": "error", "error": str(exc)}
 
