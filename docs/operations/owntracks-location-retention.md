@@ -862,3 +862,16 @@ SQL control and current two-owner schema/registration are hosted-unrun until an
 exact current candidate executes them. Software doubles and planted engine rows
 prove only their positioned predicates; they do not certify registered online
 remote holders, lawful full mixed-copy erasure, browser or protected delivery.
+
+The `dcd0524` hosted Memory species reached the original unanswered ledger
+positive and failed there; its answered-child and actual producer receipt-fault
+controls were downstream and did not run. That planted fixture reused a session
+with an earlier unfinished private `delegate_ask`, while recording only its two
+later successful asks. The complete private/recorded matching guard remains
+unchanged. The fixture now captures the earlier ask's actual input fingerprint,
+finishes that planted call through the native result producer and retains its
+matching record when completing the same session. An unfinished or omitted
+same-name private sibling still refuses; the full matching trace has a positive
+companion. This is a source-positioned fixture correction, not current SQL or
+online proof. Recursive/borrowed question, mixed-copy and all-holder closure
+remain required source work and all original outcomes remain unfulfilled.

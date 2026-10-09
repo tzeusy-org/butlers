@@ -6324,6 +6324,25 @@ async def _assert_source_question_tool_values():
             return self.rows
 
     conn = Conn()
+    # A private same-session sibling cannot vanish from the complete trace.
+    sibling_result = result | {"ledger_id": str(uuid4())}
+    sibling_call = call | {
+        "input_fingerprint": fingerprint_tool_call_payload({"question": "Earlier original ask"}),
+        "result": sibling_result,
+    }
+    sibling = witness | {
+        "tool_generation": uuid4(),
+        "input_digest": bytes.fromhex(sibling_call["input_fingerprint"]),
+        "result_digest": bytes.fromhex(fingerprint_tool_call_payload(sibling_result)),
+    }
+    conn.rows = [witness, sibling | {"outcome": None, "result_digest": None}]
+    assert not await source_question_tool_finished(conn, header, source_session, canonical)
+    conn.rows = [witness, sibling]
+    assert not await source_question_tool_finished(conn, header, source_session, canonical)
+    assert await source_question_tool_finished(
+        conn, header, dict(tool_calls=[sibling_call, call]), canonical
+    )
+    conn.rows = [witness]
     assert await source_question_tool_finished(conn, header, source_session, canonical)
     for key, changed in [
         ("tool_generation", uuid4()),

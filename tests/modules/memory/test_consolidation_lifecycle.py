@@ -1606,8 +1606,13 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
 
     from butlers.chronicler.location_delegation_copies import question_digest
     from butlers.chronicler.location_policy import PolicyUnavailableError
-    from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
+    from butlers.chronicler.location_tool_copies import (
+        _current_tool_copy,
+        _ToolCopy,
+        finish_tool_copy,
+    )
     from butlers.core.delegation_ledger import record_ask
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
     from butlers.location_retention import content_digest
 
     context, tool_generation = uuid.uuid4(), uuid.uuid4()
@@ -1647,7 +1652,11 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
                 "VALUES($1,$2,'delegate_ask','core',$3)",
                 tool_generation,
                 session_id,
-                b"d" * 32,
+                bytes.fromhex(
+                    fingerprint_tool_call_payload(
+                        {"question": "synthetic native location question"}
+                    )
+                ),
             )
     tool = _ToolCopy(runtime, tool_generation, session_id, "delegate_ask", "core")
     token = _current_tool_copy.set(tool)
@@ -1669,6 +1678,7 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
             ("native_copy", row["copy_generation"], row["input_digest"]) for row in selected_native
         }
         identifier = uuid.UUID(await record_ask(domain, status="pending", **fields))
+        original_ask_flags = tool.read_observed, tool.mixed_inputs
         async with domain.acquire() as observed:
             birth = await observed.fetchrow(
                 "SELECT * FROM location_native_delegation_inputs WHERE ledger_id=$1",
@@ -1860,7 +1870,25 @@ async def _assert_native_delegation_writer(domain, runtime, session_id):
             )
         from butlers.chronicler.location_delegation_copies import delegation_frontier_closed
 
-        await _assert_source_question_disposal(domain, runtime, session_id, context)
+        # Complete the earlier actual private ask and retain its full trace.
+        # Later successful asks cannot hide an unfinished same-name sibling.
+        previous_result = dict(
+            status="routed", ledger_id=str(identifier), target_butler="relationship"
+        )
+        previous_tool = _ToolCopy(runtime, tool_generation, session_id, "delegate_ask", "core")
+        previous_tool.read_observed, previous_tool.mixed_inputs = original_ask_flags
+        previous_token = _current_tool_copy.set(previous_tool)
+        await finish_tool_copy((previous_tool, previous_token), previous_result)
+        previous_call = dict(
+            name="delegate_ask",
+            module="core",
+            outcome="success",
+            input_fingerprint=fingerprint_tool_call_payload(
+                {"question": "synthetic native location question"}
+            ),
+            result=previous_result,
+        )
+        await _assert_source_question_disposal(domain, runtime, session_id, context, previous_call)
         await _assert_received_answer_disposal(domain, runtime)
         await _assert_source_answer_disposal(domain, runtime)
         unrelated_case = uuid.uuid4()
@@ -2079,7 +2107,7 @@ async def _assert_question_receiver_disposal(domain, runtime):
         await _close_question_receiver(runtime, dict(binding, body_digest=b"x" * 32))
 
 
-async def _assert_source_question_disposal(domain, runtime, session_id, context):
+async def _assert_source_question_disposal(domain, runtime, session_id, context, previous_call):
     """Real owning source/receiver receipt ordering; planted lineage, NOT online proof."""
     from butlers.chronicler.location_delegation_disposal import (
         _REDUCED_QUESTION,
@@ -2256,6 +2284,7 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context)
         session_id,
         None,
         [
+            previous_call,
             {
                 "name": "delegate_ask",
                 "module": "core",
