@@ -1001,3 +1001,12 @@ readbacks, immutable history, and the explicit absence of a final receiving
 receipt while its caller context remains open. Those new SQL controls are
 hosted-unrun. Full failed/routed/mixed closure, online all-holder admission,
 browser invalidation and protected/native delivery remain required work.
+
+
+### Original-question receiving fence and complete attempt census
+
+The configured receiving target now writes `location_received_question_source_floors` from the fixed owning source plan. It verifies the full current canonical question profile and freezes original source/ledger/generation/body plus decision/manifest before a separate committed readback. Birth and admission both check that fence: a fresh call cannot exchange or schedule, and a source RPC already in flight cannot admit after the fence commits. Rejected handler digests and lifetimes remain separately recorded rather than being treated as erased.
+
+The owning prepare result includes a complete left-joined attempt census. Legacy unknown source, unaccepted attempt, missing floor/receipt, current-incarnation mismatch or live private processing remains pending. The source invokes the actual target even when no source loan has been recorded, and compares the exact source and root binding on the fixed route. A fence is admission prevention; it is not a terminal disposal receipt. No missing source loan is synthesized. Disposition-only interrupted-source recovery, full recursive/mixed/runtime/online/browser/protected closure and all original raw deletion acceptance remain mandatory and unfulfilled.
+
+The added grouped migrated control plants an exact terminal attempt solely to test census SQL, then adds an unresolved original sibling and separately reads both back. It is not a registered remote producer or erasure witness. Current software controls cover actual handler prebirth and in-flight admission refusal plus complete census pending/closed semantics. Current source-floor SQL controls remain unexecuted until exact-head hosted evidence.

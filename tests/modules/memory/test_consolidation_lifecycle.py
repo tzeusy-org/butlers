@@ -2776,6 +2776,7 @@ async def _assert_source_question_disposal(domain, runtime, session_id, context,
     )
 
     await _assert_question_refusal_stage(domain, runtime)
+    await _assert_question_source_floor_sql(domain, runtime)
 
 
 async def _assert_core_question_context_disposal(domain, runtime, binding, task, prompt):
@@ -3666,3 +3667,169 @@ async def _assert_question_refusal_stage(domain, runtime):
         runtime.domain = original
         if not finished:
             _current_tool_copy.reset(token)
+
+
+async def _assert_question_source_floor_sql(domain, runtime):
+    """Real owning source fence; root plan planted, not a registered remote witness."""
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_delegation_receivers import receiving_question_fenced
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_reconciliation import (
+        question_attempt_census,
+        seal_question_source_floor,
+    )
+    from butlers.chronicler.location_tool_copies import _current_tool_copy
+    from butlers.core.delegation_ledger import get_delegation, record_ask
+
+    token = _current_tool_copy.set(None)
+    try:
+        # This is the established unconfigured Connection writer contract,
+        # planting canonical body for SQL engine proof, not native authority.
+        async with domain.acquire() as conn:
+            ledger = uuid.UUID(
+                await record_ask(
+                    conn,
+                    asking_butler="chronicler",
+                    target_butler=runtime.name,
+                    question="synthetic full source-fence question",
+                    status="pending",
+                    metadata={},
+                )
+            )
+        canonical = await get_delegation(domain, str(ledger))
+        digest = question_digest(dict(canonical))
+        generation, decision = uuid.uuid4(), uuid.uuid4()
+        question = dict(
+            ledger_id=str(ledger),
+            question_generation=str(generation),
+            target_name=runtime.name,
+            body_digest=digest.hex(),
+            current_body_digest=digest.hex(),
+            complete_input=True,
+        )
+        plan = dict(
+            source_name="chronicler", decision_id=str(decision), manifest_digest=(b"m" * 32).hex()
+        )
+        assert not await seal_question_source_floor(
+            runtime, plan, question | dict(complete_input=False)
+        )
+        async with domain.acquire() as observed:
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_question_source_floors WHERE source_name='chronicler' AND ledger_id=$1)",
+                ledger,
+            )
+        assert await seal_question_source_floor(runtime, plan, question)
+        assert await seal_question_source_floor(runtime, plan, question)
+        with pytest.raises(PolicyUnavailableError, match="source floor differs"):
+            await seal_question_source_floor(
+                runtime, plan | dict(manifest_digest=(b"x" * 32).hex()), question
+            )
+        async with domain.acquire() as observed:
+            floor = await observed.fetchrow(
+                "SELECT * FROM location_received_question_source_floors WHERE source_name='chronicler' AND ledger_id=$1",
+                ledger,
+            )
+            assert floor["body_digest"] == digest and floor["question_generation"] == generation
+            assert floor["manifest_digest"] == b"m" * 32
+            with pytest.raises(asyncpg.RaiseError, match="permanent"):
+                await observed.execute(
+                    "UPDATE location_received_question_source_floors SET body_digest=$2 WHERE source_name='chronicler' AND ledger_id=$1",
+                    ledger,
+                    b"x" * 32,
+                )
+        empty = await question_attempt_census(runtime, plan, question)
+        assert empty["attempt_count"] == 0 and empty["pending"] is False
+        # The actual preexisting attempt now sees the full original-source
+        # fence in the SAME admission check, even without an individual floor.
+        receiving = uuid.uuid4()
+        async with domain.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO location_received_delegation_attempts "
+                "(receiving_generation,ledger_id,body_digest,receiving_incarnation,server_request,source_name) "
+                "VALUES($1,$2,$3,$4,$5,'chronicler')",
+                receiving,
+                ledger,
+                digest,
+                runtime.incarnation,
+                uuid.uuid4(),
+            )
+            assert await receiving_question_fenced(conn, receiving)
+        async with domain.acquire() as observed:
+            assert (
+                await observed.fetchval(
+                    "SELECT body_digest FROM location_received_question_source_floors WHERE source_name='chronicler' AND ledger_id=$1",
+                    ledger,
+                )
+                == digest
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_inputs WHERE receiving_generation=$1)",
+                receiving,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_dispositions WHERE receiving_generation=$1)",
+                receiving,
+            )
+        missing = await question_attempt_census(runtime, plan, question)
+        assert missing["attempt_count"] == 1 and missing["pending"] is True
+        # Planted terminal cells test the census SQL, not the owning erasure
+        # producer or registered remote attestation. Its complete positive is
+        # paired with a second original attempt having no surviving floor.
+        async with domain.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO location_received_delegation_floors "
+                    "(receiving_generation,decision_id,manifest_digest,source_name,"
+                    "question_generation,ledger_id,loan_id,body_digest,receiving_incarnation) "
+                    "VALUES($1,$2,$3,'chronicler',$4,$5,$6,$7,$8)",
+                    receiving,
+                    decision,
+                    b"m" * 32,
+                    generation,
+                    ledger,
+                    uuid.uuid4(),
+                    digest,
+                    runtime.incarnation,
+                )
+                await conn.execute(
+                    "INSERT INTO location_received_delegation_dispositions "
+                    "(receiving_generation,receipt_id) VALUES($1,$2)",
+                    receiving,
+                    uuid.uuid4(),
+                )
+        closed = await question_attempt_census(runtime, plan, question)
+        assert closed["attempt_count"] == 1 and closed["pending"] is False
+        sibling = uuid.uuid4()
+        async with domain.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO location_received_delegation_attempts "
+                "(receiving_generation,ledger_id,body_digest,receiving_incarnation,"
+                "server_request,source_name) VALUES($1,$2,$3,$4,$5,'chronicler')",
+                sibling,
+                ledger,
+                digest,
+                runtime.incarnation,
+                uuid.uuid4(),
+            )
+        incomplete = await question_attempt_census(runtime, plan, question)
+        assert incomplete["attempt_count"] == 2 and incomplete["pending"] is True
+        async with domain.acquire() as observed:
+            assert (
+                await observed.fetchval(
+                    "SELECT count(*) FROM location_received_delegation_attempts WHERE ledger_id=$1",
+                    ledger,
+                )
+                == 2
+            )
+            assert await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_dispositions "
+                "WHERE receiving_generation=$1)",
+                receiving,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_dispositions "
+                "WHERE receiving_generation=$1)",
+                sibling,
+            )
+    finally:
+        _current_tool_copy.reset(token)

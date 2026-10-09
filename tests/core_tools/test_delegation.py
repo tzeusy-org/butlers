@@ -689,6 +689,7 @@ async def _assert_native_received_question_schedule(monkeypatch):
             self.witness_failure = False
             self.server_finished = {}
             self.refusals = {}
+            self.source_floors = {}
             self.question_intents = {}
             self.transaction_active = False
             self.fenced = False
@@ -815,6 +816,9 @@ async def _assert_native_received_question_schedule(monkeypatch):
             ]
 
         async def fetchval(self, sql, *args):
+            if "FROM location_received_question_source_floors" in sql:
+                assert args == (canonical["asking_butler"], ledger)
+                return tuple(args) in self.source_floors
             if (
                 "FROM location_received_delegation_inputs" in sql
                 and "location_received_delegation_schedules" in sql
@@ -823,7 +827,11 @@ async def _assert_native_received_question_schedule(monkeypatch):
             if "FROM location_received_delegation_dispositions" in sql:
                 return self.dispositions.get(args[0])
             if "FROM location_received_delegation_floors" in sql:
-                return args[0] in self.floors
+                attempt = self.attempts.get(args[0])
+                return args[0] in self.floors or (
+                    attempt is not None
+                    and (attempt["source_name"], attempt["ledger_id"]) in self.source_floors
+                )
             if "FROM location_received_delegation_attempts" in sql:
                 row = self.attempts.get(args[0])
                 if "ledger_id=$2" in sql:
@@ -1389,6 +1397,63 @@ async def _assert_native_received_question_schedule(monkeypatch):
         finally:
             receiver_runtime.exchange = original_exchange
             _current_tool_copy.reset(refusal_token)
+        # The full source fence blocks both a new reservation and the actual
+        # admission COMMIT after an in-flight source exchange. These planted
+        # SQL cells prove causal ordering, not authenticated root enrollment.
+        floor_key = (canonical["asking_butler"], ledger)
+        before_inputs, before_tasks = len(receiver_pool.inputs), len(receiver_pool.tasks)
+        before_refusals = len(receiver_pool.refusals)
+        rpc_calls = []
+        fenced_tool = _ToolCopy(
+            receiver_runtime, uuid.uuid4(), uuid.uuid4(), "delegate_receive", "core"
+        )
+        fenced_token = _current_tool_copy.set(fenced_tool)
+
+        async def never_exchange(*args):
+            rpc_calls.append("unwanted")
+            return await original_exchange(*args)
+
+        try:
+            receiver_pool.source_floors[floor_key] = {"planted": "original source floor"}
+            receiver_runtime.exchange = never_exchange
+            assert (await receive())["status"] == "error"
+            assert rpc_calls == [] and fenced_tool.read_observed
+            assert len(receiver_pool.refusals) == before_refusals + 1
+            assert (
+                len(receiver_pool.inputs) == before_inputs
+                and len(receiver_pool.tasks) == before_tasks
+            )
+        finally:
+            receiver_pool.source_floors.pop(floor_key, None)
+            receiver_runtime.exchange = original_exchange
+            _current_tool_copy.reset(fenced_token)
+        raced_tool = _ToolCopy(
+            receiver_runtime, uuid.uuid4(), uuid.uuid4(), "delegate_receive", "core"
+        )
+        raced_token = _current_tool_copy.set(raced_tool)
+        before_loans = len(source_pool.loans)
+
+        async def raced_exchange(*args):
+            prepared = await original_exchange(*args)
+            receiver_pool.source_floors[floor_key] = {
+                "planted": "floor committed during source RPC"
+            }
+            return prepared
+
+        try:
+            receiver_runtime.exchange = raced_exchange
+            assert (await receive())["status"] == "error"
+            assert raced_tool.read_observed and not receiver_writer.pending
+            assert len(source_pool.loans) == before_loans + 1  # The real source half committed.
+            assert (
+                len(receiver_pool.inputs) == before_inputs
+                and len(receiver_pool.tasks) == before_tasks
+            )
+            assert len(receiver_pool.refusals) == before_refusals + 2
+        finally:
+            receiver_pool.source_floors.pop(floor_key, None)
+            receiver_runtime.exchange = original_exchange
+            _current_tool_copy.reset(raced_token)
         # Installed constructor ordinary ingress requires a positive fixed
         # source-owned job birth. Neither missing native data nor a caller's
         # ordinary label can manufacture that classification.

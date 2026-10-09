@@ -122,6 +122,8 @@ async def source_question_cohort(conn: Any, decision: UUID) -> list[dict]:
                     "question_generation": str(header["question_generation"]),
                     "ledger_id": str(header["ledger_id"]),
                     "body_digest": header["body_digest"].hex(),
+                    "current_body_digest": question_digest(dict(canonical)).hex(),
+                    "target_name": canonical["target_butler"],
                     "parent_count": header["parent_count"],
                     "complete_input": complete,
                     "loans": [
@@ -367,7 +369,14 @@ async def prepare_question_receivers(runtime: Any, decision: UUID) -> dict:
     if str(plan.get("decision_id")) != str(decision):
         raise PolicyUnavailableError("Native question source plan differs")
     receipts = []
+    census = []
     for question in plan.get("question_cohort", ()):
+        if question.get("target_name") == runtime.name:
+            from butlers.chronicler.location_question_reconciliation import (
+                seal_question_source_floor,
+            )
+
+            await seal_question_source_floor(runtime, plan, question)
         for loan in question["loans"]:
             if loan.get("receiver_name") != runtime.name:
                 continue
@@ -389,7 +398,11 @@ async def prepare_question_receivers(runtime: Any, decision: UUID) -> dict:
                 receipt = await _close_question_receiver(runtime, binding)
             if receipt is not None:
                 receipts.append(str(receipt))
-    return {"decision_id": str(decision), "receipt_ids": receipts}
+        if question.get("complete_input") is True and question.get("target_name") == runtime.name:
+            from butlers.chronicler.location_question_reconciliation import question_attempt_census
+
+            census.append(await question_attempt_census(runtime, plan, question))
+    return {"decision_id": str(decision), "receipt_ids": receipts, "source_census": census}
 
 
 async def question_receiver_status(runtime: Any, decision: UUID, receipt: UUID) -> dict:
@@ -442,7 +455,12 @@ async def reconcile_question_receivers(domain: Any, decision: UUID) -> None:
         for question in plan["question_cohort"]
         for loan in question["loans"]
     }
-    for name in sorted({loan["receiver_name"] for _, loan in expected.values()}):
+    targets = {loan["receiver_name"] for _, loan in expected.values()} | {
+        question["target_name"]
+        for question in plan["question_cohort"]
+        if question.get("complete_input") is True and question.get("target_name")
+    }
+    for name in sorted(targets):
         prepared = await runtime.routed_tool(
             name,
             "location_retention_prepare_questions",
@@ -450,6 +468,12 @@ async def reconcile_question_receivers(domain: Any, decision: UUID) -> None:
         )
         if prepared.get("decision_id") != str(decision):
             raise PolicyUnavailableError("Native receiving preparation differs")
+        for question in plan["question_cohort"]:
+            if question.get("complete_input") is not True or question.get("target_name") != name:
+                continue
+            from butlers.chronicler.location_question_reconciliation import require_question_census
+
+            require_question_census(prepared, plan, question, name)
         for receipt in prepared.get("receipt_ids", ()):
             result = await runtime.routed_tool(
                 name,

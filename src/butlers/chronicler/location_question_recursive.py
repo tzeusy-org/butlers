@@ -90,6 +90,8 @@ async def question_owner_cohort(runtime: Any, conn: Any, plan: dict) -> list[dic
                     question_generation=str(header["question_generation"]),
                     ledger_id=str(header["ledger_id"]),
                     body_digest=header["body_digest"].hex(),
+                    current_body_digest=question_digest(dict(canonical)).hex(),
+                    target_name=canonical["target_butler"],
                     parent_count=header["parent_count"],
                     complete_input=complete,
                     loans=[

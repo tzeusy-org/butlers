@@ -7586,3 +7586,303 @@ async def _assert_receiving_refusal_stage_values():
     assert not captured_artifact_calls(
         [call], [], [witness], closed_receives=[dict(tool_generation=tool.generation)]
     )
+    await _assert_question_source_floor_values()
+
+
+async def _assert_question_source_floor_values():
+    """Actual owning fence producer and readback; private plan/SQL doubles only."""
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_copies import question_digest
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_reconciliation import seal_question_source_floor
+    from butlers.core.delegation_source import clear_writer, register_writer
+
+    ledger, generation, decision = uuid4(), uuid4(), uuid4()
+    canonical = dict(
+        id=ledger,
+        asking_butler="finance",
+        target_butler="home",
+        question="synthetic original source",
+        catalog_match_id=None,
+        catalog_score=None,
+        metadata={},
+        status="pending",
+    )
+    digest = question_digest(canonical)
+    question = dict(
+        ledger_id=str(ledger),
+        question_generation=str(generation),
+        body_digest=digest.hex(),
+        current_body_digest=digest.hex(),
+        target_name="home",
+        complete_input=True,
+    )
+    plan = dict(source_name="finance", decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+
+    class Pool:
+        def __init__(self):
+            self.floor = None
+            self.unknown = False
+            self.fail = False
+            self.trace = []
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.trace.append("acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            old = deepcopy(self.floor)
+            self.trace.append("begin")
+            try:
+                yield
+            except BaseException:
+                self.floor = old
+                self.trace.append("rollback")
+                raise
+            self.trace.append("commit")
+
+        async def fetchrow(self, sql, *args):
+            if "FROM public.delegation_ledger" in sql:
+                assert args == (ledger,) and "FOR UPDATE" in sql
+                return canonical
+            assert "FROM location_received_question_source_floors" in sql
+            assert args == ("finance", ledger)
+            self.trace.append("readback")
+            return None if self.unknown and self.trace[-2] == "acquire" else self.floor
+
+        async def execute(self, sql, *args):
+            assert (
+                "INSERT INTO location_received_question_source_floors" in sql
+                and "ON CONFLICT DO NOTHING" in sql
+            )
+            self.trace.append("floor")
+            if self.floor is None:
+                self.floor = dict(
+                    zip(
+                        (
+                            "source_name",
+                            "ledger_id",
+                            "question_generation",
+                            "body_digest",
+                            "decision_id",
+                            "manifest_digest",
+                        ),
+                        args,
+                    )
+                )
+            if self.fail:
+                raise RuntimeError("planted source fence receipt failure")
+
+    pool = Pool()
+
+    async def lock(conn):
+        assert conn is pool
+        pool.trace.append("policy")
+
+    runtime = SimpleNamespace(domain=pool, name="home", active=True, lock_domain=lock)
+    writer = SimpleNamespace(runtime=runtime)
+    register_writer(pool, writer)
+    try:
+        assert not await seal_question_source_floor(
+            runtime, plan, question | dict(complete_input=False)
+        )
+        assert not await seal_question_source_floor(
+            runtime, plan, question | dict(target_name="other")
+        )
+        assert pool.floor is None
+        with pytest.raises(PolicyUnavailableError, match="original binding differs"):
+            await seal_question_source_floor(
+                runtime, plan, {k: v for k, v in question.items() if k != "current_body_digest"}
+            )
+        assert pool.floor is None
+        canonical["question"] = "independent changed canonical body"
+        with pytest.raises(PolicyUnavailableError, match="current body differs"):
+            await seal_question_source_floor(runtime, plan, question)
+        assert pool.floor is None
+        canonical["question"] = "synthetic original source"
+        pool.fail = True
+        with pytest.raises(RuntimeError, match="source fence receipt failure"):
+            await seal_question_source_floor(runtime, plan, question)
+        assert pool.floor is None and "rollback" in pool.trace
+        pool.fail = False
+        pool.trace.clear()
+        assert await seal_question_source_floor(runtime, plan, question)
+        stored = deepcopy(pool.floor)
+        assert (
+            pool.floor["question_generation"] == generation and pool.floor["body_digest"] == digest
+        )
+        assert pool.trace.index("policy") < pool.trace.index("floor") < pool.trace.index("commit")
+        assert pool.trace.index("commit") < len(pool.trace) - 1 and pool.trace[-1] == "readback"
+        assert await seal_question_source_floor(runtime, plan, question) and pool.floor == stored
+        with pytest.raises(PolicyUnavailableError, match="source floor differs"):
+            await seal_question_source_floor(
+                runtime, plan | dict(manifest_digest=(b"x" * 32).hex()), question
+            )
+        assert pool.floor == stored
+        pool.unknown = True
+        with pytest.raises(PolicyUnavailableError, match="census floor is unknown"):
+            await seal_question_source_floor(runtime, plan, question)
+        assert pool.floor == stored
+        pool.unknown = False
+        assert await seal_question_source_floor(runtime, plan, question)
+        runtime.active = False
+        with pytest.raises(PolicyUnavailableError, match="constructor differs"):
+            await seal_question_source_floor(runtime, plan, question)
+        assert pool.floor == stored
+    finally:
+        clear_writer(pool, writer)
+    await _assert_question_attempt_census_values()
+
+
+async def _assert_question_attempt_census_values():
+    """Actual full left-joined census and fixed-result checker; software doubles."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_reconciliation import (
+        question_attempt_census,
+        require_question_census,
+    )
+
+    ledger, question, decision, incarnation = uuid4(), uuid4(), uuid4(), uuid4()
+    plan = dict(source_name="finance", decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+    selected = dict(
+        ledger_id=str(ledger), question_generation=str(question), body_digest=(b"b" * 32).hex()
+    )
+    row = dict(
+        source_name="finance",
+        body_digest=b"b" * 32,
+        receiving_incarnation=incarnation,
+        floor_incarnation=incarnation,
+        floor_question=question,
+        floor_source="finance",
+        floor_digest=b"b" * 32,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        receipt_id=uuid4(),
+    )
+
+    class Pool:
+        rows = []
+        floor = dict(
+            question_generation=question,
+            body_digest=b"b" * 32,
+            decision_id=decision,
+            manifest_digest=b"m" * 32,
+        )
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        async def fetchrow(self, sql, *args):
+            assert "FROM location_received_question_source_floors" in sql and args == (
+                "finance",
+                ledger,
+            )
+            return self.floor
+
+        async def fetch(self, sql, *args):
+            assert "LEFT JOIN location_received_delegation_floors" in sql
+            assert "LEFT JOIN location_received_delegation_dispositions" in sql
+            assert "a.source_name IS NULL" in sql and args == (ledger, "finance")
+            return self.rows
+
+    pool = Pool()
+
+    async def lock(conn):
+        assert conn is pool
+
+    writer = SimpleNamespace(pending={}, receiving={})
+    runtime = SimpleNamespace(
+        domain=pool,
+        name="home",
+        incarnation=incarnation,
+        lock_domain=lock,
+        delegation_writer=writer,
+    )
+    result = await question_attempt_census(runtime, plan, selected)
+    assert result["attempt_count"] == 0 and result["pending"] is False
+    require_question_census(dict(source_census=[result]), plan, selected, "home")
+    pool.rows = [row]
+    result = await question_attempt_census(runtime, plan, selected)
+    assert result["attempt_count"] == 1 and result["pending"] is False
+    require_question_census(dict(source_census=[result]), plan, selected, "home")
+    for field, bad in [
+        ("source_name", None),
+        ("body_digest", b"x" * 32),
+        ("receiving_incarnation", uuid4()),
+        ("floor_incarnation", uuid4()),
+        ("floor_question", uuid4()),
+        ("floor_source", None),
+        ("floor_digest", None),
+        ("decision_id", uuid4()),
+        ("manifest_digest", b"x" * 32),
+        ("receipt_id", None),
+    ]:
+        old = row[field]
+        row[field] = bad
+        pending = await question_attempt_census(runtime, plan, selected)
+        assert pending["pending"] is True and pending["attempt_count"] == 1
+        with pytest.raises(PolicyUnavailableError, match="census is pending"):
+            require_question_census(dict(source_census=[pending]), plan, selected, "home")
+        row[field] = old
+    pool.rows = [row, row | dict(receipt_id=None)]
+    result = await question_attempt_census(runtime, plan, selected)
+    assert (
+        result["attempt_count"] == 2 and result["pending"] is True
+    )  # No surviving terminal JOIN census.
+    pool.rows = [row]
+    writer.pending["actual private cell"] = SimpleNamespace(ledger=ledger)
+    assert (await question_attempt_census(runtime, plan, selected))["pending"] is True
+    writer.pending.clear()
+    writer.receiving[uuid4()] = SimpleNamespace(ledger=ledger)
+    assert (await question_attempt_census(runtime, plan, selected))["pending"] is True
+    writer.receiving.clear()
+    result = await question_attempt_census(runtime, plan, selected)
+    assert result["pending"] is False
+    for prepared in (
+        {},
+        None,
+        dict(source_census=None),
+        dict(source_census=[None]),
+        dict(source_census=[]),
+        dict(source_census=[result, result]),
+    ):
+        with pytest.raises(PolicyUnavailableError, match="census is unavailable"):
+            require_question_census(prepared, plan, selected, "home")
+    for field, bad in [
+        ("source_name", "other"),
+        ("body_digest", (b"x" * 32).hex()),
+        ("ledger_id", str(uuid4())),
+        ("decision_id", str(uuid4())),
+        ("manifest_digest", (b"x" * 32).hex()),
+        ("receiver_name", "other"),
+        ("attempt_count", True),
+        ("attempt_count", -1),
+        ("pending", None),
+    ]:
+        with pytest.raises(PolicyUnavailableError, match="census is pending"):
+            require_question_census(
+                dict(source_census=[result | {field: bad}]), plan, selected, "home"
+            )
+    with pytest.raises(PolicyUnavailableError, match="incarnation differs"):
+        require_question_census(
+            dict(source_census=[result | dict(receiving_incarnation="forged")]),
+            plan,
+            selected,
+            "home",
+        )
+    require_question_census(dict(source_census=[result]), plan, selected, "home")

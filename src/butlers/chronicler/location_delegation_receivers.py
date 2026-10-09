@@ -119,6 +119,10 @@ async def receiving_question_fenced(conn: Any, receiving: UUID) -> bool:
         await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM location_received_delegation_floors "
             "WHERE receiving_generation=$1) OR EXISTS("
+            "SELECT 1 FROM location_received_delegation_attempts a "
+            "JOIN location_received_question_source_floors f "
+            "ON f.source_name=a.source_name AND f.ledger_id=a.ledger_id "
+            "WHERE a.receiving_generation=$1) OR EXISTS("
             "SELECT 1 FROM location_received_delegation_claims c "
             "JOIN location_received_delegation_contexts q USING(claim_generation) "
             "JOIN location_runtime_context_dispositions d USING(input_generation) "
@@ -412,6 +416,14 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
                 or not source
             ):
                 raise PolicyUnavailableError("Native receiving birth source differs")
+            source_fenced = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_question_source_floors "
+                "WHERE source_name=$1 AND ledger_id=$2)",
+                source,
+                ledger,
+            )
+            if type(source_fenced) is not bool:
+                raise PolicyUnavailableError("Native receiving source fence is unavailable")
             await conn.execute(
                 "INSERT INTO location_received_delegation_attempts "
                 "(receiving_generation,ledger_id,body_digest,receiving_incarnation,"
@@ -444,6 +456,10 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
     )
     writer.pending[token] = pending
     try:
+        if source_fenced:
+            # Record only the handler's rejected digest/lifetime, never admit
+            # or schedule a new copy behind the qualified original-source fence.
+            raise PolicyUnavailableError("Native receiving question source is fenced")
         prepared = await runtime.exchange(
             await runtime.endpoint(source),
             token,
