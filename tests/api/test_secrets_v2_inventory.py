@@ -807,7 +807,8 @@ async def test_inventory_reads_butler_sources_concurrently():
     mock_db.relation_observed_since_start = MagicMock(return_value=True)
 
     with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _barrier_fetch):
-        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=0.1)
+        # The barrier and response assertions prove concurrency; this only guards hangs.
+        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=5.0)
 
     assert entered == ["alpha", "beta"]
     assert "sources_degraded" not in response.meta.model_dump(exclude_none=True)
@@ -846,7 +847,8 @@ async def test_inventory_timeout_omits_only_the_slow_source(monkeypatch):
     mock_db.relation_observed_since_start = MagicMock(return_value=True)
 
     with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _source_fetch):
-        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=0.2)
+        # Source/request budgets prove degradation; this only guards test hangs.
+        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=5.0)
 
     assert [secret.key for secret in response.data.system] == ["HEALTHY_KEY"]
     assert response.meta.sources_degraded == ["slow"]

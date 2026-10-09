@@ -18,7 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "@testing-library/react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { IngestionEventSummary } from "@/api/index.ts";
@@ -215,7 +215,14 @@ function mockSavedViews(views: TimelineSavedViewEntry[], opts: { isError?: boole
  */
 function LocationProbe() {
   const location = useLocation();
-  return <span data-testid="location-search">{location.search}</span>;
+  const navigationType = useNavigationType();
+  const navigate = useNavigate();
+  return <>
+    <span data-testid="location-search" data-navigation-type={navigationType}>
+      {location.search}
+    </span>
+    <button data-testid="history-back" onClick={() => navigate(-1)}>Back</button>
+  </>;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +238,11 @@ function renderAt(initialUrl: string) {
     root = createRoot(container);
     root.render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[initialUrl]}>
-          <TimelineTab isActive={true} />
+        <MemoryRouter initialEntries={["/history-start?retained=sentinel", initialUrl]} initialIndex={1}>
+          <Routes>
+            <Route path="/history-start" element={<span data-testid="prior-page">Prior page</span>} />
+            <Route path="*" element={<TimelineTab isActive={true} />} />
+          </Routes>
           <LocationProbe />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -299,6 +309,11 @@ describe("TimelineTab link state — serialization into the URL", () => {
     const params = currentParams();
     expect(params.get("view")).toBe("errors");
     expect(params.get("statuses")).toBe(ERRORS_STATUSES_PARAM);
+
+    expect(container.querySelector("[data-testid='location-search']")?.getAttribute("data-navigation-type")).toBe("REPLACE");
+    clickTestId("history-back");
+    expect(container.querySelector("[data-testid='prior-page']")).not.toBeNull();
+    expect(currentParams().get("retained")).toBe("sentinel");
   });
 
   it("writes the exact status CSV, in ALL_STATUSES order, when a chip is toggled on", () => {
@@ -314,6 +329,11 @@ describe("TimelineTab link state — serialization into the URL", () => {
     // present in this same URL, so "view is absent" is a fact about `view`,
     // not about an empty or crashed page.
     expect(params.get("view")).toBeNull();
+
+    expect(container.querySelector("[data-testid='location-search']")?.getAttribute("data-navigation-type")).toBe("REPLACE");
+    clickTestId("history-back");
+    expect(container.querySelector("[data-testid='prior-page']")).not.toBeNull();
+    expect(currentParams().get("retained")).toBe("sentinel");
   });
 
   it("keeps both keys out of the URL at their defaults, and passes the same statuses to the events query", () => {
@@ -394,6 +414,21 @@ describe("TimelineTab link state — read on mount into rendered state", () => {
     // The status selection reached the query layer too, not just the chips.
     const calls = vi.mocked(useIngestionEvents).mock.calls;
     expect(calls[calls.length - 1][0]).toMatchObject({ statuses: ERRORS_STATUSES_PARAM });
+
+    clickTestId("range-1h");
+    expect(currentParams().get("range")).toBe("1h");
+    expect(container.querySelector("[data-testid='location-search']")?.getAttribute("data-navigation-type")).toBe("PUSH");
+    clickTestId("history-back");
+    expect(currentParams().get("range")).toBe("7d");
+    expect(currentParams().get("q")).toBe("payment");
+    expect(currentParams().get("channels")).toBe("email,telegram");
+    expect(container.querySelector("[data-testid='location-search']")?.getAttribute("data-navigation-type")).toBe("POP");
+    // Range/search seed local state on mount. Returning to this URL proves
+    // navigation; a real remount separately proves its hydration contract.
+    act(() => root.unmount());
+    renderAt(link);
+    const hydratedCalls = vi.mocked(useIngestionEvents).mock.calls;
+    expect(hydratedCalls[hydratedCalls.length - 1][0]).toMatchObject({ q: "payment", channels: "email,telegram" });
   });
 
   it("treats an explicit empty ?statuses= as 'nothing enabled', not as absent", () => {

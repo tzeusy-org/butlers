@@ -35,10 +35,10 @@ Scope: v1-mandatory
 ### Requirement: Smoke Tests Run In CI As A Fast Gate
 The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every merge-group tree and every backend-applicable
 pull request as a fast gate, distinct from and faster than the integration tier,
-and MUST NOT pull in the E2E suite or any real LLM dependency.
+and MUST NOT pull in the E2E suite or any real LLM dependency. The dedicated-selection scenario below and the distinct/faster fast-gate description apply to scoped execution and uncovered full-mode smoke items; full derived mode does not claim a separate smoke job completed faster than the full integration run. Complete full execution MAY use exact-identity derived smoke evidence from the same successful lane population under P8; this explicitly qualifies the previous unconditional dedicated invocation while preserving its command, no-LLM/no-E2E and failure contracts.
 
 ID: REQ-testing-034
-Source: bu-ly3lv5.1 preserved smoke outcome; existing bu-r5mnn event policy and testing-and-verification
+Source: bu-ly3lv5.1 preserved smoke outcome; existing bu-r5mnn event policy and testing-and-verification; bu-ly3lv5.6 P8 full-mode proof qualification
 Scope: v1-mandatory
 
 #### Scenario: Dedicated smoke selection in CI
@@ -57,6 +57,11 @@ Scope: v1-mandatory
 - **WHEN** a successful classifier identifies a docs/spec-only pull request, or the workflow is a push to main after protected merge-group validation
 - **THEN** check-preflight may skip under the existing event policy
 - **AND** this skip cannot authorize a missing classifier verdict, a failed/cancelled preflight, a backend-applicable pull request, or a merge-group omission
+
+#### Scenario: Exact full-lane smoke reuse preserves the same guarantee
+- **WHEN** full-lane receipts prove every item selected by the dedicated smoke command actually completed successfully
+- **THEN** preflight emits explicitly derived release evidence with actual commands and exact source/run/attempt identity
+- **AND** any uncovered or unavailable selected item requires the original dedicated command or a non-successful preflight
 
 ## ADDED Requirements
 

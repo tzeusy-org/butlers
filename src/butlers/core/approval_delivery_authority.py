@@ -267,6 +267,12 @@ class ProtectedApprovalMCP:
                     result = await client.call_tool(tool, arguments)
         except (TimeoutError, httpx.TimeoutException):
             raise RecoveryAuthorityError(_REFUSAL) from None
+        except RuntimeError as error:
+            # FastMCP wraps initialization failures with their explicit cause.
+            # Inspect one typed hop, never messages or unrelated runtime faults.
+            if not isinstance(error.__cause__, (TimeoutError, httpx.TimeoutException)):
+                raise
+            raise RecoveryAuthorityError(_REFUSAL) from None
         if not isinstance(result.data, dict):
             raise RecoveryAuthorityError(_REFUSAL)
         return result.data

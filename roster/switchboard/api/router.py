@@ -43,7 +43,7 @@ from butlers.api.models import (
 )
 from butlers.config import load_config
 from butlers.core.mcp_urls import runtime_mcp_url
-from butlers.modules.metrics.prometheus import async_query
+from butlers.core.prometheus import async_query
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state as _derive_butler_eligibility_state,
 )

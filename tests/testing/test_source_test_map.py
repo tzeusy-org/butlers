@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from butlers.testing.source_test_map import FULL_SUITE, resolve_test_paths
+from butlers.testing.source_test_map import _PREFIX_MAP, FULL_SUITE, resolve_test_paths
 
 pytestmark = pytest.mark.unit
 
@@ -19,6 +19,14 @@ def _configured_testpaths() -> list[str]:
 
 def test_full_scope_matches_pytest_testpaths() -> None:
     assert FULL_SUITE == _configured_testpaths()
+    assert dict(_PREFIX_MAP)["src/butlers/core/prometheus.py"] == [
+        "tests/core/test_prometheus.py",
+        "tests/api/test_ingestion_pipeline.py",
+        "roster/switchboard/tests/test_connector_stats_prometheus.py",
+        "roster/switchboard/tests/test_ingestion_fanout_db_fallback.py",
+    ]
+    # The ownership map remains useful without weakening core's shared-boundary escalation.
+    assert resolve_test_paths(["src/butlers/core/prometheus.py"]) == FULL_SUITE
 
 
 @pytest.mark.parametrize(
@@ -29,8 +37,6 @@ def test_full_scope_matches_pytest_testpaths() -> None:
         ("tests/api/conftest.py", ["tests/api/"]),
         ("roster/relationship/tests/conftest.py", ["roster/relationship/tests/"]),
         ("roster/conftest.py", ["roster/"]),
-        ("tests/modules/memory/_test_helpers.py", ["tests/modules/memory/"]),
-        ("roster/relationship/tests/evidence_schema.py", ["roster/relationship/tests/"]),
     ],
 )
 def test_direct_test_edits_remain_narrow(changed_file: str, expected: list[str]) -> None:
@@ -56,6 +62,8 @@ def test_direct_test_edits_remain_narrow(changed_file: str, expected: list[str])
         "src/butlers/testing/scoped_runner.py",
         "src/butlers/unknown_new_boundary.py",
         "unknown_root_tool.py",
+        "tests/modules/memory/_test_helpers.py",
+        "roster/relationship/tests/evidence_schema.py",
     ],
 )
 def test_shared_migration_and_unknown_paths_escalate(changed_file: str) -> None:
@@ -69,6 +77,10 @@ def test_known_documentation_only_change_does_not_invent_pytest_scope() -> None:
 def test_fixture_asset_without_a_test_bearing_owner_escalates() -> None:
     fixture = "tests/fixtures/audit_result_guard/roster/switchboard/violating_audit_writer.py"
     assert resolve_test_paths([fixture]) == FULL_SUITE
+    # Actual shared helper consumer lives outside tests/, despite adjacent test files.
+    helper = "tests/three_seams_helpers.py"
+    assert resolve_test_paths([helper]) == FULL_SUITE
+    assert resolve_test_paths(["tests/__init__.py"]) == FULL_SUITE
 
 
 @pytest.mark.parametrize("changed_file", [".github/workflows/ci.yml", "./.github/workflows/ci.yml"])
