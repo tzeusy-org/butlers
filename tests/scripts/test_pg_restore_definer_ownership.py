@@ -327,7 +327,9 @@ def _run_restore_script(
         'export POSTGRES_PASSWORD="$PGPASSWORD_FOR_TEST"; '
         # Test-only code-only diagnostics apply to the real child client. The
         # SQL, roles, error-stop policy and restoration assertions are unchanged.
-        'psql() { command psql --set=VERBOSITY=sqlstate "$@"; }; export -f psql; '
+        'psql() { for arg; do case "$arg" in -c|--command|--command=*) '
+        'command psql --set=VERBOSITY=sqlstate "$@"; return;; esac; done; '
+        'command psql --set=VERBOSITY=sqlstate --file=- "$@"; }; export -f psql; '
         "bash /pg_restore.sh /backup.sql.gz "
         "--host host.docker.internal "
         f"--port {target.port} --user {target.login} "
@@ -335,7 +337,9 @@ def _run_restore_script(
         password=target.password,
     )
 
-    emit_restore_diagnostic(result, stage="certified_restore")
+    emit_restore_diagnostic(
+        result, stage="certified_restore", artifact=gzip.decompress(backup.read_bytes()).decode()
+    )
     return result
 
 

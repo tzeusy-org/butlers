@@ -256,6 +256,36 @@ def test_successful_run_records_success_and_names_the_artifact(
     healthy = json.loads(capsys.readouterr().out.removeprefix("RESTORE_COMMAND_DIAGNOSTIC "))
     assert healthy["returncode"] == 0 and healthy["flags"]["certified_done"]
     assert not any(healthy["sqlstates"].values())
+    # Actual client --file=- reports input offsets. Only fixed source stages
+    # and known codes escape; even a planted artifact body stays private.
+    artifact = "\n".join(
+        [
+            private,
+            "CREATE TEMP TABLE butlers_cost_claim_restore_rows (synthetic);",
+            "synthetic cost claim statement",
+            "-- Butlers scoped OwnTracks copy history",
+            "synthetic native statement " + private,
+        ]
+    )
+    emit_restore_diagnostic(
+        subprocess.CompletedProcess(
+            [],
+            3,
+            "",
+            "psql:<stdin>:1: ERROR: 42P01\n"
+            "psql:<stdin>:3: ERROR: 42501\n"
+            "psql:<stdin>:5: ERROR: 23503\n" + private,
+        ),
+        stage="raw_drill",
+        artifact=artifact,
+    )
+    located = capsys.readouterr().out
+    assert private not in located
+    fixed = json.loads(located.removeprefix("RESTORE_COMMAND_DIAGNOSTIC "))
+    assert fixed["flags"]["sql_error_seen"]
+    assert fixed["source_stage_codes"]["ordinary_dump"]["42P01"]
+    assert fixed["source_stage_codes"]["cost_claim_import"]["42501"]
+    assert fixed["source_stage_codes"]["native_copy_import"]["23503"]
 
 
 def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Path, bin_dir: Path):

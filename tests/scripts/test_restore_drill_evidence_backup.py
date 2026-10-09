@@ -451,7 +451,7 @@ def _restore_artifact(artifact: str, postgres_container, target_db: str) -> str:
             'PGPASSWORD="$PGPASSWORD_FOR_TEST" psql --host=host.docker.internal '
             f"--port={postgres_container.get_exposed_port(5432)} "
             f"--username={parsed.username} --dbname={target_db} "
-            "--no-password --quiet -v ON_ERROR_STOP=0 -v VERBOSITY=sqlstate",
+            "--no-password --quiet -v ON_ERROR_STOP=0 -v VERBOSITY=sqlstate --file=-",
         ],
         input=artifact,
         env=env,
@@ -461,7 +461,7 @@ def _restore_artifact(artifact: str, postgres_container, target_db: str) -> str:
     )
     from butlers.testing.restore_diagnostics import emit_restore_diagnostic
 
-    emit_restore_diagnostic(completed, stage="raw_drill")
+    emit_restore_diagnostic(completed, stage="raw_drill", artifact=artifact)
     assert completed.returncode == 0, completed.stderr[-2000:]
     return parsed._replace(path=f"/{target_db}").geturl()
 
