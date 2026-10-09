@@ -10,7 +10,7 @@ SOURCE preparation: check only genuinely completed preparation records. Check on
 - [x] 3.2 Reconcile docs/index/current operational references and installed exact manifests or actual public computed collector without scope/cap changes.
 - [x] 4.1 Allocate/validate full owned REMOVED/core helper bodies and retirement metadata; prepare the exact nine-separator ledger and whole before/proposed/inverse/native/foreign maps.
 - [x] 4.2 Run actual affected/owning/neutralized/restored controls, full tests/roster collection, planner/budget/shard/lint/format/spec/guards and retain measured Tests delta.
-- [ ] 5.1 Publish coherent SOURCE-preparation checkpoint and complete disposable read-only installed builder/Validator/retirement-predicate rehearsal, full rebuilt-body and inverse proof; retain exact checkpoint source/tests without claiming future final-head delivery.
+- [x] 5.1 Publish coherent SOURCE-preparation checkpoint and complete disposable read-only installed builder/Validator/retirement-predicate rehearsal, full rebuilt-body and inverse proof; retain exact checkpoint source/tests without claiming future final-head delivery.
 - [ ] 5.2 Obtain genuine independent completion-scope review confirming these preparation tasks and full preservation are actually complete and eligible for normal own native administration; retain its exact source/body identity.
 
 ## Mandatory administrative delivery tail (outside prearchive checkboxes)
