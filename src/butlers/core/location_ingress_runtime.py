@@ -569,14 +569,16 @@ async def close_structured_processing_copies(runtime: Any, child: Any, conn: Any
             raise CopyFloorUnavailable("ingress_structured_processing_receipt_differs")
         receipt = row["receipt_id"] or (original_receipt[-1] if original_receipt else uuid4())
         committed.append((row["input_generation"], *binding, receipt))
+    # Validate the WHOLE planned/stored receipt set before the first INSERT.
+    # A later Python refusal must never leave an earlier local write for the
+    # original parent-end observer to commit as a partial disposition.
+    for row, original in zip(rows, committed, strict=True):
         if row["receipt_id"] is None:
             await conn.execute(
                 "INSERT INTO location_ingress_structured_local_ends "
                 "(input_generation,task_generation,handler_generation,incarnation,"
                 "output_digest,receipt_id) VALUES($1,$2,$3,$4,$5,$6)",
-                row["input_generation"],
-                *binding,
-                receipt,
+                *original,
             )
     runtime._structured_local_closures[id(child)] = tuple(committed)
 

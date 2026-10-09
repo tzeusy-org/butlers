@@ -1867,3 +1867,21 @@ receipt INSERT on a real Connection, then requires separate surviving original
 bindings/absent receipt and restored same-producer committed readbacks. Current
 new SQL/registered lifetime and whole erasure evidence remain UNRUN until exact
 head hosted proof; these controls do not invoke a provider or routed receiver.
+
+
+Native structured output is now privately reconstructed from an immutable JSON
+snapshot before capture/readback or token-accounting awaits. The actual tool
+handler consumes that owned body, rather than an adapter-retained mutable alias.
+The existing owner changes the original returned nested argument only after
+actual output capture/readback: the previous producer executes the changed
+argument and fails original consumed-body equality; the snapshot reaches the
+unchanged captured-body positive. Ordinary unconfigured output remains unchanged.
+This binds consumption, not routed receiver or provider disposal.
+
+Local disposition prevalidates every planned/stored receipt UUID before any
+INSERT. The two-entry owning reconciler control plants a restorable missing first
+receipt and a different second receipt with otherwise valid bindings. The prior
+loop writes the first before refusal; the corrected loop preserves both rows and
+write count, retaining the original observer. Healthy complete sibling closure
+and same-original receipt retry remain positive. These software controls model
+metadata; genuine role/transaction/registered receipt proof remains hosted UNRUN.

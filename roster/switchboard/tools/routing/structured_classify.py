@@ -568,6 +568,22 @@ async def try_structured_classification(
             if native_sdk is not None:
                 tool_calls, text, usage = await finish_structured_ingress_sdk(pool, native_sdk)
 
+            if native_input is not None:
+                try:
+                    # The adapter may retain mutable returned dictionaries.
+                    # Own the consumed output before capture/readback awaits,
+                    # exactly as the admitted input owns its original wire.
+                    frozen_output = json.loads(
+                        json.dumps(
+                            {"tool_calls": tool_calls, "text": text},
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    raise CopyFloorUnavailable("ingress_structured_output_body_unknown") from None
+                tool_calls, text = frozen_output["tool_calls"], frozen_output["text"]
+
             # The actual result must have committed original input lineage
             # before any local route/tool consumes a copied SDK decision.
             # A failed witness cannot turn into an untracked fallback call.

@@ -11708,6 +11708,50 @@ async def _assert_native_ingress_runtime_values():
                     "text": None,
                 }
             )
+        # The SDK retains its returned mutable object. After actual output
+        # capture/readback, mutation of that alias must not change the body
+        # subsequently consumed by the actual local tool handler.
+        returned_calls = [
+            dict(name="route_to_butler", input=dict(butler="chronicler", prompt="synthetic"))
+        ]
+        original_returned = copy.deepcopy(returned_calls)
+
+        async def aliased_reply(**kwargs):
+            await actual_adapter(**kwargs)
+            return returned_calls, None, None
+
+        async def change_returned_alias(actual_pool, generation, *, tool_calls, text):
+            await capture_structured_ingress_output(
+                actual_pool, generation, tool_calls=tool_calls, text=text
+            )
+            assert pool.structured_output[1] == content_digest(
+                {"tool_calls": original_returned, "text": None}
+            )
+            returned_calls[0]["input"]["prompt"] = "Synthetic changed after output readback"
+
+        with (
+            patch(module + ".resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+            patch(
+                module + ".check_token_quota", AsyncMock(return_value=SimpleNamespace(allowed=True))
+            ),
+            patch(module + ".create_adapter", return_value=adapter),
+            patch(
+                "butlers.core.location_ingress_runtime.capture_structured_ingress_output",
+                side_effect=change_returned_alias,
+            ),
+        ):
+            adapter.invoke_structured.side_effect = aliased_reply
+            route.reset_mock()
+            decision = await sc.try_structured_classification(
+                pool, mcp_server=server, prompt=prompt, include_bug_report=False
+            )
+            assert decision is not None and route.await_count == 1
+            assert route.call_args.kwargs["prompt"] == original_returned[0]["input"]["prompt"]
+            assert returned_calls[0]["input"]["prompt"] != route.call_args.kwargs["prompt"]
+            assert pool.structured_output[1] == content_digest(
+                {"tool_calls": original_returned, "text": None}
+            )
+        adapter.invoke_structured.side_effect = actual_adapter
         # Mutate the actual shared nested schema only after the actual input
         # has committed and its SDK Task birth/readback have completed. The
         # SDK must receive the original privately frozen body, not that alias.
@@ -12052,6 +12096,24 @@ async def _assert_structured_local_processing_disposition_values():
         pool.rows = pool.rows[:1]
         with pytest.raises(CopyFloorUnavailable, match="processing_end_unknown"):
             await verify_structured_processing_copies(owner, child)
+        pool.rows = copy.deepcopy(full_committed)
+        pool.rows[0].update(
+            dict(
+                local_task=None,
+                local_handler=None,
+                local_incarnation=None,
+                local_output=None,
+                receipt_id=None,
+            )
+        )
+        differing_receipt = uuid4()
+        pool.rows[1]["receipt_id"] = differing_receipt
+        writes_before_mismatch = pool.writes
+        await SwitchboardInputCopies.reconcile_observed_ends(owner)
+        assert pool.writes == writes_before_mismatch
+        assert pool.rows[0]["receipt_id"] is None
+        assert pool.rows[1]["receipt_id"] == differing_receipt
+        assert owner._inputs[id(child)] is child
         pool.rows = full_committed
         pool.rows[0]["local_output"] = b"x" * 32
         with pytest.raises(CopyFloorUnavailable, match="receipt_differs"):
