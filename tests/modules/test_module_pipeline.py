@@ -618,6 +618,7 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
 
 async def test_decomposition_route_exception_is_content_blind_in_result_and_persistence(
     caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
 ):
     sentinel = "15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
     signal = {
@@ -638,7 +639,9 @@ async def test_decomposition_route_exception_is_content_blind_in_result_and_pers
     )
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -658,11 +661,18 @@ async def test_decomposition_route_exception_is_content_blind_in_result_and_pers
             message_inbox_id="00000000-0000-0000-0000-000000000096",
         )
 
+    assert fact_authority.source_registry() is prior_registry
     assert result.routing_error == "finance: route_failed:RuntimeError"
     lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
     assert lifecycle["dispatch_outcomes"]["failed"] == ["finance"]
     assert sentinel not in repr(lifecycle)
     assert sentinel not in caplog.text
+
+    with pytest.raises(RuntimeError, match="route exception scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("route exception scenario failed")
+    assert fact_authority.source_registry() is prior_registry
 
 
 async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_boundary(
