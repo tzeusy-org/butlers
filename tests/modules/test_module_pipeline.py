@@ -920,6 +920,7 @@ async def test_content_blind_structured_classification_failure_has_no_traceback(
         + repr([record.__dict__ for record in caplog.records])
     )
     assert sentinel not in observability
+    await _assert_owntracks_classification_diagnostic_copies(caplog)
 
 
 async def test_non_content_blind_structured_classification_keeps_detailed_diagnostic(
@@ -4751,3 +4752,87 @@ class TestDecompositionEmptyMetric:
             assert "butlers.pipeline.decomposition_empty" not in data
         finally:
             _reset_metrics_global_state()
+
+
+async def _assert_owntracks_classification_diagnostic_copies(caplog):
+    """Actual pipeline classifier paths; mocked adapter/DB, no online erasure."""
+    precise = "synthetic GPS 1.31415926,103.81234567 private-SSID"
+    for failure in ("structured", "dispatch", "policy_route", "empty_route"):
+
+        async def dispatch(**kwargs):
+            assert precise in kwargs["prompt"]
+            if failure == "dispatch":
+                raise RuntimeError(precise)
+            return FakeSpawnerResult(
+                output=precise,
+                tool_calls=[] if failure == "empty_route" else [_route_call("finance")],
+            )
+
+        pipeline = MessagePipeline(
+            MagicMock(),
+            dispatch,
+            source_butler="switchboard",
+            local_tool_server_provider=lambda: object() if failure == "structured" else None,
+        )
+        caplog.clear()
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.classify._load_available_butlers",
+                new=AsyncMock(return_value=_MOCK_BUTLERS),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+                new=AsyncMock(side_effect=RuntimeError(precise)),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                new=AsyncMock(
+                    side_effect=RuntimeError(precise)
+                    if failure in ("policy_route", "empty_route")
+                    else None,
+                    return_value={"result": {"status": "accepted"}},
+                ),
+            ),
+            patch("butlers.modules.pipeline.logger.exception") as exceptional,
+            patch("butlers.modules.pipeline.logger.info") as info,
+            patch("butlers.modules.pipeline.logger.warning") as warning,
+            patch("butlers.modules.pipeline.logger.error") as closed_error,
+            caplog.at_level(logging.DEBUG),
+        ):
+            result = await pipeline.process(
+                precise,
+                tool_args={
+                    "source_channel": "owntracks",
+                    "source_identity": "synthetic phone",
+                    "request_id": str(uuid4()),
+                    "request_context": {"triage_decision": "route_to", "triage_target": "finance"}
+                    if failure == "policy_route"
+                    else {},
+                },
+            )
+        if failure in ("structured", "dispatch"):
+            assert result.acked_targets
+        else:
+            assert result.failed_targets
+            assert closed_error.called
+            assert precise not in result.routing_error
+        assert not exceptional.called
+        observability = (
+            caplog.text
+            + repr([r.__dict__ for r in caplog.records])
+            + repr(info.call_args_list)
+            + repr(warning.call_args_list)
+            + repr(closed_error.call_args_list)
+        )
+        assert precise not in observability
+        if failure == "structured":
+            assert result.route_result["cc_summary"] == precise
+            assert any(
+                "failure_class=RuntimeError" in str(c) or "RuntimeError" in str(c)
+                for c in warning.call_args_list
+            )
+        elif failure == "dispatch":
+            assert result.target_butler == "general" and result.classification_error is None
+            assert "RuntimeError" in repr(warning.call_args_list)
+        assert MessagePipeline._uses_content_blind_observability("owntracks", {})
+        assert not MessagePipeline._uses_content_blind_observability("telegram_bot", {})

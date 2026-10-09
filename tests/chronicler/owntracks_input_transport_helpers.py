@@ -528,6 +528,8 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                     )
                     assert sse_inbox["raw_payload"]["payload"]["raw"] == sse_raw
                     assert sse_input["stored_digest"] == content_digest(dict(sse_inbox))
+                await _assert_native_no_dispatch_disposal(switchboard, point, "skip")
+                await _assert_native_no_dispatch_disposal(switchboard, sse_point, "metadata_only")
     finally:
         if connector is not None:
             await connector._shutdown()
@@ -623,3 +625,187 @@ async def _assert_native_first_source_atomicity(endpoint, pool):
         assert source is not None and source["copy_kind"] == 1
         assert source["dedupe_digest"] == logical_digest(key)
         assert source["stored_digest"] == content_digest(dict(stored))
+
+
+async def _assert_native_no_dispatch_disposal(pool, point, terminal):
+    """Real configured owning reducer/roles; fixed plan and terminal are planted.
+
+    This is not registered online Chronicler plan/expiry or actual classifier
+    proof. The accepted canonical body and complete input lifetime were produced
+    by actual TCP/SDK ingestion above; no lineage/end/role is invented here.
+    """
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock, patch
+
+    import pytest
+
+    from butlers.connectors.owntracks_forgetting import FrozenRaw, frozen_manifest
+    from butlers.core import location_copy_retention as copies
+    from butlers.core.location_ingress_copies import require_ingress_closed
+    from butlers.location_retention import content_digest
+    from butlers.modules.pipeline import MessagePipeline
+
+    request = point["accepted_request_id"]
+    async with asyncio.timeout(10):
+        while True:
+            async with pool.acquire() as conn:
+                original = await conn.fetchrow("SELECT * FROM message_inbox WHERE id=$1", request)
+                key = original["request_context"]["dedupe_key"]
+                try:
+                    await require_ingress_closed(conn, request, key, original)
+                except copies.CopyFloorUnavailable:
+                    pass
+                else:
+                    break
+            await asyncio.sleep(0.01)
+    assert original["raw_payload"]["payload"]["raw"] == point["raw_payload"]
+    frozen = FrozenRaw(
+        **{key: point[key] for key in ("source_revision", "retention_at", "accepted_request_id")},
+        raw_id=point["id"],
+        **{key: point[key].hex() for key in ("logical_source_digest", "content_digest")},
+        accepted_payload_digest=content_digest(
+            {"raw": original["raw_payload"]["payload"]["raw"]}
+        ).hex(),
+        accepted_normalized_digest=content_digest({"text": original["normalized_text"]}).hex(),
+    )
+    decision, cutoff = uuid4(), datetime.now(UTC)
+    manifest = frozen_manifest(decision, 1, cutoff, (frozen,))
+    plan = {
+        "decision_id": str(decision),
+        "policy_version": 1,
+        "cutoff": cutoff.isoformat(),
+        "rows": [frozen.model_dump(mode="json")],
+        "manifest_digest": manifest.hex(),
+        "state": "holder_pending",
+    }
+    actual_pipeline = MessagePipeline(pool, AsyncMock(side_effect=AssertionError("no runtime")))
+    lifecycle = "skipped" if terminal == "skip" else terminal
+    # Invoke the actual canonical lifecycle writer used by the fixed native
+    # policy branch. Branch selection is explicitly planted, not a claimed
+    # global-policy evaluation or receipt proxy for classifier termination.
+    await actual_pipeline._update_message_inbox_lifecycle(
+        message_inbox_id=request,
+        decomposition_output={
+            "request_id": str(request),
+            "policy_bypass": True,
+            "triage_decision": terminal,
+        },
+        dispatch_outcomes={"request_id": str(request)},
+        response_summary="Policy bypass: " + terminal,
+        lifecycle_state=lifecycle,
+        classified_at=cutoff,
+        classification_duration_ms=0.0,
+        final_state_at=cutoff,
+    )
+    terminal_row = dict(await pool.fetchrow("SELECT * FROM message_inbox WHERE id=$1", request))
+    assert terminal_row["lifecycle_state"] == lifecycle
+    assert terminal_row["final_state_at"] is not None
+    assert not await pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE request_id=$1)", request
+    )
+    with patch.object(copies, "_registered_plan", AsyncMock(return_value=plan)):
+        # A contradictory canonical decision cannot qualify either terminal.
+        await pool.execute(
+            "UPDATE message_inbox SET decomposition_output=jsonb_set(decomposition_output,'{triage_decision}',to_jsonb($2::text)) WHERE id=$1",
+            request,
+            "skip" if terminal == "metadata_only" else "metadata_only",
+        )
+        with pytest.raises(copies.CopyFloorUnavailable, match="source_copy_cohort_pending"):
+            await copies.forget_skipped_source(pool, decision)
+        async with pool.acquire() as observed:
+            assert (
+                await observed.fetchval(
+                    "SELECT raw_payload FROM message_inbox WHERE id=$1", request
+                )
+                == terminal_row["raw_payload"]
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_retention_copy_receipts WHERE decision_id=$1)",
+                decision,
+            )
+        await pool.execute(
+            "UPDATE message_inbox SET decomposition_output=$2::jsonb WHERE id=$1",
+            request,
+            terminal_row["decomposition_output"],
+        )
+        # Call the actual reducer with the actual acquired writer; fault
+        # AFTER its original UPDATE, not a handwritten rollback proxy.
+        from contextlib import asynccontextmanager
+
+        import asyncpg
+
+        reached = []
+
+        class FaultConnection:
+            def __init__(self, actual):
+                self.actual = actual
+
+            def __getattr__(self, name):
+                return getattr(self.actual, name)
+
+            async def execute(self, query, *args):
+                result = await self.actual.execute(query, *args)
+                if "UPDATE switchboard.message_inbox" in query:
+                    assert self.actual.is_in_transaction()
+                    assert await self.actual.fetchval(
+                        "SELECT raw_payload FROM message_inbox WHERE id=$1", request
+                    ) == {"retention": "forgotten"}
+                    assert await self.actual.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM location_retention_copy_receipts WHERE decision_id=$1)",
+                        decision,
+                    )
+                    reached.append(True)
+                    raise asyncpg.RaiseError("Synthetic own source reduction fault")
+                return result
+
+        class FaultPool:
+            @asynccontextmanager
+            async def acquire(self):
+                async with pool.acquire() as actual:
+                    assert isinstance(actual, asyncpg.pool.PoolConnectionProxy)
+                    yield FaultConnection(actual)
+
+        with pytest.raises(asyncpg.RaiseError, match="Synthetic own source reduction fault"):
+            await copies.forget_skipped_source(FaultPool(), decision)
+        assert reached == [True]
+        async with pool.acquire() as observed:
+            assert (
+                await observed.fetchval(
+                    "SELECT raw_payload FROM message_inbox WHERE id=$1", request
+                )
+                == terminal_row["raw_payload"]
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_retention_copy_receipts WHERE decision_id=$1)",
+                decision,
+            )
+            assert not await observed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_retention_source_floors WHERE request_id=$1)",
+                request,
+            )
+        receipt = await copies.forget_skipped_source(pool, decision)
+        assert receipt["manifest_digest"] == manifest.hex() and receipt["forgotten_count"] == 1
+        assert receipt["source_kind"] == "switchboard_skipped"
+        async with pool.acquire() as observed:
+            reduced = await observed.fetchrow(
+                "SELECT raw_payload,normalized_text,lifecycle_state FROM message_inbox WHERE id=$1",
+                request,
+            )
+            assert reduced["raw_payload"] == {"retention": "forgotten"}
+            assert reduced["normalized_text"] == "[OwnTracks exact evidence forgotten]"
+            assert reduced["lifecycle_state"] == lifecycle
+            assert (
+                await observed.fetchval(
+                    "SELECT logical_source_digest FROM location_retention_source_floors WHERE request_id=$1",
+                    request,
+                )
+                == point["logical_source_digest"]
+            )
+            assert (
+                await observed.fetchval(
+                    "SELECT receipt_id FROM location_retention_copy_receipts WHERE decision_id=$1",
+                    decision,
+                )
+                == receipt["receipt_id"]
+            )
+        assert await copies.forget_skipped_source(pool, decision) == receipt

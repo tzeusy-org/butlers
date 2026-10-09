@@ -1901,7 +1901,10 @@ class MessagePipeline:
         payload_type = (
             request_context.get("payload_type") if isinstance(request_context, dict) else None
         )
-        return source == "whatsapp_user_client" or payload_type == "conversation_history"
+        return (
+            source in {"whatsapp_user_client", "owntracks"}
+            or payload_type == "conversation_history"
+        )
 
     @staticmethod
     def _log_fields(
@@ -1913,7 +1916,7 @@ class MessagePipeline:
         content_blind: bool = False,
         **extra: Any,
     ) -> dict[str, Any]:
-        content_blind = content_blind or source == "whatsapp_user_client"
+        content_blind = content_blind or source in {"whatsapp_user_client", "owntracks"}
         safe_chat_id = chat_id
         if content_blind and chat_id is not None:
             safe_chat_id = MessagePipeline._opaque_observability_ref(chat_id)
@@ -2595,7 +2598,7 @@ class MessagePipeline:
                 except Exception:
                     logger.debug(
                         "Engagement detection failed; proceeding without update",
-                        exc_info=True,
+                        exc_info=not content_blind_observability,
                     )
 
                 # --- Mark as processing so the scanner does not re-enqueue ---
@@ -2611,7 +2614,7 @@ class MessagePipeline:
                     except Exception:
                         logger.debug(
                             "Failed to mark message_inbox as processing; scanner may re-enqueue",
-                            exc_info=True,
+                            exc_info=not content_blind_observability,
                         )
 
                 # Freeze before both direct policy routing and classification.
@@ -2708,7 +2711,7 @@ class MessagePipeline:
                                     "Policy bypass: failed to fetch raw_payload for wellness "
                                     "envelope from message_inbox id=%s; routing without context",
                                     message_inbox_id,
-                                    exc_info=True,
+                                    exc_info=not content_blind_observability,
                                 )
 
                         # Dashboard channel: the policy bypass (sticky/pinned
@@ -2811,11 +2814,22 @@ class MessagePipeline:
                             else:
                                 acked = [_triage_target]
                         except Exception as bypass_exc:
-                            logger.exception("Policy bypass route failed for %s", _triage_target)
                             failed = [_triage_target]
-                            failed_details = [
-                                f"{_triage_target}: {type(bypass_exc).__name__}: {bypass_exc}"
-                            ]
+                            if source == "owntracks":
+                                failure_class = type(bypass_exc).__name__
+                                logger.error(
+                                    "Policy bypass route failed for %s failure_class=%s",
+                                    _triage_target,
+                                    failure_class,
+                                )
+                                failed_details = [f"{_triage_target}: {failure_class}"]
+                            else:
+                                logger.exception(
+                                    "Policy bypass route failed for %s", _triage_target
+                                )
+                                failed_details = [
+                                    f"{_triage_target}: {type(bypass_exc).__name__}: {bypass_exc}"
+                                ]
 
                         bypass_latency_ms = (time.perf_counter() - bypass_start) * 1000
                         lifecycle_state = "errored" if failed_details else "parsed"
@@ -3178,7 +3192,7 @@ class MessagePipeline:
                                 else:
                                     logger.debug(
                                         "Identity resolution failed; proceeding without preamble",
-                                        exc_info=True,
+                                        exc_info=not content_blind_observability,
                                     )
 
                     if _decomp_messages is not None:
@@ -4068,12 +4082,20 @@ class MessagePipeline:
                             else:
                                 acked = [fallback_target]
                         except Exception as fallback_exc:
-                            logger.exception("Fallback route failed")
                             routed = [fallback_target]
                             failed = [fallback_target]
-                            failed_details = [
-                                f"{fallback_target}: {type(fallback_exc).__name__}: {fallback_exc}"
-                            ]
+                            if source == "owntracks":
+                                failure_class = type(fallback_exc).__name__
+                                logger.error(
+                                    "Fallback route failed failure_class=%s", failure_class
+                                )
+                                failed_details = [f"{fallback_target}: {failure_class}"]
+                            else:
+                                logger.exception("Fallback route failed")
+                                failed_details = [
+                                    f"{fallback_target}: {type(fallback_exc).__name__}: "
+                                    f"{fallback_exc}"
+                                ]
 
                     # Determine target butler label
                     if len(routed) == 1:

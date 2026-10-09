@@ -1,4 +1,4 @@
-"""Switchboard-owned source-copy floor for a proven native no-dispatch branch.
+"""Switchboard-owned source-copy floor for proven native no-dispatch branches.
 
 The fixed registry lookup reads the owning Chronicler plan over MCP. A caller
 UUID only locates that plan; it never supplies source rows, cutoff or verdict.
@@ -70,8 +70,10 @@ async def _registered_plan(pool: asyncpg.Pool, decision_id: UUID) -> dict:
 async def forget_skipped_source(pool: asyncpg.Pool, decision_id: UUID) -> dict:
     """Frozen plan read before locks; source redaction/floors/receipt one own TX.
 
-    The terminal native skip path commits without an LLM or target dispatch.
-    Any other path still requires its complete owning copy cohort and is held.
+    The terminal native skip and metadata-only paths commit without an LLM
+    or target dispatch. The historical switchboard_skipped receipt category
+    denotes this fixed no-dispatch profile; it does not change inbox lifecycle.
+    Every other path requires its complete owning descendant cohort and is held.
     Missing source rows never count as proof of a completed purge.
     """
     plan = await _registered_plan(pool, decision_id)
@@ -185,14 +187,17 @@ async def forget_skipped_source(pool: asyncpg.Pool, decision_id: UUID) -> dict:
                     payload = raw.get("payload") or {}
                     native_terminal = stored["decomposition_output"] or {}
                     outcomes = stored["dispatch_outcomes"] or {}
+                    terminal = {"skipped": "skip", "metadata_only": "metadata_only"}.get(
+                        stored["lifecycle_state"]
+                    )
                     if (
-                        context.get("dedupe_key") != key
+                        terminal is None
+                        or context.get("dedupe_key") != key
                         or raw.get("source", {}).get("provider") != "owntracks"
-                        or stored["lifecycle_state"] != "skipped"
                         or stored["final_state_at"] is None
-                        or stored["response_summary"] != "Policy bypass: skip"
+                        or stored["response_summary"] != f"Policy bypass: {terminal}"
                         or native_terminal.get("policy_bypass") is not True
-                        or native_terminal.get("triage_decision") != "skip"
+                        or native_terminal.get("triage_decision") != terminal
                         or set(outcomes) != {"request_id"}
                         or str(outcomes["request_id"]) != str(frozen.accepted_request_id)
                         or content_digest({"raw": payload.get("raw")}).hex()

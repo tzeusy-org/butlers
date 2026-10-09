@@ -1628,3 +1628,36 @@ Task, callback or SDK hold reproduces semantic failures. This is software
 evidence only, without configured-role SQL or registered HTTP qualification.
 The full lawful error/log/runtime disposal path remains required source work;
 permanent refusal does not fulfill the original four outcomes.
+
+
+The initial source profile above admitted only the canonical skip branch. The
+current owning reducer additionally admits the actual metadata-only terminal:
+matching canonical lifecycle, policy-bypass decision/summary and final-state
+receipt, request-only outcomes, original accepted body and complete ended ingress
+census, and no source session. It retains the historical `switchboard_skipped`
+storage category for this fixed no-dispatch profile; it preserves actual lifecycle
+and audit metadata. This does not classify a label, absent session or caller
+verdict as lineage, nor close routed/error/runtime copies. Contradictory decisions,
+unknown holders, routed outcomes or changed body remain refused before reduction.
+The existing owning software species executes both valid terminals and their
+refusal/rollback/replay companions against metadata doubles. The migrated TCP
+species additionally positions actual accepted input/role/current body, canonical
+lifecycle writer, source reducer/floor/receipt and separate readbacks; its plan and
+policy-branch selection are explicitly planted and do not prove registered
+Chronicler plan admission or classifier behavior. This extension remains SQL
+UNRUN until its own exact published hosted case executes. All original four
+outcomes and complete native/runtime/online/all-holder obligations remain UNMET.
+
+
+The actual OwnTracks classification pipeline now follows its content-blind
+observability path: no precise input preview, model-output log or exception
+traceback/text on structured, dispatch, policy-route or empty-route failure.
+The actual registered direct-ingest callback keeps fixed class/category/count
+failure metadata for OwnTracks; unrelated ordinary diagnostics remain unchanged.
+Existing owning software controls exercise the real registered callback and
+pipeline failure paths with synthetic precise input, alongside ordinary and
+healthy routing companions. These controls use modeled DB/adapter/event I/O.
+Preventing new diagnostic copies does not dispose old logs, exception objects or
+runtime descendants. In particular the prior private unresolved-error marker is
+still a hold, never a terminal receipt or complete erasure claim. Full lawful
+log/error/routed/runtime/mixed closure remains active SOURCE work and UNMET.

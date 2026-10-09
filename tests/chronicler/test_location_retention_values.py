@@ -467,7 +467,7 @@ async def test_native_retention_failure_has_separate_completion_and_count_only_c
     assert await retention._complete_attempt_cohort(Cohort(65))
 
 
-def test_source_copy_readback_binds_exact_committed_holder_and_refuses_partial_ack():
+async def test_source_copy_readback_binds_exact_committed_holder_and_refuses_partial_ack():
     """REQ-location-retention-005/006; metadata control, not actual MCP/SQL proof."""
     from uuid import uuid4
 
@@ -497,6 +497,7 @@ def test_source_copy_readback_binds_exact_committed_holder_and_refuses_partial_a
             source_copy_receipt({**complete, **mismatch}, decision, manifest, 2)
     with pytest.raises(ValueError):
         source_copy_receipt({"success": True}, decision, manifest, 2)
+    await _assert_native_no_dispatch_source_copy()
 
 
 async def test_native_malformed_carry_is_held_with_ordinary_legacy_positive(monkeypatch, caplog):
@@ -9569,6 +9570,7 @@ async def _assert_native_ingress_census_and_actual_task_end():
     actual_names = {tool.name for tool in await actual_mcp.list_tools()}
     assert {"ingest", "connector.heartbeat", "backfill.poll", "backfill.progress"} <= actual_names
     assert "connector_heartbeat" not in actual_names
+    await _assert_registered_direct_ingress_diagnostics(actual_mcp)
 
     request, generation, server = uuid4(), uuid4(), uuid4()
     stored = {"raw_payload": {"synthetic": "source"}, "normalized_text": "synthetic text"}
@@ -10810,3 +10812,251 @@ async def _assert_native_ingress_completed_task_holders():
     assert len(committed_headers) == 1 and len(native_inputs._servers) == 2
     assert committed_headers[0].generation != original_webhook.generation
     assert ended_headers == committed_headers
+
+
+async def _assert_native_no_dispatch_source_copy():
+    """Actual own reducer; source/DB metadata doubles are not SQL evidence."""
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from uuid import uuid4
+
+    from butlers.connectors.owntracks_forgetting import FrozenRaw, frozen_manifest
+    from butlers.core import location_copy_retention as copies
+    from butlers.core import location_ingress_copies as ingress
+
+    decision = uuid4()
+    request = uuid4()
+    key = "owntracks:synthetic-terminal:1:location"
+    raw = {"lat": 1.314159, "lon": 103.812345}
+    frozen = FrozenRaw(
+        raw_id=uuid4(),
+        source_revision=1,
+        logical_source_digest=logical_digest(key).hex(),
+        content_digest=content_digest(raw).hex(),
+        retention_at=datetime(2026, 1, 1, tzinfo=UTC),
+        accepted_request_id=request,
+        accepted_payload_digest=content_digest({"raw": raw}).hex(),
+        accepted_normalized_digest=content_digest({"text": "synthetic precise input"}).hex(),
+    )
+    cutoff = datetime(2026, 1, 5, tzinfo=UTC)
+    manifest = frozen_manifest(decision, 1, cutoff, (frozen,))
+    plan = {
+        "decision_id": str(decision),
+        "policy_version": 1,
+        "cutoff": cutoff.isoformat(),
+        "rows": [frozen.model_dump(mode="json")],
+        "manifest_digest": manifest.hex(),
+        "state": "holder_pending",
+    }
+
+    class Pool:
+        def __init__(self, terminal):
+            self.row = {
+                "id": request,
+                "request_context": {"dedupe_key": key},
+                "raw_payload": {"source": {"provider": "owntracks"}, "payload": {"raw": raw}},
+                "normalized_text": "synthetic precise input",
+                "lifecycle_state": terminal,
+                "final_state_at": cutoff,
+                "response_summary": "Policy bypass: "
+                + ("skip" if terminal == "skipped" else terminal),
+                "decomposition_output": {
+                    "policy_bypass": True,
+                    "triage_decision": "skip" if terminal == "skipped" else terminal,
+                },
+                "dispatch_outcomes": {"request_id": str(request)},
+                "attachments": [],
+                "processing_metadata": {},
+            }
+            self.receipt, self.floors, self.session = None, [], False
+            self.unknown_census, self.receipt_fault = False, False
+            self.census, self.readbacks = 0, 0
+
+        @asynccontextmanager
+        async def acquire(self):
+            self.readbacks += 1
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            before = deepcopy((self.row, self.receipt, self.floors))
+            try:
+                yield
+            except BaseException:
+                self.row, self.receipt, self.floors = before
+                raise
+
+        async def fetchrow(self, query, *args):
+            if "FROM location_retention_copy_receipts" in query:
+                return self.receipt
+            assert "FROM switchboard.message_inbox" in query and args == (request,)
+            return deepcopy(self.row)
+
+        async def fetch(self, query, *args):
+            if "location_retention_source_floors" in query:
+                return deepcopy(self.floors)
+            assert "FROM switchboard.message_inbox" in query
+            if "SELECT id" in query:
+                assert args == ([key],)
+                return [{"id": request}]
+            assert "FOR UPDATE" in query and args == ([request],)
+            return [deepcopy(self.row)]
+
+        async def fetchval(self, query, *args):
+            assert "FROM sessions WHERE request_id=$1" in query and args == (request,)
+            return self.session
+
+        async def execute(self, query, *args):
+            if "pg_advisory_xact_lock" in query or query.startswith("SET LOCAL"):
+                return
+            if "INSERT INTO location_retention_copy_receipts" in query:
+                if self.receipt_fault:
+                    raise RuntimeError("synthetic receipt failure")
+                self.receipt = {
+                    "decision_id": decision,
+                    "manifest_digest": manifest,
+                    "receipt_id": args[2],
+                    "source_kind": "switchboard_skipped",
+                    "forgotten_count": 1,
+                }
+                return
+            if "INSERT INTO location_retention_source_floors" in query:
+                self.floors.append({"request_id": request, "logical_source_digest": args[3]})
+                return
+            assert "UPDATE switchboard.message_inbox" in query and args == (request,)
+            self.row.update(
+                raw_payload={"retention": "forgotten"},
+                normalized_text="[OwnTracks exact evidence forgotten]",
+                attachments=[],
+                processing_metadata={},
+            )
+
+    async def source(pool, actual):
+        assert actual == decision
+        return plan
+
+    async def census(conn, actual, actual_key, row):
+        assert actual == request and actual_key == key and row == conn.row
+        conn.census += 1
+        if conn.unknown_census:
+            raise copies.CopyFloorUnavailable("ingress_input_cohort_pending")
+
+    from unittest.mock import patch
+
+    with (
+        patch.object(copies, "_registered_plan", source),
+        patch.object(ingress, "lock_ingress_census", AsyncMock()),
+        patch.object(ingress, "require_ingress_closed", census),
+    ):
+        for terminal in ("skipped", "metadata_only"):
+            pool = Pool(terminal)
+            original = deepcopy(pool.row)
+            for invalid in ("unknown_census", "session", "changed_decision", "route", "unfinished"):
+                pool.row = deepcopy(original)
+                pool.unknown_census, pool.session = False, False
+                if invalid == "unknown_census":
+                    pool.unknown_census = True
+                elif invalid == "session":
+                    pool.session = True
+                elif invalid == "changed_decision":
+                    pool.row["decomposition_output"]["triage_decision"] = (
+                        "skip" if terminal == "metadata_only" else "metadata_only"
+                    )
+                elif invalid == "route":
+                    pool.row["dispatch_outcomes"]["routed"] = ["chronicler"]
+                else:
+                    pool.row["final_state_at"] = None
+                planted = deepcopy(pool.row)
+                with pytest.raises(copies.CopyFloorUnavailable):
+                    await copies.forget_skipped_source(pool, decision)
+                assert pool.row == planted and pool.receipt is None and not pool.floors
+            pool.row, pool.unknown_census, pool.session = deepcopy(original), False, False
+            receipt = await copies.forget_skipped_source(pool, decision)
+            assert receipt["manifest_digest"] == manifest.hex() and receipt["forgotten_count"] == 1
+            assert pool.row["raw_payload"] == {"retention": "forgotten"}
+            assert pool.row["normalized_text"] == "[OwnTracks exact evidence forgotten]"
+            assert pool.floors == [
+                {
+                    "request_id": request,
+                    "logical_source_digest": bytes.fromhex(frozen.logical_source_digest),
+                }
+            ]
+            assert pool.census > 0 and pool.readbacks > 1
+            assert await copies.forget_skipped_source(pool, decision) == receipt
+            pool = Pool(terminal)
+            original = deepcopy(pool.row)
+            pool.receipt_fault = True
+            with pytest.raises(RuntimeError, match="synthetic receipt failure"):
+                await copies.forget_skipped_source(pool, decision)
+            assert pool.row == original and pool.receipt is None and not pool.floors
+
+
+async def _assert_registered_direct_ingress_diagnostics(mcp):
+    """Actual registered closure, modeled pipeline/event I/O; no SQL or erasure."""
+    import inspect
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from uuid import uuid4
+
+    actual_ingest = (await mcp.get_tool("ingest")).fn
+    while "func" in inspect.getclosurevars(actual_ingest).nonlocals:
+        actual_ingest = inspect.getclosurevars(actual_ingest).nonlocals["func"]
+    process = inspect.getclosurevars(actual_ingest).nonlocals["_process_ingested_message"]
+    precise = "synthetic GPS 1.31415926,103.81234567 private-SSID"
+    for channel in ("owntracks", "ordinary"):
+        for outcome in ("error", "result", "healthy"):
+            error = RuntimeError(precise)
+            pipeline = SimpleNamespace(
+                process=AsyncMock(
+                    side_effect=error if outcome == "error" else None,
+                    return_value=SimpleNamespace(
+                        classification_error=precise if outcome == "result" else None,
+                        routing_error=precise if outcome == "result" else None,
+                        failed_targets=[precise] if outcome == "result" else [],
+                    ),
+                )
+            )
+            with (
+                patch(
+                    "butlers.core.ingestion_events.ingestion_event_reconcile_after_processing",
+                    new=AsyncMock(),
+                ) as event,
+                patch("butlers.core_tools._switchboard.logger.exception") as exceptional,
+                patch("butlers.core_tools._switchboard.logger.error") as warning,
+            ):
+                result = await process(
+                    pipeline,
+                    str(uuid4()),
+                    precise,
+                    {
+                        "channel": channel,
+                        "provider": channel,
+                        "endpoint_identity": "synthetic phone",
+                    },
+                    {},
+                    {},
+                    uuid4(),
+                )
+            assert result is None
+            assert pipeline.process.await_args.kwargs["message_text"] == precise
+            actual = event.await_args.kwargs
+            assert actual["routing_failed"] is (outcome != "healthy")
+            if outcome == "healthy":
+                assert (
+                    actual["error_detail"] is None and not exceptional.called and not warning.called
+                )
+            elif channel == "owntracks":
+                assert not exceptional.called
+                assert precise not in repr(warning.call_args_list)
+                assert precise not in actual["error_detail"]
+                if outcome == "error":
+                    assert actual["error_detail"] == "pipeline_exception:RuntimeError"
+                    assert warning.called
+                else:
+                    assert (
+                        actual["error_detail"]
+                        == "classification_error; routing_error; failed_targets:1"
+                    )
+            else:
+                assert precise in actual["error_detail"]
+                assert exceptional.called is (outcome == "error")

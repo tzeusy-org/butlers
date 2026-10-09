@@ -357,6 +357,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                         request_id,
                     )
 
+        content_blind = channel == "owntracks" or source.get("provider") == "owntracks"
         routing_failed = False
         _routing_error_detail: str | None = None
 
@@ -423,17 +424,35 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             )
             if result.classification_error or result.routing_error or result.failed_targets:
                 routing_failed = True
-                _parts = [p for p in [result.classification_error, result.routing_error] if p]
-                if result.failed_targets:
-                    _parts.append(f"failed_targets: {result.failed_targets}")
+                if content_blind:
+                    _parts = []
+                    if result.classification_error:
+                        _parts.append("classification_error")
+                    if result.routing_error:
+                        _parts.append("routing_error")
+                    if result.failed_targets:
+                        _parts.append(f"failed_targets:{len(result.failed_targets)}")
+                else:
+                    _parts = [p for p in [result.classification_error, result.routing_error] if p]
+                    if result.failed_targets:
+                        _parts.append(f"failed_targets: {result.failed_targets}")
                 _routing_error_detail = "; ".join(_parts) if _parts else "routing failed"
         except Exception as _proc_exc:
             routing_failed = True
-            _routing_error_detail = f"{type(_proc_exc).__name__}: {_proc_exc}"
-            logger.exception(
-                "Background pipeline processing failed for request_id=%s",
-                request_id,
-            )
+            if content_blind:
+                failure_class = type(_proc_exc).__name__
+                _routing_error_detail = f"pipeline_exception:{failure_class}"
+                logger.error(
+                    "Background pipeline processing failed for request_id=%s failure_class=%s",
+                    request_id,
+                    failure_class,
+                )
+            else:
+                _routing_error_detail = f"{type(_proc_exc).__name__}: {_proc_exc}"
+                logger.exception(
+                    "Background pipeline processing failed for request_id=%s",
+                    request_id,
+                )
 
         if routing_failed:
             from butlers.core.location_ingress_copies import retain_ingress_processing_failure
