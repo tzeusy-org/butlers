@@ -39,7 +39,27 @@ def emit_restore_diagnostic(result: subprocess.CompletedProcess[str], *, stage: 
     )
     states = {
         code: bool(re.search(rf"(?m)^\s*(?:ERROR|FATAL):\s*{code}(?:\s|$)", output))
-        for code in ("42501", "42P01", "42703", "42601", "22P02", "23503", "P0001", "25P02")
+        for code in (
+            "42501",
+            "42P01",
+            "42703",
+            "42601",
+            "22P02",
+            "23503",
+            "P0001",
+            "25P02",
+            "23514",
+            "23505",
+            "42883",
+            "42P17",
+            "42704",
+            "2BP01",
+            "55000",
+            "42804",
+            "22023",
+            "XX000",
+            "42P07",
+        )
     }
     print(
         "RESTORE_COMMAND_DIAGNOSTIC "

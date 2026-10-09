@@ -451,7 +451,7 @@ def _restore_artifact(artifact: str, postgres_container, target_db: str) -> str:
             'PGPASSWORD="$PGPASSWORD_FOR_TEST" psql --host=host.docker.internal '
             f"--port={postgres_container.get_exposed_port(5432)} "
             f"--username={parsed.username} --dbname={target_db} "
-            "--no-password --quiet -v ON_ERROR_STOP=0",
+            "--no-password --quiet -v ON_ERROR_STOP=0 -v VERBOSITY=sqlstate",
         ],
         input=artifact,
         env=env,
