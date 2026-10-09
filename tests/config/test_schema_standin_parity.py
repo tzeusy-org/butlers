@@ -1,50 +1,16 @@
-"""Drift guards for the hand-provisioned table stand-ins in ``butlers.testing``.
+"""Real-chain clone/fresh catalog guards replacing independent-table stand-ins.
 
-An integration test that needs one table from *another* butler's migration
-chain sometimes provisions it by hand rather than running that whole chain.
-``connector_registry`` is the recurring case: three integration tests each
-stood up their own copy of that table, with a column list covering only what
-their own endpoint queried.
-
-That is a silent-breakage machine.  When ``sw_031`` widened the registry, the
-stale stand-ins produced five of the nine failures on PR #3853 -- and none of
-them pointed at the DDL.  The endpoint's ``SELECT`` raised, the route returned
-its DEGRADED envelope, and the test died much later on ``KeyError:
-'hourly_events_available'`` or an ``IndexError`` on an empty device list.  Each
-file also passed in isolation against its own stand-in, so the cost was only
-paid ~35 minutes into a full run, by whoever changed the schema next.
-
-These tests move the failure back to the point of breakage:
-
-- :func:`test_standin_matches_the_real_migration_chain` diffs every registered
-  stand-in against the table the real chain builds, naming the exact columns,
-  constraints, indexes and non-internal triggers that drifted.  Trigger
-  function bodies and execution metadata are read from ``pg_proc`` and
-  ``pg_trigger``; only the declared self-contained append-only trigger is
-  mirrored, while sibling-table FK substitutes are explicitly classified as
-  exclusions in :mod:`butlers.testing.schema_standins`.
-- :func:`test_the_index_diff_can_fail` keeps that index arm honest: a guard
-  nobody has watched go red is indistinguishable from one that cannot.
-- :func:`test_the_trigger_diff_can_fail` keeps trigger declaration/body and
-  classification arms honest, including absent, altered and unclassified
-  definitions.
-- :func:`test_no_test_hand_rolls_a_standin_table` stops the class from
-  recurring by refusing any further hand-written copy of a registered table.
-
-The append-only trigger is deliberately covered here rather than by the
-stored-function drift probe: the latter validates deployed ``init-db.sql``
-functions, while this contract validates the stand-in's schema-qualified
-function/table binding.  FK-substitute triggers from ``approvals_008``,
-``approvals_009`` and ``approvals_011`` remain real-chain-only because their
-referential semantics belong to ``tests/modules/test_approvals_retention.py``.
+Legacy node and parameter identities remain traceable. Independent creatability,
+FK exclusions and copied trigger definitions are retired mechanisms; complete
+real relationships, actual append-only behavior and literal catalog mutation
+controls replace them. REQ-testing-053 / REQ-testing-055.
 """
 
 from __future__ import annotations
 
 import re
 import shutil
-from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -52,42 +18,86 @@ import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
+from butlers.testing.migrated_templates import MigrationStage, template_cache
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from butlers.testing.schema_standins import (
-    APPROVAL_EVENTS,
-    AUTONOMY_APPROVAL_HISTORY,
-    AUTONOMY_SUGGESTIONS,
-    CONTACT_ENTITY_MAP,
-    PENDING_ACTIONS,
-    STANDINS,
-    TableStandin,
-    TriggerExclusion,
-)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PARITY_SCHEMA = "standin_parity"
-_BLINDED_SCHEMA = "standin_parity_blinded"
 _EXEMPTION_MARKER = "schema-standin-exempt:"
 _EXEMPTION_LOOKBACK_LINES = 8
 
 docker_available = shutil.which("docker") is not None
 
 
-@pytest.fixture(scope="module")
-def parity_db_url(postgres_container) -> str:
-    """Provision every chain the registered stand-ins claim to mirror.
+@dataclass(frozen=True)
+class _Relation:
+    table: str
+    real_schema: str
+    stages: tuple[MigrationStage, ...]
 
-    A chain that owns a schema is migrated under it, so its tables land where
-    the declaring stand-in says they do rather than in ``public``.
-    """
-    chains: list[str] = []
-    schemas: dict[str, str] = {}
-    for standin in STANDINS.values():
-        chains.extend(chain for chain in standin.chains if chain not in chains)
-        schemas.update(standin.chain_schemas)
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=chains, schemas=schemas
+
+_CORE = (MigrationStage("core"),)
+_APPROVALS = (*_CORE, MigrationStage("approvals"))
+_RELATIONSHIP = (
+    *_CORE,
+    MigrationStage("memory", schema="relationship"),
+    MigrationStage("relationship", schema="relationship"),
+)
+RELATIONS = {
+    relation.table: relation
+    for relation in (
+        _Relation("connector_registry", "public", (*_CORE, MigrationStage("switchboard"))),
+        *(
+            _Relation(name, "public", _APPROVALS)
+            for name in (
+                "pending_actions",
+                "autonomy_approval_history",
+                "autonomy_suggestions",
+                "approval_rules",
+                "approval_events",
+            )
+        ),
+        *(
+            _Relation(name, "relationship", _RELATIONSHIP)
+            for name in (
+                "entity_predicate_registry",
+                "contact_entity_map",
+            )
+        ),
+        *(
+            _Relation(name, "public", _CORE)
+            for name in (
+                "entity_graph_edges",
+                "entity_rebind_log",
+            )
+        ),
     )
+}
+
+
+@pytest.fixture(scope="module")
+def parity_db_url(postgres_container):
+    """New per-case clone plus a genuine fresh reference under the SAME principal."""
+    cache = template_cache(postgres_container)
+    owned = []
+
+    def pair(relation):
+        clone = create_migrated_test_db(
+            postgres_container, migration_db_name(), stages=relation.stages, fresh=False
+        )
+        owned.append(clone)
+        # This reads clone/global catalogs BEFORE fresh bootstrap can repair a
+        # planted defect, then rebuilds all ordered real stages as the same key
+        # principal. It never projects ownership or grants catalog equivalence.
+        reference = cache.fresh_reference(clone)
+        owned.append(reference)
+        cache.assert_pristine_clone(clone)
+        return clone, reference
+
+    try:
+        yield pair
+    finally:
+        for url in reversed(owned):
+            cache.discard_clone(url)
 
 
 def _columns(conn, schema: str, table: str) -> dict[str, tuple[str, str, str | None]]:
@@ -109,7 +119,7 @@ def _constraints(conn, schema: str, table: str) -> dict[str, str]:
             "FROM pg_constraint c "
             "JOIN pg_class t ON t.oid = c.conrelid "
             "JOIN pg_namespace n ON n.oid = t.relnamespace "
-            "WHERE n.nspname = :s AND t.relname = :t AND c.contype IN ('p', 'c')"
+            "WHERE n.nspname = :s AND t.relname = :t"
         ),
         {"s": schema, "t": table},
     )
@@ -237,202 +247,73 @@ def _triggers(conn, schema: str, table: str) -> dict[str, dict[str, object]]:
     return result
 
 
-def _trigger_drift(
-    standin: TableStandin,
-    real: dict[str, dict[str, object]],
-    mirror: dict[str, dict[str, object]],
-    *,
-    real_schema: str,
-    mirror_schema: str,
-) -> list[str]:
-    """Classify every non-internal trigger and compare mirrored definitions."""
-    problems: list[str] = []
-    expected = {trigger.name: trigger for trigger in standin.triggers}
-    exclusions = {exclusion.name: exclusion for exclusion in standin.excluded_triggers}
-
-    for name in sorted(expected.keys() & exclusions.keys()):
-        problems.append(
-            f"  INVALID trigger classification: {name} is both mirrored and excluded "
-            f"for {standin.constant_path}"
+def _surface(conn, relation: _Relation) -> dict:
+    schema, table = relation.real_schema, relation.table
+    columns = _columns(conn, schema, table)
+    assert columns, f"{schema}.{table} was not created by chains"
+    attributes = conn.execute(
+        text(
+            "SELECT pg_get_userbyid(c.relowner),c.relacl,c.relrowsecurity,c.relforcerowsecurity "
+            "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname=:s AND c.relname=:t"
+        ),
+        {"s": schema, "t": table},
+    ).one()
+    policies = tuple(
+        tuple(row)
+        for row in conn.execute(
+            text(
+                "SELECT policyname,permissive,roles,cmd,qual,with_check FROM pg_policies "
+                "WHERE schemaname=:s AND tablename=:t ORDER BY policyname"
+            ),
+            {"s": schema, "t": table},
         )
-
-    for name in sorted(set(real) & set(expected)):
-        if name not in mirror:
-            problems.append(
-                f"  MISSING trigger: {name} -- the migration chain has it, "
-                f"{standin.constant_path} does not render it"
-            )
-    for name in sorted(set(expected) - set(real)):
-        problems.append(
-            f"  MISSING trigger: {name} -- {standin.constant_path} declares it, "
-            f"but {real_schema}.{standin.table} has no such non-internal trigger"
-        )
-    for name in sorted(set(expected) & set(mirror) - set(real)):
-        problems.append(
-            f"  EXTRA trigger: {name} -- {standin.constant_path} renders it, "
-            f"but the real {real_schema}.{standin.table} does not"
-        )
-
-    for name, exclusion in sorted(exclusions.items()):
-        if name not in real:
-            problems.append(
-                f"  STALE trigger exclusion: {name} ({exclusion.migration}) -- {exclusion.reason}"
-            )
-        if name in mirror:
-            problems.append(
-                f"  EXCLUDED trigger rendered: {name} -- {exclusion.migration} is a "
-                "sibling-table guard and must remain absent from an independent stand-in"
-            )
-
-    unknown_real = set(real) - set(expected) - set(exclusions)
-    for name in sorted(unknown_real):
-        problems.append(
-            f"  UNCLASSIFIED trigger: {name} -- {real_schema}.{standin.table} has a "
-            f"non-internal trigger with no mirrored definition or named exclusion in "
-            f"{standin.constant_path}"
-        )
-    unknown_mirror = set(mirror) - set(expected)
-    for name in sorted(unknown_mirror):
-        problems.append(
-            f"  UNCLASSIFIED trigger: {name} -- {mirror_schema}.{standin.table} has a "
-            f"trigger that {standin.constant_path} does not declare"
-        )
-
-    comparable_fields = (
-        ("tgenabled", "enabled state"),
-        ("tgtype", "trigger type bits"),
-        ("event_timing_level", "event/timing/level"),
-        ("when_condition", "WHEN condition"),
-        ("trigger_arguments", "arguments"),
-        ("trigger_columns", "UPDATE OF columns"),
-        ("tgdeferrable", "deferrability"),
-        ("tginitdeferred", "initially-deferred flag"),
-        ("is_constraint", "constraint-trigger flag"),
-        ("has_constraint_relation", "constraint relation flag"),
-        ("transition_tables", "transition-table names"),
-        ("function_body", "function body"),
-        ("function_language", "function language"),
-        ("function_security_definer", "function security"),
-        ("function_config", "function configuration"),
     )
-    for name in sorted(set(real) & set(mirror) & set(expected)):
-        real_row = real[name]
-        mirror_row = mirror[name]
-        real_function = real_row["function_binding"]
-        mirror_function = mirror_row["function_binding"]
-        assert isinstance(real_function, tuple) and isinstance(mirror_function, tuple)
-        if real_function[0] != real_schema:
-            problems.append(
-                f"  MISMATCHED trigger function binding: {name} -- chain binds "
-                f"{real_function[0]}.{real_function[1]} instead of {real_schema}."
-                f"{real_function[1]}"
-            )
-        if mirror_function[0] != mirror_schema:
-            problems.append(
-                f"  MISMATCHED trigger function binding: {name} -- mirror binds "
-                f"{mirror_function[0]}.{mirror_function[1]} instead of "
-                f"{mirror_schema}.{mirror_function[1]}"
-            )
-        if real_function[1:] != mirror_function[1:]:
-            problems.append(
-                f"  MISMATCHED trigger function identity: {name} -- chain says "
-                f"{real_function[1:]!r}, mirror says {mirror_function[1:]!r}"
-            )
-        for field, label in comparable_fields:
-            if real_row[field] != mirror_row[field]:
-                problems.append(
-                    f"  MISMATCHED trigger {label}: {name} -- chain says "
-                    f"{real_row[field]!r}, mirror says {mirror_row[field]!r}"
-                )
+    return {
+        "column": columns,
+        "constraint": _constraints(conn, schema, table),
+        "index": _indexes(conn, schema, table),
+        "trigger": _triggers(conn, schema, table),
+        "owner-acl-rls": tuple(attributes),
+        "policy": policies,
+    }
+
+
+def _differences(real: dict, clone: dict) -> list[str]:
+    # Closed relation/field labels only; executable function bodies and role or
+    # ACL values stay in memory rather than entering diagnostic messages.
+    problems = []
+    for kind in sorted(real):
+        left, right = real[kind], clone[kind]
+        if isinstance(left, dict) and isinstance(right, dict):
+            problems.extend(f"MISSING {kind}: {key}" for key in sorted(left.keys() - right.keys()))
+            problems.extend(f"EXTRA {kind}: {key}" for key in sorted(right.keys() - left.keys()))
+            for key in sorted(left.keys() & right.keys()):
+                if left[key] != right[key]:
+                    problems.append(f"MISMATCHED {kind}: {key}")
+        elif left != right:
+            problems.append(f"MISMATCHED {kind}")
     return problems
 
 
-def _describe_drift(standin: TableStandin, real: dict, mirror: dict, kind: str) -> list[str]:
-    """Return one human-readable line per drifted item, or an empty list."""
-    problems: list[str] = []
-    for name in sorted(set(real) - set(mirror)):
-        problems.append(
-            f"  MISSING {kind}: {name} {real[name]} -- the migration chain has it, "
-            f"{standin.constant_path} does not"
-        )
-    for name in sorted(set(mirror) - set(real)):
-        problems.append(
-            f"  EXTRA {kind}: {name} {mirror[name]} -- {standin.constant_path} has it, "
-            "the migration chain does not"
-        )
-    for name in sorted(set(real) & set(mirror)):
-        if real[name] != mirror[name]:
-            problems.append(
-                f"  MISMATCHED {kind}: {name} -- chain says {real[name]}, "
-                f"{standin.constant_path} says {mirror[name]}"
-            )
-    return problems
-
-
-def _drift(
-    conn,
-    standin: TableStandin,
-    mirror_schema: str,
-    *,
-    after_mirror_ddl: Callable[[object, str], None] | None = None,
-) -> list[str]:
-    """Build the stand-in and diff tables, indexes and triggers against reality.
-
-    ``after_mirror_ddl`` is a narrow falsification seam used only by the
-    parameterized trigger guard to install an intentionally unclassified
-    mirror trigger before catalog inspection.
-    """
-    conn.execute(text(f"DROP SCHEMA IF EXISTS {mirror_schema} CASCADE"))
-    conn.execute(text(f"CREATE SCHEMA {mirror_schema}"))
-    conn.execute(text(standin.ddl(schema=mirror_schema)))
-    if after_mirror_ddl is not None:
-        after_mirror_ddl(conn, mirror_schema)
-
-    real_columns = _columns(conn, standin.real_schema, standin.table)
-    assert real_columns, (
-        f"{standin.real_schema}.{standin.table} was not created by chains "
-        f"{list(standin.chains)} -- the stand-in's chain/schema metadata is wrong"
-    )
-
-    problems = _describe_drift(
-        standin, real_columns, _columns(conn, mirror_schema, standin.table), "column"
-    )
-    for reader, kind in ((_constraints, "constraint"), (_indexes, "index")):
-        problems += _describe_drift(
-            standin,
-            reader(conn, standin.real_schema, standin.table),
-            reader(conn, mirror_schema, standin.table),
-            kind,
-        )
-    problems += _trigger_drift(
-        standin,
-        _triggers(conn, standin.real_schema, standin.table),
-        _triggers(conn, mirror_schema, standin.table),
-        real_schema=standin.real_schema,
-        mirror_schema=mirror_schema,
-    )
-    return problems
+def _read(url: str, relation: _Relation) -> dict:
+    engine = create_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            return _surface(connection, relation)
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
-@pytest.mark.parametrize("standin", list(STANDINS.values()), ids=list(STANDINS))
-def test_standin_matches_the_real_migration_chain(parity_db_url: str, standin: TableStandin):
-    """Every stand-in table surface, including classified trigger metadata, matches."""
-    engine = create_engine(parity_db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            problems = _drift(conn, standin, _PARITY_SCHEMA)
-    finally:
-        engine.dispose()
-
-    assert not problems, (
-        f"The {standin.table} test stand-in has drifted from the "
-        f"{'/'.join(standin.chains)} migration chain:\n" + "\n".join(problems) + "\n"
-        f"Reconcile {standin.constant_path} with the chain. A stale stand-in does not "
-        "fail here in CI -- it fails as a DEGRADED envelope and a downstream KeyError "
-        "in whichever integration test uses it (PR #3853)."
-    )
+@pytest.mark.parametrize("standin", list(RELATIONS.values()), ids=list(RELATIONS))
+def test_standin_matches_the_real_migration_chain(parity_db_url, standin: _Relation):
+    """Legacy ten identities now compare full real migrated relationships/security."""
+    clone, reference = parity_db_url(standin)
+    real, actual = _read(reference, standin), _read(clone, standin)
+    assert not _differences(real, actual)
+    assert _differences(real, actual) == _differences(actual, real) == []
 
 
 @pytest.mark.integration
@@ -440,338 +321,333 @@ def test_standin_matches_the_real_migration_chain(parity_db_url: str, standin: T
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.parametrize(
     "standin",
-    (AUTONOMY_APPROVAL_HISTORY, AUTONOMY_SUGGESTIONS, APPROVAL_EVENTS),
+    tuple(
+        RELATIONS[name]
+        for name in ("autonomy_approval_history", "autonomy_suggestions", "approval_events")
+    ),
     ids=("autonomy_approval_history", "autonomy_suggestions", "approval_events"),
 )
-async def test_standin_ddl_is_independently_creatable(
-    provisioned_postgres_pool, standin: TableStandin
-) -> None:
-    """A stand-in must not rely on sibling tables absent from its fresh test DB.
+async def test_standin_ddl_is_independently_creatable(parity_db_url, standin: _Relation):
+    """Retired independence is replaced by actual sibling/FK/trigger behavior.
 
-    The ``approval_events`` case also exercises its self-contained append-only
-    trigger.  Both a public function/table and a first-in-path shadow function
-    exist before the schema-qualified mirror is provisioned; this proves an
-    altered ``search_path`` cannot hijack the trigger binding.  Repeating the
-    same DDL proves the fixture's idempotent drop/recreate semantics.
+    Existing identities stay, but no independent copied DDL is constructed.
+    The append-only binding remains immune to a first-in-path shadow function;
+    replay uses the actual migration chain, not a hand-written trigger copy.
     """
-    async with provisioned_postgres_pool() as pool:
-        if standin is not APPROVAL_EVENTS:
-            await pool.execute(standin.ddl())
+    clone, reference = parity_db_url(standin)
+    assert not _differences(_read(reference, standin), _read(clone, standin))
+    connection = await asyncpg.connect(clone)
+    try:
+        if standin.table != "approval_events":
+            assert await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_name='approval_rules')"
+            )
             return
-
-        mirror_schema = "standin_trigger_independent"
-        async with pool.acquire() as conn:
-            await conn.execute(f"CREATE SCHEMA {mirror_schema}")
-
-            # schema-standin-exempt: conflicting public relation for search_path binding test
-            await conn.execute(
-                """
-                CREATE TABLE public.approval_events (
-                    event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    action_id UUID,
-                    event_type TEXT NOT NULL,
-                    actor TEXT NOT NULL
-                )
-                """
+        await connection.execute("CREATE SCHEMA standin_trigger_shadow")
+        await connection.execute("""
+            CREATE FUNCTION standin_trigger_shadow.prevent_approval_events_mutation()
+            RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$
+        """)
+        await connection.execute("SET search_path TO standin_trigger_shadow, public")
+        mirror_function_schema = await connection.fetchval("""
+            SELECT function_namespace.nspname FROM pg_trigger trigger_row
+            JOIN pg_class table_row ON table_row.oid=trigger_row.tgrelid
+            JOIN pg_namespace table_namespace ON table_namespace.oid=table_row.relnamespace
+            JOIN pg_proc function_row ON function_row.oid=trigger_row.tgfoid
+            JOIN pg_namespace function_namespace ON function_namespace.oid=function_row.pronamespace
+            WHERE table_namespace.nspname='public' AND table_row.relname='approval_events'
+              AND trigger_row.tgname='trg_approval_events_immutable'
+        """)
+        mirror_schema = "public"
+        assert mirror_function_schema == mirror_schema
+        public_function_before = await connection.fetchval(
+            "SELECT pg_get_functiondef('public.prevent_approval_events_mutation()'::regprocedure)"
+        )
+        public_trigger_count_before = await connection.fetchval("""
+            SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relname='approval_events' AND NOT t.tgisinternal
+        """)
+        # Actual siblings are present. A valid event uses a real pending parent;
+        # the removed independent-table fixture allowed orphan action IDs.
+        action_id, event_id = uuid4(), uuid4()
+        await connection.execute(
+            """
+            INSERT INTO public.pending_actions(id,tool_name,tool_args,expires_at)
+            VALUES($1,'parity_control','{}'::jsonb,now()+interval '1 hour')
+        """,
+            action_id,
+        )
+        await connection.execute(
+            """
+            INSERT INTO public.approval_events(event_id,action_id,event_type,actor)
+            VALUES($1,$2,'action_queued','owner')
+        """,
+            event_id,
+            action_id,
+        )
+        with pytest.raises(asyncpg.RaiseError, match="append-only: UPDATE"):
+            await connection.execute(
+                "UPDATE public.approval_events SET actor='other' WHERE event_id=$1", event_id
             )
-            for schema in ("public", "standin_trigger_shadow"):
-                if schema != "public":
-                    await conn.execute(f"CREATE SCHEMA {schema}")
-                await conn.execute(
-                    f"""
-                    CREATE OR REPLACE FUNCTION {schema}.prevent_approval_events_mutation()
-                    RETURNS trigger
-                    LANGUAGE plpgsql
-                    AS $$
-                    BEGIN
-                        RETURN NEW;
-                    END;
-                    $$
+        with pytest.raises(asyncpg.RaiseError, match="append-only: DELETE"):
+            await connection.execute(
+                "DELETE FROM public.approval_events WHERE event_id=$1", event_id
+            )
+        # The qualified bound function and all existing trigger metadata survive
+        # a hostile search_path and actual chain replay.
+        from butlers.migrations import run_migrations
+
+        await run_migrations(clone, chain="approvals")
+        assert (
+            await connection.fetchval(
+                "SELECT pg_get_functiondef('public.prevent_approval_events_mutation()'::regprocedure)"
+            )
+            == public_function_before
+        )
+        assert (
+            await connection.fetchval("""
+            SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relname='approval_events' AND NOT t.tgisinternal
+        """)
+            == public_trigger_count_before
+        )
+        # A separately acquired connection proves the allowed insert committed.
+        other = await asyncpg.connect(clone)
+        try:
+            assert (
+                await other.fetchval(
+                    "SELECT count(*) FROM public.approval_events WHERE event_id=$1", event_id
+                )
+                == 1
+            )
+        finally:
+            await other.close()
+        # The real deferrable cycle admits both related rows in one transaction;
+        # a missing sibling still refuses commit, rather than being omitted to
+        # make an independent-table stand-in constructible.
+        rule_id, cyclic_action_id = uuid4(), uuid4()
+        async with connection.transaction():
+            await connection.execute(
+                """
+                INSERT INTO public.approval_rules(id,tool_name,arg_constraints,created_from)
+                VALUES($1,'parity_cycle','{}'::jsonb,$2)
+            """,
+                rule_id,
+                cyclic_action_id,
+            )
+            await connection.execute(
+                """
+                INSERT INTO public.pending_actions(id,tool_name,tool_args,approval_rule_id)
+                VALUES($1,'parity_cycle','{}'::jsonb,$2)
+            """,
+                cyclic_action_id,
+                rule_id,
+            )
+        assert (
+            await connection.fetchval(
+                "SELECT created_from=$2 FROM public.approval_rules WHERE id=$1",
+                rule_id,
+                cyclic_action_id,
+            )
+            is True
+        )
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
+            async with connection.transaction():
+                await connection.execute(
                     """
-                )
-
-            public_function_before = await conn.fetchval(
-                "SELECT pg_get_functiondef("
-                "'public.prevent_approval_events_mutation()'::regprocedure)"
-            )
-            public_trigger_count_before = await conn.fetchval(
-                """
-                SELECT count(*)
-                FROM pg_trigger trigger_row
-                JOIN pg_class table_row ON table_row.oid = trigger_row.tgrelid
-                JOIN pg_namespace table_namespace
-                    ON table_namespace.oid = table_row.relnamespace
-                WHERE table_namespace.nspname = 'public'
-                  AND table_row.relname = 'approval_events'
-                  AND NOT trigger_row.tgisinternal
-                """
-            )
-
-            await conn.execute("SET search_path TO standin_trigger_shadow, public")
-            await conn.execute(standin.ddl(schema=mirror_schema))
-
-            mirror_function_schema = await conn.fetchval(
-                """
-                SELECT function_namespace.nspname
-                FROM pg_trigger trigger_row
-                JOIN pg_class table_row ON table_row.oid = trigger_row.tgrelid
-                JOIN pg_namespace table_namespace
-                    ON table_namespace.oid = table_row.relnamespace
-                JOIN pg_proc function_row ON function_row.oid = trigger_row.tgfoid
-                JOIN pg_namespace function_namespace
-                    ON function_namespace.oid = function_row.pronamespace
-                WHERE table_namespace.nspname = $1
-                  AND table_row.relname = 'approval_events'
-                  AND trigger_row.tgname = 'trg_approval_events_immutable'
+                    INSERT INTO public.approval_rules(tool_name,arg_constraints,created_from)
+                    VALUES('parity_orphan','{}'::jsonb,$1)
                 """,
-                mirror_schema,
-            )
-            assert mirror_function_schema == mirror_schema
-
-            action_id = uuid4()
-            event_id = uuid4()
-            await conn.execute(
-                f"""
-                INSERT INTO {mirror_schema}.approval_events
-                    (event_id, action_id, event_type, actor)
-                VALUES ($1, $2, 'action_queued', 'owner')
-                """,
-                event_id,
-                action_id,
-            )
-            with pytest.raises(asyncpg.RaiseError, match="append-only: UPDATE"):
-                await conn.execute(
-                    f"UPDATE {mirror_schema}.approval_events SET actor = 'other' WHERE event_id = $1",
-                    event_id,
+                    uuid4(),
                 )
-            with pytest.raises(asyncpg.RaiseError, match="append-only: DELETE"):
-                await conn.execute(
-                    f"DELETE FROM {mirror_schema}.approval_events WHERE event_id = $1", event_id
-                )
-
-            # CREATE OR REPLACE FUNCTION plus DROP/CREATE TRIGGER is the same
-            # repeat-safe path used by the approvals fixture.
-            await conn.execute(standin.ddl(schema=mirror_schema))
-
-            public_id = uuid4()
-            await conn.execute(
-                "INSERT INTO public.approval_events (event_id, action_id, event_type, actor) "
-                "VALUES ($1, $2, 'action_queued', 'owner')",
-                public_id,
+        # Orphan writes remain forbidden by the REAL sibling-table trigger.
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
+            await connection.execute(
+                """
+                INSERT INTO public.approval_events(event_id,action_id,event_type,actor)
+                VALUES($1,$2,'action_queued','owner')
+            """,
+                uuid4(),
                 uuid4(),
             )
-            await conn.execute(
-                "UPDATE public.approval_events SET actor = 'other' WHERE event_id = $1", public_id
-            )
-            await conn.execute("DELETE FROM public.approval_events WHERE event_id = $1", public_id)
-
-            assert (
-                await conn.fetchval(
-                    "SELECT pg_get_functiondef("
-                    "'public.prevent_approval_events_mutation()'::regprocedure)"
-                )
-                == public_function_before
-            )
-            assert (
-                await conn.fetchval(
-                    """
-                    SELECT count(*)
-                    FROM pg_trigger trigger_row
-                    JOIN pg_class table_row ON table_row.oid = trigger_row.tgrelid
-                    JOIN pg_namespace table_namespace
-                        ON table_namespace.oid = table_row.relnamespace
-                    WHERE table_namespace.nspname = 'public'
-                      AND table_row.relname = 'approval_events'
-                      AND NOT trigger_row.tgisinternal
-                    """
-                )
-                == public_trigger_count_before
-            )
+    finally:
+        await connection.close()
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
-def test_the_index_diff_can_fail(parity_db_url: str):
-    """Dropping a real index from a stand-in must be reported, not tolerated.
-
-    ``ux_pending_actions_active_deduplication_key`` (``approvals_013``) is the
-    concrete case: it is a *unique* partial index, so it decides which rows the
-    real table accepts.  A stand-in without it accepts writes production
-    rejects.  Diffing a deliberately blinded copy proves the index arm of
-    :func:`test_standin_matches_the_real_migration_chain` reports that, rather
-    than passing the way it did while indexes went unread (bu-cwv9l).
-    """
-    engine = create_engine(parity_db_url, isolation_level="AUTOCOMMIT")
+def test_the_index_diff_can_fail(parity_db_url):
+    relation = RELATIONS["pending_actions"]
+    clone, reference = parity_db_url(relation)
+    real = _read(reference, relation)
+    engine = create_engine(clone, isolation_level="AUTOCOMMIT")
+    name = "ux_pending_actions_active_deduplication_key"
     try:
-        with engine.connect() as conn:
-            problems = _drift(conn, replace(PENDING_ACTIONS, indexes=()), _BLINDED_SCHEMA)
+        with engine.connect() as connection:
+            definition = connection.execute(
+                text(
+                    "SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname=:name"
+                ),
+                {"name": name},
+            ).scalar_one()
+            connection.execute(text(f"DROP INDEX public.{name}"))
+            try:
+                problems = _differences(real, _surface(connection, relation))
+                assert any(
+                    "MISSING index: ux_pending_actions_active_deduplication_key" in p
+                    for p in problems
+                )
+                assert any(
+                    "EXTRA index: ux_pending_actions_active_deduplication_key" in p
+                    for p in _differences(_surface(connection, relation), real)
+                )
+            finally:
+                connection.execute(text(definition))
+            # A same-name index with lost UNIQUE authority must also fail;
+            # counting index names would miss this exact semantic drift.
+            assert "CREATE UNIQUE INDEX" in definition
+            connection.execute(text(f"DROP INDEX public.{name}"))
+            try:
+                connection.execute(
+                    text(definition.replace("CREATE UNIQUE INDEX", "CREATE INDEX", 1))
+                )
+                assert f"MISMATCHED index: {name}" in _differences(
+                    real, _surface(connection, relation)
+                )
+            finally:
+                connection.execute(text(f"DROP INDEX public.{name}"))
+                connection.execute(text(definition))
+            connection.execute(
+                text("CREATE INDEX parity_extra_index ON public.pending_actions(id)")
+            )
+            try:
+                assert "EXTRA index: parity_extra_index" in _differences(
+                    real, _surface(connection, relation)
+                )
+            finally:
+                connection.execute(text("DROP INDEX public.parity_extra_index"))
+            assert not _differences(real, _surface(connection, relation))
     finally:
         engine.dispose()
-
-    assert any(
-        "MISSING index: ux_pending_actions_active_deduplication_key" in problem
-        for problem in problems
-    ), (
-        "The parity guard did not notice a missing unique partial index. "
-        f"It reported: {problems or 'no drift at all'}"
-    )
-
-
-def _without_approval_events_trigger(standin: TableStandin) -> TableStandin:
-    return replace(standin, triggers=())
-
-
-def _with_changed_approval_events_body(standin: TableStandin) -> TableStandin:
-    trigger = standin.triggers[0]
-    return replace(
-        standin,
-        triggers=(
-            replace(trigger, function_body=trigger.function_body.replace("TG_OP", "TG_OP || ''")),
-        ),
-    )
-
-
-def _with_changed_approval_events_timing(standin: TableStandin) -> TableStandin:
-    trigger = standin.triggers[0]
-    return replace(standin, triggers=(replace(trigger, timing="AFTER"),))
-
-
-def _with_stale_trigger_exclusion(standin: TableStandin) -> TableStandin:
-    return replace(
-        standin,
-        excluded_triggers=standin.excluded_triggers
-        + (
-            TriggerExclusion(
-                name="trg_approval_events_removed",
-                migration="approvals_999",
-                reason="falsification-only stale exclusion",
-            ),
-        ),
-    )
-
-
-def _install_unclassified_trigger(conn: object, schema: str) -> None:
-    """Install a mirror-only trigger that has no stand-in classification."""
-    assert hasattr(conn, "execute")
-    conn.execute(
-        text(
-            f"""
-            CREATE OR REPLACE FUNCTION {schema}.unclassified_approval_event_trigger()
-            RETURNS trigger
-            LANGUAGE plpgsql
-            AS $$
-            BEGIN
-                RETURN NEW;
-            END;
-            $$
-            """
-        )
-    )
-    conn.execute(
-        text(
-            f"""
-            CREATE TRIGGER trg_approval_events_unclassified
-            BEFORE INSERT ON {schema}.approval_events
-            FOR EACH ROW
-            EXECUTE FUNCTION {schema}.unclassified_approval_event_trigger()
-            """
-        )
-    )
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.parametrize(
-    "label,mutate_standin,after_mirror_ddl,needle",
+    "label",
     (
-        pytest.param(
-            "missing-declaration",
-            _without_approval_events_trigger,
-            None,
-            "UNCLASSIFIED trigger: trg_approval_events_immutable",
-            id="missing-declaration",
-        ),
-        pytest.param(
-            "changed-function-body",
-            _with_changed_approval_events_body,
-            None,
-            "MISMATCHED trigger function body: trg_approval_events_immutable",
-            id="changed-function-body",
-        ),
-        pytest.param(
-            "changed-timing",
-            _with_changed_approval_events_timing,
-            None,
-            "MISMATCHED trigger event/timing/level: trg_approval_events_immutable",
-            id="changed-timing",
-        ),
-        pytest.param(
-            "unclassified-trigger",
-            lambda standin: standin,
-            _install_unclassified_trigger,
-            "UNCLASSIFIED trigger: trg_approval_events_unclassified",
-            id="unclassified-trigger",
-        ),
-        pytest.param(
-            "stale-exclusion",
-            _with_stale_trigger_exclusion,
-            None,
-            "STALE trigger exclusion: trg_approval_events_removed",
-            id="stale-exclusion",
-        ),
+        "missing-declaration",
+        "changed-function-body",
+        "changed-timing",
+        "unclassified-trigger",
+        "stale-exclusion",
     ),
 )
-def test_the_trigger_diff_can_fail(
-    parity_db_url: str,
-    label: str,
-    mutate_standin: Callable[[TableStandin], TableStandin],
-    after_mirror_ddl: Callable[[object, str], None] | None,
-    needle: str,
-):
-    """Every trigger parity/classification arm must fail when deliberately blinded.
+def test_the_trigger_diff_can_fail(parity_db_url, label):
+    """Five existing identities now plant actual full-catalog differences.
 
-    One parameterized falsification test covers the trigger declaration, body,
-    execution metadata and named-exclusion contract.  The body mutation is
-    intentionally inside ``prosrc``; the guard must report it rather than
-    normalizing arbitrary function SQL away.
+    The old named-exclusion mechanism is retired: no trigger is excluded from a
+    complete clone/fresh surface. The stale-exclusion identity specifically
+    proves a formerly ignorable extra trigger is now a material mismatch.
     """
-    assert label
-    engine = create_engine(parity_db_url, isolation_level="AUTOCOMMIT")
+    relation = RELATIONS["approval_events"]
+    clone, reference = parity_db_url(relation)
+    real = _read(reference, relation)
+    engine = create_engine(clone, isolation_level="AUTOCOMMIT")
     try:
-        with engine.connect() as conn:
-            problems = _drift(
-                conn,
-                mutate_standin(APPROVAL_EVENTS),
-                _BLINDED_SCHEMA,
-                after_mirror_ddl=after_mirror_ddl,
-            )
+        with engine.connect() as connection:
+            function = connection.execute(
+                text(
+                    "SELECT pg_get_functiondef('public.prevent_approval_events_mutation()'::regprocedure)"
+                )
+            ).scalar_one()
+            trigger = connection.execute(
+                text("""
+                SELECT pg_get_triggerdef(t.oid,true) FROM pg_trigger t
+                JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname='public' AND c.relname='approval_events'
+                  AND t.tgname='trg_approval_events_immutable'
+            """)
+            ).scalar_one()
+            try:
+                if label == "missing-declaration":
+                    connection.execute(
+                        text("DROP TRIGGER trg_approval_events_immutable ON public.approval_events")
+                    )
+                    needle = "MISSING trigger: trg_approval_events_immutable"
+                elif label == "changed-function-body":
+                    assert "TG_OP" in function
+                    connection.execute(text(function.replace("TG_OP", "TG_OP || ''")))
+                    needle = "MISMATCHED trigger: trg_approval_events_immutable"
+                elif label == "changed-timing":
+                    assert "BEFORE" in trigger
+                    connection.execute(
+                        text("DROP TRIGGER trg_approval_events_immutable ON public.approval_events")
+                    )
+                    connection.execute(text(trigger.replace("BEFORE", "AFTER", 1)))
+                    needle = "MISMATCHED trigger: trg_approval_events_immutable"
+                else:
+                    connection.execute(
+                        text("""
+                        CREATE FUNCTION public.parity_unclassified_trigger()
+                        RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$
+                    """)
+                    )
+                    name = (
+                        "trg_approval_events_unclassified"
+                        if label == "unclassified-trigger"
+                        else "trg_approval_events_removed"
+                    )
+                    connection.execute(
+                        text(f"""
+                        CREATE TRIGGER {name} BEFORE INSERT ON public.approval_events
+                        FOR EACH ROW EXECUTE FUNCTION public.parity_unclassified_trigger()
+                    """)
+                    )
+                    needle = f"EXTRA trigger: {name}"
+                problems = _differences(real, _surface(connection, relation))
+                assert any(needle in problem for problem in problems)
+            finally:
+                connection.execute(
+                    text(
+                        "DROP TRIGGER IF EXISTS trg_approval_events_immutable ON public.approval_events"
+                    )
+                )
+                connection.execute(text(function))
+                connection.execute(text(trigger))
+                for name in ("trg_approval_events_unclassified", "trg_approval_events_removed"):
+                    connection.execute(
+                        text(f"DROP TRIGGER IF EXISTS {name} ON public.approval_events")
+                    )
+                connection.execute(
+                    text("DROP FUNCTION IF EXISTS public.parity_unclassified_trigger()")
+                )
+            assert not _differences(real, _surface(connection, relation))
     finally:
         engine.dispose()
-
-    assert any(needle in problem for problem in problems), (
-        f"The trigger parity guard did not report {label}: {needle}. "
-        f"It reported: {problems or 'no drift at all'}"
-    )
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
-def test_chain_schema_metadata_can_fail(parity_db_url: str):
-    """A wrong real schema must fail loudly instead of making parity vacuous."""
-    engine = create_engine(parity_db_url, isolation_level="AUTOCOMMIT")
+def test_chain_schema_metadata_can_fail(parity_db_url):
+    relation = RELATIONS["contact_entity_map"]
+    clone, reference = parity_db_url(relation)
+    from dataclasses import replace
+
+    engine = create_engine(clone)
     try:
-        with engine.connect() as conn:
+        with engine.connect() as connection:
             with pytest.raises(
-                AssertionError,
-                match=r"public\.contact_entity_map was not created by chains",
+                AssertionError, match=r"public\.contact_entity_map was not created by chains"
             ):
-                _drift(
-                    conn,
-                    replace(CONTACT_ENTITY_MAP, real_schema="public"),
-                    _BLINDED_SCHEMA,
-                )
+                _surface(connection, replace(relation, real_schema="public"))
+            assert _surface(connection, relation)["column"]
     finally:
         engine.dispose()
+    assert not _differences(_read(reference, relation), _read(clone, relation))
 
 
 def _exempted(lines: list[str], match_line_index: int) -> bool:
@@ -783,7 +659,7 @@ def _exempted(lines: list[str], match_line_index: int) -> bool:
 
 
 @pytest.mark.unit
-def test_no_test_hand_rolls_a_standin_table():
+def test_no_test_hand_rolls_a_standin_table(tmp_path):
     """A further hand-written copy of a stand-in table is refused at source level.
 
     The three original ``connector_registry`` stand-ins each looked reasonable
@@ -798,7 +674,7 @@ def test_no_test_hand_rolls_a_standin_table():
     """
     search_roots = [_REPO_ROOT / "tests", *sorted(_REPO_ROOT.glob("roster/*/tests"))]
     offenders: list[str] = []
-    for standin in STANDINS.values():
+    for standin in RELATIONS.values():
         pattern = re.compile(
             rf"CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?(\w+\.)?{standin.table}\b",
             re.IGNORECASE,
@@ -813,9 +689,53 @@ def test_no_test_hand_rolls_a_standin_table():
 
     assert not offenders, (
         "These tests hand-roll a table that already has a single shared "
-        "definition:\n" + "\n".join(offenders) + "\nUse the constant in "
-        "src/butlers/testing/schema_standins.py so a migration can never leave "
+        "definition:\n" + "\n".join(offenders) + "\nRun the actual migration chain rather than "
+        "copying chain-owned DDL so a migration can never leave "
         "one copy stale (bu-r8opr) -- or, for a fixture that genuinely is not a "
         f"query stand-in, put '# {_EXEMPTION_MARKER} <why>' within the "
         f"{_EXEMPTION_LOOKBACK_LINES} lines above it."
     )
+
+    # The broader detector follows actual migration inputs and both test roots,
+    # including quoted/multiline/dynamic/concatenated identities. This miniature
+    # is parser/source evidence, never a migrated database or runtime catalog.
+    import json
+    from dataclasses import asdict
+
+    from butlers.testing.schema_guard import copied_table_creations, unreviewed_creations
+
+    migration = tmp_path / "alembic/versions/core/current.py"
+    migration.parent.mkdir(parents=True)
+    migration.write_text("op.create_table('owned_table')\n")
+    test = tmp_path / "tests/test_copy.py"
+    test.parent.mkdir()
+    test.write_text("sql = " + repr('CREATE TABLE "public"."owned_table" (id integer)') + "\n")
+    roster_test = tmp_path / "roster/example/tests/test_copy.py"
+    roster_test.parent.mkdir(parents=True)
+    roster_test.write_text('sql = "CREATE TABLE " + unknown_table + " (id integer)"\n')
+    declarations = tmp_path / "exceptions.json"
+    declarations.write_text(json.dumps({"schema": 1, "exceptions": []}))
+    copies = copied_table_creations(tmp_path)
+    assert len(copies) == 2 and {copy.table for copy in copies} == {"owned_table", None}
+    assert len(unreviewed_creations(tmp_path, declarations)) == 2
+    # A bounded historical declaration binds BOTH complete source and exact
+    # literal bytes. A reason comment alone cannot authorize a changed fixture.
+    row = asdict(next(copy for copy in copies if copy.path == "tests/test_copy.py"))
+    row.pop("line")
+    row.update(
+        kind="historical", reason="Planted pre-migration parser control", proof="local-control"
+    )
+    declarations.write_text(json.dumps({"schema": 1, "exceptions": [row]}))
+    assert len(unreviewed_creations(tmp_path, declarations)) == 1
+    declarations.write_text(json.dumps({"schema": True, "exceptions": [row]}))
+    with pytest.raises(ValueError, match="invalid schema fixture exception declaration"):
+        unreviewed_creations(tmp_path, declarations)
+    declarations.write_text(json.dumps({"schema": 1, "exceptions": [row]}))
+    test.write_text(test.read_text() + "changed_fixture = True\n")
+    with pytest.raises(ValueError, match="stale schema fixture exception declaration"):
+        unreviewed_creations(tmp_path, declarations)
+    test.write_text("setup = run_actual_migrations()\n")
+    roster_test.write_text("setup = run_actual_migrations()\n")
+    declarations.write_text(json.dumps({"schema": 1, "exceptions": []}))
+    assert copied_table_creations(tmp_path) == ()
+    assert unreviewed_creations(tmp_path, declarations) == ()

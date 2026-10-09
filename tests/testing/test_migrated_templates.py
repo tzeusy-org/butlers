@@ -322,21 +322,65 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
         "stage": -1,
         "category": "database",
         "sqlstate": "23505",
+        "revision": "UNKNOWN",
     }
     status_file = tmp_path / "closed-builder-status.json"
     status_file.write_text(json.dumps(receipt))
-    assert migrated_templates._read_builder_failure(status_file) == ":bootstrap:-1:database:23505"
+    assert (
+        migrated_templates._read_builder_failure(status_file)
+        == ":bootstrap:-1:database:23505:UNKNOWN"
+    )
     assert "private" not in status_file.read_text()
     for corrupted in (
         {**receipt, "stage": True},
         {**receipt, "category": "private-value"},
         {**receipt, "sqlstate": "private-value"},
+        {**receipt, "revision": "private-value"},
         {**receipt, "operand": "private-value"},
     ):
         status_file.write_text(json.dumps(corrupted))
         assert migrated_templates._read_builder_failure(status_file) == ""
     status_file.write_text(json.dumps(receipt))
-    assert migrated_templates._read_builder_failure(status_file) == ":bootstrap:-1:database:23505"
+    assert (
+        migrated_templates._read_builder_failure(status_file)
+        == ":bootstrap:-1:database:23505:UNKNOWN"
+    )
+
+    # A real published migration frame supplies only its declared revision,
+    # while the driver's public duplicate-column code survives the finite
+    # decoder. No raw statement/context is needed to position the boundary.
+    import runpy
+
+    from alembic import op
+
+    class DuplicateColumn(Exception):
+        pgcode = "42701"
+
+    module = runpy.run_path(
+        str(
+            migrated_templates._ROOT / "roster/relationship/migrations/002_align_contacts_schema.py"
+        )
+    )
+    private_failure = ProgrammingError(
+        "private statement", {"password": "private-value"}, DuplicateColumn()
+    )
+    with monkeypatch.context() as patch:
+
+        def failed_statement(*args, **kwargs):
+            raise private_failure
+
+        patch.setattr(op, "execute", failed_statement)
+        with pytest.raises(ProgrammingError) as positioned:
+            module["upgrade"]()
+    receipt = migrated_templates._builder_failure(
+        positioned.value, {"phase": "migration", "stage": 3}
+    )
+    assert receipt["revision"] == "rel_002" and receipt["sqlstate"] == "42701"
+    status_file.write_text(json.dumps(receipt))
+    assert migrated_templates._read_builder_failure(status_file) == (
+        ":migration:3:database:42701:rel_002"
+    )
+    assert "private" not in status_file.read_text()
 
     # Actual filesystem/Git inputs and finite ambient aliases bind the key;
     # these are software provenance controls, not a real server equivalence.
@@ -422,3 +466,65 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
         asyncio.run(cancel_cleanup())
     finally:
         cleanup_release.set()
+
+    # These are real operation clocks over software controls. The same bounded
+    # owner follows asyncio.to_thread without disclosing source/key/SQL values;
+    # nested observations are spans, not an invented additive wall-time total.
+    from butlers.testing import migration_metrics
+
+    token = migration_metrics.begin("fresh")
+    try:
+        migrated_templates.source_profile(checkout)
+
+        def threaded_span():
+            with migration_metrics.measure("pool-connect", mode="fresh"):
+                time.sleep(0.002)
+
+        asyncio.run(asyncio.to_thread(threaded_span))
+        with pytest.raises(ValueError, match="planted operation failure"):
+            with migration_metrics.measure("cleanup-database"):
+                raise ValueError("planted operation failure")
+        observed = migration_metrics.snapshot()
+        assert observed["policy"] == "fresh" and observed["complete"] is True
+        assert [span["phase"] for span in observed["spans"]] == [
+            "key-hash",
+            "pool-connect",
+            "cleanup-database",
+        ]
+        assert [span["success"] for span in observed["spans"]] == [True, True, False]
+        assert all(
+            type(span["elapsed_s"]) is float
+            and span["elapsed_s"] >= 0
+            and set(span) == {"phase", "mode", "elapsed_s", "success"}
+            for span in observed["spans"]
+        )
+        assert str(checkout) not in json.dumps(observed)
+        with pytest.raises(ValueError, match="unknown migration provisioning span"):
+            with migration_metrics.measure("private operand"):
+                pass
+        with monkeypatch.context() as patch:
+            patch.setattr(migration_metrics, "_MAX_EVENTS", len(observed["spans"]))
+            threaded_span()
+        assert migration_metrics.snapshot()["complete"] is False
+    finally:
+        migration_metrics.finish(token)
+    # Restoring the prior per-test owner is distinct from fabricating fresh
+    # measurements after a failed/overflowed capture.
+    token = migration_metrics.begin("cloned-eligible")
+    try:
+        threaded_span()
+        assert migration_metrics.snapshot()["complete"] is True
+        assert len(migration_metrics.snapshot()["spans"]) == 1
+        reference_backend = _MemoryBackend()
+        reference_cache = TemplateCache(reference_backend)
+        try:
+            clone = reference_cache.borrow("clock-clone", stages, threading.Event())
+            reference_cache.fresh_reference(clone)
+            reference_span = migration_metrics.snapshot()["spans"][-1]
+            assert reference_span["phase"] == "fixture-total"
+            assert reference_span["mode"] == "fresh-reference"
+            assert reference_span["success"] is True
+        finally:
+            reference_cache.close()
+    finally:
+        migration_metrics.finish(token)

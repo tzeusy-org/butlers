@@ -43,6 +43,8 @@ from urllib.parse import quote, urlparse
 import asyncpg
 from sqlalchemy import Connection, create_engine, text
 
+from butlers.testing.migration_metrics import measure
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
 _PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
@@ -457,31 +459,32 @@ def create_migrated_test_db(
     )
     if any(not isinstance(stage, MigrationStage) for stage in requested):
         raise TypeError("stages must contain MigrationStage values")
-    if not fresh:
-        if not requested:
-            raise ValueError("a template requires at least one real migration stage")
-        return template_cache(postgres_container).borrow(
-            db_name, requested, _cancel or threading.Event()
-        )
+    with measure("fixture-total", mode="fresh" if fresh else "cloned"):
+        if not fresh:
+            if not requested:
+                raise ValueError("a template requires at least one real migration stage")
+            return template_cache(postgres_container).borrow(
+                db_name, requested, _cancel or threading.Event()
+            )
 
-    # Local import avoids a circular import at module load time.
-    from butlers.migrations import run_migrations
+        # Local import avoids a circular import at module load time.
+        from butlers.migrations import run_migrations
 
-    if schemas is None:
-        schemas = {}
-    if revisions is None:
-        revisions = {}
+        if schemas is None:
+            schemas = {}
+        if revisions is None:
+            revisions = {}
 
-    db_url = create_migration_db(postgres_container, db_name)
+        db_url = create_migration_db(postgres_container, db_name)
 
-    for stage in requested:
-        chain, schema, revision = stage.chain, stage.schema, stage.revision
-        if revision is None:
-            asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
-        else:
-            _upgrade_chain_to_revision(db_url, chain=chain, schema=schema, revision=revision)
+        for stage in requested:
+            chain, schema, revision = stage.chain, stage.schema, stage.revision
+            if revision is None:
+                asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
+            else:
+                _upgrade_chain_to_revision(db_url, chain=chain, schema=schema, revision=revision)
 
-    return db_url
+        return db_url
 
 
 def _upgrade_chain_to_revision(
@@ -601,26 +604,27 @@ async def create_migrated_test_pool(
     if search_path is not None:
         pool_kwargs["server_settings"] = {"search_path": search_path}
 
-    creation = asyncio.ensure_future(asyncpg.create_pool(db_url, **pool_kwargs))
-    try:
-        return await asyncio.shield(creation)
-    except BaseException:
-        while not creation.done():
-            try:
-                await asyncio.shield(creation)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        if not creation.cancelled() and creation.exception() is None:
-            await _join_owned_cleanup(creation.result().close())
-        if not fresh:
-            from butlers.testing.migrated_templates import template_cache
+    with measure("pool-connect", mode="fresh" if fresh else "cloned"):
+        creation = asyncio.ensure_future(asyncpg.create_pool(db_url, **pool_kwargs))
+        try:
+            return await asyncio.shield(creation)
+        except BaseException:
+            while not creation.done():
+                try:
+                    await asyncio.shield(creation)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not creation.cancelled() and creation.exception() is None:
+                await _join_owned_cleanup(creation.result().close())
+            if not fresh:
+                from butlers.testing.migrated_templates import template_cache
 
-            await _join_owned_cleanup(
-                asyncio.to_thread(template_cache(postgres_container).discard_clone, db_url)
-            )
-        raise
+                await _join_owned_cleanup(
+                    asyncio.to_thread(template_cache(postgres_container).discard_clone, db_url)
+                )
+            raise
 
 
 def _composite_test_search_path(schemas_to_search, *, stages=None, schemas=None) -> str:
@@ -671,4 +675,5 @@ async def migrated_pool(postgres_container: object, **kwargs):
                 pool.terminate()
                 raise RuntimeError("test pool cleanup timeout") from None
 
-        await _join_owned_cleanup(close())
+        with measure("pool-close"):
+            await _join_owned_cleanup(close())

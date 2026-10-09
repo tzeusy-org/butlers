@@ -28,7 +28,10 @@ from functools import wraps
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
+from psycopg2 import errorcodes
 from sqlalchemy import create_engine, text
+
+from butlers.testing.migration_metrics import measure, measured
 
 _ROOT = Path(__file__).resolve().parents[3]
 _WAIT_SECONDS = 300
@@ -38,23 +41,68 @@ _CACHES_LOCK = threading.RLock()
 _CACHES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _BUILD_PHASES = {"input", "create-database", "extensions", "bootstrap", "migration"}
 _FAILURE_CATEGORIES = {"database", "migration-admission", "import", "source", "unknown"}
-_SQLSTATES = {
-    "42501",
-    "23505",
-    "42P01",
-    "42703",
-    "23502",
-    "23514",
-    "42704",
-    "42P07",
-    "2BP01",
-    "42883",
-    "22023",
-    "42601",
-    "55000",
-    "57P03",
-    "UNKNOWN",
-}
+# This is the driver's finite public SQLSTATE enumeration, not an arbitrary
+# exception attribute or error-message parser. Unlisted/non-string values stay
+# UNKNOWN; no query, password, role or provider operand can be emitted.
+_SQLSTATES = frozenset(
+    value
+    for value in vars(errorcodes).values()
+    if type(value) is str and re.fullmatch(r"[0-9A-Z]{5}", value)
+) | {"UNKNOWN"}
+
+
+def _trusted_failure_revision(error: BaseException) -> str:
+    """Only a revision literal from an actual owned migration source frame."""
+    result = "UNKNOWN"
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        path = Path(frame.f_code.co_filename).resolve()
+        try:
+            relative = path.relative_to(_ROOT).as_posix()
+        except ValueError:
+            relative = ""
+        if (
+            relative.startswith("alembic/versions/")
+            or (relative.startswith(("src/", "roster/")) and "/migrations/" in relative)
+        ) and path.is_file():
+            value = frame.f_globals.get("revision")
+            literals = {
+                node.value.value
+                for node in ast.parse(path.read_text()).body
+                if isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Constant)
+                and type(node.value.value) is str
+                and any(
+                    isinstance(target, ast.Name) and target.id == "revision"
+                    for target in node.targets
+                )
+            }
+            if type(value) is str and value in literals:
+                result = value
+        traceback = traceback.tb_next
+    return result
+
+
+def _public_revisions() -> frozenset[str]:
+    values = {"UNKNOWN"}
+    for path in (
+        *_ROOT.glob("alembic/versions/**/*.py"),
+        *_ROOT.glob("src/**/migrations/*.py"),
+        *_ROOT.glob("roster/**/migrations/*.py"),
+    ):
+        for node in ast.parse(path.read_text()).body:
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Constant)
+                and type(node.value.value) is str
+                and any(
+                    isinstance(target, ast.Name) and target.id == "revision"
+                    for target in node.targets
+                )
+            ):
+                values.add(node.value.value)
+    return frozenset(values)
 
 
 class TemplateError(RuntimeError):
@@ -70,7 +118,7 @@ def _builder_failure(error: BaseException, state: dict) -> dict:
     category, sqlstate = "unknown", "UNKNOWN"
     if isinstance(error, DBAPIError):
         category = "database"
-        candidate = getattr(error.orig, "pgcode", None)
+        candidate = getattr(error.orig, "pgcode", None) or getattr(error.orig, "sqlstate", None)
         if type(candidate) is str and candidate in _SQLSTATES:
             sqlstate = candidate
     elif isinstance(error, BootstrapPrerequisiteError):
@@ -84,6 +132,7 @@ def _builder_failure(error: BaseException, state: dict) -> dict:
         "stage": state["stage"],
         "category": category,
         "sqlstate": sqlstate,
+        "revision": _trusted_failure_revision(error),
     }
 
 
@@ -103,7 +152,7 @@ def _read_builder_failure(path: Path) -> str:
         return ""
     if (
         type(value) is not dict
-        or set(value) != {"phase", "stage", "category", "sqlstate"}
+        or set(value) != {"phase", "stage", "category", "sqlstate", "revision"}
         or type(value["phase"]) is not str
         or value["phase"] not in _BUILD_PHASES
         or type(value["stage"]) is not int
@@ -112,9 +161,13 @@ def _read_builder_failure(path: Path) -> str:
         or value["category"] not in _FAILURE_CATEGORIES
         or type(value["sqlstate"]) is not str
         or value["sqlstate"] not in _SQLSTATES
+        or type(value["revision"]) is not str
+        or value["revision"] not in _public_revisions()
     ):
         return ""
-    return ":" + ":".join(str(value[key]) for key in ("phase", "stage", "category", "sqlstate"))
+    return ":" + ":".join(
+        str(value[key]) for key in ("phase", "stage", "category", "sqlstate", "revision")
+    )
 
 
 def _closed_failure(function):
@@ -296,6 +349,7 @@ def _environment_inputs(module: ast.Module) -> set[str]:
     return inputs
 
 
+@measured("key-hash")
 def source_profile(root: Path = _ROOT) -> str:
     """Bind actual bytes/modes, including dirty and new relevant working-tree inputs."""
     git_environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -432,6 +486,7 @@ class _Backend:
                 {"password": entry.password},
             )
 
+    @measured("cold-build")
     def construct(self, entry: _Entry, name: str, cancel: threading.Event) -> None:
         """Join/kill the actual owning builder before releasing any cache state."""
         with tempfile.TemporaryDirectory(prefix="butlers-template-status-") as directory:
@@ -484,6 +539,7 @@ class _Backend:
                         raise TemplateError("construction-group-cleanup-incomplete")
                     time.sleep(0.02)
 
+    @measured("parity-readback")
     def authority(self, entry: _Entry, *, complete: bool = False) -> tuple:
         with _connection(self.admin_url) as connection:
             roles = tuple(
@@ -524,6 +580,7 @@ class _Backend:
             r for r in edges if all(relevant(name) for name in r[:3]) or entry.role in r[:3]
         )
 
+    @measured("parity-readback")
     def database_state(self, name: str) -> tuple:
         with _connection(self.admin_url) as connection:
             owner, null_acl = connection.execute(
@@ -590,54 +647,63 @@ class _Backend:
 
     def clone(self, entry: _Entry, name: str) -> None:
         with _connection(self.admin_url) as connection:
-            connection.execute(
-                text(
-                    f"CREATE DATABASE {_ident(name)} OWNER {_ident(entry.role)} "
-                    f"TEMPLATE {_ident(entry.source_name)}"
+            with measure("clone-database", mode="cloned"):
+                connection.execute(
+                    text(
+                        f"CREATE DATABASE {_ident(name)} OWNER {_ident(entry.role)} "
+                        f"TEMPLATE {_ident(entry.source_name)}"
+                    )
                 )
-            )
             owner, null_acl, acl, settings = entry.database_state
             if owner != entry.role:
                 raise TemplateError("database-owner-changed")
-            if not null_acl:
-                grantees = {(True, None), (False, entry.role)}
-                grantees.update((r[1], r[2]) for r in self.database_state(name)[2])
-                for public, role in sorted(grantees, key=lambda r: (r[0], r[1] or "")):
-                    connection.execute(
-                        text(
-                            f"REVOKE ALL ON DATABASE {_ident(name)} FROM "
-                            + ("PUBLIC" if public else _ident(role))
-                        )
-                    )
-                for grantor, public, grantee, privilege, grantable in acl:
-                    if (
-                        privilege not in {"CREATE", "CONNECT", "TEMPORARY"}
-                        or type(grantable) is not bool
-                    ):
-                        raise TemplateError("unknown-database-acl")
-                    connection.execute(text(f"SET ROLE {_ident(grantor)}"))
-                    try:
+            with measure("database-acl", mode="cloned"):
+                if not null_acl:
+                    grantees = {(True, None), (False, entry.role)}
+                    grantees.update((r[1], r[2]) for r in self.database_state(name)[2])
+                    for public, role in sorted(grantees, key=lambda r: (r[0], r[1] or "")):
                         connection.execute(
                             text(
-                                f"GRANT {privilege} ON DATABASE {_ident(name)} TO "
-                                + ("PUBLIC" if public else _ident(grantee))
-                                + (" WITH GRANT OPTION" if grantable else "")
+                                f"REVOKE ALL ON DATABASE {_ident(name)} FROM "
+                                + ("PUBLIC" if public else _ident(role))
                             )
                         )
-                    finally:
-                        connection.execute(text("RESET ROLE"))
-            for role, variables in settings:
-                for variable in variables:
-                    setting, separator, value = variable.partition("=")
-                    if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", setting):
-                        raise TemplateError("unknown-database-setting")
-                    target = f"ALTER ROLE {_ident(role)} IN DATABASE" if role else "ALTER DATABASE"
-                    connection.execute(
-                        text(f"{target} {_ident(name)} SET {_ident(setting)} TO {_literal(value)}")
-                    )
+                    for grantor, public, grantee, privilege, grantable in acl:
+                        if (
+                            privilege not in {"CREATE", "CONNECT", "TEMPORARY"}
+                            or type(grantable) is not bool
+                        ):
+                            raise TemplateError("unknown-database-acl")
+                        connection.execute(text(f"SET ROLE {_ident(grantor)}"))
+                        try:
+                            connection.execute(
+                                text(
+                                    f"GRANT {privilege} ON DATABASE {_ident(name)} TO "
+                                    + ("PUBLIC" if public else _ident(grantee))
+                                    + (" WITH GRANT OPTION" if grantable else "")
+                                )
+                            )
+                        finally:
+                            connection.execute(text("RESET ROLE"))
+            with measure("database-settings", mode="cloned"):
+                for role, variables in settings:
+                    for variable in variables:
+                        setting, separator, value = variable.partition("=")
+                        if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", setting):
+                            raise TemplateError("unknown-database-setting")
+                        target = (
+                            f"ALTER ROLE {_ident(role)} IN DATABASE" if role else "ALTER DATABASE"
+                        )
+                        connection.execute(
+                            text(
+                                f"{target} {_ident(name)} SET {_ident(setting)} "
+                                f"TO {_literal(value)}"
+                            )
+                        )
         if self.database_state(name) != entry.database_state:
             raise TemplateError("database-acl-settings-mismatch")
 
+    @measured("parity-readback")
     def schema_dump(self, name: str) -> bytes:
         parsed = urlparse(self.admin_url)
         version = self.container.get_wrapped_container().exec_run(
@@ -689,10 +755,12 @@ class _Backend:
                 )
             )
 
+    @measured("cleanup-database")
     def drop_db(self, name: str) -> None:
         with _connection(self.admin_url) as connection:
             connection.execute(text(f"DROP DATABASE IF EXISTS {_ident(name)} WITH (FORCE)"))
 
+    @measured("cleanup-role")
     def drop_role(self, role: str) -> None:
         with _connection(self.admin_url) as connection:
             connection.execute(text(f"DROP ROLE IF EXISTS {_ident(role)}"))
@@ -794,6 +862,7 @@ class TemplateCache:
                 raise
 
     @_closed_failure
+    @measured("fixture-total", mode="fresh-reference")
     def fresh_reference(self, clone_url: str) -> str:
         """Observe clone/global metadata BEFORE bootstrap can repair a defect."""
         name = urlparse(clone_url).path.lstrip("/")
