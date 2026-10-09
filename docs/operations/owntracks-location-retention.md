@@ -1421,3 +1421,16 @@ SQLSTATE flags if the real client includes them. They never print command
 arguments, SQL, row bodies or arbitrary error text through that diagnostic.
 Absent categories remain unknown. Original full-history, ownership, failure
 and role assertions remain mandatory; diagnostics do not certify replay.
+
+The later code-only client diagnostics separated native-import SQLSTATE 42501
+from an earlier ordinary-dump 42P01. The ordinary dump sets session
+`row_security=off`; the native importer now sets `SET LOCAL row_security=on`
+inside its existing transaction before using `connector_writer`. This applies
+the unchanged forced policies and exact role, with no grant or ownership change.
+PostgreSQL's [row-security contract](https://www.postgresql.org/docs/17/ddl-rowsecurity.html)
+states that `off` raises when policies would filter a query. The existing actual
+restore species neutralizes only this setting in the same artifact, requires a
+native-import 42501 refusal, then retains the full original healthy restore and
+row/posture controls. Those new causal controls still require exact-head hosted
+execution; this source correction does not claim the ordinary missing-relation
+cause or certify recovery.

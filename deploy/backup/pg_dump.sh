@@ -543,6 +543,7 @@ SELECT coalesce(pg_catalog.pg_has_role(current_user,
   AS butlers_native_copy_restore_authorized \gset
 \if :butlers_native_copy_restore_authorized
 BEGIN;
+SET LOCAL row_security=on;
 SET LOCAL TIME ZONE 'UTC';
 DO $$ BEGIN
   IF EXISTS(SELECT 1 FROM butlers_owntracks_copy_restore_rows WHERE

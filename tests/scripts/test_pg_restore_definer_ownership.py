@@ -45,6 +45,7 @@ pinned here:
 from __future__ import annotations
 
 import gzip
+import json
 import os
 import re
 import shutil
@@ -535,7 +536,7 @@ def test_restore_script_refuses_to_certify_a_laundered_restore(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
-    backup_artifact: Path, source_db_url: str, postgres_container, tmp_path: Path
+    backup_artifact: Path, source_db_url: str, postgres_container, tmp_path: Path, capsys
 ) -> None:
     """A restore the script certifies has no definer function on the restorer.
 
@@ -560,6 +561,27 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         admin_url=admin_url,
     )
     db_name = "butlers_restore_certified"
+
+    # The ordinary pg_dump stream sets session row_security=off. The appended
+    # constrained-role importer must explicitly APPLY the unchanged FORCE-RLS
+    # policies, not inherit the dump's mode that raises when policies apply.
+    # Neutralize only this producer setting in the SAME actual artifact/client.
+    original_artifact = gzip.decompress(backup_artifact.read_bytes()).decode()
+    native_mode = "\\if :butlers_native_copy_restore_authorized\nBEGIN;\nSET LOCAL row_security=on;"
+    assert original_artifact.count(native_mode) == 1
+    neutralized = tmp_path / "native-row-security-off.sql.gz"
+    neutralized.write_bytes(
+        gzip.compress(
+            original_artifact.replace(
+                native_mode, native_mode.replace("row_security=on", "row_security=off"), 1
+            ).encode()
+        )
+    )
+    capsys.readouterr()
+    refused_native = _run_restore_script(neutralized, target, "butlers_restore_native_mode_off")
+    diagnostic = json.loads(capsys.readouterr().out.split("RESTORE_COMMAND_DIAGNOSTIC ")[-1])
+    assert refused_native.returncode != 0
+    assert diagnostic["source_stage_codes"]["native_copy_import"]["42501"]
 
     result = _run_restore_script(backup_artifact, target, db_name)
     assert result.returncode == 0, (
