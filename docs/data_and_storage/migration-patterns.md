@@ -360,10 +360,17 @@ bound source-copy identity/rollback diagnostics are labelled separately from bot
 producer species. Child deadlines include bounded kill, concurrent pipe draining and reap; no
 raw client diagnostics or credentials become receipts.
 
-A passing source/static/collection check is not SQL proof. Full migrated-state controls,
-independently reviewed exact-head normal evidence and the protected landing remain required
-before this follow-up is called delivered. Applied core_255, the historical q34 assertions and
-function/caller/FK/FORCE-RLS hardening scopes remain unchanged.
+A passing source/static/collection check is not SQL proof. Hosted normal run
+[37869001709](https://github.com/tzeusy-org/butlers/actions/runs/37869001709) at source
+`6ab2c0255650753cb915f1e40168ec36d0c061a7` passed all five owning PostgreSQL cases without
+skips. Its populated-state node reached both Health and General dynamic heads, the separate
+readbacks, all historical controls, unmodified regular-file psql success, staged late NOWAIT,
+identity/race/rollback refusals and released-lock restored positives. Independent SOURCE and
+preparation review qualified these controls for normal own native sync/archive. Fresh final-head
+normal and independent review, protected validation and actual landing remain required before
+this follow-up is called delivered. Applied core_255, the historical q34 assertions and
+function/caller/FK/FORCE-RLS hardening scopes remain unchanged; this evidence does not establish
+their separate authority contract or equate the trusted migration owner with runtime roles.
 
 ## Implementation Notes
 
