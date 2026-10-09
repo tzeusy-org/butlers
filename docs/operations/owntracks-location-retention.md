@@ -946,3 +946,31 @@ remain unrun until the exact successor executes hosted. Missing attempts/source
 selectors, mixed input or interrupted contexts remain unknown. Full registered
 recursive/all-holder, lawful mixed-copy and managed browser/native/protected
 closure remain mandatory beyond this bounded interrupted-attempt path.
+
+### Scheduled question copy before caller-context termination
+
+An admitted CLI receive previously required its caller context to close before
+reducing its separately scheduled child, while that context could not qualify
+its receive call without the child being disposed. The actual owning task
+producer now has a separate disposition stage. It requires the complete stored
+receiving floor, current constructor incarnation, unchanged original task,
+finished native server or actual private handler result and every assigned
+processing/context receipt. Its reduced task and immutable original/reduced
+prompt receipt commit together and are checked from another acquisition.
+
+The task receipt closes only that scheduled copy. The caller context requires
+all original receiving attempts, complete same-name private/recorded Tool
+matching, exact successful scheduled-result metadata and each full task
+receipt. A missing admitted attempt, error or mixed result, changed body or
+unmatched sibling does not qualify. The final receiver then checks the exact
+partial task receipt while separately requiring its caller context and every
+other lifetime; it does not treat the reduced prompt as a terminal receipt.
+
+Current strict software controls plant live server/processing holds, actual
+producer receipt-write faults, healthy replay and lost readback, plus same-name
+sibling/full-floor/current-body/result negatives. The existing migrated species
+adds a fault at the actual producer's receipt INSERT after its actual task
+UPDATE, a different acquisition's original-task/no-receipt survivor and restored
+actual-producer/readback/replay. These new SQL controls remain hosted-unrun.
+Failed/unaccepted CLI contexts, lawful mixed descendants and complete online,
+browser and protected/native erasure remain required continuation work.

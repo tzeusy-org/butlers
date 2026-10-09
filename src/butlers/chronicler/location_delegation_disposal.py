@@ -297,7 +297,27 @@ async def _close_question_receiver(runtime: Any, binding: dict) -> UUID | None:
                         generation,
                     )
                     if schedule is not None:
-                        if (
+                        task_receipt = await conn.fetchrow(
+                            "SELECT * FROM location_received_question_task_dispositions "
+                            "WHERE receiving_generation=$1",
+                            generation,
+                        )
+                        if task_receipt is not None:
+                            if (
+                                task_receipt["task_id"] != schedule["task_id"]
+                                or task_receipt["decision_id"] != binding["decision_id"]
+                                or task_receipt["manifest_digest"] != binding["manifest_digest"]
+                                or task_receipt["original_prompt_digest"]
+                                != schedule["prompt_digest"]
+                                or task_receipt["reduced_prompt_digest"]
+                                != hashlib.sha256(_REDUCED_TASK.encode()).digest()
+                                or schedule["prompt"] != _REDUCED_TASK
+                                or schedule["enabled"] is not False
+                            ):
+                                raise PolicyUnavailableError(
+                                    "Native receiving task receipt differs"
+                                )
+                        elif (
                             hashlib.sha256(schedule["prompt"].encode()).digest()
                             != schedule["prompt_digest"]
                         ):
@@ -363,6 +383,9 @@ async def prepare_question_receivers(runtime: Any, decision: UUID) -> dict:
                 await close_owned_questions(runtime, decision)
                 await dispose_core_question_contexts(runtime, binding)
                 await dispose_memory_question_contexts(runtime, binding, plan)
+                from butlers.chronicler.location_question_tasks import prepare_question_task
+
+                await prepare_question_task(runtime, binding)
                 receipt = await _close_question_receiver(runtime, binding)
             if receipt is not None:
                 receipts.append(str(receipt))

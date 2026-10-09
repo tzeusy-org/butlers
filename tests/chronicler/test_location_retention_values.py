@@ -3129,6 +3129,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_recursive_question_cohort_values()
     await _assert_recursive_question_observation_values()
     await _assert_unaccepted_question_recovery_values()
+    await _assert_receiving_task_disposition_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
 
@@ -7014,3 +7015,305 @@ async def _assert_unaccepted_question_recovery_values():
     assert result["receipt_id"] == str(pool.receipt)  # Committed evidence survives lost ACK.
     pool.unknown = False
     assert await prepare_question_loan(runtime, decision, loan, generation) == result
+
+
+async def _assert_receiving_task_disposition_values():
+    """Actual own task reducer and profile readers; SQL doubles, not PG/online."""
+    import hashlib
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_delegation_disposal import _REDUCED_TASK
+    from butlers.chronicler.location_memory_context import captured_artifact_calls
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_tasks import prepare_question_task
+    from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+
+    generation, decision, incarnation, ledger, loan, question, task_id, server, tool = (
+        uuid4() for _ in range(9)
+    )
+    binding = dict(
+        receiving_generation=generation,
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        source_name="finance",
+        question_generation=question,
+        ledger_id=ledger,
+        loan_id=loan,
+        body_digest=b"q" * 32,
+        receiving_incarnation=incarnation,
+    )
+    prompt = "synthetic original copied question task"
+    task = dict(
+        task_id=task_id,
+        prompt=prompt,
+        enabled=True,
+        prompt_digest=hashlib.sha256(prompt.encode()).digest(),
+    )
+    admitted = binding | dict(exclusive_input=True, parent_count=1)
+    attempt = binding | dict(server_request=server, tool_generation=tool, receiving_session=uuid4())
+
+    class Pool:
+        in_transaction = False
+        finished = False
+        unresolved = False
+        previous = None
+        fault = False
+        unknown = False
+        updated = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            old_task, old_receipt = deepcopy(task), deepcopy(self.previous)
+            self.in_transaction = True
+            try:
+                yield
+            except BaseException:
+                task.clear()
+                task.update(old_task)
+                self.previous = old_receipt
+                raise
+            finally:
+                self.in_transaction = False
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_received_delegation_floors" in sql:
+                return binding
+            if "FROM location_received_delegation_inputs" in sql:
+                return admitted
+            if "FROM location_received_delegation_attempts" in sql:
+                return attempt
+            if "FROM location_received_delegation_schedules s" in sql:
+                return task
+            if "FROM location_received_question_task_dispositions d" in sql:
+                return None if self.unknown or self.previous is None else self.previous | task
+            if "FROM location_received_question_task_dispositions" in sql:
+                return self.previous
+            raise AssertionError("unexpected task disposition row")
+
+        async def fetchval(self, sql, *args):
+            if "location_received_delegation_server_finished" in sql:
+                return self.finished
+            if "location_received_delegation_claims c" in sql:
+                return self.unresolved
+            raise AssertionError("unexpected task disposition value")
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction
+            if "UPDATE scheduled_tasks" in sql:
+                self.updated = True
+                task.update(prompt=args[1], enabled=False)
+            elif "INSERT INTO location_received_question_task_dispositions" in sql:
+                if self.fault:
+                    raise RuntimeError("synthetic actual receipt failure")
+                self.previous = dict(
+                    zip(
+                        (
+                            "receiving_generation",
+                            "task_id",
+                            "decision_id",
+                            "manifest_digest",
+                            "original_prompt_digest",
+                            "reduced_prompt_digest",
+                            "receipt_id",
+                        ),
+                        args,
+                    )
+                )
+            else:
+                raise AssertionError("unexpected task disposition write")
+
+    pool = Pool()
+
+    async def lock(conn):
+        assert conn is pool and conn.in_transaction
+
+    runtime = SimpleNamespace(
+        domain=pool,
+        lock_domain=lock,
+        incarnation=incarnation,
+        delegation_writer=SimpleNamespace(receiving={}, pending={}),
+    )
+    assert not await prepare_question_task(runtime, binding)
+    assert task["prompt"] == prompt and pool.previous is None
+    pool.finished = True
+    pool.unresolved = True
+    assert not await prepare_question_task(runtime, binding)
+    assert not pool.updated
+    pool.unresolved = False
+    pool.fault = True
+    with pytest.raises(RuntimeError, match="actual receipt failure"):
+        await prepare_question_task(runtime, binding)
+    assert pool.updated and task["prompt"] == prompt and pool.previous is None
+    pool.fault = False
+    assert await prepare_question_task(runtime, binding)
+    receipt = deepcopy(pool.previous)
+    assert task["prompt"] == _REDUCED_TASK and task["enabled"] is False
+    assert await prepare_question_task(runtime, binding) and pool.previous == receipt
+    pool.unknown = True
+    with pytest.raises(PolicyUnavailableError, match="Committed native question task"):
+        await prepare_question_task(runtime, binding)
+    assert pool.previous == receipt
+    pool.unknown = False
+    task["prompt"] = "independent changed current task"
+    with pytest.raises(PolicyUnavailableError, match="task disposition differs"):
+        await prepare_question_task(runtime, binding)
+    task["prompt"] = _REDUCED_TASK
+    assert await prepare_question_task(runtime, binding)
+
+    call = dict(
+        name="delegate_receive",
+        module="core",
+        outcome="success",
+        input_fingerprint="ab" * 32,
+        result=dict(status="scheduled", ledger_id=str(ledger), task_id=str(task_id)),
+    )
+    witness = dict(
+        tool_generation=tool,
+        tool_name="delegate_receive",
+        module_name="core",
+        outcome="success",
+        input_digest=bytes.fromhex(call["input_fingerprint"]),
+        result_digest=bytes.fromhex(fingerprint_tool_call_payload(call["result"])),
+        exclusive_inputs=True,
+    )
+    assert not captured_artifact_calls([call], [], [witness])
+    assert captured_artifact_calls(
+        [call], [], [witness], closed_receives=[dict(tool_generation=tool)]
+    )
+    sibling = uuid4()
+    assert not captured_artifact_calls(
+        [call, call],
+        [],
+        [witness, witness | dict(tool_generation=sibling)],
+        closed_receives=[dict(tool_generation=tool)],
+    )
+    assert captured_artifact_calls(
+        [call, call],
+        [],
+        [witness, witness | dict(tool_generation=sibling)],
+        closed_receives=[dict(tool_generation=tool), dict(tool_generation=sibling)],
+    )
+    assert not captured_artifact_calls(
+        [call | dict(result=call["result"] | dict(answer="mixed body"))],
+        [],
+        [witness],
+        closed_receives=[dict(tool_generation=tool)],
+    )
+    assert not captured_artifact_calls(
+        [call | dict(outcome="error")], [], [witness], closed_receives=[dict(tool_generation=tool)]
+    )
+    from butlers.chronicler.location_question_tasks import closed_received_question_tools
+
+    session = attempt["receiving_session"]
+    row = admitted | dict(
+        tool_generation=tool,
+        receiving_session=session,
+        task_id=task_id,
+        prompt_digest=task["prompt_digest"],
+        decision_id=decision,
+        manifest_digest=b"m" * 32,
+        original_prompt_digest=task["prompt_digest"],
+        reduced_prompt_digest=hashlib.sha256(_REDUCED_TASK.encode()).digest(),
+        prompt=_REDUCED_TASK,
+        enabled=False,
+        floor_source=admitted["source_name"],
+        floor_digest=admitted["body_digest"],
+        floor_question=question,
+        floor_loan=loan,
+        floor_ledger=ledger,
+        floor_decision=decision,
+        floor_manifest=b"m" * 32,
+        floor_incarnation=incarnation,
+        outcome="success",
+        result_digest=witness["result_digest"],
+        exclusive_inputs=True,
+        module_name="core",
+        tool_name="delegate_receive",
+        tool_session=session,
+    )
+
+    class Profile:
+        attempts = [attempt]
+        rows = {generation: row}
+
+        async def fetch(self, sql, *args):
+            assert '"home".location_received_delegation_attempts' in sql and args == (session,)
+            return self.attempts
+
+        async def fetchrow(self, sql, *args):
+            assert '"home".location_received_question_task_dispositions' in sql
+            assert '"home".location_runtime_tool_intents' in sql
+            assert "chronicler." not in sql
+            return self.rows.get(args[0])
+
+    profile = Profile()
+    selected_plan = dict(decision_id=str(decision), manifest_digest=(b"m" * 32).hex())
+    assert await closed_received_question_tools(
+        profile, runtime, '"home"', session, selected_plan
+    ) == [dict(tool_generation=tool)]
+    for key, bad in [
+        ("floor_manifest", b"x" * 32),
+        ("floor_decision", uuid4()),
+        ("floor_incarnation", uuid4()),
+        ("floor_digest", b"x" * 32),
+        ("floor_loan", uuid4()),
+        ("floor_question", uuid4()),
+        ("module_name", "memory"),
+        ("tool_name", "other"),
+        ("tool_session", uuid4()),
+        ("result_digest", b"x" * 32),
+        ("prompt", "independent current prompt"),
+        ("exclusive_inputs", False),
+    ]:
+        old = row[key]
+        row[key] = bad
+        assert (
+            await closed_received_question_tools(profile, runtime, '"home"', session, selected_plan)
+            == []
+        )
+        row[key] = old
+    # A second original attempt of the same Tool cannot disappear in an
+    # admitted JOIN and a closed successful sibling cannot proxy its receipt.
+    second = uuid4()
+    profile.attempts = [attempt, attempt | dict(receiving_generation=second)]
+    assert (
+        await closed_received_question_tools(profile, runtime, '"home"', session, selected_plan)
+        == []
+    )
+    second_task = uuid4()
+    profile.rows[second] = row | dict(task_id=second_task)
+    assert (
+        await closed_received_question_tools(profile, runtime, '"home"', session, selected_plan)
+        == []
+    )  # One actual Tool result cannot match two different scheduled tasks.
+    second_tool = uuid4()
+    profile.attempts[1] = profile.attempts[1] | dict(tool_generation=second_tool)
+    profile.rows[second].update(
+        tool_generation=second_tool,
+        result_digest=bytes.fromhex(
+            fingerprint_tool_call_payload(
+                dict(
+                    status="scheduled",
+                    ledger_id=str(ledger),
+                    task_id=str(second_task),
+                )
+            )
+        ),
+    )
+    assert {
+        x["tool_generation"]
+        for x in await closed_received_question_tools(
+            profile, runtime, '"home"', session, selected_plan
+        )
+    } == {tool, second_tool}
+    profile.rows[second]["exclusive_input"] = False
+    assert await closed_received_question_tools(
+        profile, runtime, '"home"', session, selected_plan
+    ) == [dict(tool_generation=tool)]

@@ -741,6 +741,8 @@ async def _assert_native_received_question_schedule(monkeypatch):
                     if self.floors[gen]["decision_id"] == args[0] and receipt == args[1]:
                         return self.floors[gen] | {"receipt_id": receipt}
                 return None
+            if "FROM location_received_question_task_dispositions" in sql:
+                return None  # Exact newly installed table, no planted partial receipt.
             if "FROM location_received_delegation_floors" in sql:
                 return self.floors.get(args[0])
             if "FROM location_received_delegation_attempts" in sql:

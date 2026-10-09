@@ -772,6 +772,15 @@ async def _dispose_runtime_context_once(
                 closed_answers = await closed_source_answer_tools(
                     conn, runtime, schema, input_generation, plan
                 )
+            closed_receives = []
+            if any(row["tool_name"] == "delegate_receive" for row in tool_witnesses):
+                from butlers.chronicler.location_question_tasks import (
+                    closed_received_question_tools,
+                )
+
+                closed_receives = await closed_received_question_tools(
+                    conn, runtime, schema, frozen["receiving_session"], plan
+                )
             if not captured_artifact_calls(
                 session["tool_calls"],
                 artifacts,
@@ -779,6 +788,7 @@ async def _dispose_runtime_context_once(
                 mutation_inputs,
                 closed_questions,
                 closed_answers,
+                closed_receives,
             ):
                 return False  # Unknown/routed mutations retain their input and copy holders.
             already_disposed = set()
@@ -930,6 +940,7 @@ def captured_artifact_calls(
     mutation_inputs: list[Any] = (),
     closed_questions: list[Any] = (),
     closed_answers: list[Any] = (),
+    closed_receives: list[Any] = (),
 ) -> bool:
     """Recorded outputs can select only SAME-writer captured artifact IDs.
 
@@ -953,7 +964,11 @@ def captured_artifact_calls(
     if witnesses or any(
         isinstance(call, dict)
         and call.get("name")
-        in (NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS | {"delegate_ask", "delegate_answer"})
+        in (
+            NATIVE_MEMORY_READ_TOOLS
+            | _MUTATION_TOOLS
+            | {"delegate_ask", "delegate_answer", "delegate_receive"}
+        )
         for call in calls
     ):
         try:
@@ -971,6 +986,17 @@ def captured_artifact_calls(
                 or row["outcome"] != "success"
                 or row["exclusive_inputs"] is not True
                 or not any(q["tool_generation"] == row["tool_generation"] for q in closed_questions)
+                for row in applicable
+            ):
+                return False
+            continue
+        if call.get("name") == "delegate_receive":
+            applicable = [row for row in witnesses if row["tool_name"] == "delegate_receive"]
+            if not applicable or any(
+                row["module_name"] != "core"
+                or row["outcome"] != "success"
+                or row["exclusive_inputs"] is not True
+                or not any(q["tool_generation"] == row["tool_generation"] for q in closed_receives)
                 for row in applicable
             ):
                 return False
@@ -1280,7 +1306,9 @@ async def capture_context_catalog_source(
             or (
                 tool["tool_name"]
                 in (
-                    NATIVE_MEMORY_READ_TOOLS | _MUTATION_TOOLS | {"delegate_ask", "delegate_answer"}
+                    NATIVE_MEMORY_READ_TOOLS
+                    | _MUTATION_TOOLS
+                    | {"delegate_ask", "delegate_answer", "delegate_receive"}
                 )
                 and tool["exclusive_inputs"] is not True
             )

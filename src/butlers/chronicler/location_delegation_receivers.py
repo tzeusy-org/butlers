@@ -543,6 +543,10 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
             or committed["exclusive_input"] is not prepared["exclusive_input"]
         ):
             raise PolicyUnavailableError("Committed native receiving question is unknown")
+        if tool is not None:
+            tool.read_observed = True
+            if prepared["exclusive_input"] is not True or prepared["parent_count"] < 1:
+                tool.mixed_inputs = True
         admission = _ReceivedQuestion(writer, pending.receiving, ledger, digest, pending.deadline)
         writer.receiving[pending.receiving] = admission
         return admission

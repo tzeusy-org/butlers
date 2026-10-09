@@ -276,6 +276,9 @@ async def prepare_question_loan(
         await close_owned_questions(runtime, decision)
         await dispose_core_question_contexts(runtime, binding)
         await dispose_memory_question_contexts(runtime, binding, plan)
+        from butlers.chronicler.location_question_tasks import prepare_question_task
+
+        await prepare_question_task(runtime, binding)
         receipt = await _close_question_receiver(runtime, binding)
     return {
         "decision_id": str(decision),

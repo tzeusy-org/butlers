@@ -2068,6 +2068,71 @@ async def _assert_question_receiver_disposal(domain, runtime):
         generation,
     )
     await domain.execute("UPDATE scheduled_tasks SET prompt=$2 WHERE id=$1", task, prompt)
+    # Fault the ACTUAL task producer's receipt INSERT after its real UPDATE;
+    # a different acquisition sees the complete original task and no receipt.
+    # Same-species SQL evidence only, not registered online source proof.
+    from contextlib import asynccontextmanager
+
+    from butlers.chronicler.location_question_tasks import prepare_question_task
+
+    updated = []
+
+    class TaskFaultConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+        async def execute(self, sql, *args):
+            if "INSERT INTO location_received_question_task_dispositions" in sql:
+                raise RuntimeError("planted actual task receipt fault")
+            result = await self.conn.execute(sql, *args)
+            if "UPDATE scheduled_tasks" in sql:
+                updated.append(True)
+            return result
+
+    class TaskFaultPool:
+        @asynccontextmanager
+        async def acquire(self):
+            async with domain.acquire() as conn:
+                yield TaskFaultConnection(conn)
+
+        async def execute(self, sql, *args):
+            async with self.acquire() as conn:
+                return await conn.execute(sql, *args)
+
+    original_domain = runtime.domain
+    runtime.domain = TaskFaultPool()
+    try:
+        with pytest.raises(RuntimeError, match="actual task receipt fault"):
+            await prepare_question_task(runtime, binding)
+    finally:
+        runtime.domain = original_domain
+    assert updated == [True]
+    async with domain.acquire() as survivor:
+        assert (
+            await survivor.fetchval("SELECT prompt FROM scheduled_tasks WHERE id=$1", task)
+            == prompt
+        )
+        assert not await survivor.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_question_task_dispositions WHERE receiving_generation=$1)",
+            generation,
+        )
+    assert await prepare_question_task(runtime, binding)
+    assert await prepare_question_task(runtime, binding)  # Same original/reduced receipt replay.
+    async with domain.acquire() as committed:
+        partial = await committed.fetchrow(
+            "SELECT * FROM location_received_question_task_dispositions WHERE receiving_generation=$1",
+            generation,
+        )
+        assert partial["original_prompt_digest"] == hashlib.sha256(prompt.encode()).digest()
+        assert partial["reduced_prompt_digest"] == hashlib.sha256(_REDUCED_TASK.encode()).digest()
+        assert partial["manifest_digest"] == binding["manifest_digest"]
+        assert not await committed.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_received_delegation_dispositions WHERE receiving_generation=$1)",
+            generation,
+        )  # Its scheduled copy receipt does not attest final receiving/context lifetime.
     receipt = await _close_question_receiver(runtime, binding)
     assert receipt is not None
     async with domain.acquire() as observed:

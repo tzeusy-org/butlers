@@ -241,6 +241,15 @@ async def _dispose_core_delegated_contexts(
                     generation,
                     plan,
                 )
+                from butlers.chronicler.location_question_tasks import (
+                    closed_received_question_tools,
+                )
+
+                receives = []
+                if any(row["tool_name"] == "delegate_receive" for row in witnesses):
+                    receives = await closed_received_question_tools(
+                        conn, runtime, _own_schema(runtime), frozen["receiving_session"], plan
+                    )
                 if not captured_artifact_calls(
                     session["tool_calls"],
                     [],
@@ -248,6 +257,7 @@ async def _dispose_core_delegated_contexts(
                     [],
                     questions,
                     answers,
+                    receives,
                 ):
                     continue
                 receipt = uuid4()
