@@ -47,7 +47,22 @@ DECLARE
         NULLIF(current_setting('butlers.connecting_user', true), ''),
         'butlers'
     )::name;
+    _amendment_target TEXT := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    );
+    _amendment_oid OID := to_regclass('public.insight_amendments');
+    _amendment_owner OID;
+    _amendment_kind "char";
+    _amendment_persistence "char";
+    _amendment_target_oid OID;
+    _amendment_target_safe BOOLEAN;
+    _bootstrap_oid OID;
 BEGIN
+    -- Clear even a previous failed invocation's session snapshots before checks.
+    PERFORM set_config('butlers.bootstrap_amendment_oid', '', false);
+    PERFORM set_config('butlers.bootstrap_amendment_owner', '', false);
+    PERFORM set_config('butlers.bootstrap_amendment_target', '', false);
+    PERFORM set_config('butlers.bootstrap_amendment_target_oid', '', false);
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _migration_user) THEN
         RAISE EXCEPTION
             'Migration/runtime user "%" does not exist. Create it first or set PGOPTIONS="-c butlers.connecting_user=<existing role>".',
@@ -62,6 +77,45 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'restore-drill admin bootstrap requires a cluster superuser';
     END IF;
+
+    -- AMENDMENT_OWNER_READ_ONLY_PREFLIGHT: no ownership or ACL side effects.
+    -- Keep exact text lookup: casting a configured name first can truncate it.
+    IF _amendment_oid IS NOT NULL THEN
+        SELECT oid INTO _bootstrap_oid FROM pg_roles WHERE rolname = current_user;
+        SELECT oid,
+               rolcanlogin AND NOT (rolsuper OR rolcreaterole OR rolcreatedb
+                                    OR rolreplication OR rolbypassrls)
+          INTO _amendment_target_oid, _amendment_target_safe
+          FROM pg_roles WHERE rolname::text = _amendment_target;
+        IF NOT COALESCE(_amendment_target_safe, false)
+           OR _amendment_target_oid = _bootstrap_oid
+           OR _amendment_target ~ '^(butler_|connector_|restore_drill_)'
+           OR _amendment_target IN (
+               'dnd_generation_owner', 'runtime_attention_outbox_owner', 'dashboard_auth_api'
+           ) THEN
+            RAISE EXCEPTION 'amendment ownership requires the configured ordinary migration login';
+        END IF;
+        SELECT relowner, relkind, relpersistence
+          INTO _amendment_owner, _amendment_kind, _amendment_persistence
+          FROM pg_class WHERE oid = _amendment_oid;
+        IF _amendment_kind IS DISTINCT FROM 'r'::"char"
+           OR _amendment_persistence IS DISTINCT FROM 'p'::"char" THEN
+            RAISE EXCEPTION 'amendment ownership requires the qualified ordinary persistent table';
+        END IF;
+        IF _amendment_owner IS NULL
+           OR _amendment_owner NOT IN (_bootstrap_oid, _amendment_target_oid) THEN
+            RAISE EXCEPTION 'amendment ownership refuses an unexpected existing owner';
+        END IF;
+    END IF;
+    -- Session-only snapshots bind the later DO to this actual catalog read.
+    -- Every full script invocation overwrites them; they grant no authority.
+    PERFORM set_config('butlers.bootstrap_amendment_oid',
+                       COALESCE(_amendment_oid::text, ''), false);
+    PERFORM set_config('butlers.bootstrap_amendment_owner',
+                       COALESCE(_amendment_owner::text, ''), false);
+    PERFORM set_config('butlers.bootstrap_amendment_target', _amendment_target, false);
+    PERFORM set_config('butlers.bootstrap_amendment_target_oid',
+                       COALESCE(_amendment_target_oid::text, ''), false);
 END;
 $$;
 
@@ -661,6 +715,85 @@ BEGIN
     RAISE NOTICE 'Bootstrap complete for database "%" (migration/runtime user "%")', _db_name, _migration_user;
 END
 $$;
+
+-- AMENDMENT_OWNER_CONVERGENCE_BEGIN: one atomic, purpose-specific transition.
+DO $$
+DECLARE
+    _target TEXT := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    );
+    _oid OID := to_regclass('public.insight_amendments');
+    _owner OID;
+    _kind "char";
+    _persistence "char";
+    _bootstrap OID;
+    _target_oid OID;
+    _target_safe BOOLEAN;
+    _locked_target OID;
+    _locked_target_safe BOOLEAN;
+    _expected_oid OID := NULLIF(current_setting('butlers.bootstrap_amendment_oid', true), '')::oid;
+    _expected_owner OID := NULLIF(current_setting('butlers.bootstrap_amendment_owner', true), '')::oid;
+    _expected_target OID := NULLIF(current_setting('butlers.bootstrap_amendment_target_oid', true), '')::oid;
+BEGIN
+    IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) THEN
+        RAISE EXCEPTION 'amendment ownership requires the original privileged bootstrap identity';
+    END IF;
+    IF current_setting('butlers.bootstrap_amendment_oid', true) IS NULL
+       OR _oid IS DISTINCT FROM _expected_oid
+       OR _target IS DISTINCT FROM current_setting('butlers.bootstrap_amendment_target', true) THEN
+        RAISE EXCEPTION 'amendment ownership identity changed after initial preflight';
+    END IF;
+    IF _oid IS NULL THEN
+        RETURN;
+    END IF;
+    SELECT oid INTO _bootstrap FROM pg_roles WHERE rolname = current_user;
+    SELECT oid,
+           rolcanlogin AND NOT (rolsuper OR rolcreaterole OR rolcreatedb
+                                OR rolreplication OR rolbypassrls)
+      INTO _target_oid, _target_safe FROM pg_roles WHERE rolname::text = _target;
+    IF NOT COALESCE(_target_safe, false) OR _target_oid = _bootstrap
+       OR _target ~ '^(butler_|connector_|restore_drill_)'
+       OR _target IN (
+           'dnd_generation_owner', 'runtime_attention_outbox_owner', 'dashboard_auth_api'
+       ) THEN
+        RAISE EXCEPTION 'amendment ownership requires the configured ordinary migration login';
+    END IF;
+    IF _target_oid IS DISTINCT FROM _expected_target THEN
+        RAISE EXCEPTION 'amendment ownership target changed after initial preflight';
+    END IF;
+    SELECT relowner, relkind, relpersistence INTO _owner, _kind, _persistence
+      FROM pg_class WHERE oid = _oid;
+    IF _kind IS DISTINCT FROM 'r'::"char" OR _persistence IS DISTINCT FROM 'p'::"char" THEN
+        RAISE EXCEPTION 'amendment ownership requires the qualified ordinary persistent table';
+    END IF;
+    IF _owner IS DISTINCT FROM _expected_owner THEN
+        RAISE EXCEPTION 'amendment ownership owner changed after initial preflight';
+    END IF;
+    IF _owner = _target_oid THEN
+        RETURN;
+    END IF;
+    IF _owner IS DISTINCT FROM _bootstrap THEN
+        RAISE EXCEPTION 'amendment ownership refuses an unexpected existing owner';
+    END IF;
+
+    LOCK TABLE ONLY public.insight_amendments IN ACCESS EXCLUSIVE MODE NOWAIT;
+    SELECT oid,
+           rolcanlogin AND NOT (rolsuper OR rolcreaterole OR rolcreatedb
+                                OR rolreplication OR rolbypassrls)
+      INTO _locked_target, _locked_target_safe FROM pg_roles WHERE rolname::text = _target;
+    SELECT relowner, relkind, relpersistence INTO _owner, _kind, _persistence
+      FROM pg_class WHERE oid = _oid;
+    IF to_regclass('public.insight_amendments') IS DISTINCT FROM _oid
+       OR _kind IS DISTINCT FROM 'r'::"char" OR _persistence IS DISTINCT FROM 'p'::"char"
+       OR _owner IS DISTINCT FROM _bootstrap
+       OR _locked_target IS DISTINCT FROM _target_oid
+       OR NOT COALESCE(_locked_target_safe, false) THEN
+        RAISE EXCEPTION 'amendment ownership identity changed before transition';
+    END IF;
+    EXECUTE format('ALTER TABLE public.insight_amendments OWNER TO %I', _target);
+END;
+$$;
+-- AMENDMENT_OWNER_CONVERGENCE_END
 
 -- ── Restore-drill interface bootstrap boundary ──────────────────────────────
 --

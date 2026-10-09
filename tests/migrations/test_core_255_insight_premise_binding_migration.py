@@ -16,9 +16,10 @@ import os
 import re
 import runpy
 import shutil
+import time
 import warnings
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -503,222 +504,837 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
     postgres_container, tmp_path
 ) -> None:
     """Real grants, inherited inventory, RLS and definers are distinct witnesses."""
-    historical = _historical_visibility_controls(postgres_container, tmp_path)
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    admin_url = migration_bootstrap_db_url(postgres_container, db_name)
-    command.upgrade(_build_alembic_config(db_url, ["core"]), "core_254")
-    assert _amendment_catalog(db_url)["qualified_object"] is False
-    command.upgrade(_build_alembic_config(admin_url, ["core"]), "core_255")
-    ordinary = _amendment_catalog(db_url)
-    administrative = _amendment_catalog(admin_url)
-    assert ordinary["ownership"]["database_owner"] == ordinary["identity"]["session_user"]
-    assert ordinary["ownership"]["effective_schema_owner"] is True
-    assert all(
-        ordinary["ownership"][flag] is False
-        for flag in ("rolsuper", "rolcreaterole", "rolcreatedb")
-    )
-    # This is the grant regression seam: bootstrap creates the table after the
-    # normal login's per-creator defaults, and before any grant-all replay.
-    _assert_bootstrap_metadata_visible(ordinary, administrative)
-    assert ordinary["ordinary_columns"]
-    assert ordinary["table"]["owner"] == administrative["identity"]["session_user"]
-    switchboard_membership = next(
-        m for m in ordinary["memberships"] if m["granted_role"] == "butler_switchboard_rw"
-    )
-    assert switchboard_membership["inherit_option"] and switchboard_membership["set_option"]
-    assert ordinary["table"]["rls"] is True
-    assert ordinary["table"]["force_rls"] is False  # existing posture; no hardening adoption
-    for function in administrative["functions"]:
-        assert function["prosecdef"] is True
-        assert function["proconfig"] == ["search_path=pg_catalog, pg_temp"]
-    assert len(administrative["functions"]) == 2
+    # REQ-proactive-insight-engine-033: keep the exact historical batch species.
+    from unittest.mock import patch
 
-    # The real finance chain supplies the bill; no copied two-column stand-in.
-    asyncio.run(run_migrations(db_url, chain="finance", schema="finance"))
-    engine = create_engine(admin_url)
-    try:
-        with engine.begin() as conn:
-            candidate = conn.execute(
-                text(
-                    "INSERT INTO public.insight_candidates "
-                    "(origin_butler, priority, category, dedup_key, expires_at, message, status, "
-                    "delivered_at, premise, delivery_ref) VALUES "
-                    "('finance', 80, 'synthetic', 'synthetic:grant-sentinel', now()+interval '1 day', "
-                    "'Synthetic grant witness', 'delivered', '2080-01-01'::timestamptz, "
-                    '\'{"kind":"owner_condition","source":"synthetic-source",'
-                    '"fingerprint":"synthetic-fingerprint"}\', jsonb_build_object(\'synthetic\', true)) RETURNING id'
-                )
-            ).scalar_one()
-            for status, delivered_at, kind in (
-                ("pending", None, "owner_condition"),
-                ("delivered", "2100-01-01", "owner_condition"),
-                ("delivered", "2080-01-01", "probe"),
-            ):
-                conn.execute(
+    import butlers.testing.migration as bootstrap_fixture
+
+    production_path = bootstrap_fixture._INIT_DB
+    production = production_path.read_text(encoding="utf-8")
+    begin = "-- AMENDMENT_OWNER_CONVERGENCE_BEGIN"
+    finish = "-- AMENDMENT_OWNER_CONVERGENCE_END"
+    assert production.count(begin) == production.count(finish) == 1
+    block_start = production.index(begin)
+    block_end = production.index(finish) + len(finish)
+    neutralized = production[:block_start] + production[block_end:]
+    historical_bootstrap = tmp_path / "historical-bootstrap.sql"
+    historical_bootstrap.write_text(neutralized, encoding="utf-8")
+    assert historical_bootstrap.read_text() == production.replace(
+        production[block_start:block_end], "", 1
+    )
+    with patch.object(bootstrap_fixture, "_INIT_DB", historical_bootstrap):
+        historical = _historical_visibility_controls(postgres_container, tmp_path)
+        db_name = migration_db_name()
+        db_url = create_migration_db(postgres_container, db_name)
+        admin_url = migration_bootstrap_db_url(postgres_container, db_name)
+        command.upgrade(_build_alembic_config(db_url, ["core"]), "core_254")
+        assert _amendment_catalog(db_url)["qualified_object"] is False
+        command.upgrade(_build_alembic_config(admin_url, ["core"]), "core_255")
+        ordinary = _amendment_catalog(db_url)
+        administrative = _amendment_catalog(admin_url)
+        assert ordinary["ownership"]["database_owner"] == ordinary["identity"]["session_user"]
+        assert ordinary["ownership"]["effective_schema_owner"] is True
+        assert all(
+            ordinary["ownership"][flag] is False
+            for flag in ("rolsuper", "rolcreaterole", "rolcreatedb")
+        )
+        # This is the grant regression seam: bootstrap creates the table after the
+        # normal login's per-creator defaults, and before any grant-all replay.
+        _assert_bootstrap_metadata_visible(ordinary, administrative)
+        assert ordinary["ordinary_columns"]
+        assert ordinary["table"]["owner"] == administrative["identity"]["session_user"]
+        switchboard_membership = next(
+            m for m in ordinary["memberships"] if m["granted_role"] == "butler_switchboard_rw"
+        )
+        assert switchboard_membership["inherit_option"] and switchboard_membership["set_option"]
+        assert ordinary["table"]["rls"] is True
+        assert ordinary["table"]["force_rls"] is False  # existing posture; no hardening adoption
+        for function in administrative["functions"]:
+            assert function["prosecdef"] is True
+            assert function["proconfig"] == ["search_path=pg_catalog, pg_temp"]
+        assert len(administrative["functions"]) == 2
+
+        # The real finance chain supplies the bill; no copied two-column stand-in.
+        asyncio.run(run_migrations(db_url, chain="finance", schema="finance"))
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                candidate = conn.execute(
                     text(
                         "INSERT INTO public.insight_candidates "
                         "(origin_butler, priority, category, dedup_key, expires_at, message, status, "
-                        "delivered_at, premise) VALUES ('finance', 80, 'synthetic', :dedup, "
-                        "now()+interval '1 day', 'Synthetic exclusion witness', :status, "
-                        "CAST(:delivered AS timestamptz), jsonb_build_object('kind', CAST(:kind AS text), "
-                        "'source', 'synthetic-source', 'fingerprint', 'synthetic-fingerprint'))"
-                    ),
-                    {
-                        "status": status,
-                        "delivered": delivered_at,
-                        "kind": kind,
-                        "dedup": f"synthetic:{status}:{kind}:{delivered_at}",
-                    },
-                )
-            conn.execute(
-                text(
-                    "INSERT INTO public.insight_amendments "
-                    "(candidate_id, episode_key, reason, summary) "
-                    "VALUES (:candidate, 'synthetic-planted', 'synthetic', 'Synthetic planted witness')"
-                ),
-                {"candidate": candidate},
-            )
-            bill = conn.execute(
-                text(
-                    "INSERT INTO finance.bills (payee, amount, currency, due_date, frequency, status) "
-                    "VALUES ('Synthetic payee', 1, 'USD', '2099-01-01', 'one_time', 'pending') RETURNING id"
-                )
-            ).scalar_one()
-            enqueue_roles = set(runpy.run_path(str(_CORE_255))["_ENQUEUE_ROLES"])
-            roles = (
+                        "delivered_at, premise, delivery_ref) VALUES "
+                        "('finance', 80, 'synthetic', 'synthetic:grant-sentinel', now()+interval '1 day', "
+                        "'Synthetic grant witness', 'delivered', '2080-01-01'::timestamptz, "
+                        '\'{"kind":"owner_condition","source":"synthetic-source",'
+                        '"fingerprint":"synthetic-fingerprint"}\', jsonb_build_object(\'synthetic\', true)) RETURNING id'
+                    )
+                ).scalar_one()
+                for status, delivered_at, kind in (
+                    ("pending", None, "owner_condition"),
+                    ("delivered", "2100-01-01", "owner_condition"),
+                    ("delivered", "2080-01-01", "probe"),
+                ):
+                    conn.execute(
+                        text(
+                            "INSERT INTO public.insight_candidates "
+                            "(origin_butler, priority, category, dedup_key, expires_at, message, status, "
+                            "delivered_at, premise) VALUES ('finance', 80, 'synthetic', :dedup, "
+                            "now()+interval '1 day', 'Synthetic exclusion witness', :status, "
+                            "CAST(:delivered AS timestamptz), jsonb_build_object('kind', CAST(:kind AS text), "
+                            "'source', 'synthetic-source', 'fingerprint', 'synthetic-fingerprint'))"
+                        ),
+                        {
+                            "status": status,
+                            "delivered": delivered_at,
+                            "kind": kind,
+                            "dedup": f"synthetic:{status}:{kind}:{delivered_at}",
+                        },
+                    )
                 conn.execute(
-                    text("SELECT rolname FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"),
-                    {"roles": sorted(enqueue_roles | {"connector_writer"})},
+                    text(
+                        "INSERT INTO public.insight_amendments "
+                        "(candidate_id, episode_key, reason, summary) "
+                        "VALUES (:candidate, 'synthetic-planted', 'synthetic', 'Synthetic planted witness')"
+                    ),
+                    {"candidate": candidate},
                 )
-                .scalars()
-                .all()
+                bill = conn.execute(
+                    text(
+                        "INSERT INTO finance.bills (payee, amount, currency, due_date, frequency, status) "
+                        "VALUES ('Synthetic payee', 1, 'USD', '2099-01-01', 'one_time', 'pending') RETURNING id"
+                    )
+                ).scalar_one()
+                enqueue_roles = set(runpy.run_path(str(_CORE_255))["_ENQUEUE_ROLES"])
+                roles = (
+                    conn.execute(
+                        text(
+                            "SELECT rolname FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
+                        ),
+                        {"roles": sorted(enqueue_roles | {"connector_writer"})},
+                    )
+                    .scalars()
+                    .all()
+                )
+                unrelated_role = f"synthetic_unrelated_{db_name}"
+                conn.execute(
+                    text(
+                        f'CREATE ROLE "{unrelated_role}" NOLOGIN NOINHERIT NOSUPERUSER '
+                        "NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS"
+                    )
+                )
+                unrelated_initial_schema_usage = conn.execute(
+                    text("SELECT has_schema_privilege(:role, 'public', 'USAGE')"),
+                    {"role": unrelated_role},
+                ).scalar_one()
+                # The canonical bootstrap can deny schema reachability first.
+                # Give only this disposable nonmember control that precondition,
+                # so the subsequent 42501 proves the separate function ACL.
+                conn.execute(text(f'GRANT USAGE ON SCHEMA public TO "{unrelated_role}"'))
+        finally:
+            engine.dispose()
+        assert set(roles) - enqueue_roles == {"connector_writer"}
+        assert enqueue_roles - set(roles) <= {"butler_calendar_rw"}
+        assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 0
+        assert len(_amendment_rows(admin_url)) == 1
+        receipts = []
+        bootstrap_observations = []
+        for replay in range(3):
+            if replay:
+                _bootstrap_migration_prerequisites(admin_url, urlparse(db_url).username)
+            observed = _amendment_catalog(db_url)
+            administrative_observed = _amendment_catalog(admin_url)
+            _assert_bootstrap_metadata_visible(observed, administrative_observed)
+            assert observed["table"]["owner"] == ordinary["table"]["owner"]
+            assert observed["table"]["rls"] is True
+            assert observed["table"]["force_rls"] is False
+            assert observed["policies"] == ordinary["policies"]
+            assert len(observed["functions"]) == 2
+            for function in observed["functions"]:
+                assert function["owner"] == administrative["identity"]["session_user"]
+                assert function["prosecdef"] is True
+                assert function["proconfig"] == ["search_path=pg_catalog, pg_temp"]
+            bootstrap_observations.append(
+                {"replay": replay, "ordinary": observed, "administrative": administrative_observed}
             )
-            unrelated_role = f"synthetic_unrelated_{db_name}"
+            for index, role in enumerate(roles):
+                # Bootstrap does not grant optional Calendar membership to the
+                # migration login. Observe that role under the disposable control
+                # login when present; do not manufacture a production membership.
+                role_url = admin_url if role == "butler_calendar_rw" else db_url
+                engine = create_engine(role_url)
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(f'SET LOCAL ROLE "{role}"'))
+                        identity = _identity(conn)
+                        assert identity["session_user"] == (
+                            administrative["identity"]["session_user"]
+                            if role == "butler_calendar_rw"
+                            else ordinary["identity"]["session_user"]
+                        )
+                        assert identity["current_user"] == identity["role"] == role
+                        grants = dict(
+                            conn.execute(
+                                text(
+                                    "SELECT has_table_privilege(current_user, 'public.insight_amendments', 'SELECT') AS can_select, "
+                                    "has_table_privilege(current_user, 'public.insight_amendments', 'INSERT') AS can_insert, "
+                                    "has_table_privilege(current_user, 'public.insight_amendments', 'UPDATE') AS can_update, "
+                                    "has_table_privilege(current_user, 'public.insight_amendments', 'DELETE') AS can_delete"
+                                )
+                            )
+                            .mappings()
+                            .one()
+                        )
+                        if replay and role != "butler_calendar_rw":
+                            # Position the RLS negative after actual grant widening;
+                            # a missing table ACL must not substitute for the policy.
+                            assert all(grants.values()), (role, replay, grants)
+                        params = {
+                            "candidate": candidate,
+                            "episode": f"synthetic-direct:{replay}:{role}",
+                        }
+                        insert = (
+                            "INSERT INTO public.insight_amendments (candidate_id, episode_key, reason) "
+                            "VALUES (:candidate, :episode, 'synthetic-direct') RETURNING id"
+                        )
+                        if role == "butler_switchboard_rw":
+                            assert (
+                                conn.execute(
+                                    text("SELECT count(*) FROM public.insight_amendments")
+                                ).scalar_one()
+                                > 0
+                            )
+                            direct_id = conn.execute(text(insert), params).scalar_one()
+                            assert (
+                                conn.execute(
+                                    text(
+                                        "UPDATE public.insight_amendments SET attempts=attempts+1 WHERE id=:id"
+                                    ),
+                                    {"id": direct_id},
+                                ).rowcount
+                                == 1
+                            )
+                            assert (
+                                conn.execute(
+                                    text(
+                                        "SELECT status FROM public.resolve_finance_bill_status(:bill)"
+                                    ),
+                                    {"bill": bill},
+                                ).scalar_one()
+                                == "pending"
+                            )
+                            assert (
+                                conn.execute(
+                                    text(
+                                        "SELECT status FROM public.resolve_finance_bill_status(gen_random_uuid())"
+                                    )
+                                ).all()
+                                == []
+                            )
+                            _expect_permission_denied(conn, "SELECT status FROM finance.bills")
+                            direct = "INSERT/UPDATE positive; peer SELECT 42501"
+                        else:
+                            _expect_permission_denied(conn, insert, params)
+                            has_select = conn.execute(
+                                text(
+                                    "SELECT has_table_privilege(current_user, 'public.insight_amendments', 'SELECT')"
+                                )
+                            ).scalar_one()
+                            if has_select:
+                                assert (
+                                    conn.execute(
+                                        text("SELECT count(*) FROM public.insight_amendments")
+                                    ).scalar_one()
+                                    == 0
+                                )
+                            else:
+                                _expect_permission_denied(
+                                    conn, "SELECT * FROM public.insight_amendments"
+                                )
+                            for verb in (
+                                "UPDATE public.insight_amendments SET attempts=999",
+                                "DELETE FROM public.insight_amendments",
+                            ):
+                                privilege = "UPDATE" if verb.startswith("UPDATE") else "DELETE"
+                                if conn.execute(
+                                    text(
+                                        "SELECT has_table_privilege(current_user, 'public.insight_amendments', :privilege)"
+                                    ),
+                                    {"privilege": privilege},
+                                ).scalar_one():
+                                    assert conn.execute(text(verb)).rowcount == 0
+                                else:
+                                    _expect_permission_denied(conn, verb)
+                            direct = "INSERT 42501; planted rows invisible and unchanged"
+                            _expect_permission_denied(
+                                conn,
+                                "SELECT * FROM public.resolve_finance_bill_status(:bill)",
+                                {"bill": bill},
+                            )
+                        enqueue = (
+                            "SELECT public.enqueue_premise_amendments(:source, :fingerprint, "
+                            "CAST(:resolved AS timestamptz), 'Synthetic function witness')"
+                        )
+                        args = {
+                            "source": "synthetic-source",
+                            "fingerprint": "synthetic-fingerprint",
+                            "resolved": f"2099-01-01 00:{replay:02d}:{index:02d}+00",
+                        }
+                        if role in enqueue_roles:
+                            assert conn.execute(text(enqueue), args).scalar_one() == 1
+                            assert conn.execute(text(enqueue), args).scalar_one() == 0
+                            for changes in (
+                                {"source": "synthetic-mismatch"},
+                                {"fingerprint": "synthetic-mismatch"},
+                                {"resolved": "2079-01-01 00:00:00+00"},
+                            ):
+                                assert conn.execute(text(enqueue), args | changes).scalar_one() == 0
+                            execution = "matching 1; duplicate/mismatch/before-delivery 0"
+                        else:
+                            _expect_permission_denied(conn, enqueue, args)
+                            execution = "42501"
+                        receipts.append(
+                            {
+                                "replay": replay,
+                                "identity": identity,
+                                "direct": direct,
+                                "enqueue": execution,
+                                "effective_table_grants": grants,
+                            }
+                        )
+                finally:
+                    engine.dispose()
+            rows = _amendment_rows(admin_url)  # new acquisition proves each role's commit
+            assert len(rows) == 1 + (replay + 1) * (len(roles) - 1 + 1)
+            assert all(row["candidate_id"] == str(candidate) for row in rows)
+            assert max(row["attempts"] for row in rows) == 1
+            assert any(
+                row["episode_key"] == "synthetic-planted" and row["attempts"] == 0 for row in rows
+            )
+            assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 0
+            engine = create_engine(admin_url)
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(f'SET LOCAL ROLE "{unrelated_role}"'))
+                    assert (
+                        conn.execute(
+                            text("SELECT has_schema_privilege(current_user, 'public', 'USAGE')")
+                        ).scalar_one()
+                        is True
+                    )
+                    for signature in (
+                        "public.enqueue_premise_amendments(text,text,timestamptz,text)",
+                        "public.resolve_finance_bill_status(uuid)",
+                    ):
+                        assert (
+                            conn.execute(
+                                text(
+                                    "SELECT has_function_privilege(current_user, :signature, 'EXECUTE')"
+                                ),
+                                {"signature": signature},
+                            ).scalar_one()
+                            is False
+                        )
+                    _expect_permission_denied(
+                        conn,
+                        "SELECT public.enqueue_premise_amendments('synthetic-source', "
+                        "'synthetic-fingerprint', '2099-01-01'::timestamptz, NULL)",
+                    )
+                    _expect_permission_denied(
+                        conn,
+                        "SELECT * FROM public.resolve_finance_bill_status(:bill)",
+                        {"bill": bill},
+                    )
+                    receipts.append(
+                        {
+                            "replay": replay,
+                            "identity": _identity(conn),
+                            "schema_usage": True,
+                            "initial_schema_usage": unrelated_initial_schema_usage,
+                            "schema_usage_grant": "disposable synthetic control only",
+                            "enqueue": "42501",
+                            "finance_probe": "42501",
+                        }
+                    )
+            finally:
+                engine.dispose()
+        supported_current_replay = _ordinary_bootstrap_owned_core_replay(
+            db_url, admin_url, scope="exact current bootstrap install after two init-db replays"
+        )
+        _publish_disposable_receipt(
+            {
+                "historical_controls": [r["variant"] for r in historical],
+                "current_source_sha256": hashlib.sha256(_CORE_255.read_bytes()).hexdigest(),
+                "current_install": ordinary,
+                "current_bootstrap_replays": bootstrap_observations,
+                "current_role_matrix": receipts,
+                "retained_rows": len(rows),
+                "supported_current_ordinary_replay": supported_current_replay,
+                "optional_calendar": "present" if "butler_calendar_rw" in roles else "absent",
+            }
+        )
+
+    assert bootstrap_fixture._INIT_DB == production_path
+    assert production_path.read_text() == production
+    original_rows = _amendment_rows(admin_url)
+    assert len(original_rows) == 43
+
+    psql_deadline = time.monotonic() + 150
+
+    def snapshot(url):
+        engine = create_engine(url)
+        try:
+            with engine.connect() as conn:
+                return {
+                    "catalog": _amendment_catalog(url),
+                    "rows": _amendment_rows(url),
+                    "oid": conn.execute(
+                        text("SELECT 'public.insight_amendments'::regclass::oid")
+                    ).scalar_one(),
+                    "columns": list(
+                        conn.execute(
+                            text(
+                                "SELECT attname, atttypid, atttypmod, attnotnull, "
+                                "pg_get_expr(d.adbin,d.adrelid) "
+                                "FROM pg_attribute a LEFT JOIN pg_attrdef d "
+                                "ON d.adrelid=a.attrelid AND d.adnum=a.attnum "
+                                "WHERE a.attrelid='public.insight_amendments'::regclass "
+                                "AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum"
+                            )
+                        ).tuples()
+                    ),
+                    "constraints": list(
+                        conn.execute(
+                            text(
+                                "SELECT conname,pg_get_constraintdef(oid),convalidated "
+                                "FROM pg_constraint WHERE conrelid="
+                                "'public.insight_amendments'::regclass ORDER BY conname"
+                            )
+                        ).tuples()
+                    ),
+                    "indexes": list(
+                        conn.execute(
+                            text(
+                                "SELECT c.oid,c.relowner,pg_get_indexdef(c.oid),"
+                                "i.indisvalid,i.indisready FROM pg_index i "
+                                "JOIN pg_class c ON c.oid=i.indexrelid "
+                                "WHERE i.indrelid='public.insight_amendments'::regclass "
+                                "ORDER BY c.oid"
+                            )
+                        ).tuples()
+                    ),
+                    "dependents": list(
+                        conn.execute(
+                            text(
+                                "SELECT c.oid,c.relkind,c.relowner FROM pg_class c "
+                                "WHERE c.oid=(SELECT reltoastrelid FROM pg_class WHERE "
+                                "oid='public.insight_amendments'::regclass) OR c.oid IN "
+                                "(SELECT indexrelid FROM pg_index WHERE indrelid="
+                                "(SELECT reltoastrelid FROM pg_class WHERE "
+                                "oid='public.insight_amendments'::regclass)) OR "
+                                "(c.relkind='S' AND EXISTS (SELECT 1 FROM pg_depend d "
+                                "WHERE d.classid='pg_class'::regclass AND d.objid=c.oid "
+                                "AND d.refobjid='public.insight_amendments'::regclass "
+                                "AND d.deptype IN ('a','i'))) ORDER BY c.oid"
+                            )
+                        ).tuples()
+                    ),
+                    "versions": {
+                        schema: list(
+                            conn.execute(
+                                text(
+                                    f"SELECT version_num FROM {schema}.alembic_version "
+                                    "ORDER BY version_num"
+                                )
+                            ).scalars()
+                        )
+                        for schema in ("public", "health", "general")
+                        if conn.execute(
+                            text("SELECT to_regclass(:name) IS NOT NULL"),
+                            {"name": f"{schema}.alembic_version"},
+                        ).scalar_one()
+                    },
+                    "owner_oid": conn.execute(
+                        text(
+                            "SELECT relowner FROM pg_class "
+                            "WHERE oid='public.insight_amendments'::regclass"
+                        )
+                    ).scalar_one(),
+                    "acl": set(
+                        conn.execute(
+                            text(
+                                "SELECT x.grantor,x.grantee,x.privilege_type,x.is_grantable "
+                                "FROM pg_class c CROSS JOIN LATERAL "
+                                "aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) x "
+                                "WHERE c.oid='public.insight_amendments'::regclass"
+                            )
+                        ).tuples()
+                    ),
+                    "column_acl": set(
+                        conn.execute(
+                            text(
+                                "SELECT a.attnum,x.grantor,x.grantee,x.privilege_type,"
+                                "x.is_grantable FROM pg_attribute a "
+                                "CROSS JOIN LATERAL aclexplode(a.attacl) x "
+                                "WHERE a.attrelid='public.insight_amendments'::regclass "
+                                "AND a.attnum>0 AND NOT a.attisdropped"
+                            )
+                        ).tuples()
+                    ),
+                    "runtime_rights": list(
+                        conn.execute(
+                            text(
+                                "SELECT r.rolname,p,has_table_privilege(r.oid,"
+                                "'public.insight_amendments',p),has_table_privilege(r.oid,"
+                                "'public.insight_amendments',p||' WITH GRANT OPTION') "
+                                "FROM pg_roles r CROSS JOIN unnest(ARRAY["
+                                "'SELECT','INSERT','UPDATE','DELETE']) p "
+                                "WHERE r.rolname=ANY(:roles) ORDER BY r.rolname,p"
+                            ),
+                            {"roles": roles},
+                        ).tuples()
+                    ),
+                }
+        finally:
+            engine.dispose()
+
+    async def psql(path, *, target=None, staged=False, require_error=None, stale_session=False):
+        """Real bounded client, no raw stdout/stderr or credentials in receipts."""
+        parsed = urlparse(admin_url)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PG")}
+        env.update(
+            PGCONNECT_TIMEOUT="5",
+            PGHOST=parsed.hostname,
+            PGPORT=str(parsed.port),
+            PGUSER=unquote(parsed.username),
+            PGPASSWORD=unquote(parsed.password),
+            PGDATABASE=parsed.path.lstrip("/"),
+            PGOPTIONS=f"-c butlers.connecting_user={target or unquote(urlparse(db_url).username)} "
+            "-c statement_timeout=15000 -c lock_timeout=1000",
+        )
+        if stale_session:
+            env["PGOPTIONS"] += (
+                " -c butlers.bootstrap_amendment_oid=1"
+                " -c butlers.bootstrap_amendment_owner=1"
+                " -c butlers.bootstrap_amendment_target=stale_synthetic"
+                " -c butlers.bootstrap_amendment_target_oid=1"
+            )
+        assert shutil.which("psql") is not None  # missing real client is not a SQL PASS
+        source = path.read_bytes()
+        owner_end = source.index(finish.encode())
+        last_statement = source.rfind(b"$$;", 0, owner_end)
+        late_line = source[:last_statement].count(b"\n") + 1
+        stderr_tail = bytearray()
+        holder_engine = None
+        holder = None
+        transaction = None
+        process = await asyncio.create_subprocess_exec(
+            "psql",
+            "-X",
+            "-w",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-v",
+            "VERBOSITY=sqlstate",
+            "-f",
+            "-" if staged else str(path),
+            env=env,
+            stdin=asyncio.subprocess.PIPE if staged else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        async def discard(stream, capture=False):
+            while chunk := await stream.read(8192):
+                if capture:
+                    stderr_tail.extend(chunk)
+                    del stderr_tail[:-4096]
+
+        drains = [
+            asyncio.create_task(discard(process.stdout)),
+            asyncio.create_task(discard(process.stderr, True)),
+        ]
+        prefix_completed = False
+        try:
+            remaining = min(30, psql_deadline - time.monotonic())
+            assert remaining > 0
+            async with asyncio.timeout(remaining):
+                if staged:
+                    split = source.index(begin.encode())
+                    prefix, suffix = source[:split], source[split:]
+                    assert prefix + suffix == production_path.read_bytes()
+                    process.stdin.write(prefix)
+                    await process.stdin.drain()
+                    deadline = time.monotonic() + 10
+                    while not await asyncio.to_thread(
+                        _run,
+                        admin_url,
+                        "SELECT has_schema_privilege('butler_switchboard_rw',"
+                        "'switchboard','CREATE')",
+                    ):
+                        assert time.monotonic() < deadline
+                        assert process.returncode is None
+                        await asyncio.sleep(0.02)
+                    prefix_completed = True  # separate acquisition sees committed legacy DO
+                    holder_engine = create_engine(admin_url)
+                    holder = holder_engine.connect()
+                    transaction = holder.begin()
+                    holder.execute(text("SET LOCAL lock_timeout='1s'"))
+                    holder.execute(
+                        text(
+                            "LOCK TABLE ONLY public.insight_amendments "
+                            "IN ACCESS EXCLUSIVE MODE NOWAIT"
+                        )
+                    )
+                    process.stdin.write(suffix)
+                    try:
+                        await process.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass  # ON_ERROR_STOP may close input before later statements
+                    process.stdin.close()
+                exit_code = await process.wait()
+                await asyncio.gather(*drains)
+        finally:
+
+            async def cleanup():
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass  # the child exited between the liveness check and signal
+                # Concurrent drains prevent PIPE-buffer shutdown from blocking reap.
+                async with asyncio.timeout(5):
+                    await asyncio.gather(process.wait(), *drains)
+
+            cleanup_task = asyncio.create_task(cleanup())
+            try:
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    await cleanup_task
+                    raise
+            finally:
+                try:
+                    if transaction is not None:
+                        transaction.rollback()  # before every independent target readback
+                finally:
+                    if holder is not None:
+                        holder.close()
+                    if holder_engine is not None:
+                        holder_engine.dispose()
+        closed_states = sorted(
+            set(re.findall(r"\b(?:55P03|42501|P0001)\b", stderr_tail.decode(errors="replace")))
+        )
+        late_statement = bool(
+            re.search(rf":{late_line}:.*\b55P03\b", stderr_tail.decode(errors="replace"))
+        )
+        if require_error is None:
+            assert exit_code == 0 and closed_states == []
+        else:
+            assert exit_code == 3 and require_error in closed_states
+        return {
+            "exit": exit_code,
+            "closed_SQLSTATE": closed_states,
+            "source_sha256": hashlib.sha256(source).hexdigest(),
+            "prefix_committed": prefix_completed,
+            "late_statement": late_statement,
+            "external_lock_released": holder is None or holder.closed,
+            "child_reaped_and_pipes_drained": process.returncode is not None,
+        }
+
+    # A redundant existing-runtime column grant plants the column-ACL witness;
+    # it adds no effective privilege to the already-granted General runtime.
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
             conn.execute(
-                text(
-                    f'CREATE ROLE "{unrelated_role}" NOLOGIN NOINHERIT NOSUPERUSER '
-                    "NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS"
-                )
+                text("GRANT SELECT(reason) ON public.insight_amendments TO butler_general_rw")
             )
-            unrelated_initial_schema_usage = conn.execute(
-                text("SELECT has_schema_privilege(:role, 'public', 'USAGE')"),
-                {"role": unrelated_role},
-            ).scalar_one()
-            # The canonical bootstrap can deny schema reachability first.
-            # Give only this disposable nonmember control that precondition,
-            # so the subsequent 42501 proves the separate function ACL.
-            conn.execute(text(f'GRANT USAGE ON SCHEMA public TO "{unrelated_role}"'))
     finally:
         engine.dispose()
-    assert set(roles) - enqueue_roles == {"connector_writer"}
-    assert enqueue_roles - set(roles) <= {"butler_calendar_rw"}
-    assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 0
-    assert len(_amendment_rows(admin_url)) == 1
-    receipts = []
-    bootstrap_observations = []
-    for replay in range(3):
-        if replay:
-            _bootstrap_migration_prerequisites(admin_url, urlparse(db_url).username)
-        observed = _amendment_catalog(db_url)
-        administrative_observed = _amendment_catalog(admin_url)
-        _assert_bootstrap_metadata_visible(observed, administrative_observed)
-        assert observed["table"]["owner"] == ordinary["table"]["owner"]
-        assert observed["table"]["rls"] is True
-        assert observed["table"]["force_rls"] is False
-        assert observed["policies"] == ordinary["policies"]
-        assert len(observed["functions"]) == 2
-        for function in observed["functions"]:
-            assert function["owner"] == administrative["identity"]["session_user"]
-            assert function["prosecdef"] is True
-            assert function["proconfig"] == ["search_path=pg_catalog, pg_temp"]
-        bootstrap_observations.append(
-            {"replay": replay, "ordinary": observed, "administrative": administrative_observed}
+    before_transfer = snapshot(admin_url)
+    assert before_transfer["column_acl"] and before_transfer["dependents"]
+
+    # Precise disposable source copies exercise every saved catalog identity.
+    # Each copy changes only the documented insertion before the owning DO.
+    saved_identity_controls = {
+        "missing": "RESET butlers.bootstrap_amendment_oid;",
+        "stale_owner": "SELECT set_config('butlers.bootstrap_amendment_owner', "
+        "(SELECT oid::text FROM pg_roles WHERE rolname='butler_general_rw'), false);",
+        "substituted_oid": "SELECT set_config('butlers.bootstrap_amendment_oid', "
+        "'public.insight_candidates'::regclass::oid::text, false);",
+        "substituted_target": "SELECT set_config('butlers.bootstrap_amendment_target', "
+        "'butler_general_rw', false);",
+        "substituted_target_oid": "SELECT set_config('butlers.bootstrap_amendment_target_oid', "
+        "(SELECT oid::text FROM pg_roles WHERE rolname='butler_general_rw'), false);",
+    }
+    identity_receipts = {}
+    for label, statement in saved_identity_controls.items():
+        insertion = statement + "\n"
+        modified = production[:block_start] + insertion + production[block_start:]
+        assert modified.replace(insertion, "", 1) == production
+        path = tmp_path / f"bootstrap-snapshot-{label}.sql"
+        path.write_text(modified)
+        identity_receipts[label] = asyncio.run(psql(path, require_error="P0001"))
+        assert snapshot(admin_url) == before_transfer
+
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("REVOKE CREATE ON SCHEMA switchboard FROM butler_switchboard_rw"))
+    finally:
+        engine.dispose()
+    assert (
+        _run(
+            admin_url, "SELECT has_schema_privilege('butler_switchboard_rw','switchboard','CREATE')"
         )
-        for index, role in enumerate(roles):
-            # Bootstrap does not grant optional Calendar membership to the
-            # migration login. Observe that role under the disposable control
-            # login when present; do not manufacture a production membership.
-            role_url = admin_url if role == "butler_calendar_rw" else db_url
-            engine = create_engine(role_url)
+        is False
+    )
+    late_refusal = asyncio.run(psql(production_path, staged=True, require_error="55P03"))
+    assert late_refusal["prefix_committed"] and late_refusal["late_statement"]
+    assert late_refusal["external_lock_released"] and late_refusal["child_reaped_and_pipes_drained"]
+    assert (
+        _run(
+            admin_url, "SELECT has_schema_privilege('butler_switchboard_rw','switchboard','CREATE')"
+        )
+        is True
+    )
+    assert snapshot(admin_url) == before_transfer
+
+    # Changed same-name object between preflight and transition must refuse.
+    # A byte-bound test-only trigger point differs by exactly this one insertion.
+    race_statement = (
+        "ALTER TABLE public.insight_amendments RENAME TO insight_amendments_retained;\n"
+        "CREATE TABLE public.insight_amendments (synthetic integer);\n"
+    )
+    race_source = production[:block_start] + race_statement + production[block_start:]
+    race_path = tmp_path / "bootstrap-replaced-object.sql"
+    race_path.write_text(race_source)
+    assert race_source.replace(race_statement, "", 1) == production
+    race_refusal = asyncio.run(psql(race_path, require_error="P0001"))
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE public.insight_amendments"))
+            conn.execute(
+                text("ALTER TABLE public.insight_amendments_retained RENAME TO insight_amendments")
+            )
+    finally:
+        engine.dispose()
+    assert snapshot(admin_url) == before_transfer
+
+    lock_statement = "LOCK TABLE ONLY public.insight_amendments IN ACCESS EXCLUSIVE MODE NOWAIT;"
+    assert production.count(lock_statement) == 1
+    changed_owner = "\n    ALTER TABLE public.insight_amendments OWNER TO butler_general_rw;"
+    owner_race_source = production.replace(lock_statement, lock_statement + changed_owner, 1)
+    assert owner_race_source.replace(changed_owner, "", 1) == production
+    owner_race_path = tmp_path / "bootstrap-under-lock-owner.sql"
+    owner_race_path.write_text(owner_race_source)
+    owner_race_refusal = asyncio.run(psql(owner_race_path, require_error="P0001"))
+    assert snapshot(admin_url) == before_transfer
+
+    # Failure AFTER the actual transfer rolls back its DO, not the committed prefix.
+    transfer = "EXECUTE format('ALTER TABLE public.insight_amendments OWNER TO %I', _target);"
+    assert production.count(transfer) == 1
+    rollback_source = production.replace(
+        transfer, transfer + "\n    RAISE EXCEPTION 'synthetic block rollback';", 1
+    )
+    rollback_path = tmp_path / "bootstrap-block-rollback.sql"
+    rollback_path.write_text(rollback_source)
+    assert (
+        rollback_source.replace("\n    RAISE EXCEPTION 'synthetic block rollback';", "", 1)
+        == production
+    )
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("REVOKE CREATE ON SCHEMA switchboard FROM butler_switchboard_rw"))
+    finally:
+        engine.dispose()
+    assert (
+        _run(
+            admin_url, "SELECT has_schema_privilege('butler_switchboard_rw','switchboard','CREATE')"
+        )
+        is False
+    )
+    rollback_refusal = asyncio.run(psql(rollback_path, require_error="P0001"))
+    assert (
+        _run(
+            admin_url, "SELECT has_schema_privilege('butler_switchboard_rw','switchboard','CREATE')"
+        )
+        is True
+    )
+    assert snapshot(admin_url) == before_transfer
+
+    # Genuine unmodified regular-file producer, after external locks are released.
+    regular_success = asyncio.run(psql(production_path, stale_session=True))
+    after_transfer = snapshot(admin_url)
+    target_oid = _run(db_url, "SELECT oid FROM pg_roles WHERE rolname=current_user")
+    assert after_transfer["owner_oid"] == target_oid != before_transfer["owner_oid"]
+    for key in ("rows", "oid", "columns", "constraints", "runtime_rights", "versions"):
+        assert after_transfer[key] == before_transfer[key]
+    old_owner = before_transfer["owner_oid"]
+
+    def owner_acl(entries, *, columns=False, substitute=False):
+        normalized = {}
+        for entry in entries:
+            prefix, (grantor, grantee, privilege, grantable) = (
+                (entry[:1], entry[1:]) if columns else ((), entry)
+            )
+            if substitute:
+                grantor = target_oid if grantor == old_owner else grantor
+                grantee = target_oid if grantee == old_owner else grantee
+            key = (*prefix, grantor, grantee, privilege)
+            normalized[key] = normalized.get(key, False) or grantable
+        return normalized
+
+    assert owner_acl(after_transfer["acl"]) == owner_acl(before_transfer["acl"], substitute=True)
+    assert owner_acl(after_transfer["column_acl"], columns=True) == owner_acl(
+        before_transfer["column_acl"], columns=True, substitute=True
+    )
+    assert after_transfer["dependents"] == [
+        (oid, kind, target_oid if owner == old_owner else owner)
+        for oid, kind, owner in before_transfer["dependents"]
+    ]
+    assert after_transfer["indexes"] == [
+        (oid, target_oid if owner == old_owner else owner, definition, valid, ready)
+        for oid, owner, definition, valid, ready in before_transfer["indexes"]
+    ]
+    for key in ("rls", "force_rls"):
+        assert after_transfer["catalog"]["table"][key] == before_transfer["catalog"]["table"][key]
+    assert after_transfer["catalog"]["policies"] == before_transfer["catalog"]["policies"]
+    assert after_transfer["catalog"]["functions"] == before_transfer["catalog"]["functions"]
+    assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 43  # owner RLS bypass
+    repeated_success = asyncio.run(psql(production_path))
+    assert snapshot(admin_url) == after_transfer
+    for schema in ("health", "general"):
+        asyncio.run(run_migrations(db_url, chain="core", schema=schema))
+        assert_at_chain_head(db_url, chain="core", schema=schema)
+        assert _amendment_rows(admin_url) == original_rows
+
+    # Actual runtime execution remains distinct from the trusted migration owner.
+    for role in roles:
+        if role == "connector_writer" or role.startswith("butler_"):
+            engine = create_engine(admin_url)
             try:
                 with engine.begin() as conn:
                     conn.execute(text(f'SET LOCAL ROLE "{role}"'))
-                    identity = _identity(conn)
-                    assert identity["session_user"] == (
-                        administrative["identity"]["session_user"]
-                        if role == "butler_calendar_rw"
-                        else ordinary["identity"]["session_user"]
-                    )
-                    assert identity["current_user"] == identity["role"] == role
-                    grants = dict(
-                        conn.execute(
-                            text(
-                                "SELECT has_table_privilege(current_user, 'public.insight_amendments', 'SELECT') AS can_select, "
-                                "has_table_privilege(current_user, 'public.insight_amendments', 'INSERT') AS can_insert, "
-                                "has_table_privilege(current_user, 'public.insight_amendments', 'UPDATE') AS can_update, "
-                                "has_table_privilege(current_user, 'public.insight_amendments', 'DELETE') AS can_delete"
-                            )
+                    assert _identity(conn)["current_user"] == role
+                    can_select = conn.execute(
+                        text(
+                            "SELECT has_table_privilege(current_user, 'public.insight_amendments','SELECT')"
                         )
-                        .mappings()
-                        .one()
-                    )
-                    if replay and role != "butler_calendar_rw":
-                        # Position the RLS negative after actual grant widening;
-                        # a missing table ACL must not substitute for the policy.
-                        assert all(grants.values()), (role, replay, grants)
-                    params = {
-                        "candidate": candidate,
-                        "episode": f"synthetic-direct:{replay}:{role}",
-                    }
-                    insert = (
-                        "INSERT INTO public.insight_amendments (candidate_id, episode_key, reason) "
-                        "VALUES (:candidate, :episode, 'synthetic-direct') RETURNING id"
-                    )
+                    ).scalar_one()
                     if role == "butler_switchboard_rw":
+                        assert can_select
                         assert (
                             conn.execute(
                                 text("SELECT count(*) FROM public.insight_amendments")
                             ).scalar_one()
-                            > 0
+                            == 43
                         )
-                        direct_id = conn.execute(text(insert), params).scalar_one()
-                        assert (
-                            conn.execute(
-                                text(
-                                    "UPDATE public.insight_amendments SET attempts=attempts+1 WHERE id=:id"
-                                ),
-                                {"id": direct_id},
-                            ).rowcount
-                            == 1
-                        )
-                        assert (
-                            conn.execute(
-                                text(
-                                    "SELECT status FROM public.resolve_finance_bill_status(:bill)"
-                                ),
-                                {"bill": bill},
-                            ).scalar_one()
-                            == "pending"
-                        )
-                        assert (
-                            conn.execute(
-                                text(
-                                    "SELECT status FROM public.resolve_finance_bill_status(gen_random_uuid())"
-                                )
-                            ).all()
-                            == []
-                        )
-                        _expect_permission_denied(conn, "SELECT status FROM finance.bills")
-                        direct = "INSERT/UPDATE positive; peer SELECT 42501"
                     else:
-                        _expect_permission_denied(conn, insert, params)
-                        has_select = conn.execute(
-                            text(
-                                "SELECT has_table_privilege(current_user, 'public.insight_amendments', 'SELECT')"
-                            )
-                        ).scalar_one()
-                        if has_select:
+                        if can_select:
                             assert (
                                 conn.execute(
                                     text("SELECT count(*) FROM public.insight_amendments")
@@ -729,124 +1345,138 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
                             _expect_permission_denied(
                                 conn, "SELECT * FROM public.insight_amendments"
                             )
-                        for verb in (
-                            "UPDATE public.insight_amendments SET attempts=999",
-                            "DELETE FROM public.insight_amendments",
-                        ):
-                            privilege = "UPDATE" if verb.startswith("UPDATE") else "DELETE"
-                            if conn.execute(
-                                text(
-                                    "SELECT has_table_privilege(current_user, 'public.insight_amendments', :privilege)"
-                                ),
-                                {"privilege": privilege},
-                            ).scalar_one():
-                                assert conn.execute(text(verb)).rowcount == 0
-                            else:
-                                _expect_permission_denied(conn, verb)
-                        direct = "INSERT 42501; planted rows invisible and unchanged"
                         _expect_permission_denied(
                             conn,
-                            "SELECT * FROM public.resolve_finance_bill_status(:bill)",
-                            {"bill": bill},
+                            "INSERT INTO public.insight_amendments "
+                            "(candidate_id,episode_key,reason) VALUES "
+                            "(:candidate,'synthetic-after-owner','synthetic')",
+                            {"candidate": candidate},
                         )
-                    enqueue = (
-                        "SELECT public.enqueue_premise_amendments(:source, :fingerprint, "
-                        "CAST(:resolved AS timestamptz), 'Synthetic function witness')"
-                    )
-                    args = {
-                        "source": "synthetic-source",
-                        "fingerprint": "synthetic-fingerprint",
-                        "resolved": f"2099-01-01 00:{replay:02d}:{index:02d}+00",
-                    }
-                    if role in enqueue_roles:
-                        assert conn.execute(text(enqueue), args).scalar_one() == 1
-                        assert conn.execute(text(enqueue), args).scalar_one() == 0
-                        for changes in (
-                            {"source": "synthetic-mismatch"},
-                            {"fingerprint": "synthetic-mismatch"},
-                            {"resolved": "2079-01-01 00:00:00+00"},
+                        for privilege, statement in (
+                            ("UPDATE", "UPDATE public.insight_amendments SET attempts=999"),
+                            ("DELETE", "DELETE FROM public.insight_amendments"),
                         ):
-                            assert conn.execute(text(enqueue), args | changes).scalar_one() == 0
-                        execution = "matching 1; duplicate/mismatch/before-delivery 0"
-                    else:
-                        _expect_permission_denied(conn, enqueue, args)
-                        execution = "42501"
-                    receipts.append(
-                        {
-                            "replay": replay,
-                            "identity": identity,
-                            "direct": direct,
-                            "enqueue": execution,
-                            "effective_table_grants": grants,
-                        }
+                            if conn.execute(
+                                text(
+                                    "SELECT has_table_privilege(current_user,"
+                                    "'public.insight_amendments',:p)"
+                                ),
+                                {"p": privilege},
+                            ).scalar_one():
+                                assert conn.execute(text(statement)).rowcount == 0
+                            else:
+                                _expect_permission_denied(conn, statement)
+            finally:
+                engine.dispose()
+    assert _amendment_rows(admin_url) == original_rows
+
+    # First bootstrap absence, ordinary-first and repeated actual regular-file paths.
+    absent_name = migration_db_name()
+    absent_url = create_migration_db(postgres_container, absent_name)
+    absent_admin = migration_bootstrap_db_url(postgres_container, absent_name)
+    original_admin_url, original_db_url = admin_url, db_url
+    try:
+        admin_url, db_url = absent_admin, absent_url
+        assert _run(admin_url, "SELECT to_regclass('public.insight_amendments')") is None
+        asyncio.run(psql(production_path))
+        assert _run(admin_url, "SELECT to_regclass('public.insight_amendments')") is None
+        command.upgrade(_build_alembic_config(db_url, ["core"]), "core_255")
+        ordinary_first = snapshot(admin_url)
+        asyncio.run(psql(production_path))
+        asyncio.run(psql(production_path))
+        assert snapshot(admin_url) == ordinary_first
+
+        # Valid table is planted; each initial refusal must leave full state untouched.
+        for unsafe_target in (
+            "butler_general_rw",
+            "restore_drill_executor",
+            "missing_synthetic_role",
+        ):
+            engine = create_engine(admin_url)
+            try:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("REVOKE CREATE ON SCHEMA switchboard FROM butler_switchboard_rw")
                     )
             finally:
                 engine.dispose()
-        rows = _amendment_rows(admin_url)  # new acquisition proves each role's commit
-        assert len(rows) == 1 + (replay + 1) * (len(roles) - 1 + 1)
-        assert all(row["candidate_id"] == str(candidate) for row in rows)
-        assert max(row["attempts"] for row in rows) == 1
-        assert any(
-            row["episode_key"] == "synthetic-planted" and row["attempts"] == 0 for row in rows
-        )
-        assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 0
+            assert (
+                _run(
+                    admin_url,
+                    "SELECT has_schema_privilege('butler_switchboard_rw','switchboard','CREATE')",
+                )
+                is False
+            )
+            before_refusal = snapshot(admin_url)
+            asyncio.run(psql(production_path, target=unsafe_target, require_error="P0001"))
+            assert snapshot(admin_url) == before_refusal
+            assert (
+                _run(
+                    admin_url,
+                    "SELECT has_schema_privilege('butler_switchboard_rw','switchboard','CREATE')",
+                )
+                is False
+            )
         engine = create_engine(admin_url)
         try:
             with engine.begin() as conn:
-                conn.execute(text(f'SET LOCAL ROLE "{unrelated_role}"'))
-                assert (
-                    conn.execute(
-                        text("SELECT has_schema_privilege(current_user, 'public', 'USAGE')")
-                    ).scalar_one()
-                    is True
-                )
-                for signature in (
-                    "public.enqueue_premise_amendments(text,text,timestamptz,text)",
-                    "public.resolve_finance_bill_status(uuid)",
-                ):
-                    assert (
-                        conn.execute(
-                            text(
-                                "SELECT has_function_privilege(current_user, :signature, 'EXECUTE')"
-                            ),
-                            {"signature": signature},
-                        ).scalar_one()
-                        is False
-                    )
-                _expect_permission_denied(
-                    conn,
-                    "SELECT public.enqueue_premise_amendments('synthetic-source', "
-                    "'synthetic-fingerprint', '2099-01-01'::timestamptz, NULL)",
-                )
-                _expect_permission_denied(
-                    conn, "SELECT * FROM public.resolve_finance_bill_status(:bill)", {"bill": bill}
-                )
-                receipts.append(
-                    {
-                        "replay": replay,
-                        "identity": _identity(conn),
-                        "schema_usage": True,
-                        "initial_schema_usage": unrelated_initial_schema_usage,
-                        "schema_usage_grant": "disposable synthetic control only",
-                        "enqueue": "42501",
-                        "finance_probe": "42501",
-                    }
+                conn.execute(
+                    text("ALTER TABLE public.insight_amendments OWNER TO butler_general_rw")
                 )
         finally:
             engine.dispose()
-    supported_current_replay = _ordinary_bootstrap_owned_core_replay(
-        db_url, admin_url, scope="exact current bootstrap install after two init-db replays"
-    )
+        third_owner = snapshot(admin_url)
+        asyncio.run(psql(production_path, require_error="P0001"))
+        assert snapshot(admin_url) == third_owner
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f'ALTER TABLE public.insight_amendments OWNER TO "{urlparse(db_url).username}"'
+                    )
+                )
+        finally:
+            engine.dispose()
+        asyncio.run(psql(production_path))
+        # Wrong-kind input is intentionally not a domain-table stand-in.
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE public.insight_amendments RENAME TO retained_amendments")
+                )
+                conn.execute(text("CREATE VIEW public.insight_amendments AS SELECT 7 AS sentinel"))
+        finally:
+            engine.dispose()
+        assert _run(admin_url, "SELECT sentinel FROM public.insight_amendments") == 7
+        asyncio.run(psql(production_path, require_error="P0001"))
+        assert _run(admin_url, "SELECT sentinel FROM public.insight_amendments") == 7
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("DROP VIEW public.insight_amendments"))
+                conn.execute(
+                    text("ALTER TABLE public.retained_amendments RENAME TO insight_amendments")
+                )
+        finally:
+            engine.dispose()
+        asyncio.run(psql(production_path))
+    finally:
+        admin_url, db_url = original_admin_url, original_db_url
     _publish_disposable_receipt(
         {
-            "historical_controls": [r["variant"] for r in historical],
-            "current_source_sha256": hashlib.sha256(_CORE_255.read_bytes()).hexdigest(),
-            "current_install": ordinary,
-            "current_bootstrap_replays": bootstrap_observations,
-            "current_role_matrix": receipts,
-            "retained_rows": len(rows),
-            "supported_current_ordinary_replay": supported_current_replay,
-            "optional_calendar": "present" if "butler_calendar_rw" in roles else "absent",
+            "convergence_source_sha256": hashlib.sha256(production.encode()).hexdigest(),
+            "historical_DBAPI_baseline": "43rows/45roles/sixvariants/two replays retained above",
+            "late_unmodified_byte_stream": late_refusal,
+            "race_copy_diagnostic": race_refusal,
+            "snapshot_copy_diagnostics": identity_receipts,
+            "under_lock_owner_copy": owner_race_refusal,
+            "rollback_copy_diagnostic": rollback_refusal,
+            "unmodified_regular_success": regular_success,
+            "repeated_regular_success": repeated_success,
+            "retained_original_rows": len(original_rows),
+            "ordinary_dynamic_head_schemas": ["health", "general"],
         }
     )
 

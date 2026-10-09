@@ -323,6 +323,48 @@ and actual role execution. Source inspection, mock results and collection are no
 SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
 `openspec/specs/proactive-insight-engine/spec.md` for the bounded contract.
 
+### Managed amendment-owner convergence
+
+The diagnostic narrative above records the bootstrap-owned state before this follow-up. The
+managed privileged `scripts/init-db.sql` producer now classifies the exact
+`public.insight_amendments` relation before any durable DDL/DCL. It requires the existing
+configured ordinary LOGIN identity, refuses a runtime/connector/recovery target or third owner,
+and treats absence as a first-install no-op. Catalog snapshots are session-local, initialized by
+the initial preflight on every invocation and independently revalidated by the later block; they
+confer no caller authority. A refused preflight stops the client before any ownership
+transition. The owner block sits after the existing role/schema/ACL block and before the restore
+interface boundary. Only the current bootstrap owner may transfer the fixed table under `ACCESS
+EXCLUSIVE MODE NOWAIT`; the block rechecks its OID, ordinary persistent kind, owner and target
+under the lock. Already-target ownership performs no ownership DDL.
+
+This is an explicit privileged managed-bootstrap step before ordinary canonical replay, not an
+automatic runtime elevation or a repair by DROP/recreation. PostgreSQL changes owner references
+in table/column ACL grantor and grantee fields and may consolidate duplicates. Index, TOAST and
+owned-sequence ownership follows the table. These expected effects are measured separately from
+unchanged row values, logical definitions, FK, runtime effective privileges/grant options,
+policies and RLS flags. The trusted migration owner bypasses the current non-FORCE RLS as an
+owner; actual runtime `SET ROLE` acquisitions must retain their own row and write restrictions.
+Table ownership does not converge the separately installed function owners or caller authority.
+
+The existing real-PG node preserves its 43-row/45-role/six-variant/two-replay historical failure
+by neutralizing only the uniquely delimited owner block in a complete source-bound fixture. Its
+original DBAPI helper is unchanged: one `cursor.execute(whole_source)` in autocommit uses a
+multi-statement implicit transaction. That historical species cannot prove the documented
+psql-file prefix commits. Separate controls invoke the unmodified regular file with `psql -X -v
+ON_ERROR_STOP=1 -f`, then ordinary dynamic-head migrations and different-connection data/version
+readback. A byte-identical, two-chunk `-f -` scheduling control delivers the complete legacy
+prefix, observes its planted schema grant committed, acquires an external lock and supplies the
+unchanged suffix. It must reach the late NOWAIT error, release the external lock before target
+readback, and retain the earlier committed grant while the owner block stays atomic. Precisely
+bound source-copy identity/rollback diagnostics are labelled separately from both unmodified
+producer species. Child deadlines include bounded kill, concurrent pipe draining and reap; no
+raw client diagnostics or credentials become receipts.
+
+A passing source/static/collection check is not SQL proof. Full migrated-state controls,
+independently reviewed exact-head normal evidence and the protected landing remain required
+before this follow-up is called delivered. Applied core_255, the historical q34 assertions and
+function/caller/FK/FORCE-RLS hardening scopes remain unchanged.
+
 ## Implementation Notes
 
 - Supported online entrypoints first verify the reviewed bootstrap profile before
