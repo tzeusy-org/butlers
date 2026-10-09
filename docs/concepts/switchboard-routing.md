@@ -183,6 +183,16 @@ psql -h localhost -U butlers -d butlers -c \
 
 ## Implementation Notes
 
+- `correct_route` records `action_type='correct_route'` for both dispatch
+  outcomes, with `outcome='success'` or `outcome='failure'`. Forward revision
+  `sw_043` adds these existing producer values to `operator_audit_log` while
+  preserving every older action and outcome, including the distinct `failed`
+  value. Applied `sw_002` stays unchanged. Downgrade refuses while either new
+  domain value exists; it never deletes or rewrites audit history to roll back.
+  The owning audit tests use the actual core and Switchboard chains under an
+  ordinary migration login and exercise writes as `butler_switchboard_rw`,
+  with a separate connection for committed readback.
+
 - Steam presence events (`status_change`, `online_status`) are both metadata-only and
   routing-skipped. `control.ingestion_tier = "metadata"` only sets the persistence shape; the skip
   comes from a `scope='global'` `ingestion_rules` row evaluated by `IngestionPolicyEvaluator` in
