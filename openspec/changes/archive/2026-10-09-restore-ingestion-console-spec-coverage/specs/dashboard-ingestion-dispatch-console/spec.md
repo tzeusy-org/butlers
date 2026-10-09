@@ -113,21 +113,31 @@ being written so that typing does not produce a history entry per keystroke;
 every other control SHALL write immediately. An empty search term SHALL remove
 its parameter rather than write an empty value.
 
-Filter writes SHALL push a history entry rather than replace one, so browser
-back and forward step through the owner's filter changes. Housekeeping writes
-that strip an inbound one-shot parameter — an OAuth error marker, a
-trace-scoping deep link — SHALL replace instead, because they represent no
-navigational intent.
+Changing the range, committing a settled debounced search (including clearing
+it), changing the channel set, selecting or clearing a minute scope, and
+opening or closing an event drawer SHALL push a URL history entry. Explicitly
+clearing the trace filter SHALL also push an entry. Browser back SHALL return
+to the preceding URL selection; mount or reload SHALL hydrate its controls as
+specified above. This does not assert additional same-mounted popstate
+synchronization for local range or search state.
 
-Not all view state is URL-backed today, and this requirement records that
-boundary rather than overstating it: the Timeline's status-chip selection is
-component state, and the active saved view is persisted per-browser in local
-storage. Neither appears in the URL, so a shared Timeline link reproduces range,
-search, channels, scope, and open event but not the sender's status filter or
-saved view. The Connectors roster, connector detail, and Filters pipeline routes
-hold no URL-backed filter state at all. Closing those gaps is deliberately out
-of scope here; this clause exists so a reader does not assume a shareability
-guarantee the surface does not provide.
+The status-chip and active saved-view mirroring effect SHALL replace the
+current entry. That mirroring creates no back step for the immediately prior
+mirrored statuses or view identity. A custom saved view may separately apply
+range, search or channels through the push interactions above; its subsequent
+statuses/view mirror still replaces that resulting entry. Legacy route/tab
+normalization and consumed OAuth markers SHALL likewise replace the current
+entry, rather than add a redirect or one-shot-marker back step.
+
+The Timeline SHALL also carry `statuses` and `view` in the URL, parse them on
+mount, and mirror subsequent changes with replacement history. Default
+statuses and the default `all` view SHALL be omitted from the canonical URL.
+Unknown statuses SHALL be named and ignored, never expanded into invented
+known statuses. A link to an unresolved custom saved-view id SHALL retain its
+explicit filters and expose the unresolved view honestly; the id does not
+transfer the other owner's saved-view contents. The Connectors roster,
+connector detail and Filters pipeline routes have no additional URL-backed
+filter state specified here.
 
 #### Scenario: Filter state preserved in URL
 
@@ -154,22 +164,32 @@ guarantee the surface does not provide.
 
 #### Scenario: Filter changes are navigable
 
-- **WHEN** the owner changes a URL-backed filter and presses back
-- **THEN** the previous filter selection is restored
+- **WHEN** the owner changes the range, commits a settled debounced search,
+  changes channels, selects or clears minute scope, opens or closes an event
+  drawer, or explicitly clears trace, and then presses back
+- **THEN** the pushed history entry returns to the preceding URL selection
+- **AND** mounting or reloading that URL hydrates its specified controls
+- **AND** this push-navigation species excludes replacement-only statuses/view
+  mirroring, legacy normalization and consumed OAuth markers
 
 #### Scenario: One-shot parameter strips replace
 
-- **WHEN** an inbound OAuth error marker or trace deep-link parameter is
-  consumed and removed
+- **WHEN** an inbound OAuth error marker is consumed and removed
 - **THEN** the history entry is replaced rather than pushed
+- **WHEN** the owner explicitly clears the trace filter
+- **THEN** the history change pushes so back can restore the trace
 
-#### Scenario: Non-URL-backed state is documented, not implied
+#### Scenario: URL-backed status and view identity are restored honestly
 
-- **WHEN** a Timeline link is shared
-- **THEN** the recipient sees the sender's range, search, channels, scope, and
-  open event
-- **AND** the recipient does not inherit the sender's status-chip selection or
-  active saved view
+- **WHEN** a Timeline link carries `statuses` and `view`
+- **THEN** the recipient restores the supported statuses and view identity,
+  alongside range, search, channels, scope and open event
+- **AND** an unresolved custom view is named without fabricating its contents
+- **WHEN** the status-chip or active saved-view mirroring effect updates
+  `statuses` or `view`
+- **THEN** it replaces the current history entry rather than pushes a new one
+- **AND** back does not restore the immediately prior mirrored statuses or
+  view identity through an entry that mirroring did not create
 
 ### Requirement: Connector roster list summary-only polling
 
@@ -181,8 +201,10 @@ still renders when the metrics backend is down. Polling SHALL be on a fixed
 interval; the roster SHALL NOT poll faster than once per 30 seconds.
 
 The available-connector catalogue, which describes connector types rather than
-live state, SHALL NOT be polled at all — it SHALL be fetched once and served
-from cache for the duration of the view.
+live state, SHALL NOT use a refetch interval. Its query SHALL use the existing
+60-second stale time and 120-second garbage-collection time. This is absence of
+polling, not a prohibition on the query library's focus/remount/invalidation
+refetches once data is stale.
 
 #### Scenario: Roster loads from the summary endpoint
 
@@ -205,5 +227,5 @@ from cache for the duration of the view.
 #### Scenario: Catalogue is fetched, not polled
 
 - **WHEN** the available-connector catalogue is loaded
-- **THEN** it is served from cache on subsequent renders with no refetch
-  interval
+- **THEN** it uses the query cache with no refetch interval
+- **AND** ordinary stale-query refetch semantics remain supported

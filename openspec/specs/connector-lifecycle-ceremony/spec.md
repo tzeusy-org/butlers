@@ -1,7 +1,6 @@
-# Connector Lifecycle Ceremony
+# connector-lifecycle-ceremony Specification
 
 ## Purpose
-
 Defines the per-action gate matrix, credential-handling contract, and
 soft-delete semantics for the connector lifecycle actions exposed by the
 dashboard API under `/api/ingestion/connectors`. Lifecycle actions differ in
@@ -14,7 +13,7 @@ not-yet-ratified `connector-oauth-scope-surface` capability and is blocked
 until that spec exists — `add-connector-oauth-scope-surface` cites this
 capability as its normative source for that gate.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Per-action lifecycle gate matrix
 
@@ -36,9 +35,10 @@ Audit-log-only actions SHALL execute immediately and still emit an
 itself: for `disconnect` it SHALL park a pending action carrying the
 replayable command contract, and approval enforcement and execution SHALL
 happen at the MCP tool layer on Switchboard, which is not bypassable from the
-dashboard API. Every lifecycle action SHALL first verify the target connector
-exists and is not soft-deleted, returning HTTP 404 when it does not and HTTP
-503 when the connector registry pool is unavailable.
+dashboard API. Every lifecycle action other than `reauth` SHALL first verify the target
+connector exists and is not soft-deleted, returning HTTP 404 when it does not
+and HTTP 503 when the connector registry pool is unavailable. The `reauth`
+refusal SHALL happen before any registry access, regardless of target existence.
 
 #### Scenario: Pause is audit-only
 
@@ -84,8 +84,8 @@ exists and is not soft-deleted, returning HTTP 404 when it does not and HTTP
 
 #### Scenario: Unknown connector is rejected before any effect
 
-- **WHEN** any lifecycle action names a connector that does not exist or whose
-  `deleted_at` is set
+- **WHEN** a lifecycle action other than `reauth` names a connector that does
+  not exist or whose `deleted_at` is set
 - **THEN** the handler returns HTTP 404 and performs no state change
 
 ### Requirement: Run-now semantics
@@ -188,7 +188,8 @@ whereas `deleted_at` removes it from the roster entirely.
 
 ### Requirement: Audit emission for all lifecycle actions
 
-Every lifecycle action SHALL emit an `audit.append()` entry to
+Every lifecycle action other than the early `reauth` refusal SHALL emit an
+`audit.append()` entry to
 `public.audit_log` carrying the actor, the action string, the target connector
 identity as `{connector_type}/{endpoint_identity}`, and the originating client
 address. Audit entries SHALL be retained indefinitely. For state-changing
@@ -246,13 +247,3 @@ response.
 - **WHEN** a parked `disconnect` approval is presented to the owner
 - **THEN** its arguments are rendered through the approvals sensitivity
   declaration for that tool rather than echoed raw
-
-## Source References
-
-- Non-Negotiable Rule 1 (user-federated sovereignty — the owner's credentials
-  never leave the credential store through a lifecycle response)
-- Non-Negotiable Rule 3 (MCP-only inter-butler communication — approval
-  execution happens through the Switchboard MCP tool, not the dashboard API)
-- RFC 0003 (Switchboard routing and ingestion)
-- RFC 0007 (Dashboard and API surface)
-- RFC 0021 (Decision loop, one-tap approvals and decision memory)
