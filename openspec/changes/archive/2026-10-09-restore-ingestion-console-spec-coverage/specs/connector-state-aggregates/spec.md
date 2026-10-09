@@ -8,10 +8,9 @@ aggregation prohibitions for the ingestion funnel aggregates surfaced on the
 `rate1h` (events per minute over the trailing hour), `routed_pct` (routed share
 of the funnel), and `filtered24h` (filtered events over the trailing 24 hours).
 These aggregates are read by the Filters pipeline view, the connector
-cross-summary, and `GET /api/ingestion/pipeline`. The sw_025 migration dropped
-the SQL rollup tables that previously backed them; this capability ratifies the
-Prometheus-PromQL-with-TTL-cache path that shipped in their place, and records
-where the shipped path is quieter about failure than the envelope suggests.
+cross-summary, and `GET /api/ingestion/pipeline`. This capability ratifies the shipped Prometheus-PromQL-with-TTL-cache path.
+It does not attribute a rollup-table removal to sw_025: that immutable revision
+seeds the Steam status skip rule, and no rollup-removal revision is asserted here.
 
 ## ADDED Requirements
 
@@ -24,7 +23,7 @@ arithmetically from the funnel counters rather than queried, as
 `routed_total / (ingested + filtered + errored) * 100.0`, and SHALL be `0.0`
 when that denominator is zero. No SQL rollup table or materialized view SHALL
 back these aggregates; re-introducing one requires a superseding spec that
-justifies reversing the sw_025 decision.
+justifies changing the Prometheus-only aggregate contract.
 
 #### Scenario: Aggregate fetch goes through the Prometheus HTTP API
 
@@ -97,6 +96,20 @@ NEVER return HTTP 500 for a Prometheus failure. The degraded envelope SHALL be
 used when `PROMETHEUS_URL` is unset or empty, when the `ingested`, `filtered`,
 or `errored` query raises, and when any other exception escapes the fetch path.
 
+"Unavailable" SHALL cover any value the handler could not observe, not only a
+transport failure: a Prometheus-reported query error on any of the six instant
+queries or the sparkline range query, a scalar that will not parse as a finite
+number, a per-butler routed series whose value cannot be read, and a sparkline
+matrix of unexpected shape SHALL each produce the degraded envelope. The
+handler SHALL NOT substitute a value it did not observe — no zero for an
+unparseable scalar, and no uniform fill of the ingested total across the 24
+sparkline buckets. When `aggregates_available` is `true`, every value in the
+response SHALL be one Prometheus actually reported.
+
+An empty PromQL result set is an observation, not a failure: Prometheus
+answering with no series for a `sum(increase(...))` SHALL read as `0` (and as
+`[0] * 24` for the sparkline) with `aggregates_available` left `true`.
+
 Backlog counters (`failed_total`, `replay_pending_total`, `written_off_total`)
 are sourced from PostgreSQL, not Prometheus, and SHALL degrade independently:
 their unavailability SHALL be signalled by `backlog_available: false` with each
@@ -130,16 +143,40 @@ empty one.
   `null`
 - **AND** the Prometheus-sourced fields are unaffected by the backlog failure
 
-#### Scenario: Unparseable scalar reads as zero without lowering the flag
+#### Scenario: Unparseable scalar lowers the flag instead of reading as zero
 
 - **WHEN** a PromQL response is well-formed HTTP but its scalar value cannot be
-  parsed, or the sparkline range query returns an unusable matrix
-- **THEN** the affected value currently resolves to `0` (or a uniformly filled
-  sparkline) while `aggregates_available` remains `true`
-- **AND** this quiet coercion is a known honesty gap in the shipped path,
-  recorded here so a reader is not misled into treating
-  `aggregates_available: true` as proof every field was observed
+  parsed, or parses as `NaN` or `Inf`
+- **THEN** the handler returns the degraded envelope with
+  `aggregates_available: false`
+- **AND** the affected field SHALL NOT be published as `0` under
+  `aggregates_available: true`
 
+#### Scenario: Unusable sparkline matrix lowers the flag instead of filling uniformly
+
+- **WHEN** the sparkline range query returns an error, a result element without
+  a `values` series, a series carrying no points, or a bucket value that will
+  not parse as a finite number
+- **THEN** the handler returns the degraded envelope with
+  `aggregates_available: false`
+- **AND** the ingested total SHALL NOT be spread evenly across the 24 buckets
+
+#### Scenario: A failed routed, rate1h, or filtered24h query degrades the envelope
+
+- **WHEN** the per-butler routed breakdown, `rate1h`, or `filtered24h` query
+  returns a Prometheus error, or one routed series' value cannot be read
+- **THEN** the handler returns the degraded envelope with
+  `aggregates_available: false`
+- **AND** `routed_pct` SHALL NOT be published as `0.0`, nor the breakdown
+  published with the unreadable series silently omitted
+
+#### Scenario: Empty result set is a truthful zero
+
+- **WHEN** an instant query returns an empty vector, or the sparkline range
+  query returns an empty matrix
+- **THEN** the affected field is `0` (or `[0] * 24` for the sparkline)
+- **AND** `aggregates_available` remains `true`, because Prometheus was reached
+  and answered
 ### Requirement: Pipeline endpoint uses TTL cache or materialized view
 
 `GET /api/ingestion/pipeline` SHALL accept a single query parameter `window`
@@ -154,8 +191,10 @@ for the backlog counters.
 #### Scenario: Pipeline served from cache under polling
 
 - **WHEN** the endpoint is polled faster than once per 60 seconds
-- **THEN** Prometheus is queried at most once per 60 seconds per window
-- **AND** intermediate polls return the cached values
+- **THEN** a poll after a completed refresh and within that entry's 60-second
+  TTL returns the cached values without another Prometheus fetch
+- **AND** concurrent cold misses may each fetch outside the lock; this cache
+  does not promise single-flight refresh or a global rate limit
 
 #### Scenario: Invalid window is rejected
 
@@ -170,14 +209,12 @@ for the backlog counters.
 - **AND** the backlog query is a single grouped `COUNT(*)` over
   `public.ingestion_events` restricted to the backlog statuses
 
-#### Scenario: Materialized view alternative honored
+#### Scenario: Materialized view requires a superseding contract
 
-- **WHEN** an implementation replaces the PromQL+TTL path with a materialized
-  view
-- **THEN** the view SHALL be refreshed no more often than every 60 seconds
-- **AND** it SHALL provide the same response shape, including
-  `aggregates_available`, which SHALL be `false` when the refresh has failed
-  for longer than the refresh interval
+- **WHEN** a change proposes a materialized view or SQL rollup for these aggregates
+- **THEN** the current Prometheus-only requirement remains binding until a
+  superseding spec is adopted
+- **AND** this historical requirement title grants no materialized-view exception
 
 ### Requirement: Aggregate response field shape
 

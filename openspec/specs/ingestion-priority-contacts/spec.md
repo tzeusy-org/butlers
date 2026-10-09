@@ -1,7 +1,6 @@
-# Ingestion Priority Contacts
+# ingestion-priority-contacts Specification
 
 ## Purpose
-
 Defines the cross-butler priority-contact store: the `public.priority_contacts`
 table, its REST surface under `/api/ingestion/priority-contacts`, the audit
 trail over its mutations, and its retention. A priority contact is an identity
@@ -14,7 +13,7 @@ cache contract that governs how it reads this table, are specified in
 `connector-gmail` (`Policy Tier Assignment`) rather than here, so the evaluator
 contract lives beside the evaluator.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Priority contacts data model
 
@@ -189,35 +188,39 @@ stops being a priority contact only by an explicit `DELETE`.
 
 ### Requirement: Cascade-delete emits audit entry
 
-A row-level `AFTER DELETE` trigger on `public.priority_contacts` SHALL write an
-audit entry with `actor = 'system:contact_cascade'` and
-`action = 'ingestion.priority_contact.cascade_remove'`, whose target is
-`contact_id` alone. The trigger function SHALL be `SECURITY DEFINER` so the
-audit line is written regardless of the deleting role's grants, and its target
-SHALL carry no butler suffix.
+This is the stable historical requirement name; its former trigger behavior is
+superseded by core_205, not current authority to recreate that trigger. The
+current table SHALL have no user cascade-audit trigger or orphaned
+`public.priority_contacts_cascade_audit()` function. A direct SQL DELETE SHALL
+NOT self-audit. An API removal SHALL emit exactly the caller-owned
+`ingestion.priority_contact.remove` action and SHALL NOT also emit
+`ingestion.priority_contact.cascade_remove`.
 
-The trigger is unconditional. It therefore fires on every delete, not only on a
-cascade, which means an API removal writes both
-`ingestion.priority_contact.remove` and
-`ingestion.priority_contact.cascade_remove` for the same row, and the
-`cascade_remove` note still reads "contact removed from public.contacts" even
-though `public.contacts` has since been dropped and no cascade path from it
-remains. This is recorded as the shipped behaviour so a reader auditing the log
-is not misled into treating a `cascade_remove` entry as evidence of a cascade;
-correcting it is deliberately out of scope for this restoration.
+The surviving `entity_id` foreign key SHALL use ON DELETE SET NULL, leaving the
+priority-contact row in place when its entity is deleted. Neither a historical
+header nor a catalog check authorizes inventing a surviving cascade path.
+Pre-existing cascade audit rows SHALL remain untouched as historical evidence;
+this restoration SHALL NOT backfill, rewrite, or delete them. A future added
+cascade path SHALL require a deliberate superseding contract, not a conditional
+trigger guessed from the old name.
 
-#### Scenario: Cascade audit entry has no butler suffix
+#### Scenario: Historical cascade audit entry has no butler suffix
 
-- **WHEN** a priority-contact row is deleted
-- **THEN** the trigger writes an audit entry whose target is the `contact_id`
-  with no `:butler` suffix
+- **WHEN** an existing audit row was emitted by the old core_129 trigger
+- **THEN** its historical target remains `contact_id` without a butler suffix
+- **AND** archiving this contract does not rewrite that landed history
 
-#### Scenario: API removal produces both audit actions
+#### Scenario: API removal produces exactly one current audit action
 
-- **WHEN** a priority contact is removed through the REST API
-- **THEN** `public.audit_log` receives both
-  `ingestion.priority_contact.remove` and
-  `ingestion.priority_contact.cascade_remove` for that contact id
+- **WHEN** a priority contact is removed through the current REST API
+- **THEN** the caller emits only `ingestion.priority_contact.remove`
+- **AND** no `ingestion.priority_contact.cascade_remove` entry is created
+
+#### Scenario: Direct deletion has no fabricated audit provenance
+
+- **WHEN** a direct SQL DELETE removes a priority-contact row
+- **THEN** no trigger writes a new audit row or a note asserting removal from
+  the dropped `public.contacts` table
 
 ### Requirement: No credentials in priority-contact API responses
 
@@ -240,11 +243,3 @@ other column.
 - **WHEN** the listing query is reviewed
 - **THEN** it projects only the declared fields and joins only
   `public.entities` and `relationship.entity_facts`
-
-## Source References
-
-- Non-Negotiable Rule 1 (user-federated sovereignty — priority is the owner's
-  declaration about their own people, held in the owner's database)
-- RFC 0003 (Switchboard routing and ingestion)
-- RFC 0004 (Identity and contact resolution — `public.entities` is the anchor)
-- RFC 0007 (Dashboard and API surface)
