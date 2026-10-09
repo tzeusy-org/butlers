@@ -6093,6 +6093,7 @@ export function postChroniclerEpisodeExplain(
 /** Fetch paginated Chronicler point events. Defaults: include_tombstoned=false. */
 export function getChroniclerEvents(
   params?: ChroniclerEventsParams,
+  signal?: AbortSignal,
 ): Promise<{ data: ChroniclerPointEvent[]; meta: { total: number; offset: number; limit: number; has_more: boolean } }> {
   const sp = new URLSearchParams();
   if (params?.source_name) sp.set("source_name", params.source_name);
@@ -6104,7 +6105,7 @@ export function getChroniclerEvents(
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return apiFetch(qs ? `/chronicler/events?${qs}` : "/chronicler/events");
+  return apiFetch(qs ? `/chronicler/events?${qs}` : "/chronicler/events", { signal });
 }
 
 // ── Chronicler routines (bu-whhll.9 / bu-whhll.11) ─────────────────────────

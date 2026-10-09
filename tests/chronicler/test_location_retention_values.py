@@ -8300,8 +8300,6 @@ async def _assert_catalog_terminal_complete_ancestry_values():
                 return []
             if "location_native_memory_mutations" in sql:
                 return []
-            if sql.startswith("WITH artifacts AS"):
-                return [dict(holder_generation=generation, receipt_id=self.terminal)]
             raise AssertionError("Unmodeled catalog fetch")
 
         async def fetchrow(self, sql, *args):

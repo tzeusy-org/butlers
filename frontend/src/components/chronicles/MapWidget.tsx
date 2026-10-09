@@ -11,7 +11,7 @@
 //   <MapWidget points={[]} />   {/* renders empty state */}
 // ---------------------------------------------------------------------------
 
-import { Component, lazy, Suspense, useSyncExternalStore, type ReactNode } from "react"
+import { Component, lazy, Suspense, useState, useSyncExternalStore, type ReactNode } from "react"
 
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
@@ -123,15 +123,20 @@ export type { MapWidgetInnerProps as MapWidgetProps }
  * - Accepts an optional `playheadPoint` prop (D12 — scrubber drives map
  *   playhead). The inner component handles marker creation and cleanup.
  */
-export function MapWidget(props: MapWidgetInnerProps) {
+export function MapWidget(props: MapWidgetInnerProps & { privacyGeneration?: number }) {
   const privacy = useSyncExternalStore(
     subscribeLocationPrivacy, getLocationPrivacySnapshot, getLocationPrivacyServerSnapshot,
   );
-  if (privacy.pending) return <MapLoadingSkeleton height={props.height} />;
+  const [initialGeneration] = useState(privacy.generation);
+  const { privacyGeneration, ...mapProps } = props;
+  // Plain initial callers keep their compatibility view; after a fence the
+  // managed point-query producer must supply an actual fresh generation.
+  if (privacy.pending || (privacyGeneration ?? initialGeneration) !== privacy.generation)
+    return <MapLoadingSkeleton height={props.height} />;
   return (
     <MapErrorBoundary height={props.height}>
       <Suspense fallback={<MapLoadingSkeleton height={props.height} />}>
-        <MapWidgetInner key={privacy.generation} {...props} />
+        <MapWidgetInner key={privacy.generation} {...mapProps} />
       </Suspense>
     </MapErrorBoundary>
   )

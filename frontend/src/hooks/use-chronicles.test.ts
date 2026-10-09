@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Tests for use-chronicles query key factory and hook queryFn behavior.
  *
@@ -26,6 +27,7 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
+    getChroniclerEvents: vi.fn(),
     getChroniclerEpisodes: vi.fn(),
     getChroniclerAggregateByCategory: vi.fn(),
     getChroniclerAggregateByDay: vi.fn(),
@@ -361,9 +363,91 @@ describe("committed location privacy generation", () => {
       await reconcileLocationPrivacy(cache, "2");
       expect(cache.getQueryData(current)).toBeUndefined();
       expect(notifications).toEqual(["pending", "settled", "pending", "settled"]);
+      await assertManagedPointQueryGeneration();
     } finally {
       unsubscribe();
       cache.clear();
     }
   });
 });
+
+
+async function assertManagedPointQueryGeneration() {
+  // The actual hook/request/cache boundary, with a synthetic API transport.
+  // Neither this mock nor a generation number proves server/GPU erasure.
+  const { createElement, act, useEffect } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+  const { useChroniclesPointEvents } = await import("./use-chronicles");
+  const { getChroniclerEvents } = await import("@/api/client.ts");
+  const { reconcileLocationPrivacy, getLocationPrivacySnapshot } = await import("./location-privacy");
+  type Response = Awaited<ReturnType<typeof getChroniclerEvents>>;
+  const requests: Array<{ signal?: AbortSignal; resolve: (body: Response) => void }> = [];
+  vi.mocked(getChroniclerEvents).mockImplementation((_params, signal) => new Promise((resolve) => {
+    requests.push({ signal, resolve });
+  }));
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  const initial = getLocationPrivacySnapshot().generation;
+  let observed: { generation: number; data: Response | undefined };
+  let transition!: Promise<void>;
+  function Probe() {
+    const query = useChroniclesPointEvents({ source_name: "owntracks", since: "archive" }, { refetchInterval: false });
+    useEffect(() => {
+      observed = { generation: query.locationPrivacyGeneration, data: query.data };
+    }, [query.locationPrivacyGeneration, query.data]);
+    return null;
+  }
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  const point: Response["data"][number] = {
+    id: "fresh-allowed", source_name: "owntracks", source_ref: "synthetic-fix",
+    event_type: "location", occurred_at: "2026-01-01T00:00:00Z", precision: "point",
+    title: null, payload: { lat: 3.14159265, lon: 104.12345678 }, privacy: "sensitive",
+    retention_days: 30, tombstone_at: null, canonical_occurred_at: "2026-01-01T00:00:00Z",
+    canonical_title: null, canonical_privacy: "sensitive", corrected_at: null,
+    correction_note: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+  };
+  const response: Response = { data: [point], meta: { total: 1, offset: 0, limit: 50, has_more: false } };
+  try {
+    await act(async () => {
+      root.render(createElement(QueryClientProvider, { client: cache }, createElement(Probe)));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(requests).toHaveLength(1);
+    expect(observed!.generation).toBe(initial);
+    expect(observed!.data).toBeUndefined();
+    const prior = requests[0];
+    expect(prior.signal?.aborted).toBe(false);
+    await act(async () => {
+      transition = reconcileLocationPrivacy(cache, "1");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(prior.signal?.aborted).toBe(true);
+    expect(observed!.generation).toBeGreaterThan(initial);
+    expect(observed!.data).toBeUndefined();
+    expect(requests.length).toBeGreaterThan(1);
+    const current = requests.at(-1)!;
+    expect(current.signal?.aborted).toBe(false);
+    await act(async () => {
+      for (const request of requests.slice(1)) request.resolve(response);
+      await transition;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      prior.resolve({ ...response, data: [{ ...point, id: "obsolete", payload: { lat: 1.31415926 } }] });
+      // A transport that ignores abort cannot replace the new response.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(observed!.data).toEqual(response);
+    expect(observed!.generation).toBe(getLocationPrivacySnapshot().generation);
+    const currentKeys = cache.getQueryCache().getAll().filter(query => query.state.data !== undefined);
+    expect(currentKeys).toHaveLength(1);
+    expect(currentKeys[0].queryKey.at(-1)).toEqual({ privacyGeneration: observed!.generation });
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    cache.clear();
+    vi.mocked(getChroniclerEvents).mockReset();
+  }
+}

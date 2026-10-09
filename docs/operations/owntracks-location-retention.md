@@ -1033,3 +1033,18 @@ and partial ancestry readbacks; that new SQL extension remains unrun until
 its exact-head hosted receipt. Freeform mixed annotations remain preserved;
 this ancestry guard is no substitute for their lawful own-copy reduction,
 registered online admission, complete all-holder erasure or protected delivery.
+
+
+### Managed map generation continuation
+
+The actual point-event query now binds its cache key and AbortSignal to the
+managed privacy generation. The drilldown forwards that exact generation with
+its derived trail/playhead through the minimap to the MapLibre wrapper. A reset
+that settles before its parent replaces old props keeps the old map unmounted;
+cloning those props cannot make them fresh. An actual new-generation request may
+render allowed points even when values are identical. The owning React tests
+plant old geometry, settle the fence with old props retained, reject an obsolete
+late transport result and retain a fresh-point positive. These are synthetic
+API/MapLibre managed-copy controls, not actual browser/GPU, server erasure,
+registered all-holder closure or whole acceptance. All original P7 runtime and
+other P1–P9 obligations remain mandatory.

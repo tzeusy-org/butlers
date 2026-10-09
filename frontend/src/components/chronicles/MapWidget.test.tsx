@@ -468,9 +468,10 @@ it("disposes planted managed map geometry during a privacy fence and renders fre
   // REQ-location-retention-007; mounted DOM/MapLibre-call control, not live GPU/server proof.
   const { MapWidget } = await import("./MapWidget");
   const { QueryClient } = await import("@tanstack/react-query");
-  const { reconcileLocationPrivacy } = await import("@/hooks/location-privacy");
+  const { reconcileLocationPrivacy, getLocationPrivacySnapshot } = await import("@/hooks/location-privacy");
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const key = ["chronicles", "point-events", { window: "archive" }];
+  const originalGeneration = getLocationPrivacySnapshot().generation;
   const old = [{ lat: 1.31415926, lng: 103.81234567 }, { lat: 1.32, lng: 103.82 }];
   const fresh = [{ lat: 3.14159265, lng: 104.12345678 }, { lat: 3.15, lng: 104.13 }];
   cache.setQueryData(key, old);
@@ -479,7 +480,7 @@ it("disposes planted managed map geometry during a privacy fence and renders fre
   const root = createRoot(host);
   try {
     await act(async () => {
-      root.render(<MapWidget points={[]} trailPoints={old} />);
+      root.render(<MapWidget points={[]} trailPoints={old} privacyGeneration={originalGeneration} />);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     const planted = mapState.maps.at(-1)!;
@@ -500,9 +501,22 @@ it("disposes planted managed map geometry during a privacy fence and renders fre
     expect(planted.sources).toEqual({});
     expect(host.querySelector('[data-testid="map-container"]')).toBeNull();
     await act(async () => {
-      root.render(<MapWidget points={[]} trailPoints={fresh} />);
+      // Settle reset while the parent still retains its old prop snapshot.
+      // Unmounting old GPU sources is insufficient if they are recreated now.
       settle();
       await transition;
+    });
+    expect(host.querySelector('[data-testid="map-container"]')).toBeNull();
+    expect(mapState.maps.filter((map) => !map.removed)).toHaveLength(0);
+    await act(async () => {
+      root.render(<MapWidget points={[]} trailPoints={old.map(point => ({ ...point }))}
+        privacyGeneration={originalGeneration} />);
+    });
+    expect(host.querySelector('[data-testid="map-container"]')).toBeNull();
+    expect(mapState.maps.filter((map) => !map.removed)).toHaveLength(0);
+    await act(async () => {
+      root.render(<MapWidget points={[]} trailPoints={fresh}
+        privacyGeneration={getLocationPrivacySnapshot().generation} />);
     });
     const current = mapState.maps.at(-1)!;
     expect(current).not.toBe(planted);

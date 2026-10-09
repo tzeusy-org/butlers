@@ -18,8 +18,11 @@
  * Tombstone defaults: include_tombstoned defaults to false in all hooks.
  */
 
-import { useEffect } from "react";
-import { reconcileLocationPrivacy } from "./location-privacy";
+import { useEffect, useSyncExternalStore } from "react";
+import {
+  reconcileLocationPrivacy, subscribeLocationPrivacy,
+  getLocationPrivacySnapshot, getLocationPrivacyServerSnapshot,
+} from "./location-privacy";
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -455,12 +458,20 @@ export function useChroniclesPointEvents(
   params?: ChroniclerEventsParams,
   options?: ChroniclesHookOptions,
 ) {
-  return useQuery({
-    queryKey: chroniclesKeys.pointEvents(params),
-    queryFn: () => getChroniclerEvents(params),
+  const privacy = useSyncExternalStore(
+    subscribeLocationPrivacy, getLocationPrivacySnapshot, getLocationPrivacyServerSnapshot,
+  );
+  // Namespace actual requests by the managed privacy generation. An old
+  // promise or retained prop cannot be relabeled as a new response, even when
+  // a parent rerenders after reset or a fresh response has identical values.
+  const query = useQuery({
+    queryKey: [...chroniclesKeys.pointEvents(params), { privacyGeneration: privacy.generation }],
+    queryFn: ({ signal }) => getChroniclerEvents(params, signal),
+    placeholderData: undefined,
     refetchInterval: options?.refetchInterval ?? CHRONICLES_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
   });
+  return { ...query, locationPrivacyGeneration: privacy.generation };
 }
 
 // ---------------------------------------------------------------------------

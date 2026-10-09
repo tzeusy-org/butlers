@@ -326,6 +326,8 @@ The system SHALL implement P7 using true server policy and source retention stat
 
 Managed dashboard query/cache and MapLibre geometry SHALL independently fence stale or late responses and invalidate current and archived location views after genuine committed retention changes. Native server-response completion SHALL NOT substitute for these managed UI controls. Planted expired geometry and a retained fresh-point positive SHALL be exercised through the real browser/runtime path; a cosmetic plaque, client purge field, empty fixture or policy clock alone SHALL NOT prove this requirement.
 
+The actual managed point-query producer SHALL namespace requests by the observed committed privacy transition generation and forward that same generation through its derived trail/playhead and minimap into the map wrapper. The wrapper SHALL retain the fence after reset settles when its parent still holds old props, including cloned old arrays; it SHALL admit a genuinely new generation even when response values match old values. Query cancellation and cache reset SHALL include current and archived variants; late obsolete responses SHALL NOT recreate retained geometry. This managed generation is a local cache/render witness, never a server deletion receipt or remote-browser attestation.
+
 ID: REQ-location-retention-007
 Source: bu-s11n0s.7 original map outcome and S3; openspec/specs/dashboard-chronicles/spec.md Map Render Privacy Contract and Where-You-Went Map Trail; proposed source-protocol P7
 Scope: v1-mandatory
