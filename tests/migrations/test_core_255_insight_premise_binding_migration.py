@@ -1309,7 +1309,12 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
     assert snapshot(admin_url) == after_transfer
     for schema in ("health", "general"):
         asyncio.run(run_migrations(db_url, chain="core", schema=schema))
-        assert_at_chain_head(db_url, chain="core", schema=schema)
+        engine = create_engine(db_url)
+        try:
+            with engine.connect() as conn:
+                assert_at_chain_head(conn, chain="core", schema=schema)
+        finally:
+            engine.dispose()
         assert _amendment_rows(admin_url) == original_rows
 
     # Actual runtime execution remains distinct from the trusted migration owner.
