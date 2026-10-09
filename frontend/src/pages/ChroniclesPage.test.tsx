@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter, useNavigate } from "react-router";
+import { MemoryRouter, useNavigate, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ChroniclesPage from "@/pages/ChroniclesPage";
@@ -95,9 +95,9 @@ function renderPage(entry = "/chronicles"): string {
   });
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[entry]}>
+      <StaticRouter location={([entry])[0] ?? "/"}>
         <ChroniclesPage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }

@@ -236,17 +236,17 @@ describe("EntityDetailPage — merge-review entry points", () => {
     expect(container.querySelector("[data-testid='duplicate-warning-panel']")).toBeNull();
   });
 
-  it("opens the compare view from the panel's Review merge action", () => {
+  it("opens the compare view from the panel's Review merge action", async () => {
     useRelationshipEntityQueue.mockReturnValue(DUP_QUEUE);
     render();
     const reviewBtn = container.querySelector(
       "[data-testid='duplicate-warning-review']",
     ) as HTMLButtonElement;
-    act(() => reviewBtn.click());
+    await act(async () => reviewBtn.click());
     expect(document.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
   });
 
-  it("opens the compare view when `m` is pressed and duplicate evidence exists", () => {
+  it("opens the compare view when `m` is pressed and duplicate evidence exists", async () => {
     useRelationshipEntityQueue.mockReturnValue(DUP_QUEUE);
     render();
     // The `m` binding is VIEW-LOCAL: it fires on the focused detail container,
@@ -254,7 +254,7 @@ describe("EntityDetailPage — merge-review entry points", () => {
     const detailRoot = container.querySelector(
       "[data-testid='entity-detail-root']",
     ) as HTMLDivElement;
-    act(() => {
+    await act(async () => {
       detailRoot.dispatchEvent(new KeyboardEvent("keydown", { key: "m", bubbles: true }));
     });
     expect(document.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
@@ -283,13 +283,13 @@ describe("EntityDetailPage — merge-review entry points", () => {
     expect(document.querySelector("[data-testid='merge-compare-dialog']")).toBeNull();
   });
 
-  it("the duplicate-warning panel opens the compare view with the triggering evidence", () => {
+  it("the duplicate-warning panel opens the compare view with the triggering evidence", async () => {
     useRelationshipEntityQueue.mockReturnValue(DUP_QUEUE);
     render();
     const reviewBtn = container.querySelector(
       "[data-testid='duplicate-warning-review']",
     ) as HTMLButtonElement;
-    act(() => reviewBtn.click());
+    await act(async () => reviewBtn.click());
     // The compare view renders (the highlight is plumbed through; this asserts
     // the entry point opens the surface for the duplicate pair).
     expect(document.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
@@ -306,11 +306,11 @@ describe("EntityDetailPage — merge-review entry points", () => {
     expect(labels.some((t) => t.includes("Peer Three"))).toBe(true);
   });
 
-  it("each Workbench peer hint opens the compare view for that pair", () => {
+  it("each Workbench peer hint opens the compare view for that pair", async () => {
     useRelationshipEntityQueue.mockReturnValue(MULTI_PEER_QUEUE);
     render("/entities/entity-001?mode=workbench");
     const shares = container.querySelectorAll("[data-testid='workbench-shares-identifiers']");
-    act(() => (shares[1] as HTMLButtonElement).click());
+    await act(async () => (shares[1] as HTMLButtonElement).click());
     expect(document.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
   });
 });

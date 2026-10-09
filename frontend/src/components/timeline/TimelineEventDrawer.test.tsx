@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for TimelineEventDrawer's per-type "View" doors (bu-ep4ks.7,
  * last-hop door repair pack).
@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { TimelineEventDrawer } from "./TimelineEventDrawer";
 import type { TimelineEvent } from "@/api/types.ts";
@@ -30,9 +30,9 @@ function event(overrides: Partial<TimelineEvent> = {}): TimelineEvent {
 
 function render(evt: TimelineEvent): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <TimelineEventDrawer event={evt} onClose={() => {}} />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

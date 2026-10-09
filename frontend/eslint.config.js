@@ -2607,7 +2607,7 @@ const RING_RING_SELECTORS = [
 ]
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', '.eslintcache', '.vite']),
   {
     // The identity component is the one canonical owner of this private
     // surface. The lint test itself is a deliberately malicious source

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for <DecisionsVerdictOpener> (bu-ckkpz.2).
  *
@@ -10,13 +10,13 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { DecisionsVerdictOpener } from "@/components/decisions/decisions-verdict-opener.tsx";
 import type { DecisionBeadSummary } from "@/api/index.ts";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 function decision(overrides: Partial<DecisionBeadSummary>): DecisionBeadSummary {

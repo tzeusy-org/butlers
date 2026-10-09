@@ -37,7 +37,10 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { differenceInCalendarDays, isValid, parseISO, subDays } from "date-fns";
+import { differenceInCalendarDays } from "date-fns/differenceInCalendarDays";
+import { isValid } from "date-fns/isValid";
+import { parseISO } from "date-fns/parseISO";
+import { subDays } from "date-fns/subDays";
 
 import { Page } from "@/components/ui/page";
 import { Button } from "@/components/ui/button";

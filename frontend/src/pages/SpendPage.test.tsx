@@ -1868,8 +1868,9 @@ describe("SpendPage — routing rules", () => {
       renderPage();
     });
 
+    const addRule = await screen.findByTestId("add-rule-button");
     await act(async () => {
-      fireEvent.click(await screen.findByTestId("add-rule-button"));
+      fireEvent.click(addRule);
     });
 
     await act(async () => {
@@ -1905,8 +1906,9 @@ describe("SpendPage — routing rules", () => {
       renderPage();
     });
 
+    const addRule = await screen.findByTestId("add-rule-button");
     await act(async () => {
-      fireEvent.click(await screen.findByTestId("add-rule-button"));
+      fireEvent.click(addRule);
     });
 
     await act(async () => {
@@ -1939,8 +1941,9 @@ describe("SpendPage — routing rules", () => {
       renderPage();
     });
 
+    const addRule = await screen.findByTestId("add-rule-button");
     await act(async () => {
-      fireEvent.click(await screen.findByTestId("add-rule-button"));
+      fireEvent.click(addRule);
     });
 
     const trigger = screen.getByLabelText(

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // SecurityPostureTile tests -- bu-dl98i.1.4, bu-dl98i.6.3, bu-zxxyo
 //

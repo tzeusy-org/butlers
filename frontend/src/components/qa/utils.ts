@@ -1,5 +1,5 @@
 import type { QaCaseSummary } from "@/api/types";
-import { formatInTimeZone } from "date-fns-tz";
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 
 export const qaSeverityClassName: Record<QaCaseSummary["sev"], string> = {
   high: "bg-destructive",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
 import type { OverviewRuntimeKpis } from "./model";
@@ -16,14 +16,14 @@ const kpis: OverviewRuntimeKpis = {
 // requires a Router context even for renderToStaticMarkup.
 function renderComponent(overrides: Partial<Parameters<typeof RuntimeSummaryKpi>[0]> = {}): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <RuntimeSummaryKpi
         kpis={kpis}
         isLoading={false}
         pendingApprovalsAvailable
         {...overrides}
       />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

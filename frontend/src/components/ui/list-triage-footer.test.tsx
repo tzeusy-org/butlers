@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for ListTriageFooterHint -- the shared footer strip advertising a
  * list's j/k/act bindings inline on the page (bu-qvnce.11 slice 4).

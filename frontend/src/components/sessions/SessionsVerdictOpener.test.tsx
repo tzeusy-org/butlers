@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for <SessionsVerdictOpener> (bu-y0v0c, JARVIS pursuit move 9
  * slice 3).
@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import {
   SessionsVerdictOpener,
@@ -20,7 +20,7 @@ import {
 import type { SessionAggregate, SessionSummary } from "@/api/index.ts";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 function aggregate(overrides: Partial<SessionAggregate> = {}): SessionAggregate {

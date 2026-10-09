@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorSummaries: vi.fn(),
@@ -26,7 +26,7 @@ import {
 import { useIngestionDroppedKnown, useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
 
 function render(ui: React.ReactElement): string {
-  return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  return renderToStaticMarkup(<StaticRouter location="/">{ui}</StaticRouter>);
 }
 
 const healthyConnector = {

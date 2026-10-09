@@ -1,14 +1,14 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { ButlerVerdictOpener } from "@/components/butler-detail/ButlerVerdictOpener";
 
 function render(overrides: Partial<React.ComponentProps<typeof ButlerVerdictOpener>> = {}): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <ButlerVerdictOpener
         butlerName="general"
         activity="idle"
@@ -30,7 +30,7 @@ function render(overrides: Partial<React.ComponentProps<typeof ButlerVerdictOpen
         failureSourcesDegraded={[]}
         {...overrides}
       />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

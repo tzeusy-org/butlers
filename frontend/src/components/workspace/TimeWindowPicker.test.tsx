@@ -11,9 +11,10 @@
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
-import { MemoryRouter, Route, Routes } from "react-router"
-import { subDays, subHours } from "date-fns"
-import { formatInTimeZone } from "date-fns-tz"
+import { Route, Routes, StaticRouter } from "react-router"
+import { subDays } from "date-fns/subDays";
+import { subHours } from "date-fns/subHours";
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
 
 import { startOfDayInTz, endOfDayInTz } from "@/lib/tz-format"
 import { isPollingDisabled, useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
@@ -76,11 +77,11 @@ describe("isPollingDisabled", () => {
 
 function renderAtUrl(url: string, ui: React.ReactNode): string {
   return renderToStaticMarkup(
-    <MemoryRouter initialEntries={[url]}>
+    <StaticRouter location={([url])[0] ?? "/"}>
       <Routes>
         <Route path="*" element={ui} />
       </Routes>
-    </MemoryRouter>,
+    </StaticRouter>,
   )
 }
 
@@ -138,11 +139,11 @@ function TimeWindowDisplay() {
 
 function renderHookViaDOM(url: string): Element {
   const html = renderToStaticMarkup(
-    <MemoryRouter initialEntries={[url]}>
+    <StaticRouter location={([url])[0] ?? "/"}>
       <Routes>
         <Route path="*" element={<TimeWindowDisplay />} />
       </Routes>
-    </MemoryRouter>,
+    </StaticRouter>,
   )
   const div = document.createElement("div")
   div.innerHTML = html

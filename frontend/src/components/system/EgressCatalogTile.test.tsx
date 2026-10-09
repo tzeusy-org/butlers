@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // EgressCatalogTile tests -- bu-ngfzz.6
 //

@@ -53,7 +53,7 @@ function renderSpine() {
 
 describe("Spine duplicate-key (bu-ffjig)", () => {
   it("renders two same-provider identities without a duplicate-key warning", () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error");
     const { entries, container } = renderSpine();
 
     // Sanity: the collision scenario is actually present (two u:google entries).

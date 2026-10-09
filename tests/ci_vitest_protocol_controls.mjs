@@ -26,6 +26,7 @@ function setup() {
     moduleId: path.join(root, 'frontend/src/pages/SettingsModelsPage.test.tsx'),
     children: { allTests: () => [test] }, errors: () => [],
     ok: () => true, state: () => 'passed',
+    diagnostic: () => ({ environmentSetupDuration: 0, prepareDuration: 0, collectDuration: 0, setupDuration: 0, duration: 0 }),
   };
   test.module = module;
   const calls = [];

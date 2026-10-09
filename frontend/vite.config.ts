@@ -9,6 +9,32 @@ const frontendRoot = path.dirname(fileURLToPath(import.meta.url))
 
 const CHUNK_WARNING_LIMIT_KB = 1_500
 
+const DATE_TEST_ENTRY_POINTS = [
+  "date-fns-tz/formatInTimeZone",
+  "date-fns-tz/fromZonedTime",
+  "date-fns-tz/toZonedTime",
+  "date-fns/addDays",
+  "date-fns/addHours",
+  "date-fns/addMonths",
+  "date-fns/addWeeks",
+  "date-fns/differenceInCalendarDays",
+  "date-fns/differenceInMinutes",
+  "date-fns/endOfDay",
+  "date-fns/format",
+  "date-fns/formatDistanceToNow",
+  "date-fns/isSameDay",
+  "date-fns/isSameMonth",
+  "date-fns/isToday",
+  "date-fns/isValid",
+  "date-fns/parseISO",
+  "date-fns/startOfDay",
+  "date-fns/startOfMonth",
+  "date-fns/startOfWeek",
+  "date-fns/subDays",
+  "date-fns/subHours"
+]
+
+
 function packageNameFromModuleId(id: string): string | undefined {
   const nodeModulesMarker = '/node_modules/'
   const nodeModulesIndex = id.lastIndexOf(nodeModulesMarker)
@@ -113,6 +139,15 @@ export default defineConfig({
     // column and date math goes off-by-one. CI runs in UTC, so pinning UTC here
     // aligns local runs with CI rather than weakening any assertion.
     env: { TZ: "UTC" },
+    // Vitest 3.2.4 supports separate browser-like and Node optimizer modes.
+    // Prebundle only the locked date entry points actually used by the suite;
+    // preserve isolated forks, test selection and all date/DST assertions.
+    deps: {
+      optimizer: {
+        web: { enabled: true, include: DATE_TEST_ENTRY_POINTS },
+        ssr: { enabled: true, include: DATE_TEST_ENTRY_POINTS },
+      },
+    },
     // Installs global browser API stubs (e.g. ResizeObserver) before each test
     // file so that jsdom-incompatible primitives work without per-file boilerplate.
     setupFiles: ["./src/test/setup.ts"],

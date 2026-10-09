@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { EventBusHealth } from "@/hooks/use-event-stream";
 
 // ---------------------------------------------------------------------------
@@ -63,7 +64,11 @@ describe("EventBusProvider / useEventBus", () => {
   });
 
   it("throws when used outside an EventBusProvider", () => {
-    expect(() => renderHook(() => useEventBus())).toThrow(/EventBusProvider/);
+    // The real hook still executes outside its provider. Server rendering
+    // propagates the expected wiring error without jsdom's uncaught-error
+    // reporter, while the mounted provider-positive cases above stay intact.
+    function MissingProvider() { useEventBus(); return null; }
+    expect(() => renderToStaticMarkup(<MissingProvider />)).toThrow(/EventBusProvider/);
   });
 
   it("delivers an event only to listeners subscribed to its type", () => {

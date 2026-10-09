@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs"
+import { pathToFileURL } from "node:url"
+import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select"
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
 // Tests for GanttSwimlaneInner — bu-ig72b.28 / bu-ig72b.30
@@ -13,12 +16,16 @@
 //   5. Tooltip content: source, precision, duration
 //   6. Sensitive episode gets a masked bar (pattern fill)
 //   7. Multiple categories render separate swimlanes
+// REQ-frontend-lane-efficiency-004: strict console, finite SSR and restoration controls.
 //   8. Tooltip uses Radix primitive: sensitive masking, "View details" link
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi } from "vitest"
-import { renderToStaticMarkup } from "react-dom/server"
-import { act } from "react"
+import { renderToStaticMarkup as renderServerMarkup } from "react-dom/server"
+import { withExpectedConsoleError, withExpectedSsrLayoutWarnings } from "@/test/expected-console"
+import { createConsoleGuard } from "@/test/console-guard"
+import type { ReactElement } from "react"
+import { act, useLayoutEffect } from "react"
 import { createRoot } from "react-dom/client"
 
 import { GanttSwimlaneInner } from "./GanttSwimlaneInner"
@@ -92,7 +99,7 @@ const CATEGORY_SOURCES: Record<
 // ---------------------------------------------------------------------------
 
 describe("GanttSwimlaneInner empty state", () => {
-  it("renders empty state when no episodes are provided", () => {
+  it("renders empty state when no episodes are provided", async () => {
     const html = renderToStaticMarkup(
       <GanttSwimlaneInner
         episodes={[]}
@@ -102,6 +109,68 @@ describe("GanttSwimlaneInner empty state", () => {
     )
     expect(html).toContain("gantt-empty")
     expect(html).toContain("No activity recorded for this window")
+    // Position the actual pinned server hook while retaining mounted effects.
+    function ReviewedSsrHook({ twice = false }: { twice?: boolean }) {
+      useLayoutEffect(() => {}, []);
+      useLayoutEffect(() => {}, []); // both hooks always run; budget is explicit.
+      return <span>{twice ? "two" : "one"}</span>;
+    }
+    const actualGuard = console.error;
+    const isolatedGuard = createConsoleGuard();
+    const strictGuard = isolatedGuard.error;
+    console.error = strictGuard;
+    try {
+    expect(withExpectedSsrLayoutWarnings({ ReviewedSsrHook: 2 }, () => renderServerMarkup(<ReviewedSsrHook />))).toContain("one");
+    // Real pinned anonymous Radix hooks, with exact first-frame admission.
+    const selectBudget = { Select: 1, RadixSelectValue: 1, RadixPortal: 1 };
+    const anonymousTree = <Select value="one"><SelectTrigger><SelectValue /></SelectTrigger><SelectContent /></Select>;
+    expect(withExpectedSsrLayoutWarnings(selectBudget, () => renderServerMarkup(anonymousTree))).toContain("combobox");
+    const warnings: unknown[][] = [];
+    console.error = (...args: unknown[]) => { warnings.push(args); };
+    try { renderServerMarkup(anonymousTree); } finally { console.error = strictGuard; }
+    expect(warnings).toHaveLength(3);
+    const selectUrl = pathToFileURL(realpathSync("node_modules/@radix-ui/react-select/dist/index.mjs")).href;
+    const valueWarning = warnings.find((args) => typeof args[1] === "string" && args[1].split("\n")[1] === `    at ${selectUrl}:220:13`);
+    expect(valueWarning).toBeDefined();
+    const [format, stack] = valueWarning!;
+    expect(typeof format).toBe("string");
+    expect(typeof stack).toBe("string");
+    expect(() => withExpectedSsrLayoutWarnings({ RadixSelectValue: 1 }, () => console.error(format, stack))).not.toThrow();
+    expect(() => withExpectedSsrLayoutWarnings({ RadixSelectValue: 1 }, () => console.error(format, String(stack).replace(":220:13", ":221:13")))).toThrow(/unexpected console/);
+    expect(() => withExpectedSsrLayoutWarnings({ RadixSelectValue: 1 }, () => console.error(String(format) + " extra", stack))).toThrow(/unexpected console/);
+    expect(() => withExpectedSsrLayoutWarnings({ RadixSelectValue: 1 }, () => console.error(format, stack, "extra"))).toThrow(/unexpected console/);
+    expect(() => withExpectedSsrLayoutWarnings({ RadixSelectValue: 1 }, () => { console.error(format, stack); console.error(format, stack); })).toThrow(/unexpected console/);
+    const anonymousLater = withExpectedSsrLayoutWarnings({ RadixSelectValue: 1 }, () => () => console.error(format, stack));
+    expect(anonymousLater).toThrow(/unexpected console/);
+    expect(console.error).toBe(strictGuard);
+    expect(console.error).toBe(strictGuard);
+    expect(() => withExpectedSsrLayoutWarnings({ ReviewedSsrHook: 1 }, () => renderServerMarkup(<ReviewedSsrHook twice />))).toThrow(/unexpected console/);
+    expect(console.error).toBe(strictGuard);
+    expect(() => withExpectedSsrLayoutWarnings({ Tooltip: 2 }, () => renderServerMarkup(<ReviewedSsrHook />))).toThrow(/unexpected console/);
+    expect(() => withExpectedSsrLayoutWarnings({ ReviewedSsrHook: 2 }, () => console.error("unexpected controlled warning"))).toThrow(/unexpected console/);
+    expect(() => withExpectedSsrLayoutWarnings({ ReviewedSsrHook: 2 }, () => { throw new Error("controlled render failure"); })).toThrow("controlled render failure");
+    expect(console.error).toBe(strictGuard);
+    withExpectedSsrLayoutWarnings({ ReviewedSsrHook: 2 }, () => {
+      const outer = console.error;
+      withExpectedSsrLayoutWarnings({ ReviewedSsrHook: 2 }, () => renderServerMarkup(<ReviewedSsrHook />));
+      expect(console.error).toBe(outer);
+    });
+    expect(console.error).toBe(strictGuard);
+    await expect(Promise.resolve().then(() => console.error("unexpected controlled later warning"))).rejects.toThrow(/unexpected console/);
+    const expected = new Error("controlled expected failure");
+    await withExpectedConsoleError(args => args.length === 2 && args[0] === "controlled error:" && args[1] === expected, 1, () => console.error("controlled error:", expected));
+    expect(console.error).toBe(strictGuard);
+    await expect(withExpectedConsoleError(() => false, 1, () => console.error("unexpected controlled error"))).rejects.toThrow(/unexpected console/);
+    await expect(withExpectedConsoleError(() => true, 1, () => { console.error("controlled expected error"); console.error("controlled excess error"); })).rejects.toThrow(/unexpected console/);
+    await expect(withExpectedConsoleError(() => true, 1, () => undefined)).rejects.toThrow("expected console error was not observed");
+    expect(console.error).toBe(strictGuard);
+    expect(() => isolatedGuard.assertClean()).toThrow(/unexpected console calls/);
+    const swallowed = createConsoleGuard();
+    try { swallowed.error("controlled swallowed error"); } catch { /* deliberate catch control */ }
+    expect(() => swallowed.assertClean()).toThrow(/unexpected console calls/);
+    createConsoleGuard().assertClean();
+    } finally { console.error = actualGuard; }
+
   })
 
   it("does NOT render the SVG bar area when episodes is empty", () => {
@@ -1098,3 +1167,11 @@ describe("GanttSwimlaneInner keyboard reachability (bu-ep4ks.15)", () => {
     }
   })
 })
+
+// Each actual episode bar owns one Tooltip useId and one two-hook Presence.
+// The largest original declared fixture has ten episodes; extra roots need review.
+function renderToStaticMarkup(element: ReactElement<{ episodes: ChroniclerEpisode[] }>): string {
+  const count = element.props.episodes.length;
+  if (count > 10) throw new Error("SSR episode fixture exceeds reviewed hook budget");
+  return withExpectedSsrLayoutWarnings({ Tooltip: count, Presence: count * 2 }, () => renderServerMarkup(element));
+}

@@ -1,7 +1,8 @@
+import { withExpectedSsrLayoutWarnings } from "@/test/expected-console";
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, useParams, useSearchParams } from "react-router";
+import { MemoryRouter, useParams, useSearchParams, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, cleanup, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -183,13 +184,13 @@ function setButlerState(butler: ButlerSummary | null, opts: Partial<UseButlerRes
 
 function renderPage(): string {
   const queryClient = new QueryClient();
-  return renderToStaticMarkup(
+  return withExpectedSsrLayoutWarnings({ Select: 1, RadixSelectValue: 1, RadixPortal: 1, RadixTabs: 2, RadixRovingFocusItem: 15, Presence: 34, Dialog: 3 }, () => renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <StaticRouter location="/">
         <ButlerDetailPage />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
-  );
+  ));
 }
 
 function renderPageLive() {
@@ -848,9 +849,9 @@ describe("Spec scenario -- ButlerHeartbeatTile absent from detail page, present 
     const queryClient = new QueryClient();
     return renderToStaticMarkup(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
+        <StaticRouter location="/">
           <SystemPage />
-        </MemoryRouter>
+        </StaticRouter>
       </QueryClientProvider>,
     );
   }

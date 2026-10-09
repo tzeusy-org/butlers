@@ -1,3 +1,4 @@
+import { withExpectedSsrLayoutWarnings } from "@/test/expected-console";
 // @vitest-environment jsdom
 /**
  * Regression tests for the Notifications page.
@@ -16,7 +17,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, StaticRouter } from "react-router";
 import { fireEvent } from "@testing-library/react";
 
 import NotificationsPage, { STATUS_OPTIONS } from "@/pages/NotificationsPage";
@@ -111,11 +112,11 @@ function setStatsState(state: Partial<UseNotificationStatsResult>) {
 }
 
 function renderPage(initialPath = "/"): string {
-  return renderToStaticMarkup(
-    <MemoryRouter initialEntries={[initialPath]}>
+  return withExpectedSsrLayoutWarnings({ Select: 2, RadixSelectValue: 2, RadixPortal: 2, Dialog: 3, Presence: 4 }, () => renderToStaticMarkup(
+    <StaticRouter location={([initialPath])[0] ?? "/"}>
       <NotificationsPage />
-    </MemoryRouter>,
-  );
+    </StaticRouter>,
+  ));
 }
 
 function LocationProbe() {

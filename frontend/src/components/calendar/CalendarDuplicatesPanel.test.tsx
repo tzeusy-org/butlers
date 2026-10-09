@@ -11,7 +11,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type {
   CalendarDuplicateCluster,
@@ -165,7 +165,7 @@ describe("CalendarDuplicatesPanel", () => {
     });
     const toggle = screen.getByTestId("duplicate-keep-separate");
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(toggle);
+    await act(async () => fireEvent.click(toggle));
     expect(keepSeparateMutation.mutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({ keep_separate: false }),
     );

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderToStaticMarkup } from "react-dom/server";
+import { withExpectedSsrLayoutWarnings } from "@/test/expected-console";
+import { renderToStaticMarkup as renderServerMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render as renderDom, screen } from "@testing-library/react";
 
@@ -266,3 +267,9 @@ describe("PulseStrip", () => {
     expect(html).not.toContain(">None<");
   });
 });
+
+
+// One DropdownMenu: two useId and one Presence. Mounted renderers keep their real layout hooks.
+function renderToStaticMarkup(...args: Parameters<typeof renderServerMarkup>): string {
+  return withExpectedSsrLayoutWarnings({"DropdownMenu": 2, "Presence": 2}, () => renderServerMarkup(...args));
+}

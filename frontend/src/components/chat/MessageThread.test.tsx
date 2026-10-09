@@ -285,7 +285,7 @@ describe("MessageThread — pending conversation activity", () => {
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
 
       // Advance past the throttle window: exactly one trailing call fires.
-      vi.advanceTimersByTime(150);
+      act(() => vi.advanceTimersByTime(150));
       expect(scrollIntoView).toHaveBeenCalledTimes(2);
     } finally {
       HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
@@ -376,7 +376,7 @@ describe("MessageThread — sr-only live announcer region (bu-0ynlk.13)", () => 
         />,
       );
 
-      vi.advanceTimersByTime(3500);
+      act(() => vi.advanceTimersByTime(3500));
 
       const committedMessage: Message = {
         id: "message-1",
@@ -525,7 +525,7 @@ describe("MessageThread — copy-link deep anchor (bu-0ynlk.11)", () => {
       />,
     );
 
-    screen.getByTitle(/Copy link/).click();
+    act(() => screen.getByTitle(/Copy link/).click());
 
     expect(writeText).toHaveBeenCalledWith(
       `${window.location.origin}/chat/conversation-1#m-message-42`,

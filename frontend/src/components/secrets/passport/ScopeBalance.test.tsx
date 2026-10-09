@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // ScopeBalance / VisaRow tests — bu-qo3sf, repointed + renamed bu-sd0l7.2
 //

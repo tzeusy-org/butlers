@@ -26,12 +26,14 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       backend: ${{ steps.classify.outputs.backend }}
       frontend: ${{ steps.classify.outputs.frontend }}
       mode: ${{ steps.classify.outputs.mode }}
       test_paths: ${{ steps.classify.outputs.test_paths }}
       inventory: ${{ steps.classify.outputs.inventory }}
+      frontend_reuse: ${{ steps.reuse.outputs.verified }}
 
     steps:
       - uses: actions/checkout@v6
@@ -65,10 +67,27 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 scripts/ci_route.py
 
+      - name: Verify protected same-tree lineage before main reuse
+        id: reuse
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_main_reuse.py qualify --proof "${RUNNER_TEMP}/protected-main/proof.json"
+
+      - name: Upload actual current-bound protected proof
+        if: steps.reuse.outputs.verified == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-protected-main-reuse
+          path: ${{ runner.temp }}/protected-main/proof.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
   guards:
     timeout-minutes: 35
-    # Every mandatory static gate in one job: one checkout, one Python, one
-    # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
+    # Shared guards keep one checkout and frozen dev environment. Frontend
+    # static checks have one independent parallel owner. The moved UV/Ruff/SQL checks retain
     # their exact scopes; guards owns inventory/budget, preflight owns reconciliation and smoke.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
@@ -81,6 +100,9 @@ jobs:
     # `frontend`, this job never skips.
     runs-on: ubuntu-latest
     needs: [route]
+    if: always()
+    outputs:
+      fresh_inventory: ${{ steps.inventory.outcome == 'success' && steps.inventory-upload.outcome == 'success' }}
     permissions:
       contents: read
       pull-requests: read
@@ -89,6 +111,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Refuse an unavailable routing or main lineage verdict
+        env:
+          ROUTE_RESULT: ${{ needs.route.result }}
+        run: test "$ROUTE_RESULT" = success
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
@@ -114,16 +141,18 @@ jobs:
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
       - name: Set up Node 24
+        if: needs.route.outputs.frontend_reuse != 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "24"
 
       - name: Install OpenSpec 1.9.0
+        if: needs.route.outputs.frontend_reuse != 'true'
         run: npm install --global @fission-ai/openspec@1.9.0
 
       - name: Check lock file is up to date
         id: lock
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: uv lock --check
 
       - name: Compute exact environment cache key
@@ -145,17 +174,17 @@ jobs:
 
       - name: Lint
         id: lint
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: make lint
 
       - name: Format check
         id: format
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: uv run ruff format --check src/ tests/ roster/ conftest.py -q
 
       - name: SQL safety check (FOR UPDATE + outer join)
         id: sql_safety
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: make check-for-update-joins
 
       # Session-link guard (bu-mr5t5): fails the PR when a tool-session
@@ -165,7 +194,7 @@ jobs:
       # any API hiccup) so a GitHub API blip never blocks the mandatory
       # title/body/commit checks. PR-only: the inputs do not exist on other events.
       - name: Write PR title and body to files
-        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && github.event_name == 'pull_request' && !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -176,7 +205,7 @@ jobs:
             --number "$PR_NUMBER" --output-dir "$RUNNER_TEMP"
 
       - name: Fetch review comments (best-effort)
-        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && github.event_name == 'pull_request' && !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -201,7 +230,7 @@ jobs:
 
       - name: Scan for tool-session links
         id: session_links
-        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && github.event_name == 'pull_request' && !cancelled() }}
         run: |
           python3 scripts/session_link_guard.py --redact-findings \
             --pr-title-file "${RUNNER_TEMP}/pr_title.txt" \
@@ -218,7 +247,7 @@ jobs:
       # rule in the `frontend` job instead.
       - name: Check for em-dashes in doctrine + dashboard copy
         id: em_dashes
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: python3 scripts/check-no-em-dashes.py
 
       # Spec-overwrite guard (bu-s9uv3): `openspec archive` writes the WHOLE
@@ -233,7 +262,7 @@ jobs:
       # block.
       - name: Check unarchived MODIFIED spec blocks against the live baseline
         id: spec_overwrites
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: python3 scripts/check_spec_overwrites.py
 
       # Strict OpenSpec validation gate for bu-n58sv. The repository carries
@@ -243,7 +272,7 @@ jobs:
       # results use the same parser and strictness rules.
       - name: Validate all OpenSpec artifacts in strict mode
         id: openspec_strict
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: make check-openspec-strict
 
       # Archived-requirements guard (bu-966by): the other side of the ledger from
@@ -261,13 +290,13 @@ jobs:
       # has archived, so a pending proposal cannot mute a gap off-ratchet.
       - name: Check archived change requirements reached the baseline
         id: archived_requirements
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: python3 scripts/check_archived_requirements_landed.py
 
       # Owner-email guard: the repo stays user-agnostic, so no tracked file may
       # carry the owner's personal addresses (matched by local-part hash).
       - name: Check no owner email addresses are tracked
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: python3 scripts/check_owner_emails.py
 
       # Countable-tasks guard (bu-h7igs): `openspec archive`'s incomplete-task
@@ -281,7 +310,7 @@ jobs:
       # cannot see, so the difference is restored before the change reaches archive.
       - name: Check every change's tasks.md is countable by the archive gate
         id: countable_tasks
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: python3 scripts/check_countable_tasks.py
 
       # Cited-requirements guard (bu-lpwjc): the third side of the ledger. The
@@ -303,7 +332,7 @@ jobs:
       # citation per (test file, id); there is no re-freeze flag on purpose.
       - name: Check REQ ids cited by tests resolve to a definition
         id: cited_requirements
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: python3 scripts/check_cited_requirements_resolve.py
 
       # Frontend-copy-inventory guard (bu-erfdj): frontend/COPY_INVENTORY.md
@@ -317,12 +346,12 @@ jobs:
       # nondeterministic field, so this gate cannot flap.
       - name: Regenerate the frontend copy inventory
         id: frontend_copy_regenerate
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: python3 scripts/extract-frontend-copy.py
 
       - name: Check the committed inventory matches the regenerated one
         id: frontend_copy
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: |
           if ! git diff --exit-code -- frontend/COPY_INVENTORY.md; then
             echo "::error file=frontend/COPY_INVENTORY.md::Frontend copy inventory is stale. Regenerate it with 'python3 scripts/extract-frontend-copy.py' and commit the result."
@@ -353,11 +382,11 @@ jobs:
       # re-freeze flag on purpose.
       - name: Check for duplicate module-level names
         id: duplicate_names
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         run: python3 scripts/check_duplicate_toplevel_names.py
 
       - name: Fail if any guard failed
-        if: ${{ !cancelled() }}
+        if: ${{ needs.route.outputs.frontend_reuse != 'true' && !cancelled() }}
         env:
           EVENT_NAME: ${{ github.event_name }}
           GUARD_OUTCOMES: |
@@ -399,10 +428,12 @@ jobs:
   # one-time preflight and ten duration-balanced file shards all begin
   # independently; no broad lane serializes the backend critical path.
       - name: Collect one fresh installed pytest inventory and enforce both budgets
+        id: inventory
         if: needs.route.outputs.inventory == 'true'
         run: uv run --no-sync python scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"
 
       - name: Upload exact attempt inventory and assignment
+        id: inventory-upload
         if: needs.route.outputs.inventory == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -412,72 +443,6 @@ jobs:
           retention-days: 14
           overwrite: true
 
-      - name: Set up Node 24
-        if: needs.route.outputs.frontend == 'true'
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-
-
-      - name: Install dependencies
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: npm ci
-
-
-      - name: Lint
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: npm run lint
-
-
-      - name: Em-dash copy gate (bu-370uj)
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: npm run lint:emdash
-
-
-      - name: Query-result coercion gate (bu-ep4ks.5)
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: npm run lint:query-coercion
-
-
-      - name: Import graph (knip)
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: npm run knip
-
-
-      - name: Build
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: npm run build
-
-
-      - name: Preserve bounded Node tooling and owner-time/visual-role survivors
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: |
-          node --test --test-timeout=300000 scripts/worktree-tooling-contract.mjs route-a-api-receipt.test.mjs
-          npm run lint:owner-time
-          npm run lint:visual-role-css
-
-      - name: Bind the single frontend build to this exact checkout and attempt
-        if: needs.route.outputs.frontend == 'true'
-        run: python3 scripts/ci_frontend_evidence.py seal --artifact "${RUNNER_TEMP}/frontend-build"
-
-      - name: Upload the source-bound browser build
-        if: needs.route.outputs.frontend == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-frontend-build
-          path: ${{ runner.temp }}/frontend-build
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
 
   check-preflight:
     timeout-minutes: 27
@@ -1350,11 +1315,99 @@ jobs:
           message: ${{ steps.coverage.outputs.percentage }}%
           color: ${{ steps.coverage.outputs.color }}
 
+  frontend-static:
+    timeout-minutes: 18
+    runs-on: ubuntu-latest
+    needs: [route]
+    if: needs.route.outputs.frontend == 'true' && needs.route.outputs.frontend_reuse != 'true'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+
+      - name: Compute exact private lint compatibility
+        id: lint-key
+        continue-on-error: true
+        working-directory: frontend
+        run: |
+          key="$(node scripts/lint-content-cache.mjs --key)"
+          printf 'key=%s\n' "$key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact advisory lint cache
+        if: steps.lint-key.outputs.key != ''
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: frontend/.eslintcache/${{ steps.lint-key.outputs.key }}
+          key: frontend-lint-${{ steps.lint-key.outputs.key }}
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+
+      - name: Save only successful compatible lint cache
+        if: steps.lint-key.outputs.key != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: frontend/.eslintcache/${{ steps.lint-key.outputs.key }}
+          key: frontend-lint-${{ steps.lint-key.outputs.key }}
+
+      - name: Em-dash copy gate (bu-370uj)
+        working-directory: frontend
+        run: npm run lint:emdash
+
+
+      - name: Query-result coercion gate (bu-ep4ks.5)
+        working-directory: frontend
+        run: npm run lint:query-coercion
+
+
+      - name: Import graph (knip)
+        working-directory: frontend
+        run: npm run knip
+
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+
+      - name: Preserve bounded Node tooling and owner-time/visual-role survivors
+        working-directory: frontend
+        run: |
+          node --test --test-timeout=300000 scripts/worktree-tooling-contract.mjs route-a-api-receipt.test.mjs
+          npm run lint:owner-time
+
+      - name: Bind the single frontend build to this exact checkout and attempt
+        run: python3 scripts/ci_frontend_evidence.py seal --artifact "${RUNNER_TEMP}/frontend-build"
+
+      - name: Upload the source-bound browser build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-frontend-build
+          path: ${{ runner.temp }}/frontend-build
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
   frontend-vitest:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route, guards]
-    if: needs.route.outputs.frontend == 'true' && needs.guards.result == 'success'
+    needs: [route]
+    if: needs.route.outputs.frontend == 'true' && needs.route.outputs.frontend_reuse != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -1383,49 +1436,78 @@ jobs:
   frontend:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route, guards, frontend-vitest]
+    needs: [route, guards, frontend-static, frontend-vitest]
     if: always()
     steps:
       - name: Required frontend verdict
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
         run: |
           python3 - <<'PY'
           import json, os
           needs = json.loads(os.environ['NEEDS_JSON'])
-          valid = set(needs) == {'route', 'guards', 'frontend-vitest'}
+          valid = set(needs) == {'route', 'guards', 'frontend-static', 'frontend-vitest'}
           valid = valid and all(isinstance(v, dict) and v.get('result') in {'success', 'skipped'} for v in needs.values())
           valid = valid and needs['route']['result'] == needs['guards']['result'] == 'success'
           applicable = needs.get('route', {}).get('outputs', {}).get('frontend')
           valid = valid and applicable in {'true', 'false'}
-          valid = valid and needs['frontend-vitest']['result'] == ('success' if applicable == 'true' else 'skipped')
+          reuse = needs.get('route', {}).get('outputs', {}).get('frontend_reuse', '')
+          main = os.environ['EVENT_NAME'] == 'push' and os.environ['REF'] == 'refs/heads/main'
+          valid = valid and (reuse == 'true' if main else reuse == '')
+          expected = 'success' if applicable == 'true' and not main else 'skipped'
+          valid = valid and all(needs[name]['result'] == expected for name in ('frontend-static', 'frontend-vitest'))
+          valid = valid and (not main or needs['guards'].get('outputs', {}).get('fresh_inventory') == 'true')
           raise SystemExit(0 if valid else 1)
           PY
       - uses: actions/checkout@v6
-        if: needs.route.outputs.frontend == 'true'
+        if: needs.route.outputs.frontend == 'true' && needs.route.outputs.frontend_reuse != 'true'
       - name: Download actual Vitest child one
-        if: needs.route.outputs.frontend == 'true'
+        if: needs.route.outputs.frontend == 'true' && needs.route.outputs.frontend_reuse != 'true'
         uses: actions/download-artifact@v4
         with:
           name: ci-vitest-1
           path: ${{ runner.temp }}/vitest-1
       - name: Download actual Vitest child two
-        if: needs.route.outputs.frontend == 'true'
+        if: needs.route.outputs.frontend == 'true' && needs.route.outputs.frontend_reuse != 'true'
         uses: actions/download-artifact@v4
         with:
           name: ci-vitest-2
           path: ${{ runner.temp }}/vitest-2
       - name: Independently reconcile both current Vitest populations
-        if: needs.route.outputs.frontend == 'true'
+        if: needs.route.outputs.frontend == 'true' && needs.route.outputs.frontend_reuse != 'true'
         run: python3 scripts/ci_vitest.py --reconcile "${RUNNER_TEMP}/vitest-1/receipt.json" "${RUNNER_TEMP}/vitest-2/receipt.json"
+
+      - uses: actions/checkout@v6
+        if: needs.route.outputs.frontend_reuse == 'true'
+      - uses: actions/setup-python@v6
+        if: needs.route.outputs.frontend_reuse == 'true'
+        with:
+          python-version: "3.12.15"
+      - name: Download protected original-identity proof
+        if: needs.route.outputs.frontend_reuse == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-protected-main-reuse
+          path: ${{ runner.temp }}/protected-main
+      - name: Download fresh current main inventory
+        if: needs.route.outputs.frontend_reuse == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-inventory
+          path: ${{ runner.temp }}/ci-inventory
+      - name: Independently verify protected proof and fresh current budgets
+        if: needs.route.outputs.frontend_reuse == 'true'
+        run: python3 scripts/ci_main_reuse.py fresh --proof "${RUNNER_TEMP}/protected-main/proof.json" --inventory "${RUNNER_TEMP}/ci-inventory/inventory.json"
 
   frontend-e2e:
     timeout-minutes: 14
     runs-on: ubuntu-latest
-    needs: [route, guards]
-    # merge_group and push:main: always (cheap, no coverage dependency).
+    needs: [route, frontend-static]
+    # merge_group: required protected evidence; qualified main reuses that exact tree.
     # pull_request: only when frontend/ changed (fail-closed, see `changes`).
-    if: github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.route.outputs.frontend == 'true')
+    if: needs.route.outputs.frontend_reuse != 'true' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.route.outputs.frontend == 'true'))
 
     defaults:
       run:
@@ -1462,7 +1544,7 @@ jobs:
       - name: Install Playwright browsers
         run: npm run test:e2e:install
 
-      - name: Download the guards build
+      - name: Download the single static build
         uses: actions/download-artifact@v4
         with:
           name: ci-frontend-build

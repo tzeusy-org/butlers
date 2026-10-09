@@ -10,16 +10,16 @@
  * labels all agree on a single zone.
  */
 
-import {
-  addDays,
-  addMonths,
-  addWeeks,
-  format as formatLocal,
-  startOfDay,
-  startOfMonth,
-  startOfWeek,
-} from "date-fns";
-import { formatInTimeZone, fromZonedTime, toZonedTime } from "date-fns-tz";
+import { addDays } from "date-fns/addDays";
+import { addMonths } from "date-fns/addMonths";
+import { addWeeks } from "date-fns/addWeeks";
+import { format as formatLocal } from "date-fns/format";
+import { startOfDay } from "date-fns/startOfDay";
+import { startOfMonth } from "date-fns/startOfMonth";
+import { startOfWeek } from "date-fns/startOfWeek";
+import { formatInTimeZone } from "date-fns-tz/formatInTimeZone";
+import { fromZonedTime } from "date-fns-tz/fromZonedTime";
+import { toZonedTime } from "date-fns-tz/toZonedTime";
 
 /** Height of each hour row in the time-axis grid (px). */
 export const HOUR_HEIGHT_PX = 60;

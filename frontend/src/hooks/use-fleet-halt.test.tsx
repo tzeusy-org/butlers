@@ -147,9 +147,12 @@ describe("useFleetHaltStatus", () => {
     mockGetDispatchAttempts.mockResolvedValue(page([], 0));
 
     const { Wrapper } = makeWrapper();
-    renderHook(() => useFleetHaltStatus(), { wrapper: Wrapper });
+    const { result } = renderHook(() => useFleetHaltStatus(), { wrapper: Wrapper });
 
     await waitFor(() => expect(mockGetDispatchAttempts).toHaveBeenCalled());
+    // Wait for all four actual query observers, not only their synchronous calls.
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await waitFor(() => expect(result.current.isAttentionLoading).toBe(false));
     for (const call of mockGetDispatchAttempts.mock.calls) {
       const params = call[0] as { outcome?: string; reason_prefix?: string };
       expect(params.outcome).toBe("quota_skip");

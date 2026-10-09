@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * The single command/route registry (bu-86c4c.7).
  *

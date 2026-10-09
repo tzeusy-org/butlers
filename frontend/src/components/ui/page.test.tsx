@@ -10,7 +10,7 @@ import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 
 import { Page, type PageProps } from "@/components/ui/page";
 import { BreadcrumbsControlProvider, useBreadcrumbsControl } from "@/components/ui/breadcrumbs-control";
@@ -35,9 +35,9 @@ function render(props: PartialPageProps): string {
     ...props,
   };
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <Page {...fullProps} />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

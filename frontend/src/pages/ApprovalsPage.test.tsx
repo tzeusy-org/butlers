@@ -1020,6 +1020,7 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
   });
 
   it("names a partial pending-actions metric source instead of treating its zero as complete", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
     vi.mocked(getApprovalMetrics).mockReturnValue(
       makeMetrics(null, {
         pending_actions_sources_degraded: ["home"],
@@ -1043,6 +1044,7 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
   });
 
   it("names a partial approval-rules metric source without hiding the healthy action family", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
     vi.mocked(getApprovalMetrics).mockReturnValue(
       makeMetrics(null, {
         approval_rules_sources_degraded: ["home"],

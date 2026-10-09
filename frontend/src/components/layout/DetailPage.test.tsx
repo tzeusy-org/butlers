@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 /**
  * Tests for <DetailPage> shell.
  *
@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { StaticRouter } from "react-router";
 
 import { DetailPage, type DetailPageProps } from "@/components/layout/DetailPage";
 
@@ -25,9 +25,9 @@ function render(props: PartialDetailPageProps): string {
     primary: props.primary ?? <div>Primary content</div>,
   };
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <StaticRouter location="/">
       <DetailPage {...full} />
-    </MemoryRouter>,
+    </StaticRouter>,
   );
 }
 

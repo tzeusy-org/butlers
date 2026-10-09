@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 // ---------------------------------------------------------------------------
 // EmptyState tests — bu-qvnce.7, reclassified bu-eyo56
 //

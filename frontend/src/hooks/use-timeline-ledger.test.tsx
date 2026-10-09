@@ -37,6 +37,7 @@ vi.mock("@/lib/event-bus", () => ({
   }),
 }));
 
+import { withExpectedConsoleError } from "@/test/expected-console";
 import { useTimelineLedger } from "./use-timeline-ledger";
 
 function makeEvent(id: string, timestamp: string, overrides: Partial<TimelineEvent> = {}): TimelineEvent {
@@ -134,10 +135,12 @@ describe("useTimelineLedger", () => {
   });
 
   it("retains the committed snapshot and retries the same cursor after Load older fails", async () => {
+    const expectedFailure = new Error("older page unavailable");
+    await withExpectedConsoleError((args) => args.length === 2 && args[0] === "Failed to load older timeline events:" && args[1] === expectedFailure, 1, async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
     const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { has_more: false });
     mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
-    mockGetTimeline.mockRejectedValueOnce(new Error("older page unavailable"));
+    mockGetTimeline.mockRejectedValueOnce(expectedFailure);
     mockGetTimeline.mockResolvedValueOnce(olderPage);
 
     const { Wrapper } = makeWrapper();
@@ -160,6 +163,7 @@ describe("useTimelineLedger", () => {
 
     await waitFor(() => expect(result.current.events.map((event) => event.id)).toEqual(["e2", "e1"]));
     expect(mockGetTimeline).toHaveBeenLastCalledWith({ limit: 50, before: "cur-1" });
+    });
   });
 
   it("retains named partial-source metadata from a successfully loaded older page", async () => {

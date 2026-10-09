@@ -1,8 +1,8 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import SessionDetailPage from "@/pages/SessionDetailPage";
@@ -66,11 +66,11 @@ function renderPage(initialEntry = "/sessions/sess-abc123"): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialEntry]}>
+      <StaticRouter location={([initialEntry])[0] ?? "/"}>
         <Routes>
           <Route path="/sessions/:id" element={<SessionDetailPage />} />
         </Routes>
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }

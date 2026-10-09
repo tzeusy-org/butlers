@@ -31,7 +31,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, StaticRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ContactChannelCard, ExpandedContactInfoRow } from "@/components/relationship/ContactChannelCard";
@@ -80,12 +80,12 @@ function renderCard(entityId = "entity-001", onLinkContact?: () => void): string
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <StaticRouter location="/">
         <ContactChannelCard
           entityId={entityId}
           onLinkContact={onLinkContact}
         />
-      </MemoryRouter>
+      </StaticRouter>
     </QueryClientProvider>,
   );
 }
@@ -1118,7 +1118,7 @@ describe("reported identity review", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
     receipt.mockRestore();
     cleanup();
-    const available = renderToStaticMarkup(<MemoryRouter><FactReporterLine fact={{ reported_by: { entity_id: "reporter", name: "Reporter", availability: "available" }, confirmation_status: "owner_confirmed", confirmed_at: "2026-01-01T00:00:00Z" }} /></MemoryRouter>);
+    const available = renderToStaticMarkup(<StaticRouter location="/"><FactReporterLine fact={{ reported_by: { entity_id: "reporter", name: "Reporter", availability: "available" }, confirmation_status: "owner_confirmed", confirmed_at: "2026-01-01T00:00:00Z" }} /></StaticRouter>);
     expect(available).toContain("Reported by Reporter");
     expect(available).toContain('href="/entities/reporter"');
     expect(available).toContain("Confirmed by you");
