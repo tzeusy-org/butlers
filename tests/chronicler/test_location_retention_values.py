@@ -3128,6 +3128,7 @@ async def test_runtime_context_disposes_closed_exact_bundle_and_preserves_mixed_
     await _assert_recursive_question_values()
     await _assert_recursive_question_cohort_values()
     await _assert_recursive_question_observation_values()
+    await _assert_unaccepted_question_recovery_values()
     await _assert_native_answer_schedule_values()
     await _assert_native_return_processing_values()
 
@@ -6785,6 +6786,8 @@ async def _assert_recursive_question_observation_values():
         assert not pool.in_transaction and target == "finance"
         calls.append((target, tool, args))
         if tool == "location_retention_prepare_question_loan":
+            assert args["receiving_generation"] == str(receiving)
+            args = {k: v for k, v in args.items() if k != "receiving_generation"}
             assert args == dict(decision_id=str(decision), loan_id=str(loan))
             return dict(decision_id=str(decision), loan_id=str(loan), receipt_id=str(receipt))
         assert tool == "location_retention_question_status"
@@ -6827,3 +6830,187 @@ async def _assert_recursive_question_observation_values():
         loan: dict(decision_id=decision, manifest_digest=b"m" * 32, receiver_receipt=receipt)
     }
     assert all(args[3] == receipt for args in pool.writes)
+
+
+async def _assert_unaccepted_question_recovery_values():
+    """Actual producer/receiver closure, strict software rows, not routed/PG proof."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_question_recursive import prepare_question_loan
+
+    decision, loan, generation, question, ledger, incarnation, source_incarnation, server = (
+        uuid4() for _ in range(8)
+    )
+    attempt = dict(
+        receiving_generation=generation,
+        ledger_id=ledger,
+        body_digest=b"q" * 32,
+        receiving_incarnation=incarnation,
+        source_name="finance",
+        server_request=server,
+        receiving_session=None,
+        tool_generation=None,
+    )
+    item = dict(
+        question_generation=str(question),
+        ledger_id=str(ledger),
+        body_digest=(b"q" * 32).hex(),
+        complete_input=True,
+        loans=[
+            dict(
+                loan_id=str(loan),
+                receiver_name="home",
+                receiving_generation=str(generation),
+                receiving_incarnation=str(incarnation),
+                body_digest=(b"q" * 32).hex(),
+            )
+        ],
+    )
+    plan = dict(
+        decision_id=str(decision),
+        manifest_digest=(b"m" * 32).hex(),
+        source_name="finance",
+        source_incarnation=str(source_incarnation),
+        question_cohort=[item],
+    )
+
+    class Pool:
+        in_transaction = False
+        floor = None
+        receipt = None
+        unknown = False
+        writes = []
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            self.in_transaction = True
+            try:
+                yield
+            finally:
+                self.in_transaction = False
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_received_delegation_inputs i" in sql:
+                return None  # Interrupted before admission, durable attempt exists.
+            if "FROM location_received_delegation_attempts" in sql:
+                return attempt if args[0] == generation else None
+            if "FROM location_received_delegation_floors f" in sql:
+                if self.unknown or self.receipt is None:
+                    return None
+                assert args == (decision, self.receipt)
+                return self.floor | dict(receipt_id=self.receipt)
+            if "FROM location_received_delegation_floors" in sql:
+                return self.floor
+            if "FROM location_received_delegation_inputs" in sql:
+                return None
+            raise AssertionError("unexpected unaccepted recovery row")
+
+        async def fetchval(self, sql, *args):
+            if "FROM location_received_delegation_dispositions" in sql:
+                return self.receipt
+            if "FROM location_received_delegation_server_finished" in sql:
+                assert args == (generation, server, b"q" * 32)
+                return True  # Explicit planted actual-own server end witness.
+            raise AssertionError("unexpected unaccepted recovery value")
+
+        async def execute(self, sql, *args):
+            assert self.in_transaction
+            self.writes.append(sql)
+            if "INSERT INTO location_received_delegation_floors" in sql:
+                self.floor = dict(
+                    zip(
+                        (
+                            "receiving_generation",
+                            "decision_id",
+                            "manifest_digest",
+                            "source_name",
+                            "question_generation",
+                            "ledger_id",
+                            "loan_id",
+                            "body_digest",
+                            "receiving_incarnation",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_delegation_dispositions" in sql:
+                self.receipt = args[1]
+            else:
+                raise AssertionError("unexpected unaccepted recovery write")
+
+    pool = Pool()
+
+    async def lock(conn):
+        assert conn is pool and conn.in_transaction
+
+    routed = []
+
+    async def route(target, tool, args):
+        assert not pool.in_transaction
+        assert target == attempt["source_name"]
+        assert tool == "location_retention_question_owner_plan"
+        assert args == dict(decision_id=str(decision))
+        routed.append(target)
+        return plan
+
+    runtime = SimpleNamespace(
+        active=True,
+        name="home",
+        incarnation=incarnation,
+        domain=pool,
+        lock_domain=lock,
+        routed_tool=route,
+        delegation_writer=SimpleNamespace(receiving={}, pending={}),
+    )
+    # A source/loan request alone cannot select a missing local attempt.
+    assert (await prepare_question_loan(runtime, decision, loan))["receipt_id"] is None
+    assert not routed and not pool.writes
+    original_source = attempt["source_name"]
+    attempt["source_name"] = None
+    assert (await prepare_question_loan(runtime, decision, loan, generation))["receipt_id"] is None
+    assert not routed and not pool.writes
+    attempt["source_name"] = original_source
+    for key, value in [
+        ("ledger_id", uuid4()),
+        ("body_digest", b"x" * 32),
+        ("receiving_incarnation", uuid4()),
+    ]:
+        old = attempt[key]
+        attempt[key] = value
+        with pytest.raises(PolicyUnavailableError):
+            await prepare_question_loan(runtime, decision, loan, generation)
+        assert not pool.writes
+        attempt[key] = old
+    for key, value in [
+        ("loan_id", str(uuid4())),
+        ("receiving_generation", str(uuid4())),
+        ("receiving_incarnation", str(uuid4())),
+        ("receiver_name", "other"),
+        ("body_digest", (b"x" * 32).hex()),
+    ]:
+        original = item["loans"][0][key]
+        item["loans"][0][key] = value
+        with pytest.raises(PolicyUnavailableError):
+            await prepare_question_loan(runtime, decision, loan, generation)
+        assert not pool.writes
+        item["loans"][0][key] = original
+    result = await prepare_question_loan(runtime, decision, loan, generation)
+    assert result["receipt_id"] == str(pool.receipt)
+    assert pool.floor["source_name"] == original_source
+    assert pool.floor["question_generation"] == question
+    writes = len(pool.writes)
+    assert await prepare_question_loan(runtime, decision, loan, generation) == result
+    assert len(pool.writes) == writes + 1  # Same floor retry, never a second receipt.
+    pool.unknown = True
+    with pytest.raises(PolicyUnavailableError, match="Native receiving receipt is unavailable"):
+        await prepare_question_loan(runtime, decision, loan, generation)
+    assert result["receipt_id"] == str(pool.receipt)  # Committed evidence survives lost ACK.
+    pool.unknown = False
+    assert await prepare_question_loan(runtime, decision, loan, generation) == result

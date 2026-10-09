@@ -189,7 +189,9 @@ async def question_owner_plan(runtime: Any, decision: UUID) -> dict:
     }
 
 
-async def prepare_question_loan(runtime: Any, decision: UUID, loan_id: UUID) -> dict:
+async def prepare_question_loan(
+    runtime: Any, decision: UUID, loan_id: UUID, receiving_generation: UUID | None = None
+) -> dict:
     """An own admitted loan selects the actual original source, never a request name."""
     from butlers.chronicler.location_delegation_contexts import (
         dispose_core_question_contexts,
@@ -211,15 +213,32 @@ async def prepare_question_loan(runtime: Any, decision: UUID, loan_id: UUID) -> 
                 "WHERE i.loan_id=$1",
                 loan_id,
             )
+            admitted = own is not None
+            if own is None and receiving_generation is not None:
+                attempt = await conn.fetchrow(
+                    "SELECT * FROM location_received_delegation_attempts "
+                    "WHERE receiving_generation=$1",
+                    receiving_generation,
+                )
+                if attempt is not None and attempt.get("source_name"):
+                    own = dict(attempt)
             if own is None:
-                # A source locator cannot mint the missing receiving association.
-                # Interrupted/unaccepted attempts need their own native recovery.
+                # Legacy NULL or absent source is unknown, never refilled from
+                # caller fields/public current ledger or inferred absence.
                 return {"decision_id": str(decision), "loan_id": str(loan_id), "receipt_id": None}
             if (
-                own["ledger_id"] != own["attempt_ledger"]
-                or own["body_digest"] != own["attempt_digest"]
-                or own["receiving_incarnation"] != runtime.incarnation
-                or own["attempt_incarnation"] != runtime.incarnation
+                own["receiving_incarnation"] != runtime.incarnation
+                or (
+                    receiving_generation is not None
+                    and own["receiving_generation"] != receiving_generation
+                )
+            ) or (
+                admitted
+                and (
+                    own["ledger_id"] != own["attempt_ledger"]
+                    or own["body_digest"] != own["attempt_digest"]
+                    or own["attempt_incarnation"] != runtime.incarnation
+                )
             ):
                 raise PolicyUnavailableError("Native nested question receiving attempt differs")
     plan = await runtime.routed_tool(
@@ -230,7 +249,7 @@ async def prepare_question_loan(runtime: Any, decision: UUID, loan_id: UUID) -> 
     if (
         plan.get("decision_id") != str(decision)
         or plan.get("source_name") != own["source_name"]
-        or plan.get("source_incarnation") != str(own["source_incarnation"])
+        or (admitted and plan.get("source_incarnation") != str(own["source_incarnation"]))
     ):
         raise PolicyUnavailableError("Native nested question owning plan differs")
     matched = [
@@ -243,7 +262,7 @@ async def prepare_question_loan(runtime: Any, decision: UUID, loan_id: UUID) -> 
         raise PolicyUnavailableError("Native nested question owning loan differs")
     question, loan = matched[0]
     if (
-        question["question_generation"] != str(own["question_generation"])
+        (admitted and question["question_generation"] != str(own["question_generation"]))
         or question["ledger_id"] != str(own["ledger_id"])
         or question["body_digest"] != own["body_digest"].hex()
         or loan["receiving_generation"] != str(own["receiving_generation"])
@@ -274,7 +293,11 @@ async def observe_question_loans(runtime: Any, plan: dict) -> None:
             prepared = await runtime.routed_tool(
                 loan["receiver_name"],
                 "location_retention_prepare_question_loan",
-                {"decision_id": plan["decision_id"], "loan_id": loan["loan_id"]},
+                {
+                    "decision_id": plan["decision_id"],
+                    "loan_id": loan["loan_id"],
+                    "receiving_generation": loan["receiving_generation"],
+                },
             )
             if (
                 prepared.get("decision_id") != plan["decision_id"]

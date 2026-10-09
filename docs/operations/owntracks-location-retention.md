@@ -923,3 +923,26 @@ Those current schema/engine controls remain hosted-unrun until their exact head
 executes. Legacy/unaccepted source association recovery, lawful mixed prose and
 metadata reduction, full registered online recursive/all-holder closure and
 managed browser/protected delivery remain mandatory unfinished obligations.
+
+### Interrupted recursive receiving attempts
+
+The owning receiver now freezes the original canonical source selector at the
+actual receiving birth lock after re-reading the full ledger body, target and
+status. Its private nullable column is immutable with the attempt. Legacy NULLs
+remain unknown and are never refilled. `location_retention_prepare_question_loan`
+accepts an optional receiving-generation locator so an original source loan can
+select an interrupted attempt that never admitted its input. The stored selector
+chooses only the existing fixed registered owner-plan tool; the complete original
+loan, source/body, receiving generation/current incarnation and root manifest
+must match before the actual receiver floor or terminal disposition commits.
+
+A terminal unaccepted server copy still requires that receiver's exact actual
+server-ended receipt and no active native receiving lifetime. It does not attest
+the remote recipient. Admitted copies keep every processing/Tool/context/child
+obligation. The producer's separate readback, immutable selector refusal, legacy
+NULL survival and exact replay controls extend the existing migrated species;
+they are authored SQL engine controls, not online registration evidence, and
+remain unrun until the exact successor executes hosted. Missing attempts/source
+selectors, mixed input or interrupted contexts remain unknown. Full registered
+recursive/all-holder, lawful mixed-copy and managed browser/native/protected
+closure remain mandatory beyond this bounded interrupted-attempt path.

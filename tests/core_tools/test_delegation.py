@@ -821,6 +821,7 @@ async def _assert_native_received_question_schedule(monkeypatch):
                         row["ledger_id"],
                         row["body_digest"],
                         row["receiving_incarnation"],
+                        row["source_name"],
                     ) == tuple(args[1:])
                 return row is not None and (row["body_digest"], row["server_request"]) == tuple(
                     args[1:]
@@ -879,6 +880,7 @@ async def _assert_native_received_question_schedule(monkeypatch):
                             "receiving_session",
                             "tool_generation",
                             "server_request",
+                            "source_name",
                         ),
                         args,
                     )
@@ -1077,6 +1079,15 @@ async def _assert_native_received_question_schedule(monkeypatch):
                     "body_digest": body_digest.hex(),
                 },
             )
+        from butlers.chronicler.location_delegation_receivers import reserve_received_question
+
+        # Actual canonical body under the birth lock supersedes a stale DTO.
+        # No attempt/source selector is frozen from the stale selected bytes.
+        for key, changed in (("asking_butler", "other"), ("question", "changed selected body")):
+            stale = canonical | {key: changed}
+            with pytest.raises(PolicyUnavailableError):
+                await reserve_received_question(receiver_writer, stale)
+            assert receiver_pool.attempts == {} and source_pool.loans == {}
         result = await receive()
         assert result["status"] == "scheduled"
         assert (
@@ -1084,6 +1095,10 @@ async def _assert_native_received_question_schedule(monkeypatch):
         )
         receiving = next(iter(receiver_pool.inputs.values()))
         bound = receiver_pool.schedules[receiving["receiving_generation"]]
+        assert (
+            receiver_pool.attempts[receiving["receiving_generation"]]["source_name"]
+            == canonical["asking_butler"]
+        )
         assert (
             receiving["body_digest"] == body_digest
             and receiving["tool_generation"] == tool.generation

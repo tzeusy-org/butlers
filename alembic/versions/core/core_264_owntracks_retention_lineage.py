@@ -303,6 +303,7 @@ def _validate_local_tables(schema: str) -> None:
                 ("tool_generation", "uuid", False),
                 ("server_request", "uuid", False),
                 ("committed_at", "timestamp with time zone", True),
+                ("source_name", "text", False),
             ],
             "location_received_delegation_inputs": [
                 ("receiving_generation", "uuid", True),
@@ -1418,6 +1419,8 @@ def upgrade() -> None:
           CHECK((receiving_session IS NULL)=(tool_generation IS NULL)),
           CHECK(tool_generation IS NOT NULL OR server_request IS NOT NULL)
         );
+        ALTER TABLE location_received_delegation_attempts
+          ADD COLUMN IF NOT EXISTS source_name TEXT;
         CREATE TABLE IF NOT EXISTS location_received_delegation_inputs (
           receiving_generation UUID PRIMARY KEY,
           ledger_id UUID NOT NULL,

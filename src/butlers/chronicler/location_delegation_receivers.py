@@ -386,10 +386,28 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
                 tool.session,
             ):
                 raise PolicyUnavailableError("Native question registered receiving input differs")
+            # Freeze the actual stored canonical selector under the birth lock.
+            # It is not source authority: recovery still requires the fixed
+            # owning route's exact original generation/body/loan evidence.
+            current = await conn.fetchrow(
+                "SELECT * FROM public.delegation_ledger WHERE id=$1 FOR UPDATE",
+                ledger,
+            )
+            if (
+                current is None
+                or current["asking_butler"] != source
+                or current["target_butler"] != runtime.name
+                or current["status"] != "pending"
+                or question_digest(dict(current)) != digest
+                or not isinstance(source, str)
+                or not source
+            ):
+                raise PolicyUnavailableError("Native receiving birth source differs")
             await conn.execute(
                 "INSERT INTO location_received_delegation_attempts "
                 "(receiving_generation,ledger_id,body_digest,receiving_incarnation,"
-                "receiving_session,tool_generation,server_request) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                "receiving_session,tool_generation,server_request,source_name) "
+                "VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
                 receiving,
                 ledger,
                 digest,
@@ -397,15 +415,17 @@ async def reserve_received_question(writer: Any, canonical: dict) -> _ReceivedQu
                 tool.session if tool else None,
                 tool.generation if tool else None,
                 server.request if server else None,
+                source,
             )
     if not await runtime.domain.fetchval(
         "SELECT EXISTS(SELECT 1 FROM location_received_delegation_attempts "
         "WHERE receiving_generation=$1 AND ledger_id=$2 AND body_digest=$3 "
-        "AND receiving_incarnation=$4)",
+        "AND receiving_incarnation=$4 AND source_name=$5)",
         receiving,
         ledger,
         digest,
         runtime.incarnation,
+        source,
     ):
         raise PolicyUnavailableError("Committed receiving attempt is unknown")
     if server is not None:

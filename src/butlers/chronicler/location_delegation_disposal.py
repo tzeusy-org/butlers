@@ -223,6 +223,10 @@ async def _close_question_receiver(runtime: Any, binding: dict) -> UUID | None:
                     attempt["ledger_id"] != binding["ledger_id"]
                     or attempt["body_digest"] != binding["body_digest"]
                     or attempt["receiving_incarnation"] != binding["receiving_incarnation"]
+                    or (
+                        attempt.get("source_name") is not None
+                        and attempt["source_name"] != binding["source_name"]
+                    )
                 ):
                     raise PolicyUnavailableError("Native receiving attempt differs")
                 if generation in runtime.delegation_writer.receiving or any(

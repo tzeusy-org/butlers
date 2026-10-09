@@ -2106,6 +2106,117 @@ async def _assert_question_receiver_disposal(domain, runtime):
     with pytest.raises(PolicyUnavailableError, match="floor differs"):
         await _close_question_receiver(runtime, dict(binding, body_digest=b"x" * 32))
 
+    # Actual generic receiver producer recovers an interrupted attempt from
+    # stored birth source+fixed owning plan. This is planted engine evidence,
+    # not online source or receiver attestation.
+    from butlers.chronicler.location_question_recursive import prepare_question_loan
+
+    interrupted, legacy, interrupted_loan, interrupted_server = (uuid.uuid4() for _ in range(4))
+    async with domain.acquire() as conn:
+        async with conn.transaction():
+            await runtime.lock_domain(conn)
+            for selected, source in ((interrupted, "chronicler"), (legacy, None)):
+                await conn.execute(
+                    "INSERT INTO location_received_delegation_attempts "
+                    "(receiving_generation,ledger_id,body_digest,receiving_incarnation,server_request,source_name) "
+                    "VALUES($1,$2,$3,$4,$5,$6)",
+                    selected,
+                    ledger,
+                    digest,
+                    runtime.incarnation,
+                    interrupted_server,
+                    source,
+                )
+            await conn.execute(
+                "INSERT INTO location_received_delegation_server_finished "
+                "(receiving_generation,server_request,body_digest,receipt_id) VALUES($1,$2,$3,$4)",
+                interrupted,
+                interrupted_server,
+                digest,
+                uuid.uuid4(),
+            )
+    original_route = runtime.routed_tool
+    fixed_routes = []
+
+    async def interrupted_plan(target, tool_name, args):
+        assert target == "chronicler" and tool_name == "location_retention_question_owner_plan"
+        assert args == dict(decision_id=str(decision))
+        fixed_routes.append(target)
+        return dict(
+            decision_id=str(decision),
+            manifest_digest=(b"m" * 32).hex(),
+            source_name="chronicler",
+            source_incarnation=str(runtime.incarnation),
+            question_cohort=[
+                dict(
+                    question_generation=str(question),
+                    ledger_id=str(ledger),
+                    body_digest=digest.hex(),
+                    complete_input=True,
+                    loans=[
+                        dict(
+                            loan_id=str(interrupted_loan),
+                            receiver_name=runtime.name,
+                            receiving_generation=str(interrupted),
+                            receiving_incarnation=str(runtime.incarnation),
+                            body_digest=digest.hex(),
+                        )
+                    ],
+                )
+            ],
+        )
+
+    runtime.routed_tool = interrupted_plan
+    try:
+        assert (await prepare_question_loan(runtime, decision, interrupted_loan, legacy))[
+            "receipt_id"
+        ] is None
+        assert fixed_routes == []
+        async with domain.acquire() as readback:
+            assert not await readback.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_floors WHERE receiving_generation=$1)",
+                legacy,
+            )
+            assert (
+                await readback.fetchval(
+                    "SELECT source_name FROM location_received_delegation_attempts WHERE receiving_generation=$1",
+                    legacy,
+                )
+                is None
+            )
+        result = await prepare_question_loan(runtime, decision, interrupted_loan, interrupted)
+        assert result["receipt_id"] is not None
+        observed = await question_receiver_status(
+            runtime, decision, uuid.UUID(result["receipt_id"])
+        )
+        assert observed["receiving_generation"] == str(interrupted)
+        assert observed["loan_id"] == str(interrupted_loan)
+        async with domain.acquire() as readback:
+            assert not await readback.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_received_delegation_inputs WHERE receiving_generation=$1)",
+                interrupted,
+            )
+            assert (
+                await readback.fetchval(
+                    "SELECT source_name FROM location_received_delegation_attempts WHERE receiving_generation=$1",
+                    interrupted,
+                )
+                == "chronicler"
+            )
+            async with readback.transaction():
+                with pytest.raises(
+                    asyncpg.RaiseError, match="Location source floors are permanent"
+                ):
+                    await readback.execute(
+                        "UPDATE location_received_delegation_attempts SET source_name='other' WHERE receiving_generation=$1",
+                        interrupted,
+                    )
+        assert (
+            await prepare_question_loan(runtime, decision, interrupted_loan, interrupted) == result
+        )
+    finally:
+        runtime.routed_tool = original_route
+
 
 async def _assert_source_question_disposal(domain, runtime, session_id, context, previous_call):
     """Real owning source/receiver receipt ordering; planted lineage, NOT online proof."""

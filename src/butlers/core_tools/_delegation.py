@@ -325,16 +325,22 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         return await question_owner_plan(receiving_runtime(), decision_id)
 
     @_core_tool("delegation")
-    async def location_retention_prepare_question_loan(decision_id: UUID, loan_id: UUID) -> dict:
-        """Prepare only this receiver's admitted original question loan.
+    async def location_retention_prepare_question_loan(
+        decision_id: UUID, loan_id: UUID, receiving_generation: UUID | None = None
+    ) -> dict:
+        """Prepare an admitted loan or exactly bound interrupted receiving attempt.
 
-        Stored input selects the fixed owning source; an unknown receiving
-        association produces no receipt. Complete child and context lifetimes
+        Stored input or birth selector chooses the fixed owning source.
+        The optional receiving locator cannot supply authority or refill a
+        legacy NULL selector. Unknown receiving association produces no receipt.
+        Complete child and context lifetimes
         remain mandatory before the separate committed terminal readback.
         """
         from butlers.chronicler.location_question_recursive import prepare_question_loan
 
-        return await prepare_question_loan(receiving_runtime(), decision_id, loan_id)
+        return await prepare_question_loan(
+            receiving_runtime(), decision_id, loan_id, receiving_generation
+        )
 
     @_core_tool("delegation")
     async def location_retention_close_owned_questions(decision_id: UUID) -> dict:
