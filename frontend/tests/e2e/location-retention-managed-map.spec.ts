@@ -80,7 +80,7 @@ test("shortening fences old current/archive canvases and admits a fresh equal-co
     }
     if (url.pathname === "/api/chronicler/location-retention") {
       if (route.request().method() === "PUT") {
-        expect(route.request().postDataJSON()).toEqual({ days: 2, version: 1 });
+        expect(route.request().postDataJSON()).toEqual({ days: 2, expected_version: 1 });
         revision = 1;
       }
       return route.fulfill({ json: { data: policy(revision) } });

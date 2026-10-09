@@ -13,7 +13,7 @@ import json
 import logging
 import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
@@ -95,6 +95,9 @@ _server_copy_scope: ContextVar[_ServerCopyScope | None] = ContextVar(
 )
 
 _server_copy_scopes: dict[UUID, _ServerCopyScope] = {}
+_HTTP_SERVER_CELL = "butlers.location.server_copy"
+_HTTP_LOAN_CELL = "butlers.location.admitted_loan"
+_HTTP_ROUTE_CELL = "butlers.location.admitted_route"
 
 
 class CatalogServerCopyLifetime:
@@ -123,7 +126,7 @@ class CatalogServerCopyLifetime:
                 final_body = True
 
         try:
-            await self.app(scope, receive, forward)
+            await self.app({**scope, _HTTP_SERVER_CELL: copies}, receive, forward)
             if final_body:
                 for runtime, loan, digest, source in copies.loans:
                     if source:
@@ -203,6 +206,7 @@ class _AdmittedRoute:
     token: str
     loan: UUID
     active: bool = True
+    runtime: Any = None
 
 
 _admitted_route: ContextVar[_AdmittedRoute | None] = ContextVar(
@@ -229,6 +233,63 @@ def catalog_transport_headers(target: str, tool: str, arguments: dict) -> dict[s
 
 
 _admitted_loan: ContextVar[_AdmittedLoan | None] = ContextVar("native_catalog_loan", default=None)
+
+
+@contextmanager
+def native_http_copy_context(butler: str):
+    """Bind only the actual SDK request's constructor-owned live ASGI cells.
+
+    Stateful MCP handlers run in the initialization session task; its copied
+    ContextVars are not a later POST's admission. The SDK carries the actual
+    Request in each message. Public headers, task snapshots and session IDs
+    cannot create these internal scope objects or their active map membership.
+    """
+    from fastmcp.server.dependencies import get_http_request
+
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        yield  # stdio/direct native callers retain their existing private scope.
+        return
+    server = request.scope.get(_HTTP_SERVER_CELL)
+    loan = request.scope.get(_HTTP_LOAN_CELL)
+    route = request.scope.get(_HTTP_ROUTE_CELL)
+    if server is None and (loan is not None or route is not None):
+        raise PolicyUnavailableError("Native HTTP server constructor differs")
+    if server is not None and (
+        not isinstance(server, _ServerCopyScope)
+        or not server.active
+        or server.target != butler
+        or _server_copy_scopes.get(server.request) is not server
+    ):
+        raise PolicyUnavailableError("Native HTTP server constructor differs")
+    if loan is not None and (
+        not isinstance(loan, _AdmittedLoan)
+        or not loan.active
+        or not loan.runtime.active
+        or loan.runtime.name != butler
+    ):
+        raise PolicyUnavailableError("Native HTTP loan constructor differs")
+    if route is not None and (
+        not isinstance(route, _AdmittedRoute)
+        or not route.active
+        or route.runtime is None
+        or not route.runtime.active
+        or route.runtime.name != butler
+    ):
+        raise PolicyUnavailableError("Native HTTP route constructor differs")
+    # A generic HTTP request also clears any copied initialization cells.
+    # Only direct/stdio native callers above keep their existing private scope.
+    cells = (
+        (_server_copy_scope, _server_copy_scope.set(server)),
+        (_admitted_loan, _admitted_loan.set(loan)),
+        (_admitted_route, _admitted_route.set(route)),
+    )
+    try:
+        yield
+    finally:
+        for variable, token in reversed(cells):
+            variable.reset(token)
 
 
 class CatalogLoanAdmission:
@@ -336,7 +397,9 @@ class CatalogLoanAdmission:
         token = _admitted_loan.set(admission)
         route_token = _admitted_route.set(routed)
         try:
-            await self.app(clean, replay, send)
+            await self.app(
+                {**clean, _HTTP_LOAN_CELL: admission, _HTTP_ROUTE_CELL: routed}, replay, send
+            )
         finally:
             if admission is not None:
                 admission.active = False
@@ -585,7 +648,7 @@ class CatalogCopyRuntime:
         )
         if confirmed.get("loan_id") != str(loan) or confirmed.get("source") != "chronicler":
             raise PolicyUnavailableError("Native routing source binding differs")
-        return _AdmittedRoute(token, loan)
+        return _AdmittedRoute(token, loan, runtime=self)
 
     async def admit_loan(self, loan: UUID, token: str) -> _AdmittedLoan:
         async with self.domain.acquire() as conn:

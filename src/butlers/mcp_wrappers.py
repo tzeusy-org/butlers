@@ -196,6 +196,19 @@ def _tool_input_fingerprint(fn: Any, args: tuple[Any, ...], kwargs: dict[str, An
     return fingerprint_tool_call_payload(payload)
 
 
+def _native_http_copy_handler(handler: Any, butler: str):
+    """Install verified request cells before any instrumentation or handler."""
+
+    @functools.wraps(handler)
+    async def bound(*args, **kwargs):
+        from butlers.chronicler.location_catalog_copies import native_http_copy_context
+
+        with native_http_copy_context(butler):
+            return await handler(*args, **kwargs)
+
+    return bound
+
+
 class _SpanWrappingMCP:
     """Proxy around FastMCP that logs and span-wraps module tool handlers.
 
@@ -346,7 +359,9 @@ class _SpanWrappingMCP:
                 return result
 
             try:
-                registered = original_decorator(instrumented)
+                registered = original_decorator(
+                    _native_http_copy_handler(instrumented, self._butler_name)
+                )
             except Exception as exc:
                 self._registration_failures[resolved_tool_name] = type(exc).__name__
                 raise
@@ -454,7 +469,9 @@ class _ToolCallLoggingMCP:
                 return result
 
             try:
-                registered = original_decorator(instrumented)
+                registered = original_decorator(
+                    _native_http_copy_handler(instrumented, self._butler_name)
+                )
             except Exception as exc:
                 self._registration_failures[resolved_tool_name] = type(exc).__name__
                 raise

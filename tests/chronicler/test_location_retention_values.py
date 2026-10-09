@@ -1927,7 +1927,9 @@ async def _assert_native_artifact_invocation_lifetime():
 
 
 @pytest.mark.asyncio
-async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is_bounded(caplog):
+async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is_bounded(
+    caplog, monkeypatch
+):
     """REQ-location-retention-005/006; software transport/control positioning, not SQL proof."""
     import json
     from types import SimpleNamespace
@@ -2176,6 +2178,125 @@ async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is
     with pytest.raises(RuntimeError, match="interrupted"):
         await lifecycle({"type": "http", "interrupted": True}, no_receive, delivered)
     assert len(finished) == 1  # Last body alone cannot close a live/failed delegate.
+
+    # Stateful MCP executes Tools in its session task. The SDK's actual Request
+    # carries only cells placed by the live fixed ASGI constructor.
+    import asyncio
+    from contextvars import Context
+
+    from starlette.requests import Request
+
+    from butlers.mcp_wrappers import _SpanWrappingMCP, _ToolCallLoggingMCP
+
+    runtime.name, runtime.active = "chronicler", True
+    captured_request = None
+    restored = []
+    monkeypatch.setattr("fastmcp.server.dependencies.get_http_request", lambda: captured_request)
+    for wrapper in (_SpanWrappingMCP, _ToolCallLoggingMCP):
+        proxy = wrapper(
+            SimpleNamespace(tool=lambda *a, **kw: lambda f: f), "chronicler", module_name="memory"
+        )
+
+        @proxy.tool(name="location_catalog_loan_body")
+        async def carried(loan_id):
+            native = copies._admitted_loan.get()
+            server = copies._server_copy_scope.get()
+            if native is None:
+                raise copies.PolicyUnavailableError("Native loan admission is unavailable")
+            assert native.runtime is runtime and native.loan == loan_id and native.active
+            assert server is not None and server.active and server.target == "chronicler"
+            return {"valid": True}
+
+        async def isolated(scope, receive, send):
+            nonlocal captured_request
+            captured_request = Request(scope)
+            assert not any(
+                name.lower() == copies._HEADER.lower().encode() for name, _ in scope["headers"]
+            )
+
+            async def invoke():
+                before = copies._admitted_loan.get(), copies._server_copy_scope.get()
+                result = await carried(loan_id=loan)
+                restored.append(
+                    (before, copies._admitted_loan.get(), copies._server_copy_scope.get())
+                )
+                return result
+
+            result = await asyncio.create_task(invoke(), context=Context())
+            assert result == {"valid": True}
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"valid", "more_body": False})
+
+        app = copies.CatalogServerCopyLifetime(
+            copies.CatalogLoanAdmission(isolated, lambda: runtime), butler_name="chronicler"
+        )
+        assert (await request(packet, headers))[0]["status"] == 200
+        assert restored[-1] == ((None, None), None, None)
+        assert not captured_request.scope[copies._HTTP_SERVER_CELL].active
+        assert not captured_request.scope[copies._HTTP_LOAN_CELL].active
+        with pytest.raises(copies.PolicyUnavailableError, match="server constructor"):
+            await carried(loan_id=loan)
+        # Header/locator fields cannot recreate an internal Request cell.
+        captured_request = Request({"type": "http", "headers": headers})
+        with pytest.raises(copies.PolicyUnavailableError, match="admission"):
+            await carried(loan_id=loan)
+
+    # The fixed Switchboard route has its own verified runtime and cell; it is
+    # carried per message too, not inferred from the source/loan locator.
+    route_runtime = SimpleNamespace(name="switchboard", active=True)
+
+    async def admit_route(selected, capability):
+        assert selected == loan and capability == "native-private-capability-0123456789"
+        return copies._AdmittedRoute(capability, selected, runtime=route_runtime)
+
+    route_runtime.admit_route = admit_route
+    route_packet = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "route",
+                "arguments": {
+                    "target_butler": "chronicler",
+                    "tool_name": "location_catalog_loan_body",
+                    "args": {"loan_id": str(loan)},
+                },
+            },
+        }
+    ).encode()
+    for wrapper in (_SpanWrappingMCP, _ToolCallLoggingMCP):
+        proxy = wrapper(
+            SimpleNamespace(tool=lambda **kw: lambda f: f), "switchboard", module_name="switchboard"
+        )
+
+        @proxy.tool(name="route")
+        async def carried_route():
+            routed = copies._admitted_route.get()
+            if routed is None:
+                raise copies.PolicyUnavailableError("Native routed admission is unavailable")
+            assert routed.runtime is route_runtime and routed.loan == loan and routed.active
+            assert copies._server_copy_scope.get().target == "switchboard"
+            return {"routed": True}
+
+        async def isolated_route(scope, receive, send):
+            nonlocal captured_request
+            captured_request = Request(scope)
+            result = await asyncio.create_task(carried_route(), context=Context())
+            assert result == {"routed": True}
+            assert copies._admitted_route.get().runtime is route_runtime
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"valid", "more_body": False})
+
+        app = copies.CatalogServerCopyLifetime(
+            copies.CatalogLoanAdmission(isolated_route, lambda: route_runtime),
+            butler_name="switchboard",
+        )
+        assert (await request(route_packet, headers))[0]["status"] == 200
+        assert copies._admitted_route.get() is None
+        assert not captured_request.scope[copies._HTTP_ROUTE_CELL].active
+        with pytest.raises(copies.PolicyUnavailableError, match="server constructor"):
+            await carried_route()
 
 
 @pytest.mark.asyncio

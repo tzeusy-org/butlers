@@ -1104,3 +1104,29 @@ no exception text, tool arguments, endpoint, capability, row or body is emitted.
 The first hosted registered transport attempt failed at the actual consumer tool
 call with cause unknown. These diagnostics position that failure and do not
 quiet it or credit a healthy routed/SQL result.
+
+
+### Stateful MCP per-request native copy cells
+
+The installed MCP SDK runs a stateful session in its initialization task and
+carries each later HTTP Request as per-message metadata. The native outer ASGI
+server/admission constructors now attach their private live cells to that actual
+Request scope after verification. Both production instrumentation wrappers read
+only this carrier before logging/handler execution, validate the fixed target and
+exact active server-map identity, install its native cells and reset them on exit.
+Generic HTTP calls clear copied initialization cells; direct/stdio calls keep
+their existing private in-process contract. An expired server, closed runtime,
+wrong target or caller header-only Request cannot rehydrate admission. This
+retains online challenge, current generation/body and actual owning lifetime
+requirements. The later a791 hosted attempt classified its actual routed-body
+refusal as policy_unavailable with both route and loan admission absent. This
+positions the missing per-call carrier; it does not attest a healthy corrected
+path. Separate-task loan and Switchboard-route software positives in both actual
+wrappers retain ended-server/header-only negatives; the fresh registered
+transport/SQL witness remains pending at this successor.
+
+The next browser control also corrects its exact setter wire assertion to the
+actual client/server `expected_version` field. Its earlier `version` assertion
+was a fixture mismatch, retained as a dated failed control. The current version
+value, shortening interaction, old/fresh geometry, cancellation and all archive
+assertions remain; no browser/runtime success is inferred from this correction.
