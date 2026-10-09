@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 _MUTEX = "location:switchboard-ingress"
 _writers: dict[asyncpg.Pool, SwitchboardInputCopies] = {}
 _HTTP_CELL = "butlers.location.ingress_input"
+_scanner_scope: ContextVar[tuple | None] = ContextVar("location_ingress_scanner", default=None)
 
 
 @dataclass(frozen=True)
@@ -242,27 +244,37 @@ class SwitchboardInputCopies:
             or (binding.task is not None and binding.task is not task)
         ):
             raise CopyFloorUnavailable("ingress_queued_input_differs")
+        await self._bind_handler(binding, task)
+        return binding
+
+    async def _bind_handler(self, binding: _Input, task: asyncio.Task) -> None:
+        # Repeated claim must re-establish the same committed nonce. A prior
+        # failed write/readback never turns private in-memory state into proof.
+        if self._inputs.get(id(binding)) is not binding or (
+            binding.task is not None and binding.task is not task
+        ):
+            raise CopyFloorUnavailable("ingress_handler_differs")
         if binding.task is None:
             binding.task, binding.handler = task, uuid4()
             if binding.kind != 2:
                 self._observe(binding, header=False)
-            async with self.writer() as conn:
-                await conn.execute(
-                    "INSERT INTO location_ingress_input_claims "
-                    "(copy_generation,handler_generation,incarnation) VALUES($1,$2,$3)",
-                    binding.generation,
-                    binding.handler,
-                    self.incarnation,
-                )
-            async with self.pool.acquire() as observed:
-                actual = await observed.fetchrow(
-                    "SELECT handler_generation,incarnation FROM location_ingress_input_claims "
-                    "WHERE copy_generation=$1",
-                    binding.generation,
-                )
-            if actual is None or tuple(actual.values()) != (binding.handler, self.incarnation):
-                raise CopyFloorUnavailable("ingress_handler_commit_unknown")
-        return binding
+        async with self.writer() as conn:
+            await conn.execute(
+                "INSERT INTO location_ingress_input_claims "
+                "(copy_generation,handler_generation,incarnation) VALUES($1,$2,$3) "
+                "ON CONFLICT(copy_generation) DO NOTHING",
+                binding.generation,
+                binding.handler,
+                self.incarnation,
+            )
+        async with self.pool.acquire() as observed:
+            actual = await observed.fetchrow(
+                "SELECT handler_generation,incarnation FROM location_ingress_input_claims "
+                "WHERE copy_generation=$1",
+                binding.generation,
+            )
+        if actual is None or tuple(actual.values()) != (binding.handler, self.incarnation):
+            raise CopyFloorUnavailable("ingress_handler_commit_unknown")
 
     async def reserve_child(self, parent: _Input, body: dict, *, kind: int = 3) -> _Input:
         """Fixed owning producer forks its actual copied input before publication."""
@@ -335,6 +347,150 @@ class SwitchboardInputCopies:
             raise CopyFloorUnavailable("ingress_child_commit_unknown")
         return child
 
+    async def reserve_recovered_queue(
+        self, header: _Header, row_id: UUID, body: dict
+    ) -> _Input | None:
+        """Own pre-read scanner binds its current copy to the recorded first writer."""
+        if (
+            not self.active
+            or self._headers.get(id(header)) is not header
+            or header.task is not asyncio.current_task()
+            or header.task.done()
+            or len(self._inputs) >= 1024
+        ):
+            raise CopyFloorUnavailable("ingress_scanner_scope_unknown")
+        async with self.writer() as conn:
+            row = await conn.fetchrow(
+                "SELECT request_context,raw_payload,normalized_text FROM message_inbox "
+                "WHERE id=$1 FOR UPDATE",
+                row_id,
+            )
+            if row is None:
+                raise CopyFloorUnavailable("ingress_scanner_row_unknown")
+            context, raw = row["request_context"], row["raw_payload"]
+            if not isinstance(context, dict) or not isinstance(raw, dict):
+                raise CopyFloorUnavailable("ingress_scanner_source_unknown")
+            expected = {
+                "request_id": str(context.get("request_id", str(row_id))),
+                "message_text": row["normalized_text"],
+                "source": raw.get("source", {}),
+                "event": raw.get("event", {}),
+                "sender": raw.get("sender", {}),
+                "attachments": None,
+                "payload_type": context.get("payload_type"),
+                "triage_decision": context.get("triage_decision"),
+                "triage_target": context.get("triage_target"),
+            }
+            if content_digest(body) != content_digest(expected):
+                raise CopyFloorUnavailable("ingress_scanner_body_changed")
+            original = await conn.fetchrow(
+                "SELECT s.copy_generation,s.dedupe_digest,s.stored_digest,b.copy_kind "
+                "FROM location_ingress_inbox_sources s "
+                "LEFT JOIN location_ingress_input_births b USING(copy_generation) "
+                "WHERE s.request_id=$1",
+                row_id,
+            )
+            source = raw.get("source")
+            if (
+                original is None
+                and isinstance(source, dict)
+                and isinstance(source.get("provider"), str)
+                and source["provider"]
+                and isinstance(source.get("channel"), str)
+                and source["channel"]
+                and source["provider"] != "owntracks"
+                and source["channel"] != "owntracks"
+            ):
+                # A label or missing private stamp alone is not ordinary
+                # authority. Compare the original committed shared admission
+                # record to every canonical selector before legacy processing.
+                admitted = await conn.fetchrow(
+                    "SELECT source_provider,source_channel,source_endpoint_identity,"
+                    "source_sender_identity,dedupe_key FROM public.ingestion_events WHERE id=$1",
+                    row_id,
+                )
+                sender = raw.get("sender")
+                expected_admission = (
+                    source["provider"],
+                    source["channel"],
+                    source.get("endpoint_identity"),
+                    sender.get("identity") if isinstance(sender, dict) else None,
+                    context.get("dedupe_key"),
+                )
+                if (
+                    admitted is None
+                    or any(not isinstance(value, str) or not value for value in expected_admission)
+                    or tuple(admitted.values()) != expected_admission
+                ):
+                    raise CopyFloorUnavailable("ingress_scanner_ordinary_admission_unknown")
+                return None  # Fixed original ordinary admission; no native proof.
+            key = context.get("dedupe_key")
+            stored = content_digest({"raw_payload": raw, "normalized_text": row["normalized_text"]})
+            if (
+                original is None
+                or original["copy_kind"] != 1
+                or not isinstance(key, str)
+                or original["dedupe_digest"] != logical_digest(key)
+                or original["stored_digest"] != stored
+                or await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM location_retention_source_floors "
+                    "WHERE dedupe_digest=$1)",
+                    original["dedupe_digest"],
+                )
+            ):
+                raise CopyFloorUnavailable("ingress_scanner_original_unknown")
+            child = _Input(
+                uuid4(),
+                header.generation,
+                original["dedupe_digest"],
+                content_digest(body),
+                None,
+                kind=2,
+            )
+            self._inputs[id(child)] = child
+            await conn.execute(
+                "INSERT INTO location_ingress_input_births(copy_generation,server_generation,"
+                "dedupe_digest,envelope_digest,copy_kind) VALUES($1,$2,$3,$4,2)",
+                child.generation,
+                child.server,
+                child.dedupe_digest,
+                child.envelope_digest,
+            )
+            await conn.execute(
+                "INSERT INTO location_ingress_input_parents "
+                "(copy_generation,parent_generation) VALUES($1,$2)",
+                child.generation,
+                original["copy_generation"],
+            )
+            await conn.execute(
+                "INSERT INTO location_ingress_accepted_inputs "
+                "(copy_generation,request_id,stored_digest) VALUES($1,$2,$3)",
+                child.generation,
+                row_id,
+                stored,
+            )
+        async with self.pool.acquire() as observed:
+            committed = await observed.fetchrow(
+                "SELECT b.server_generation,b.dedupe_digest,b.envelope_digest,b.copy_kind,"
+                "p.parent_generation,a.request_id,a.stored_digest "
+                "FROM location_ingress_input_births b "
+                "LEFT JOIN location_ingress_input_parents p USING(copy_generation) "
+                "LEFT JOIN location_ingress_accepted_inputs a USING(copy_generation) "
+                "WHERE b.copy_generation=$1",
+                child.generation,
+            )
+        if committed is None or tuple(committed.values()) != (
+            child.server,
+            child.dedupe_digest,
+            child.envelope_digest,
+            2,
+            original["copy_generation"],
+            row_id,
+            stored,
+        ):
+            raise CopyFloorUnavailable("ingress_scanner_commit_unknown")
+        return child
+
     async def bind_accepted(self, binding: _Input, request_id: UUID) -> None:
         if (
             self._inputs.get(id(binding)) is not binding
@@ -354,6 +510,13 @@ class SwitchboardInputCopies:
             body = content_digest(
                 {"raw_payload": row["raw_payload"], "normalized_text": row["normalized_text"]}
             )
+            original = await conn.fetchrow(
+                "SELECT dedupe_digest,stored_digest FROM location_ingress_inbox_sources "
+                "WHERE request_id=$1",
+                request_id,
+            )
+            if original is None or tuple(original.values()) != (binding.dedupe_digest, body):
+                raise CopyFloorUnavailable("ingress_canonical_source_unknown")
             await conn.execute(
                 "INSERT INTO location_ingress_accepted_inputs "
                 "(copy_generation,request_id,stored_digest) VALUES($1,$2,$3)",
@@ -456,6 +619,8 @@ class SwitchboardInputCopies:
         """No new input; retry only real observed ends before pool shutdown."""
         self.active = False
         try:
+            if self._settlers:
+                await asyncio.gather(*tuple(self._settlers), return_exceptions=True)
             await self.reconcile_observed_ends()
         finally:
             if _writers.get(self.pool) is self:
@@ -602,6 +767,49 @@ def _buffer_body(ref: Any) -> dict:
     }
 
 
+def _clear_buffer_ref(ref: Any) -> tuple:
+    """Fixed owning object disposal validates its current full frozen body."""
+    captured = ref._native_ingress
+    if captured is None:
+        raise CopyFloorUnavailable("ingress_buffer_binding_unknown")
+    runtime, queued, body = captured
+    if (
+        runtime._inputs.get(id(queued)) is not queued
+        or queued.kind != 2
+        or content_digest(_buffer_body(ref)) != queued.envelope_digest
+        or content_digest(body) != queued.envelope_digest
+    ):
+        raise CopyFloorUnavailable("ingress_buffer_copy_differs")
+    ref.message_text = ""
+    ref.source, ref.event, ref.sender = {}, {}, {}
+    ref.attachments, ref.payload_type = None, None
+    ref.triage_decision, ref.triage_target = None, None
+    ref._native_ingress = None
+    body.clear()
+    runtime._cleared_inputs.add(id(queued))
+    return runtime, queued
+
+
+def discard_buffer_input(ref: Any) -> None:
+    """Dispose only the exact rejected or stopped owning queue object."""
+    if ref._native_ingress is None:
+        return  # Existing ordinary buffer behavior supplies no native proof.
+    runtime, queued, _body = ref._native_ingress
+    if queued.task is not None:
+        raise CopyFloorUnavailable("ingress_discard_claim_already_present")
+    _clear_buffer_ref(ref)
+
+    async def finish():
+        task = asyncio.current_task()
+        await runtime._bind_handler(queued, task)
+        runtime._ended_inputs.add(id(queued))
+        await runtime.reconcile_observed_ends()
+
+    settling = asyncio.create_task(finish())
+    runtime._settlers.add(settling)
+    settling.add_done_callback(runtime._settled)
+
+
 async def process_buffer_input(ref: Any, invoke: Any) -> None:
     """Own queued object is disposed only after its separate processing Task ends."""
     captured = ref._native_ingress
@@ -622,15 +830,7 @@ async def process_buffer_input(ref: Any, invoke: Any) -> None:
             raise CopyFloorUnavailable("ingress_processing_still_active")
         if ref._native_ingress is not captured:
             raise CopyFloorUnavailable("ingress_buffer_binding_differs")
-        ref.message_text = ""
-        ref.source, ref.event, ref.sender = {}, {}, {}
-        ref.attachments, ref.payload_type = None, None
-        ref.triage_decision, ref.triage_target = None, None
-        ref._native_ingress = None
-        body.clear()
-        # This private cleared-object witness is separate from Task-end;
-        # the long-lived worker cannot attest an untouched queued payload.
-        runtime._cleared_inputs.add(id(queued))
+        _clear_buffer_ref(ref)
         runtime._ended_inputs.add(id(queued))
         await runtime.reconcile_observed_ends()
 
@@ -647,6 +847,107 @@ async def process_buffer_input(ref: Any, invoke: Any) -> None:
     else:
         # A successful business result cannot escape a failed end witness.
         await finish()
+
+
+async def run_buffer_scanner(pool: Any, invoke: Any) -> int:
+    """A separate actual Task captures its receiving lifetime BEFORE row reads."""
+    runtime = _writers.get(pool)
+    if runtime is None:
+        return await invoke()
+
+    async def scan():
+        header = await runtime.reserve_header()
+        token = _scanner_scope.set((runtime, header))
+        try:
+            return await invoke()
+        finally:
+            _scanner_scope.reset(token)
+
+    return await asyncio.create_task(scan())
+
+
+async def reserve_scanned_buffer_input(pool: Any, ref: Any) -> None:
+    """Fixed own scanner publishes only independently read-back canonical lineage."""
+    runtime = _writers.get(pool)
+    if runtime is None:
+        return
+    current = _scanner_scope.get()
+    if (
+        current is None
+        or current[0] is not runtime
+        or current[1].task is not asyncio.current_task()
+    ):
+        raise CopyFloorUnavailable("ingress_scanner_scope_unknown")
+    body = _buffer_body(ref)
+    child = await runtime.reserve_recovered_queue(current[1], ref.message_inbox_id, body)
+    if child is not None:
+        ref._native_ingress = (runtime, child, body)
+
+
+async def lock_registered_ingress_writer(pool: Any, conn: Any) -> None:
+    """Actual canonical owning transaction enters control before dedup/row locks."""
+    runtime = _writers.get(pool)
+    if runtime is None:
+        return  # Explicit unconfigured legacy writer supplies no lineage proof.
+    actual = await conn.fetchrow("SELECT current_schema(),current_user")
+    if tuple(actual.values()) != ("switchboard", "butler_switchboard_rw"):
+        raise CopyFloorUnavailable("ingress_owning_identity_differs")
+    await lock_ingress_census(conn)
+
+
+async def capture_canonical_ingress_source(
+    pool: Any,
+    conn: Any,
+    request_id: UUID,
+    request_context: dict,
+    raw_payload: dict,
+    normalized_text: str,
+) -> None:
+    """Same actual first INSERT transaction freezes its private SDK producer."""
+    runtime = _writers.get(pool)
+    if runtime is None:
+        return
+    cell = _current_request_input(runtime)
+    binding = cell.queued
+    task = asyncio.current_task()
+    key = request_context.get("dedupe_key")
+    if (
+        not runtime.active
+        or binding is None
+        or runtime._inputs.get(id(binding)) is not binding
+        or binding.kind != 1
+        or binding.task is not task
+        or task is None
+        or task.done()
+        or not isinstance(key, str)
+        or logical_digest(key) != binding.dedupe_digest
+    ):
+        raise CopyFloorUnavailable("ingress_canonical_producer_unknown")
+    actual = await conn.fetchrow(
+        "SELECT b.server_generation,b.dedupe_digest,b.envelope_digest,b.copy_kind,"
+        "c.handler_generation,c.incarnation FROM location_ingress_input_births b "
+        "LEFT JOIN location_ingress_input_claims c USING(copy_generation) "
+        "WHERE b.copy_generation=$1",
+        binding.generation,
+    )
+    expected = (
+        binding.server,
+        binding.dedupe_digest,
+        binding.envelope_digest,
+        1,
+        binding.handler,
+        runtime.incarnation,
+    )
+    if actual is None or tuple(actual.values()) != expected:
+        raise CopyFloorUnavailable("ingress_canonical_claim_unknown")
+    await conn.execute(
+        "INSERT INTO location_ingress_inbox_sources "
+        "(request_id,copy_generation,dedupe_digest,stored_digest) VALUES($1,$2,$3,$4)",
+        request_id,
+        binding.generation,
+        binding.dedupe_digest,
+        content_digest({"raw_payload": raw_payload, "normalized_text": normalized_text}),
+    )
 
 
 async def lock_ingress_census(conn: Any) -> None:
@@ -683,6 +984,15 @@ async def require_ingress_closed(conn: Any, request_id: UUID, key: str, stored: 
     digest = content_digest(
         {"raw_payload": stored["raw_payload"], "normalized_text": stored["normalized_text"]}
     )
+    original = await conn.fetchrow(
+        "SELECT s.dedupe_digest,s.stored_digest,b.copy_kind "
+        "FROM location_ingress_inbox_sources s "
+        "LEFT JOIN location_ingress_input_births b USING(copy_generation) "
+        "WHERE s.request_id=$1",
+        request_id,
+    )
+    if original is None or tuple(original.values()) != (logical_digest(key), digest, 1):
+        raise CopyFloorUnavailable("ingress_canonical_source_unknown")
     if not rows or any(
         row["handler_generation"] is None
         or row["copy_kind"] not in (1, 2, 3)

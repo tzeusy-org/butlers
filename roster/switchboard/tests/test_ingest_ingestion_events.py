@@ -44,13 +44,14 @@ class _FakeConn:
     def __init__(self, *, existing_row: dict | None = None) -> None:
         # If set, inner duplicate re-check inside lock returns this row.
         self._inner_existing: dict | None = existing_row
+        self.transaction_depth = 0
         # Ordered list of (sql, args) tuples captured from execute().
         self.execute_calls: list[tuple[str, tuple]] = []
         # The UUID7 that will be "inserted" (set on first INSERT call).
         self._inserted_id: UUID | None = None
 
     def transaction(self) -> Any:
-        return _FakeTransaction()
+        return _FakeTransaction(self)
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.execute_calls.append((sql, args))
@@ -79,10 +80,15 @@ class _FakeConn:
 
 
 class _FakeTransaction:
+    def __init__(self, conn):
+        self.conn = conn
+
     async def __aenter__(self) -> None:
+        self.conn.transaction_depth += 1
         return None
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        self.conn.transaction_depth -= 1
         return False
 
 
@@ -228,6 +234,7 @@ class TestIngestionEventsWriteOnAccept:
         assert pool.conn.has_ingestion_events_insert(), (
             "public.ingestion_events INSERT must be executed for a new ingest"
         )
+        await _assert_native_first_source_writer_order()
 
     async def test_ingestion_events_id_equals_request_id(self) -> None:
         pool = _FakePool()
@@ -697,3 +704,41 @@ class TestIngestionEventPublishesOnBus:
 
         assert result.duplicate is True
         mock_publish.assert_not_awaited()
+
+
+async def _assert_native_first_source_writer_order():
+    """Actual native writer hook ordering only, not real SQL rollback proof."""
+    from unittest.mock import patch
+
+    from butlers.core import location_ingress_copies
+
+    pool = _FakePool()
+    native = _telegram_envelope(update_id="977")
+    native["source"] = {
+        "channel": "owntracks",
+        "provider": "owntracks",
+        "endpoint_identity": "owntracks:synthetic-first-source",
+    }
+    trace = []
+
+    async def lock(actual_pool, conn):
+        assert actual_pool is pool and conn is pool.conn
+        assert conn.transaction_depth == 1 and conn.execute_calls == []
+        trace.append("control-before-dedup")
+
+    async def capture(actual_pool, conn, request_id, context, raw, text):
+        assert actual_pool is pool and conn is pool.conn
+        assert conn.transaction_depth == 1
+        assert conn.has_message_inbox_insert() and not conn.has_ingestion_events_insert()
+        assert context["request_id"] == str(request_id)
+        assert raw["source"]["provider"] == "owntracks" and text == "hello"
+        trace.append("same-writer-before-commit")
+
+    with (
+        patch.object(location_ingress_copies, "lock_registered_ingress_writer", lock),
+        patch.object(location_ingress_copies, "capture_canonical_ingress_source", capture),
+    ):
+        result = await ingest_v1(pool, native, policy_evaluator=None, enable_thread_affinity=False)
+    assert trace == ["control-before-dedup", "same-writer-before-commit"]
+    assert result.duplicate is False and pool.conn.transaction_depth == 0
+    assert pool.conn.has_ingestion_events_insert()

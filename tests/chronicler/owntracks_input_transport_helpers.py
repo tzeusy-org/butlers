@@ -13,6 +13,16 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 
+def register_native_switchboard_tools(context, mcp):
+    """Use the production decorator contract, including explicit MCP tool names."""
+    from butlers.core_tools._switchboard import register_switchboard_tools
+
+    def core_tool(group, **tool_kwargs):
+        return mcp.tool(**tool_kwargs)
+
+    register_switchboard_tools(context, mcp, core_tool)
+
+
 async def assert_native_owntracks_input_transport(postgres_container):
     """Separate healthy database: never clean up or alter earlier planted histories."""
     import asyncpg
@@ -57,7 +67,6 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
     from butlers.core.location_copy_retention import CopyFloorUnavailable
     from butlers.core.location_ingress_copies import SwitchboardInputCopies, require_ingress_closed
     from butlers.core_tools._base import ToolContext
-    from butlers.core_tools._switchboard import register_switchboard_tools
     from butlers.daemon import ButlerDaemon
     from butlers.db import register_jsonb_codec
     from butlers.location_retention import content_digest
@@ -125,7 +134,7 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
         )
         # Invoke the real owning registration, preserving its envelope parser,
         # global policy, dedup/advisory locks and canonical accepted-row writer.
-        register_switchboard_tools(context, mcp, lambda group: mcp.tool)
+        register_native_switchboard_tools(context, mcp)
         app = ButlerDaemon._build_mcp_http_app(
             mcp, butler_name="switchboard", location_ingress_runtime=receiving
         )
@@ -240,7 +249,7 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                     assert pending_queue is not None and pending_queue["ended"] is None
                     assert pending_queue["handler_generation"] is not None
                     key = await committed.fetchval(
-                        "SELECT dedupe_key FROM message_inbox WHERE id=$1",
+                        "SELECT request_context->>'dedupe_key' FROM message_inbox WHERE id=$1",
                         point["accepted_request_id"],
                     )
                     import pytest
@@ -312,6 +321,7 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                     )
                     == 2
                 )
+                await _assert_native_first_source_atomicity(switchboard_url, switchboard)
                 runtime.close_admission()
                 async with httpx.AsyncClient(timeout=10) as phone:
                     held = await phone.post(
@@ -412,3 +422,89 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
         await asyncio.sleep(0)
         await receiving.stop()
         await switchboard.close()
+
+
+async def _assert_native_first_source_atomicity(endpoint, pool):
+    """Fault the real same-connection producer; separate readback proves rollback."""
+    from datetime import UTC, datetime
+    from unittest.mock import patch
+
+    import asyncpg
+    import pytest
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    from butlers.connectors.owntracks import build_location_envelope
+    from butlers.core.location_ingress_copies import capture_canonical_ingress_source
+    from butlers.location_retention import content_digest, logical_digest
+    from butlers.tools.switchboard.ingestion.ingest import _compute_dedupe_key
+    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+    raw = {
+        "_type": "location",
+        "tid": "AF",
+        "tst": int(datetime.now(UTC).timestamp()),
+        "lat": 1.5,
+        "lon": 103.5,
+    }
+    envelope = build_location_envelope(
+        raw, "owntracks:atomic-" + str(uuid4()), datetime.now(UTC).isoformat(), "full"
+    )
+    key = _compute_dedupe_key(parse_ingest_envelope(envelope))
+    reached = []
+
+    async def fail_after_receipt(actual_pool, conn, request_id, context, payload, text):
+        assert actual_pool is pool and isinstance(conn, asyncpg.pool.PoolConnectionProxy)
+        assert conn.is_in_transaction()
+        await capture_canonical_ingress_source(
+            actual_pool, conn, request_id, context, payload, text
+        )
+        assert await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM message_inbox WHERE id=$1)", request_id
+        )
+        assert await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM location_ingress_inbox_sources WHERE request_id=$1)",
+            request_id,
+        )
+        reached.append(True)
+        raise asyncpg.RaiseError("Synthetic first-source receipt fault")
+
+    async with Client(endpoint + "/mcp") as caller:
+        with patch(
+            "butlers.core.location_ingress_copies.capture_canonical_ingress_source",
+            new=fail_after_receipt,
+        ):
+            with pytest.raises(ToolError):
+                await caller.call_tool("ingest", envelope)
+        assert reached == [True]
+        # Different acquisition after the actual transaction has unwound.
+        async with pool.acquire() as committed:
+            assert not await committed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM message_inbox "
+                "WHERE request_context->>'dedupe_key'=$1)",
+                key,
+            )
+            assert not await committed.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM location_ingress_inbox_sources "
+                "WHERE dedupe_digest=$1)",
+                logical_digest(key),
+            )
+        restored = await caller.call_tool("ingest", envelope)
+        accepted = restored.data
+        assert accepted["status"] == "accepted" and not accepted["duplicate"]
+        from uuid import UUID
+
+        actual_id = UUID(str(accepted["request_id"]))
+        async with pool.acquire() as committed:
+            stored = await committed.fetchrow(
+                "SELECT raw_payload,normalized_text FROM message_inbox WHERE id=$1", actual_id
+            )
+            source = await committed.fetchrow(
+                "SELECT s.dedupe_digest,s.stored_digest,b.copy_kind "
+                "FROM location_ingress_inbox_sources s "
+                "JOIN location_ingress_input_births b USING(copy_generation) WHERE s.request_id=$1",
+                actual_id,
+            )
+        assert source is not None and source["copy_kind"] == 1
+        assert source["dedupe_digest"] == logical_digest(key)
+        assert source["stored_digest"] == content_digest(dict(stored))

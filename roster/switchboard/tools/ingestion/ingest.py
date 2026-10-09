@@ -990,6 +990,11 @@ async def ingest_v1(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                if envelope.source.provider == "owntracks":
+                    from butlers.core.location_ingress_copies import lock_registered_ingress_writer
+
+                    await lock_registered_ingress_writer(pool, conn)
+
                 # Serialise concurrent inserts for the same dedupe_key
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedupe_key)
 
@@ -1093,6 +1098,15 @@ async def ingest_v1(
                     attachments_value,
                     lifecycle_state,
                 )
+
+                if envelope.source.provider == "owntracks":
+                    from butlers.core.location_ingress_copies import (
+                        capture_canonical_ingress_source,
+                    )
+
+                    await capture_canonical_ingress_source(
+                        pool, conn, request_id, request_context, raw_payload, normalized_text
+                    )
 
                 # Insert canonical ingestion event — same UUID7, same transaction.
                 # This row is the durable, normalised first-class record of every

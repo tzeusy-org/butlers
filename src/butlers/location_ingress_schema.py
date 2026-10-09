@@ -35,6 +35,13 @@ LOCAL_COLUMNS = {
         ("stored_digest", "bytea", True),
         ("committed_at", "timestamp with time zone", True),
     ],
+    "location_ingress_inbox_sources": [
+        ("request_id", "uuid", True),
+        ("copy_generation", "uuid", True),
+        ("dedupe_digest", "bytea", True),
+        ("stored_digest", "bytea", True),
+        ("committed_at", "timestamp with time zone", True),
+    ],
     "location_ingress_input_ends": [
         ("copy_generation", "uuid", True),
         ("ended_at", "timestamp with time zone", True),
@@ -70,6 +77,13 @@ LOCAL_CONSTRAINTS = {
     "location_ingress_accepted_inputs": {
         "PRIMARY KEY (copy_generation)",
         "FOREIGN KEY (copy_generation) REFERENCES location_ingress_input_births(copy_generation)",
+        "CHECK ((octet_length(stored_digest) = 32))",
+    },
+    "location_ingress_inbox_sources": {
+        "PRIMARY KEY (request_id)",
+        "UNIQUE (copy_generation)",
+        "FOREIGN KEY (copy_generation) REFERENCES location_ingress_input_births(copy_generation)",
+        "CHECK ((octet_length(dedupe_digest) = 32))",
         "CHECK ((octet_length(stored_digest) = 32))",
     },
     "location_ingress_input_ends": {
@@ -109,6 +123,12 @@ def local_schema_sql() -> str:
         CREATE TABLE IF NOT EXISTS location_ingress_accepted_inputs (
           copy_generation UUID PRIMARY KEY REFERENCES location_ingress_input_births,
           request_id UUID NOT NULL,
+          stored_digest BYTEA NOT NULL CHECK(octet_length(stored_digest)=32),
+          committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
+        CREATE TABLE IF NOT EXISTS location_ingress_inbox_sources (
+          request_id UUID PRIMARY KEY,
+          copy_generation UUID NOT NULL UNIQUE REFERENCES location_ingress_input_births,
+          dedupe_digest BYTEA NOT NULL CHECK(octet_length(dedupe_digest)=32),
           stored_digest BYTEA NOT NULL CHECK(octet_length(stored_digest)=32),
           committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
         CREATE TABLE IF NOT EXISTS location_ingress_input_ends (

@@ -9531,8 +9531,15 @@ async def _assert_native_ingress_census_and_actual_task_end():
     """Actual task/guard software; SQL selection and configured roles are hosted-only."""
     import asyncio
     import json
-    from unittest.mock import AsyncMock
+
+    # Execute the same helper used by the registered HTTP owning species.
+    # Only policy loading is replaced; real FastMCP decorators retain names,
+    # parser schemas and tool registration. This is software, not SQL proof.
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
     from uuid import uuid4
+
+    from fastmcp import FastMCP
 
     from butlers.core.location_copy_retention import CopyFloorUnavailable
     from butlers.core.location_ingress_copies import (
@@ -9541,7 +9548,27 @@ async def _assert_native_ingress_census_and_actual_task_end():
         _Header,
         require_ingress_closed,
     )
-    from butlers.location_retention import content_digest
+    from butlers.core_tools._base import ToolContext
+    from butlers.location_retention import content_digest, logical_digest
+    from tests.chronicler.owntracks_input_transport_helpers import register_native_switchboard_tools
+
+    actual_mcp = FastMCP("native registration software control")
+    context = ToolContext(
+        daemon=SimpleNamespace(_pipeline=None, _buffer=None),
+        pool=object(),
+        spawner=None,
+        butler_name="switchboard",
+        butler_type=None,
+        is_switchboard=True,
+        is_messenger=False,
+        route_metrics=None,
+    )
+    with patch("butlers.ingestion_policy.IngestionPolicyEvaluator.ensure_loaded", new=AsyncMock()):
+        register_native_switchboard_tools(context, actual_mcp)
+        await asyncio.sleep(0)
+    actual_names = {tool.name for tool in await actual_mcp.list_tools()}
+    assert {"ingest", "connector.heartbeat", "backfill.poll", "backfill.progress"} <= actual_names
+    assert "connector_heartbeat" not in actual_names
 
     request, generation, server = uuid4(), uuid4(), uuid4()
     stored = {"raw_payload": {"synthetic": "source"}, "normalized_text": "synthetic text"}
@@ -9575,7 +9602,38 @@ async def _assert_native_ingress_census_and_actual_task_end():
             assert "LEFT JOIN location_ingress_accepted_inputs" in sql
             return self.rows
 
+        async def fetchrow(self, sql, *args):
+            assert "FROM location_ingress_inbox_sources" in sql
+            return getattr(
+                self,
+                "original",
+                {
+                    "dedupe_digest": logical_digest("canonical-key"),
+                    "stored_digest": content_digest(stored),
+                    "copy_kind": 1,
+                },
+            )
+
     conn = Conn()
+    await require_ingress_closed(conn, request, "canonical-key", stored)
+    for original in (
+        None,
+        {"dedupe_digest": b"wrong", "stored_digest": content_digest(stored), "copy_kind": 1},
+        {
+            "dedupe_digest": logical_digest("canonical-key"),
+            "stored_digest": b"changed",
+            "copy_kind": 1,
+        },
+        {
+            "dedupe_digest": logical_digest("canonical-key"),
+            "stored_digest": content_digest(stored),
+            "copy_kind": None,
+        },
+    ):
+        conn.original = original
+        with pytest.raises(CopyFloorUnavailable, match="ingress_canonical_source_unknown"):
+            await require_ingress_closed(conn, request, "canonical-key", stored)
+    del conn.original
     await require_ingress_closed(conn, request, "canonical-key", stored)
     for rows in (
         [],
@@ -9733,6 +9791,8 @@ async def _assert_native_ingress_census_and_actual_task_end():
         async def fetchrow(self, sql, generation):
             assert "FROM location_ingress_input_claims " in sql
             claim_trace.append("claim-readback")
+            if getattr(self, "unavailable", False):
+                return None
             return self.row
 
     claims = Claims()
@@ -9848,6 +9908,23 @@ async def _assert_native_ingress_census_and_actual_task_end():
         with pytest.raises(CopyFloorUnavailable, match="ingress_queued_input_differs"):
             await sdk.call_tool("ingest", envelope)
     assert received == ["owntracks", "ordinary"]
+
+    retry = _Input(
+        uuid4(),
+        cell.header.generation,
+        b"r" * 32,
+        content_digest(envelope),
+        asyncio.current_task(),
+        handler=uuid4(),
+    )
+    pending._inputs[id(retry)] = retry
+    retry_cell = _RequestInput(pending, cell.header, retry)
+    claims.unavailable = True
+    with pytest.raises(CopyFloorUnavailable, match="ingress_handler_commit_unknown"):
+        await pending.claim_queued_input(retry_cell, envelope)
+    claims.unavailable = False
+    assert await pending.claim_queued_input(retry_cell, envelope) is retry
+    assert retry.handler == claims.row["handler_generation"]
 
     from butlers.core.location_ingress_copies import spawn_ingest_processing
 
@@ -9992,3 +10069,296 @@ async def _assert_native_ingress_census_and_actual_task_end():
             if metadata_fails
             else all(value is None for value in settlements)
         )
+
+    # Actual buffer enqueue rejects and stop removes its own untouched objects;
+    # neither a generic absence nor worker completion invents their disposal.
+    from butlers.config import BufferConfig
+    from butlers.core.buffer import DurableBuffer
+    from butlers.core.location_ingress_copies import discard_buffer_input
+
+    await asyncio.sleep(0)
+    while pending._settlers:
+        older = await asyncio.gather(*tuple(pending._settlers), return_exceptions=True)
+        assert all(value is None or isinstance(value, RuntimeError) for value in older)
+        await asyncio.sleep(0)
+    pending.reconcile_observed_ends = AsyncMock(return_value=None)
+    rejected_queue = DurableBuffer(BufferConfig(queue_capacity=1), None, AsyncMock())
+
+    def queued_ref():
+        original = _MessageRef(
+            request_id="synthetic-discard",
+            message_inbox_id=uuid4(),
+            message_text="synthetic retained queue payload",
+            source={"provider": "owntracks"},
+            event={"id": "synthetic-event"},
+            sender={"id": "synthetic-sender"},
+            enqueued_at=datetime.now(UTC),
+        )
+        frozen = _buffer_body(original)
+        allocation = _Input(
+            uuid4(), cell.header.generation, b"q" * 32, content_digest(frozen), None, kind=2
+        )
+        pending._inputs[id(allocation)] = allocation
+        original._native_ingress = (pending, allocation, frozen)
+        return original, allocation, frozen
+
+    offered, first, first_body = queued_ref()
+    assert rejected_queue.enqueue(
+        **_buffer_body(offered),
+        message_inbox_id=offered.message_inbox_id,
+        _native_ingress=offered._native_ingress,
+    )
+    actual_first = rejected_queue._tier_queues["default"]._queue[0]
+    offered, refused, refused_body = queued_ref()
+    assert not rejected_queue.enqueue(
+        **_buffer_body(offered),
+        message_inbox_id=offered.message_inbox_id,
+        _native_ingress=offered._native_ingress,
+    )
+    assert actual_first.message_text == "synthetic retained queue payload"
+    assert id(first) not in pending._cleared_inputs
+    assert id(refused) in pending._cleared_inputs and refused_body == {}
+    await asyncio.gather(*pending._settlers)
+    assert refused.handler is not None and id(refused) in pending._ended_inputs
+    rejected_queue._running = True
+    await rejected_queue.stop(drain_timeout_s=0)
+    await asyncio.gather(*pending._settlers)
+    assert rejected_queue.queue_depth == 0
+    assert actual_first.message_text == "" and actual_first._native_ingress is None
+    assert id(first) in pending._ended_inputs and first_body == {}
+    assert first.handler is not None
+
+    # A claimed processing object or changed body is retained unchanged.
+    offered, claimed, frozen = queued_ref()
+    claimed.task = asyncio.current_task()
+    with pytest.raises(CopyFloorUnavailable, match="ingress_discard_claim_already_present"):
+        discard_buffer_input(offered)
+    assert offered.message_text == "synthetic retained queue payload" and frozen
+    offered, changed, frozen = queued_ref()
+    offered.message_text = "synthetic changed queue payload"
+    with pytest.raises(CopyFloorUnavailable, match="ingress_buffer_copy_differs"):
+        discard_buffer_input(offered)
+    assert offered.message_text == "synthetic changed queue payload" and frozen
+    assert changed.task is None and id(changed) not in pending._cleared_inputs
+    await _assert_native_cold_ingress_values()
+
+
+async def _assert_native_cold_ingress_values():
+    """Actual scanner scope and current captured-parent engine; software only."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from uuid import uuid4
+
+    from butlers.config import BufferConfig
+    from butlers.core.buffer import DurableBuffer, _MessageRef
+    from butlers.core.location_copy_retention import CopyFloorUnavailable
+    from butlers.core.location_ingress_copies import (
+        SwitchboardInputCopies,
+        _Header,
+        _scanner_scope,
+        _writers,
+        reserve_scanned_buffer_input,
+    )
+
+    request_id, original_generation = uuid4(), uuid4()
+    canonical = {
+        "request_context": {"request_id": str(request_id), "dedupe_key": "synthetic cold key"},
+        "raw_payload": {
+            "source": {"provider": "owntracks", "channel": "owntracks", "endpoint_identity": "e"},
+            "sender": {"identity": "s"},
+            "event": {},
+        },
+        "normalized_text": "synthetic frozen input",
+    }
+    original = {
+        "copy_generation": original_generation,
+        "dedupe_digest": logical_digest("synthetic cold key"),
+        "stored_digest": content_digest(
+            {
+                "raw_payload": canonical["raw_payload"],
+                "normalized_text": canonical["normalized_text"],
+            }
+        ),
+        "copy_kind": 1,
+    }
+
+    class Connection:
+        parent = original
+        forgotten = False
+        admission = None
+        committed = True
+        trace = []
+        births = {}
+        parent_generation = None
+        accepted = None
+
+        async def fetchrow(self, sql, *args):
+            if "FROM message_inbox " in sql:
+                assert "FOR UPDATE" in sql and args == (request_id,)
+                self.trace.append("locked canonical read")
+                return canonical
+            if "FROM location_ingress_inbox_sources " in sql:
+                assert "LEFT JOIN location_ingress_input_births" in sql
+                return self.parent
+            if "FROM public.ingestion_events " in sql:
+                return self.admission
+            assert "FROM location_ingress_input_births " in sql
+            assert "LEFT JOIN location_ingress_input_parents" in sql
+            assert "LEFT JOIN location_ingress_accepted_inputs" in sql
+            self.trace.append("independent committed readback")
+            if not self.committed:
+                return None
+            birth = self.births[args[0]]
+            return {
+                "server_generation": birth[1],
+                "dedupe_digest": birth[2],
+                "envelope_digest": birth[3],
+                "copy_kind": 2,
+                "parent_generation": self.parent_generation,
+                "request_id": self.accepted[1],
+                "stored_digest": self.accepted[2],
+            }
+
+        async def fetchval(self, sql, *args):
+            assert "location_retention_source_floors" in sql
+            return self.forgotten
+
+        async def execute(self, sql, *args):
+            self.trace.append("committing lineage")
+            if "INSERT INTO location_ingress_input_births" in sql:
+                self.births[args[0]] = args
+            elif "INSERT INTO location_ingress_input_parents" in sql:
+                self.parent_generation = args[1]
+            else:
+                assert "INSERT INTO location_ingress_accepted_inputs" in sql
+                self.accepted = args
+
+    conn = Connection()
+
+    class Pool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield conn
+
+    pool = Pool()
+    runtime = object.__new__(SwitchboardInputCopies)
+    runtime.pool, runtime.active = pool, True
+    runtime._inputs, runtime._headers = {}, {}
+
+    @asynccontextmanager
+    async def writer():
+        yield conn
+
+    runtime.writer = writer
+
+    def make_ref():
+        return _MessageRef(
+            request_id=str(request_id),
+            message_inbox_id=request_id,
+            message_text=canonical["normalized_text"],
+            source=canonical["raw_payload"]["source"],
+            event={},
+            sender=canonical["raw_payload"]["sender"],
+            enqueued_at=datetime.now(UTC),
+        )
+
+    async def reserve_header():
+        header = _Header(uuid4(), asyncio.current_task())
+        runtime._headers[id(header)] = header
+        conn.trace.append("header commit readback before query")
+        return header
+
+    runtime.reserve_header = reserve_header
+    previous = _writers.get(pool)
+    _writers[pool] = runtime
+    try:
+        ref = make_ref()
+        with pytest.raises(CopyFloorUnavailable, match="ingress_scanner_scope_unknown"):
+            await reserve_scanned_buffer_input(pool, ref)
+        assert ref._native_ingress is None
+
+        buffer = DurableBuffer(BufferConfig(), pool, AsyncMock())
+        caller = asyncio.current_task()
+
+        async def scan():
+            assert asyncio.current_task() is not caller
+            assert conn.trace == ["header commit readback before query"]
+            assert _scanner_scope.get()[0] is runtime
+            await reserve_scanned_buffer_input(pool, ref)
+            return 1
+
+        buffer._scan_canonical_rows = scan
+        assert await buffer._run_scanner_sweep() == 1
+        assert _scanner_scope.get() is None
+        assert ref._native_ingress[0] is runtime
+        assert ref._native_ingress[1].kind == 2
+        assert conn.parent_generation == original_generation
+        assert conn.trace.index("locked canonical read") > 0
+        assert conn.trace[-1] == "independent committed readback"
+
+        # No smaller/guessed original, refilled canonical body or policy floor.
+        header = await reserve_header()
+        body = ref._native_ingress[2]
+        for parent in (
+            None,
+            {**original, "copy_kind": None},
+            {**original, "stored_digest": b"changed"},
+            {**original, "dedupe_digest": b"changed"},
+        ):
+            conn.parent = parent
+            with pytest.raises(CopyFloorUnavailable, match="ingress_scanner_original_unknown"):
+                await runtime.reserve_recovered_queue(header, request_id, body)
+        conn.parent = original
+        conn.forgotten = True
+        with pytest.raises(CopyFloorUnavailable, match="ingress_scanner_original_unknown"):
+            await runtime.reserve_recovered_queue(header, request_id, body)
+        conn.forgotten = False
+        with pytest.raises(CopyFloorUnavailable, match="ingress_scanner_body_changed"):
+            await runtime.reserve_recovered_queue(
+                header, request_id, {**body, "message_text": "new"}
+            )
+        conn.committed = False
+        with pytest.raises(CopyFloorUnavailable, match="ingress_scanner_commit_unknown"):
+            await runtime.reserve_recovered_queue(header, request_id, body)
+        conn.committed = True
+        assert (await runtime.reserve_recovered_queue(header, request_id, body)).kind == 2
+
+        # Ordinary compatibility requires the exact original shared admission,
+        # not an arbitrary current non-location label or absent private stamp.
+        canonical["raw_payload"]["source"] = {
+            "provider": "telegram",
+            "channel": "telegram_bot",
+            "endpoint_identity": "ordinary",
+        }
+        ordinary = make_ref()
+        from butlers.core.location_ingress_copies import _buffer_body
+
+        conn.parent = None
+        ordinary_body = _buffer_body(ordinary)
+        admission = {
+            "source_provider": "telegram",
+            "source_channel": "telegram_bot",
+            "source_endpoint_identity": "ordinary",
+            "source_sender_identity": "s",
+            "dedupe_key": "synthetic cold key",
+        }
+        for bad in (
+            None,
+            {**admission, "source_provider": "owntracks"},
+            {**admission, "dedupe_key": "another admission"},
+        ):
+            conn.admission = bad
+            with pytest.raises(
+                CopyFloorUnavailable, match="ingress_scanner_ordinary_admission_unknown"
+            ):
+                await runtime.reserve_recovered_queue(header, request_id, ordinary_body)
+        conn.admission = admission
+        assert await runtime.reserve_recovered_queue(header, request_id, ordinary_body) is None
+        canonical["raw_payload"]["source"]["provider"] = "owntracks"
+        with pytest.raises(CopyFloorUnavailable, match="ingress_scanner_original_unknown"):
+            await runtime.reserve_recovered_queue(header, request_id, _buffer_body(make_ref()))
+    finally:
+        if previous is None:
+            _writers.pop(pool)
+        else:
+            _writers[pool] = previous

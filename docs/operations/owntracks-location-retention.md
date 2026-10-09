@@ -1572,3 +1572,38 @@ them closed or grant READY. The existing real-role HTTP helper now positions a h
 actual buffer/processing pair beside committed end readbacks and an unchanged live
 worker. That authored extension is SQL/registered-transport UNRUN until exact hosted
 evidence. All original four outcomes and complete P1–P9 obligations remain mandatory.
+
+
+The continuing receiving source now records the canonical first writer in
+`location_ingress_inbox_sources`, inside the same owning transaction as the
+original inbox INSERT and shared ingestion event. It takes the receiving control
+lock before existing dedup/row locks. Binding and cold recovery require that exact
+SDK generation, key and full canonical body; they do not derive ancestry from row
+existence or UUID ordering. The actual scanner Task reserves/readbacks its lifetime
+before source reads, and queued recovery publishes only after its original-parent
+and complete-body metadata have separately committed. Configured ordinary recovery
+compares every source selector and key to the original shared admission record;
+missing or mismatched admission remains unavailable. This does not classify all
+routed or inherited non-OwnTracks descendants as ordinary.
+
+The fixed buffer producer now clears an exact unclaimed rejected/full-queue object
+and abandoned queued objects after workers unwind at shutdown. A separate actual
+disposal Task records their claim/end after field clearing. Active claimed or
+changed objects are retained. Every repeated handler claim independently rechecks
+the committed original handler/incarnation before processing; an in-memory claim
+from an earlier unknown readback cannot authorize a retry.
+
+The existing registered HTTP/real-role helper corrects both independently reviewed
+808 fixture defects: its real FastMCP decorator forwards named-tool keyword
+arguments exactly like the daemon, and its inbox key read uses
+`request_context->>'dedupe_key'`. A software control executes that exact helper,
+restores the old keyword contract to reproduce the named-tool TypeError, and restores
+the genuine registration positive. The authored SQL extension invokes the actual
+canonical source producer on the actual acquired business connection, faults after
+its real receipt INSERT, reads absent inbox/stamp from another acquisition, then
+restores the same producer and checks the complete committed source body. This new
+SQL/transport extension is UNRUN until its exact hosted owning case executes.
+Current 808 hosted failure reached registration, so it proves neither the later
+column read nor queued/processing SQL. All original four outcomes/P1–P9 remain
+mandatory UNMET; interrupted histories and routed target/runtime/loan holders remain
+independent source and proof obligations.
