@@ -211,6 +211,19 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **WHEN** both source and target have `roles = []`
 - **THEN** after merge, target MUST have `roles = []`
 
+#### Scenario: Owner source becomes a tombstone without duplicating the owner
+
+- **WHEN** the source is the singleton owner and an authorized merge keeps a different live target
+- **THEN** the target MUST receive the ordered, deduplicated role union including owner
+- **AND** the source tombstone MUST retain its other roles and MUST no longer hold owner
+- **AND** the owner singleton constraint MUST remain enabled without a committed ownerless state
+
+#### Scenario: Downstream merge failure restores the original owner
+
+- **WHEN** a merge fails after owner roles and references have moved inside its transaction
+- **THEN** the original source and target roles, metadata, aliases and references MUST be restored
+- **AND** no successful merge audit, rebind receipt cohort or post-commit fleet event MUST be emitted
+
 ### Requirement: Entity merge rebinds fleet references with durable receipts
 
 Entity merge SHALL have one relationship-owned implementation. It SHALL rebind

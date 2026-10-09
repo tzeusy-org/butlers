@@ -2,8 +2,8 @@
 
 - [x] 1. Implement the singleton-preserving transaction order and extend the same existing software and PostgreSQL nodes while preserving original assertions.
 - [x] 2. Complete proportional software, collection, planner, shard, budget, hygiene and full native-body preservation checks.
-- [ ] 3. Qualify actual current migrated PostgreSQL old-order refusal, rollback/readback, restored success and runtime-role companion through the exact hosted owning node.
-- [ ] 4. Obtain independent source and concrete preparation completion-scope review before native administration.
+- [x] 3. Qualify actual current migrated PostgreSQL old-order refusal, rollback/readback, restored success and runtime-role companion through the exact hosted owning node.
+- [x] 4. Obtain independent source and concrete preparation completion-scope review before native administration.
 
 ## Mandatory administrative delivery after genuine preparation
 

@@ -42,6 +42,23 @@ delta; no incomplete-task override, skip-specs or validation bypass. Fresh final
 normal, nonauthor/protected review and actual squash remain mandatory administrative
 delivery after archive. Source preparation does not close the original issue.
 
+## Qualified preparation record
+
+Exact source `750a76c6e1bd079e8c3b5aafc4b6f4246d53724d` passed normal run
+`37943068516`: all eleven authenticated Python artifacts have zero failures or
+errors, and all seventeen owning cases passed without skips. The existing real
+owner-source node passed in7.731s, including old-order singleton refusal, the
+independent committed reader, downstream rollback, runtime-role denial and
+restored role-union companions. Genuine independent source and concrete
+preparation review approved the unchanged production/test bodies. All four
+preparation tasks are therefore evidenced before ordinary native administration.
+
+The ordinary installed disposable archive applies this whole preserving delta.
+Its resulting baseline and archive must be read back and adopted without editing
+foreign bodies. Fresh final-head normal, nonauthor review, protected exact-tree
+checks and actual squash remain mandatory after administration. The source result
+supplies no live repair, deployment, Template8 performance or whole-delivery credit.
+
 ## Rollback
 
 Before commit, the normal transaction restores all effects. Code recovery restores
