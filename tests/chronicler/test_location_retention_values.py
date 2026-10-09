@@ -1927,7 +1927,7 @@ async def _assert_native_artifact_invocation_lifetime():
 
 
 @pytest.mark.asyncio
-async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is_bounded():
+async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is_bounded(caplog):
     """REQ-location-retention-005/006; software transport/control positioning, not SQL proof."""
     import json
     from types import SimpleNamespace
@@ -2124,6 +2124,28 @@ async def test_catalog_native_admission_precedes_delegate_and_server_lifetime_is
     # UUID-only direct invocation cannot borrow the native cell after return.
     with pytest.raises(copies.PolicyUnavailableError, match="admission"):
         await copies.CatalogCopyRuntime.loan_body(runtime, loan)
+
+    # Actual outer challenge failure retains refusal while recording only the
+    # installed exception class/SQLSTATE and source-owned stage.
+    import asyncpg
+
+    async def denied_admit(selected, capability):
+        raise asyncpg.InsufficientPrivilegeError("synthetic-private-argument-do-not-log")
+
+    runtime.admit_loan = denied_admit
+    app = copies.CatalogLoanAdmission(delegate, lambda: runtime)
+    caplog.clear()
+    assert (await request(packet, headers))[0]["status"] == 503
+    assert (
+        "stage=loan_challenge category=postgres sqlstate=42501 class=insufficient_privilege"
+        in caplog.text
+    )
+    assert "synthetic-private-argument-do-not-log" not in caplog.text
+    assert "native-private-capability-0123456789" not in caplog.text
+    runtime.admit_loan = admit
+    caplog.clear()
+    assert (await request(packet, headers))[0]["status"] == 200
+    assert "Location catalog failure" not in caplog.text
 
     finished = []
 

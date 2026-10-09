@@ -50,7 +50,9 @@ function policy(revision: number): LocationRetentionStatus {
 // REQ-location-retention-007: actual managed browser/MapLibre lifetime only.
 // Synthetic API transitions do not attest server purge or a remote recipient.
 test("shortening fences old current/archive canvases and admits a fresh equal-coordinate generation", async ({ page }) => {
-  const current = new Date(Date.now() - DAY_MS).toISOString().slice(0, 10);
+  const now = Date.now();
+  await page.clock.setFixedTime(new Date(now));
+  const current = new Date(now - DAY_MS).toISOString().slice(0, 10);
   const archive = new Date(Date.parse(`${current}T00:00:00Z`) - DAY_MS).toISOString().slice(0, 10);
   const requests: Array<{ since: string; revision: number }> = [];
   const held: Route[] = [];
@@ -105,6 +107,10 @@ test("shortening fences old current/archive canvases and admits a fresh equal-co
   await page.getByRole("button", { name: "Previous day", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`date=${archive}`));
   await expect(canvas).toBeVisible();
+  // Position a normal stale-cache refetch without sleeping or treating time
+  // as deletion evidence. Production queryClient freshness is 30 seconds;
+  // the synthetic policy revision remains zero until the actual PUT below.
+  await page.clock.setFixedTime(new Date(now + 31_000));
   holdOldCurrent = true;
   await page.getByRole("button", { name: "Next day", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`date=${current}`));

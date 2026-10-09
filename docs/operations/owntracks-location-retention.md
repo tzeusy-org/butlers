@@ -1086,3 +1086,21 @@ hosted execution; static collection/type checks cannot attest runtime erasure.
 Even a future browser PASS will establish this managed UI lifetime only, not
 upstream raw deletion, real authenticated retention policy, registered all-holder
 closure, other recipients or the whole original P1–P9/S1–S3 acceptance.
+
+
+The first hosted browser attempt reached the deliberate obsolete-request
+assertion but did not plant that request: the production query client keeps
+queries fresh for 30 seconds. The corrected fixture advances only its browser
+Date clock by 31 seconds before archive-to-current navigation, positioning a
+normal stale-query refetch without sleeping or changing policy freshness. The
+policy revision stays zero until the real UI PUT. This clock is test positioning,
+never deletion or source-disposition evidence; the old request must still be
+cancelled and all original canvas/context/archive/fresh assertions remain.
+
+Native catalog failures now report only fixed source-stage, closed exception
+class/category/validated SQLSTATE and admission-presence booleans. Outer refusal
+remains HTTP503 and receive exceptions still propagate with pending state cleared;
+no exception text, tool arguments, endpoint, capability, row or body is emitted.
+The first hosted registered transport attempt failed at the actual consumer tool
+call with cause unknown. These diagnostics position that failure and do not
+quiet it or credit a healthy routed/SQL result.

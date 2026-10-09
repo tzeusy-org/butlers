@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -48,6 +49,34 @@ _BODY_COLUMNS = (
     "updated_at",
 )
 _runtimes: dict[Any, CatalogCopyRuntime] = {}
+
+_logger = logging.getLogger(__name__)
+
+
+def _log_catalog_failure(stage: str, exc: Exception) -> None:
+    from butlers.chronicler.location_policy import closed_failure
+
+    # Only source-defined positions and closed classes; never exception text,
+    # endpoint/capability, tool arguments, body, row or arbitrary operation.
+    if stage not in {
+        "outer_parse",
+        "loan_challenge",
+        "route_challenge",
+        "metadata_control",
+        "receiver_prepare",
+        "receiver_commit",
+        "routed_body",
+        "receiving_lifetime",
+    }:
+        stage = "unknown"
+    category, label, state = closed_failure(exc)
+    _logger.warning(
+        "Location catalog failure stage=%s category=%s sqlstate=%s class=%s",
+        stage,
+        category,
+        state,
+        label,
+    )
 
 
 @dataclass
@@ -185,6 +214,8 @@ def catalog_transport_headers(target: str, tool: str, arguments: dict) -> dict[s
     """Switchboard infrastructure reads its own outer admission, never public args."""
     bound = _admitted_route.get()
     if bound is None:
+        if target == "chronicler" and tool == "location_catalog_loan_body":
+            _logger.warning("Location catalog route context present=false")
         return {}
     if (
         not bound.active
@@ -238,6 +269,7 @@ class CatalogLoanAdmission:
             return
         admission = None
         routed = None
+        stage = "outer_parse"
         try:
             if len(tokens) != 1 or not 32 <= len(tokens[0]) <= 128:
                 raise ValueError
@@ -270,6 +302,7 @@ class CatalogLoanAdmission:
                 if params.get("name") == "location_catalog_loan_body":
                     if set(arguments) - {"loan_id", "trace_context"} or "loan_id" not in arguments:
                         raise ValueError
+                    stage = "loan_challenge"
                     admission = await runtime.admit_loan(UUID(arguments["loan_id"]), capability)
                 elif params.get("name") == "route":
                     if (
@@ -279,6 +312,7 @@ class CatalogLoanAdmission:
                         or set(arguments["args"]) != {"loan_id"}
                     ):
                         raise ValueError
+                    stage = "route_challenge"
                     routed = await runtime.admit_route(
                         UUID(arguments["args"]["loan_id"]), capability
                     )
@@ -293,7 +327,8 @@ class CatalogLoanAdmission:
                     return {"type": "http.request", "body": bytes(body), "more_body": False}
                 return await receive()
 
-        except Exception:
+        except Exception as exc:
+            _log_catalog_failure(stage, exc)
             from starlette.responses import JSONResponse
 
             await JSONResponse({"status": "unavailable"}, status_code=503)(clean, receive, send)
@@ -594,6 +629,11 @@ class CatalogCopyRuntime:
             or admission.runtime is not self
             or admission.loan != loan
         ):
+            _logger.warning(
+                "Location catalog loan context present=%s active=%s",
+                admission is not None,
+                admission is not None and admission.active,
+            )
             raise PolicyUnavailableError("Native loan admission is unavailable")
         stored = await self.domain.fetchrow(
             "SELECT l.receiver_name,g.catalog_id FROM location_native_catalog_loans l "
@@ -823,7 +863,8 @@ class CatalogCopyRuntime:
             else:
                 raise ValueError
             return JSONResponse(result)
-        except Exception:
+        except Exception as exc:
+            _log_catalog_failure("metadata_control", exc)
             return JSONResponse({"status": "unavailable"}, status_code=503)
 
     async def receive(self, catalog: UUID) -> dict:
@@ -836,6 +877,7 @@ class CatalogCopyRuntime:
         token = secrets.token_urlsafe(32)
         pending = _Pending(catalog, "chronicler", time.monotonic() + 30)
         self.pending[token] = pending
+        stage = "receiver_prepare"
         try:
             prepared = await self.exchange(
                 endpoint,
@@ -855,6 +897,7 @@ class CatalogCopyRuntime:
                 or prepared["incarnation"] != str(self.incarnation)
             ):
                 raise PolicyUnavailableError("Native loan response differs")
+            stage = "receiver_commit"
             async with self.domain.acquire() as conn:
                 async with conn.transaction():
                     await self.lock_domain(conn)
@@ -878,6 +921,7 @@ class CatalogCopyRuntime:
 
             from butlers.connectors.mcp_client import CachedMCPClient
 
+            stage = "routed_body"
             mcp_endpoint = await self.endpoint("switchboard", control=False)
             registered = urlsplit(mcp_endpoint)
             # The registered owning daemon exposes both transports. Its fixed
@@ -913,6 +957,7 @@ class CatalogCopyRuntime:
                 or content_digest({"catalog_body": body}) != digest
             ):
                 raise PolicyUnavailableError("Native catalog body changed")
+            stage = "receiving_lifetime"
             # Bind a processing holder before the admitted bytes leave this
             # producer. Runtime session identity comes from the registered
             # guard cell, never a query/session/actor string.
@@ -980,6 +1025,9 @@ class CatalogCopyRuntime:
                     raise PolicyUnavailableError("Native server copy capacity is unavailable")
                 scope.loans.append((self, loan, digest, False))
             return body
+        except Exception as exc:
+            _log_catalog_failure(stage, exc)
+            raise
         finally:
             self.pending.pop(token, None)
 
