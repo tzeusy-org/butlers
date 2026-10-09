@@ -852,7 +852,9 @@ else:
         # The actual PATH-selected Node probe is optional diagnostic metadata,
         # not an identity or worker-admission substitute for the real collector.
         observed = vitest.runtime_observation(buildroot)
-        assert observed is not None and observed["available_parallelism"] > 0
+        assert observed is None or (
+            type(observed["available_parallelism"]) is int and observed["available_parallelism"] > 0
+        )
         for raw in (
             b"private control text",
             b'{"node":"24.21.0","available_parallelism":true}',
@@ -867,6 +869,29 @@ else:
                     lambda command, **kwargs: subprocess.CompletedProcess(command, 0, raw, b""),
                 )
                 assert vitest.runtime_observation(buildroot) is None
+        with monkeypatch.context() as diagnostic:
+            diagnostic.setattr(
+                vitest,
+                "run_process",
+                lambda command, **kwargs: subprocess.CompletedProcess(
+                    command, 0, b'{"node":"24.21.0","available_parallelism":4}', b""
+                ),
+            )
+            assert vitest.runtime_observation(buildroot) == {
+                "node": "24.21.0",
+                "available_parallelism": 4,
+            }
+
+        # An unavailable optional probe must not block the actual full-reference,
+        # shard execution and independent verifier protocol below. Only this
+        # diagnostic subprocess is neutralized; the real bounded helper remains.
+        def unavailable_probe(command, **kwargs):
+            if command[:2] == ["node", "-e"]:
+                raise FileNotFoundError("optional control unavailable")
+            return bounded_helper(command, **kwargs)
+
+        local.setattr(vitest, "run_process", unavailable_probe)
+        observed = None
         for mode, stage, category in (
             ("collect-full", "collect-full", "timeout"),
             ("collect-shard-1", "execute", "timeout"),
@@ -931,6 +956,7 @@ else:
             "float-outcome",
             "integer-isolate",
             "boolean-module-errors",
+            "mandatory-config",
         ):
             corrupted = copy.deepcopy(pair)
             child = corrupted[0]
@@ -967,6 +993,10 @@ else:
                 execution["config"]["isolate"] = 1
             elif mutation == "boolean-module-errors":
                 execution["modules"][file]["errors"] = False
+            elif mutation == "mandatory-config":
+                for sibling in corrupted:
+                    sibling["reference"]["config"]["node"] = "22.0.0"
+                    sibling["execution"]["config"]["node"] = "22.0.0"
             else:
                 child["reference"]["modules"][file]["items"][token]["key"] = "1" * 64
             with pytest.raises(ValueError):

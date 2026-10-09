@@ -101,7 +101,9 @@ finite nonnegative integer or floating-point phase timers remain valid numeric d
 
 Guards performs one actual installed `pytest tests/ roster/ --collect-only -q -n0 -m ""`
 collection. Exact inherited markers establish both populations; advisory weights never do.
-Both unchanged lane budgets consume this inventory. Deterministic LPT assigns whole files to
+Missing, malformed, nonobject or duplicate-key advisory weight files fall back to the same
+finite deterministic costs and set assignment degradation; inventory, assignment and execution
+evidence still use strict JSON admission in every entrypoint. Both unchanged lane budgets consume this inventory. Deterministic LPT assigns whole files to
 five unit and six integration children. Each child independently recollects its assignment;
 preflight reconciles complete nonce-hashed identity multiplicity, logical starts and phases
 across all eleven children. Missing/extra/stale receipts cannot hide behind a matrix aggregate.
@@ -125,6 +127,8 @@ No source control or inferred setup saving establishes current timing or hosted 
 The frontend verifier compares configuration booleans, module error counters and reconstructed
 count/multiplicity/outcome summaries with exact JSON types; equal integers, floats and booleans
 cannot substitute for one another in these declarations or counters.
+The optional PATH Node/CPU diagnostic may be UNKNOWN without blocking those mandatory installed
+collector/configuration and population proofs; it never substitutes for their admission.
 
 All workflow jobs have finite positive watchdogs. Pytest defaults to 300 seconds per item;
 existing finite overrides and frontend test defaults remain. An item timer does not bound

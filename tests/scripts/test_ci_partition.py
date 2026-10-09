@@ -140,6 +140,74 @@ def test_partition_preserves_fresh_membership_with_unknown_weights(
         result = partition.partition(current, malformed, root=tmp_path)
         assert result["weights_degraded"] is True
         partition.validate_assignment(current, result, root=tmp_path)
+    # Advisory-file parsing must reach the real default partition algorithm;
+    # authoritative inventory/assignment/receipt readers remain strict.
+    weights_path = tmp_path / ".github/ci-test-weights.json"
+    budget_path = tmp_path / "scripts/test-budget-baseline.json"
+    budget_path.parent.mkdir()
+    budget_path.write_text((partition.ROOT / "scripts/test-budget-baseline.json").read_text())
+    native_partition = partition.partition
+    native_budgets = partition.check_budgets
+    fallback = native_partition(current, {}, root=tmp_path)
+    for raw, degraded in (
+        (json.dumps(weights), False),
+        ("{", True),
+        ("[]", True),
+        (json.dumps(weights)[:-1] + ',"schema":"ci-weights.v1"}', True),
+        (json.dumps({**weights, "collected_at": "2000-01-01T00:00:00+00:00"}), True),
+        (json.dumps(weights), False),
+    ):
+        weights_path.write_text(raw)
+        with monkeypatch.context() as entry:
+            entry.setattr(partition, "ROOT", tmp_path)
+            # Reuse this actual fresh miniature collector output, not a fake
+            # inventory. Budget validation and LPT are the production algorithms.
+            entry.setattr(partition, "collect_inventory", lambda **kwargs: copy.deepcopy(current))
+            entry.setattr(
+                partition,
+                "check_budgets",
+                lambda data, **kwargs: native_budgets(data, root=tmp_path),
+            )
+            entry.setattr(
+                partition,
+                "partition",
+                lambda data, timing, **kwargs: native_partition(data, timing, root=tmp_path),
+            )
+            entry.setattr(sys, "argv", ["ci_partition", "--output", str(tmp_path / "output")])
+            assert partition.main() == 0
+            observed = partition.read_json(tmp_path / "output/assignment.json")
+            assert observed["weights_degraded"] is degraded
+            assert (
+                observed["shards"]
+                == (fallback if degraded else native_partition(current, weights, root=tmp_path))[
+                    "shards"
+                ]
+            )
+            assert legacy.verify(repo_root=tmp_path) == {
+                lane: (sum(map(len, files.values())), len(files))
+                for lane, files in current["lanes"].items()
+            }
+        if raw in ("{", "[]") or raw.endswith(',"schema":"ci-weights.v1"}'):
+            with pytest.raises(ValueError):
+                partition.read_json(weights_path)
+    # The standalone path genuinely executes the miniature assigned shard;
+    # malformed advisory metadata cannot hide any collected item or selector.
+    weights_path.write_text("{")
+    with monkeypatch.context() as standalone:
+        standalone.setenv("CI_COVERAGE", "0")
+        assert (
+            legacy.run_shard(
+                lane="unit",
+                shard=1,
+                repo_root=tmp_path,
+                coverage_file=None,
+                evidence_dir=tmp_path / "standalone-evidence",
+            )
+            == 0
+        )
+        receipt = partition.read_json(tmp_path / "standalone-evidence/shard-observation.json")
+        assert receipt["complete"] is True and receipt["pytest_exit"] == 0
+    weights_path.unlink()
     result = partition.partition(current, weights, root=tmp_path)
     reordered = copy.deepcopy(current)
     reordered["lanes"] = {

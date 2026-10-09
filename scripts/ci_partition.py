@@ -99,6 +99,22 @@ def read_json(path: Path) -> dict:
     return value
 
 
+def load_advisory_weights(path: Path) -> dict:
+    """Invalid/missing advisory metadata uses P4 defaults, never evidence admission.
+
+    Keep duplicate/nonobject parsing strict even here: refusing the metadata
+    as a whole produces deterministic fallback with assignment degradation.
+    Inventory, assignment and execution callers continue to use read_json.
+    """
+    try:
+        return read_json(path)
+    except (OSError, ValueError):
+        print(
+            "::notice::advisory weights unavailable; deterministic defaults apply", file=sys.stderr
+        )
+        return {}
+
+
 def file_path(name: str, root: Path) -> Path:
     if not isinstance(name, str) or "\\" in name or "::" in name:
         raise ValueError("invalid inventory file")
@@ -476,7 +492,7 @@ def main() -> int:
         data = collect_inventory()
         counts = check_budgets(data)
         weights_path = ROOT / ".github/ci-test-weights.json"
-        assignment = partition(data, read_json(weights_path) if weights_path.is_file() else {})
+        assignment = partition(data, load_advisory_weights(weights_path))
         args.output.mkdir(parents=True, exist_ok=True)
         for name, value in (("inventory.json", data), ("assignment.json", assignment)):
             (args.output / name).write_text(json.dumps(value, sort_keys=True) + "\n")
@@ -486,6 +502,7 @@ def main() -> int:
                     "counts": counts,
                     "inventory_digest": data["digest"],
                     "assignment_digest": assignment["digest"],
+                    "weights_degraded": assignment["weights_degraded"],
                 }
             )
         )

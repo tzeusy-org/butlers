@@ -123,14 +123,12 @@ def _node_file(node_id: str) -> str:
 
 def verify(*, repo_root: Path = REPO_ROOT) -> dict[str, tuple[int, int]]:
     """One fresh collector supplies exact cover and both unchanged lane budgets."""
-    from ci_partition import check_budgets, collect_inventory, partition
+    from ci_partition import check_budgets, collect_inventory, load_advisory_weights, partition
 
     inventory = collect_inventory(root=repo_root)
     check_budgets(inventory, root=repo_root)
     weights = repo_root / ".github/ci-test-weights.json"
-    partition(
-        inventory, json.loads(weights.read_text()) if weights.is_file() else {}, root=repo_root
-    )
+    partition(inventory, load_advisory_weights(weights), root=repo_root)
     results = {
         lane: (sum(map(len, files.values())), len(files))
         for lane, files in inventory["lanes"].items()
@@ -309,15 +307,19 @@ def run_shard(
     config = _lane_config(lane)
     if shard not in range(1, config.shard_count + 1):
         raise ValueError(f"{lane}: shard must be between 1 and {config.shard_count}, got {shard}")
-    from ci_partition import assigned_files, collect_inventory, partition, read_json
+    from ci_partition import (
+        assigned_files,
+        collect_inventory,
+        load_advisory_weights,
+        partition,
+        read_json,
+    )
     from ci_shard_observer import node_digest
 
     if inventory_dir is None:
         inventory = collect_inventory(root=repo_root)
         weights = repo_root / ".github/ci-test-weights.json"
-        assignment = partition(
-            inventory, read_json(weights) if weights.is_file() else {}, root=repo_root
-        )
+        assignment = partition(inventory, load_advisory_weights(weights), root=repo_root)
     else:
         inventory = read_json(inventory_dir / "inventory.json")
         assignment = read_json(inventory_dir / "assignment.json")
