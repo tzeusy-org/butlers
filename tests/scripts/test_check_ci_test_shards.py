@@ -16,6 +16,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import check_ci_test_shards as shards  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures/ci_shards"))
+import hand_manifest  # noqa: E402
+
 pytestmark = pytest.mark.unit
 
 
@@ -39,11 +42,13 @@ def test_read_manifest_requires_repo_relative_python_test_files(tmp_path: Path) 
     _write_test_file(tmp_path, "tests/test_a.py")
     manifest = _write_manifest(tmp_path, "unit", 1, "tests/test_a.py\n")
 
-    assert shards._read_manifest(manifest=manifest, repo_root=tmp_path) == ["tests/test_a.py"]
+    assert hand_manifest._read_manifest(manifest=manifest, repo_root=tmp_path) == [
+        "tests/test_a.py"
+    ]
 
     manifest.write_text("tests/test_a.py::test_example\n", encoding="utf-8")
     with pytest.raises(ValueError, match="test files"):
-        shards._read_manifest(manifest=manifest, repo_root=tmp_path)
+        hand_manifest._read_manifest(manifest=manifest, repo_root=tmp_path)
 
 
 def test_read_manifest_rejects_unsorted_files(tmp_path: Path) -> None:
@@ -52,7 +57,7 @@ def test_read_manifest_rejects_unsorted_files(tmp_path: Path) -> None:
     manifest = _write_manifest(tmp_path, "unit", 1, "tests/test_b.py\ntests/test_a.py\n")
 
     with pytest.raises(ValueError, match="must be sorted"):
-        shards._read_manifest(manifest=manifest, repo_root=tmp_path)
+        hand_manifest._read_manifest(manifest=manifest, repo_root=tmp_path)
 
 
 def test_no_subcommand_defaults_to_verify(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,13 +68,15 @@ def test_no_subcommand_defaults_to_verify(monkeypatch: pytest.MonkeyPatch) -> No
 def test_validate_lane_rejects_missing_and_duplicate_selected_files(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setitem(shards.LANES, "unit", shards.LaneConfig(UNIT_MARKER, 2, 1, True, "3"))
+    monkeypatch.setitem(
+        hand_manifest.LANES, "unit", hand_manifest.LaneConfig(UNIT_MARKER, 2, 1, True, "3")
+    )
     for name in ("tests/test_a.py", "tests/test_b.py"):
         _write_test_file(tmp_path, name)
     manifest_one = _write_manifest(tmp_path, "unit", 1, "tests/test_a.py\n")
     manifest_two = _write_manifest(tmp_path, "unit", 2, "tests/test_a.py\n")
-    shard_one = shards.ShardSpec("unit", 1, manifest_one.relative_to(tmp_path))
-    shard_two = shards.ShardSpec("unit", 2, manifest_two.relative_to(tmp_path))
+    shard_one = hand_manifest.ShardSpec("unit", 1, manifest_one.relative_to(tmp_path))
+    shard_two = hand_manifest.ShardSpec("unit", 2, manifest_two.relative_to(tmp_path))
 
     def collect(*, paths: list[str], marker: str, ignore_e2e: bool, repo_root: Path) -> set[str]:
         assert marker == UNIT_MARKER
@@ -77,27 +84,33 @@ def test_validate_lane_rejects_missing_and_duplicate_selected_files(
             return {"tests/test_a.py::test_example", "tests/test_b.py::test_example"}
         return {"tests/test_a.py::test_example"}
 
-    monkeypatch.setattr(shards, "_collect_node_ids", collect)
+    monkeypatch.setattr(hand_manifest, "_collect_node_ids", collect)
 
     with pytest.raises(ValueError, match="listed more than once"):
-        shards._validate_lane(lane="unit", shard_specs=[shard_one, shard_two], repo_root=tmp_path)
+        hand_manifest._validate_lane(
+            lane="unit", shard_specs=[shard_one, shard_two], repo_root=tmp_path
+        )
 
     manifest_two.write_text("tests/test_b.py\n", encoding="utf-8")
-    monkeypatch.setitem(shards.LANES, "unit", shards.LaneConfig(UNIT_MARKER, 1, 1, True, "3"))
+    monkeypatch.setitem(
+        hand_manifest.LANES, "unit", hand_manifest.LaneConfig(UNIT_MARKER, 1, 1, True, "3")
+    )
     with pytest.raises(ValueError, match="Missing selected test files"):
-        shards._validate_lane(lane="unit", shard_specs=[shard_one], repo_root=tmp_path)
+        hand_manifest._validate_lane(lane="unit", shard_specs=[shard_one], repo_root=tmp_path)
 
 
 def test_validate_lane_rejects_overlapping_selected_node_ids(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setitem(shards.LANES, "unit", shards.LaneConfig(UNIT_MARKER, 2, 1, True, "3"))
+    monkeypatch.setitem(
+        hand_manifest.LANES, "unit", hand_manifest.LaneConfig(UNIT_MARKER, 2, 1, True, "3")
+    )
     for name in ("tests/test_a.py", "tests/test_b.py"):
         _write_test_file(tmp_path, name)
     manifest_one = _write_manifest(tmp_path, "unit", 1, "tests/test_a.py\n")
     manifest_two = _write_manifest(tmp_path, "unit", 2, "tests/test_b.py\n")
-    shard_one = shards.ShardSpec("unit", 1, manifest_one.relative_to(tmp_path))
-    shard_two = shards.ShardSpec("unit", 2, manifest_two.relative_to(tmp_path))
+    shard_one = hand_manifest.ShardSpec("unit", 1, manifest_one.relative_to(tmp_path))
+    shard_two = hand_manifest.ShardSpec("unit", 2, manifest_two.relative_to(tmp_path))
 
     def collect(*, paths: list[str], marker: str, ignore_e2e: bool, repo_root: Path) -> set[str]:
         assert marker == UNIT_MARKER
@@ -105,22 +118,26 @@ def test_validate_lane_rejects_overlapping_selected_node_ids(
             return {"tests/test_a.py::test_example", "tests/test_b.py::test_example"}
         return {"tests/test_a.py::test_example", "tests/test_b.py::test_example"}
 
-    monkeypatch.setattr(shards, "_collect_node_ids", collect)
+    monkeypatch.setattr(hand_manifest, "_collect_node_ids", collect)
 
     with pytest.raises(ValueError, match="selected by more than one shard"):
-        shards._validate_lane(lane="unit", shard_specs=[shard_one, shard_two], repo_root=tmp_path)
+        hand_manifest._validate_lane(
+            lane="unit", shard_specs=[shard_one, shard_two], repo_root=tmp_path
+        )
 
 
 def test_validate_lane_accepts_exactly_once_file_and_node_coverage(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setitem(shards.LANES, "unit", shards.LaneConfig(UNIT_MARKER, 2, 1, True, "3"))
+    monkeypatch.setitem(
+        hand_manifest.LANES, "unit", hand_manifest.LaneConfig(UNIT_MARKER, 2, 1, True, "3")
+    )
     for name in ("tests/test_a.py", "tests/test_b.py"):
         _write_test_file(tmp_path, name)
     manifest_one = _write_manifest(tmp_path, "unit", 1, "tests/test_a.py\n")
     manifest_two = _write_manifest(tmp_path, "unit", 2, "tests/test_b.py\n")
-    shard_one = shards.ShardSpec("unit", 1, manifest_one.relative_to(tmp_path))
-    shard_two = shards.ShardSpec("unit", 2, manifest_two.relative_to(tmp_path))
+    shard_one = hand_manifest.ShardSpec("unit", 1, manifest_one.relative_to(tmp_path))
+    shard_two = hand_manifest.ShardSpec("unit", 2, manifest_two.relative_to(tmp_path))
 
     def collect(*, paths: list[str], marker: str, ignore_e2e: bool, repo_root: Path) -> set[str]:
         assert marker == UNIT_MARKER
@@ -128,9 +145,9 @@ def test_validate_lane_accepts_exactly_once_file_and_node_coverage(
             return {"tests/test_a.py::test_example", "tests/test_b.py::test_example"}
         return {f"{paths[0]}::test_example"}
 
-    monkeypatch.setattr(shards, "_collect_node_ids", collect)
+    monkeypatch.setattr(hand_manifest, "_collect_node_ids", collect)
 
-    assert shards._validate_lane(
+    assert hand_manifest._validate_lane(
         lane="unit", shard_specs=[shard_one, shard_two], repo_root=tmp_path
     ) == (2, 2)
 
@@ -141,11 +158,13 @@ def test_lane_local_validation_allows_a_mixed_marker_file_in_both_lanes(
     _write_test_file(tmp_path, "tests/test_mixed.py")
     unit_manifest = _write_manifest(tmp_path, "unit", 1, "tests/test_mixed.py\n")
     integration_manifest = _write_manifest(tmp_path, "integration", 1, "tests/test_mixed.py\n")
-    monkeypatch.setitem(shards.LANES, "unit", shards.LaneConfig(UNIT_MARKER, 1, 1, True, "3"))
     monkeypatch.setitem(
-        shards.LANES,
+        hand_manifest.LANES, "unit", hand_manifest.LaneConfig(UNIT_MARKER, 1, 1, True, "3")
+    )
+    monkeypatch.setitem(
+        hand_manifest.LANES,
         "integration",
-        shards.LaneConfig("integration", 1, 5, False, "auto"),
+        hand_manifest.LaneConfig("integration", 1, 5, False, "auto"),
     )
 
     def collect(*, paths: list[str], marker: str, ignore_e2e: bool, repo_root: Path) -> set[str]:
@@ -153,19 +172,87 @@ def test_lane_local_validation_allows_a_mixed_marker_file_in_both_lanes(
             return {"tests/test_mixed.py::test_unit"}
         return {"tests/test_mixed.py::test_integration"}
 
-    monkeypatch.setattr(shards, "_collect_node_ids", collect)
-    assert shards._validate_lane(
+    monkeypatch.setattr(hand_manifest, "_collect_node_ids", collect)
+    assert hand_manifest._validate_lane(
         lane="unit",
-        shard_specs=[shards.ShardSpec("unit", 1, unit_manifest.relative_to(tmp_path))],
+        shard_specs=[hand_manifest.ShardSpec("unit", 1, unit_manifest.relative_to(tmp_path))],
         repo_root=tmp_path,
     ) == (1, 1)
-    assert shards._validate_lane(
+    assert hand_manifest._validate_lane(
         lane="integration",
         shard_specs=[
-            shards.ShardSpec("integration", 1, integration_manifest.relative_to(tmp_path))
+            hand_manifest.ShardSpec("integration", 1, integration_manifest.relative_to(tmp_path))
         ],
         repo_root=tmp_path,
     ) == (1, 1)
+
+
+def _computed_runner_fixture(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    """Real miniature fresh collector; unrelated seeded files keep 5+6 nonempty.
+
+    This validates runner transport, not the repository/hosted inventory. The
+    exact original selected file remains the only shard-one unit fixture.
+    """
+    import ci_partition
+
+    # Collection and its later assignment/readback use this same local fixture
+    # identity for the full test lifetime, including when CI supplies a SHA.
+    for name in (
+        "GITHUB_SHA",
+        "GITHUB_REPOSITORY",
+        "GITHUB_WORKFLOW",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_EVENT_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    native_run = subprocess.run
+    root.joinpath("roster").mkdir(exist_ok=True)
+    root.joinpath("pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\nmarkers=["integration"]\n'
+    )
+    for index in range(
+        5 if "mark.integration" in root.joinpath("tests/test_a.py").read_text() else 4
+    ):
+        root.joinpath(f"tests/test_seed_u{index}.py").write_text("def test_seed(): pass\n")
+    for index in range(
+        5 if "mark.integration" in root.joinpath("tests/test_a.py").read_text() else 6
+    ):
+        root.joinpath(f"tests/test_seed_i{index}.py").write_text(
+            "import pytest\n@pytest.mark.integration\ndef test_seed(): pass\n"
+        )
+    native_run(["git", "init", "-q", str(root)], check=True)
+    native_run(["git", "-C", str(root), "add", "."], check=True)
+    native_run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    actual_collect = ci_partition.collect_inventory
+    cached = None
+
+    def fresh(*, root: Path):
+        nonlocal cached
+        with monkeypatch.context() as active:
+            active.setattr(subprocess, "run", native_run)
+            for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_EVENT_NAME"):
+                active.delenv(name, raising=False)
+            identity = ci_partition.checkout_identity(root)
+            if cached is None or cached["identity"] != identity:
+                cached = actual_collect(root=root)
+            return copy.deepcopy(cached)
+
+    monkeypatch.setattr(ci_partition, "collect_inventory", fresh)
 
 
 def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution(
@@ -175,11 +262,14 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
     subprocess_run = subprocess.run
     _write_test_file(tmp_path, "tests/test_a.py")
     _write_manifest(tmp_path, "unit", 1, "tests/test_a.py\n")
+    _computed_runner_fixture(monkeypatch, tmp_path)
     coverage_file = tmp_path / "coverage-unit-1.data"
     evidence_dir = tmp_path / "evidence"
     captured: dict[str, object] = {}
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git" or "--collect-only" in command:
+            return subprocess_run(command, **kwargs)
         captured["command"] = command
         captured["kwargs"] = kwargs
         return subprocess.CompletedProcess(command, 0)
@@ -651,8 +741,13 @@ def test_run_shard_keeps_the_lane_marker_file_boundary_and_loadfile_distribution
 def test_run_shard_retains_auto_workers_for_integration(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    subprocess_run = subprocess.run
     _write_test_file(tmp_path, "tests/test_a.py")
     _write_manifest(tmp_path, "integration", 1, "tests/test_a.py\n")
+    (tmp_path / "tests/test_a.py").write_text(
+        "import pytest\n@pytest.mark.integration\ndef test_example(): pass\n"
+    )
+    _computed_runner_fixture(monkeypatch, tmp_path)
     monkeypatch.setitem(
         shards.LANES,
         "integration",
@@ -661,6 +756,8 @@ def test_run_shard_retains_auto_workers_for_integration(
     captured: dict[str, object] = {}
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git" or "--collect-only" in command:
+            return subprocess_run(command, **kwargs)
         captured["command"] = command
         return subprocess.CompletedProcess(command, 0)
 

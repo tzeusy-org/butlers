@@ -1,0 +1,26 @@
+name: CI advisory duration candidates
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read bounded successful same-run execution evidence only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_weight_candidates.py --output "${RUNNER_TEMP}/ci-weight-candidate"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-weight-candidate
+          path: ${{ runner.temp }}/ci-weight-candidate/*.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
