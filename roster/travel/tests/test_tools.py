@@ -11,7 +11,7 @@ Covers all 6 tool functions:
     6. add_document     — attach to trip, all types, expiry, invalid trip_id
 
 Uses testcontainers PostgreSQL for a real DB.  Tests are isolated via the
-``provisioned_postgres_pool`` fixture (fresh DB per test).
+``migrated_pool`` helper (independent database per fixture invocation).
 """
 
 from __future__ import annotations
@@ -22,6 +22,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
+
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -30,119 +33,11 @@ pytestmark = [
 ]
 
 # ---------------------------------------------------------------------------
-# Schema DDL — kept inline so each test gets a clean, isolated database
+# Actual current migration tables — isolated per fixture invocation
 # ---------------------------------------------------------------------------
 
-_CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS travel"
-
-_CREATE_TRIPS = """
-CREATE TABLE IF NOT EXISTS travel.trips (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    start_date  DATE NOT NULL,
-    end_date    DATE NOT NULL CHECK (end_date >= start_date),
-    status      TEXT NOT NULL
-                    CHECK (status IN ('planned', 'active', 'completed', 'cancelled')),
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_LEGS = """
-CREATE TABLE IF NOT EXISTS travel.legs (
-    id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id                   UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                      TEXT NOT NULL CHECK (type IN ('flight', 'train', 'bus', 'ferry')),
-    carrier                   TEXT,
-    departure_airport_station TEXT,
-    departure_city            TEXT,
-    departure_at              TIMESTAMPTZ NOT NULL,
-    arrival_airport_station   TEXT,
-    arrival_city              TEXT,
-    arrival_at                TIMESTAMPTZ NOT NULL CHECK (arrival_at >= departure_at),
-    confirmation_number       TEXT,
-    pnr                       TEXT,
-    seat                      TEXT,
-    metadata                  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_ACCOMMODATIONS = """
-CREATE TABLE IF NOT EXISTS travel.accommodations (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id             UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                TEXT NOT NULL CHECK (type IN ('hotel', 'airbnb', 'hostel')),
-    name                TEXT,
-    address             TEXT,
-    check_in            TIMESTAMPTZ,
-    check_out           TIMESTAMPTZ,
-    confirmation_number TEXT,
-    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_RESERVATIONS = """
-CREATE TABLE IF NOT EXISTS travel.reservations (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id             UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                TEXT NOT NULL
-                            CHECK (type IN ('car_rental', 'restaurant', 'activity', 'tour')),
-    provider            TEXT,
-    datetime            TIMESTAMPTZ,
-    confirmation_number TEXT,
-    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_DOCUMENTS = """
-CREATE TABLE IF NOT EXISTS travel.documents (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id     UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type        TEXT NOT NULL
-                    CHECK (type IN ('boarding_pass', 'visa', 'insurance', 'receipt')),
-    blob_ref    TEXT,
-    expiry_date DATE,
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 # bu-2jtfw.8: trip_summary() now also queries travel.connections.
-_CREATE_CONNECTIONS = """
-CREATE TABLE IF NOT EXISTS travel.connections (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
-    available_minutes  INT,
-    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    computed_at        TIMESTAMPTZ NOT NULL,
-    verdict_changed_at TIMESTAMPTZ NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (inbound_leg_id, outbound_leg_id)
-)
-"""
-
-_CREATE_TRAVELLERS = """
-CREATE TABLE IF NOT EXISTS travel.travellers (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    entity_id UUID,
-    traveller_key TEXT NOT NULL,
-    display_name TEXT
-)
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -151,18 +46,21 @@ CREATE TABLE IF NOT EXISTS travel.travellers (
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with all travel schema tables."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute(_CREATE_SCHEMA)
-        await p.execute(_CREATE_TRIPS)
-        await p.execute(_CREATE_LEGS)
-        await p.execute(_CREATE_ACCOMMODATIONS)
-        await p.execute(_CREATE_RESERVATIONS)
-        await p.execute(_CREATE_DOCUMENTS)
-        await p.execute(_CREATE_CONNECTIONS)
-        await p.execute(_CREATE_TRAVELLERS)
-        yield p
+async def pool(postgres_container):
+    """An independent database with the complete current travel chain.
+
+    Real migration tables, indexes, functions, constraints and seed rows replace
+    the copied subset. Existing test-owned data and business assertions remain.
+    """
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("travel", schema="travel"),
+        ),
+        pool_schema="travel",
+    ) as pool:
+        yield pool
 
 
 # ---------------------------------------------------------------------------

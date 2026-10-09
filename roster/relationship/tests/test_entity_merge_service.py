@@ -384,7 +384,7 @@ async def test_merge_rebinds_catalog_and_opens_honest_receipt_cohort(merge_pool)
     local_fact = await pool.fetchval(
         """
         INSERT INTO facts (subject, scope, entity_id, predicate, content)
-        VALUES ('entity:' || $1::text, 'relationship', $1, 'note', 'opaque local reference')
+        VALUES ('entity:' || ($1::uuid)::text, 'relationship', $1, 'note', 'opaque local reference')
         RETURNING id
         """,
         source_id,
@@ -641,7 +641,7 @@ async def test_local_rebind_handler_repoints_every_owned_reference_and_settles_r
     fact_id = await pool.fetchval(
         """
         INSERT INTO facts (subject, scope, entity_id, predicate, content)
-        VALUES ('entity:' || $1::text, 'relationship', $1, 'note', 'opaque') RETURNING id
+        VALUES ('entity:' || ($1::uuid)::text, 'relationship', $1, 'note', 'opaque') RETURNING id
         """,
         source_id,
     )
@@ -744,7 +744,7 @@ async def test_concurrent_replay_preserves_truthful_rebound_count(merge_pool) ->
     source_id = await _insert_entity(pool, "Concurrent source")
     target_id = await _insert_entity(pool, "Concurrent target")
     await pool.execute(
-        "INSERT INTO facts (subject, scope, entity_id, predicate, content) VALUES ('entity:' || $1::text, 'relationship', $1, 'note', 'opaque')",
+        "INSERT INTO facts (subject, scope, entity_id, predicate, content) VALUES ('entity:' || ($1::uuid)::text, 'relationship', $1, 'note', 'opaque')",
         source_id,
     )
     rebind_id = uuid4()
@@ -793,7 +793,7 @@ async def test_live_fleet_event_invokes_local_rebind_handler(merge_pool) -> None
     fact_id = await pool.fetchval(
         """
         INSERT INTO facts (subject, scope, entity_id, predicate, content)
-        VALUES ('entity:' || $1::text, 'relationship', $1, 'note', 'opaque') RETURNING id
+        VALUES ('entity:' || ($1::uuid)::text, 'relationship', $1, 'note', 'opaque') RETURNING id
         """,
         source_id,
     )

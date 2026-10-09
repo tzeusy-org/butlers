@@ -41,3 +41,39 @@ async def simulate_temporal_cutover(pool: asyncpg.Pool | asyncpg.Connection) -> 
     code path, never as a model for a repository migration.
     """
     await pool.execute(f"DROP INDEX IF EXISTS relationship.{rel_035().LEGACY_SPO_INDEX}")
+
+
+@cache
+def _historical_notes_statement() -> str:
+    """The exact rel001 definition, used only as a legacy mutator sentinel.
+
+    The complete current chain removes this table at rel010. These fence
+    controls deliberately plant its real old constraints without pretending
+    it belongs to the current catalog or copying a weakened column list.
+    """
+    path = _REL_035_PATH.with_name("001_relationship_tables.py")
+    spec = importlib.util.spec_from_file_location("_historical_rel001_notes", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    statements = []
+
+    class CollectingOp:
+        def execute(self, statement):
+            statements.append(statement)
+
+    module.op = CollectingOp()
+    module.upgrade()
+    notes = [
+        statement
+        for statement in statements
+        if statement.split()[:6] == ["CREATE", "TABLE", "IF", "NOT", "EXISTS", "notes"]
+    ]
+    assert len(notes) == 1
+    return notes[0]
+
+
+async def plant_historical_notes_sentinel(pool: asyncpg.Pool) -> None:
+    """Plant the genuine removed notes table in an isolated fence scenario."""
+    assert await pool.fetchval("SELECT to_regclass('relationship.notes')") is None
+    await pool.execute(_historical_notes_statement())

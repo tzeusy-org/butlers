@@ -42,7 +42,10 @@ from butlers.tools.relationship.fact_temporal import (
     PACKET_COLUMNS,
     TemporalError,
 )
-from roster.relationship.tests.evidence_schema import simulate_temporal_cutover
+from roster.relationship.tests.evidence_schema import (
+    plant_historical_notes_sentinel,
+    simulate_temporal_cutover,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -342,6 +345,7 @@ class TestEffectiveTimeMutatorFences:
         from butlers.tools.relationship.contacts import contact_merge
 
         await simulate_temporal_cutover(pool)
+        await plant_historical_notes_sentinel(pool)
         target_entity = await _insert_entity(pool, name="Carol (canonical)", roles=[])
         source_entity = await _insert_entity(pool, name="Carol (duplicate)", roles=[])
         await _add_temporal_fact(pool, source_entity, "carol@example.test", uuid.uuid4())
@@ -355,7 +359,10 @@ class TestEffectiveTimeMutatorFences:
                 contact,
                 entity,
             )
-            await pool.execute("INSERT INTO notes (contact_id) VALUES ($1)", contact)
+            await pool.execute(
+                "INSERT INTO notes (contact_id, content) VALUES ($1, 'Historical fence sentinel')",
+                contact,
+            )
             contacts.append(contact)
         state = await _merge_state(pool)
         notes = await pool.fetch("SELECT id, contact_id FROM notes ORDER BY id")
@@ -522,26 +529,21 @@ class TestEffectiveTimeMutatorFences:
             )
         else:
             registry = importlib.import_module(f"butlers.{path}_account_registry")
-            table = f"public.{path}_accounts"
-            await pool.execute(f"""
-                CREATE TABLE {table} (
-                    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    entity_id    UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                    is_primary   BOOLEAN NOT NULL DEFAULT false,
-                    status       TEXT NOT NULL DEFAULT 'active',
-                    connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    revoked_at   TIMESTAMPTZ
+            # The real core chain already owns both registries and entity_info.
+            # Seed case DATA, including Steam's actual NOT NULL identity, without
+            # replacing the registry's FK/index/constraint catalog.
+            if path == "google":
+                account = await pool.fetchval(
+                    "INSERT INTO public.google_accounts (entity_id) VALUES ($1) RETURNING id",
+                    companion,
                 )
-            """)
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS public.entity_info (
-                    entity_id UUID, type TEXT, value TEXT
+            else:
+                account = await pool.fetchval(
+                    "INSERT INTO public.steam_accounts (entity_id, steam_id) "
+                    "VALUES ($1, $2) RETURNING id",
+                    companion,
+                    1,  # Synthetic local fixture DATA; no provider call or credential.
                 )
-            """)
-            account = await pool.fetchval(
-                f"INSERT INTO {table} (entity_id) VALUES ($1) RETURNING id",  # noqa: S608
-                companion,
-            )
             await registry.disconnect_account(pool, account, hard_delete=True)
             # Every version the companion subjects is gone, with its evidence.
             assert (
@@ -573,6 +575,7 @@ class TestEffectiveTimeMutatorFences:
         pool: asyncpg.Pool, target_entity: uuid.UUID, source_entity: uuid.UUID
     ) -> tuple[uuid.UUID, uuid.UUID]:
         """(target contact, source contact), each bridged and carrying one note."""
+        await plant_historical_notes_sentinel(pool)
         contacts = []
         for name, entity in (("Target", target_entity), ("Source", source_entity)):
             contact = await pool.fetchval(
@@ -583,7 +586,10 @@ class TestEffectiveTimeMutatorFences:
                 contact,
                 entity,
             )
-            await pool.execute("INSERT INTO notes (contact_id) VALUES ($1)", contact)
+            await pool.execute(
+                "INSERT INTO notes (contact_id, content) VALUES ($1, 'Historical fence sentinel')",
+                contact,
+            )
             contacts.append(contact)
         return contacts[0], contacts[1]
 

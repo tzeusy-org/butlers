@@ -646,14 +646,14 @@ async def _make_owner_contact(pool):
     entity_id = await pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
-        VALUES ('Owner', 'Owner', 'person', ARRAY['owner'])
+        VALUES ('Owner', 'person', ARRAY['owner'])
         RETURNING id
         """
     )
     contact_id = await pool.fetchval(
         """
         INSERT INTO contacts (name, first_name, listed, entity_id)
-        VALUES ('Owner', true, $1)
+        VALUES ('Owner', 'Owner', true, $1)
         RETURNING id
         """,
         entity_id,

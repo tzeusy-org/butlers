@@ -440,7 +440,7 @@ async def _make_contact(
     row = await pool.fetchrow(
         """
         INSERT INTO contacts (name, first_name, entity_id, listed, stay_in_touch_days)
-        VALUES ($1, $1, $2, $3, $4)
+        VALUES ($1::text, $1::text, $2, $3, $4)
         RETURNING id, first_name, entity_id, listed, stay_in_touch_days
         """,
         name,
@@ -1700,7 +1700,7 @@ async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) ->
     row = await pool.fetchrow(
         """
         INSERT INTO contacts (name, first_name, entity_id, listed)
-        VALUES ($1, $1, $2, $3)
+        VALUES ($1::text, $1::text, $2, $3)
         RETURNING id, entity_id, first_name, listed
         """,
         first_name,

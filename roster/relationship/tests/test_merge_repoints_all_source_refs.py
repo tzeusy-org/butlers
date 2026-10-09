@@ -84,7 +84,7 @@ async def _add_narrative_fact(
     return await pool.fetchval(
         """
         INSERT INTO facts (subject, entity_id, predicate, content, scope, validity)
-        VALUES ('entity:' || $1::text, $1, $2, $3, 'relationship', 'active')
+        VALUES ('entity:' || ($1::uuid)::text, $1, $2, $3, 'relationship', 'active')
         RETURNING id
         """,
         entity_id,
@@ -125,7 +125,7 @@ class TestMergeRepointsAllSourceRefs:
         edge_fact_id = await pool.fetchval(
             """
             INSERT INTO facts (subject, entity_id, object_entity_id, predicate, content, scope, validity)
-            VALUES ('entity:' || $1::text, $1, $2, 'interacted_with', 'lunch', 'relationship', 'active')
+            VALUES ('entity:' || ($1::uuid)::text, $1, $2, 'interacted_with', 'lunch', 'relationship', 'active')
             RETURNING id
             """,
             other_id,

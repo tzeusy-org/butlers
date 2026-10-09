@@ -216,7 +216,10 @@ async def _column_exists(conn, table: str, column: str) -> bool:
 async def test_expand_keeps_the_old_writer_and_reverses_without_losing_facts(pool) -> None:
     upgrade, downgrade = _statements("upgrade"), _statements("downgrade")
     async with pool.acquire() as conn:
-        subject = await conn.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
+        subject = await conn.fetchval(
+            "INSERT INTO public.entities (canonical_name) "
+            "VALUES ('Historical writer subject') RETURNING id"
+        )
         legacy_id = await _old_write(conn, subject, "legacy@example.test")
         await conn.execute(
             """
@@ -347,7 +350,10 @@ async def test_checks_admit_each_bound_state_once(pool) -> None:
     async with pool.acquire() as conn:
         for statement in _statements("upgrade"):
             await conn.execute(statement)
-        subject = await conn.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
+        subject = await conn.fetchval(
+            "INSERT INTO public.entities (canonical_name) "
+            "VALUES ('Historical writer subject') RETURNING id"
+        )
         outcomes = {}
         for case, packet, _ in _BOUND_STATES:
             try:

@@ -109,12 +109,14 @@ async def _make_entity(
     *,
     name: str = "Test Person",
     roles: list[str] | None = None,
+    entity_type: str = "person",
 ) -> uuid.UUID:
     return await pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
-        "VALUES ($1, 'person', $2) RETURNING id",
+        "VALUES ($1, $3, $2) RETURNING id",
         name,
         roles or [],
+        entity_type,
     )
 
 
@@ -769,7 +771,9 @@ class TestObjectEntityIdBackfill:
         """When two entities share a canonical_name, backfill skips (ambiguous)."""
         subject = await _make_entity(pool, name="Carol")
         await _make_entity(pool, name="Shared Name")
-        await _make_entity(pool, name="Shared Name")
+        # The live uniqueness key includes entity_type; the real resolver
+        # deliberately matches canonical_name without filtering the type.
+        await _make_entity(pool, name="Shared Name", entity_type="organization")
 
         fact_id = await _insert_relational_fact_no_oid(
             pool, predicate="works_at", content="Shared Name", subject_entity_id=subject

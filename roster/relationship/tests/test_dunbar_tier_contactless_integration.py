@@ -105,7 +105,7 @@ async def _create_entity_with_contact(pool, name: str) -> tuple[uuid.UUID, uuid.
     """Returns (entity_id, contact_id)."""
     entity_id = await _create_entity(pool, name)
     contact_row = await pool.fetchrow(
-        "INSERT INTO contacts (name, first_name, entity_id) VALUES ($1, $1, $2) RETURNING id",
+        "INSERT INTO contacts (name, first_name, entity_id) VALUES ($1::text, $1::text, $2) RETURNING id",
         name,
         entity_id,
     )

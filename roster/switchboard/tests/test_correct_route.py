@@ -22,6 +22,8 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 from butlers.tools.switchboard.routing.correct_route import (
     _RETENTION_WINDOW,
     correct_route,
@@ -41,120 +43,30 @@ pytestmark = [
 
 
 # ---------------------------------------------------------------------------
-# DB fixture — minimal schema needed by correct_route
+# DB fixture — complete current Switchboard migration schema
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with the tables needed by correct_route.
+async def pool(postgres_container):
+    """An independent database with the complete current switchboard chain.
 
-    Scoped to the real ``switchboard`` schema (not ``public``) to mirror
-    production's one-db/multi-schema topology — required for the
-    schema-qualified ``butler_registry``/``routing_log`` queries inside
-    route()/resolve_routing_target() to resolve correctly.
+    Real migration tables, indexes, functions, constraints and seed rows replace
+    the copied subset. Existing test-owned data and business assertions remain.
     """
-    async with provisioned_postgres_pool(schema="switchboard") as p:
-        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
-        # public.ingestion_events (from core_019 + core_032)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.ingestion_events (
-                id                       UUID PRIMARY KEY,
-                received_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-                source_channel           TEXT NOT NULL,
-                source_provider          TEXT NOT NULL,
-                source_endpoint_identity TEXT NOT NULL,
-                source_sender_identity   TEXT,
-                source_thread_identity   TEXT,
-                external_event_id        TEXT NOT NULL,
-                dedupe_key               TEXT NOT NULL,
-                dedupe_strategy          TEXT NOT NULL,
-                ingestion_tier           TEXT NOT NULL,
-                policy_tier              TEXT NOT NULL,
-                triage_decision          TEXT,
-                triage_target            TEXT,
-                status                   TEXT NOT NULL DEFAULT 'ingested',
-                error_detail             TEXT
-            )
-        """)
-
-        # message_inbox — partitioned table (simplified: single non-partitioned table for tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS message_inbox (
-                id                   UUID NOT NULL,
-                received_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-                request_context      JSONB NOT NULL DEFAULT '{}'::jsonb,
-                raw_payload          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                normalized_text      TEXT NOT NULL DEFAULT '',
-                lifecycle_state      TEXT NOT NULL DEFAULT 'accepted',
-                processing_metadata  JSONB NOT NULL DEFAULT '{}'::jsonb,
-                schema_version       TEXT NOT NULL DEFAULT 'message_inbox.v2',
-                attachments          JSONB,
-                direction            TEXT NOT NULL DEFAULT 'inbound',
-                ingestion_tier       TEXT NOT NULL DEFAULT 'full',
-                created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (id)
-            )
-        """)
-
-        # operator_audit_log (from switchboard migration 012)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS operator_audit_log (
-                id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                action_type      TEXT NOT NULL,
-                target_request_id UUID,
-                target_table     TEXT,
-                operator_identity TEXT NOT NULL,
-                reason           TEXT NOT NULL,
-                action_payload   JSONB NOT NULL DEFAULT '{}'::jsonb,
-                outcome          TEXT NOT NULL,
-                outcome_details  JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # butler_registry (needed by route() inside correct_route)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS butler_registry (
-                name             TEXT PRIMARY KEY,
-                endpoint_url     TEXT NOT NULL,
-                description      TEXT,
-                modules          JSONB NOT NULL DEFAULT '[]',
-                last_seen_at     TIMESTAMPTZ,
-                eligibility_state TEXT NOT NULL DEFAULT 'active',
-                liveness_ttl_seconds INTEGER NOT NULL DEFAULT 300,
-                quarantined_at   TIMESTAMPTZ,
-                quarantine_reason TEXT,
-                route_contract_min INTEGER NOT NULL DEFAULT 1,
-                route_contract_max INTEGER NOT NULL DEFAULT 1,
-                capabilities     JSONB NOT NULL DEFAULT '[]',
-                eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                registered_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-                agent_type       TEXT NOT NULL DEFAULT 'butler'
-            )
-        """)
-
-        # routing_log (needed by _log_routing inside route())
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS routing_log (
-                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_butler  TEXT NOT NULL,
-                target_butler  TEXT NOT NULL,
-                tool_name      TEXT NOT NULL,
-                success        BOOLEAN NOT NULL,
-                duration_ms    INTEGER,
-                error          TEXT,
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                thread_id      TEXT,
-                source_channel TEXT,
-                contact_id     UUID,
-                entity_id      UUID,
-                sender_roles   TEXT[]
-            )
-        """)
-
-        yield p
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core", schema="switchboard"),
+            MigrationStage("switchboard", schema="switchboard"),
+        ),
+        pool_schema="switchboard",
+    ) as pool:
+        await pool.execute("SELECT switchboard_message_inbox_ensure_partition(now())")
+        await pool.execute(
+            "SELECT switchboard_message_inbox_ensure_partition(now() + INTERVAL '1 month')"
+        )
+        yield pool
 
 
 # ---------------------------------------------------------------------------

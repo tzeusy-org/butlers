@@ -110,7 +110,7 @@ async def _make_contact(pool, first_name: str) -> dict:
         first_name,
     )
     row = await pool.fetchrow(
-        "INSERT INTO contacts (name, first_name, entity_id) VALUES ($1, $1, $2) RETURNING id, first_name",
+        "INSERT INTO contacts (name, first_name, entity_id) VALUES ($1::text, $1::text, $2) RETURNING id, first_name",
         first_name,
         entity_row["id"],
     )
@@ -817,7 +817,7 @@ async def test_gift_add_no_entity_raises_value_error(pool):
 
     # Create a contact without entity_id
     row = await pool.fetchrow(
-        "INSERT INTO contacts (name, first_name) VALUES ($1, $1) RETURNING id",
+        "INSERT INTO contacts (name, first_name) VALUES ($1::text, $1::text) RETURNING id",
         "Orphan",
     )
     cid = row["id"]
@@ -832,7 +832,7 @@ async def test_gift_update_status_no_entity_raises_value_error(pool):
 
     # Create a contact without entity_id (no entry in contact_entity_map)
     row = await pool.fetchrow(
-        "INSERT INTO contacts (name, first_name) VALUES ($1, $1) RETURNING id",
+        "INSERT INTO contacts (name, first_name) VALUES ($1::text, $1::text) RETURNING id",
         "OrphanUpdate",
     )
     cid = row["id"]
