@@ -12,16 +12,24 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
 import asyncpg
 import pytest
+from alembic.config import Config
+from sqlalchemy.exc import IntegrityError
 
+from alembic import command
+from butlers.db import register_jsonb_codec
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.routing.correct_route import (
     _RETENTION_WINDOW,
     correct_route,
@@ -41,125 +49,148 @@ pytestmark = [
 
 
 # ---------------------------------------------------------------------------
-# DB fixture — minimal schema needed by correct_route
+# DB fixture — real core + Switchboard chains, ordinary migration login
 # ---------------------------------------------------------------------------
 
 
+class _CorrectionPool(asyncpg.Pool):
+    """A real asyncpg pool carrying its disposable Alembic configuration."""
+
+    migration_config: Config
+
+
+@pytest.fixture(scope="module")
+def correction_db_url(postgres_container):
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+    )
+
+
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with the tables needed by correct_route.
+async def pool(correction_db_url):
+    """Reuse migrated structure; isolate every node's committed rows.
 
-    Scoped to the real ``switchboard`` schema (not ``public``) to mirror
-    production's one-db/multi-schema topology — required for the
-    schema-qualified ``butler_registry``/``routing_log`` queries inside
-    route()/resolve_routing_target() to resolve correctly.
+    The supported factory runs bootstrap separately from the ordinary
+    NOCREATEDB migration login. No Template8 cache or copied DDL is used.
     """
-    async with provisioned_postgres_pool(schema="switchboard") as p:
-        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
-        # public.ingestion_events (from core_019 + core_032)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.ingestion_events (
-                id                       UUID PRIMARY KEY,
-                received_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-                source_channel           TEXT NOT NULL,
-                source_provider          TEXT NOT NULL,
-                source_endpoint_identity TEXT NOT NULL,
-                source_sender_identity   TEXT,
-                source_thread_identity   TEXT,
-                external_event_id        TEXT NOT NULL,
-                dedupe_key               TEXT NOT NULL,
-                dedupe_strategy          TEXT NOT NULL,
-                ingestion_tier           TEXT NOT NULL,
-                policy_tier              TEXT NOT NULL,
-                triage_decision          TEXT,
-                triage_target            TEXT,
-                status                   TEXT NOT NULL DEFAULT 'ingested',
-                error_detail             TEXT
-            )
-        """)
-
-        # message_inbox — partitioned table (simplified: single non-partitioned table for tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS message_inbox (
-                id                   UUID NOT NULL,
-                received_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-                request_context      JSONB NOT NULL DEFAULT '{}'::jsonb,
-                raw_payload          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                normalized_text      TEXT NOT NULL DEFAULT '',
-                lifecycle_state      TEXT NOT NULL DEFAULT 'accepted',
-                processing_metadata  JSONB NOT NULL DEFAULT '{}'::jsonb,
-                schema_version       TEXT NOT NULL DEFAULT 'message_inbox.v2',
-                attachments          JSONB,
-                direction            TEXT NOT NULL DEFAULT 'inbound',
-                ingestion_tier       TEXT NOT NULL DEFAULT 'full',
-                created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (id)
-            )
-        """)
-
-        # operator_audit_log (from switchboard migration 012)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS operator_audit_log (
-                id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                action_type      TEXT NOT NULL,
-                target_request_id UUID,
-                target_table     TEXT,
-                operator_identity TEXT NOT NULL,
-                reason           TEXT NOT NULL,
-                action_payload   JSONB NOT NULL DEFAULT '{}'::jsonb,
-                outcome          TEXT NOT NULL,
-                outcome_details  JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # butler_registry (needed by route() inside correct_route)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS butler_registry (
-                name             TEXT PRIMARY KEY,
-                endpoint_url     TEXT NOT NULL,
-                description      TEXT,
-                modules          JSONB NOT NULL DEFAULT '[]',
-                last_seen_at     TIMESTAMPTZ,
-                eligibility_state TEXT NOT NULL DEFAULT 'active',
-                liveness_ttl_seconds INTEGER NOT NULL DEFAULT 300,
-                quarantined_at   TIMESTAMPTZ,
-                quarantine_reason TEXT,
-                route_contract_min INTEGER NOT NULL DEFAULT 1,
-                route_contract_max INTEGER NOT NULL DEFAULT 1,
-                capabilities     JSONB NOT NULL DEFAULT '[]',
-                eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                registered_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-                agent_type       TEXT NOT NULL DEFAULT 'butler'
-            )
-        """)
-
-        # routing_log (needed by _log_routing inside route())
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS routing_log (
-                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_butler  TEXT NOT NULL,
-                target_butler  TEXT NOT NULL,
-                tool_name      TEXT NOT NULL,
-                success        BOOLEAN NOT NULL,
-                duration_ms    INTEGER,
-                error          TEXT,
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                thread_id      TEXT,
-                source_channel TEXT,
-                contact_id     UUID,
-                entity_id      UUID,
-                sender_roles   TEXT[]
-            )
-        """)
-
+    p = await _CorrectionPool(
+        correction_db_url,
+        min_size=2,
+        max_size=3,
+        max_queries=50000,
+        max_inactive_connection_lifetime=300.0,
+        loop=None,
+        connection_class=asyncpg.Connection,
+        record_class=asyncpg.Record,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard, public"},
+    )
+    p.migration_config = _build_alembic_config(
+        correction_db_url, ["switchboard"], target_schema="switchboard"
+    )
+    try:
+        # Reset only rows in this module's disposable DB. DELETE avoids
+        # TRUNCATE's privilege requirements on unrelated FK descendants.
+        for table in (
+            "switchboard.routing_log",
+            "switchboard.operator_audit_log",
+            "switchboard.message_inbox",
+            "public.ingestion_events",
+            "switchboard.butler_registry_eligibility_log",
+            "switchboard.butler_boot_registrations",
+            "switchboard.butler_registry_control_plane",
+            "switchboard.butler_registry",
+        ):
+            await p.execute(f"DELETE FROM {table}")
         yield p
+    finally:
+        await p.close()
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _audit_revision(pool: asyncpg.Pool, *, legacy: bool) -> None:
+    """Run the actual bounded revision, never hand-install a test CHECK."""
+    assert isinstance(pool, _CorrectionPool)
+    operation = command.downgrade if legacy else command.upgrade
+    # pinned-revision: this species owns only the sw_042 -> sw_043 boundary.
+    target = "switchboard@sw_042" if legacy else "switchboard@sw_043"
+    await asyncio.to_thread(operation, pool.migration_config, target)
+
+
+@asynccontextmanager
+async def _audit_runtime(pool: asyncpg.Pool):
+    async with pool.acquire() as writer:
+        await writer.execute("SET ROLE butler_switchboard_rw")
+        try:
+            role = await writer.fetchrow(
+                "SELECT current_user AS name, rolsuper, rolcreaterole, rolcreatedb, "
+                "rolreplication, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+            )
+            assert role["name"] == "butler_switchboard_rw"
+            assert not any(role[key] for key in role if key != "name")
+            yield writer
+        finally:
+            await writer.execute("RESET ROLE")
+
+
+async def _legacy_domains(pool: asyncpg.Pool) -> list[dict[str, Any]]:
+    """Plant every old action/outcome combination under the real old CHECKs."""
+    async with _audit_runtime(pool) as writer:
+        for action in (
+            "manual_reroute",
+            "cancel_request",
+            "abort_request",
+            "controlled_replay",
+            "controlled_retry",
+            "force_complete",
+        ):
+            for outcome in ("success", "failed", "rejected", "partial"):
+                await writer.execute(
+                    "INSERT INTO operator_audit_log "
+                    "(action_type, target_request_id, target_table, operator_identity, "
+                    "reason, outcome) VALUES ($1, $2, 'message_inbox', 'legacy-domain', "
+                    "'legacy upgrade survivor', $3)",
+                    action,
+                    uuid.uuid4(),
+                    outcome,
+                )
+    return [
+        dict(row)
+        for row in await pool.fetch(
+            "SELECT * FROM operator_audit_log WHERE operator_identity = 'legacy-domain' ORDER BY id"
+        )
+    ]
+
+
+async def _invalid_domains(pool: asyncpg.Pool) -> None:
+    async with _audit_runtime(pool) as writer:
+        for action, outcome in (
+            ("invalid-action", "success"),
+            ("manual_reroute", "invalid-outcome"),
+        ):
+            with pytest.raises(asyncpg.CheckViolationError):
+                await writer.execute(
+                    "INSERT INTO operator_audit_log "
+                    "(action_type, target_request_id, target_table, operator_identity, "
+                    "reason, outcome) VALUES ($1, $2, 'message_inbox', 'invalid-domain', "
+                    "'must refuse', $3)",
+                    action,
+                    uuid.uuid4(),
+                    outcome,
+                )
+        assert (
+            await writer.fetchval(
+                "SELECT count(*) FROM operator_audit_log WHERE operator_identity = 'invalid-domain'"
+            )
+            == 0
+        )
 
 
 def _make_request_id() -> uuid.UUID:
@@ -551,13 +582,56 @@ class TestCorrectRouteDispatchFailure:
         await _seed_message_inbox(pool, request_id=request_id)
         await _register_butler(pool, "missing_butler")
 
-        result = await correct_route(
-            pool,
-            request_id=request_id,
-            correct_butler="missing_butler",
-            correction_id=correction_id,
-            call_fn=_failing_call_fn(),
-        )
+        await _audit_revision(pool, legacy=True)
+        legacy_rows = await _legacy_domains(pool)
+        await _invalid_domains(pool)
+        try:
+            async with _audit_runtime(pool) as writer:
+                old_result = await correct_route(
+                    writer,
+                    request_id=request_id,
+                    correct_butler="missing_butler",
+                    correction_id=correction_id,
+                    call_fn=_failing_call_fn(),
+                )
+                assert old_result["error"] == "dispatch_failed"
+                assert (
+                    await pool.fetchval(
+                        "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1",
+                        request_id,
+                    )
+                    == 0
+                )
+        finally:
+            await _audit_revision(pool, legacy=False)
+        assert [
+            dict(row)
+            for row in await pool.fetch(
+                "SELECT * FROM operator_audit_log WHERE operator_identity = 'legacy-domain' ORDER BY id"
+            )
+        ] == legacy_rows
+        await _invalid_domains(pool)
+
+        async with _audit_runtime(pool) as writer:
+            result = await correct_route(
+                writer,
+                request_id=request_id,
+                correct_butler="missing_butler",
+                correction_id=correction_id,
+                call_fn=_failing_call_fn(),
+            )
+
+            async with pool.acquire() as reader:
+                assert await writer.fetchval("SELECT pg_backend_pid()") != await reader.fetchval(
+                    "SELECT pg_backend_pid()"
+                )
+                assert (
+                    await reader.fetchval(
+                        "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1",
+                        request_id,
+                    )
+                    == 1
+                )
 
         assert result["success"] is False
         assert result["error"] == "dispatch_failed"
@@ -579,6 +653,53 @@ class TestCorrectRouteDispatchFailure:
             else outcome_details_raw
         )
         assert outcome_details["error"] == "dispatch_failed"
+
+        # An actual downgrade refuses new-domain rows without deleting history.
+        with pytest.raises(IntegrityError) as refused:
+            await _audit_revision(pool, legacy=True)
+        assert getattr(refused.value.orig, "pgcode", None) == "23514"
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1", request_id
+            )
+            == 1
+        )
+        await pool.execute(
+            "DELETE FROM operator_audit_log WHERE target_request_id = $1", request_id
+        )
+        await _audit_revision(pool, legacy=True)
+        try:
+            async with _audit_runtime(pool) as writer:
+                await correct_route(
+                    writer,
+                    request_id=request_id,
+                    correct_butler="missing_butler",
+                    correction_id=correction_id,
+                    call_fn=_failing_call_fn(),
+                )
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1",
+                    request_id,
+                )
+                == 0
+            )
+        finally:
+            await _audit_revision(pool, legacy=False)
+        async with _audit_runtime(pool) as writer:
+            await correct_route(
+                writer,
+                request_id=request_id,
+                correct_butler="missing_butler",
+                correction_id=correction_id,
+                call_fn=_failing_call_fn(),
+            )
+        assert (
+            await pool.fetchval(
+                "SELECT outcome FROM operator_audit_log WHERE target_request_id = $1", request_id
+            )
+            == "failure"
+        )
 
 
 class TestCorrectRouteSuccess:
@@ -714,13 +835,55 @@ class TestCorrectRouteSuccess:
 
         call_fn = await self._make_mock_call_fn()
 
-        await correct_route(
-            pool,
-            request_id=request_id,
-            correct_butler="correct_butler",
-            correction_id=correction_id,
-            call_fn=call_fn,
-        )
+        await _audit_revision(pool, legacy=True)
+        legacy_rows = await _legacy_domains(pool)
+        await _invalid_domains(pool)
+        try:
+            async with _audit_runtime(pool) as writer:
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await correct_route(
+                        writer,
+                        request_id=request_id,
+                        correct_butler="correct_butler",
+                        correction_id=correction_id,
+                        call_fn=call_fn,
+                    )
+        finally:
+            await _audit_revision(pool, legacy=False)
+        assert [
+            dict(row)
+            for row in await pool.fetch(
+                "SELECT * FROM operator_audit_log WHERE operator_identity = 'legacy-domain' ORDER BY id"
+            )
+        ] == legacy_rows
+        await _invalid_domains(pool)
+
+        async with _audit_runtime(pool) as writer:
+            await correct_route(
+                writer,
+                request_id=request_id,
+                correct_butler="correct_butler",
+                correction_id=correction_id,
+                call_fn=call_fn,
+            )
+
+            async with pool.acquire() as reader:
+                assert await writer.fetchval("SELECT pg_backend_pid()") != await reader.fetchval(
+                    "SELECT pg_backend_pid()"
+                )
+                assert (
+                    await reader.fetchval(
+                        "SELECT lifecycle_state FROM message_inbox WHERE id = $1", request_id
+                    )
+                    == "corrected"
+                )
+                assert (
+                    await reader.fetchval(
+                        "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1",
+                        request_id,
+                    )
+                    == 1
+                )
 
         audit_row = await pool.fetchrow(
             """
@@ -735,6 +898,46 @@ class TestCorrectRouteSuccess:
         assert audit_row["target_request_id"] == request_id
         assert audit_row["outcome"] == "success"
         assert str(correction_id) in audit_row["operator_identity"]
+
+        with pytest.raises(IntegrityError) as refused:
+            await _audit_revision(pool, legacy=True)
+        assert getattr(refused.value.orig, "pgcode", None) == "23514"
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1", request_id
+            )
+            == 1
+        )
+        await pool.execute(
+            "DELETE FROM operator_audit_log WHERE target_request_id = $1", request_id
+        )
+        await _audit_revision(pool, legacy=True)
+        try:
+            async with _audit_runtime(pool) as writer:
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await correct_route(
+                        writer,
+                        request_id=request_id,
+                        correct_butler="correct_butler",
+                        correction_id=correction_id,
+                        call_fn=call_fn,
+                    )
+        finally:
+            await _audit_revision(pool, legacy=False)
+        async with _audit_runtime(pool) as writer:
+            await correct_route(
+                writer,
+                request_id=request_id,
+                correct_butler="correct_butler",
+                correction_id=correction_id,
+                call_fn=call_fn,
+            )
+        assert (
+            await pool.fetchval(
+                "SELECT outcome FROM operator_audit_log WHERE target_request_id = $1", request_id
+            )
+            == "success"
+        )
 
     @pytest.mark.pg_clock
     async def test_success_calls_route_with_original_context(self, pool: asyncpg.Pool) -> None:
