@@ -3523,7 +3523,10 @@ async def _assert_question_refusal_stage(domain, runtime):
 
     generation, ledger, tool_generation, decision, question, loan = (uuid.uuid4() for _ in range(6))
     session = await session_create(
-        domain, prompt="synthetic refused question caller", trigger_source="trigger"
+        domain,
+        prompt="synthetic refused question caller",
+        trigger_source="trigger",
+        request_id=str(uuid.uuid4()),
     )
     digest = hashlib.sha256(b"synthetic refused canonical question").digest()
     input_digest = bytes.fromhex(
