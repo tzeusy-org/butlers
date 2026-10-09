@@ -157,6 +157,49 @@ async def test_native_projection_policy_rollback_and_real_role_fences(
                     transaction.rollback()
                 with catalog.begin():
                     migration._validate_local_tables("chronicler")
+                # Existing ingress ancestry tables are never newly-owned DDL.
+                # Actual wrong-owner replay must preserve the existing owner,
+                # refuse installed shape, and restore healthy after rollback.
+                for table in (
+                    "location_ingress_input_parents",
+                    "location_ingress_input_claims",
+                    "location_ingress_inbox_sources",
+                ):
+                    transaction = catalog.begin()
+                    try:
+                        original_owner = catalog.execute(
+                            sa.text(
+                                "SELECT pg_get_userbyid(relowner) FROM pg_class "
+                                "WHERE oid=to_regclass(:table)"
+                            ),
+                            {"table": "chronicler." + table},
+                        ).scalar_one()
+                        catalog.execute(
+                            sa.text(f"ALTER TABLE {table} OWNER TO butler_chronicler_rw")
+                        )
+                        migration._create_local_tables("chronicler", "SELECT 1")
+                        actual_owner = catalog.execute(
+                            sa.text(
+                                "SELECT pg_get_userbyid(relowner) FROM pg_class "
+                                "WHERE oid=to_regclass(:table)"
+                            ),
+                            {"table": "chronicler." + table},
+                        ).scalar_one()
+                        assert actual_owner == "butler_chronicler_rw"
+                        with pytest.raises(RuntimeError, match="identity differs"):
+                            migration._validate_local_tables("chronicler")
+                    finally:
+                        transaction.rollback()
+                    assert (
+                        await pool.fetchval(
+                            "SELECT pg_get_userbyid(relowner) FROM pg_class "
+                            "WHERE oid=to_regclass($1)",
+                            "chronicler." + table,
+                        )
+                        == original_owner
+                    )
+                    with catalog.begin():
+                        migration._validate_local_tables("chronicler")
                 for statements, reason in (
                     (
                         [

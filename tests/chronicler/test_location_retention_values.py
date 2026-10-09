@@ -833,6 +833,66 @@ async def test_native_inline_fixture_uses_complete_owning_retention_dependencies
         with pytest.raises(RuntimeError, match="core writer anchor"):
             select("health", rows)
 
+    # Run the actual pre-DDL catalog selection and owner installer. The double
+    # filters by its ACTUAL SQL IN names, rather than handing back every seeded
+    # row regardless of a missing selector. This models catalog I/O, not SQL.
+    import re
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from sqlalchemy.dialects import postgresql
+
+    create = migration["_create_local_tables"]
+    commands = []
+    present_tables = set()
+
+    class Catalog:
+        dialect = postgresql.dialect()
+
+        def execute(self, statement, parameters):
+            query = str(statement)
+            assert "pg_catalog.pg_class" in query and parameters == {"schema": "switchboard"}
+            selected = re.search(r"c\.relname IN\s*\((.*?)\)", query, re.S)
+            assert selected is not None
+            selected_names = set(re.findall(r"'([^']+)'", selected.group(1)))
+            return SimpleNamespace(scalars=lambda: sorted(present_tables & selected_names))
+
+    catalog = Catalog()
+    operation = SimpleNamespace(get_bind=lambda: catalog, execute=commands.append)
+    with patch.dict(
+        create.__globals__,
+        {"op": operation, "_core_writer_owner": lambda schema: (101, "stored-core-writer")},
+    ):
+        create("switchboard", "SELECT 1")
+        absent_commands = [str(q) for q in commands if str(q).startswith("ALTER TABLE ")]
+        created_tables = {
+            re.fullmatch(r"ALTER TABLE switchboard\.(\w+) OWNER TO .+", q).group(1)
+            for q in absent_commands
+        }
+        assert set(migration["LOCAL_TABLES"]) <= created_tables
+        assert all("stored-core-writer" in q for q in absent_commands)
+        # A complete existing catalog must never receive an OWNER transfer,
+        # including the three original ingress ancestry/claim/source ledgers.
+        present_tables.update(created_tables)
+        commands.clear()
+        create("switchboard", "SELECT 1")
+        assert commands == ["SELECT 1"]
+        present_tables.clear()
+        present_tables.update(
+            {
+                "location_ingress_input_parents",
+                "location_ingress_input_claims",
+                "location_ingress_inbox_sources",
+            }
+        )
+        commands.clear()
+        create("switchboard", "SELECT 1")
+        fresh_after_three = [str(q) for q in commands if str(q).startswith("ALTER TABLE ")]
+        assert len(fresh_after_three) == len(absent_commands) - 3
+        assert all(
+            not any("." + name + " " in q for name in present_tables) for q in fresh_after_three
+        )
+
 
 async def test_native_mcp_input_birth_precedes_emission_and_unknown_commit_refuses(monkeypatch):
     """REQ-location-retention-005/006; actual producer/guard software, not SQL/MCP transport."""
