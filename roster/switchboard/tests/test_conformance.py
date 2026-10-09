@@ -14,9 +14,11 @@ import asyncio
 import json
 import shutil
 import uuid
-from datetime import UTC, datetime
 
 import pytest
+
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 # Skip tests if Docker not available
 docker_available = shutil.which("docker") is not None
@@ -35,163 +37,24 @@ pytestmark = [
 
 
 @pytest.fixture
-async def switchboard_pool(provisioned_postgres_pool):
-    """Provision a fresh database with switchboard tables.
+async def switchboard_pool(postgres_container):
+    """An independent database with the complete current switchboard chain.
 
-    Scoped to the real ``switchboard`` schema (bu-nz1wx) so the bare table DDL
-    below lands in ``switchboard`` and the production code's schema-qualified
-    ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
-    one-db/multi-schema topology.
+    Real migration tables, indexes, functions, constraints and seed rows replace
+    the copied subset. Existing test-owned data and business assertions remain.
     """
-    async with provisioned_postgres_pool(schema="switchboard") as pool:
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
-        # Create minimal required tables for conformance tests
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core", schema="switchboard"),
+            MigrationStage("switchboard", schema="switchboard"),
+        ),
+        pool_schema="switchboard",
+    ) as pool:
+        await pool.execute("SELECT switchboard_message_inbox_ensure_partition(now())")
         await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS message_inbox (
-                id UUID NOT NULL DEFAULT gen_random_uuid(),
-                received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
-                raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                normalized_text TEXT NOT NULL,
-                decomposition_output JSONB,
-                dispatch_outcomes JSONB,
-                response_summary TEXT,
-                lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
-                schema_version TEXT NOT NULL DEFAULT 'message_inbox.v2',
-                processing_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                final_state_at TIMESTAMPTZ,
-                trace_id TEXT,
-                session_id UUID,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (received_at, id)
-            ) PARTITION BY RANGE (received_at)
-            """
+            "SELECT switchboard_message_inbox_ensure_partition(now() + INTERVAL '1 month')"
         )
-
-        # Create partitions covering test date range
-        await pool.execute(
-            """
-            CREATE OR REPLACE FUNCTION switchboard_message_inbox_ensure_partition(
-                reference_ts TIMESTAMPTZ DEFAULT now()
-            ) RETURNS TEXT
-            LANGUAGE plpgsql
-            AS $$
-            DECLARE
-                month_start TIMESTAMPTZ;
-                month_end TIMESTAMPTZ;
-                partition_name TEXT;
-            BEGIN
-                month_start := date_trunc('month', reference_ts);
-                month_end := month_start + INTERVAL '1 month';
-                partition_name := format('message_inbox_p%s', to_char(month_start, 'YYYYMM'));
-                EXECUTE format(
-                    'CREATE TABLE IF NOT EXISTS %I PARTITION OF message_inbox '
-                    'FOR VALUES FROM (%L) TO (%L)',
-                    partition_name, month_start, month_end
-                );
-                RETURN partition_name;
-            END;
-            $$
-            """
-        )
-
-        reference_now = datetime.now(UTC)
-        await pool.execute("SELECT switchboard_message_inbox_ensure_partition($1)", reference_now)
-        await pool.execute(
-            "SELECT switchboard_message_inbox_ensure_partition($1::timestamptz + INTERVAL '1 month')",
-            reference_now,
-        )
-
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fanout_execution_log (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_channel TEXT NOT NULL,
-                source_id TEXT,
-                tool_name TEXT NOT NULL,
-                fanout_mode TEXT NOT NULL,
-                join_policy TEXT NOT NULL,
-                abort_policy TEXT NOT NULL,
-                plan_payload JSONB NOT NULL,
-                execution_payload JSONB NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS dead_letter_queue (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                original_request_id UUID NOT NULL,
-                source_table TEXT NOT NULL,
-                failure_reason TEXT NOT NULL,
-                failure_category TEXT NOT NULL,
-                retry_count INTEGER NOT NULL DEFAULT 0,
-                last_retry_at TIMESTAMPTZ,
-                original_payload JSONB NOT NULL,
-                request_context JSONB NOT NULL,
-                error_details JSONB NOT NULL DEFAULT '{}'::jsonb,
-                replay_eligible BOOLEAN NOT NULL DEFAULT true,
-                replayed_at TIMESTAMPTZ,
-                replayed_request_id UUID,
-                replay_outcome TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                CONSTRAINT valid_failure_category CHECK (
-                    failure_category IN (
-                        'timeout',
-                        'retry_exhausted',
-                        'circuit_open',
-                        'policy_violation',
-                        'validation_error',
-                        'downstream_failure',
-                        'unknown'
-                    )
-                ),
-                CONSTRAINT valid_replay_outcome CHECK (
-                    replay_outcome IS NULL OR replay_outcome IN (
-                        'success',
-                        'failed',
-                        'rejected'
-                    )
-                )
-            )
-            """
-        )
-
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS operator_audit_log (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                action_type TEXT NOT NULL,
-                target_request_id UUID NOT NULL,
-                target_table TEXT NOT NULL,
-                operator_identity TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                action_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                outcome TEXT NOT NULL,
-                outcome_details JSONB NOT NULL DEFAULT '{}'::jsonb,
-                performed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                CONSTRAINT valid_action_type CHECK (
-                    action_type IN (
-                        'manual_reroute',
-                        'cancel_request',
-                        'abort_request',
-                        'controlled_replay',
-                        'controlled_retry',
-                        'force_complete'
-                    )
-                ),
-                CONSTRAINT valid_outcome CHECK (
-                    outcome IN ('success', 'failed', 'rejected', 'partial')
-                )
-            )
-            """
-        )
-
         yield pool
 
 

@@ -10,12 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_PREDICATE_REGISTRY,
-    PENDING_ACTIONS,
-)
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -49,205 +45,66 @@ def patch_embedding_engine():
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with relationship + contact_info tables."""
-    async with provisioned_postgres_pool() as p:
-        # Create public.entities first so contacts.entity_id FK resolves.
-        # `listed` (BOOLEAN NOT NULL DEFAULT true, core_103) is included so
-        # channel_search can filter `e.listed = true` without a separate join.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                listed BOOLEAN NOT NULL DEFAULT true,
-                stay_in_touch_days INT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+async def pool(postgres_container):
+    """Real writer chains plus an explicitly unsupported legacy shadow.
 
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
+    Core115 retired public.contact_info. Its old copied no-FK shape is planted
+    only for the existing no-legacy-write and orphan controls below; it is not
+    a representation of a current or historical migration-owned relation.
+    """
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+        pool_schema="relationship",
+    ) as p:
+        assert await p.fetchval("SELECT to_regclass('public.contact_info')") is None
+        await p.execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+        )
         await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES
-                ('has-email', 'contact', 'literal', 'Email address for the entity.'),
-                ('has-phone', 'contact', 'literal', 'Phone number for the entity.'),
-                ('has-handle', 'contact', 'literal', 'Channel-scoped handle.'),
-                ('has-website', 'contact', 'literal', 'Web URL associated with the entity.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
+                    INSERT INTO relationship.entity_predicate_registry
+                        (predicate, kind, object_kind, description)
+                    VALUES
+                        ('has-email', 'contact', 'literal', 'Email address for the entity.'),
+                        ('has-phone', 'contact', 'literal', 'Phone number for the entity.'),
+                        ('has-handle', 'contact', 'literal', 'Channel-scoped handle.'),
+                        ('has-website', 'contact', 'literal', 'Web URL associated with the entity.')
+                    ON CONFLICT (predicate) DO NOTHING
+                """)
+        # schema-standin-exempt: planted unsupported legacy shadow proves current triple writers never write it; not migration/catalog parity
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                object_kind TEXT NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src TEXT NOT NULL,
-                conf FLOAT NOT NULL DEFAULT 1.0 CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata JSONB,
-                weight INT,
-                verified BOOL NOT NULL DEFAULT false,
-                "primary" BOOL,
-                validity TEXT NOT NULL DEFAULT 'active'
-                    CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+                    CREATE TABLE IF NOT EXISTS public.contact_info (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        contact_id UUID NOT NULL,
+                        type VARCHAR NOT NULL,
+                        value TEXT NOT NULL,
+                        label VARCHAR,
+                        is_primary BOOLEAN DEFAULT false,
+                        context VARCHAR CHECK (context IN ('personal', 'work', 'other')),
+                        created_at TIMESTAMPTZ DEFAULT now()
+                    )
+                """)
         await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-
-        # Create base relationship tables (from 001 migration)
-        # entity_id column present so _is_owner_contact JOIN works
+                    CREATE INDEX IF NOT EXISTS idx_shared_contact_info_type_value
+                        ON public.contact_info (type, value)
+                """)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                nickname TEXT,
-                company TEXT,
-                job_title TEXT,
-                gender TEXT,
-                pronouns TEXT,
-                avatar_url TEXT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                entity_id UUID REFERENCES public.entities(id),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+                    CREATE INDEX IF NOT EXISTS idx_shared_contact_info_contact_id
+                        ON public.contact_info (contact_id)
+                """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
-        """)
-
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge used by
-        # _entity_resolve and channel_search.  Unqualified: resolves to public
-        # schema under the test pool's default search_path.
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-
-        # Create public.contact_info
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.contact_info (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                type VARCHAR NOT NULL,
-                value TEXT NOT NULL,
-                label VARCHAR,
-                is_primary BOOLEAN DEFAULT false,
-                context VARCHAR CHECK (context IN ('personal', 'work', 'other')),
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_shared_contact_info_type_value
-                ON public.contact_info (type, value)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_shared_contact_info_contact_id
-                ON public.contact_info (contact_id)
-        """)
-
-        # pending_actions — used by the owner gate in channel_add/update
-        await p.execute(PENDING_ACTIONS.ddl())
-
-        # Predicate registry — columns must match what store_fact() queries
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS predicate_registry (
-                name TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type TEXT,
-                is_edge BOOLEAN NOT NULL DEFAULT false,
-                is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status TEXT NOT NULL DEFAULT 'active',
-                superseded_by TEXT,
-                deprecated_at TIMESTAMPTZ,
-                inverse_of TEXT,
-                is_symmetric BOOLEAN NOT NULL DEFAULT false,
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                usage_count INTEGER NOT NULL DEFAULT 0,
-                last_used_at TIMESTAMPTZ
-            )
-        """)
-        await p.execute("""
-            INSERT INTO predicate_registry (name, is_temporal) VALUES
-                ('interaction', true),
-                ('life_event', true),
-                ('contact_note', true),
-                ('activity', true)
-            ON CONFLICT (name) DO NOTHING
-        """)
-
-        # Facts table (TEXT embedding avoids pgvector dependency in tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding TEXT,
-                search_vector TSVECTOR,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                entity_id UUID REFERENCES public.entities(id),
-                object_entity_id UUID REFERENCES public.entities(id),
-                valid_at TIMESTAMPTZ DEFAULT NULL,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-
-        # memory_links table (used by store_fact for supersession links)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS memory_links (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_type TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id UUID NOT NULL,
-                relation TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_type, source_id, target_type, target_id)
-            )
-        """)
-
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
+                    INSERT INTO predicate_registry (name, is_temporal) VALUES
+                        ('interaction', true),
+                        ('life_event', true),
+                        ('contact_note', true),
+                        ('activity', true)
+                    ON CONFLICT (name) DO NOTHING
+                """)
         yield p
 
 
@@ -752,24 +609,21 @@ async def test_multiple_types_per_contact(pool):
 
 
 async def test_contact_info_orphan_after_contact_delete(pool):
-    """public.contact_info rows persist after contact deletion (no DB-level FK cascade).
+    """A deliberately unsupported no-FK shadow survives contact deletion.
 
-    public.contact_info intentionally has no,
-    since it lives in the shared schema and must be accessible from multiple butler schemas.
-    Referential integrity is enforced at the application layer.  This test verifies the
-    current DB behaviour: contact_info rows are NOT automatically removed when the parent
-    contact is hard-deleted.  Application code that performs hard contact deletes must
-    explicitly clean up public.contact_info rows.
+    This retains the old positive planted-row control for no-legacy-write
+    assertions. The current core chain retires this table; the test does not
+    claim that any current or historical migrated contact_info lacks its FK.
     """
     from butlers.tools.relationship import contact_create
 
     c = await contact_create(pool, "CascadeTest")
     await _insert_legacy_contact_info(pool, c["id"], "email", "cascade@example.com")
 
-    # Hard delete the contact — no FK cascade, so public.contact_info rows persist
+    # Hard delete the contact; the deliberately planted shadow has no FK.
     await pool.execute("DELETE FROM contacts WHERE id = $1", c["id"])
 
-    # Rows still exist: application layer must clean them up explicitly
+    # The planted legacy row is the positive companion to no-legacy-write controls.
     rows = await pool.fetch("SELECT * FROM public.contact_info WHERE contact_id = $1", c["id"])
     assert len(rows) == 1, (
         "public.contact_info has no FK cascade; orphan rows persist after contact deletion"
@@ -791,15 +645,15 @@ async def _make_owner_contact(pool):
     """
     entity_id = await pool.fetchval(
         """
-        INSERT INTO public.entities (canonical_name, name, entity_type, roles)
-        VALUES ('Owner', 'Owner', 'person', ARRAY['owner'])
+        INSERT INTO public.entities (canonical_name, entity_type, roles)
+        VALUES ('Owner', 'person', ARRAY['owner'])
         RETURNING id
         """
     )
     contact_id = await pool.fetchval(
         """
-        INSERT INTO contacts (first_name, listed, entity_id)
-        VALUES ('Owner', true, $1)
+        INSERT INTO contacts (name, first_name, listed, entity_id)
+        VALUES ('Owner', 'Owner', true, $1)
         RETURNING id
         """,
         entity_id,

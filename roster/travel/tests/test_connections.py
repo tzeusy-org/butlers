@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import APPROVAL_EVENTS, PENDING_ACTIONS
+from butlers.testing.migration import migrated_pool
 from butlers.tools.travel.connections import (
     acknowledge_connection_risk,
     compute_connection_verdict,
@@ -146,112 +146,21 @@ def test_negative_or_zero_gap_is_broken_not_a_crash():
 # recompute_trip_connections — real Postgres integration
 # ---------------------------------------------------------------------------
 
-CREATE_TRAVEL_SCHEMA = "CREATE SCHEMA IF NOT EXISTS travel"
-
-CREATE_TRIPS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.trips (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    start_date  DATE NOT NULL,
-    end_date    DATE NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'planned',
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_LEGS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.legs (
-    id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id                   UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                      TEXT NOT NULL DEFAULT 'flight',
-    carrier                   TEXT,
-    departure_airport_station TEXT,
-    departure_city            TEXT,
-    departure_at              TIMESTAMPTZ NOT NULL,
-    arrival_airport_station   TEXT,
-    arrival_city              TEXT,
-    arrival_at                TIMESTAMPTZ NOT NULL,
-    confirmation_number       TEXT,
-    pnr                       TEXT,
-    seat                      TEXT,
-    metadata                  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-    booking_record_id         UUID,
-    segment_index             INT
-)
-"""
-
-CREATE_AIRPORT_MINIMUM_CONNECT_SQL = """
-CREATE TABLE IF NOT EXISTS travel.airport_minimum_connect (
-    airport_code               TEXT PRIMARY KEY,
-    minimum_connect_minutes    INT NOT NULL,
-    interline_buffer_minutes   INT NOT NULL DEFAULT 30,
-    source                     TEXT,
-    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_CONNECTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.connections (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
-    available_minutes  INT,
-    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    computed_at        TIMESTAMPTZ NOT NULL,
-    verdict_changed_at TIMESTAMPTZ NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (inbound_leg_id, outbound_leg_id)
-)
-"""
 
 # Hand-written (not a registered schema_standins.py stand-in): mirrors
 # core_210/core_211's public.expected_signals shape closely enough for the
 # 'unknown' verdict test's read/write.
-CREATE_EXPECTED_SIGNALS_SQL = """
-CREATE TABLE IF NOT EXISTS public.expected_signals (
-    signal_key                 TEXT PRIMARY KEY,
-    producer                   TEXT NOT NULL,
-    producer_endpoint_identity TEXT,
-    expected_cadence_seconds   BIGINT NOT NULL,
-    last_observed_at           TIMESTAMPTZ,
-    measurability               TEXT NOT NULL,
-    unmeasurable_reason         TEXT,
-    evaluated_at                TIMESTAMPTZ NOT NULL,
-    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_INSIGHT_CANDIDATES_SQL = """
-CREATE TABLE IF NOT EXISTS insight_candidates (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    category           TEXT NOT NULL,
-    dedup_key          TEXT NOT NULL UNIQUE,
-    prepared_action_id UUID
-)
-"""
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as p:
-        await p.execute(CREATE_TRAVEL_SCHEMA)
-        await p.execute(CREATE_TRIPS_SQL)
-        await p.execute(CREATE_LEGS_SQL)
-        await p.execute(CREATE_AIRPORT_MINIMUM_CONNECT_SQL)
-        await p.execute(CREATE_CONNECTIONS_SQL)
-        await p.execute(CREATE_EXPECTED_SIGNALS_SQL)
-        await p.execute(PENDING_ACTIONS.ddl())
-        await p.execute(APPROVAL_EVENTS.ddl())
-        await p.execute(CREATE_INSIGHT_CANDIDATES_SQL)
+async def pool(postgres_container):
+    """Actual core/travel/approvals catalogs, including booking and door FKs."""
+    async with migrated_pool(postgres_container, chains=["core", "travel", "approvals"]) as p:
+        # Each case supplies its own admitted reference minimums.
+        await p.execute("TRUNCATE travel.airport_minimum_connect")
+        await p.execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+        )
         yield p
 
 
@@ -277,6 +186,13 @@ async def _insert_leg(
     booking_record_id=None,
     segment_index=None,
 ):
+    if booking_record_id is not None:
+        await pool.execute(
+            "INSERT INTO travel.booking_records (id, trip_id) VALUES ($1::uuid, $2::uuid) "
+            "ON CONFLICT (id) DO NOTHING",
+            booking_record_id,
+            trip_id,
+        )
     row = await pool.fetchrow(
         "INSERT INTO travel.legs (trip_id, type, carrier, departure_airport_station, "
         "arrival_airport_station, departure_at, arrival_at, booking_record_id, segment_index) "
@@ -562,11 +478,16 @@ class TestRecomputeTripConnectionsAgainstPostgres:
 
         async def persist_candidate(db, **kwargs):
             await db.execute(
-                "INSERT INTO insight_candidates (category, dedup_key, prepared_action_id) "
-                "VALUES ($1, $2, $3)",
+                "INSERT INTO insight_candidates "
+                "(category, dedup_key, prepared_action_id, origin_butler, priority, message, expires_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 kwargs["category"],
                 kwargs["dedup_key"],
                 kwargs["prepared_action_id"],
+                kwargs["origin_butler"],
+                kwargs["priority"],
+                kwargs["message"],
+                kwargs["expires_at"],
             )
             return {"status": "accepted"}
 

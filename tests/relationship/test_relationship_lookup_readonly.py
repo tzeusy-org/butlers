@@ -22,15 +22,14 @@ helper assigns.
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import asyncpg
 import pytest
 
+from butlers.testing.migration import migrated_pool
 from butlers.tools.relationship.relationship_lookup import relationship_lookup
 from butlers.tools.relationship.staleness import (
     AGING_MAX_DAYS,
@@ -46,99 +45,18 @@ pytestmark = [
 
 
 # ---------------------------------------------------------------------------
-# Schema provisioning — the three tables the lookup reads.
+# Schema provisioning — the actual three owning migration chains.
 # ---------------------------------------------------------------------------
 
 
-def _apply_evidence_schema():
-    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
-
-    ``roster/`` is not importable from ``tests/`` on its own, and the rel_034 /
-    rel_035 DDL must not be copied here (same loader as
-    ``tests/integration/test_email_identity_enrichment_db.py``).
-    """
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "relationship"
-        / "tests"
-        / "evidence_schema.py"
-    )
-    spec = importlib.util.spec_from_file_location("_relationship_evidence_schema", schema_path)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.apply_evidence_schema
-
-
-async def _provision_lookup_schema(p: asyncpg.Pool) -> None:
-    """Create public.entities, relationship.entity_facts, and a minimal facts table.
-
-    These mirror the columns the read path touches; the narrative ``facts`` table
-    is created minimal-but-sufficient so its SELECTs run and return nothing,
-    keeping the read-only assertions focused on the identity store + entities.
-    """
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name TEXT        NOT NULL DEFAULT '',
-            name           TEXT        NOT NULL DEFAULT '',
-            entity_type    TEXT        NOT NULL DEFAULT 'person',
-            aliases        TEXT[]      NOT NULL DEFAULT '{}',
-            metadata       JSONB       DEFAULT '{}'::jsonb,
-            roles          TEXT[]      NOT NULL DEFAULT '{}',
-            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-            id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-            subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-            predicate   TEXT        NOT NULL,
-            object      TEXT        NOT NULL,
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            src         TEXT        NOT NULL,
-            conf        FLOAT       NOT NULL DEFAULT 1.0,
-            last_seen   TIMESTAMPTZ,
-            observed_at TIMESTAMPTZ,
-            metadata    JSONB,
-            weight      INT,
-            verified    BOOL        NOT NULL DEFAULT false,
-            "primary"   BOOL,
-            validity    TEXT        NOT NULL DEFAULT 'active',
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    # rel_034/rel_035 stores: the identity fact below carries effective time.
-    await _apply_evidence_schema()(p)
-    # Minimal narrative facts table — only the columns the lookup SELECTs touch.
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS facts (
-            content_authority TEXT, authority_entity_id UUID,
-            id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            entity_id         UUID,
-            object_entity_id  UUID,
-            predicate         TEXT        NOT NULL DEFAULT '',
-            content           TEXT        NOT NULL DEFAULT '',
-            source_butler     TEXT,
-            confidence        FLOAT,
-            scope             TEXT        NOT NULL DEFAULT 'relationship',
-            validity          TEXT        NOT NULL DEFAULT 'active',
-            observed_at       TIMESTAMPTZ,
-            last_confirmed_at TIMESTAMPTZ,
-            valid_at          TIMESTAMPTZ,
-            created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-
-
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as p:
-        await _provision_lookup_schema(p)
+async def pool(postgres_container):
+    """Read-only controls use real identity, evidence, and narrative catalogs."""
+    async with migrated_pool(
+        postgres_container,
+        chains=["core", "memory", "relationship"],
+        schemas={"relationship": "relationship"},
+    ) as p:
         yield p
 
 
@@ -167,8 +85,8 @@ async def seeded_entity(pool: asyncpg.Pool) -> uuid.UUID:
     )
     await pool.execute(
         """
-        INSERT INTO facts (entity_id, predicate, content, source_butler, confidence, scope, observed_at)
-        VALUES ($1, 'prefers', 'morning calls', 'memory', 0.8, 'relationship', now())
+        INSERT INTO facts (subject, entity_id, predicate, content, source_butler, confidence, scope, observed_at)
+        VALUES ('entity:' || $1::text, $1, 'prefers', 'morning calls', 'memory', 0.8, 'relationship', now())
         """,
         eid,
     )

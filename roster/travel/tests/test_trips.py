@@ -8,6 +8,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
+
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -65,129 +68,26 @@ def _freeze_travel_clock(monkeypatch):
 # Schema helpers
 # ---------------------------------------------------------------------------
 
-CREATE_TRAVEL_SCHEMA = "CREATE SCHEMA IF NOT EXISTS travel"
-
-CREATE_TRIPS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.trips (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    start_date  DATE NOT NULL,
-    end_date    DATE NOT NULL,
-    status      TEXT NOT NULL CHECK (status IN ('planned', 'active', 'completed', 'cancelled')),
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_LEGS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.legs (
-    id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id                   UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                      TEXT NOT NULL CHECK (type IN ('flight', 'train', 'bus', 'ferry')),
-    carrier                   TEXT,
-    departure_airport_station TEXT,
-    departure_city            TEXT,
-    departure_at              TIMESTAMPTZ NOT NULL,
-    arrival_airport_station   TEXT,
-    arrival_city              TEXT,
-    arrival_at                TIMESTAMPTZ NOT NULL,
-    confirmation_number       TEXT,
-    pnr                       TEXT,
-    seat                      TEXT,
-    metadata                  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_ACCOMMODATIONS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.accommodations (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id             UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                TEXT NOT NULL CHECK (type IN ('hotel', 'airbnb', 'hostel')),
-    name                TEXT,
-    address             TEXT,
-    check_in            TIMESTAMPTZ,
-    check_out           TIMESTAMPTZ,
-    confirmation_number TEXT,
-    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_RESERVATIONS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.reservations (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id             UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                TEXT NOT NULL
-        CHECK (type IN ('car_rental', 'restaurant', 'activity', 'tour')),
-    provider            TEXT,
-    datetime            TIMESTAMPTZ,
-    confirmation_number TEXT,
-    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_DOCUMENTS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.documents (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id     UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type        TEXT NOT NULL CHECK (type IN ('boarding_pass', 'visa', 'insurance', 'receipt')),
-    blob_ref    TEXT,
-    expiry_date DATE,
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 # bu-2jtfw.8: trip_summary() now also queries travel.connections.
-CREATE_CONNECTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.connections (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
-    available_minutes  INT,
-    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    computed_at        TIMESTAMPTZ NOT NULL,
-    verdict_changed_at TIMESTAMPTZ NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (inbound_leg_id, outbound_leg_id)
-)
-"""
-
-CREATE_TRAVELLERS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.travellers (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    entity_id UUID,
-    traveller_key TEXT NOT NULL,
-    display_name TEXT
-)
-"""
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with travel schema tables."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute(CREATE_TRAVEL_SCHEMA)
-        await p.execute(CREATE_TRIPS_SQL)
-        await p.execute(CREATE_LEGS_SQL)
-        await p.execute(CREATE_ACCOMMODATIONS_SQL)
-        await p.execute(CREATE_RESERVATIONS_SQL)
-        await p.execute(CREATE_DOCUMENTS_SQL)
-        await p.execute(CREATE_CONNECTIONS_SQL)
-        await p.execute(CREATE_TRAVELLERS_SQL)
-        yield p
+async def pool(postgres_container):
+    """An independent database with the complete current travel chain.
+
+    Real migration tables, indexes, functions, constraints and seed rows replace
+    the copied subset. Existing test-owned data and business assertions remain.
+    """
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("travel", schema="travel"),
+        ),
+        pool_schema="travel",
+    ) as pool:
+        yield pool
 
 
 # ---------------------------------------------------------------------------

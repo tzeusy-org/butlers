@@ -16,7 +16,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 # ---------------------------------------------------------------------------
 # Pure-function tests (no DB required)
@@ -395,95 +396,18 @@ pytestmark_integration = [
 
 
 @pytest.fixture
-async def dunbar_pool(provisioned_postgres_pool):
-    """Provision a fresh DB with all tables needed by the Dunbar engine."""
-    async with provisioned_postgres_pool() as p:
-        # public.entities
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                listed BOOLEAN NOT NULL DEFAULT true,
-                posture TEXT NOT NULL DEFAULT 'active',
-                stay_in_touch_days INT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # contacts table (kept; dunbar now reads via contact_entity_map + entities)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                entity_id UUID,
-                stay_in_touch_days INT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge that
-        # dunbar reads instead of public.contacts (Phase 7.4e).
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        # important_dates table (for context bonus tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS important_dates (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                label TEXT NOT NULL,
-                month INT NOT NULL,
-                day INT NOT NULL,
-                year INT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # facts table
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL DEFAULT '',
-                embedding TEXT,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                entity_id UUID,
-                valid_at TIMESTAMPTZ,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID,
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_referenced_at TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                search_vector tsvector,
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-        await p.execute(
-            "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred ON facts (subject, predicate)"
-        )
+async def dunbar_pool(postgres_container):
+    """Real CRM, memory and catalog chains; each case owns its clone."""
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+        pool_schema="relationship",
+    ) as p:
         yield p
 
 
@@ -504,7 +428,7 @@ async def _make_contact(
         # reads these off public.entities (rel_031), not public.contacts.
         entity_row = await pool.fetchrow(
             """
-            INSERT INTO public.entities (name, listed, stay_in_touch_days)
+            INSERT INTO public.entities (canonical_name, listed, stay_in_touch_days)
             VALUES ($1, $2, $3)
             RETURNING id
             """,
@@ -515,8 +439,8 @@ async def _make_contact(
         entity_id = entity_row["id"]
     row = await pool.fetchrow(
         """
-        INSERT INTO contacts (first_name, entity_id, listed, stay_in_touch_days)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO contacts (name, first_name, entity_id, listed, stay_in_touch_days)
+        VALUES ($1::text, $1::text, $2, $3, $4)
         RETURNING id, first_name, entity_id, listed, stay_in_touch_days
         """,
         name,
@@ -1741,106 +1665,18 @@ _LAMBDA_NEW = math.log(2) / 30.0
 
 
 @pytest.fixture
-async def simple_pool(provisioned_postgres_pool):
-    """Provision a fresh database with entities, contacts, cem and facts tables."""
-    async with provisioned_postgres_pool() as p:
-        # public.entities — dunbar reads listed + stay_in_touch_days here (rel_031).
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                listed BOOLEAN NOT NULL DEFAULT true,
-                posture TEXT NOT NULL DEFAULT 'active',
-                stay_in_touch_days INT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                nickname TEXT,
-                company TEXT,
-                job_title TEXT,
-                gender TEXT,
-                pronouns TEXT,
-                avatar_url TEXT,
-                entity_id UUID,
-                stay_in_touch_days INT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL DEFAULT '',
-                embedding TEXT,
-                search_vector tsvector,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                entity_id UUID,
-                object_entity_id UUID,
-                valid_at TIMESTAMPTZ,
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_referenced_at TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-        await p.execute(
-            "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_new ON facts (subject, predicate)"
-        )
-        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
-        # cascade targets dunbar_tier_set's bulk override retraction disowns/deletes.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_schema TEXT NOT NULL,
-                source_table  TEXT NOT NULL,
-                source_id     UUID NOT NULL,
-                tenant_id     TEXT NOT NULL DEFAULT 'owner',
-                entity_id     UUID,
-                summary       TEXT NOT NULL DEFAULT '',
-                memory_type   TEXT NOT NULL DEFAULT 'fact',
-                confidence    DOUBLE PRECISION,
-                invalid_at    TIMESTAMPTZ,
-                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_schema, source_table, source_id)
-            )
-        """)
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
+async def simple_pool(postgres_container):
+    """Real CRM, memory and catalog chains; each case owns its clone."""
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+        pool_schema="relationship",
+    ) as p:
         yield p
 
 
@@ -1852,8 +1688,8 @@ async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) ->
     """
     entity_row = await pool.fetchrow(
         """
-        INSERT INTO public.entities (name, canonical_name, listed)
-        VALUES ($1, $2, $3)
+        INSERT INTO public.entities (canonical_name, aliases, listed)
+        VALUES ($1, ARRAY[$2::text], $3)
         RETURNING id
         """,
         first_name,
@@ -1863,8 +1699,8 @@ async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) ->
     entity_id = entity_row["id"]
     row = await pool.fetchrow(
         """
-        INSERT INTO contacts (first_name, entity_id, listed)
-        VALUES ($1, $2, $3)
+        INSERT INTO contacts (name, first_name, entity_id, listed)
+        VALUES ($1::text, $1::text, $2, $3)
         RETURNING id, entity_id, first_name, listed
         """,
         first_name,

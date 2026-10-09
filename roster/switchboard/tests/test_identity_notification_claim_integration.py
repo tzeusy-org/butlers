@@ -7,6 +7,8 @@ import shutil
 
 import pytest
 
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 from butlers.tools.switchboard.identity.inject import _claim_unknown_sender_notification
 
 pytestmark = [
@@ -17,22 +19,14 @@ pytestmark = [
 
 
 async def test_unknown_sender_notification_claim_is_durable_and_single_winner(
-    provisioned_postgres_pool,
+    postgres_container,
 ) -> None:
     """Competing pool connections can persist only one notification permission."""
-    async with provisioned_postgres_pool(schema="switchboard") as pool:
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
-        await pool.execute(
-            """
-            CREATE TABLE state (
-                key TEXT PRIMARY KEY,
-                value JSONB NOT NULL DEFAULT '{}'::jsonb,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                version INTEGER NOT NULL DEFAULT 1
-            )
-            """
-        )
-
+    async with migrated_pool(
+        postgres_container,
+        stages=(MigrationStage("core", schema="switchboard"),),
+        pool_schema="switchboard",
+    ) as pool:
         first, second = await asyncio.gather(
             _claim_unknown_sender_notification(pool, "telegram", "12345"),
             _claim_unknown_sender_notification(pool, "telegram", "12345"),

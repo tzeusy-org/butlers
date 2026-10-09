@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 from butlers.tools.switchboard.ingestion.ingest import (
     IngestAcceptedResponse,
     ingest_v1,
@@ -37,122 +39,26 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with message_inbox table (including ingestion_tier).
+async def pool(postgres_container):
+    """Use the complete real Switchboard chain and its partition functions.
 
-    WARNING: This fixture duplicates the database schema from sw_008 + sw_019 migrations.
-    If you update the message_inbox schema, you must manually update this fixture.
-
-    Scoped to the real ``switchboard`` schema (bu-nz1wx) so the bare table DDL
-    below lands in ``switchboard`` and the production code's schema-qualified
-    ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
-    one-db/multi-schema topology. ``public.ingestion_events`` stays explicitly
-    public (cross-schema, exactly as production writes it).
+    Core owns public.ingestion_events; the qualified core and Switchboard
+    stages own message_inbox, indexes, pinned definers and every constraint.
+    Each invocation retains an independent database and production JSONB codec.
     """
-    async with provisioned_postgres_pool(schema="switchboard") as p:
-        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
-        # Base message_inbox table (from sw_008 / test_ingest_api pattern)
-        await p.execute(
-            """
-            CREATE TABLE message_inbox (
-                id UUID NOT NULL DEFAULT gen_random_uuid(),
-                received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
-                raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                normalized_text TEXT NOT NULL,
-                decomposition_output JSONB,
-                dispatch_outcomes JSONB,
-                response_summary TEXT,
-                lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
-                schema_version TEXT NOT NULL DEFAULT 'message_inbox.v2',
-                processing_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                final_state_at TIMESTAMPTZ,
-                trace_id TEXT,
-                session_id UUID,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                attachments JSONB DEFAULT NULL,
-                direction TEXT NOT NULL DEFAULT 'inbound',
-                ingestion_tier TEXT NOT NULL DEFAULT 'full',
-                PRIMARY KEY (received_at, id)
-            ) PARTITION BY RANGE (received_at)
-            """
-        )
-
-        # Dedupe unique index (from sw_010)
-        await p.execute(
-            """
-            CREATE UNIQUE INDEX uq_message_inbox_dedupe_key_received_at
-            ON message_inbox ((request_context ->> 'dedupe_key'), received_at)
-            WHERE request_context ->> 'dedupe_key' IS NOT NULL
-            """
-        )
-
-        # ingestion_tier index (from sw_019)
-        await p.execute(
-            """
-            CREATE INDEX ix_message_inbox_ingestion_tier_received_at
-            ON message_inbox (ingestion_tier, received_at DESC)
-            """
-        )
-
-        # Partition management function
-        await p.execute(
-            """
-            CREATE OR REPLACE FUNCTION switchboard_message_inbox_ensure_partition(
-                reference_ts TIMESTAMPTZ DEFAULT now()
-            ) RETURNS TEXT
-            LANGUAGE plpgsql
-            AS $$
-            DECLARE
-                month_start TIMESTAMPTZ;
-                month_end TIMESTAMPTZ;
-                partition_name TEXT;
-            BEGIN
-                month_start := date_trunc('month', reference_ts);
-                month_end := month_start + INTERVAL '1 month';
-                partition_name := format('message_inbox_p%s', to_char(month_start, 'YYYYMM'));
-                EXECUTE format(
-                    'CREATE TABLE IF NOT EXISTS %I PARTITION OF message_inbox '
-                    'FOR VALUES FROM (%L) TO (%L)',
-                    partition_name, month_start, month_end
-                );
-                RETURN partition_name;
-            END;
-            $$
-            """
-        )
-
-        # Create partitions
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core", schema="switchboard"),
+            MigrationStage("switchboard", schema="switchboard"),
+        ),
+        pool_schema="switchboard",
+    ) as p:
+        # Ensure the test's actual month is admitted by the real pinned definer.
         await p.execute("SELECT switchboard_message_inbox_ensure_partition(now())")
         await p.execute(
             "SELECT switchboard_message_inbox_ensure_partition(now() + INTERVAL '1 month')"
         )
-
-        # Create public.ingestion_events table (core_019 migration)
-        await p.execute(
-            """
-            CREATE TABLE IF NOT EXISTS public.ingestion_events (
-                id                       UUID PRIMARY KEY,
-                received_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-                source_channel           TEXT NOT NULL,
-                source_provider          TEXT NOT NULL,
-                source_endpoint_identity TEXT NOT NULL,
-                source_sender_identity   TEXT,
-                source_sender_display_name TEXT,
-                source_thread_identity   TEXT,
-                external_event_id        TEXT NOT NULL,
-                dedupe_key               TEXT NOT NULL,
-                dedupe_strategy          TEXT NOT NULL,
-                ingestion_tier           TEXT NOT NULL,
-                policy_tier              TEXT NOT NULL,
-                triage_decision          TEXT,
-                triage_target            TEXT,
-                CONSTRAINT uq_ingestion_events_dedupe_key UNIQUE (dedupe_key)
-            )
-            """
-        )
-
         yield p
 
 

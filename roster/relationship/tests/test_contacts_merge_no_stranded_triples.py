@@ -35,19 +35,15 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_GRAPH_EDGES,
-    ENTITY_PREDICATE_REGISTRY,
-    ENTITY_REBIND_LOG,
-)
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 from butlers.tools.relationship.fact_temporal import (
     MUTATOR_UNSUPPORTED,
     PACKET_COLUMNS,
     TemporalError,
 )
 from roster.relationship.tests.evidence_schema import (
-    apply_evidence_schema,
+    plant_historical_notes_sentinel,
     simulate_temporal_cutover,
 )
 
@@ -64,148 +60,28 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with the relationship-merge schema surface used by merge_entities."""
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as p:
+async def pool(postgres_container):
+    """Real current chains for both the flat legacy CRM and qualified triple store."""
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship", schema="relationship"),
+        ),
+        pool_schema="relationship",
+        min_pool_size=2,
+        max_pool_size=8,
+    ) as p:
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        # Channel predicates are multi-cardinality: two different emails are two
-        # legitimate rows (the three-emails-three-rows rule) and must both survive.
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, cardinality, description)
-            VALUES
-                ('has-email',    'contact', 'literal', 'multi', 'Email address.'),
-                ('has-phone',    'contact', 'literal', 'multi', 'Phone number.'),
-                ('has-telegram', 'contact', 'literal', 'multi', 'Telegram handle.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0,
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        # memory-module narrative store, read by the compare snapshot's
-        # _fetch_narrative_facts_for_compare (LEFT side of the structural diff).
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id     UUID,
-                object_entity_id UUID,
-                predicate     TEXT        NOT NULL,
-                content       TEXT,
-                source_butler TEXT,
-                confidence       FLOAT    NOT NULL DEFAULT 1.0,
-                observed_at      TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                valid_at         TIMESTAMPTZ,
-                supersedes_id    UUID,
-                scope         TEXT        NOT NULL DEFAULT 'relationship',
-                validity      TEXT        NOT NULL DEFAULT 'active',
-                created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.merge_reviews (
-                id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_a        UUID        NOT NULL REFERENCES public.entities(id),
-                entity_b        UUID        NOT NULL REFERENCES public.entities(id),
-                shared_facts    JSONB       NOT NULL DEFAULT '[]'::jsonb,
-                divergent_facts JSONB       NOT NULL DEFAULT '[]'::jsonb,
-                outcome         TEXT        NOT NULL CHECK (outcome IN ('merged', 'dismissed')),
-                reviewed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # contacts table used by the contact_merge MCP path. Created unqualified
-        # (search_path-resolved) like the `facts` table above so contact_merge's
-        # unqualified `SELECT ... FROM contacts` resolves it.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                name        TEXT,
-                entity_id   UUID,
-                archived_at TIMESTAMPTZ,
-                listed      BOOL        NOT NULL DEFAULT true,
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # contact_merge re-points a fixed set of child tables in one transaction;
-        # a missing table aborts the whole transaction in Postgres, so create the
-        # minimal child tables it touches (single contact_id FK each is enough for
-        # the audit-row path under test).
-        for _child in (
-            "notes",
-            "interactions",
-            "dates",
-            "gifts",
-            "loans",
-            "group_members",
-            "contact_labels",
-            "contact_info",
-            "addresses",
-            "tasks",
-            "life_events",
-            "stay_in_touch",
-        ):
-            await p.execute(
-                f"CREATE TABLE IF NOT EXISTS {_child} "  # noqa: S608 — fixed literal names
-                "(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), contact_id UUID)"
-            )
-        await p.execute(
-            "CREATE TABLE IF NOT EXISTS relationships "
-            "(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), contact_a UUID, contact_b UUID)"
-        )
-        # contact_merge also re-points the legacy contacts-facts table named
-        # ``facts``; the narrative ``facts`` table created above has no contact_id,
-        # so add it (harmless — compute_merge_evidence reads entity_facts, not facts).
-        await p.execute("ALTER TABLE facts ADD COLUMN IF NOT EXISTS contact_id UUID")
-        # contact_entity_map (rel_029) — merge_entities now updates this instead of
-        # public.contacts.entity_id directly (bu-j77a5).
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        # bu-8478w: merge_entity_pair repoints entity_graph_edges rows for
-        # rewired entity_facts on the same connection.
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
+                    INSERT INTO relationship.entity_predicate_registry
+                        (predicate, kind, object_kind, cardinality, description)
+                    VALUES
+                        ('has-email',    'contact', 'literal', 'multi', 'Email address.'),
+                        ('has-phone',    'contact', 'literal', 'multi', 'Phone number.'),
+                        ('has-telegram', 'contact', 'literal', 'multi', 'Telegram handle.')
+                    ON CONFLICT (predicate) DO NOTHING
+                """)
         yield p
 
 
@@ -219,8 +95,8 @@ def _db_with_pool(pool: asyncpg.Pool) -> MagicMock:
 async def _insert_entity(pool: asyncpg.Pool, *, name: str, roles: list[str]) -> uuid.UUID:
     return await pool.fetchval(
         """
-        INSERT INTO public.entities (canonical_name, name, entity_type, roles)
-        VALUES ($1, $1, 'person', $2)
+        INSERT INTO public.entities (canonical_name, entity_type, roles)
+        VALUES ($1, 'person', $2)
         RETURNING id
         """,
         name,
@@ -469,6 +345,7 @@ class TestEffectiveTimeMutatorFences:
         from butlers.tools.relationship.contacts import contact_merge
 
         await simulate_temporal_cutover(pool)
+        await plant_historical_notes_sentinel(pool)
         target_entity = await _insert_entity(pool, name="Carol (canonical)", roles=[])
         source_entity = await _insert_entity(pool, name="Carol (duplicate)", roles=[])
         await _add_temporal_fact(pool, source_entity, "carol@example.test", uuid.uuid4())
@@ -482,7 +359,10 @@ class TestEffectiveTimeMutatorFences:
                 contact,
                 entity,
             )
-            await pool.execute("INSERT INTO notes (contact_id) VALUES ($1)", contact)
+            await pool.execute(
+                "INSERT INTO notes (contact_id, content) VALUES ($1, 'Historical fence sentinel')",
+                contact,
+            )
             contacts.append(contact)
         state = await _merge_state(pool)
         notes = await pool.fetch("SELECT id, contact_id FROM notes ORDER BY id")
@@ -649,26 +529,21 @@ class TestEffectiveTimeMutatorFences:
             )
         else:
             registry = importlib.import_module(f"butlers.{path}_account_registry")
-            table = f"public.{path}_accounts"
-            await pool.execute(f"""
-                CREATE TABLE {table} (
-                    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    entity_id    UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                    is_primary   BOOLEAN NOT NULL DEFAULT false,
-                    status       TEXT NOT NULL DEFAULT 'active',
-                    connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    revoked_at   TIMESTAMPTZ
+            # The real core chain already owns both registries and entity_info.
+            # Seed case DATA, including Steam's actual NOT NULL identity, without
+            # replacing the registry's FK/index/constraint catalog.
+            if path == "google":
+                account = await pool.fetchval(
+                    "INSERT INTO public.google_accounts (entity_id) VALUES ($1) RETURNING id",
+                    companion,
                 )
-            """)
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS public.entity_info (
-                    entity_id UUID, type TEXT, value TEXT
+            else:
+                account = await pool.fetchval(
+                    "INSERT INTO public.steam_accounts (entity_id, steam_id) "
+                    "VALUES ($1, $2) RETURNING id",
+                    companion,
+                    1,  # Synthetic local fixture DATA; no provider call or credential.
                 )
-            """)
-            account = await pool.fetchval(
-                f"INSERT INTO {table} (entity_id) VALUES ($1) RETURNING id",  # noqa: S608
-                companion,
-            )
             await registry.disconnect_account(pool, account, hard_delete=True)
             # Every version the companion subjects is gone, with its evidence.
             assert (
@@ -700,6 +575,7 @@ class TestEffectiveTimeMutatorFences:
         pool: asyncpg.Pool, target_entity: uuid.UUID, source_entity: uuid.UUID
     ) -> tuple[uuid.UUID, uuid.UUID]:
         """(target contact, source contact), each bridged and carrying one note."""
+        await plant_historical_notes_sentinel(pool)
         contacts = []
         for name, entity in (("Target", target_entity), ("Source", source_entity)):
             contact = await pool.fetchval(
@@ -710,7 +586,10 @@ class TestEffectiveTimeMutatorFences:
                 contact,
                 entity,
             )
-            await pool.execute("INSERT INTO notes (contact_id) VALUES ($1)", contact)
+            await pool.execute(
+                "INSERT INTO notes (contact_id, content) VALUES ($1, 'Historical fence sentinel')",
+                contact,
+            )
             contacts.append(contact)
         return contacts[0], contacts[1]
 

@@ -16,12 +16,9 @@ import asyncpg
 import pytest
 
 import butlers.tools.relationship.whatsapp_reconciliation as reconciliation
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_PREDICATE_REGISTRY,
-    ENTITY_REBIND_LOG,
-    PENDING_ACTIONS,
-)
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
+from butlers.testing.whatsmeow_schema import install_lid_store
 from butlers.tools.relationship.entity_merge import (
     LockedEntityPair,
     LockedGuardRejected,
@@ -34,7 +31,6 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
     build_whatsapp_reconciliation_plan,
     validate_empty_shell_locked,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,
@@ -44,157 +40,74 @@ pytestmark = [
 
 
 @pytest.fixture
-async def reconciliation_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool(
-        schema="relationship", min_pool_size=2, max_pool_size=8
+async def reconciliation_pool(postgres_container):
+    """Real catalogs plus historical015 no-FK Chronicler entity anchors.
+
+    Historical anchors are an explicit prerequisite for the guarded-source
+    tests, not a representation of the current Chronicler head (016 retires
+    the direct episode anchor). No chain-owned schema is hand composed.
+    """
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory", schema="relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals", schema="relationship"),
+            MigrationStage("chronicler", schema="chronicler", revision="chronicler_015"),
+        ),
+        pool_schema="relationship",
+        min_pool_size=2,
+        max_pool_size=8,
     ) as pool:
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+        await install_lid_store(pool)
+        # Non-query-owned table deliberately tests generic FK reference discovery.
         await pool.execute("CREATE SCHEMA IF NOT EXISTS reconciliation_test")
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS chronicler")
-        await pool.execute(
-            """
-            CREATE TABLE public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT NOT NULL,
-                entity_type TEXT NOT NULL DEFAULT 'person',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE public.whatsmeow_lid_map (
-                lid TEXT PRIMARY KEY,
-                pn TEXT NOT NULL
-            )
-            """
-        )
-        # core_009 deliberately leaves memory_catalog.entity_id without a FK.
-        await pool.execute(
-            """
-            CREATE TABLE public.memory_catalog (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_schema TEXT NOT NULL,
-                source_table TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                entity_id UUID,
-                summary TEXT NOT NULL DEFAULT '',
-                memory_type TEXT NOT NULL DEFAULT 'fact',
-                object_entity_id UUID REFERENCES public.entities(id),
-                UNIQUE (source_schema, source_table, source_id)
-            )
-            """
-        )
-        await pool.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await pool.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
-        await pool.execute(
-            """
-            CREATE TABLE relationship.entity_facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject UUID NOT NULL REFERENCES public.entities(id),
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                src TEXT NOT NULL,
-                conf FLOAT NOT NULL DEFAULT 1.0,
-                last_seen TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata JSONB,
-                weight INT,
-                verified BOOL NOT NULL DEFAULT false,
-                "primary" BOOL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE UNIQUE INDEX uq_reconciliation_entity_facts_active
-            ON relationship.entity_facts (subject, predicate, object)
-            WHERE validity = 'active'
-            """
-        )
-        await apply_evidence_schema(pool)
-        await pool.execute(
-            """
-            CREATE TABLE relationship.facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID,
-                object_entity_id UUID,
-                predicate TEXT NOT NULL,
-                content TEXT,
-                source_butler TEXT,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                observed_at TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                valid_at TIMESTAMPTZ,
-                supersedes_id UUID,
-                scope TEXT NOT NULL DEFAULT 'relationship',
-                validity TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await pool.execute(CONTACT_ENTITY_MAP.ddl(schema="relationship"))
-        await pool.execute(
-            """
-            CREATE TABLE relationship.merge_reviews (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_a UUID NOT NULL REFERENCES public.entities(id),
-                entity_b UUID NOT NULL REFERENCES public.entities(id),
-                shared_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
-                divergent_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
-                outcome TEXT NOT NULL,
-                reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await pool.execute(PENDING_ACTIONS.ddl(schema="relationship"))
-        await pool.execute(
-            """
+        await pool.execute("""
             CREATE TABLE reconciliation_test.arbitrary_entity_reference (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 arbitrary_owner UUID NOT NULL REFERENCES public.entities(id)
             )
-            """
-        )
-        # Chronicler intentionally carries entity anchors without public.entities
-        # FKs (chronicler_013 through chronicler_016).  These are explicit
-        # protected references, not discoverable through pg_constraint.
-        await pool.execute(
-            """
-            CREATE TABLE chronicler.episodes (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE chronicler.episode_entities (
-                episode_id UUID NOT NULL,
-                entity_id UUID NOT NULL,
-                PRIMARY KEY (episode_id, entity_id)
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE chronicler.point_events (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID
-            )
-            """
-        )
+        """)
+        await pool.execute("""
+            INSERT INTO chronicler.source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('reconciliation-control', 'supported')
+        """)
         yield pool
+
+
+async def _execute_chronicler_reference(pool, statement: str, *args):
+    """Complete the old reference seeds with the real mandatory parent data.
+
+    Original three parameter identities and their enforcing guards survive;
+    these finite DATA adaptations do not add defaults or change any catalog.
+    """
+    statement = (
+        statement.replace(
+            "INSERT INTO chronicler.episodes (entity_id, id) VALUES ($1, $2)",
+            "INSERT INTO chronicler.episodes (entity_id, id, source_name, source_ref, episode_type, start_at) "
+            "VALUES ($1, $2, 'reconciliation-control', $2::text, 'activity', now())",
+        )
+        .replace(
+            "INSERT INTO chronicler.point_events (entity_id, id) VALUES ($1, $2)",
+            "INSERT INTO chronicler.point_events (entity_id, id, source_name, source_ref, event_type, occurred_at) "
+            "VALUES ($1, $2, 'reconciliation-control', $2::text, 'activity', now())",
+        )
+        .replace(
+            "INSERT INTO chronicler.point_events (entity_id) VALUES ($1)",
+            "INSERT INTO chronicler.point_events (entity_id, source_name, source_ref, event_type, occurred_at) "
+            "VALUES ($1, 'reconciliation-control', gen_random_uuid()::text, 'activity', now())",
+        )
+    )
+    if statement.startswith("INSERT INTO chronicler.episode_entities"):
+        await pool.execute(
+            """
+            INSERT INTO chronicler.episodes (id, source_name, source_ref, episode_type, start_at)
+            VALUES ($1, 'reconciliation-control', $1::text, 'activity', now())
+        """,
+            args[1],
+        )
+    return await pool.execute(statement, *args)
 
 
 def _source_metadata(**extra: object) -> dict[str, object]:
@@ -464,7 +377,7 @@ async def test_every_shell_and_reference_class_is_excluded(reconciliation_pool) 
 
     memory_subject_source, _ = await _source_with_target(pool, "6591000006")
     await pool.execute(
-        "INSERT INTO relationship.facts (entity_id, predicate) VALUES ($1, 'contact_note')",
+        "INSERT INTO relationship.facts (subject, content, scope, entity_id, predicate) VALUES ('entity:' || $1::text, 'Controlled note', 'relationship', $1, 'contact_note')",
         memory_subject_source,
     )
     sources.append(memory_subject_source)
@@ -472,8 +385,8 @@ async def test_every_shell_and_reference_class_is_excluded(reconciliation_pool) 
     memory_object_source, _ = await _source_with_target(pool, "6591000007")
     await pool.execute(
         """
-        INSERT INTO relationship.facts (entity_id, object_entity_id, predicate)
-        VALUES ($1, $2, 'knows')
+        INSERT INTO relationship.facts (subject, content, scope, entity_id, object_entity_id, predicate)
+        VALUES ('entity:' || $1::text, 'Controlled relationship', 'relationship', $1, $2, 'knows')
         """,
         await _entity(pool, "Memory fact subject"),
         memory_object_source,
@@ -528,7 +441,7 @@ async def test_chronicler_no_fk_entity_references_are_protected(
 ) -> None:
     pool = reconciliation_pool
     source, _target = await _source_with_target(pool, "6591500001")
-    await pool.execute(insert_sql, source, uuid4())
+    await _execute_chronicler_reference(pool, insert_sql, source, uuid4())
 
     plan = await build_whatsapp_reconciliation_plan(pool)
 
@@ -842,7 +755,7 @@ async def test_locked_guard_serializes_new_decisions_and_protected_references(
                 )
                 for sql, *args in blocked_writes:
                     with pytest.raises(asyncpg.QueryCanceledError):
-                        await concurrent.execute(sql, *args)
+                        await _execute_chronicler_reference(concurrent, sql, *args)
                 await concurrent.execute("SET statement_timeout = 0")
 
     assert await pool.fetchval("SELECT count(*) FROM relationship.pending_actions") == 0

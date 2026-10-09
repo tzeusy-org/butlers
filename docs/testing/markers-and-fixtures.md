@@ -149,6 +149,13 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 ## Implementation Notes
 
+- Owned migrated-template builders close their complete newly created process group before
+  releasing single-flight ownership. A zero parent exit with an active descendant refuses
+  READY; timeout, cancellation and nonzero exits kill the same owned group and reap the
+  direct child. SQL/backend failures at the cache API become closed categories with raw
+  SQLAlchemy parameter context suppressed. Generated key principals are registered before
+  creation so a committed CREATE followed by a connection failure remains owned cleanup.
+  These lifecycle software controls do not establish PostgreSQL catalog parity or a speed gain.
 - CI's required `check` consumes the actual `needs` JSON under `always()`. That scheduling
   condition alone does not enforce a failed dependency. Changes/guards and applicable planner
   verdicts must succeed; preflight is required independently of heavy-shard classification.
@@ -217,3 +224,23 @@ Tests can use this to skip gracefully when Docker is not installed.
 ## Related Pages
 
 - [Testing Strategy](testing-strategy.md) -- Test pyramid and quality gates
+
+## Owned migrated templates
+
+`create_migrated_test_db` and `create_migrated_test_pool` remain genuinely fresh by default. Reviewed behavior fixtures can explicitly pass `fresh=eligible_fixture_fresh()`. `--migration-fixtures=fresh` switches only those adopted callers back to independent ordinary-role bootstrap and real migrations for a compatible comparison; it never changes selectors, markers, workers, tracing or coverage. Migration/bootstrap/ACL/role subjects and production `Database.provision` stay fresh. Cache parity tests explicitly exercise cloning as their subject under either comparison policy.
+
+`MigrationStage(chain, schema, revision)` retains the full order, including repeated core stages for the thirteen-schema Concierge fleet. `migrated_at` caches only a source-resolved prerequisite; the target upgrade/downgrade still runs in each test. No stamp substitutes for execution.
+
+Each testcontainer/process owns its private key roles, immutable complete sources and distinct borrower databases. Key principals are ordinary NOCREATEDB, NOINHERIT, non-superuser logins. Builds run unchanged bootstrap through the existing disposable control login and real migrations under the key login. No per-clone catalog reownership or production privilege changes occur. Full source bytes/modes, dependency/runtime/ambient migration inputs, server/extensions and ordered resolved stages bind the key. Unknown inputs, incomplete builds, changed authority or mismatched catalog/ACL/settings refuse reuse.
+
+Construction uses an owned bounded child with private input through stdin, discarded output, cancellation/timeout kill and reap before lock release. Async callers join cancelled construction and cleanup. Container teardown drops only its owned databases and roles before stopping the container. Full reference parity freezes clone/global catalogs before independently replaying migrations with the same principal, so bootstrap cannot repair and conceal a clone defect.
+
+Per-test JUnit carries `migration_provisioning` with the actual selected fixture policy and bounded operation spans: key hashing, cold construction, clone creation, database ACL/settings replay, catalog readback, pool connection/close and owned cleanup. Every span has a fixed operation label, success boolean and finite elapsed seconds; it carries no role/database/key/path/SQL or exception operands. Spans can nest, so their sum is not a wall-time measurement. A truncated/non-finite capture is explicitly incomplete. These source clocks need genuine matching PostgreSQL execution before any cost or performance claim.
+
+All former stand-in consumers now invoke ordered real chains; the compatibility-named parity nodes compare complete clone/fresh table catalogs, including all FK/unique constraints, owners/ACL/RLS/policies and actual trigger/function bodies. Independent-table creatability and omitted sibling triggers are retired mechanisms. The retained cases exercise real append-only writes, deferred sibling relationships, missing/extra/altered indexes and triggers, hostile search paths and wrong-schema refusal.
+
+Current Relationship behavior fixtures run the complete qualified Relationship chain once. Its later revisions alter fixed `relationship.*` tables even when the Alembic version table lives elsewhere, so replaying the complete chain first in `public` and then in `relationship` is not a valid current topology. The fixture pool uses `relationship,public`. Legacy contact IDs are compatibility data linked through the actual `contact_entity_map` and `public.entities`; no fixture recreates retired `public.contacts`. Some test-owned helpers still seed/read the Relationship-local shadow left by the real fresh-chain `rel_003` guard. Those rows are compatibility data and do not establish current runtime registration or caller authority. Deliberately historical migration subjects keep their explicit real prerequisite revisions and still execute their actual targets separately.
+
+The existing legacy contact-merge fence scenarios additionally plant the exact `rel_001` notes definition after the current chain has removed it at `rel_010`. The original required content and contact FK remain intact. This is a historical child-row sentinel: the tests must prove refusal before changing it, and the table is not represented as part of the current catalog. Current case seeds also obey the real entity-name/type uniqueness key and bind reused name and UUID parameters explicitly before rendering them as text; a permissive copied fixture must not determine their SQL types.
+
+This is SOURCE preparation. Stand-in retirement, genuine PostgreSQL parity, actual clone-cost measurement, complete historical/current population reconciliation, three compatible merge-group comparisons and ten-run hard bounds remain separately mandatory. No wall-clock gain is claimed. The active `owned-migrated-integration-templates` change preserves the complete preparation and delivery record.

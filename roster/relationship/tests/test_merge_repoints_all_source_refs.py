@@ -6,7 +6,7 @@ re-point EVERY reference to the source entity onto the survivor, not just
 Background: gifts / loans / interactions / contact-notes / life-events all live
 in the memory-module ``facts`` table keyed by ``entity_id`` (edge-facts point at
 the source via ``object_entity_id``), and linked CRM contacts live in
-``public.contacts`` keyed by ``entity_id``. The old handler moved only
+``relationship.contact_entity_map`` keyed by ``entity_id``. The old handler moved only
 ``relationship.entity_facts`` and tombstoned the source, so those narrative
 ``facts`` rows and linked contacts orphaned onto the merged-away (tombstone)
 entity and vanished from the surviving entity.
@@ -27,13 +27,8 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_GRAPH_EDGES,
-    ENTITY_PREDICATE_REGISTRY,
-    ENTITY_REBIND_LOG,
-)
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 pytestmark = [
     pytest.mark.integration,
@@ -43,118 +38,25 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with the full reference surface ``merge_entities`` must repoint.
-
-    Mirrors the live column layout closely enough for the handler:
-    - ``public.entities`` (survivor/tombstone),
-    - ``relationship.entity_facts`` + predicate registry + ``uq_ef_spo_active``,
-    - the memory-module ``facts`` store with ``object_entity_id`` / ``valid_at`` /
-      ``supersedes_id`` (the columns ``_repoint_facts_on_conn`` reads/writes),
-    - ``public.contacts`` (linked CRM records),
-    - ``relationship.merge_reviews`` (the in-transaction audit row).
-    """
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as p:
+async def pool(postgres_container):
+    """Real current CRM/triple chain; legacy contact IDs are compatibility data."""
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship", schema="relationship"),
+        ),
+        pool_schema="relationship",
+        min_pool_size=2,
+        max_pool_size=8,
+    ) as p:
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, cardinality, description)
-            VALUES ('has-email', 'contact', 'literal', 'multi', 'Email address.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0,
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        # Memory-module narrative store. Columns must include object_entity_id /
-        # valid_at / supersedes_id because _repoint_facts_on_conn reads/writes them.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id        UUID,
-                object_entity_id UUID,
-                predicate        TEXT        NOT NULL,
-                content          TEXT,
-                source_butler    TEXT,
-                confidence        FLOAT      NOT NULL DEFAULT 1.0,
-                observed_at       TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                valid_at          TIMESTAMPTZ,
-                supersedes_id     UUID,
-                scope            TEXT        NOT NULL DEFAULT 'relationship',
-                validity         TEXT        NOT NULL DEFAULT 'active',
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.merge_reviews (
-                id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_a        UUID        NOT NULL REFERENCES public.entities(id),
-                entity_b        UUID        NOT NULL REFERENCES public.entities(id),
-                shared_facts    JSONB       NOT NULL DEFAULT '[]'::jsonb,
-                divergent_facts JSONB       NOT NULL DEFAULT '[]'::jsonb,
-                outcome         TEXT        NOT NULL CHECK (outcome IN ('merged', 'dismissed')),
-                reviewed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.contacts (
-                id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                name        TEXT,
-                entity_id   UUID        REFERENCES public.entities(id) ON DELETE SET NULL,
-                archived_at TIMESTAMPTZ,
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge used by
-        # the re-point step in merge_entities (replacing direct public.contacts writes).
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        # bu-8478w: merge_entity_pair repoints entity_graph_edges rows for
-        # rewired entity_facts on the same connection.
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
+                    INSERT INTO relationship.entity_predicate_registry
+                        (predicate, kind, object_kind, cardinality, description)
+                    VALUES ('has-email', 'contact', 'literal', 'multi', 'Email address.')
+                    ON CONFLICT (predicate) DO NOTHING
+                """)
         yield p
 
 
@@ -167,8 +69,8 @@ def _db_with_pool(pool: asyncpg.Pool) -> MagicMock:
 async def _insert_entity(pool: asyncpg.Pool, *, name: str, roles: list[str]) -> uuid.UUID:
     return await pool.fetchval(
         """
-        INSERT INTO public.entities (canonical_name, name, entity_type, roles)
-        VALUES ($1, $1, 'person', $2)
+        INSERT INTO public.entities (canonical_name, entity_type, roles)
+        VALUES ($1, 'person', $2)
         RETURNING id
         """,
         name,
@@ -181,8 +83,8 @@ async def _add_narrative_fact(
 ) -> uuid.UUID:
     return await pool.fetchval(
         """
-        INSERT INTO facts (entity_id, predicate, content, scope, validity)
-        VALUES ($1, $2, $3, 'relationship', 'active')
+        INSERT INTO facts (subject, entity_id, predicate, content, scope, validity)
+        VALUES ('entity:' || ($1::uuid)::text, $1, $2, $3, 'relationship', 'active')
         RETURNING id
         """,
         entity_id,
@@ -194,7 +96,7 @@ async def _add_narrative_fact(
 class TestMergeRepointsAllSourceRefs:
     async def test_gifts_loans_notes_lifeevents_and_contacts_follow_survivor(self, pool):
         """A source carrying gifts/loans/interactions/notes/life-events in the
-        memory ``facts`` store AND a linked ``public.contacts`` row merges into a
+        memory ``facts`` store AND a linked ``contact_entity_map`` row merges into a
         target; every reference must move to the survivor, the source must be
         tombstoned, and NO row may reference the source entity_id afterward."""
         from butlers.api.router_discovery import discover_butler_routers
@@ -222,8 +124,8 @@ class TestMergeRepointsAllSourceRefs:
         other_id = await _insert_entity(pool, name="Bob", roles=[])
         edge_fact_id = await pool.fetchval(
             """
-            INSERT INTO facts (entity_id, object_entity_id, predicate, content, scope, validity)
-            VALUES ($1, $2, 'interacted_with', 'lunch', 'relationship', 'active')
+            INSERT INTO facts (subject, entity_id, object_entity_id, predicate, content, scope, validity)
+            VALUES ('entity:' || ($1::uuid)::text, $1, $2, 'interacted_with', 'lunch', 'relationship', 'active')
             RETURNING id
             """,
             other_id,
@@ -237,12 +139,9 @@ class TestMergeRepointsAllSourceRefs:
             source_id,
         )
 
-        # A linked CRM contact pointing at the source entity.
-        source_contact = await pool.fetchval(
-            "INSERT INTO public.contacts (name, entity_id) VALUES ($1, $2) RETURNING id",
-            "Alice (duplicate)",
-            source_id,
-        )
+        # A legacy contact ID is compatibility data, not a newly registered
+        # runtime identity. The current consumer reads only the real bridge.
+        source_contact = uuid.uuid4()
         # Populate contact_entity_map (rel_029) — this is what merge_entities now updates.
         await pool.execute(
             "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",

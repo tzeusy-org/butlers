@@ -470,11 +470,14 @@ it before changing the subsystem.
 
 ### Test traps
 
-- A test needing another butler's table builds it from `src/butlers/testing/schema_standins.py`
-  (e.g. `CONNECTOR_REGISTRY.ddl(schema="switchboard")`), never a local `CREATE TABLE`: a hand-copied
-  column list goes stale and the route degrades far from the cause.
-  `tests/config/test_schema_standin_parity.py` enforces it (`# schema-standin-exempt: <why>` opts a
-  non-query fixture out).
+- A test needing another butler's table runs its actual migration chain through
+  `src/butlers/testing/migration.py`, with explicit ordered schema stages, rather than copying
+  a table or trigger definition. Business fixtures may explicitly opt into worker-local
+  cloning; migration/bootstrap/ACL subjects stay genuinely fresh. The compatibility-named
+  `tests/config/test_schema_standin_parity.py` compares real clone/fresh catalogs and rejects
+  copied chain-owned query DDL; only finite source-bound non-query or historical fixtures
+  can carry a reviewed exception. The unused stand-in helper remains until hosted real
+  catalog/security survivor proof permits its technical retirement.
 - Test counts: always state the scope beside the number (`tests/` and `tests/ roster/` differ by
   thousands). Anchor the grep as `^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_` to exclude
   commented-out and in-string matches.

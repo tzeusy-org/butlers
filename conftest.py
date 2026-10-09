@@ -9,6 +9,7 @@ Canonical shared fixture definitions live in
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import os
 import shutil
@@ -513,6 +514,48 @@ def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
 
+def pytest_addoption(parser) -> None:
+    parser.addoption(
+        "--migration-fixtures",
+        choices=("cloned-eligible", "fresh"),
+        default="cloned-eligible",
+        help="Only explicitly adopted behavior fixtures: cloned setup or real fresh comparison",
+    )
+
+
+def pytest_configure(config) -> None:
+    from butlers.testing import migration
+
+    migration._ELIGIBLE_FIXTURES_FRESH = config.getoption("--migration-fixtures") == "fresh"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item):
+    """Own bounded per-test provisioning spans, including thread/async cleanup."""
+    from butlers.testing import migration_metrics
+
+    token = migration_metrics.begin(item.config.getoption("--migration-fixtures"))
+    try:
+        yield
+    finally:
+        migration_metrics.finish(token)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Use the existing JUnit carrier; no alternate population or verdict."""
+    from butlers.testing import migration_metrics
+
+    outcome = yield
+    report = outcome.get_result()
+    if report.when == "teardown":
+        value = migration_metrics.snapshot()
+        if value is not None and value["spans"]:
+            report.user_properties.append(
+                ("migration_provisioning", json.dumps(value, separators=(",", ":")))
+            )
+
+
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
     """Shared Postgres testcontainer for all DB-backed tests in this pytest session.
@@ -524,8 +567,13 @@ def postgres_container() -> Iterator[PostgresContainer]:
     """
     from testcontainers.postgres import PostgresContainer
 
+    from butlers.testing.migrated_templates import close_template_cache
+
     with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
+        try:
+            yield pg
+        finally:
+            close_template_cache(pg)
 
 
 @pytest.fixture

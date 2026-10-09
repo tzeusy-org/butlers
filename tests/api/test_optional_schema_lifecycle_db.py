@@ -51,7 +51,11 @@ from butlers.api.routers.secrets_v2 import (
     rotate_cli_credential,
     set_system_credential,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    eligible_fixture_fresh,
+    migration_db_name,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -80,6 +84,7 @@ def migrated_db_url(postgres_container) -> str:
         migration_db_name(),
         chains=["core", "memory"],
         schemas={"core": "lifecycle", "memory": "lifecycle"},
+        fresh=eligible_fixture_fresh(),
     )
 
 
@@ -95,6 +100,7 @@ def chronicler_memory_db_url(postgres_container) -> str:
             "chronicler": "chronicler",
             "memory": "chronicler_mem",
         },
+        fresh=eligible_fixture_fresh(),
     )
 
 
@@ -106,6 +112,7 @@ def chronicler_domain_only_db_url(postgres_container) -> str:
         migration_db_name(),
         chains=["core", "chronicler"],
         schemas={"core": "chronicler", "chronicler": "chronicler"},
+        fresh=eligible_fixture_fresh(),
     )
 
 

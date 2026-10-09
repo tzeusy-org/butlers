@@ -258,6 +258,157 @@ def test_create_migration_db_bootstraps_restore_drill_prerequisite(postgres_cont
     assert can_create_databases is False
     assert has_trusted_installer is True
 
+    # REQ-testing-052 / REQ-testing-053: real head templates preserve ordinary
+    # principals and full fresh-reference catalogs, not just table counts.
+    from butlers.testing.migrated_templates import TemplateError, template_cache
+
+    for chains, schemas in (
+        (["core"], None),
+        (["core", "switchboard"], {"switchboard": "switchboard"}),
+    ):
+        clone_a = create_migrated_test_db(
+            postgres_container, migration_db_name(), chains=chains, schemas=schemas, fresh=False
+        )
+        clone_b = create_migrated_test_db(
+            postgres_container, migration_db_name(), chains=chains, schemas=schemas, fresh=False
+        )
+        cache = template_cache(postgres_container)
+        fresh_reference = cache.fresh_reference(clone_b)
+        cache.assert_pristine_clone(clone_b)
+        assert clone_a != clone_b != fresh_reference
+        assert urlparse(clone_a).username == urlparse(clone_b).username
+        assert urlparse(clone_b).username == urlparse(fresh_reference).username
+        for target in (clone_a, clone_b, fresh_reference):
+            engine = create_engine(target)
+            try:
+                with engine.connect() as connection:
+                    assert (
+                        connection.execute(
+                            text(
+                                "SELECT rolcreatedb OR rolsuper OR rolcreaterole OR rolbypassrls "
+                                "FROM pg_roles WHERE rolname=current_user"
+                            )
+                        ).scalar_one()
+                        is False
+                    )
+            finally:
+                engine.dispose()
+        engine = create_engine(clone_b, isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as connection:
+                connection.execute(
+                    text("CREATE INDEX template_negative_index ON public.state(key)")
+                )
+                try:
+                    with pytest.raises(TemplateError, match="clone-catalog-parity-mismatch"):
+                        cache.assert_pristine_clone(clone_b)
+                finally:
+                    connection.execute(text("DROP INDEX template_negative_index"))
+                connection.execute(
+                    text("ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO butler_health_rw")
+                )
+                try:
+                    with pytest.raises(TemplateError, match="clone-catalog-parity-mismatch"):
+                        cache.assert_pristine_clone(clone_b)
+                finally:
+                    connection.execute(
+                        text(
+                            "ALTER DEFAULT PRIVILEGES REVOKE SELECT ON TABLES FROM butler_health_rw"
+                        )
+                    )
+        finally:
+            engine.dispose()
+        cache.assert_pristine_clone(clone_b)
+        # A real allowed commit and a wrong-role RLS refusal, with separate
+        # acquisitions after each transaction. The clone is not an admin pool.
+        engine = create_engine(clone_a)
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("SET LOCAL ROLE butler_general_rw"))
+                connection.execute(
+                    text(
+                        "INSERT INTO public.expected_signals(signal_key,producer,expected_cadence_seconds,measurability,evaluated_at) VALUES('template_runtime_guard','owner',1,'present',now())"
+                    )
+                )
+            with engine.connect() as connection:
+                assert (
+                    connection.execute(
+                        text(
+                            "SELECT producer_role='butler_general_rw' FROM public.expected_signals WHERE signal_key='template_runtime_guard'"
+                        )
+                    ).scalar_one()
+                    is True
+                )
+            with engine.connect() as connection:
+                assert (
+                    connection.execute(
+                        text(
+                            "SELECT has_table_privilege('butler_health_rw',"
+                            "'public.expected_signals','INSERT')"
+                        )
+                    ).scalar_one()
+                    is True
+                )
+            with pytest.raises(ProgrammingError) as denied:
+                with engine.begin() as connection:
+                    connection.execute(text("SET LOCAL ROLE butler_health_rw"))
+                    connection.execute(
+                        text(
+                            "INSERT INTO public.expected_signals(signal_key,producer,producer_role,expected_cadence_seconds,measurability,evaluated_at) VALUES('template_denied_guard','owner','butler_general_rw',1,'present',now())"
+                        )
+                    )
+            assert denied.value.orig.pgcode == "42501"
+            with engine.connect() as connection:
+                assert (
+                    connection.execute(
+                        text(
+                            "SELECT count(*) FROM public.expected_signals WHERE signal_key='template_denied_guard'"
+                        )
+                    ).scalar_one()
+                    == 0
+                )
+        finally:
+            engine.dispose()
+        engine = create_engine(clone_a)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO public.state(key,value) VALUES('template_isolation_guard','{}'::jsonb)"
+                    )
+                )
+                connection.execute(text("CREATE TABLE template_isolation_guard (id integer)"))
+            with engine.connect() as connection:
+                transaction = connection.begin()
+                connection.execute(
+                    text(
+                        "INSERT INTO public.state(key,value) VALUES('template_rollback_guard','{}'::jsonb)"
+                    )
+                )
+                transaction.rollback()
+        finally:
+            engine.dispose()
+        for target in (clone_b, fresh_reference):
+            engine = create_engine(target)
+            try:
+                with engine.connect() as connection:
+                    assert (
+                        connection.execute(
+                            text(
+                                "SELECT count(*) FROM public.state WHERE key LIKE 'template_%_guard'"
+                            )
+                        ).scalar_one()
+                        == 0
+                    )
+                    assert (
+                        connection.execute(
+                            text("SELECT to_regclass('public.template_isolation_guard')")
+                        ).scalar_one()
+                        is None
+                    )
+            finally:
+                engine.dispose()
+
 
 def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
     """Core migrations create all required tables and schemas; idempotent on second run."""

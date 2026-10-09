@@ -21,7 +21,13 @@ import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    create_migration_db,
+    eligible_fixture_fresh,
+    migration_db_name,
+)
 
 # All async tests in this file must share the session event loop so that the
 # asyncpg pools created in module/function-scoped fixtures (which themselves
@@ -99,13 +105,15 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
 
 @pytest.fixture(scope="module")
 def fleet_db_url(postgres_container) -> str:
-    from butlers.migrations import run_migrations
-
-    db_url = create_migration_db(postgres_container, migration_db_name())
-    for schema in _FLEET_SCHEMAS:
-        asyncio.run(run_migrations(db_url, chain="core", schema=schema))
-    asyncio.run(run_migrations(db_url, chain="concierge", schema="concierge"))
-    return db_url
+    # REQ-testing-052: preserve every repeated core/schema stage. The distinct
+    # test_upgrade_downgrade_round_trip still executes its full fresh subject.
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        stages=tuple(MigrationStage("core", schema) for schema in _FLEET_SCHEMAS)
+        + (MigrationStage("concierge", "concierge"),),
+        fresh=eligible_fixture_fresh(),
+    )
 
 
 @pytest.fixture

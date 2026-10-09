@@ -21,6 +21,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
+
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -46,206 +49,26 @@ def _load_travel_router():
 # Schema creation helpers
 # ---------------------------------------------------------------------------
 
-CREATE_TRAVEL_SCHEMA = "CREATE SCHEMA IF NOT EXISTS travel"
-
-CREATE_TRIPS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.trips (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    start_date  DATE NOT NULL,
-    end_date    DATE NOT NULL CHECK (end_date >= start_date),
-    status      TEXT NOT NULL
-                    CHECK (status IN ('planned', 'active', 'completed', 'cancelled')),
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_LEGS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.legs (
-    id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id                   UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                      TEXT NOT NULL CHECK (type IN ('flight', 'train', 'bus', 'ferry')),
-    carrier                   TEXT,
-    departure_airport_station TEXT,
-    departure_city            TEXT,
-    departure_at              TIMESTAMPTZ NOT NULL,
-    arrival_airport_station   TEXT,
-    arrival_city              TEXT,
-    arrival_at                TIMESTAMPTZ NOT NULL CHECK (arrival_at >= departure_at),
-    confirmation_number       TEXT,
-    pnr                       TEXT,
-    seat                      TEXT,
-    metadata                  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_ACCOMMODATIONS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.accommodations (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id             UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                TEXT NOT NULL CHECK (type IN ('hotel', 'airbnb', 'hostel')),
-    name                TEXT,
-    address             TEXT,
-    check_in            TIMESTAMPTZ,
-    check_out           TIMESTAMPTZ,
-    confirmation_number TEXT,
-    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_RESERVATIONS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.reservations (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id             UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                TEXT NOT NULL
-                            CHECK (type IN ('car_rental', 'restaurant', 'activity', 'tour')),
-    provider            TEXT,
-    datetime            TIMESTAMPTZ,
-    confirmation_number TEXT,
-    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_DOCUMENTS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.documents (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id     UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type        TEXT NOT NULL
-                    CHECK (type IN ('boarding_pass', 'visa', 'insurance', 'receipt')),
-    blob_ref    TEXT,
-    expiry_date DATE,
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 # bu-2jtfw.8: PNR-keyed booking identity, traveller party, and connections.
-CREATE_PUBLIC_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name  TEXT NOT NULL DEFAULT '',
-    entity_type     TEXT NOT NULL DEFAULT 'other',
-    aliases         TEXT[] NOT NULL DEFAULT '{}',
-    metadata        JSONB DEFAULT '{}'::jsonb,
-    roles           TEXT[] NOT NULL DEFAULT '{}',
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_BOOKING_RECORDS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.booking_records (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id            UUID REFERENCES travel.trips(id) ON DELETE CASCADE,
-    record_locator     TEXT,
-    source_message_id  TEXT,
-    provider           TEXT NOT NULL DEFAULT '',
-    metadata           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_BOOKING_RECORDS_UNIQUE_INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS ux_booking_records_provider_locator
-    ON travel.booking_records (provider, record_locator) WHERE record_locator IS NOT NULL
-"""
-
-ALTER_LEGS_ADD_SEGMENT_IDENTITY_SQL = """
-ALTER TABLE travel.legs
-    ADD COLUMN IF NOT EXISTS segment_index INT,
-    ADD COLUMN IF NOT EXISTS booking_record_id UUID
-        REFERENCES travel.booking_records(id) ON DELETE SET NULL
-"""
-
-CREATE_LEGS_SEGMENT_UNIQUE_INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS ux_legs_booking_record_segment
-    ON travel.legs (booking_record_id, segment_index)
-    WHERE booking_record_id IS NOT NULL AND segment_index IS NOT NULL
-"""
-
-CREATE_TRAVELLERS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.travellers (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id       UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    entity_id     UUID REFERENCES public.entities(id),
-    traveller_key TEXT NOT NULL,
-    display_name  TEXT,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (trip_id, traveller_key)
-)
-"""
-
-CREATE_LEG_PASSENGERS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.leg_passengers (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    leg_id         UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    traveller_id   UUID NOT NULL REFERENCES travel.travellers(id) ON DELETE CASCADE,
-    seat           TEXT,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (leg_id, traveller_id)
-)
-"""
-
-CREATE_AIRPORT_MINIMUM_CONNECT_SQL = """
-CREATE TABLE IF NOT EXISTS travel.airport_minimum_connect (
-    airport_code               TEXT PRIMARY KEY,
-    minimum_connect_minutes    INT NOT NULL,
-    interline_buffer_minutes   INT NOT NULL DEFAULT 30,
-    source                     TEXT,
-    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_CONNECTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS travel.connections (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
-    available_minutes  INT,
-    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    computed_at        TIMESTAMPTZ NOT NULL,
-    verdict_changed_at TIMESTAMPTZ NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (inbound_leg_id, outbound_leg_id)
-)
-"""
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with travel schema tables."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute(CREATE_TRAVEL_SCHEMA)
-        await p.execute(CREATE_TRIPS_SQL)
-        await p.execute(CREATE_LEGS_SQL)
-        await p.execute(CREATE_ACCOMMODATIONS_SQL)
-        await p.execute(CREATE_RESERVATIONS_SQL)
-        await p.execute(CREATE_DOCUMENTS_SQL)
-        await p.execute(CREATE_PUBLIC_ENTITIES_SQL)
-        await p.execute(CREATE_BOOKING_RECORDS_SQL)
-        await p.execute(CREATE_BOOKING_RECORDS_UNIQUE_INDEX_SQL)
-        await p.execute(ALTER_LEGS_ADD_SEGMENT_IDENTITY_SQL)
-        await p.execute(CREATE_LEGS_SEGMENT_UNIQUE_INDEX_SQL)
-        await p.execute(CREATE_TRAVELLERS_SQL)
-        await p.execute(CREATE_LEG_PASSENGERS_SQL)
-        await p.execute(CREATE_AIRPORT_MINIMUM_CONNECT_SQL)
-        await p.execute(CREATE_CONNECTIONS_SQL)
-        yield p
+async def pool(postgres_container):
+    """An independent database with the complete current travel chain.
+
+    Real migration tables, indexes, functions, constraints and seed rows replace
+    the copied subset. Existing test-owned data and business assertions remain.
+    """
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("travel", schema="travel"),
+        ),
+        pool_schema="travel",
+    ) as pool:
+        yield pool
 
 
 # ---------------------------------------------------------------------------

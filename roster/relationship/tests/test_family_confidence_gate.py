@@ -22,18 +22,13 @@ import uuid
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    ENTITY_GRAPH_EDGES,
-    ENTITY_PREDICATE_REGISTRY,
-    PENDING_ACTIONS,
-)
+from butlers.testing.migration import migrated_pool
 from butlers.tools.relationship.relationship_assert_fact import (
     _FAMILY_GATE_CONF,
     _FAMILY_GATE_PREDICATES,
     AssertOutcome,
     relationship_assert_fact,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 # ---------------------------------------------------------------------------
 # Test markers
@@ -51,71 +46,28 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with entities, entity_facts, predicate_registry, pending_actions."""
-    async with provisioned_postgres_pool() as p:
+async def pool(postgres_container):
+    """Complete real writer chains, including every sibling integrity guard."""
+    async with migrated_pool(
+        postgres_container,
+        chains=["core", "relationship", "approvals"],
+        schemas={"relationship": "relationship"},
+    ) as p:
+        await p.execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+        )
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        # Seed all predicates needed by gate tests: kinship + one non-kinship control
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES
-                ('parent-of',  'relational', 'entity', 'Parent-child relationship.'),
-                ('child-of',   'relational', 'entity', 'Child-parent relationship.'),
-                ('family-of',  'relational', 'entity', 'Family / kinship relationship.'),
-                ('partner-of', 'relational', 'entity', 'Spousal or partner relationship.'),
-                ('friend-of',  'relational', 'entity', 'Friendship relationship.'),
-                ('knows',      'relational', 'entity', 'General acquaintance.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        await p.execute(PENDING_ACTIONS.ddl())
-        # RFC 0031 Slice 2 (bu-8cdl1.8): the central writer projects
-        # entity-kind facts here in the same transaction as the fact write.
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
+                    INSERT INTO relationship.entity_predicate_registry
+                        (predicate, kind, object_kind, description)
+                    VALUES
+                        ('parent-of',  'relational', 'entity', 'Parent-child relationship.'),
+                        ('child-of',   'relational', 'entity', 'Child-parent relationship.'),
+                        ('family-of',  'relational', 'entity', 'Family / kinship relationship.'),
+                        ('partner-of', 'relational', 'entity', 'Spousal or partner relationship.'),
+                        ('friend-of',  'relational', 'entity', 'Friendship relationship.'),
+                        ('knows',      'relational', 'entity', 'General acquaintance.')
+                    ON CONFLICT (predicate) DO NOTHING
+                """)
         yield p
 
 
@@ -127,7 +79,7 @@ async def pool(provisioned_postgres_pool):
 async def _make_entity(pool: asyncpg.Pool, *, roles: list[str] | None = None) -> uuid.UUID:
     return await pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
-        "VALUES ('Test Person', 'person', $1) RETURNING id",
+        "VALUES ('Test Person ' || gen_random_uuid()::text, 'person', $1) RETURNING id",
         roles or [],
     )
 

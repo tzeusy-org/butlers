@@ -11,18 +11,17 @@ import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
-from urllib.parse import urlsplit, urlunsplit
-from uuid import uuid4
 
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_PREDICATE_REGISTRY,
-    ENTITY_REBIND_LOG,
-    PENDING_ACTIONS,
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    eligible_fixture_fresh,
+    migration_db_name,
 )
+from butlers.testing.whatsmeow_schema import install_lid_store
 from butlers.tools.relationship.whatsapp_reconciliation import (
     ContentBlindReconciliationReport,
     PartialApplyError,
@@ -33,27 +32,6 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT_PATH = _REPO_ROOT / "scripts" / "reconcile_whatsapp_entities.py"
-
-
-def _apply_evidence_schema():
-    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
-
-    ``roster/`` is not importable from ``tests/`` on its own, and the rel_034 /
-    rel_035 DDL must not be copied here (same loader as
-    ``tests/integration/test_email_identity_enrichment_db.py``).
-    """
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "relationship"
-        / "tests"
-        / "evidence_schema.py"
-    )
-    spec = importlib.util.spec_from_file_location("_relationship_evidence_schema", schema_path)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.apply_evidence_schema
 
 
 def _load_script():
@@ -320,83 +298,23 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
     postgres_container,
 ) -> None:
     """The isolated operator environment must reach and complete the real merge path."""
-    admin_url = postgres_container.get_connection_url().replace(
-        "postgresql+psycopg2://", "postgresql://", 1
+    # Real ordinary key login and complete current operator prerequisites.
+    database_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory", schema="relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals", schema="relationship"),
+        ),
+        fresh=eligible_fixture_fresh(),
     )
-    parsed = urlsplit(admin_url)
-    database_name = f"reconciliation_apply_{uuid4().hex[:12]}"
-    database_url = urlunsplit(parsed._replace(path=f"/{database_name}"))
-
-    admin = await asyncpg.connect(admin_url)
-    try:
-        await admin.execute(f'CREATE DATABASE "{database_name}"')
-    finally:
-        await admin.close()
-
+    database_url = database_url.replace("postgresql+psycopg2://", "postgresql://", 1)
     conn = await asyncpg.connect(database_url)
     try:
-        await conn.execute(
-            """
-            CREATE SCHEMA relationship;
-            CREATE TABLE public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT NOT NULL,
-                entity_type TEXT NOT NULL DEFAULT 'person',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            CREATE TABLE public.whatsmeow_lid_map (
-                lid TEXT PRIMARY KEY,
-                pn TEXT NOT NULL
-            );
-            CREATE TABLE relationship.entity_facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject UUID NOT NULL REFERENCES public.entities(id),
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                src TEXT NOT NULL,
-                conf FLOAT NOT NULL DEFAULT 1.0,
-                last_seen TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                verified BOOL NOT NULL DEFAULT false,
-                "primary" BOOL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            CREATE TABLE relationship.facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID,
-                object_entity_id UUID,
-                predicate TEXT NOT NULL,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                valid_at TIMESTAMPTZ,
-                supersedes_id UUID,
-                scope TEXT NOT NULL DEFAULT 'relationship',
-                validity TEXT NOT NULL DEFAULT 'active'
-            );
-            CREATE TABLE relationship.merge_reviews (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_a UUID NOT NULL REFERENCES public.entities(id),
-                entity_b UUID NOT NULL REFERENCES public.entities(id),
-                shared_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
-                divergent_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
-                outcome TEXT NOT NULL,
-                reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            """
-        )
-        await conn.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await conn.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
-        await conn.execute(CONTACT_ENTITY_MAP.ddl(schema="relationship"))
-        await conn.execute(PENDING_ACTIONS.ddl(schema="relationship"))
-        # rel_034 stores + rel_035 effective-time columns the merge path reads.
-        await _apply_evidence_schema()(conn)
+        await install_lid_store(conn)
         source_id = await conn.fetchval(
             """
             INSERT INTO public.entities (canonical_name, metadata)
