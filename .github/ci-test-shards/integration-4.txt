@@ -30,6 +30,7 @@ tests/api/test_runtime_probe_control_receipts_db.py
 tests/api/test_secrets_v2_schema_drift_db.py
 tests/config/test_init_db_bootstrap.py
 tests/config/test_init_db_runtime_attention_interface_version.py
+tests/config/test_relationship_temporal_cutover_candidate.py
 tests/config/test_schema_acl_isolation.py
 tests/config/test_stored_function_body_drift.py
 tests/config/test_switchboard_notifications_migration.py
