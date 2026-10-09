@@ -194,7 +194,6 @@ tests/modules/memory/test_reembedding.py
 tests/modules/memory/test_tools_preferences.py
 tests/modules/memory/test_tools_reading.py
 tests/modules/test_contact_backfill_atomicity.py
-tests/modules/test_document_renderer.py
 tests/modules/test_email_guard_context.py
 tests/modules/test_email_identity_matching.py
 tests/modules/test_gate.py

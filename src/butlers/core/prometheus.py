@@ -1,15 +1,7 @@
-"""Prometheus HTTP API query helpers.
+"""Prometheus HTTP API query helpers for dashboard API callers.
 
-Provides async functions for PromQL instant and range queries via the
-Prometheus HTTP API (``/api/v1/query`` and ``/api/v1/query_range``).
-
-No auth headers are required — the Prometheus endpoint is Tailscale-gated;
-plain HTTP internally.
-
-All functions return results on success and surface errors as dicts rather
-than raising, so callers (MCP tools) can relay descriptive messages to the
-LLM without unhandled exceptions crossing the MCP boundary.
-"""
+The surviving instant and range transports retain their existing request,
+timeout, result and error behavior. API callers own aggregation and degradation."""
 
 from __future__ import annotations
 
