@@ -23,6 +23,7 @@ import uuid
 import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -40,6 +41,45 @@ class TemplateError(RuntimeError):
     """A closed, content-free failure in owned test provisioning."""
 
 
+def _closed_failure(function):
+    """SQLAlchemy formats bound parameters; none may escape the cache API."""
+
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except TemplateError:
+            raise
+        except Exception:
+            raise TemplateError("owned-template-operation-failed") from None
+
+    return guarded
+
+
+def _active_group_members(group: int) -> bool:
+    """Observe only PID/group/state, never command lines or process environments.
+
+    The Linux CI owner can prove descendants cannot continue mutating SQL after
+    its direct child exits. Descendant reaping belongs to their OS parent;
+    this process proves none remain active and reaps its own direct child.
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        raise TemplateError("process-group-observation-unavailable")
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rpartition(")")[2].split()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if len(fields) < 3:
+            raise TemplateError("process-group-observation-unavailable")
+        if int(fields[2]) == group and fields[0] not in ("Z", "X"):
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class MigrationStage:
     """An ordered real chain target; duplicate chains in different schemas survive."""
@@ -51,6 +91,13 @@ class MigrationStage:
     def resolved(self) -> MigrationStage:
         from butlers.migrations import _chain_script_directory, _normalize_schema, get_chain_head
 
+        if (
+            type(self.chain) is not str
+            or not self.chain
+            or (self.schema is not None and type(self.schema) is not str)
+            or (self.revision is not None and (type(self.revision) is not str or not self.revision))
+        ):
+            raise TemplateError("unresolved-stage")
         target = self.revision or get_chain_head(self.chain)
         directory = _chain_script_directory(self.chain)
         revision = directory.get_revision(target)
@@ -116,6 +163,7 @@ def _environment_inputs(module: ast.Module) -> set[str]:
                     aliases[target.id] = dotted(node.value)
 
     inputs = set()
+    parents = {child: node for node in ast.walk(module) for child in ast.iter_child_nodes(node)}
     for node in ast.walk(module):
         argument = None
         if isinstance(node, ast.Call):
@@ -126,7 +174,11 @@ def _environment_inputs(module: ast.Module) -> set[str]:
                 argument = node.args[0] if node.args else None
             elif function.startswith("os.environ."):
                 raise TemplateError("unbound-migration-environment")
-            elif function == "getattr" and node.args and dotted(node.args[0]) == "os":
+            elif (
+                function in ("getattr", "vars")
+                and node.args
+                and dotted(node.args[0]) in ("os", "os.environ")
+            ):
                 raise TemplateError("unbound-migration-environment")
         elif isinstance(node, ast.Subscript) and dotted(node.value) == "os.environ":
             argument = node.slice
@@ -142,6 +194,29 @@ def _environment_inputs(module: ast.Module) -> set[str]:
         if not isinstance(key, str):
             raise TemplateError("unbound-migration-environment")
         inputs.add(key)
+    # Iteration, passing the entire mapping, reflection and indirect accessor
+    # calls have no finite key witness. Simple aliases remain supported, but
+    # each use of an alias must itself be a supported read or another alias.
+    for node in ast.walk(module):
+        if isinstance(node, (ast.Name, ast.Attribute)) and dotted(node) == "os.environ":
+            parent = parents.get(node)
+            supported = (
+                (
+                    isinstance(parent, ast.Attribute)
+                    and parent.value is node
+                    and parent.attr == "get"
+                )
+                or (isinstance(parent, ast.Subscript) and parent.value is node)
+                or (
+                    isinstance(parent, ast.Assign)
+                    and parent.value is node
+                    and len(parent.targets) == 1
+                    and isinstance(parent.targets[0], ast.Name)
+                )
+                or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store))
+            )
+            if not supported:
+                raise TemplateError("unbound-migration-environment")
     return inputs
 
 
@@ -305,13 +380,22 @@ class _Backend:
                 time.sleep(0.02)
             if child.returncode != 0:
                 raise TemplateError("construction-failed")
+            if _active_group_members(child.pid):
+                raise TemplateError("construction-left-active-descendant")
         finally:
-            if child.poll() is None:
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            # poll() reaps only the direct parent. Its descendants may still
+            # own connections even after a nominal zero exit, so always kill
+            # the owned group and prove no active member remains.
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             child.wait(timeout=_CONTROL_SECONDS)
+            cleanup_deadline = time.monotonic() + _CONTROL_SECONDS
+            while _active_group_members(child.pid):
+                if time.monotonic() >= cleanup_deadline:
+                    raise TemplateError("construction-group-cleanup-incomplete")
+                time.sleep(0.02)
 
     def authority(self, entry: _Entry, *, complete: bool = False) -> tuple:
         with _connection(self.admin_url) as connection:
@@ -497,9 +581,14 @@ class _Backend:
             raise TemplateError("schema-dump-failed")
         raw = result.output
         # Recent matching clients may emit one unpredictable psql guard pair.
-        tokens = re.findall(rb"(?m)^\\(?:un)?restrict ([A-Za-z0-9]+)\r?\n", raw)
+        tokens = re.findall(rb"(?m)^\\(restrict|unrestrict) ([A-Za-z0-9]+)\r?\n", raw)
         if tokens:
-            if len(tokens) != 2 or tokens[0] != tokens[1]:
+            if (
+                len(tokens) != 2
+                or tokens[0][0] != b"restrict"
+                or tokens[1][0] != b"unrestrict"
+                or tokens[0][1] != tokens[1][1]
+            ):
                 raise TemplateError("unknown-dump-wrapper")
             raw = re.sub(rb"(?m)^\\(?:un)?restrict [A-Za-z0-9]+\r?\n", b"", raw)
         return raw
@@ -519,7 +608,7 @@ class _Backend:
 
     def drop_role(self, role: str) -> None:
         with _connection(self.admin_url) as connection:
-            connection.execute(text(f"DROP ROLE {_ident(role)}"))
+            connection.execute(text(f"DROP ROLE IF EXISTS {_ident(role)}"))
 
 
 class TemplateCache:
@@ -544,6 +633,7 @@ class TemplateCache:
         finally:
             self.lock.release()
 
+    @_closed_failure
     def borrow(self, name: str, stages: tuple[MigrationStage, ...], cancel: threading.Event) -> str:
         from butlers.testing.migration import provisioning_lock
 
@@ -563,9 +653,11 @@ class TemplateCache:
                     profile,
                 )
                 self.databases.add(entry.source_name)
+                # A CREATE can commit before a connection/finalizer raises.
+                # Register the exact owned identity before the first side effect.
+                self.roles.add(entry.role)
                 try:
                     self.backend.create_role(entry)
-                    self.roles.add(entry.role)
                     from butlers.testing.migration import _DISPOSABLE_MIGRATION_ROLES
 
                     _DISPOSABLE_MIGRATION_ROLES.add(entry.role)
@@ -582,6 +674,11 @@ class TemplateCache:
                 except BaseException:
                     self.backend.drop_db(entry.source_name)
                     self.databases.discard(entry.source_name)
+                    self.backend.drop_role(entry.role)
+                    self.roles.discard(entry.role)
+                    from butlers.testing.migration import _DISPOSABLE_MIGRATION_ROLES
+
+                    _DISPOSABLE_MIGRATION_ROLES.discard(entry.role)
                     raise
             if not entry.ready or self.backend.authority(entry) != entry.authority:
                 self.entries.pop(key, None)
@@ -609,6 +706,7 @@ class TemplateCache:
                 self.databases.discard(name)
                 raise
 
+    @_closed_failure
     def fresh_reference(self, clone_url: str) -> str:
         """Observe clone/global metadata BEFORE bootstrap can repair a defect."""
         name = urlparse(clone_url).path.lstrip("/")
@@ -643,6 +741,7 @@ class TemplateCache:
                 self.databases.discard(reference)
                 raise
 
+    @_closed_failure
     def assert_pristine_clone(self, clone_url: str) -> None:
         """A positioned full-catalog guard before a fixture mutates its clone."""
         name = urlparse(clone_url).path.lstrip("/")
@@ -659,6 +758,7 @@ class TemplateCache:
             ):
                 raise TemplateError("clone-catalog-parity-mismatch")
 
+    @_closed_failure
     def discard_clone(self, clone_url: str) -> None:
         name = urlparse(clone_url).path.lstrip("/")
         with self._locked():
@@ -669,24 +769,33 @@ class TemplateCache:
             self.databases.remove(name)
 
     def close(self) -> None:
-        with self._locked():
+        # Failed cleanup retains exact ownership for a bounded retry. Borrow
+        # remains closed even when teardown could not remove every resource.
+        if not self.lock.acquire(timeout=_WAIT_SECONDS):
+            raise TemplateError("cache-owner-timeout")
+        try:
             self.closed = True
             refused = False
             for name in sorted(self.databases):
                 try:
                     self.backend.drop_db(name)
+                    self.databases.discard(name)
                 except Exception:
                     refused = True
             for role in sorted(self.roles):
                 try:
                     self.backend.drop_role(role)
+                    from butlers.testing.migration import _DISPOSABLE_MIGRATION_ROLES
+
+                    _DISPOSABLE_MIGRATION_ROLES.discard(role)
+                    self.roles.discard(role)
                 except Exception:
                     refused = True
-            self.databases.clear()
-            self.roles.clear()
             self.entries.clear()
             if refused:
                 raise TemplateError("owned-cleanup-incomplete")
+        finally:
+            self.lock.release()
 
 
 def template_cache(container: object) -> TemplateCache:
@@ -700,9 +809,12 @@ def template_cache(container: object) -> TemplateCache:
 
 def close_template_cache(container: object) -> None:
     with _CACHES_LOCK:
-        cache = _CACHES.pop(container, None)
+        cache = _CACHES.get(container)
     if cache is not None:
         cache.close()
+        with _CACHES_LOCK:
+            if _CACHES.get(container) is cache:
+                _CACHES.pop(container)
 
 
 def _build(payload: dict) -> None:

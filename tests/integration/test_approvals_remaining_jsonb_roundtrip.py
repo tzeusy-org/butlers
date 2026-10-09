@@ -62,13 +62,7 @@ from butlers.modules.approvals.autonomy_tracker import record_approval
 from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.approvals.models import ActionStatus, PendingAction
 from butlers.modules.approvals.module import ApprovalsModule
-from butlers.testing.schema_standins import (
-    APPROVAL_EVENTS,
-    APPROVAL_RULES,
-    AUTONOMY_APPROVAL_HISTORY,
-    AUTONOMY_SUGGESTIONS,
-    PENDING_ACTIONS,
-)
+from butlers.testing.migration import migrated_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -79,19 +73,9 @@ pytestmark = [
 
 
 @pytest.fixture
-async def approvals_full_pool(provisioned_postgres_pool):
-    """Provision a fresh database with the full approvals + autonomy schema.
-
-    The approvals tables come from :mod:`butlers.testing.schema_standins`, so
-    the parity guard keeps every fixture table honest against the approvals
-    chain.
-    """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(PENDING_ACTIONS.ddl())
-        await pool.execute(APPROVAL_RULES.ddl())
-        await pool.execute(APPROVAL_EVENTS.ddl())
-        await pool.execute(AUTONOMY_APPROVAL_HISTORY.ddl())
-        await pool.execute(AUTONOMY_SUGGESTIONS.ddl())
+async def approvals_full_pool(postgres_container):
+    """Complete real approvals + autonomy, including live-reference guards."""
+    async with migrated_pool(postgres_container, chains=["core", "approvals"]) as pool:
         yield pool
 
 

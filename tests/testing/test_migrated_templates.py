@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import os
+import signal
 import subprocess
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from urllib.parse import urlparse
 
 import pytest
+from sqlalchemy.exc import ProgrammingError
 
 from butlers.testing import migrated_templates
 from butlers.testing.migrated_templates import MigrationStage, TemplateCache, TemplateError
@@ -81,7 +86,7 @@ class _MemoryBackend:
         self.databases.discard(name)
 
     def drop_role(self, role):
-        self.roles.remove(role)
+        self.roles.discard(role)
 
 
 def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monkeypatch, tmp_path):
@@ -131,6 +136,8 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
     children = []
     marker = tmp_path / "builder-started"
     healthy = False
+    descendant = True
+    fail_parent = False
 
     def helper_child(args, **kwargs):
         if args[1:] != ["-m", "butlers.testing.migrated_templates", "--build"]:
@@ -138,8 +145,13 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
         source = (
             "import os,sys,time;from pathlib import Path;sys.stdin.buffer.read();"
             "os.write(1,b'x'*262144);os.write(2,b'y'*262144);"
-            f"Path({str(marker)!r}).write_text('ready');"
-            + ("pass" if healthy else "time.sleep(30)")
+            + (
+                "import subprocess;subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
+                if descendant
+                else ""
+            )
+            + f"Path({str(marker)!r}).write_text('ready');"
+            + ("sys.exit(3)" if fail_parent else "pass" if healthy else "time.sleep(30)")
         )
         child = original_popen([args[0], "-c", source], **kwargs)
         children.append(child)
@@ -154,6 +166,7 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
         with pytest.raises(TemplateError, match="construction-timeout"):
             cache.borrow("timeout", stages, threading.Event())
         assert marker.exists() and children[-1].poll() is not None
+        assert not migrated_templates._active_group_members(children[-1].pid)
         assert "timeout" not in backend.databases and not cache.entries
         marker.unlink()
         cancelled = threading.Event()
@@ -167,7 +180,22 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
             with pytest.raises(TemplateError, match="construction-cancelled"):
                 pending.result(5)
         assert children[-1].poll() is not None and not cache.entries
+        assert not migrated_templates._active_group_members(children[-1].pid)
         healthy = True
+        descendant = True
+        with pytest.raises(TemplateError, match="construction-left-active-descendant"):
+            cache.borrow("descendant-refusal", stages, threading.Event())
+        assert children[-1].returncode == 0
+        assert not migrated_templates._active_group_members(children[-1].pid)
+        assert "descendant-refusal" not in backend.databases and not cache.entries
+        fail_parent = True
+        with pytest.raises(TemplateError, match="^construction-failed$"):
+            cache.borrow("nonzero-refusal", stages, threading.Event())
+        assert children[-1].returncode == 3
+        assert not migrated_templates._active_group_members(children[-1].pid)
+        assert "nonzero-refusal" not in backend.databases and not cache.entries
+        fail_parent = False
+        descendant = False
         assert (
             urlparse(cache.borrow("released-positive", stages, threading.Event())).path
             == "/released-positive"
@@ -175,9 +203,77 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
         assert children[-1].returncode == 0
     finally:
         for child in children:
+            # The neutralized old builder may publish after its parent exits.
+            # The test controller still owns and kills its planted group.
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             if child.poll() is None:
                 child.kill()
             child.wait(timeout=5)
+        cache.close()
+
+    # SQLAlchemy renders bound parameters when an exception escapes. A real
+    # typed synthetic failure must become a closed category at the public API;
+    # no credentials, SQL operands or formatted exception enter a receipt.
+    backend = _MemoryBackend()
+    cache = TemplateCache(backend)
+    private_parameters = []
+
+    class Connection:
+        def execute(self, statement, params):
+            private_parameters.append(params["password"])
+            raise ProgrammingError(str(statement), params, ValueError())
+
+    @contextmanager
+    def private_connection(url):
+        yield Connection()
+
+    def private_sql_failure(entry):
+        migrated_templates._Backend.create_role(backend, entry)
+
+    monkeypatch.setattr(migrated_templates, "_connection", private_connection)
+    monkeypatch.setattr(backend, "create_role", private_sql_failure)
+    try:
+        with pytest.raises(TemplateError, match="^owned-template-operation-failed$") as caught:
+            cache.borrow("private-error", stages, threading.Event())
+        assert caught.value.__suppress_context__ is True
+        rendered = "".join(traceback.format_exception(caught.value))
+        assert private_parameters and all(value not in rendered for value in private_parameters)
+        assert not cache.entries and not backend.databases
+        original_drop = backend.drop_db
+
+        def private_cleanup_failure(name):
+            raise ProgrammingError(
+                "private cleanup", {"password": private_parameters[0]}, ValueError()
+            )
+
+        monkeypatch.setattr(backend, "drop_db", private_cleanup_failure)
+        with pytest.raises(TemplateError, match="^owned-template-operation-failed$") as caught:
+            cache.borrow("private-cleanup", stages, threading.Event())
+        assert all(
+            value not in "".join(traceback.format_exception(caught.value))
+            for value in private_parameters
+        )
+        with pytest.raises(TemplateError, match="^owned-cleanup-incomplete$") as caught:
+            cache.close()
+        assert all(
+            value not in "".join(traceback.format_exception(caught.value))
+            for value in private_parameters
+        )
+        assert cache.closed and cache.databases
+        with pytest.raises(TemplateError, match="^cache-owner-closed$"):
+            cache.borrow("closed-owner", stages, threading.Event())
+        monkeypatch.setattr(backend, "drop_db", original_drop)
+        cache.close()
+        assert not cache.databases and not cache.roles and not backend.databases
+        cache = TemplateCache(backend)
+        monkeypatch.setattr(backend, "create_role", _MemoryBackend.create_role.__get__(backend))
+        assert urlparse(cache.borrow("privacy-restored", stages, threading.Event())).path == (
+            "/privacy-restored"
+        )
+    finally:
         cache.close()
 
     # Actual filesystem/Git inputs and finite ambient aliases bind the key;
@@ -210,6 +306,17 @@ def test_owned_cache_publishes_once_and_refuses_failed_or_changed_authority(monk
     assert keys == {"TEMPLATE_KEY", "OTHER_KEY"}
     with pytest.raises(TemplateError, match="unbound-migration-environment"):
         migrated_templates._environment_inputs(ast.parse("import os; x=os.getenv(unknown_key)"))
+    for source in (
+        "import os; keys=list(os.environ)",
+        "from os import environ as env; x=dict(env)",
+        "import os; env=os.environ; x=getattr(env,'get')('KEY')",
+        "import os; x=vars(os)['environ']",
+    ):
+        with pytest.raises(TemplateError, match="unbound-migration-environment"):
+            migrated_templates._environment_inputs(ast.parse(source))
+    for stage in (MigrationStage(True), MigrationStage("core", revision=False)):
+        with pytest.raises(TemplateError, match="unresolved-stage"):
+            stage.resolved()
 
     # Repeated cancellation while actual cleanup is blocked must keep the
     # thread owner joined, not turn a cancelled await into orphaned IO.

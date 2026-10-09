@@ -29,7 +29,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
+from butlers.testing.migration import migrated_pool
 
 # ---------------------------------------------------------------------------
 # Helper: load the migration module.
@@ -94,85 +94,22 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with public.entities, relationship.credentials, relationship.entity_facts."""
-    async with provisioned_postgres_pool() as p:
-        # 1. public.entities (FK target for relationship.credentials.entity_id)
+async def pool(postgres_container):
+    """Complete real writer chains, including every sibling integrity guard."""
+    async with migrated_pool(
+        postgres_container,
+        chains=["core", "relationship", "approvals"],
+        schemas={"relationship": "relationship"},
+    ) as p:
+        await p.execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+        )
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # 2. relationship schema
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-
-        # 3. relationship.entity_facts (needed to verify credentials are NOT inserted here)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # 4. relationship.credentials (the table under test — exact schema from migration)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.credentials (
-                id           UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                entity_id    UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                type         TEXT        NOT NULL,
-                value        TEXT        NOT NULL,
-                created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_used_at TIMESTAMPTZ,
-                revoked_at   TIMESTAMPTZ
-            )
-        """)
-
-        # 5. Partial unique index: one active credential per (entity, type)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_cred_entity_type_active
-                ON relationship.credentials (entity_id, type)
-                WHERE revoked_at IS NULL
-        """)
-
-        # 6. Lookup index
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_cred_entity_id
-                ON relationship.credentials (entity_id)
-        """)
-
-        # 7. entity_predicate_registry (used by credential-vs-fact independence test)
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES ('has-email', 'contact', 'literal', 'Email address.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-
+                    INSERT INTO relationship.entity_predicate_registry
+                        (predicate, kind, object_kind, description)
+                    VALUES ('has-email', 'contact', 'literal', 'Email address.')
+                    ON CONFLICT (predicate) DO NOTHING
+                """)
         yield p
 
 

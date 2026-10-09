@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 pytestmark = [
     pytest.mark.integration,
@@ -43,436 +44,76 @@ def _mock_contact_signal(monkeypatch: pytest.MonkeyPatch, *, is_overdue: bool) -
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with relationship tables and return a pool."""
-    async with provisioned_postgres_pool() as p:
-        # Create relationship tables (mirrors Alembic relationship migration)
+async def pool(postgres_container):
+    """Real chains and all sibling constraints; only case data is seeded below."""
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+        pool_schema="relationship",
+    ) as p:
+        await p.execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+        )
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                nickname TEXT,
-                company TEXT,
-                job_title TEXT,
-                gender TEXT,
-                pronouns TEXT,
-                avatar_url TEXT,
-                entity_id UUID,
-                stay_in_touch_days INT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
+                    INSERT INTO relationship_types ("group", forward_label, reverse_label) VALUES
+                        ('family', 'spouse', 'spouse'),
+                        ('family', 'partner', 'partner'),
+                        ('family', 'parent', 'child'),
+                        ('family', 'child', 'parent'),
+                        ('family', 'sibling', 'sibling'),
+                        ('social', 'close friend', 'close friend'),
+                        ('social', 'friend', 'friend'),
+                        ('work', 'colleague', 'colleague'),
+                        ('work', 'manager', 'report'),
+                        ('work', 'mentor', 'mentee'),
+                        ('other', 'custom', 'custom')
+                    ON CONFLICT DO NOTHING
+                """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
-        # contact_create() writes here best-effort; resolve_contact_entity_id() reads here.
-        # Without this table, contact_create silently no-ops and entity_id stays None,
-        # breaking entity-id-dependent scoring in contact_resolve and fact anchoring.
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        # relationship_types taxonomy (used by relationship_add and resolve.py salience)
+                    INSERT INTO life_event_categories (name) VALUES
+                        ('Career'), ('Personal'), ('Social') ON CONFLICT (name) DO NOTHING
+                """)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship_types (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                "group" TEXT NOT NULL DEFAULT 'other',
-                forward_label TEXT NOT NULL,
-                reverse_label TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # Seed common relationship types used by salience scoring
+                    INSERT INTO life_event_types (category_id, name)
+                    SELECT id, type_name FROM life_event_categories
+                    CROSS JOIN (VALUES
+                        ('new job'), ('promotion'), ('quit'), ('retired'), ('graduated')
+                    ) AS t(type_name)
+                    WHERE name = 'Career' ON CONFLICT (category_id, name) DO NOTHING
+                """)
         await p.execute("""
-            INSERT INTO relationship_types ("group", forward_label, reverse_label) VALUES
-                ('family', 'spouse', 'spouse'),
-                ('family', 'partner', 'partner'),
-                ('family', 'parent', 'child'),
-                ('family', 'child', 'parent'),
-                ('family', 'sibling', 'sibling'),
-                ('social', 'close friend', 'close friend'),
-                ('social', 'friend', 'friend'),
-                ('work', 'colleague', 'colleague'),
-                ('work', 'manager', 'report'),
-                ('work', 'mentor', 'mentee'),
-                ('other', 'custom', 'custom')
-            ON CONFLICT DO NOTHING
-        """)
+                    INSERT INTO life_event_types (category_id, name)
+                    SELECT id, type_name FROM life_event_categories
+                    CROSS JOIN (VALUES
+                        ('married'), ('divorced'), ('had a child'), ('moved'), ('passed away')
+                    ) AS t(type_name)
+                    WHERE name = 'Personal' ON CONFLICT (category_id, name) DO NOTHING
+                """)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationships (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_a UUID NOT NULL,
-                contact_b UUID NOT NULL,
-                contact_id UUID GENERATED ALWAYS AS (contact_a) STORED,
-                related_contact_id UUID GENERATED ALWAYS AS (contact_b) STORED,
-                relationship_type_id UUID REFERENCES relationship_types(id) ON DELETE SET NULL,
-                type TEXT NOT NULL DEFAULT '',
-                notes TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
+                    INSERT INTO life_event_types (category_id, name)
+                    SELECT id, type_name FROM life_event_categories
+                    CROSS JOIN (VALUES
+                        ('met for first time'), ('reconnected')
+                    ) AS t(type_name)
+                    WHERE name = 'Social' ON CONFLICT (category_id, name) DO NOTHING
+                """)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS important_dates (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID,
-                local_entity_id UUID,
-                label TEXT NOT NULL,
-                month INT NOT NULL,
-                day INT NOT NULL,
-                year INT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS notes (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                title TEXT,
-                body TEXT NOT NULL,
-                emotion TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS interactions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                type TEXT NOT NULL,
-                summary TEXT,
-                occurred_at TIMESTAMPTZ DEFAULT now(),
-                created_at TIMESTAMPTZ DEFAULT now(),
-                direction VARCHAR(10),
-                duration_minutes INTEGER,
-                metadata JSONB
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_interactions_contact_occurred
-                ON interactions (contact_id, occurred_at)
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS gifts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                description TEXT NOT NULL,
-                occasion TEXT,
-                status TEXT NOT NULL DEFAULT 'idea'
-                    CHECK (status IN ('idea', 'purchased', 'wrapped', 'given', 'thanked')),
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS loans (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                lender_contact_id UUID NOT NULL,
-                borrower_contact_id UUID NOT NULL,
-                name TEXT NOT NULL,
-                amount_cents INT NOT NULL,
-                currency TEXT NOT NULL DEFAULT 'USD',
-                loaned_at TIMESTAMPTZ,
-                settled BOOLEAN DEFAULT false,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                settled_at TIMESTAMPTZ
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS groups (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL UNIQUE,
-                type TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS group_members (
-                group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-                contact_id UUID NOT NULL,
-                role TEXT,
-                PRIMARY KEY (group_id, contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS labels (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL UNIQUE,
-                color TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_labels (
-                label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-                contact_id UUID,
-                local_entity_id UUID,
-                PRIMARY KEY (label_id, contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS quick_facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                key TEXT NOT NULL,
-                value TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now(),
-                UNIQUE (contact_id, key)
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS addresses (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                label VARCHAR NOT NULL DEFAULT 'Home',
-                line_1 TEXT NOT NULL,
-                line_2 TEXT,
-                city VARCHAR,
-                province VARCHAR,
-                postal_code VARCHAR,
-                country VARCHAR(2),
-                is_current BOOLEAN NOT NULL DEFAULT false,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_addresses_contact_id
-                ON addresses (contact_id)
-        """)
-        # Life event tables (migration 002)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS life_event_categories (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL UNIQUE,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS life_event_types (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                category_id UUID NOT NULL REFERENCES life_event_categories(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                UNIQUE (category_id, name)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_life_event_types_category
-                ON life_event_types (category_id)
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS life_events (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                life_event_type_id UUID NOT NULL REFERENCES life_event_types(id),
-                summary TEXT NOT NULL,
-                description TEXT,
-                happened_at DATE,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                title VARCHAR NOT NULL,
-                description TEXT,
-                completed BOOLEAN DEFAULT false,
-                completed_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_life_events_contact_happened
-                ON life_events (contact_id, happened_at)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_life_events_type
-                ON life_events (life_event_type_id)
-        """)
-        # Seed categories
-        await p.execute("""
-            INSERT INTO life_event_categories (name) VALUES
-                ('Career'), ('Personal'), ('Social')
-        """)
-        # Seed Career types
-        await p.execute("""
-            INSERT INTO life_event_types (category_id, name)
-            SELECT id, type_name FROM life_event_categories
-            CROSS JOIN (VALUES
-                ('new job'), ('promotion'), ('quit'), ('retired'), ('graduated')
-            ) AS t(type_name)
-            WHERE name = 'Career'
-        """)
-        # Seed Personal types
-        await p.execute("""
-            INSERT INTO life_event_types (category_id, name)
-            SELECT id, type_name FROM life_event_categories
-            CROSS JOIN (VALUES
-                ('married'), ('divorced'), ('had a child'), ('moved'), ('passed away')
-            ) AS t(type_name)
-            WHERE name = 'Personal'
-        """)
-        # Seed Social types
-        await p.execute("""
-            INSERT INTO life_event_types (category_id, name)
-            SELECT id, type_name FROM life_event_categories
-            CROSS JOIN (VALUES
-                ('met for first time'), ('reconnected')
-            ) AS t(type_name)
-            WHERE name = 'Social'
-        """)
-
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tasks_contact_id ON tasks (contact_id)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks (completed)
-        """)
-
-        # public.entities (needed by store_fact for entity_id validation)
-        # listed (BOOLEAN NOT NULL DEFAULT true, core_103) is required so that
-        # contact_archive() can set entities.listed=false (bu-5nlh6) and
-        # entity-anchored searches (channel_search) can filter on e.listed=true.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                listed BOOLEAN NOT NULL DEFAULT true,
-                posture TEXT NOT NULL DEFAULT 'active',
-                stay_in_touch_days INT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID REFERENCES public.entities(id),
-                roles JSONB NOT NULL DEFAULT '[]'
-            )
-        """)
-
-        # Predicate registry — columns must match what store_fact() queries
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS predicate_registry (
-                name TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type TEXT,
-                is_edge BOOLEAN NOT NULL DEFAULT false,
-                is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status TEXT NOT NULL DEFAULT 'active',
-                superseded_by TEXT,
-                deprecated_at TIMESTAMPTZ,
-                inverse_of TEXT,
-                is_symmetric BOOLEAN NOT NULL DEFAULT false,
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                usage_count INTEGER NOT NULL DEFAULT 0,
-                last_used_at TIMESTAMPTZ
-            )
-        """)
-        await p.execute("""
-            INSERT INTO predicate_registry (name, is_temporal) VALUES
-                ('interaction', true),
-                ('life_event', true),
-                ('contact_note', true),
-                ('activity', true),
-                ('gift', false),
-                ('loan', false),
-                ('contact_task', false)
-            ON CONFLICT (name) DO NOTHING
-        """)
-
-        # Facts table (TEXT embedding avoids pgvector dependency in tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding TEXT,
-                search_vector TSVECTOR,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                entity_id UUID REFERENCES public.entities(id),
-                object_entity_id UUID REFERENCES public.entities(id),
-                valid_at TIMESTAMPTZ DEFAULT NULL,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
-                ON facts (subject, predicate)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_predicate_valid_at
-                ON facts (predicate, valid_at)
-        """)
-
-        # memory_links table (used by store_fact for supersession links)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS memory_links (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_type TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id UUID NOT NULL,
-                relation TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_type, source_id, target_type, target_id)
-            )
-        """)
-
-        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
-        # cascade targets forget_memory()'s retraction (via task_delete etc.)
-        # disowns/deletes.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_schema TEXT NOT NULL,
-                source_table  TEXT NOT NULL,
-                source_id     UUID NOT NULL,
-                tenant_id     TEXT NOT NULL DEFAULT 'owner',
-                entity_id     UUID,
-                summary       TEXT NOT NULL DEFAULT '',
-                memory_type   TEXT NOT NULL DEFAULT 'fact',
-                confidence    DOUBLE PRECISION,
-                invalid_at    TIMESTAMPTZ,
-                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_schema, source_table, source_id)
-            )
-        """)
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-
+                    INSERT INTO predicate_registry (name, is_temporal) VALUES
+                        ('interaction', true),
+                        ('life_event', true),
+                        ('contact_note', true),
+                        ('activity', true),
+                        ('gift', false),
+                        ('loan', false),
+                        ('contact_task', false)
+                    ON CONFLICT (name) DO NOTHING
+                """)
         yield p
 
 
@@ -482,7 +123,7 @@ def patch_embedding_engine():
 
     Relationship tools call store_fact() which requires an EmbeddingEngine.  In the
     test environment there is no real model, so we return a deterministic fake.
-    The facts table stores embedding as TEXT so this is compatible.
+    The real facts table accepts this deterministic 384-dimensional vector.
     """
     engine = MagicMock()
     engine.embed.return_value = [0.1] * 384
@@ -575,7 +216,7 @@ async def test_contact_update_entity_id_updates_map(pool):
 
     # Create a second entity to reassign to.
     new_entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
+        "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id",
         "Reassigned Entity",
     )
     new_entity_id = new_entity_row["id"]
@@ -690,14 +331,14 @@ async def test_contact_get_archived_returns_stale_dunbar(pool):
     # Archived state lives on the entity now (listed=false), read by dunbar via
     # contact_entity_map → public.entities.
     entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name, listed) VALUES ($1, false) RETURNING id",
+        "INSERT INTO public.entities (canonical_name, listed) VALUES ($1, false) RETURNING id",
         "Archived Contact",
     )
     entity_id = entity_row["id"]
 
     contact_row = await pool.fetchrow(
         """
-        INSERT INTO contacts (first_name, entity_id, listed)
+        INSERT INTO contacts (name, first_name, entity_id, listed)
         VALUES ($1, $2, $3)
         RETURNING id, listed
         """,
@@ -732,14 +373,14 @@ async def test_contact_get_active_returns_not_stale_dunbar(pool):
 
     # Directly create contact and entity rows
     entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name) VALUES ($1) RETURNING id",
+        "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id",
         "Active Contact",
     )
     entity_id = entity_row["id"]
 
     contact_row = await pool.fetchrow(
         """
-        INSERT INTO contacts (first_name, entity_id, listed)
+        INSERT INTO contacts (name, first_name, entity_id, listed)
         VALUES ($1, $2, $3)
         RETURNING id, listed
         """,
@@ -985,8 +626,8 @@ async def test_upcoming_dates_entity_anchored(pool):
     # Insert a public.entities row directly (no contact needed)
     entity_id = await pool.fetchval(
         """
-        INSERT INTO public.entities (canonical_name, name)
-        VALUES ($1, $2)
+        INSERT INTO public.entities (canonical_name, aliases)
+        VALUES ($1, ARRAY[$2::text])
         RETURNING id
         """,
         "Entity-Anchored-Person",

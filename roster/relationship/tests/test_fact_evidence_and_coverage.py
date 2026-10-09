@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
+from butlers.testing.migration import migrated_pool
 from butlers.tools.relationship.fact_coverage import (
     compose_state,
     predicate_coverage,
@@ -43,7 +43,6 @@ from butlers.tools.relationship.relationship_assert_fact import (
 )
 from roster.relationship.tests.evidence_schema import (
     MAX_TEXT_CHARS,
-    apply_evidence_schema,
 )
 from roster.relationship.tests.fact_authority_fixtures import approve_fixture, replay_fixture
 
@@ -188,61 +187,24 @@ class TestEvidenceValidation:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Relationship schema plus the rel_034 evidence ledger and coverage table."""
-    async with provisioned_postgres_pool() as p:
+async def pool(postgres_container):
+    """Complete real writer chains, including every sibling integrity guard."""
+    async with migrated_pool(
+        postgres_container,
+        chains=["core", "relationship", "approvals", "memory"],
+        schemas={"relationship": "relationship"},
+    ) as p:
+        await p.execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+        )
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES
-                ('has-email', 'contact', 'literal', 'Email address for the entity.'),
-                ('has-phone', 'contact', 'literal', 'Phone number for the entity.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        await p.execute(PENDING_ACTIONS.ddl())
-        await apply_evidence_schema(p)
+                    INSERT INTO relationship.entity_predicate_registry
+                        (predicate, kind, object_kind, description)
+                    VALUES
+                        ('has-email', 'contact', 'literal', 'Email address for the entity.'),
+                        ('has-phone', 'contact', 'literal', 'Phone number for the entity.')
+                    ON CONFLICT (predicate) DO NOTHING
+                """)
         yield p
 
 
@@ -714,28 +676,11 @@ class TestPredicateCoverage:
                 )
 
 
-async def _apply_knowledge_gap_schema(pool: asyncpg.Pool) -> None:
-    """Run the real mem_014 DDL, so this fixture cannot drift from the migration."""
-    import importlib.util
-    from pathlib import Path
-
-    path = Path("src/butlers/modules/memory/migrations/014_knowledge_gaps.py")
-    spec = importlib.util.spec_from_file_location("mem_014_for_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    statements: list[str] = []
-    module.op = type("Op", (), {"execute": staticmethod(statements.append)})
-    module.upgrade()
-    for statement in statements:
-        await pool.execute(statement)
-
-
 @pytest.mark.integration
 @_docker
 @_session_loop
 class TestKnowledgeGapClosure:
     async def _open_gap(self, pool, entity, predicate=_PRED_HAS_PHONE):
-        await _apply_knowledge_gap_schema(pool)
         return await pool.fetchval(
             "INSERT INTO knowledge_gaps (entity_id, predicate, question_summary)"
             " VALUES ($1, $2, 'What is Alice phone?') RETURNING id",

@@ -327,7 +327,7 @@ def test_create_migration_db_bootstraps_restore_drill_prerequisite(postgres_cont
                 connection.execute(text("SET LOCAL ROLE butler_general_rw"))
                 connection.execute(
                     text(
-                        "INSERT INTO public.expected_signals(signal_key,producer,expected_cadence_seconds,measurability,evaluated_at) VALUES('template_runtime_guard','template_guard',1,'present',now())"
+                        "INSERT INTO public.expected_signals(signal_key,producer,expected_cadence_seconds,measurability,evaluated_at) VALUES('template_runtime_guard','owner',1,'present',now())"
                     )
                 )
             with engine.connect() as connection:
@@ -339,14 +339,25 @@ def test_create_migration_db_bootstraps_restore_drill_prerequisite(postgres_cont
                     ).scalar_one()
                     is True
                 )
-            with pytest.raises(ProgrammingError):
+            with engine.connect() as connection:
+                assert (
+                    connection.execute(
+                        text(
+                            "SELECT has_table_privilege('butler_health_rw',"
+                            "'public.expected_signals','INSERT')"
+                        )
+                    ).scalar_one()
+                    is True
+                )
+            with pytest.raises(ProgrammingError) as denied:
                 with engine.begin() as connection:
                     connection.execute(text("SET LOCAL ROLE butler_health_rw"))
                     connection.execute(
                         text(
-                            "INSERT INTO public.expected_signals(signal_key,producer,producer_role,expected_cadence_seconds,measurability,evaluated_at) VALUES('template_denied_guard','template_guard','butler_general_rw',1,'present',now())"
+                            "INSERT INTO public.expected_signals(signal_key,producer,producer_role,expected_cadence_seconds,measurability,evaluated_at) VALUES('template_denied_guard','owner','butler_general_rw',1,'present',now())"
                         )
                     )
+            assert denied.value.orig.pgcode == "42501"
             with engine.connect() as connection:
                 assert (
                     connection.execute(

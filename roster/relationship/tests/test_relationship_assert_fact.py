@@ -28,11 +28,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    ENTITY_GRAPH_EDGES,
-    ENTITY_PREDICATE_REGISTRY,
-    PENDING_ACTIONS,
-)
+from butlers.testing.migration import migrated_pool
 from butlers.tools.relationship.fact_evidence import EvidencePacket
 from butlers.tools.relationship.fact_temporal import (
     CORRECTION_REQUIRED,
@@ -50,7 +46,6 @@ from butlers.tools.relationship.relationship_assert_fact import (
     relationship_assert_fact,
 )
 from roster.relationship.tests.evidence_schema import (
-    apply_evidence_schema,
     simulate_temporal_cutover,
 )
 from roster.relationship.tests.fact_authority_fixtures import (
@@ -84,81 +79,24 @@ _UNKNOWN_PRED = "has-feet"  # not in predicate_registry
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with relationship.entity_facts and relationship.entity_predicate_registry."""
-    async with provisioned_postgres_pool() as p:
-        # 1. public.entities (FK target for relationship.entity_facts.subject)
+async def pool(postgres_container):
+    """Real full Relationship/approval topology for every writer invocation."""
+    async with migrated_pool(
+        postgres_container,
+        chains=["core", "relationship", "approvals"],
+        schemas={"relationship": "relationship"},
+    ) as p:
+        await _provision_schema(p)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # 2. relationship schema
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-
-        # 3. relationship.entity_predicate_registry
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        # Seed the predicates used in tests
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
-            VALUES
-                ('has-email',  'contact',   'literal', 'Email address for the entity.'),
-                ('has-phone',  'contact',   'literal', 'Phone number for the entity.'),
-                ('has-handle', 'contact',   'literal', 'Channel-scoped handle.'),
-                ('knows',      'relational','entity',  'Generic acquaintance or social connection.'),
-                ('friend-of',  'relational','entity',  'Close friendship.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-
-        # 4. relationship.entity_facts
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-
-        # 5. pending_actions (for owner carve-out)
-        await p.execute(PENDING_ACTIONS.ddl())
-
-        # 6. public.entity_graph_edges (RFC 0031 Slice 2, bu-8cdl1.8): the
-        # central writer projects entity-kind facts here in the same
-        # transaction as the fact write.
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
+                    INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
+                    VALUES
+                        ('has-email',  'contact',   'literal', 'Email address for the entity.'),
+                        ('has-phone',  'contact',   'literal', 'Phone number for the entity.'),
+                        ('has-handle', 'contact',   'literal', 'Channel-scoped handle.'),
+                        ('knows',      'relational','entity',  'Generic acquaintance or social connection.'),
+                        ('friend-of',  'relational','entity',  'Close friendship.')
+                    ON CONFLICT (predicate) DO NOTHING
+                """)
         yield p
 
 
@@ -1022,65 +960,20 @@ class TestConfImmutability:
 # overwrites conf/observed_at on the row that already holds the active slot.
 
 
-def _bigger_pool(provisioned_postgres_pool):
-    """Provision a pool with enough connections for concurrent writers."""
-    return provisioned_postgres_pool(min_pool_size=2, max_pool_size=8)
+def _bigger_pool(postgres_container):
+    """Distinct real-chain clone with the original concurrent pool capacity."""
+    return migrated_pool(
+        postgres_container,
+        chains=["core", "relationship", "approvals"],
+        schemas={"relationship": "relationship"},
+        min_pool_size=2,
+        max_pool_size=8,
+    )
 
 
 async def _provision_schema(p: asyncpg.Pool) -> None:
-    """Create the minimal relationship schema used by these tests.
-
-    Mirrors the per-test ``pool`` fixture above so the concurrency tests can run
-    on a higher-capacity pool.
-    """
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name TEXT        NOT NULL DEFAULT '',
-            name           TEXT        NOT NULL DEFAULT '',
-            entity_type    TEXT        NOT NULL DEFAULT 'person',
-            aliases        TEXT[]      NOT NULL DEFAULT '{}',
-            metadata       JSONB       DEFAULT '{}'::jsonb,
-            roles          TEXT[]      NOT NULL DEFAULT '{}',
-            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-    await p.execute("""
-        INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
-        VALUES ('has-email', 'contact', 'literal', 'Email address for the entity.')
-        ON CONFLICT (predicate) DO NOTHING
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-            id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-            subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-            predicate   TEXT        NOT NULL,
-            object      TEXT        NOT NULL,
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            src         TEXT        NOT NULL,
-            conf        FLOAT       NOT NULL DEFAULT 1.0
-                            CHECK (conf >= 0.0 AND conf <= 1.0),
-            last_seen   TIMESTAMPTZ,
-            observed_at TIMESTAMPTZ,
-            metadata    JSONB,
-            weight      INT,
-            verified    BOOL        NOT NULL DEFAULT false,
-            "primary"   BOOL,
-            validity    TEXT        NOT NULL DEFAULT 'active'
-                            CHECK (validity IN ('active', 'retracted', 'superseded')),
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-            ON relationship.entity_facts (subject, predicate, object)
-            WHERE validity = 'active'
-    """)
-    await apply_evidence_schema(p)
+    """Only fixture data admission; all DDL is installed by the real chains."""
+    await p.execute("UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton")
 
 
 class TestConcurrentWriterRace:
@@ -1089,9 +982,7 @@ class TestConcurrentWriterRace:
     and every row keeps its own observed_at.
     """
 
-    async def test_forced_race_supersedes_without_mutating_active_row(
-        self, provisioned_postgres_pool
-    ):
+    async def test_forced_race_supersedes_without_mutating_active_row(self, postgres_container):
         """Deterministically force the read-then-insert race.
 
         Sequence (single asyncio task, interleaved by hand):
@@ -1106,7 +997,7 @@ class TestConcurrentWriterRace:
         original observed_at; the superseded row keeps conf=0.9, the active row
         carries conf=0.4.
         """
-        async with _bigger_pool(provisioned_postgres_pool) as p:
+        async with _bigger_pool(postgres_container) as p:
             await _provision_schema(p)
             entity = await p.fetchval(
                 "INSERT INTO public.entities (canonical_name, roles) "
@@ -1196,9 +1087,7 @@ class TestConcurrentWriterRace:
             assert abs(float(active["conf"]) - 0.4) < 1e-6
             assert active["observed_at"] == obs_b
 
-    async def test_concurrent_double_assert_one_active_one_superseded(
-        self, provisioned_postgres_pool
-    ):
+    async def test_concurrent_double_assert_one_active_one_superseded(self, postgres_container):
         """Two real concurrent writers (gather) on the same triple, different conf.
 
         The unique partial index on the active slot serialises the writers; the
@@ -1206,7 +1095,7 @@ class TestConcurrentWriterRace:
         state: exactly one active + one superseded row, both retaining their
         original observed_at, regardless of which writer wins the slot first.
         """
-        async with _bigger_pool(provisioned_postgres_pool) as p:
+        async with _bigger_pool(postgres_container) as p:
             await _provision_schema(p)
             entity = await p.fetchval(
                 "INSERT INTO public.entities (canonical_name, roles) "
@@ -1568,9 +1457,9 @@ class TestEffectiveTimeAfterCutover:
         assert await seed_and_list() == seeded
 
     async def test_concurrent_corrections_have_one_winner_and_a_clean_loser(
-        self, provisioned_postgres_pool
+        self, postgres_container
     ):
-        async with _bigger_pool(provisioned_postgres_pool) as p:
+        async with _bigger_pool(postgres_container) as p:
             await _provision_schema(p)
             await simulate_temporal_cutover(p)
             entity = await p.fetchval(

@@ -24,12 +24,12 @@ import asyncpg
 import pytest
 
 from butlers.identity import resolve_outbound_channel
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 from butlers.tools.relationship.relationship_assert_fact import (
     assert_prefers_channel,
     relationship_assert_fact,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,
@@ -42,79 +42,34 @@ _DELIVERABLE = {"telegram", "email"}
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as p:
+async def pool(postgres_container):
+    """Real chains and all sibling constraints; only case data is seeded below."""
+    async with migrated_pool(
+        postgres_container,
+        stages=(
+            MigrationStage("core"),
+            MigrationStage("memory"),
+            MigrationStage("relationship"),
+            MigrationStage("relationship", schema="relationship"),
+            MigrationStage("approvals"),
+        ),
+        pool_schema="relationship",
+    ) as p:
         await p.execute(
-            """
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
+            "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
         )
         await p.execute(
             """
-            CREATE TABLE IF NOT EXISTS public.contacts (
-                id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name       TEXT,
-                entity_id  UUID REFERENCES public.entities(id) ON DELETE SET NULL,
-                metadata   JSONB,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
+                    INSERT INTO relationship.entity_predicate_registry
+                        (predicate, kind, object_kind, description, cardinality)
+                    VALUES
+                        ('has-email',  'contact',  'literal', 'Email.',  'multi'),
+                        ('has-phone',  'contact',  'literal', 'Phone.',  'multi'),
+                        ('has-handle', 'contact',  'literal', 'Handle.', 'multi'),
+                        ('prefers-channel', 'override', 'literal', 'Preferred channel.', 'single')
+                    ON CONFLICT (predicate) DO NOTHING
+                    """
         )
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await p.execute(
-            """
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description, cardinality)
-            VALUES
-                ('has-email',  'contact',  'literal', 'Email.',  'multi'),
-                ('has-phone',  'contact',  'literal', 'Phone.',  'multi'),
-                ('has-handle', 'contact',  'literal', 'Handle.', 'multi'),
-                ('prefers-channel', 'override', 'literal', 'Preferred channel.', 'single')
-            ON CONFLICT (predicate) DO NOTHING
-            """
-        )
-        await p.execute(
-            """
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await p.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-            """
-        )
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
         yield p
 
 

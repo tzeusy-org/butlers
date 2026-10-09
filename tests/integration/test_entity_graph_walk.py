@@ -10,12 +10,9 @@ Postgres so multi-hop traversal, direction filtering, edge-type filtering,
 cycle safety, and withheld-edge exclusion are verified against real SQL
 semantics, not asserted against a mock.
 
-Schema is the ``ENTITY_GRAPH_EDGES`` stand-in
-(``src/butlers/testing/schema_standins.py``) rather than the full "core"
-Alembic chain: the stand-in drops the FK to ``public.entities`` (per its
-no-FK rule, so it stays independently creatable), which conveniently means
-these tests can use arbitrary UUIDs as entity ids without provisioning real
-entity rows — exactly what a pure traversal test over the edge table needs.
+The real core chain supplies the graph table and its entity foreign keys.
+Traversal fixtures seed their actual subjects and objects rather than omitting
+referential integrity. All prior traversal assertions remain unchanged.
 """
 
 from __future__ import annotations
@@ -32,7 +29,7 @@ from butlers.core.entity_graph_edges import (
     find_entity_graph_path,
     walk_entity_graph,
 )
-from butlers.testing.schema_standins import ENTITY_GRAPH_EDGES
+from butlers.testing.migration import migrated_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -44,26 +41,9 @@ pytestmark = [
 
 @pytest.fixture
 async def pool(postgres_container) -> asyncpg.Pool:
-    """A fresh database per test, hand-rolled with only the edges stand-in."""
-    admin_url = postgres_container.get_connection_url().replace(
-        "postgresql+psycopg2://", "postgresql://", 1
-    )
-    from urllib.parse import urlsplit, urlunsplit
-
-    parsed = urlsplit(admin_url)
-    database_name = f"entity_graph_walk_{uuid.uuid4().hex[:12]}"
-    database_url = urlunsplit(parsed._replace(path=f"/{database_name}"))
-
-    admin = await asyncpg.connect(admin_url)
-    try:
-        await admin.execute(f'CREATE DATABASE "{database_name}"')
-    finally:
-        await admin.close()
-
-    p = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
-    await p.execute(ENTITY_GRAPH_EDGES.ddl())
-    yield p
-    await p.close()
+    """A distinct database per test, with actual core-chain relationships."""
+    async with migrated_pool(postgres_container, chains=["core"], max_pool_size=5) as p:
+        yield p
 
 
 def _uuid() -> uuid.UUID:
@@ -78,6 +58,12 @@ async def _live_edge(
     obj: uuid.UUID,
     sensitivity: str = "normal",
 ) -> None:
+    for entity in (subject, obj):
+        await pool.execute(
+            "INSERT INTO public.entities(id,canonical_name,entity_type) "
+            "VALUES($1,'Traversal fixture','person') ON CONFLICT(id) DO NOTHING",
+            entity,
+        )
     await pool.execute(
         """
         INSERT INTO public.entity_graph_edges (
@@ -93,6 +79,11 @@ async def _live_edge(
 
 
 async def _withheld_edge(pool: asyncpg.Pool, *, subject: uuid.UUID) -> None:
+    await pool.execute(
+        "INSERT INTO public.entities(id,canonical_name,entity_type) "
+        "VALUES($1,'Traversal fixture','person') ON CONFLICT(id) DO NOTHING",
+        subject,
+    )
     await pool.execute(
         """
         INSERT INTO public.entity_graph_edges (

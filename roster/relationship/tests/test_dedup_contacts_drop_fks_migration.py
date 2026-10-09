@@ -23,7 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from butlers.testing.migrated_templates import MigrationStage
+from butlers.testing.migration import migrated_pool
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1] / "migrations" / "030_dedup_contacts_drop_contacts_fks.py"
@@ -89,67 +90,12 @@ class TestMigrationStructure:
 # (b) Integration: dedup + FK-drop behaviour against a live DB
 # ---------------------------------------------------------------------------
 
-# Minimal schema mirroring the live column layout the migration touches. The
-# relationship tables land in `public` here (no search_path override), exactly
-# as the migration's unqualified names resolve in schema-less test runs.
-_PROVISION_SCHEMA = """
-CREATE TABLE public.entities (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid()
-);
-CREATE TABLE public.contacts (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    entity_id  UUID REFERENCES public.entities(id) ON DELETE SET NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE addresses (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_id UUID NOT NULL,
-    CONSTRAINT addresses_contact_id_fkey FOREIGN KEY (contact_id)
-        REFERENCES public.contacts(id) ON DELETE CASCADE
-);
-CREATE TABLE labels (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE contact_labels (
-    label_id   UUID NOT NULL,
-    contact_id UUID NOT NULL,
-    PRIMARY KEY (label_id, contact_id),
-    CONSTRAINT contact_labels_contact_id_fkey FOREIGN KEY (contact_id)
-        REFERENCES public.contacts(id) ON DELETE CASCADE
-);
-CREATE TABLE group_members (
-    group_id   UUID NOT NULL,
-    contact_id UUID NOT NULL,
-    PRIMARY KEY (group_id, contact_id),
-    CONSTRAINT group_members_contact_id_fkey FOREIGN KEY (contact_id)
-        REFERENCES public.contacts(id) ON DELETE CASCADE
-);
-CREATE TABLE important_dates (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_id UUID NOT NULL,
-    CONSTRAINT important_dates_contact_id_fkey FOREIGN KEY (contact_id)
-        REFERENCES public.contacts(id) ON DELETE CASCADE
-);
-CREATE TABLE life_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_id UUID NOT NULL,
-    CONSTRAINT life_events_contact_id_fkey FOREIGN KEY (contact_id)
-        REFERENCES public.contacts(id) ON DELETE CASCADE
-);
-CREATE TABLE relationships (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_a UUID NOT NULL,
-    contact_b UUID NOT NULL,
-    CONSTRAINT relationships_contact_a_fkey FOREIGN KEY (contact_a)
-        REFERENCES public.contacts(id) ON DELETE CASCADE,
-    CONSTRAINT relationships_contact_b_fkey FOREIGN KEY (contact_b)
-        REFERENCES public.contacts(id) ON DELETE CASCADE
-);
-CREATE TABLE tasks (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_id UUID NOT NULL,
-    CONSTRAINT tasks_contact_id_fkey FOREIGN KEY (contact_id)
-        REFERENCES public.contacts(id) ON DELETE CASCADE
-);
-"""
+# The fixture caches only the actual core_133 / rel_029 prerequisite.
+# rel_030's two real statements below execute for every independent database.
+_PREFIX_STAGES = (
+    MigrationStage("core", revision="core_133"),
+    MigrationStage("relationship", schema="relationship", revision="rel_029"),
+)
 
 
 def _fk_to_contacts_count_sql() -> str:
@@ -162,26 +108,40 @@ def _fk_to_contacts_count_sql() -> str:
 
 
 async def _seed(pool):
-    e1 = await pool.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
-    e2 = await pool.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
+    e1 = await pool.fetchval(
+        "INSERT INTO public.entities(canonical_name) VALUES(gen_random_uuid()::text) RETURNING id"
+    )
+    e2 = await pool.fetchval(
+        "INSERT INTO public.entities(canonical_name) VALUES(gen_random_uuid()::text) RETURNING id"
+    )
     # c1 older than c2 -> c1 canonical for e1. c3 alone for e2.
     c1 = await pool.fetchval(
-        "INSERT INTO public.contacts (entity_id, created_at) VALUES ($1, now() - interval '2 days') RETURNING id",
+        "INSERT INTO public.contacts (name, entity_id, created_at) VALUES (gen_random_uuid()::text, $1, now() - interval '2 days') RETURNING id",
         e1,
     )
     c2 = await pool.fetchval(
-        "INSERT INTO public.contacts (entity_id, created_at) VALUES ($1, now() - interval '1 day') RETURNING id",
+        "INSERT INTO public.contacts (name, entity_id, created_at) VALUES (gen_random_uuid()::text, $1, now() - interval '1 day') RETURNING id",
         e1,
     )
     c3 = await pool.fetchval(
-        "INSERT INTO public.contacts (entity_id, created_at) VALUES ($1, now()) RETURNING id", e2
+        "INSERT INTO public.contacts (name, entity_id, created_at) VALUES (gen_random_uuid()::text, $1, now()) RETURNING id",
+        e2,
     )
-    l1 = await pool.fetchval("INSERT INTO labels DEFAULT VALUES RETURNING id")
-    l2 = await pool.fetchval("INSERT INTO labels DEFAULT VALUES RETURNING id")
+    l1 = await pool.fetchval(
+        "INSERT INTO labels(name) VALUES(gen_random_uuid()::text) RETURNING id"
+    )
+    l2 = await pool.fetchval(
+        "INSERT INTO labels(name) VALUES(gen_random_uuid()::text) RETURNING id"
+    )
     g1 = uuid.uuid4()
+    await pool.execute("INSERT INTO groups(id,name) VALUES($1,'Dedup fixture group')", g1)
 
     # addresses: one per duplicate contact (both must survive on c1).
-    await pool.execute("INSERT INTO addresses (contact_id) VALUES ($1), ($2)", c1, c2)
+    await pool.execute(
+        "INSERT INTO addresses (contact_id,line_1) VALUES ($1,'First fixture address'), ($2,'Second fixture address')",
+        c1,
+        c2,
+    )
     # contact_labels: (l1,c1)+(l1,c2) collide; (l2,c2) repoints to (l2,c1).
     await pool.execute(
         "INSERT INTO contact_labels (label_id, contact_id) VALUES ($1,$2),($1,$3),($4,$3)",
@@ -194,12 +154,18 @@ async def _seed(pool):
     await pool.execute(
         "INSERT INTO group_members (group_id, contact_id) VALUES ($1,$2),($1,$3)", g1, c1, c2
     )
-    await pool.execute("INSERT INTO important_dates (contact_id) VALUES ($1)", c2)
-    await pool.execute("INSERT INTO life_events (contact_id) VALUES ($1)", c2)
-    await pool.execute("INSERT INTO tasks (contact_id) VALUES ($1)", c2)
+    await pool.execute(
+        "INSERT INTO important_dates (contact_id,label,month,day) VALUES ($1,'Fixture date',1,1)",
+        c2,
+    )
+    await pool.execute(
+        "INSERT INTO life_events (contact_id,life_event_type_id,summary) SELECT $1,id,'Fixture event' FROM life_event_types ORDER BY id LIMIT 1",
+        c2,
+    )
+    await pool.execute("INSERT INTO tasks (contact_id,title) VALUES ($1,'Fixture task')", c2)
     # relationships: (c1,c3) keep; (c2,c3) -> (c1,c3); (c1,c2) -> self-loop DELETED.
     await pool.execute(
-        "INSERT INTO relationships (contact_a, contact_b) VALUES ($1,$2),($3,$2),($1,$3)",
+        "INSERT INTO relationships (contact_a, contact_b,type) VALUES ($1,$2,'friend'),($3,$2,'friend'),($1,$3,'friend')",
         c1,
         c3,
         c2,
@@ -218,11 +184,11 @@ async def _seed(pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_dedup_and_fk_drop(provisioned_postgres_pool) -> None:
+async def test_dedup_and_fk_drop(postgres_container) -> None:
     mod = _load_migration()
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_PROVISION_SCHEMA)
-        await pool.execute(CONTACT_ENTITY_MAP.ddl())
+    async with migrated_pool(
+        postgres_container, stages=_PREFIX_STAGES, pool_schema="relationship"
+    ) as pool:
         ids = await _seed(pool)
         c1, c2, c3, l1, l2 = ids["c1"], ids["c2"], ids["c3"], ids["l1"], ids["l2"]
 

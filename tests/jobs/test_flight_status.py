@@ -27,6 +27,7 @@ from butlers.jobs.flight_status import (
     parse_flight_status,
     run_flight_status_check,
 )
+from butlers.testing.migration import migrated_pool
 
 pytestmark = pytest.mark.unit
 
@@ -412,44 +413,15 @@ async def test_leg_without_flight_number_is_skipped():
 # metadata written the way `record_booking` (post bu-2jtfw.1 fix) writes it.
 # ---------------------------------------------------------------------------
 
-_TRAVEL_SCHEMA_SQL = """
-CREATE SCHEMA IF NOT EXISTS travel;
-
-CREATE TABLE IF NOT EXISTS travel.trips (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    start_date  DATE NOT NULL,
-    end_date    DATE NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'planned',
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS travel.legs (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id     UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type        TEXT NOT NULL DEFAULT 'flight',
-    departure_at TIMESTAMPTZ NOT NULL,
-    arrival_at   TIMESTAMPTZ NOT NULL,
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
-
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")
 class TestFetchUpcomingFlightLegsAgainstPostgres:
-    async def test_selects_both_segments_of_the_dd94xr_journey(
-        self, provisioned_postgres_pool
-    ) -> None:
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute(_TRAVEL_SCHEMA_SQL)
-
+    async def test_selects_both_segments_of_the_dd94xr_journey(self, postgres_container) -> None:
+        async with migrated_pool(
+            postgres_container, chains=["core", "travel", "approvals"]
+        ) as pool:
             trip_id = await pool.fetchval(
                 """
                 INSERT INTO travel.trips (name, destination, start_date, end_date, status)
@@ -499,66 +471,21 @@ class TestFetchUpcomingFlightLegsAgainstPostgres:
 # recompute, real approval-spine door.
 # ---------------------------------------------------------------------------
 
-_CONNECTIONS_SCHEMA_SQL = """
-ALTER TABLE travel.legs
-    ADD COLUMN IF NOT EXISTS departure_airport_station TEXT,
-    ADD COLUMN IF NOT EXISTS arrival_airport_station TEXT,
-    ADD COLUMN IF NOT EXISTS carrier TEXT,
-    ADD COLUMN IF NOT EXISTS booking_record_id UUID,
-    ADD COLUMN IF NOT EXISTS segment_index INT;
-
-CREATE TABLE IF NOT EXISTS public.flight_status_feed_status (
-    id                      SMALLINT PRIMARY KEY DEFAULT 1,
-    configured              BOOLEAN NOT NULL DEFAULT false,
-    last_attempt_at         TIMESTAMPTZ,
-    last_success_at         TIMESTAMPTZ,
-    last_error              TEXT,
-    consecutive_failures    INTEGER NOT NULL DEFAULT 0,
-    legs_checked            INTEGER NOT NULL DEFAULT 0,
-    delays_detected         INTEGER NOT NULL DEFAULT 0,
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT chk_flight_status_feed_status_singleton CHECK (id = 1)
-);
-
-CREATE TABLE IF NOT EXISTS travel.airport_minimum_connect (
-    airport_code               TEXT PRIMARY KEY,
-    minimum_connect_minutes    INT NOT NULL,
-    interline_buffer_minutes   INT NOT NULL DEFAULT 30,
-    source                     TEXT,
-    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS travel.connections (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
-    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
-    available_minutes  INT,
-    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    computed_at        TIMESTAMPTZ NOT NULL,
-    verdict_changed_at TIMESTAMPTZ NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (inbound_leg_id, outbound_leg_id)
-);
-"""
-
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")
 class TestDelayRepairsConnectionAgainstPostgres:
     async def test_inbound_delay_flips_holding_connection_to_broken_and_parks_a_door(
-        self, provisioned_postgres_pool
+        self, postgres_container
     ) -> None:
-        from butlers.testing.schema_standins import PENDING_ACTIONS
-
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute(_TRAVEL_SCHEMA_SQL)
-            await pool.execute(_CONNECTIONS_SCHEMA_SQL)
-            await pool.execute(PENDING_ACTIONS.ddl())
+        async with migrated_pool(
+            postgres_container, chains=["core", "travel", "approvals"]
+        ) as pool:
+            await pool.execute("TRUNCATE travel.airport_minimum_connect")
+            await pool.execute(
+                "UPDATE approval_delivery_rollout SET admission_enabled=true WHERE singleton"
+            )
             await pool.execute(
                 "INSERT INTO travel.airport_minimum_connect (airport_code, minimum_connect_minutes) "
                 "VALUES ('PEK', 90)"
@@ -580,6 +507,11 @@ class TestDelayRepairsConnectionAgainstPostgres:
             # boundary against a 90-minute minimum before the delay lands.
             outbound_departure = inbound_arrival + timedelta(minutes=120)
             booking_record_id = uuid.uuid4()
+            await pool.execute(
+                "INSERT INTO travel.booking_records (id, trip_id) VALUES ($1, $2)",
+                booking_record_id,
+                trip_id,
+            )
 
             inbound_id = await pool.fetchval(
                 """

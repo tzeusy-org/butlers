@@ -35,7 +35,7 @@ import asyncio
 import threading
 import uuid
 from collections.abc import Sequence
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from functools import wraps
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -621,3 +621,22 @@ async def _join_owned_cleanup(awaitable):
         except asyncio.CancelledError:
             continue
     return cleanup.result()
+
+
+@asynccontextmanager
+async def migrated_pool(postgres_container: object, **kwargs):
+    """A real-chain behavior fixture with unchanged per-invocation pool lifetime."""
+    kwargs.setdefault("fresh", eligible_fixture_fresh())
+    pool = await create_migrated_test_pool(postgres_container, **kwargs)
+    try:
+        yield pool
+    finally:
+
+        async def close():
+            try:
+                await asyncio.wait_for(pool.close(), timeout=20)
+            except TimeoutError:
+                pool.terminate()
+                raise RuntimeError("test pool cleanup timeout") from None
+
+        await _join_owned_cleanup(close())

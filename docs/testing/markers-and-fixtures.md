@@ -149,6 +149,13 @@ Tests can use this to skip gracefully when Docker is not installed.
 
 ## Implementation Notes
 
+- Owned migrated-template builders close their complete newly created process group before
+  releasing single-flight ownership. A zero parent exit with an active descendant refuses
+  READY; timeout, cancellation and nonzero exits kill the same owned group and reap the
+  direct child. SQL/backend failures at the cache API become closed categories with raw
+  SQLAlchemy parameter context suppressed. Generated key principals are registered before
+  creation so a committed CREATE followed by a connection failure remains owned cleanup.
+  These lifecycle software controls do not establish PostgreSQL catalog parity or a speed gain.
 - CI's required `check` consumes the actual `needs` JSON under `always()`. That scheduling
   condition alone does not enforce a failed dependency. Changes/guards and applicable planner
   verdicts must succeed; preflight is required independently of heavy-shard classification.

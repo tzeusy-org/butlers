@@ -33,8 +33,11 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from butlers.testing.schema_standins import CONNECTOR_REGISTRY
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    eligible_fixture_fresh,
+    migration_db_name,
+)
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -50,11 +53,12 @@ BASE_URL = "http://test"
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain — public.ingestion_events + connectors.filtered_events."""
+    """Real core plus Switchboard registry, with the existing module lifetime."""
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["core"],
+        chains=["core", "switchboard"],
+        fresh=eligible_fixture_fresh(),
     )
 
 
@@ -68,11 +72,7 @@ async def pool(postgres_container, migrated_db_url: str):
     )
     await p.execute("TRUNCATE TABLE public.ingestion_events CASCADE")
     await p.execute("TRUNCATE TABLE connectors.filtered_events CASCADE")
-    # connector_registry lives in the switchboard chain; this test is about
-    # core-chain tables, so it stands the registry up from the one shared
-    # declaration rather than running that whole chain. Hand-copying the column
-    # list here is what made this file break silently on sw_031 (bu-r8opr).
-    await p.execute(CONNECTOR_REGISTRY.ddl())
+    # The real Switchboard chain owns connector_registry and its indexes.
     await p.execute("TRUNCATE TABLE connector_registry")
     yield p
     await p.close()
