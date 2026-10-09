@@ -926,6 +926,11 @@ else:
             "update-error",
             "late",
             "boolean-exit",
+            "float-count",
+            "float-selected",
+            "float-outcome",
+            "integer-isolate",
+            "boolean-module-errors",
         ):
             corrupted = copy.deepcopy(pair)
             child = corrupted[0]
@@ -950,6 +955,18 @@ else:
                 child["elapsed_s"] = 901
             elif mutation == "boolean-exit":
                 child["exit_code"] = False
+            elif mutation == "float-count":
+                child["count"] = float(child["count"])
+            elif mutation == "float-selected":
+                item = next(iter(child["selected"]))
+                child["selected"][item] = float(child["selected"][item])
+            elif mutation == "float-outcome":
+                outcome = next(iter(child["outcomes"]))
+                child["outcomes"][outcome] = float(child["outcomes"][outcome])
+            elif mutation == "integer-isolate":
+                execution["config"]["isolate"] = 1
+            elif mutation == "boolean-module-errors":
+                execution["modules"][file]["errors"] = False
             else:
                 child["reference"]["modules"][file]["items"][token]["key"] = "1" * 64
             with pytest.raises(ValueError):

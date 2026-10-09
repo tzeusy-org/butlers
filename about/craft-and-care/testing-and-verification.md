@@ -122,6 +122,10 @@ reuses only the source/attempt/content-bound build and retains locked browser ve
 mandatory OS dependencies on cache hits/misses, three bounded attempts and ordinary cleanup.
 No source control or inferred setup saving establishes current timing or hosted upload proof.
 
+The frontend verifier compares configuration booleans, module error counters and reconstructed
+count/multiplicity/outcome summaries with exact JSON types; equal integers, floats and booleans
+cannot substitute for one another in these declarations or counters.
+
 All workflow jobs have finite positive watchdogs. Pytest defaults to 300 seconds per item;
 existing finite overrides and frontend test defaults remain. An item timer does not bound
 collection, worker startup or session finalization. The owning job watchdog bounds those phases,

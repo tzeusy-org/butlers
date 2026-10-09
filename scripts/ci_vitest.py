@@ -186,6 +186,21 @@ def positive_count(value) -> bool:
     return type(value) is int and value > 0
 
 
+def same_json_value(observed, expected) -> bool:
+    """Compare validated JSON structure without boolean/numeric coercion."""
+    if type(observed) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return observed.keys() == expected.keys() and all(
+            same_json_value(observed[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(observed) == len(expected) and all(
+            same_json_value(actual, required) for actual, required in zip(observed, expected)
+        )
+    return observed == expected
+
+
 def validate_reference(reference: dict, root: Path) -> dict:
     """Validate genuine current unsharded declarations, not cached file counts."""
     if (
@@ -327,7 +342,7 @@ def validate_execution(reference: dict, execution: dict, shard: int) -> dict:
         not isinstance(execution, dict)
         or set(execution) != fields
         or execution["schema"] != "ci-vitest-execution.v2"
-        or execution["config"] != reference["config"]
+        or not same_json_value(execution["config"], reference["config"])
         or execution["complete"] is not True
         or execution["reason"] != "passed"
         or type(execution["unhandled_errors"]) is not int
@@ -348,7 +363,7 @@ def validate_execution(reference: dict, execution: dict, shard: int) -> dict:
     for file in selected:
         expected = reference["modules"][file]
         observed = execution["modules"][file]
-        if observed != expected:
+        if not same_json_value(observed, expected):
             raise ValueError("Vitest shard declaration differs from current full reference")
         if type(execution["queued"][file]) is not int or execution["queued"][file] != 1:
             raise ValueError("Vitest module queued more or less than once")
@@ -410,7 +425,7 @@ def reconcile(root: Path, receipts: list[dict]) -> None:
     for receipt in receipts:
         if (
             receipt.get("schema") != "ci-vitest.v2"
-            or receipt.get("identity") != expected_identity
+            or not same_json_value(receipt.get("identity"), expected_identity)
             or receipt.get("complete") is not True
             or type(receipt.get("exit_code")) is not int
             or receipt["exit_code"] != 0
@@ -434,10 +449,10 @@ def reconcile(root: Path, receipts: list[dict]) -> None:
         reference = validate_reference(receipt["reference"], root)
         if full is None:
             full = reference
-        elif full != reference:
+        elif not same_json_value(full, reference):
             raise ValueError("independent current full Vitest references differ")
         proof = validate_execution(reference, receipt["execution"], receipt["shard"])
-        if any(receipt.get(key) != value for key, value in proof.items()):
+        if any(not same_json_value(receipt.get(key), value) for key, value in proof.items()):
             raise ValueError("Vitest declared summary differs from actual occurrence proof")
         populations.append(collections.Counter(proof["selected"]))
     required = collections.Counter(
