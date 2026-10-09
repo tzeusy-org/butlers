@@ -23,6 +23,32 @@ def register_native_switchboard_tools(context, mcp):
     register_switchboard_tools(context, mcp, core_tool)
 
 
+async def wait_owntracks_inputs_ended(runtime, pool, point):
+    """Wait only for original producer ends; malformed/unknown input still refuses."""
+    from butlers.connectors.owntracks_input_copies import require_inputs_ended
+
+    async with asyncio.timeout(10):
+        while True:
+            await runtime.reconcile_observed_ends()
+            try:
+                async with pool.acquire() as committed:
+                    await require_inputs_ended(
+                        committed,
+                        point["source_input_generation"],
+                        point["logical_source_digest"],
+                        point["content_digest"],
+                    )
+            except ValueError as exc:
+                if str(exc) not in {
+                    "native input server cohort is still active",
+                    "native input source cohort is still active",
+                }:
+                    raise
+            else:
+                return
+            await asyncio.sleep(0.01)
+
+
 async def assert_native_owntracks_input_transport(postgres_container):
     """Separate healthy database: never clean up or alter earlier planted histories."""
     import asyncpg
@@ -518,19 +544,24 @@ async def _assert_native_owntracks_input_transport(url, postgres_container, conn
                     assert sse_point["content_digest"] == content_digest(sse_raw)
                     assert sse_input["handler_generation"] is not None
                     assert sse_input["incarnation"] == receiving.incarnation
-                    async with connector_pool.acquire() as committed:
-                        await require_inputs_ended(
-                            committed,
-                            sse_point["source_input_generation"],
-                            sse_point["logical_source_digest"],
-                            sse_point["content_digest"],
-                        )
                     sse_inbox = await switchboard.fetchrow(
                         "SELECT raw_payload,normalized_text FROM message_inbox WHERE id=$1",
                         sse_point["accepted_request_id"],
                     )
                     assert sse_inbox["raw_payload"]["payload"]["raw"] == sse_raw
                     assert sse_input["stored_digest"] == content_digest(dict(sse_inbox))
+                # The actual connector server/processing/replay Tasks have
+                # independent lifetimes from the Switchboard SDK handler.
+                # Teardown cannot grant an end: reconcile the original source
+                # capabilities and require their separate committed readback.
+                await wait_owntracks_inputs_ended(sse_runtime, connector_pool, sse_point)
+                async with connector_pool.acquire() as committed:
+                    await require_inputs_ended(
+                        committed,
+                        sse_point["source_input_generation"],
+                        sse_point["logical_source_digest"],
+                        sse_point["content_digest"],
+                    )
                 await _assert_native_no_dispatch_disposal(switchboard, point, "skip")
                 await _assert_native_no_dispatch_disposal(switchboard, sse_point, "metadata_only")
                 await _assert_native_ingress_runtime_reservation(

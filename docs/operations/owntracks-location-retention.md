@@ -1698,3 +1698,12 @@ SQL extension remains UNRUN until exact-head hosted execution. All four original
 outcomes, all36 native scenarios and full all-holder/registered/role/browser/recovery
 acceptance remain UNMET; the published de0d and prior db730 receipts qualify only
 their separately dated scopes.
+
+The registered SSE transport fixture qualifies the connector's original input
+cohort after its actual webhook server teardown and owning end reconciliation,
+separately from Switchboard SDK handler/server completion. Only the two fixed
+active source-cohort categories are retried; missing or malformed original
+ancestry still refuses. Teardown and elapsed time do not manufacture a terminal
+receipt. The existing software control holds an actual middleware Task open and
+then restores its original end callback; genuine registered SQL qualification
+remains required at the corrected exact head.

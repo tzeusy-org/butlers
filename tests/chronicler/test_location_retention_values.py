@@ -9132,11 +9132,49 @@ async def _assert_owntracks_input_complete_cohort_and_server_lifetime():
     try:
         await inner_ended.wait()
         assert observed == []  # Inner ASGI return alone is not actual server-task completion.
+        from contextlib import asynccontextmanager
+
+        from tests.chronicler.owntracks_input_transport_helpers import wait_owntracks_inputs_ended
+
+        class Pool:
+            @asynccontextmanager
+            async def acquire(self):
+                yield connection
+
+        reconciled = asyncio.Event()
+
+        class Runtime:
+            async def reconcile_observed_ends(self):
+                # Metadata I/O is doubled; the observer is the real original
+                # middleware Task done callback, not a caller end/HTTP result.
+                connection.pending_server = observed == []
+                reconciled.set()
+
+        point = dict(
+            source_input_generation=processing,
+            logical_source_digest=logical,
+            content_digest=raw,
+        )
+        qualification = asyncio.create_task(wait_owntracks_inputs_ended(Runtime(), Pool(), point))
+        await reconciled.wait()
+        await asyncio.sleep(0)
+        assert not qualification.done() and connection.pending_server
         finish_server.set()
         await task
         await asyncio.sleep(0)  # Execute actual Task done callbacks, not a duration witness.
         assert observed == ["webhook_server"]
+        await qualification
+        assert not connection.pending_server
+        connection.captured = rows[1:]
+        with pytest.raises(ValueError, match="original bundle is incomplete"):
+            await wait_owntracks_inputs_ended(Runtime(), Pool(), point)
+        connection.captured = rows
+        await wait_owntracks_inputs_ended(Runtime(), Pool(), point)
     finally:
+        if "qualification" in locals():
+            if not qualification.done():
+                qualification.cancel()
+            await asyncio.gather(qualification, return_exceptions=True)
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
