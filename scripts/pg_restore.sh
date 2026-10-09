@@ -312,6 +312,7 @@ echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
 # the existing temporary audit directory and are never printed by this guard.
 (
   umask 077
+  echo "RETENTION_NATIVE_CERT_CAPTURE=begin" >&2
   gunzip -c "$BACKUP_FILE" | awk -v state="$AUDIT_DIR/native_presence" -v input_state="$AUDIT_DIR/native_input_count" '
     /^CREATE TABLE connectors\.owntracks_filtered_copy_(births|floors|batches|members) / {
       native=1; native_tables[$3]++
@@ -335,6 +336,7 @@ echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
       print (input_count == 4 ? 8 : 4) > input_state
     }
   ' | LC_ALL=C sort > "$AUDIT_DIR/native_expected" || exit 7
+  echo "RETENTION_NATIVE_CERT_CAPTURE=validated" >&2
   if [[ "$(cat "$AUDIT_DIR/native_presence")" == "present" ]]; then
     NATIVE_RESTORE_TABLE_COUNT="$(cat "$AUDIT_DIR/native_input_count")"
     case "$NATIVE_RESTORE_TABLE_COUNT" in
@@ -342,6 +344,7 @@ echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
       8) NATIVE_RESTORE_HAS_INPUT=true ;;
       *) exit 7 ;;
     esac
+    echo "RETENTION_NATIVE_CERT_CAPTURE=observer" >&2
     PGPASSWORD="$PG_PASSWORD" psql \
       --host="$PG_HOST" --port="$PG_PORT" --username="$PG_USER" \
       --dbname="$TARGET_DB" --no-password --quiet --no-align --tuples-only \

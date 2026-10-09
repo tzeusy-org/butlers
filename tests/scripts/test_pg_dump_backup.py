@@ -234,6 +234,32 @@ def _assert_closed_certificate_stage_diagnostic() -> None:
     assert diagnostic["certificate_stage_codes"]["point_check"]["42P01"] is False
     assert not any(row["42501"] for row in diagnostic["certificate_stage_codes"].values())
     assert private not in output.getvalue()
+    assert diagnostic["certificate_marker_seen"] == {
+        "posture": False,
+        "filtered_read": False,
+        "input_read": True,
+        "point_check": False,
+    }
+    assert not any(diagnostic["certificate_capture_seen"].values())
+    # Prior SQL errors must not be attributed to a later capture-only refusal.
+    output = StringIO()
+    capture_only = subprocess.CompletedProcess(
+        [],
+        1,
+        "no SECURITY DEFINER function in 'public' fell to\nERROR: 42P01\n",
+        "RETENTION_NATIVE_CERT_CAPTURE=begin\n",
+    )
+    with redirect_stdout(output):
+        emit_restore_diagnostic(capture_only, stage="certified_restore")
+    diagnostic = json.loads(output.getvalue().split("RESTORE_COMMAND_DIAGNOSTIC ")[1])
+    assert diagnostic["certificate_capture_seen"] == {
+        "begin": True,
+        "validated": False,
+        "observer": False,
+    }
+    assert not any(diagnostic["certificate_marker_seen"].values())
+    assert not any(any(row.values()) for row in diagnostic["certificate_stage_codes"].values())
+    assert diagnostic["sqlstates"]["42P01"] is True
 
 
 @pytest.mark.unit

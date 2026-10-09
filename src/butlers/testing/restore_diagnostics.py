@@ -88,6 +88,14 @@ def emit_restore_diagnostic(
     # These literal markers come from the checked-in certificate script, not
     # row content or command arguments. Only its stderr stream can position a
     # later code-only psql error; never borrow dump-stream line offsets here.
+    certificate_marker_seen = {
+        name: f"RETENTION_NATIVE_CERT_STAGE={name}" in (result.stderr or "")
+        for name in certificate_codes
+    }
+    certificate_capture_seen = {
+        name: f"RETENTION_NATIVE_CERT_CAPTURE={name}" in (result.stderr or "")
+        for name in ("begin", "validated", "observer")
+    }
     certificate_stage = None
     if flags["definer_audit_passed"]:
         for line in (result.stderr or "").splitlines():
@@ -141,6 +149,8 @@ def emit_restore_diagnostic(
                 "sqlstates": states,
                 "source_stage_codes": stage_codes,
                 "certificate_stage_codes": certificate_codes,
+                "certificate_marker_seen": certificate_marker_seen,
+                "certificate_capture_seen": certificate_capture_seen,
             },
             sort_keys=True,
         )
