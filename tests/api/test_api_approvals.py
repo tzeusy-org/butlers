@@ -27,6 +27,7 @@ from butlers.api.routers.approvals import (
     _get_db_manager,
     _row_to_autonomy_suggestion,
 )
+from butlers.modules.approvals.park import park_prepared_action
 
 pytestmark = pytest.mark.unit
 
@@ -2049,6 +2050,7 @@ async def test_emit_approvals_event_includes_expected_fields(app):
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-dashboard-api-068; actual prepared producer and all HTTP projections retain classification and unknowns.
 async def test_detail_returns_typed_decision_dossier_fields(app):
     """The detail endpoint carries risk labels and typed evidence verbatim."""
     row = _make_pending_row()
@@ -2065,6 +2067,61 @@ async def test_detail_returns_typed_decision_dossier_fields(app):
     assert detail["reversibility"] == "compensable"
     assert detail["evidence"] == row["evidence"]
 
+    # Exercise the actual producer over this software connection, then replay
+    # its emitted INSERT into the real HTTP read/projection seams. This is not
+    # PostgreSQL execution; the migrated producer companion owns that evidence.
+    _, conn = _app_with_mock_db(app, fetchval_return=1)
+    pool = app.dependency_overrides[_get_db_manager]().pool("general")
+    admission = await park_prepared_action(
+        pool,
+        action_id=row["id"],
+        tool_name=row["tool_name"],
+        tool_args=row["tool_args"],
+        agent_summary=row["agent_summary"],
+        requested_at=row["requested_at"],
+        expires_at=_NOW + timedelta(days=1),
+        why=row["why"],
+        evidence=row["evidence"],
+        blast_radius=row["blast_radius"],
+        reversibility=row["reversibility"],
+        origin_butler="general",
+        deduplication_key=f"prepared:{row['id']}",
+    )
+    insert = next(
+        call.args
+        for call in conn.execute.await_args_list
+        if "INSERT INTO pending_actions" in call.args[0]
+    )
+    assert insert[1] == admission.action_id == row["id"]
+    stored = {**row, "origin": insert[6], "expires_at": insert[8]}
+    assert stored["origin"] == "prepared"
+    conn.execute.reset_mock()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for origin in (stored["origin"], None, "legacy", "PREPARED", {}, [], True):
+            conn.fetch.return_value = [{**stored, "origin": origin}]
+            conn.fetchrow.return_value = {**stored, "origin": origin}
+            for path in (
+                "/api/approvals/actions",
+                "/api/approvals?state=waiting",
+                "/api/approvals/history",
+                "/api/approvals/actions/executed",
+                f"/api/approvals/{row['id']}",
+            ):
+                response = await client.get(path)
+                assert response.status_code == 200
+                data = response.json()["data"]
+                item = data[0] if isinstance(data, list) else data
+                assert item["origin"] == ("prepared" if origin == "prepared" else None)
+                assert item["id"] == str(row["id"])
+                assert item["butler"] == "general"
+                assert item["push_failed"] is False
+                if origin == "prepared":
+                    assert item["delivery"] is None
+    conn.execute.assert_not_awaited()
+
 
 async def test_detail_preserves_failed_push_delivery_state(app):
     """The dossier keeps failed-push truth instead of silently dropping it."""
@@ -2080,6 +2137,16 @@ async def test_detail_preserves_failed_push_delivery_state(app):
     detail = resp.json()["data"]
     assert detail["push_outcome"] == "failed"
     assert detail["push_failed"] is True
+
+    for origin in ("prepared", None, "legacy"):
+        row["origin"] = origin
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/approvals/{row['id']}")
+        assert response.status_code == 200
+        assert response.json()["data"]["push_failed"] is True
+        assert response.json()["data"]["push_outcome"] == "failed"
 
 
 # Spec: REQ-approval-delivery-intent-recovery-007, REQ-dashboard-approvals-001; mocked detail projection excludes unsafe fields and preserves uncertainty.
@@ -2132,6 +2199,15 @@ async def test_detail_projects_only_safe_durable_delivery_truth(app):
     assert "provider_reference" not in serialized
     assert "callback" not in serialized
     assert "recipient" not in serialized
+
+    row["origin"] = "prepared"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        prepared = await client.get(f"/api/approvals/{row['id']}")
+    assert prepared.status_code == 200
+    assert prepared.json()["data"]["origin"] == "prepared"
+    assert prepared.json()["data"]["delivery"] == delivery
 
 
 async def test_detail_includes_originating_session_id(app):

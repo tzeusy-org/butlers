@@ -81,6 +81,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Approvals
 - Waiting
 - Stalled
+- Approval origin: {}
 - {} Undo
 - Deny reason (optional)
 - None
@@ -4872,4 +4873,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3880*
+*Total strings: 3881*
