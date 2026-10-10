@@ -67,7 +67,10 @@ Linux with libseccomp is required for socket confinement. The launcher denies
 socket/connect/sendto/sendmsg before tool import and descendants inherit denial;
 unsupported confinement fails closed. It does not impersonate a collector or
 change pytest isolation/selection. Commands retain finite 300-second watchdogs,
-nonzero outcomes and owned-group cleanup. No test bodies/fixtures execute in
+nonzero outcomes and owned-group cleanup. SIGKILL delivery is followed by Linux
+pidfd exit observation for that group, with a separate finite one-second cleanup
+bound and refusal if completion cannot be attested. The direct parent exiting is
+not proof that its descendants have exited; unrelated groups are never signalled. No test bodies/fixtures execute in
 collect-only mode. Tracked full bodies/modes/HEAD are compared before/after;
 side effects refuse and are not silently reverted. Output stays in RAM and only
 fixed target/status categories are printed. Temporary stdin carriers live outside

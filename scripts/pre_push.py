@@ -14,11 +14,13 @@ import hashlib
 import json
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -27,6 +29,7 @@ STATE = "butlers-pre-push.json"
 DISPATCHER = "butlers-pre-push-hooks"
 DISPATCH_FILES = (*HOOKS, "pre_push.py", "pre_push_sandbox.py")
 CHECK_TIMEOUT = 300
+CLEANUP_TIMEOUT = 1
 OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 # Existing tracked assets are not regenerated or replaced by this installer.
 MANAGED = {
@@ -196,6 +199,7 @@ def install(root: Path, *, uninstall: bool = False) -> None:
                 prior = bytes.fromhex(state["prior_config_hex"])
                 if (
                     config.read_bytes() != installed
+                    or config.stat().st_mode & 0o777 != state["installed_config_mode"]
                     or state["schema"] != 2
                     or origins.decode() != state["installed_origins"]
                     or dispatcher_bodies(dispatcher) != state["dispatcher"]
@@ -356,6 +360,56 @@ def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str,
     return plan
 
 
+def await_owned_group_exit(group: int) -> None:
+    """Observe exit, not merely signal delivery, for this owned Linux group."""
+    if not hasattr(os, "pidfd_open"):
+        raise Refusal("owned-process-cleanup-unavailable")
+    deadline = time.monotonic() + CLEANUP_TIMEOUT
+    while True:
+        descriptors = []
+        try:
+            for entry in Path("/proc").iterdir():
+                if not entry.name.isdecimal():
+                    continue
+                try:
+                    fields = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
+                    if int(fields[2]) != group or fields[0] in ("Z", "X"):
+                        continue
+                    descriptor = os.pidfd_open(int(entry.name))
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                # Re-read after opening so a recycled PID cannot be mistaken
+                # for the observed member. Never signal or reap these handles.
+                try:
+                    current = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
+                    if current[2] == fields[2] and current[19] == fields[19]:
+                        descriptors.append(descriptor)
+                    else:
+                        os.close(descriptor)
+                except OSError:
+                    os.close(descriptor)
+                    raise
+            if not descriptors:
+                return
+            poll = select.poll()
+            for descriptor in descriptors:
+                poll.register(descriptor, select.POLLIN)
+            remaining = set(descriptors)
+            while remaining:
+                budget = deadline - time.monotonic()
+                if budget <= 0:
+                    raise Refusal("owned-process-cleanup-timeout")
+                for descriptor, events in poll.poll(max(1, int(budget * 1000))):
+                    if events & (select.POLLIN | select.POLLHUP):
+                        remaining.discard(descriptor)
+                        poll.unregister(descriptor)
+                    else:
+                        raise Refusal("owned-process-cleanup-unavailable")
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+
+
 def run_checked(
     name: str,
     command: list[str],
@@ -403,15 +457,19 @@ def run_checked(
     except subprocess.TimeoutExpired:
         raise Refusal(f"{name}:timeout") from None
     finally:
-        # Descendants with inherited pipes/DEVNULL must not outlive any outcome.
+        # Observe group completion even when the direct parent already exited.
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
-        for stream in (process.stdout, process.stderr):
-            if stream:
-                stream.close()
+            with recovery_signals():
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await_owned_group_exit(process.pid)
+                process.wait(timeout=CLEANUP_TIMEOUT)
+        finally:
+            for stream in (process.stdout, process.stderr):
+                if stream:
+                    stream.close()
 
 
 def tree_bodies(root: Path) -> dict:

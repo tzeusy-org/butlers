@@ -255,6 +255,15 @@ def test_installer_refuses_unknown_config_and_restores_absent_state(tmp_path, mo
     installed = (root / ".git/config").read_bytes()
     driver.install(root)
     assert (root / ".git/config").read_bytes() == installed
+    installed_mode = (root / ".git/config").stat().st_mode & 0o777
+    (root / ".git/config").chmod(installed_mode ^ 0o020)
+    drift_mode = (root / ".git/config").stat().st_mode & 0o777
+    for uninstall in (False, True):
+        with pytest.raises(driver.Refusal):
+            driver.install(root, uninstall=uninstall)
+        assert (root / ".git/config").stat().st_mode & 0o777 == drift_mode
+        assert (root / ".git/config").read_bytes() == installed
+    (root / ".git/config").chmod(installed_mode)
     driver.install(worktree)
     assert (root / ".git/config").read_bytes() == installed
     # Real config restore followed by an interruption must restore the whole
