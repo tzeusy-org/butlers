@@ -22,6 +22,7 @@ from fastmcp import Client, FastMCP
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_mcp_manager
+from butlers.api.routers import approvals as approvals_router
 from butlers.api.routers import calendar_workspace as workspace
 from butlers.core.approvals_hooks import DecisionDossier
 from butlers.daemon import ButlerDaemon
@@ -176,6 +177,7 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
     database.register_configured_modules("messenger", frozenset({"calendar", "approvals"}))
     app = create_authenticated_domain_app()
     app.dependency_overrides[workspace._get_db_manager] = lambda: database
+    app.dependency_overrides[approvals_router._get_db_manager] = lambda: database
     app.dependency_overrides[get_mcp_manager] = lambda: manager
     coordinator = module._response_coordinator
     now = datetime.now(UTC)

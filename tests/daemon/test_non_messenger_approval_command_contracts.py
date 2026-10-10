@@ -182,6 +182,9 @@ async def _relationship_approval_daemon(
     fact_id: uuid.UUID,
 ) -> tuple[ButlerDaemon, ApprovalsModule, _RelationshipMemoryDB]:
     config = load_config(_REPO_ROOT / "roster" / "relationship")
+    # This fixture registers only Memory and Approvals, not Calendar. Keep
+    # every registered memory gate while scoping the unregistered module out.
+    config.modules["approvals"]["gated_tools"].pop("calendar_respond", None)
     approvals = ApprovalsModule()
     memory = MemoryModule()
     approval_db = _RelationshipMemoryDB(fact_id)
@@ -458,6 +461,9 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
         ),
         ("roster/relationship/jobs/relationship_jobs.py", "run_email_identity_enrichment"),
         ("roster/relationship/tools/relationship_assert_fact.py", "_create_pending_action"),
+        # The registered Calendar tool uses its trusted startup-bound canonical
+        # preparer; replay still runs through the owning gate and executor.
+        ("src/butlers/modules/calendar_response.py", "prepare_and_park"),
     }
     found_sources: set[tuple[str, str]] = set()
     for root in (_REPO_ROOT / "src", _REPO_ROOT / "roster"):
