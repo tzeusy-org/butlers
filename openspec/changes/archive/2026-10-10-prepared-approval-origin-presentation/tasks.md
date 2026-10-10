@@ -8,8 +8,8 @@
 
 ## Separate implementation and supported adoption
 
-- [ ] 2.1 Under a separate source release, implement and prove the actual prepared producer→list/history/detail→mounted rail/dossier chain with old assertions and failed/unknown/refusal/restored companions intact.
-- [ ] 2.2 Obtain actual current source qualification and genuine independent preparation approval, including installed read-only generation/application/inverse proof, before any supported native administration.
+- [x] 2.1 Under a separate source release, implement and prove the actual prepared producer→list/history/detail→mounted rail/dossier chain with old assertions and failed/unknown/refusal/restored companions intact.
+- [x] 2.2 Obtain actual current source qualification and genuine independent preparation approval, including installed read-only generation/application/inverse proof, before any supported native administration.
 
 ## Mandatory administrative delivery tail after truthful preparation
 
