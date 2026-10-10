@@ -38,11 +38,13 @@ no HEAD-only admission for an unscanned second tree. Missing origin/main refuses
 | Commit attribution | exact base..HEAD existing session-link scanner |
 | Current partition/budget | ordinary `check_ci_test_shards.py`, one actual collector supplying both unchanged budgets and computed 5+6 membership |
 
-Documentation/about/spec/frontend-only diffs cannot alter Python collection
-inputs and omit local collection; unknown paths, test/source/tool/config changes
-collect the complete actual default selected membership. No planner, static count,
-weight, cache or stale receipt certifies membership. CI independently collects,
-budget-checks and executes under its current event modes. No CI step is removed.
+Every push currently collects the complete actual default selected membership.
+Imports and parametrization can read documentation, spec or frontend assets; no
+unproved path skip is admitted. Unknown paths and deletions retain collection.
+No planner, static count, weight, cache or stale receipt certifies membership.
+CI independently collects, budget-checks and executes under its current event
+modes. No CI step is removed. This conservative envelope does not establish the
+hard under-30-second metric; missed natural timing keeps the parent phase open.
 
 Linux with libseccomp is required for socket confinement. The launcher denies
 socket/connect/sendto/sendmsg before tool import and descendants inherit denial;

@@ -64,6 +64,10 @@ def body_digest(path: Path) -> str:
 
 
 def asset_binding(root: Path) -> dict:
+    if any(x.name not in HOOKS for x in (root / ".githooks").iterdir()) or any(
+        (root / ".beads/hooks").glob("*.old")
+    ):
+        raise Refusal("uncomposable-hook-chain")
     files = [f".githooks/{name}" for name in HOOKS]
     files += [f".beads/hooks/{name}" for name in HOOKS]
     files += ["scripts/pre_push.py", "scripts/pre_push_sandbox.py"]
@@ -211,8 +215,10 @@ def validate_updates(raw: bytes, head: str) -> bytes:
 
 
 def collection_required(paths: list[str]) -> bool:
-    # Proven non-collection surfaces only; unknown paths widen.
-    return any(not name.startswith(("docs/", "about/", "openspec/", "frontend/")) for name in paths)
+    # Imports/parametrization may read docs, specs or frontend assets. Until a
+    # complete executing dependency proof earns a skip, every push recollects.
+    # This conservative envelope does not claim the hard under-30s metric.
+    return True
 
 
 def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str, list[str]]]:

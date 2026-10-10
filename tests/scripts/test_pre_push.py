@@ -71,7 +71,7 @@ def test_readonly_plan_executes_real_predicates_and_never_mutating_aggregate():
     # Budget/partition remains the actual one-collection ordinary entrypoint.
     command = dict(plan)["fresh-inventory-partition-budget"]
     assert command[-1] == "scripts/check_ci_test_shards.py"
-    assert "fresh-inventory-partition-budget" not in dict(driver.guard_plan(["docs/x.md"]))
+    assert "fresh-inventory-partition-budget" in dict(driver.guard_plan(["docs/x.md"]))
     assert "fresh-inventory-partition-budget" in dict(driver.guard_plan(["unknown.asset"]))
     # Deletion still changes collection even though Ruff cannot read the path.
     assert "fresh-inventory-partition-budget" in dict(
