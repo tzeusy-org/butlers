@@ -16,7 +16,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import icalendar
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from fastmcp.exceptions import ToolError
 
@@ -56,6 +56,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarPrepResponse,
     CalendarProposalAcceptRequest,
     CalendarProposalActionResponse,
+    CalendarRespondRequest,
+    CalendarRespondResponse,
     CalendarSourceToggleRequest,
     CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
@@ -143,6 +145,27 @@ def _calendar_core_enabled_butlers() -> set[str]:
         groups = cal.get("groups")
         if not groups or "core" in groups:
             enabled.add(cfg.name)
+    return enabled
+
+
+def _calendar_response_enabled_butlers() -> set[str]:
+    """Configured response owners; runtime admission remains independently gated."""
+    enabled = set()
+    try:
+        configs = list_butlers()
+    except Exception:
+        return enabled
+    for config in configs:
+        calendar = config.modules.get("calendar") or {}
+        approval = config.modules.get("approvals") or {}
+        groups = calendar.get("groups")
+        if (
+            calendar.get("response_enabled") is True
+            and (not groups or "core" in groups)
+            and approval.get("enabled") is True
+            and "calendar_respond" in (approval.get("gated_tools") or {})
+        ):
+            enabled.add(config.name)
     return enabled
 
 
@@ -1566,6 +1589,7 @@ async def get_workspace_invitations(
     if not conflicts_available:
         degraded.add("calendar conflict scan")
     observed_issues = scan.issues if scan is not None else []
+    response_owners = _calendar_response_enabled_butlers()
     entries = []
     for row in invitation_read.rows[:limit]:
         if not owners.get(row["source_key"]):
@@ -1611,6 +1635,7 @@ async def get_workspace_invitations(
                 organizer_source=organizer_source,
                 butler_name=owners.get(row["source_key"]),
                 conflict_issues=issues,
+                response_configured=owners.get(row["source_key"]) in response_owners,
             )
         )
     has_more = len(invitation_read.rows) > limit
@@ -2274,17 +2299,23 @@ async def _call_mcp_tool(
     butler_name: str,
     tool_name: str,
     arguments: dict[str, Any],
+    *,
+    closed_error: bool = False,
 ) -> dict[str, Any]:
     """Call a butler MCP tool and coerce response content into a dict payload."""
     try:
         client = await mgr.get_client(butler_name)
         result = await client.call_tool(tool_name, arguments)
     except ButlerUnreachableError as exc:
+        if closed_error:
+            raise HTTPException(status_code=503, detail="response_transport_unavailable") from None
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{butler_name}' is unreachable: {exc}",
         ) from exc
     except Exception as exc:  # pragma: no cover - defensive transport fallback
+        if closed_error:
+            raise HTTPException(status_code=503, detail="response_transport_unavailable") from None
         logger.exception(
             "Unexpected MCP call failure for butler '%s' tool '%s'",
             butler_name,
@@ -2430,6 +2461,219 @@ async def parse_quick_add_event(
             parse_available=outcome.parse_available,
             draft=draft,
             reason=outcome.reason,
+        )
+    )
+
+
+async def _calendar_response_review_pool(
+    db: DatabaseManager, action_id: UUID, owner: str
+) -> tuple[Any, dict[str, Any]]:
+    """Authenticate read selection by complete own-source and command binding.
+
+    This read selector is not decision or execution authority. Messenger's
+    separate notification-review discriminator keeps its existing admission.
+    """
+    from butlers.modules.calendar_response import _digest
+
+    names = db.configured_butlers_with_module("approvals")
+    if (
+        not isinstance(names, list)
+        or not names
+        or len(names) > 64
+        or any(not isinstance(name, str) or not name for name in names)
+        or len(set(names)) != len(names)
+        or owner not in names
+    ):
+        raise HTTPException(status_code=503, detail="response_review_census_unavailable")
+    rows, failed = await db.fan_out_with_status(
+        "SELECT id FROM pending_actions WHERE id=$1", (action_id,), butler_names=names
+    )
+    if any(
+        len(values) > 1 or any(row.get("id") != action_id for row in values)
+        for values in rows.values()
+    ):
+        raise HTTPException(status_code=409, detail="response_review_owner_unverified")
+    matches = [name for name, values in rows.items() if values]
+    if failed:
+        raise HTTPException(status_code=503, detail="response_review_lookup_degraded")
+    if set(rows) != set(names) or len(matches) != 1 or matches[0] != owner:
+        raise HTTPException(status_code=409, detail="response_review_owner_unverified")
+    pool = db.pool(owner)
+    try:
+        command_row = await pool.fetchrow(
+            "SELECT action_type,action_payload FROM calendar_action_log WHERE id=$1", action_id
+        )
+        pending = await pool.fetchrow(
+            "SELECT tool_name,tool_args FROM pending_actions WHERE id=$1", action_id
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="response_review_unavailable") from None
+    payload = _normalize_json_object(command_row["action_payload"]) if command_row else {}
+    command = _normalize_json_object(payload.get("command"))
+    args = _normalize_json_object(pending["tool_args"]) if pending else {}
+    expected = {
+        **_normalize_json_object(command.get("arguments")),
+        "_command_id": str(action_id),
+        "_command_digest": payload.get("digest"),
+    }
+    if (
+        not command_row
+        or command_row["action_type"] != "workspace_user_respond"
+        or command.get("owner") != owner
+        or _digest(command) != payload.get("digest")
+        or not pending
+        or pending["tool_name"] != "calendar_respond"
+        or args != expected
+    ):
+        raise HTTPException(status_code=409, detail="response_review_binding_unverified")
+    # Carry the admitted immutable binding through the later dossier read.
+    # That read uses another acquisition and must not display a changed action.
+    return pool, expected
+
+
+async def _respond_through_approval(
+    *,
+    arguments: dict[str, Any],
+    butler_name: str,
+    http_request: Request,
+    mgr: MCPClientManager,
+    db: DatabaseManager,
+) -> CalendarRespondResponse:
+    from butlers.api.audit_emit import authenticated_principal
+    from butlers.api.routers.approvals import (
+        _decision_actor_id,
+        _dispatch_approved_action_outcome,
+        approve_owning_action,
+    )
+    from butlers.modules.calendar_response import _digest
+
+    authenticated_principal()
+    result = await _call_mcp_tool(
+        mgr,
+        butler_name,
+        "calendar_respond",
+        {
+            **arguments,
+            "_why": "Owner requested this exact invitation response",
+            "_evidence": [],
+            "_blast_radius": "self",
+            "_reversibility": "compensable",
+        },
+        closed_error=True,
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=409, detail=result["error"])
+    try:
+        command_id = UUID(result["command_id"])
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(status_code=503, detail="response_command_unavailable") from None
+    pool = db.pool(butler_name)
+    command_row = await pool.fetchrow(
+        "SELECT action_payload,action_result FROM calendar_action_log WHERE id=$1", command_id
+    )
+    payload = _normalize_json_object(command_row["action_payload"]) if command_row else {}
+    if payload.get("request_digest") != _digest(arguments):
+        raise HTTPException(status_code=409, detail="response_command_binding_changed")
+    command = _normalize_json_object(payload.get("command"))
+    if command.get("owner") != butler_name:
+        raise HTTPException(status_code=409, detail="response_command_owner_changed")
+    if result["status"] in {"pending_approval", "approved"}:
+        pending = await pool.fetchrow(
+            "SELECT tool_name,tool_args,status FROM pending_actions WHERE id=$1", command_id
+        )
+        tool_args = _normalize_json_object(pending["tool_args"]) if pending else {}
+        if (
+            pending is None
+            or pending["tool_name"] != "calendar_respond"
+            or tool_args.get("_command_id") != str(command_id)
+            or tool_args.get("_command_digest") != payload.get("digest")
+        ):
+            raise HTTPException(status_code=409, detail="response_approval_binding_changed")
+        if pending["status"] == "pending":
+            decision = await approve_owning_action(
+                parsed_id=command_id,
+                actor_id=_decision_actor_id(None, callback_authenticated=False),
+                edits=None,
+                action_butler=butler_name,
+                target_pool=pool,
+                db_mgr=db,
+                mcp_mgr=mgr,
+                expected_tool_args=tool_args,
+            )
+            result = {
+                "status": "approved" if not decision.data.dispatched else "failed",
+                "command_id": str(command_id),
+            }
+        elif pending["status"] in {"rejected", "expired"}:
+            result = {"status": "rejected", "command_id": str(command_id)}
+        else:
+            if pending["status"] == "approved":
+                # Recovery dispatches only this existing, exact owning command.
+                # The executor/committed attempt fence prevents repeated egress.
+                await _dispatch_approved_action_outcome(
+                    mgr,
+                    db,
+                    pool,
+                    str(command_id),
+                    "calendar_respond",
+                    tool_args,
+                    butler_name,
+                )
+            result = {"status": "approved", "command_id": str(command_id)}
+    # Dispatch/executor result is not provider attribution. Only the owning
+    # durable command receipt, or committed start fence, determines the effect.
+    current = await pool.fetchrow(
+        "SELECT action_payload,action_result FROM calendar_action_log WHERE id=$1", command_id
+    )
+    receipt = _normalize_json_object(current["action_result"]) if current else {}
+    current_payload = _normalize_json_object(current["action_payload"]) if current else {}
+    phase = current_payload.get("phase")
+    status = receipt.get("status") or (
+        "uncertain" if phase in {"egress_started", "uncertain"} else result["status"]
+    )
+    return CalendarRespondResponse(
+        status=status,
+        command_id=command_id,
+        approval_id=command_id,
+        source_butler=butler_name,
+        reason=receipt.get("reason") or result.get("reason"),
+        projection_available=receipt.get("projection_available") is True,
+        undo_available=status == "applied"
+        and isinstance(receipt.get("before"), dict)
+        and not receipt.get("undo")
+        and not current_payload.get("inverse_claim")
+        and not _normalize_json_object(current_payload.get("command")).get("inverse_of"),
+    )
+
+
+@router.post("/respond", response_model=ApiResponse[CalendarRespondResponse])
+async def respond_to_invitation(
+    body: CalendarRespondRequest,
+    http_request: Request,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarRespondResponse]:
+    """Compose an authenticated owner decision with the exact owning gated tool."""
+    targets = db.configured_butlers_with_module("calendar")
+    if targets is None:
+        raise HTTPException(status_code=503, detail="response_owner_census_unavailable")
+    owners, failed = await db.fan_out_with_status(
+        "SELECT id FROM calendar_event_instances WHERE id=$1",
+        (body.entry_id,),
+        butler_names=targets,
+    )
+    matches = [name for name, rows in owners.items() if rows]
+    if failed:
+        raise HTTPException(status_code=503, detail="response_owner_lookup_degraded")
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail="response_owner_unverified")
+    return ApiResponse(
+        data=await _respond_through_approval(
+            arguments=body.model_dump(mode="json"),
+            butler_name=matches[0],
+            http_request=http_request,
+            mgr=mgr,
+            db=db,
         )
     )
 
@@ -3399,8 +3643,8 @@ async def _find_action_owner(
 ) -> tuple[tuple[str, dict[str, Any]] | None, list[str]]:
     """Locate the butler schema and row owning *action_id*.
 
-    Action ids are globally unique UUIDs, so the first calendar butler with a
-    matching ``calendar_action_log`` row owns it.
+    UUID generation does not prove cross-schema uniqueness. Refuse multiple
+    observed owners before choosing an action type or dispatching an inverse.
 
     Returns ``(owner_or_none, failed_butlers)``. When ``owner`` is ``None`` but
     ``failed_butlers`` is non-empty the lookup was inconclusive — the owning
@@ -3412,15 +3656,16 @@ async def _find_action_owner(
     results, failed = await db.fan_out_with_status(
         _UNDO_LOOKUP_SQL, (action_id,), butler_names=targets
     )
-    for butler_name, rows in results.items():
-        if rows:
-            return (butler_name, dict(rows[0])), failed
-    return None, failed
+    matches = [(name, dict(row)) for name, rows in results.items() for row in rows]
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail="calendar_action_owner_ambiguous")
+    return (matches[0] if matches else None), failed
 
 
 @router.post("/undo/{action_id}", response_model=ApiResponse[CalendarUndoResponse])
 async def undo_calendar_mutation(
     action_id: UUID,
+    http_request: Request,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[CalendarUndoResponse]:
@@ -3492,6 +3737,39 @@ async def undo_calendar_mutation(
         raise HTTPException(
             status_code=409,
             detail=f"Action {action_id} was already undone.",
+        )
+
+    if action_type == "workspace_user_respond":
+        from butlers.modules.calendar_response import (
+            CalendarResponseError,
+            reserve_response_inverse,
+        )
+
+        # Response identity cannot use the legacy first-match owner assumption.
+        targets = db.configured_butlers_with_module("calendar")
+        if targets is None:
+            raise HTTPException(status_code=503, detail="response_owner_census_unavailable")
+        rows, failed = await db.fan_out_with_status(
+            _UNDO_LOOKUP_SQL, (action_id,), butler_names=targets
+        )
+        if failed or sum(bool(items) for items in rows.values()) != 1:
+            raise HTTPException(status_code=409, detail="response_inverse_owner_unverified")
+        try:
+            arguments = await reserve_response_inverse(db.pool(butler_name), action_id)
+        except CalendarResponseError as exc:
+            raise HTTPException(status_code=409, detail=exc.code) from None
+        response = await _respond_through_approval(
+            arguments=arguments, butler_name=butler_name, http_request=http_request, mgr=mgr, db=db
+        )
+        return ApiResponse(
+            data=CalendarUndoResponse(
+                action_id=action_id,
+                action_type=action_type,
+                inverse_tool="calendar_respond",
+                request_id=arguments["request_id"],
+                undone=response.status == "applied",
+                result=response.model_dump(mode="json"),
+            )
         )
 
     inverse_tool = _UNDO_INVERSE_TOOL.get(action_type)

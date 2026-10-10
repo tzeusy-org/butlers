@@ -1542,6 +1542,24 @@ export interface CalendarInvitationEntry {
   organizer_source: "event" | "attendee" | "unknown";
   butler_name: string | null;
   conflict_issues: ConflictIssue[];
+  response_configured?: boolean;
+}
+
+export interface CalendarResponseRequest {
+  entry_id: string;
+  request_id: string;
+  response_status: "accepted" | "declined" | "tentative";
+  send_updates: "none" | "all" | "externalOnly";
+}
+
+export interface CalendarResponseReceipt {
+  status: "pending_approval" | "approved" | "rejected" | "uncertain" | "noop" | "applied" | "failed";
+  command_id: string | null;
+  approval_id: string | null;
+  source_butler: string;
+  projection_available: boolean;
+  undo_available: boolean;
+  reason: string | null;
 }
 
 export interface CalendarInvitationsResponse {

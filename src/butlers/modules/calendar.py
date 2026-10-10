@@ -49,7 +49,14 @@ from butlers.core.temporal.scheduling import (
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
 from butlers.fleet_events import publish_fleet_event
-from butlers.modules.base import Module, ToolGroupMixin, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.calendar_response import (
+    CalendarResponseCoordinator,
+    CalendarResponseError,
+    CalendarResponseUncertainError,
+    SelfResponseSnapshot,
+    verified_response_result,
+)
 from butlers.oauth_token_payload import OAuthTokenValidationError, validate_oauth_token_payload
 
 logger = logging.getLogger(__name__)
@@ -1276,6 +1283,7 @@ class CalendarConfig(ToolGroupMixin, BaseModel):
 
     provider: str = Field(min_length=1)
     account: str | None = None
+    response_enabled: bool = False
     calendar_id: str | None = None
     timezone: str = "UTC"
     conflicts: CalendarConflictDefaults = Field(default_factory=CalendarConflictDefaults)
@@ -2001,6 +2009,30 @@ class CalendarProvider(abc.ABC):
         """Fetch a single event by id."""
         ...
 
+    async def get_response_calendar(self, *, calendar_id: str) -> dict[str, Any]:
+        """Read the current exact calendar-list access role, without a fallback."""
+        raise CalendarResponseError("response_provider_unavailable")
+
+    async def get_response_event(self, *, calendar_id: str, event_id: str) -> dict[str, Any]:
+        """Read the full explicit participant/occurrence resource for admission."""
+        raise CalendarResponseError("response_provider_unavailable")
+
+    async def prepare_response_write(self) -> str:
+        """Finish credential readiness before any durable write-start claim."""
+        raise CalendarResponseError("response_provider_unavailable")
+
+    async def respond_to_invitation(
+        self,
+        *,
+        calendar_id: str,
+        before: SelfResponseSnapshot,
+        response_status: str,
+        send_updates: str,
+        access_token: str,
+    ) -> dict[str, Any]:
+        """Issue one conditional participant-only request, with no write retry."""
+        raise CalendarResponseError("response_provider_unavailable")
+
     @abc.abstractmethod
     async def create_event(
         self,
@@ -2539,6 +2571,69 @@ class _GoogleProvider(CalendarProvider):
         if not isinstance(payload, dict):
             raise CalendarAuthError("Google Calendar API returned an unexpected get_event payload")
         return _google_event_to_calendar_event(payload, fallback_timezone=self._config.timezone)
+
+    async def get_response_calendar(self, *, calendar_id: str) -> dict[str, Any]:
+        return await self._request_google_json(
+            "GET", f"/users/me/calendarList/{quote(calendar_id, safe='')}"
+        )
+
+    async def get_response_event(self, *, calendar_id: str, event_id: str) -> dict[str, Any]:
+        """Use an ordinary read without flattening participant provenance."""
+        return await self._request_google_json(
+            "GET", f"/calendars/{quote(calendar_id, safe='')}/events/{quote(event_id, safe='')}"
+        )
+
+    async def prepare_response_write(self) -> str:
+        return await self._oauth.get_access_token()
+
+    async def respond_to_invitation(
+        self,
+        *,
+        calendar_id: str,
+        before: SelfResponseSnapshot,
+        response_status: str,
+        send_updates: str,
+        access_token: str,
+    ) -> dict[str, Any]:
+        """Perform the dedicated participant PATCH, never the generic retry path.
+
+        The owning command checks and commits its one-attempt fence first.
+        Token readiness has already completed. Provider errors are closed
+        categories: request URLs, credentials and response bodies cannot enter
+        the approval executor's exception text.
+        """
+        if response_status not in {"needsAction", "accepted", "declined", "tentative"}:
+            raise CalendarResponseError("response_status_invalid")
+        if send_updates not in {"none", "all", "externalOnly"}:
+            raise CalendarResponseError("response_notifications_invalid")
+        path = f"/calendars/{quote(calendar_id, safe='')}/events/{quote(before.event_id, safe='')}"
+        try:
+            # httpx's ordinary transport has retries=0. In production this is
+            # the module-owned client; injected transports are controlled tests.
+            response = await self._http_client.request(
+                "PATCH",
+                f"{GOOGLE_CALENDAR_API_BASE_URL}{path}",
+                params={"sendUpdates": send_updates},
+                headers={"Authorization": f"Bearer {access_token}", "If-Match": before.etag},
+                json={
+                    "attendeesOmitted": True,
+                    "attendees": [{"email": before.self_email, "responseStatus": response_status}],
+                },
+            )
+        except httpx.HTTPError:
+            raise CalendarResponseUncertainError("response_transport_uncertain") from None
+        if 400 <= response.status_code < 500 and response.status_code != 408:
+            raise CalendarRequestError(
+                status_code=response.status_code, message="response_provider_rejected"
+            )
+        if response.status_code != 200:
+            raise CalendarResponseUncertainError("response_provider_uncertain")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise CalendarResponseUncertainError("response_result_unverified") from None
+        verified_response_result(payload, before=before, response_status=response_status)
+        return payload
 
     async def create_event(
         self,
@@ -3087,6 +3182,9 @@ class CalendarModule(Module):
     def __init__(self) -> None:
         self._config: CalendarConfig | None = None
         self._provider: CalendarProvider | None = None
+        self._response_ready = False
+        self._response_credential_entity_id: uuid.UUID | None = None
+        self._response_coordinator = CalendarResponseCoordinator(self)
         self._butler_name: str = DEFAULT_BUTLER_NAME
         self._approval_enqueuer: ApprovalEnqueuer | None = None
         self._db: Any = None
@@ -3142,6 +3240,62 @@ class CalendarModule(Module):
 
     def migration_revisions(self) -> str | None:
         return None
+
+    def canonical_approval_preparers(self) -> dict[str, Any]:
+        if self._config is None or not self._config.response_enabled:
+            return {}
+        return {"calendar_respond": self._response_coordinator}
+
+    def set_response_approval_ready(self, ready: bool) -> None:
+        self._response_ready = ready
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        if not self.canonical_approval_preparers():
+            return {}
+        return {
+            "calendar_respond": ToolMeta(
+                canonical_name="calendar_respond",
+                module_name="calendar",
+                group_name="core",
+                arg_sensitivities={
+                    "_write": True,
+                    "entry_id": True,
+                    "response_status": True,
+                    "request_id": True,
+                    "send_updates": True,
+                    "_command_id": True,
+                    "_command_digest": True,
+                },
+            )
+        }
+
+    async def _verified_response_account(self) -> dict[str, str]:
+        from butlers.google_account_registry import get_google_account
+
+        if self._config is None or self._response_credential_entity_id is None:
+            raise CalendarResponseError("response_credentials_unverified")
+        account = await get_google_account(self._db.pool, self._config.account)
+        if not isinstance(account.email, str) or not account.email.strip():
+            raise CalendarResponseError("response_credentials_unverified")
+        permission = await self._db.pool.fetchrow(
+            "SELECT granted FROM public.permissions WHERE butler=$1 AND permission=$2",
+            self._butler_name,
+            CALENDAR_WRITE_PERMISSION,
+        )
+        if permission is not None and permission["granted"] is not True:
+            raise CalendarResponseError("response_permission_denied")
+        write_scopes = {
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/calendar.events",
+        }
+        if (
+            account.entity_id != self._response_credential_entity_id
+            or account.status != "active"
+            or not write_scopes.intersection(account.granted_scopes)
+            or (self._config.account is None and not account.is_primary)
+        ):
+            raise CalendarResponseError("response_credentials_changed")
+        return {"entity_id": str(account.entity_id), "email": account.email}
 
     def set_approval_enqueuer(self, enqueuer: ApprovalEnqueuer) -> None:
         """Set the callback used to enqueue overlap override requests for approval.
@@ -3205,6 +3359,40 @@ class CalendarModule(Module):
             if group_enabled(self._config, group):
                 return mcp.tool()
             return lambda fn: fn
+
+        if self._config.response_enabled:
+            if not group_enabled(self._config, "core"):
+                raise RuntimeError("calendar response requires its core registration group")
+
+            @mcp.tool(exclude_args=["_command_id", "_command_digest"])
+            async def calendar_respond(
+                entry_id: str,
+                response_status: Literal["accepted", "declined", "tentative"],
+                request_id: str,
+                send_updates: Literal["none", "all", "externalOnly"] = "none",
+                _command_id: str | None = None,
+                _command_digest: str | None = None,
+            ) -> dict[str, Any]:
+                """Respond only to the verified self attendee after exact owner approval.
+
+                The gate prepares the immutable occurrence command. A direct
+                call cannot authorize an effect or pass private command bindings.
+                """
+                arguments = dict(
+                    entry_id=entry_id,
+                    response_status=response_status,
+                    request_id=request_id,
+                    send_updates=send_updates,
+                    _command_id=_command_id,
+                    _command_digest=_command_digest,
+                )
+                result = await module._response_coordinator.execute(arguments)
+                if result.get("status") in {"failed", "uncertain"}:
+                    # A recorded closed outcome is not a successful approved
+                    # execution. Preserve the durable Calendar receipt while
+                    # keeping this approval retryable behind its attempt fence.
+                    return {**result, "success": False}
+                return result
 
         @_tool("core")
         async def calendar_list_events(
@@ -5693,6 +5881,7 @@ class CalendarModule(Module):
                         "CalendarModule: resolved Google credentials for account %s",
                         account_email,
                     )
+                    self._response_credential_entity_id = google_account.entity_id
                     return _GoogleOAuthCredentials(
                         client_id=client_id,
                         client_secret=client_secret,
@@ -5711,6 +5900,7 @@ class CalendarModule(Module):
 
                 if client_id and client_secret and refresh_token:
                     logger.debug("CalendarModule: resolved Google credentials from CredentialStore")
+                    self._response_credential_entity_id = primary_entity_id
                     return _GoogleOAuthCredentials(
                         client_id=client_id,
                         client_secret=client_secret,
@@ -6307,6 +6497,8 @@ class CalendarModule(Module):
             When provided, individual Google credential keys are resolved from
             ``butler_secrets``.
         """
+        self._response_ready = False
+        self._response_credential_entity_id = None
         self._config = self._coerce_config(config)
         self._db = db
         self._butler_name = self._resolve_effective_butler_name()
@@ -6426,6 +6618,8 @@ class CalendarModule(Module):
         )
 
     async def on_shutdown(self) -> None:
+        self._response_ready = False
+        self._response_credential_entity_id = None
         if self._force_sync_queue_task is not None and not self._force_sync_queue_task.done():
             self._force_sync_queue_task.cancel()
             try:

@@ -324,6 +324,10 @@ async def test_relationship_registration_dispatches_legacy_merge_via_memory_call
     event.
     """
     config = load_config(_REPO_ROOT / "roster" / "relationship")
+    # This focused registry contains Memory and Approvals, not Calendar. Keep
+    # its original curation-only gate scope; the actual Calendar installation
+    # and missing-gate refusal are exercised at the real response startup seam.
+    config.modules["approvals"]["gated_tools"].pop("calendar_respond")
     db = MockDB()
     db.schema = "relationship"
     memory = MemoryModule()

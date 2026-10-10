@@ -2258,6 +2258,24 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Proposal dismissed.
 - End time must be after the start time.
 
+## `frontend/src/components/calendar/CalendarResponsePanel.tsx`
+
+- Submitting response…
+- Check response outcome
+- Review response receipt
+- Undo response
+- Open approval dossier
+- Approval review unavailable; source or action identity is unverified.
+- Close receipt
+- Invitation responses
+- Respond to {}
+- {} invitation {}
+- Response receipt
+- Accept
+- Decline
+- Tentative
+- {} invitation: {}
+
 ## `frontend/src/components/calendar/CalendarVerdictOpener.tsx`
 
 - Loading invitations…
@@ -4875,4 +4893,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3883*
+*Total strings: 3898*
