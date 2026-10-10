@@ -118,6 +118,27 @@ def test_installer_refuses_unknown_config_and_restores_absent_state(tmp_path, mo
     (root / ".beads/hooks").mkdir(parents=True)
     for name in driver.HOOKS:
         (root / ".githooks" / name).touch()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Hook control",
+            "-c",
+            "user.email=hook-control@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "own configuration control",
+        ],
+        check=True,
+    )
+    worktree = tmp_path / "worktree"
+    subprocess.run(
+        ["git", "-C", str(root), "worktree", "add", "-q", "--detach", str(worktree)],
+        check=True,
+    )
     # This isolates configuration mechanics only. Installed source/delegate
     # proof uses actual bodies/binary in separate full-source controls.
     monkeypatch.setattr(driver, "asset_binding", lambda root: {"fixture": "config-only"})
@@ -125,7 +146,9 @@ def test_installer_refuses_unknown_config_and_restores_absent_state(tmp_path, mo
     installed = (root / ".git/config").read_bytes()
     driver.install(root)
     assert (root / ".git/config").read_bytes() == installed
-    driver.install(root, uninstall=True)
+    driver.install(worktree)
+    assert (root / ".git/config").read_bytes() == installed
+    driver.install(worktree, uninstall=True)
     assert (root / ".git/config").read_bytes() == before
     assert not (root / ".git/butlers-pre-push.json").exists()
     assert not (root / ".git/butlers-pre-push.lock").exists()

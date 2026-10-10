@@ -8,7 +8,9 @@ installer changes repository-local common `core.hooksPath` to `.githooks`, recor
 prior config bytes/mode, and leaves managed assets untouched. Repeating installation
 is a no-op only for identical assets/config. `make uninstall-hooks` restores exact
 prior config bytes/mode and refuses intervening changes instead of overwriting
-new configuration. Custom/global/worktree hooks, executable default hooks or
+new configuration. Reported config origins retain their exact scope/value while
+relative and absolute names of the same common file share its resolved identity.
+Custom/global/worktree hooks, executable default hooks or
 unknown chains refuse before mutation. No global settings are changed.
 
 Five forwarding entries use the owning checkout's existing managed hook. The

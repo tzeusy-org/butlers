@@ -105,6 +105,7 @@ def config_origins(root: Path) -> bytes:
             "config",
             "--show-origin",
             "--show-scope",
+            "--null",
             "--get-all",
             "core.hooksPath",
         ],
@@ -112,7 +113,21 @@ def config_origins(root: Path) -> bytes:
     )
     if result.returncode not in (0, 1):
         raise Refusal("config-unavailable")
-    return result.stdout
+    # Git reports the same common config relatively from its root and
+    # absolutely from a worktree. Keep scope/value exact, bind file identity.
+    fields = result.stdout.split(b"\0")
+    if fields == [b""]:
+        return b""
+    if fields[-1] or (len(fields) - 1) % 3:
+        raise Refusal("config-origin-malformed")
+    normalized = []
+    for index in range(0, len(fields) - 1, 3):
+        scope, origin, value = fields[index : index + 3]
+        if origin.startswith(b"file:"):
+            path = Path(os.fsdecode(origin[5:]))
+            origin = b"file:" + os.fsencode((root / path).resolve())
+        normalized.extend((scope, origin, value))
+    return b"\0".join(normalized) + b"\0"
 
 
 @contextmanager
