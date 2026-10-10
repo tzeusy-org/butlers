@@ -25,6 +25,7 @@ from pathlib import Path
 HOOKS = ("pre-commit", "prepare-commit-msg", "post-checkout", "post-merge", "pre-push")
 STATE = "butlers-pre-push.json"
 DISPATCHER = "butlers-pre-push-hooks"
+DISPATCH_FILES = (*HOOKS, "pre_push.py", "pre_push_sandbox.py")
 CHECK_TIMEOUT = 300
 OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 # Existing tracked assets are not regenerated or replaced by this installer.
@@ -155,10 +156,10 @@ def recovery_signals():
 def dispatcher_bodies(directory: Path) -> dict:
     if directory.is_symlink() or not directory.is_dir():
         raise Refusal("installed-dispatcher-unavailable")
-    if {p.name for p in directory.iterdir()} != set(HOOKS):
+    if {p.name for p in directory.iterdir()} != set(DISPATCH_FILES):
         raise Refusal("installed-dispatcher-drift")
     result = {}
-    for name in HOOKS:
+    for name in DISPATCH_FILES:
         path = directory / name
         body_digest(path)
         result[name] = {"body_hex": path.read_bytes().hex(), "mode": path.stat().st_mode & 0o777}
@@ -174,7 +175,7 @@ def write_dispatcher(directory: Path, bodies: dict) -> None:
 
 
 def remove_dispatcher(directory: Path) -> None:
-    for name in HOOKS:
+    for name in DISPATCH_FILES:
         (directory / name).unlink(missing_ok=True)
     directory.rmdir()
 
@@ -258,6 +259,12 @@ def install(root: Path, *, uninstall: bool = False) -> None:
             }
             for name in HOOKS
         }
+        for name in ("pre_push.py", "pre_push_sandbox.py"):
+            path = root / "scripts" / name
+            bodies[name] = {
+                "body_hex": path.read_bytes().hex(),
+                "mode": path.stat().st_mode & 0o777,
+            }
         try:
             # Common absolute dispatch keeps hooks present even when another
             # owning worktree predates these assets. Its wrapper refuses missing
@@ -363,7 +370,13 @@ def run_checked(
         raise Refusal(f"{name}:tool-unavailable")
     command = [executable, *command[1:]]
     if confined:
-        command = [sys.executable, str(root / "scripts/pre_push_sandbox.py"), *command]
+        common = common_dir(root)
+        launcher = (
+            common / DISPATCHER / "pre_push_sandbox.py"
+            if (common / STATE).exists()
+            else root / "scripts/pre_push_sandbox.py"
+        )
+        command = [sys.executable, str(launcher), *command]
     environment = {
         **os.environ,
         "PYTHONDONTWRITEBYTECODE": "1",

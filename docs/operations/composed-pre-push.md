@@ -4,11 +4,14 @@
 not install hooks in the canonical checkout or establish elapsed targets.
 
 Run `make install-hooks` only after serialized installation approval. The
-installer copies the five exact forwarding bodies/modes into an owned common-Git
+installer copies the five exact forwarding bodies/modes and reviewed driver/launcher
+into an owned common-Git
 directory and sets repository-local common `core.hooksPath` to that absolute
 dispatcher. Older or later owning worktrees still invoke the dispatcher and refuse
 missing owning code/runtime instead of silently skipping absent relative hooks.
-It records prior config bytes/mode and leaves managed assets untouched. Repeating installation
+The common retained driver admits the complete owning asset bodies/modes before
+any owning driver import; a changed owning driver cannot approve itself. It records
+prior config bytes/mode and leaves managed assets untouched. Repeating installation
 is a no-op only for identical assets/config. `make uninstall-hooks` restores exact
 prior config bytes/mode and refuses intervening changes instead of overwriting
 new configuration. Catchable interruptions in either installation or uninstall
