@@ -160,6 +160,15 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   one arg constraint plus `expires_at` or `max_uses`); rules created from an action at those tiers
   default to `max_uses=1`.
 
+The dashboard action, flat-list, history and dossier responses expose additive
+`origin: "prepared" | null` from the stored pending action. Only the exact stored
+`prepared` value earns the neutral Prepared label in the rail and dossier;
+absent, malformed and unrecognized values remain Origin unknown. This label is
+independent of status, expiry, permissions and delivery evidence. Intended
+non-send without delivery evidence is not a failed push, while independently
+recorded failure or uncertain delivery remains visible even for a prepared action.
+
+
 ## Related Pages
 
 - [Module System](module-system.md)

@@ -4,7 +4,7 @@
 - [x] 1.2 Validate the complete paired contract and categorical success/unknown/failure/privacy matrix with meaningful refusal/restoration controls.
 - [x] 1.3 Prove installed strict full-target generation, disposable application, complete requirement/scenario preservation, foreign continuity and physical/semantic inverse.
 - [x] 1.4 Run proportional spec-format, authoring, ratchet, trace, planner and repository guards with inherited debt named.
-- [ ] 1.5 Obtain genuine exact-head independent contract review, current applicable hosted/protected gates and confirmed squash delivery for this spec-only PR.
+- [x] 1.5 Obtain genuine exact-head independent contract review, current applicable hosted/protected gates and confirmed squash delivery for this spec-only PR.
 
 ## Separate implementation and supported adoption
 

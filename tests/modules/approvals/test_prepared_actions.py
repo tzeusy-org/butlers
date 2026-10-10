@@ -18,8 +18,15 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
+from butlers.api.routers.approvals import (
+    _delivery_truth,
+    _pending_action_to_api,
+    _pending_action_to_detail,
+    _pending_action_to_summary,
+)
 from butlers.db import register_jsonb_codec
 from butlers.modules.approvals.delivery_lifecycle import defer_pending_action
+from butlers.modules.approvals.models import PendingAction
 from butlers.modules.approvals.park import park_pending_action, park_prepared_action
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -101,6 +108,22 @@ async def test_park_prepared_action_stays_default_off_and_never_pushes(pool) -> 
         "SELECT EXISTS (SELECT 1 FROM approval_delivery_intents WHERE action_id = $1)",
         kwargs["action_id"],
     )
+
+    # Spec: REQ-dashboard-api-068; migrated stored origin survives all projections.
+    stored = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", kwargs["action_id"])
+    action = PendingAction.from_row(stored)
+    delivery = _delivery_truth(stored, action)
+    for projection in (
+        _pending_action_to_api,
+        _pending_action_to_summary,
+        _pending_action_to_detail,
+    ):
+        item = projection(action, "relationship", delivery=delivery)
+        assert item.origin == "prepared"
+        assert item.id == str(kwargs["action_id"])
+        assert item.butler == "relationship"
+        assert item.push_failed is False
+        assert item.delivery is None
 
 
 # Spec: REQ-approval-delivery-intent-recovery-010; enabled prepared admission is collapsed, standalone and non-sendable.

@@ -118,8 +118,8 @@ class ApprovalAction(BaseModel):
     origin: Literal["prepared"] | None = Field(
         default=None,
         description=(
-            "'prepared' for a proactive draft parked by an insight-scan producer "
-            "and never pushed to the owner; null for every other approval action."
+            "Exact stored 'prepared' classification; null means origin unknown. "
+            "Origin is independent from notification and execution evidence."
         ),
     )
     dispatched: bool = Field(
@@ -193,6 +193,10 @@ class ApprovalDetail(BaseModel):
             "fact references (e.g. subject/object of relationship_assert_fact)."
         ),
     )
+    origin: Literal["prepared"] | None = Field(
+        default=None,
+        description="Exact stored 'prepared' classification, or null for unknown origin.",
+    )
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
         Field(
             default=None,
@@ -238,6 +242,10 @@ class ApprovalSummary(BaseModel):
     execution_result: dict[str, Any] | None = None
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
+    origin: Literal["prepared"] | None = Field(
+        default=None,
+        description="Exact stored 'prepared' classification, or null for unknown origin.",
+    )
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
         Field(
             default=None,
