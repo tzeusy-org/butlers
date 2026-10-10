@@ -21,6 +21,28 @@
       "excerpt": "- **THEN** the `session_process_logs` table is created with the specified schema and index"
     }
   ],
+  "amend-dashboard-chat-composer-queue-and-suggestions/dashboard-chat-ui/Message Input Area": [
+    {
+      "kind": "clause",
+      "scenario": "Input disabled during streaming",
+      "digest": "cd554043e53b",
+      "excerpt": "- **THEN** the textarea and send button are disabled"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Input disabled during streaming",
+      "digest": "fb9cce2fcee7",
+      "excerpt": "- **AND** a \"Stop\" button replaces the send button, which calls the server-side cancel endpoint (see Stream cancellat..."
+    }
+  ],
+  "amend-dashboard-chat-composer-queue-and-suggestions/dashboard-chat-ui/Typing Indicator": [
+    {
+      "kind": "clause",
+      "scenario": "Typing indicator during processing",
+      "digest": "27486908959c",
+      "excerpt": "- **AND** the indicator shows three animated dots with a bounce animation (staggered `animation-delay`)"
+    }
+  ],
   "amend-secrets-inventory-label-minimization/dashboard-api/Secrets Inventory and Per-Credential Read Endpoints": [
     {
       "kind": "clause",
