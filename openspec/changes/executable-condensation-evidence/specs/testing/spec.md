@@ -2,9 +2,11 @@
 
 ### Requirement: Condensation requires current executable survivor evidence
 
-ID: REQ-testing-053
-
 The system MUST refuse condensation admission until exact source-bound survivor evidence preserves the removed behavior, complete case multiplicity and protected architecture, wire, privacy, authorization, retry, idempotency and migration outcomes. Neither test counts, similar text, source deletion, attestation nor coverage alone establishes that evidence. The consumer SHALL preserve the existing selection, budgets, default coverage core, required CI event predicates and full terminal merge-group gate.
+
+ID: REQ-testing-053
+Source: bu-ly3lv5.11 preserving A82/B146 contract; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md Five-Minute Routine-Lane Target; AGENTS.md Test Scope Policy
+Scope: v1-mandatory
 
 #### Scenario: Exact branch contexts and retained mutation kills
 - **WHEN** removed cases and named survivors execute a protected proof
