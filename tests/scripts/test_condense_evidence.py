@@ -1,0 +1,367 @@
+"""REQ-testing-053: actual branch contexts and finite source-owned mutation proof."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+import condense_evidence as evidence  # noqa: E402
+
+pytestmark = pytest.mark.unit
+
+
+def _toy(tmp_path):
+    root = tmp_path / "subject"
+    root.mkdir()
+    (root / "toy.py").write_text(
+        "def reply(flag):\n    if flag:\n        return 'accepted'\n    return 'error'\n"
+    )
+    (root / "tests").mkdir()
+    (root / "tests/test_toy.py").write_text(
+        "from toy import reply\n"
+        "def test_removed():\n    assert reply(True) == 'accepted'\n"
+        "def test_survivor():\n    assert reply(True) == 'accepted'\n    assert reply(False) == 'error'\n"
+        "def test_error_only():\n    assert reply(False) == 'error'\n"
+    )
+    (root / "scripts").mkdir()
+    source = Path(__file__).resolve().parents[2]
+    for name in ("condense_evidence.py", "check_condensation_ledger.py", "pre_push.py"):
+        shutil.copy2(source / "scripts" / name, root / "scripts" / name)
+    governing = root / "openspec/specs/testing/spec.md"
+    governing.parent.mkdir(parents=True)
+    public_contract = source / "openspec/specs/testing/spec.md"
+    if "ID: REQ-testing-053" not in public_contract.read_text():
+        public_contract = (
+            source / "openspec/changes/executable-condensation-evidence/specs/testing/spec.md"
+        )
+    governing.write_bytes(public_contract.read_bytes())
+    shutil.copy2(source / "uv.lock", root / "uv.lock")
+    (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "owned toy",
+        ],
+        check=True,
+    )
+    return root
+
+
+def _config(removed="tests/test_toy.py::test_removed", survivor="tests/test_toy.py::test_survivor"):
+    return {
+        "base": "HEAD",
+        "scope": ["toy.py"],
+        "removed": [removed],
+        "survivors": [survivor],
+        "cluster": "owned-proof",
+        "bead": "bu-ly3lv5.11",
+        "contract": {"class": "wire", "cites": ["REQ-testing-053"]},
+        "mapping": {
+            removed: {"survivors": [survivor], "reason": "same branch and status contract"}
+        },
+    }
+
+
+def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch):
+    """REQ-testing-053: real carriers admit retained kills; falsified carriers and authority refuse."""
+    root = _toy(tmp_path)
+    monkeypatch.setenv("COVERAGE_CORE", "sysmon")
+    config = _config()
+    before = (root / "toy.py").read_bytes()
+    original_base = evidence.git(root, "rev-parse", "HEAD")
+    owner = root / "tests/test_toy.py"
+    original_owner = owner.read_text()
+    owner.write_text(
+        original_owner.replace("def test_removed():\n    assert reply(True) == 'accepted'\n", "")
+    )
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "disposable proposed deletion",
+        ],
+        check=True,
+    )
+    config["base"] = original_base
+    proof = evidence.prove(root, config, tmp_path / "proof")
+    assert proof["status"] == "PASS"
+    assert proof["coverage"]["core"] == "ctrace"
+    assert proof["coverage"]["residue_arcs"] == 0
+    assert proof["mutation"]["killed_by_removed"]
+    assert proof["mutation"]["lost"] == []
+    assert all(
+        run["core"] == "ctrace" and run["complete"] and run["cleanup"] for run in proof["runs"]
+    )
+    assert (root / "toy.py").read_bytes() == before
+    assert os.environ["COVERAGE_CORE"] == "sysmon"
+    saved = evidence.strict_json(tmp_path / "proof/ledger.json")
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    consumer.executable_proof(
+        tmp_path / "proof", saved["proof"], saved["binding"], saved["removed"], saved["survivors"]
+    )
+    admitted = consumer.verify(root, original_base, [tmp_path / "proof/ledger.json"])
+    assert admitted["losses"] == 1 and admitted["ledger_clusters"] == 1
+    with pytest.raises(consumer.EvidenceError, match="unproven"):
+        consumer.verify(root, original_base, [])
+    saved_path = tmp_path / "proof/ledger.json"
+    original_ledger = saved_path.read_bytes()
+    for mutation, category in (
+        ("tools", "changed-installed-proof-tools"),
+        ("citation", "unresolved-contract-citation"),
+        ("migration", "migration-runtime-proof"),
+    ):
+        mutant = copy.deepcopy(saved)
+        if mutation == "tools":
+            mutant["binding"]["tools"]["closure"] = "0" * 64
+        elif mutation == "citation":
+            mutant["contract"]["cites"] = ["REQ-" + "undefined-999"]
+        else:
+            mutant["contract"]["class"] = "migration"
+        saved_path.write_text(json.dumps(mutant))
+        with pytest.raises(consumer.EvidenceError, match=category):
+            consumer.verify(root, original_base, [saved_path])
+        saved_path.write_bytes(original_ledger)
+        assert consumer.verify(root, original_base, [saved_path])["status"] == "PASS"
+    # Preserve actual SQLite while falsifying both summary and its JSON readback.
+    forged = copy.deepcopy(saved)
+    run = forged["proof"]["runs"][0]
+    path = tmp_path / "proof" / run["artifact"]["path"]
+    original = path.read_bytes()
+    run["arcs"] = {key: [] for key in run["arcs"]}
+    row = {k: v for k, v in run.items() if k not in {"artifact", "coverage_artifact"}}
+    path.write_text(json.dumps(row))
+    run["artifact"].update(
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(), bytes=path.stat().st_size
+    )
+    try:
+        with pytest.raises(consumer.EvidenceError, match="branch-carrier-summary-mismatch"):
+            consumer.executable_proof(
+                tmp_path / "proof",
+                forged["proof"],
+                forged["binding"],
+                forged["removed"],
+                forged["survivors"],
+            )
+    finally:
+        path.write_bytes(original)
+    consumer.executable_proof(
+        tmp_path / "proof", saved["proof"], saved["binding"], saved["removed"], saved["survivors"]
+    )
+
+
+def test_distinct_status_owner_loses_kill_and_arcs(tmp_path):
+    """REQ-testing-053: different statuses cannot substitute for the removed behavior."""
+    root = _toy(tmp_path)
+    proof = evidence.prove(
+        root, _config(survivor="tests/test_toy.py::test_error_only"), tmp_path / "proof"
+    )
+    assert proof["status"] == "REFUSED"
+    assert proof["coverage"]["residue_arcs"] > 0
+    assert proof["mutation"]["lost"]
+    assert proof["restored"] and proof["cleanup"]
+
+
+def test_setup_failure_is_unknown_with_durable_receipt(tmp_path):
+    """REQ-testing-053: malformed input and setup failures preserve scoped UNKNOWN."""
+    root = _toy(tmp_path)
+    bad_config = tmp_path / "malformed.json"
+    bad_config.write_text('{"base":1,"base":2}')
+    bad_output = tmp_path / "malformed-output"
+    assert (
+        evidence.main(
+            [
+                "prove",
+                "--repo-root",
+                str(root),
+                "--config",
+                str(bad_config),
+                "--output",
+                str(bad_output),
+            ]
+        )
+        == 2
+    )
+    assert evidence.strict_json(bad_output / "receipt.json")["status"] == "UNKNOWN"
+    for kind in ("test-scope", "malformed-contract", "empty-owner"):
+        refused = _config()
+        if kind == "test-scope":
+            refused["scope"] = ["tests/test_toy.py"]
+        elif kind == "malformed-contract":
+            refused["contract"]["cites"] = []
+        else:
+            refused["bead"] = ""
+        with pytest.raises(evidence.EvidenceError, match="proof-unknown"):
+            evidence.prove(root, refused, tmp_path / kind)
+        assert evidence.strict_json(tmp_path / kind / "receipt.json")["status"] == "UNKNOWN"
+    (root / "conftest.py").write_text(
+        "import pytest\n@pytest.fixture(autouse=True)\ndef unavailable():\n    raise RuntimeError('private operand must not be retained')\n"
+    )
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "planted setup failure",
+        ],
+        check=True,
+    )
+    before = (root / "toy.py").read_bytes()
+    with pytest.raises(evidence.EvidenceError, match="proof-unknown"):
+        evidence.prove(root, _config(), tmp_path / "proof")
+    receipt = evidence.strict_json(tmp_path / "proof/receipt.json")
+    assert receipt["status"] == "UNKNOWN"
+    assert "private operand" not in (tmp_path / "proof/receipt.json").read_text()
+    assert (root / "toy.py").read_bytes() == before
+
+
+def test_literal_coverage_query_does_not_use_regex_contexts(tmp_path):
+    """REQ-testing-053: actual CoverageData queries match literal phase contexts."""
+    import coverage
+
+    data = coverage.CoverageData(basename=str(tmp_path / "contexts.coverage"))
+    data.set_context("case[one]|call")
+    data.add_arcs({"subject.py": {(1, 2)}})
+    data.set_context("caseo|call")
+    data.add_arcs({"subject.py": {(3, 4)}})
+    data.set_query_context("case[one]|call")
+    assert data.arcs("subject.py") == [(1, 2)]
+    data.set_query_context("caseo|call")
+    assert data.arcs("subject.py") == [(3, 4)]
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "cancel", "crash"])
+def test_owned_timeout_leaves_unknown_and_no_active_group(tmp_path, outcome):
+    """REQ-testing-053: timeout, cancellation and writer crash preserve owned recovery."""
+    if outcome == "timeout":
+        with pytest.raises(evidence.EvidenceError, match="proof-timeout"):
+            evidence.owned_run(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=tmp_path,
+                env=dict(os.environ),
+                timeout=0.1,
+            )
+        root = _toy(tmp_path)
+        with pytest.raises(evidence.EvidenceError, match="proof-unknown"):
+            evidence.prove(root, _config(), tmp_path / "total-timeout", timeout=0.01)
+        total = evidence.strict_json(tmp_path / "total-timeout/receipt.json")
+        assert total["status"] == "UNKNOWN" and total["restored"] and total["cleanup"]
+        return
+    root = _toy(tmp_path)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(_config()))
+    output = tmp_path / "interrupted"
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            evidence.__file__,
+            "prove",
+            "--repo-root",
+            str(root),
+            "--config",
+            str(config),
+            "--output",
+            str(output),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            journal_path = output / "journal.json"
+            if journal_path.exists():
+                journal = evidence.strict_json(journal_path)
+                if journal["mutations"]:
+                    break
+            if child.poll() is not None:
+                pytest.fail("proof terminated before the positioned mutation seam")
+            time.sleep(0.01)
+        else:
+            pytest.fail("mutation seam was not reached")
+        os.kill(child.pid, signal.SIGTERM if outcome == "cancel" else signal.SIGKILL)
+        child.wait(timeout=10)
+        assert evidence.strict_json(output / "receipt.json")["status"] == "UNKNOWN"
+        assert (root / "toy.py").read_text().endswith("    return 'error'\n")
+        owned = Path(journal["owned_copy"])
+        if outcome == "cancel":
+            assert not owned.exists()
+            receipt = evidence.strict_json(output / "receipt.json")
+            assert receipt["restored"] and receipt["cleanup"]
+        else:
+            # A killed writer cannot restamp PASS. Wait only for its already-running
+            # finite toy worker, then use the actual supported scoped recovery.
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    result = evidence.recover(output)
+                    break
+                except evidence.EvidenceError as exc:
+                    if (
+                        str(exc)
+                        not in {
+                            "recovery-process-not-settled-no-signal",
+                            "recovery-owned-group-completion-unknown",
+                        }
+                        or time.monotonic() >= deadline
+                    ):
+                        raise
+                    time.sleep(0.01)
+            assert result == {
+                "status": "UNKNOWN",
+                "restored": True,
+                "cleanup": True,
+                "category": "recovered-needs-fresh-proof",
+            }
+            for mutation in journal["mutations"]:
+                before = (output / mutation["before_file"]).read_bytes()
+                for side in ("removed", "survivors"):
+                    restored = owned / side / mutation["path"]
+                    assert restored.read_bytes() == before
+                    assert restored.stat().st_mode & 0o777 == mutation["before_mode"]
+    finally:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
