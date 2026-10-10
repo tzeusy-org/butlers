@@ -56,6 +56,7 @@ def test_ref_updates_require_actual_head_and_preserve_multi_ref_bytes(tmp_path, 
     (root / ".beads/hooks").mkdir(parents=True)
     for name in driver.HOOKS:
         (root / ".githooks" / name).touch()
+        (root / ".beads/hooks" / name).write_bytes((ROOT / ".beads/hooks" / name).read_bytes())
     (root / "scripts").mkdir()
     for name in ("pre_push.py", "pre_push_sandbox.py"):
         (root / "scripts" / name).write_bytes((ROOT / "scripts" / name).read_bytes())
@@ -209,6 +210,7 @@ def test_installer_refuses_unknown_config_and_restores_absent_state(tmp_path, mo
     (root / ".beads/hooks").mkdir(parents=True)
     for name in driver.HOOKS:
         (root / ".githooks" / name).touch()
+        (root / ".beads/hooks" / name).write_bytes((ROOT / ".beads/hooks" / name).read_bytes())
     (root / "scripts").mkdir()
     for name in ("pre_push.py", "pre_push_sandbox.py"):
         (root / "scripts" / name).write_bytes((ROOT / "scripts" / name).read_bytes())

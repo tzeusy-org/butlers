@@ -4,7 +4,8 @@
 not install hooks in the canonical checkout or establish elapsed targets.
 
 Run `make install-hooks` only after serialized installation approval. The
-installer copies the five exact forwarding bodies/modes and reviewed driver/launcher
+installer copies the five forwarding bodies/modes, the five exact managed bodies,
+and reviewed driver/launcher
 into an owned common-Git
 directory and sets repository-local common `core.hooksPath` to that absolute
 dispatcher. Older or later owning worktrees still invoke the dispatcher and refuse
@@ -23,7 +24,10 @@ relative and absolute names of the same common file share its resolved identity.
 Custom/global/worktree hooks, executable default hooks or
 unknown chains refuse before mutation. No global settings are changed.
 
-Five forwarding entries use the owning checkout's existing managed hook. The
+All five forwarding entries independently admit the owning source and installed
+Beads binary through the retained common driver, then execute the retained exact
+managed body corresponding to that owning source. No mutable owning driver or
+managed hook is imported or invoked before this admission. The
 composed pre-push driver runs guards first, then passes original complete stdin
 once to the actual managed pre-push asset. Other lifecycle entries preserve
 exact argv, status, cwd and `BD_IMPORT_AUTO=false` in the existing post-checkout

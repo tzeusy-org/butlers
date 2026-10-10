@@ -2,5 +2,6 @@
 # Forward the owning checkout's unchanged managed asset and exact Git argv.
 root=$(git rev-parse --show-toplevel) || exit 1
 command -v bd >/dev/null 2>&1 || { echo 'hook refused: bd unavailable' >&2; exit 1; }
-[ -x "$root/.beads/hooks/post-merge" ] || exit 1
-exec "$root/.beads/hooks/post-merge" "$@"
+[ -x "$root/.venv/bin/python" ] && [ ! -L "$root/.venv" ] || exit 1
+common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
+exec "$root/.venv/bin/python" "$common/butlers-pre-push-hooks/pre_push.py" forward post-merge "$@"

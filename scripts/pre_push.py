@@ -27,7 +27,12 @@ from pathlib import Path
 HOOKS = ("pre-commit", "prepare-commit-msg", "post-checkout", "post-merge", "pre-push")
 STATE = "butlers-pre-push.json"
 DISPATCHER = "butlers-pre-push-hooks"
-DISPATCH_FILES = (*HOOKS, "pre_push.py", "pre_push_sandbox.py")
+DISPATCH_FILES = (
+    *HOOKS,
+    "pre_push.py",
+    "pre_push_sandbox.py",
+    *("managed-" + name for name in HOOKS),
+)
 CHECK_TIMEOUT = 300
 CLEANUP_TIMEOUT = 1
 OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -263,6 +268,12 @@ def install(root: Path, *, uninstall: bool = False) -> None:
             }
             for name in HOOKS
         }
+        for name in HOOKS:
+            path = root / ".beads/hooks" / name
+            bodies["managed-" + name] = {
+                "body_hex": path.read_bytes().hex(),
+                "mode": path.stat().st_mode & 0o777,
+            }
         for name in ("pre_push.py", "pre_push_sandbox.py"):
             path = root / "scripts" / name
             bodies[name] = {
@@ -522,7 +533,7 @@ def check(root: Path, base: str, *, expected_head: str | None = None) -> dict:
     return before
 
 
-def hook(root: Path, args: list[str]) -> None:
+def admit_installation(root: Path) -> None:
     state_path = common_dir(root) / STATE
     try:
         state = json.loads(state_path.read_text())
@@ -534,6 +545,18 @@ def hook(root: Path, args: list[str]) -> None:
             raise Refusal("installed-assets-changed")
     except (OSError, ValueError, KeyError, TypeError):
         raise Refusal("installation-state-unavailable") from None
+
+
+def forward(root: Path, args: list[str]) -> None:
+    if not args or args[0] not in HOOKS or args[0] == "pre-push":
+        raise Refusal("unsupported-managed-hook")
+    admit_installation(root)
+    managed = common_dir(root) / DISPATCHER / ("managed-" + args[0])
+    os.execv(str(managed), [str(managed), *args[1:]])
+
+
+def hook(root: Path, args: list[str]) -> None:
+    admit_installation(root)
     expected_head = git(root, "rev-parse", "HEAD").decode().strip()
     raw = validate_updates(sys.stdin.buffer.read(), expected_head)
     checked_source = check(root, "origin/main", expected_head=expected_head)
@@ -554,7 +577,7 @@ def hook(root: Path, args: list[str]) -> None:
         try:
             status = run_checked(
                 "managed-pre-push",
-                [str(root / ".beads/hooks/pre-push"), *args],
+                [str(common_dir(root) / DISPATCHER / "managed-pre-push"), *args],
                 root,
                 stdin=carrier,
                 confined=True,
@@ -567,13 +590,13 @@ def hook(root: Path, args: list[str]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("install", "uninstall", "check", "hook"))
+    parser.add_argument("mode", choices=("install", "uninstall", "check", "hook", "forward"))
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("hook_args", nargs="*")
     args = (
         parser.parse_args()
-        if sys.argv[1:2] != ["hook"]
-        else argparse.Namespace(mode="hook", base="origin/main", hook_args=sys.argv[2:])
+        if sys.argv[1:2] not in (["hook"], ["forward"])
+        else argparse.Namespace(mode=sys.argv[1], base="origin/main", hook_args=sys.argv[2:])
     )
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
 
@@ -587,6 +610,8 @@ def main() -> int:
             install(root, uninstall=args.mode == "uninstall")
         elif args.mode == "check":
             check(root, args.base)
+        elif args.mode == "forward":
+            forward(root, args.hook_args)
         else:
             hook(root, args.hook_args)
         return 0
