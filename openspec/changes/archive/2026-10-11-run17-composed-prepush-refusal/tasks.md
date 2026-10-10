@@ -6,7 +6,7 @@
 
 ## 2. Independent preparation admission
 
-- [ ] 2.1 Obtain genuine independent review of the exact complete native preparation, installed generation/application/inverse and refusal/restored evidence before ROOT authorizes tracked supported sync/archive.
+- [x] 2.1 Obtain genuine independent review of the exact complete native preparation, installed generation/application/inverse and refusal/restored evidence before ROOT authorizes tracked supported sync/archive.
 
 Mandatory delivery remains separate from preparation flags: ROOT-authorized R1
 implementation against the approved active package, real owning052 code/citations
