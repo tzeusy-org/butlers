@@ -2465,7 +2465,9 @@ async def parse_quick_add_event(
     )
 
 
-async def _calendar_response_review_pool(db: DatabaseManager, action_id: UUID, owner: str):
+async def _calendar_response_review_pool(
+    db: DatabaseManager, action_id: UUID, owner: str
+) -> tuple[Any, dict[str, Any]]:
     """Authenticate read selection by complete own-source and command binding.
 
     This read selector is not decision or execution authority. Messenger's
@@ -2524,7 +2526,9 @@ async def _calendar_response_review_pool(db: DatabaseManager, action_id: UUID, o
         or args != expected
     ):
         raise HTTPException(status_code=409, detail="response_review_binding_unverified")
-    return pool
+    # Carry the admitted immutable binding through the later dossier read.
+    # That read uses another acquisition and must not display a changed action.
+    return pool, expected
 
 
 async def _respond_through_approval(

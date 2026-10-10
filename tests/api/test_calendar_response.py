@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,6 +13,7 @@ import httpx
 import pytest
 
 from butlers.api.deps import get_mcp_manager
+from butlers.api.routers import approvals
 from butlers.api.routers import calendar_workspace as workspace
 from butlers.modules.calendar_response import _digest
 
@@ -72,6 +75,7 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
     pool = SimpleNamespace(fetchrow=AsyncMock(side_effect=read))
     db = SimpleNamespace(
         pool=lambda owner: pool if owner == "messenger" else None,
+        butler_names=["messenger", "relationship"],
         configured_butlers_with_module=lambda module: ["messenger", "relationship"],
         fan_out_with_status=AsyncMock(
             return_value=({"messenger": [{"id": entry_id}], "relationship": []}, [])
@@ -90,7 +94,10 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
 
     old_reader = pool.fetchrow
     pool.fetchrow = AsyncMock(side_effect=review_read)
-    assert await workspace._calendar_response_review_pool(db, command_id, "messenger") is pool
+    assert await workspace._calendar_response_review_pool(db, command_id, "messenger") == (
+        pool,
+        private_args,
+    )
     with pytest.raises(HTTPException):
         await workspace._calendar_response_review_pool(db, command_id, "relationship")
     for rows, failed in [
@@ -106,7 +113,75 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
     with pytest.raises(HTTPException):
         await workspace._calendar_response_review_pool(db, command_id, "messenger")
     pending["tool_args"] = private_args
-    assert await workspace._calendar_response_review_pool(db, command_id, "messenger") is pool
+    assert await workspace._calendar_response_review_pool(db, command_id, "messenger") == (
+        pool,
+        private_args,
+    )
+    # Actual GET reads again after admission. A final read failure is unavailable,
+    # and a changed tool/argument/UUID must not become a different earned dossier.
+    final_kind = "healthy"
+
+    async def final_read(sql, *args):
+        assert args == (command_id,) and "pending_actions AS pa" in sql
+        if final_kind == "read-failure":
+            raise RuntimeError("Synthetic final dossier read failure")
+        if final_kind == "missing":
+            return None
+        row = {
+            "id": command_id,
+            "tool_name": "calendar_respond",
+            "tool_args": dict(private_args),
+            "status": "pending",
+            "requested_at": datetime.now(UTC),
+        }
+        if final_kind == "changed-tool":
+            row["tool_name"] = "send_email"
+        elif final_kind == "changed-args":
+            row["tool_args"] = {**private_args, "response_status": "declined"}
+        elif final_kind == "changed-digest":
+            row["tool_args"] = {**private_args, "_command_digest": "changed"}
+        elif final_kind == "changed-id":
+            row["id"] = uuid.uuid4()
+        return row
+
+    connection = SimpleNamespace(
+        fetchval=AsyncMock(return_value=False), fetchrow=AsyncMock(side_effect=final_read)
+    )
+
+    @asynccontextmanager
+    async def acquire_review():
+        yield connection
+
+    pool.acquire = acquire_review
+    app.dependency_overrides[approvals._get_db_manager] = lambda: db
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as review_client:
+            review_url = f"/api/approvals/{command_id}?review_source=calendar:messenger"
+            healthy = await review_client.get(review_url)
+            assert healthy.status_code == 200
+            assert healthy.json()["data"]["id"] == str(command_id)
+            assert healthy.json()["data"]["butler"] == "messenger"
+            assert healthy.json()["data"]["proposed_action"]["tool_name"] == "calendar_respond"
+            for final_kind in (
+                "read-failure",
+                "missing",
+                "changed-tool",
+                "changed-args",
+                "changed-digest",
+                "changed-id",
+            ):
+                refused = await review_client.get(review_url)
+                assert refused.status_code == (
+                    503 if final_kind in {"read-failure", "missing"} else 409
+                )
+                assert "data" not in refused.json()
+                assert "Synthetic" not in refused.text
+            final_kind = "healthy"
+            assert (await review_client.get(review_url)).status_code == 200
+    finally:
+        app.dependency_overrides.pop(approvals._get_db_manager, None)
     pool.fetchrow = old_reader
     db.fan_out_with_status.return_value = (
         {"messenger": [{"id": entry_id}], "relationship": []},

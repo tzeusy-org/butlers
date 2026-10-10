@@ -2961,6 +2961,7 @@ async def get_approval_detail(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
+    calendar_expected_args: dict[str, Any] | None = None
     if review_source is not None and review_source.startswith("calendar:"):
         from butlers.api.routers.calendar_workspace import _calendar_response_review_pool
 
@@ -2969,7 +2970,9 @@ async def get_approval_detail(
             raise HTTPException(
                 status_code=400, detail="Unsupported Calendar approval review source"
             )
-        pool = await _calendar_response_review_pool(db_mgr, parsed_id, owner)
+        pool, calendar_expected_args = await _calendar_response_review_pool(
+            db_mgr, parsed_id, owner
+        )
         named_pools = [(owner, pool)]
     elif review_source is not None:
         if review_source != "messenger":
@@ -2994,6 +2997,14 @@ async def get_approval_detail(
                 )
                 if row is not None:
                     pa = PendingAction.from_row(row)
+                    if calendar_expected_args is not None and (
+                        pa.id != parsed_id
+                        or pa.tool_name != "calendar_respond"
+                        or pa.tool_args != calendar_expected_args
+                    ):
+                        raise HTTPException(
+                            status_code=409, detail="response_review_binding_unverified"
+                        )
                     denial_reason = (
                         await _latest_rejection_reason(conn, pa.id)
                         if pa.status.value == "rejected"
@@ -3012,9 +3023,15 @@ async def get_approval_detail(
                         delivery=_delivery_truth(row, pa),
                     )
                 )
-        except Exception:
+        except Exception as exc:
+            if calendar_expected_args is not None:
+                if isinstance(exc, HTTPException):
+                    raise
+                raise HTTPException(status_code=503, detail="response_review_unavailable") from None
             continue
 
+    if calendar_expected_args is not None:
+        raise HTTPException(status_code=503, detail="response_review_unavailable")
     raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
 
 
