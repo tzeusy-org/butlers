@@ -119,4 +119,3 @@ it("refuses disabled capability and preserves an unknown request before exact-ke
     expect(screen.getByText(/Approval review unavailable/)).toBeTruthy();
   }
 });
-
