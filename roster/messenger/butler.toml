@@ -30,6 +30,7 @@ dispatch_mode = "job"
 job_name = "calendar_prep_contribution"
 
 [modules.calendar]
+response_enabled = true
 provider = "google"
 groups = ["core"]
 
@@ -107,3 +108,6 @@ risk_tier = "medium"
 
 # RFC 0015: report errors to QA; this module never dispatches locally.
 [modules.self_healing]
+
+[modules.approvals.gated_tools.calendar_respond]
+risk_tier = "medium"

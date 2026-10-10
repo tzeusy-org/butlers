@@ -3044,6 +3044,34 @@ async def approve_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
+    return await approve_owning_action(
+        parsed_id=parsed_id,
+        actor_id=actor_id,
+        edits=request.edits,
+        action_butler=action_butler,
+        target_pool=target_pool,
+        db_mgr=db_mgr,
+        mcp_mgr=mcp_mgr,
+    )
+
+
+async def approve_owning_action(
+    *,
+    parsed_id: UUID,
+    actor_id: str,
+    edits: dict[str, Any] | None,
+    action_butler: str,
+    target_pool: Any,
+    db_mgr: DatabaseManager,
+    mcp_mgr: MCPClientManager,
+    expected_tool_args: dict[str, Any] | None = None,
+) -> ApiResponse[ApprovalAction]:
+    """Shared verified decision/audit/dispatch on an already selected owner.
+
+    Calendar supplies the actual canonical pending args read from this pool;
+    callers cannot select an approval id or standing rule through that API.
+    """
+    action_id = str(parsed_id)
     # Use a single connection + transaction for the read, optional edits update,
     # approve, and audit so that an edits UPDATE / approve transition cannot
     # persist while the audit append fails. AuditTableNotAvailableError is
@@ -3052,14 +3080,28 @@ async def approve_approval(
     # spec), rolling this transaction back.
     async with target_pool.acquire() as conn, conn.transaction():
         action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
+            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1"
+            + (" FOR UPDATE" if expected_tool_args is not None else ""),
+            parsed_id,
         )
 
+        if expected_tool_args is not None:
+            if (
+                edits
+                or action_row is None
+                or action_row["tool_name"] != "calendar_respond"
+                or action_row["tool_args"] != expected_tool_args
+            ):
+                raise HTTPException(status_code=409, detail="response_approval_binding_changed")
+
+        if edits and action_row is not None and action_row["tool_name"] == "calendar_respond":
+            raise HTTPException(status_code=409, detail="response_command_is_immutable")
+
         # Apply edits to tool args before approval (same connection, no partial update risk)
-        if request.edits and action_row is not None:
+        if edits and action_row is not None:
             raw_args = action_row["tool_args"]
             tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-            tool_args.update(request.edits)
+            tool_args.update(edits)
             # Bind the sanitized dict directly (no json.dumps, no ::jsonb
             # cast) — asyncpg's registered jsonb codec already serializes
             # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
@@ -3077,7 +3119,7 @@ async def approve_approval(
             create_rule=False,
         )
         if "error" not in result:
-            edits_note = json.dumps(request.edits) if request.edits else None
+            edits_note = json.dumps(edits) if edits else None
             await audit_router.append(
                 conn,
                 _decision_audit_actor(actor_id),
@@ -3101,8 +3143,8 @@ async def approve_approval(
         tool_args_for_dispatch = (
             json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         )
-        if request.edits:
-            tool_args_for_dispatch.update(request.edits)
+        if edits:
+            tool_args_for_dispatch.update(edits)
 
         dispatch_outcome = await _dispatch_approved_action_outcome(
             mcp_mgr,

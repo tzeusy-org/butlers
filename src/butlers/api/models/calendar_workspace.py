@@ -642,6 +642,7 @@ class CalendarInvitationEntry(BaseModel):
     organizer_source: Literal["event", "attendee", "unknown"] = "unknown"
     butler_name: str | None = None
     conflict_issues: list[ConflictIssue] = Field(default_factory=list)
+    response_configured: bool = False
 
 
 class CalendarInvitationsResponse(BaseModel):
@@ -1040,3 +1041,25 @@ class CalendarKeepSeparateResponse(BaseModel):
 
     cluster_key: str
     keep_separate: bool
+
+
+class CalendarRespondRequest(BaseModel):
+    """Public response inputs; all authority and provider bindings are server-derived."""
+
+    model_config = ConfigDict(extra="forbid")
+    entry_id: UUID
+    request_id: UUID
+    response_status: Literal["accepted", "declined", "tentative"]
+    send_updates: Literal["none", "all", "externalOnly"] = "none"
+
+
+class CalendarRespondResponse(BaseModel):
+    status: Literal[
+        "pending_approval", "approved", "rejected", "uncertain", "noop", "applied", "failed"
+    ]
+    command_id: UUID | None = None
+    approval_id: UUID | None = None
+    projection_available: bool = False
+    undo_available: bool = False
+    source_butler: str
+    reason: str | None = None

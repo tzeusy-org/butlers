@@ -180,3 +180,22 @@ recorded failure or uncertain delivery remains visible even for a prepared actio
 - [Calendar Module](calendar.md) -- uses approval integration for overlap overrides
 - [Email Module](email.md) -- tools gated by approvals
 - [Telegram Module](telegram.md) -- tools gated by approvals
+
+### Calendar canonical preparation
+
+Calendar response admission is a module-owned startup extension of the real
+approval gate, not caller metadata or a private handler API. The gate validates
+its public arguments and dossier, then invokes the registered canonical
+preparer before recipient exemptions or standing-rule matching. The preparer
+freezes the provider-proven target and atomically persists its command and
+ordinary pending action through one owning connection. Other gated tools keep
+their existing policy and notification-recovery behavior.
+
+Startup refuses an enabled response capability without its actual registered
+gate and owning executor. Dispatch uses the captured original handler and the
+existing task/tool/argument execution context; direct or inherited child-task
+calls cannot write. Dashboard response decisions reuse `approve_owning_action`
+with exact persisted arguments, no edits and `create_rule=False`. An already
+approved command may recover through that same owning dispatch; its independent
+committed attempt fence prevents a repeated provider write. RFC 0023 recovery
+remains notification-only and retains its default-off authority boundary.

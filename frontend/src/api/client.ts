@@ -54,6 +54,8 @@ import type {
   ConflictScanResponse,
   CalendarInvitationsParams,
   CalendarInvitationsResponse,
+  CalendarResponseRequest,
+  CalendarResponseReceipt,
   CalendarKeepSeparateRequest,
   CalendarKeepSeparateResponse,
   CalendarPrepResponse,
@@ -1616,6 +1618,15 @@ export function getCalendarInvitations(
   return apiFetch<ApiResponse<CalendarInvitationsResponse>>(
     `/calendar/workspace/invitations?${sp.toString()}`,
   );
+}
+
+/** Authenticated owner response through canonical preparation and approval. */
+export function respondToCalendarInvitation(
+  body: CalendarResponseRequest,
+): Promise<ApiResponse<CalendarResponseReceipt>> {
+  return apiFetch<ApiResponse<CalendarResponseReceipt>>("/calendar/workspace/respond", {
+    method: "POST", body: JSON.stringify(body),
+  });
 }
 
 /** Persist the cross-source dedup match-strategy / noisy-threshold settings. */

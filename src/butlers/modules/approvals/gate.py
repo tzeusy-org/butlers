@@ -48,6 +48,7 @@ from butlers.modules.base import ToolMeta
 
 if TYPE_CHECKING:
     from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
+    from butlers.modules.approvals.preparation import CanonicalApprovalPreparer
 
 logger = logging.getLogger(__name__)
 
@@ -454,6 +455,7 @@ async def apply_approval_gates(
     tool_metadata: dict[str, ToolMeta] | None = None,
     decision_memory_writer: DecisionMemoryWriter | None = None,
     approval_push_runtime: ApprovalPushRuntime | None = None,
+    canonical_preparers: dict[str, CanonicalApprovalPreparer] | None = None,
 ) -> dict[str, Any]:
     """Wrap gated tools on the FastMCP server with approval interception.
 
@@ -530,6 +532,7 @@ async def apply_approval_gates(
             tool_meta=metadata.get(tool_name),
             decision_memory_writer=decision_memory_writer,
             approval_push_runtime=approval_push_runtime,
+            canonical_preparer=(canonical_preparers or {}).get(tool_name),
         )
 
         # Replace the tool's handler on the MCP server
@@ -550,6 +553,7 @@ def _make_gate_wrapper(
     tool_meta: ToolMeta | None = None,
     decision_memory_writer: DecisionMemoryWriter | None = None,
     approval_push_runtime: ApprovalPushRuntime | None = None,
+    canonical_preparer: CanonicalApprovalPreparer | None = None,
 ) -> Any:
     """Create an async wrapper function that intercepts gated tool calls.
 
@@ -614,6 +618,27 @@ def _make_gate_wrapper(
         action_id = uuid.uuid4()
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=expiry_hours)
+
+        # Module-owned command preparation is deliberately before recipient/rule
+        # resolution. Self response has no outbound-owner or standing-rule bypass.
+        if canonical_preparer is not None:
+            unexpected = set(tool_args) - canonical_preparer.public_arguments
+            if unexpected:
+                return {"error": "response_public_arguments_invalid"}
+            dossier = approval_hooks.validate_non_owner_dossier(
+                raw_why=raw_why,
+                raw_evidence=raw_evidence,
+                raw_blast_radius=raw_blast_radius,
+                raw_reversibility=raw_reversibility,
+            )
+            if isinstance(dossier, dict):
+                return dossier
+            result = await canonical_preparer.prepare_and_park(
+                tool_args=tool_args, requested_at=now, expires_at=expires_at, dossier=dossier
+            )
+            if result.get("status") == "pending_approval":
+                await _emit_created(uuid.UUID(result["action_id"]), ActionStatus.PENDING.value)
+            return result
 
         # Sanitize tool_args into a fully JSON-safe dict (UUID/datetime -> str)
         # via a json.dumps/loads round-trip, mirroring audit.append()'s pattern

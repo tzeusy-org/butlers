@@ -1653,6 +1653,28 @@ class ButlerDaemon:
             None,
         )
         tool_metadata = ButlerDaemon._collect_tool_metadata(self)
+        canonical_preparers: dict[str, Any] = {}
+        response_modules: list[Any] = []
+        for module in self._active_modules:
+            # A declared method, not a permissive mock/dynamic attribute, owns
+            # this trusted startup extension. Caller JSON cannot register it.
+            declared = getattr(type(module), "canonical_approval_preparers", None)
+            if not callable(declared):
+                continue
+            prepared = module.canonical_approval_preparers()
+            if set(prepared).intersection(canonical_preparers):
+                raise RuntimeError("duplicate canonical approval preparer")
+            canonical_preparers.update(prepared)
+            if prepared:
+                response_modules.append(module)
+        if canonical_preparers and (
+            approvals_module is None
+            or approval_config is None
+            or not approval_config.enabled
+            or not set(canonical_preparers).issubset(approval_config.gated_tools)
+            or not callable(getattr(approvals_module, "set_tool_executor", None))
+        ):
+            raise RuntimeError("canonical response requires its owning approval gate and executor")
         if approvals_module is not None:
             set_tool_metadata = getattr(approvals_module, "set_tool_metadata", None)
             if callable(set_tool_metadata):
@@ -1768,10 +1790,15 @@ class ButlerDaemon:
             tool_metadata=tool_metadata,
             decision_memory_writer=decision_memory_writer,
             approval_push_runtime=self._approval_push_runtime,
+            **({"canonical_preparers": canonical_preparers} if canonical_preparers else {}),
         )
         # Keep the executor closure wired above, but make its captured mapping
         # available once gate wrapping has saved the original handlers.
         originals.update(wrapped_originals)
+        if not set(canonical_preparers).issubset(wrapped_originals):
+            raise RuntimeError("canonical response handler was not gated")
+        for module in response_modules:
+            module.set_response_approval_ready(True)
 
         if originals:
             logger.info(

@@ -161,6 +161,7 @@ job_name = "email_identity_enrichment"
 # sweep. Re-adding it would throw UndefinedTableError every 30 minutes.
 
 [modules.calendar]
+response_enabled = true
 provider = "google"
 groups = ["core"]
 
@@ -215,3 +216,6 @@ groups = [
 
 # RFC 0015: report errors to QA; this module never dispatches locally.
 [modules.self_healing]
+
+[modules.approvals.gated_tools.calendar_respond]
+risk_tier = "medium"

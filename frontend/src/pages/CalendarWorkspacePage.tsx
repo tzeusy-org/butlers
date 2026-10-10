@@ -80,6 +80,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { CalendarAgendaView } from "@/components/calendar/CalendarAgendaView";
+import { CalendarResponsePanel } from "@/components/calendar/CalendarResponsePanel";
 import { CalendarVerdictOpener } from "@/components/calendar/CalendarVerdictOpener";
 import { ConflictRadarBanner } from "@/components/calendar/ConflictRadarBanner";
 import { CalendarPortabilityDialog } from "@/components/calendar/CalendarPortabilityDialog";
@@ -4866,6 +4867,16 @@ export default function CalendarWorkspacePage() {
         onOpenInvitation={(entryId) => { void openInvitation(entryId); }}
         invitationDetailLoading={invitationDetailLoading}
       />
+
+      <CalendarResponsePanel entries={invitations ?? []}
+        onObserved={(receipt) => {
+          if (receipt.status === "applied" && receipt.projection_available) {
+            void queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
+            void queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+            void queryClient.invalidateQueries({ queryKey: ["calendar-workspace-audit"] });
+          }
+        }}
+        unavailable={!invitationsAvailable || invitationsQuery.isPending || invitationsQuery.isPlaceholderData} />
 
       {freshnessPlaque ? (
         <SourceDegradedNote

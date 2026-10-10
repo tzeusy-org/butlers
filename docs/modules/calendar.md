@@ -95,7 +95,7 @@ Projection status is tracked as `fresh`, `stale`, or `failed`.
 
 ## Rate Limiting
 
-Google Calendar API calls include retry logic for `429 Too Many Requests` and `503 Service Unavailable` with exponential backoff (max 3 retries, base 1s).
+Ordinary Google Calendar API calls include retry logic for `429 Too Many Requests` and `503 Service Unavailable` with exponential backoff (max 3 retries, base 1s).
 
 ## Database Tables
 
@@ -190,3 +190,43 @@ None. The calendar module is a leaf module. When the approvals module is co-load
 
 - [Module System](module-system.md)
 - [Approvals Module](approvals.md)
+
+## Approval-bound invitation responses
+
+`calendar_respond` is opt-in (`response_enabled = true`) and requires the
+Calendar core group, an enabled owning approval gate and the captured shared
+executor. Only the Messenger and Relationship source configurations install
+this capability. An invitation owned by a different daemon is not rerouted to
+borrow it. Public arguments are the projection occurrence `entry_id`, an
+accepted/declined/tentative choice, a UUID `request_id` and `send_updates`
+(default `none`; `all` and `externalOnly` are explicit notification choices).
+
+The actual registered pre-gate preparer resolves the owning pool, source,
+credential account, live calendar access role, explicit self participant and
+provider occurrence/ETag. It atomically parks the immutable command with its
+pending action in the existing owning tables. A caller cannot supply private
+bindings or select an account, ETag, actor, recipient, approval or bypass.
+Standing rules and owner-recipient exemptions do not execute this operation.
+
+Authenticated `POST /api/calendar/workspace/respond` composes that exact command
+with the existing verified decision/audit and owning dispatch. The executor
+binds the original arguments to its own task and a verified human decision.
+Token readiness precedes a separately committed one-attempt fence. The dedicated
+Google participant-only PATCH sets `attendeesOmitted=true`, sends only the
+verified self response, and includes `If-Match`; it never uses the generic
+401/429/503 write retry path. Existing operations retain their retry behavior.
+
+Cancellation, restart or an unattributable provider result retains uncertainty.
+Neither a fresh request key, provider readback, source-row replacement nor
+ordinary approval retention clears the physical-target fence. The existing
+action-log record is retained; any future action-log retention must preserve an
+unresolved fence. An attributable provider response is committed before
+projection, so projection failure remains applied-with-projection-unavailable.
+
+The mounted controls use the same typed handler for contextual, keyboard and
+palette actions. Receipt state survives inbox-row removal; outcome refresh
+reuses the original key and never optimistically labels an invitation accepted.
+Only an applied pre-state earns Undo. The existing undo route reserves one
+server-owned inverse, including a retained `needsAction`, and uses the same
+approval tool, exact source and unchanged provider post-version. A lost inverse
+HTTP result does not offer another Undo. Existing CRUD inverses remain intact.
