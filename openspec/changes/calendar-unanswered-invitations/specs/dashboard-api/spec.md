@@ -23,6 +23,7 @@ Scope: v1-mandatory
 - **AND** deterministic operational source ownership is retained without rewriting physical ledgers
 - **AND** the start/end window is ordered and at most 90 days, limit is 1..200, and remaining eligible rows expose has_more and next_cursor
 - **AND** malformed or wrong-window/timezone cursors are refused
+- **AND** relevant current same-origin tombstones and moved copies participate before final window filtering, so newer cancelled or out-of-window copies cannot resurrect stale invitations
 
 #### Scenario: Organizer and conflict evidence are honest
 - **WHEN** an invitation is listed

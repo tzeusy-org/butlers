@@ -65,8 +65,8 @@ async def test_migrated_invitation_projection_query_and_get(migrated_core_postgr
                 modified["attendees"][0]["organizer"] = True
             elif name == "solo":
                 modified.pop("organizer")
-            else:
-                modified["status"] = "cancelled"
+            # Project the confirmed occurrence first: the unchanged Google
+            # parser returns None for a cancellation, which sync passes as an ID.
             event = _google_event_to_calendar_event(modified, fallback_timezone="UTC")
             assert event is not None
             events.append(event)
@@ -75,7 +75,17 @@ async def test_migrated_invitation_projection_query_and_get(migrated_core_postgr
             provider_name="google",
             calendar_id="primary",
             updated_events=events,
-            cancelled_ids=[],
+            cancelled_ids=["cancelled"],
+        )
+        assert (
+            _google_event_to_calendar_event(
+                {**modified, "status": "cancelled"}, fallback_timezone="UTC"
+            )
+            is None
+        )
+        assert (
+            await pool.fetchval("SELECT status FROM calendar_events WHERE origin_ref='cancelled'")
+            == "cancelled"
         )
         duplicate_source = await pool.fetchval(
             """INSERT INTO calendar_sources (source_key,source_kind,lane,provider,calendar_id)
@@ -125,10 +135,14 @@ async def test_migrated_invitation_projection_query_and_get(migrated_core_postgr
                 for issue in entry["conflict_issues"]
             )
             assert data["issues_available"] is False
-            # Cancellation changes current eligibility without retroactive writes.
-            await pool.execute(
-                """UPDATE calendar_event_instances SET status='cancelled'
-                   WHERE event_id IN (SELECT id FROM calendar_events WHERE origin_ref='event-0')""",
+            # Actual cancelled_ids tombstones only the newest copy. Its stale
+            # other-source copy remains physically present but cannot reappear.
+            await module._project_provider_changes(
+                source_id=duplicate_source,
+                provider_name="google",
+                calendar_id="copy",
+                updated_events=[],
+                cancelled_ids=["event-0"],
             )
             cancelled = (
                 await client.get(
@@ -144,3 +158,45 @@ async def test_migrated_invitation_projection_query_and_get(migrated_core_postgr
         )
         healthy = await query_calendar_invitations(db, start=start, end=end)
         assert healthy.rows == [] and healthy.status_available is True
+        restored_event = _google_event_to_calendar_event(
+            {
+                **payload,
+                "id": "event-0",
+                "attendees": [
+                    {"email": "owner@example.test", "self": True, "responseStatus": "needsAction"}
+                ],
+            },
+            fallback_timezone="UTC",
+        )
+        assert restored_event is not None
+        await module._project_provider_changes(
+            source_id=duplicate_source,
+            provider_name="google",
+            calendar_id="copy",
+            updated_events=[restored_event],
+            cancelled_ids=[],
+        )
+        restored = await query_calendar_invitations(db, start=start, end=end)
+        assert len(restored.rows) == 1 and restored.status_available is True
+        moved_event = _google_event_to_calendar_event(
+            {
+                **payload,
+                "id": "event-0",
+                "start": {"dateTime": "2026-07-03T09:00:00Z"},
+                "end": {"dateTime": "2026-07-03T10:00:00Z"},
+                "attendees": [
+                    {"email": "owner@example.test", "self": True, "responseStatus": "accepted"}
+                ],
+            },
+            fallback_timezone="UTC",
+        )
+        assert moved_event is not None
+        await module._project_provider_changes(
+            source_id=duplicate_source,
+            provider_name="google",
+            calendar_id="copy",
+            updated_events=[moved_event],
+            cancelled_ids=[],
+        )
+        moved = await query_calendar_invitations(db, start=start, end=end)
+        assert moved.rows == [] and moved.status_available is True

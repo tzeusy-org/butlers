@@ -110,12 +110,15 @@ None. The calendar module is a leaf module. When the approvals module is co-load
 - `GET /api/calendar/workspace/invitations` reads the current provider projection
   without provider requests or RSVP writes. Only an explicit `self=true`, exact
   `needsAction` status and literal `response_status_explicit=true` marker admit an
-  unanswered occurrence. Google parsing retains this projection-only provenance;
-  AttendeeInfo and MCP payload defaults are unchanged. Unmarked legacy/defaulted
+  unanswered occurrence. Google parsing retains this projection-only provenance in an ordered
+  `attendee_status_provenance` companion binding email and status; projected
+  attendees remain exactly the unchanged MCP payloads. Unmarked legacy/defaulted
   status is unknown, omitted and suppresses empty/calm admission until ordinary
   sync supplies genuine provenance; reads never backfill it.
-- Invitation deduplication runs before eligibility and keyset slicing so a stale
-  unanswered copy cannot resurrect an accepted current copy. The window is at
+- Invitation lookup discovers bounded-window identities, then includes relevant
+  same-origin tombstones and moved copies before deduplication and final window,
+  eligibility and keyset slicing. A stale unanswered copy cannot resurrect a
+  newer accepted, cancelled or out-of-window copy. The window is at
   most 90 days, limit at most 200, and cursors bind range/timezone. Organizer
   absence stays unknown; an organizer-attendee fallback is labelled. Radar doors
   contain only actually observed matching occurrence IDs. Source or conflict

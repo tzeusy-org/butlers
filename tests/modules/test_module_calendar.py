@@ -2792,7 +2792,10 @@ class TestGoogleDateOnlyProjection:
                 cancelled_ids=[],
             )
             projected = module._upsert_projection_event.await_args.kwargs["metadata"]
-            assert projected["attendees"][0]["response_status_explicit"] is explicit
+            assert (
+                projected["attendee_status_provenance"][0]["response_status_explicit"] is explicit
+            )
+            assert projected["attendees"] == [tool_payload]
 
     def test_google_all_day_create_body_uses_date_boundaries(self) -> None:
         body = _build_google_event_body(

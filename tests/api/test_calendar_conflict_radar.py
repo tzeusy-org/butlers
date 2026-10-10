@@ -714,6 +714,12 @@ def _invitation_row(status="needsAction", *, explicit=True, **overrides):
                 "email": "owner@example.test",
                 "self": True,
                 "response_status": status,
+            }
+        ],
+        "attendee_status_provenance": [
+            {
+                "email": "owner@example.test",
+                "response_status": status,
                 "response_status_explicit": explicit,
             }
         ],
@@ -798,6 +804,7 @@ async def test_invitations_admit_explicit_provider_truth_and_earned_conflict(app
     fallback["event_metadata"]["attendees"].append(
         {"email": "host@example.test", "organizer": True, "display_name": "Host"}
     )
+    fallback["event_metadata"]["attendee_status_provenance"].append({})
     app, _ = _build_app(app, workspace_rows={"general": [fallback]})
     observed = (await _get_invitations(app)).json()["data"]["entries"][0]
     assert observed["organizer"] == "Host" and observed["organizer_source"] == "attendee"
@@ -805,7 +812,7 @@ async def test_invitations_admit_explicit_provider_truth_and_earned_conflict(app
     missing = (await _get_invitations(app)).json()["data"]["entries"][0]
     assert missing["organizer"] is None and missing["organizer_source"] == "unknown"
     app, _ = _build_app(app, workspace_rows={"general": [raw]})
-    a.pop("response_status_explicit")
+    raw["event_metadata"].pop("attendee_status_provenance")
     legacy = (await _get_invitations(app)).json()["data"]
     assert legacy["entries"] == [] and legacy["issues_available"] is False
     # A fresh accepted copy wins over a stale unanswered copy before admission.
@@ -820,17 +827,179 @@ async def test_invitations_admit_explicit_provider_truth_and_earned_conflict(app
     assert settled["entries"] == [] and settled["issues_available"] is True
     assert any("source_type" in call.args[0] for call in db.fan_out_with_status.await_args_list)
 
+    # Model the emitted predicates, rather than letting canned SQL rows hide an
+    # early cancellation/window filter. The real migrated companion owns SQL.
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from butlers.api.read_models.calendar_workspace_v1 import query_calendar_invitations
+    from butlers.modules.calendar import CalendarModule
+
+    stale = _invitation_row()
+    stale["instance_updated_at"] = _DAY
+    newest = deepcopy(stale)
+    newest.update(
+        instance_id=uuid4(),
+        event_id=uuid4(),
+        source_id=uuid4(),
+        source_key="provider:google:copy",
+        instance_updated_at=_DAY + timedelta(hours=1),
+    )
+    records = [stale, newest]
+    emitted = []
+
+    async def predicate_rows(query, args=(), butler_names=None):
+        emitted.append(query)
+        selected = deepcopy(records)
+        if "i.starts_at < $1 AND i.ends_at > $2" in query:
+            selected = [
+                r
+                for r in selected
+                if r["instance_starts_at"] < args[0] and r["instance_ends_at"] > args[1]
+            ]
+        elif "i.starts_at < $2" in query:
+            selected = [
+                r
+                for r in selected
+                if r["instance_starts_at"] < args[1] and r["instance_ends_at"] > args[2]
+            ]
+        if "COALESCE(i.status, e.status) != 'cancelled'" in query:
+            selected = [
+                r for r in selected if (r["instance_status"] or r["event_status"]) != "cancelled"
+            ]
+        if "e.origin_ref = ANY($1::text[])" in query:
+            occurrences = set(zip(args[1], args[2], strict=True))
+            selected = [
+                r
+                for r in selected
+                if (not r["recurrence_rule"] and r["origin_ref"] in args[0])
+                or (
+                    r["recurrence_rule"]
+                    and (r["origin_ref"], r["instance_starts_at"]) in occurrences
+                )
+            ]
+        return {"general": selected}, []
+
+    db.fan_out_with_status.side_effect = predicate_rows
+    read_args = {"start": _DAY, "end": _DAY + timedelta(days=1)}
+    before_cancel = await query_calendar_invitations(db, **read_args)
+    assert len(before_cancel.rows) == 1 and before_cancel.status_available is True
+
+    class TombstonePool:
+        async def fetchrow(self, query, *args):
+            if "to_regclass('calendar_sources')" in query:
+                return dict.fromkeys(
+                    (
+                        "has_sources",
+                        "has_events",
+                        "has_instances",
+                        "has_cursors",
+                        "has_action_log",
+                        "has_events_body",
+                        "has_events_source_butler",
+                        "has_events_source_session_id",
+                    ),
+                    True,
+                )
+            assert "UPDATE calendar_events" in query and "status = 'cancelled'" in query
+            assert args[:2] == (newest["source_id"], newest["origin_ref"])
+            newest["event_status"] = "cancelled"
+            return {"id": newest["event_id"]}
+
+        async def execute(self, query, *args):
+            assert "UPDATE calendar_event_instances" in query and "status = 'cancelled'" in query
+            assert args[0] == newest["event_id"]
+            newest["instance_status"] = "cancelled"
+            newest["instance_updated_at"] = _DAY + timedelta(hours=2)
+            return "UPDATE 1"
+
+    module = CalendarModule()
+    module._db = SimpleNamespace(pool=TombstonePool())
+    await module._project_provider_changes(
+        source_id=newest["source_id"],
+        provider_name="google",
+        calendar_id="copy",
+        updated_events=[],
+        cancelled_ids=[newest["origin_ref"]],
+    )
+    tombstone = await query_calendar_invitations(db, **read_args)
+    assert tombstone.rows == [] and tombstone.status_available is True
+    newest.update(instance_status="confirmed", event_status="confirmed")
+    restored = await query_calendar_invitations(db, **read_args)
+    assert len(restored.rows) == 1 and restored.status_available is True
+    newest["event_metadata"]["attendees"][0]["response_status"] = "accepted"
+    newest["instance_starts_at"] += timedelta(days=2)
+    newest["instance_ends_at"] += timedelta(days=2)
+    moved = await query_calendar_invitations(db, **read_args)
+    assert moved.rows == [] and moved.status_available is True
+    newest["instance_starts_at"] -= timedelta(days=2)
+    newest["instance_ends_at"] -= timedelta(days=2)
+    # An eligible moved copy is also outside the inbox, not resurrected at the old time.
+    newest["event_metadata"]["attendees"][0]["response_status"] = "needsAction"
+    newest["instance_starts_at"] += timedelta(days=2)
+    newest["instance_ends_at"] += timedelta(days=2)
+    moved_unanswered = await query_calendar_invitations(db, **read_args)
+    assert moved_unanswered.rows == [] and moved_unanswered.status_available is True
+    assert not any("LIMIT" in q.split("WHERE s.lane", 1)[-1] for q in emitted)
+    # Companion provenance cannot be transplanted across identities or statuses.
+    records[:] = [deepcopy(stale)]
+    for malformed in (
+        True,
+        [],
+        [
+            {
+                "email": "other@example.test",
+                "response_status": "needsAction",
+                "response_status_explicit": True,
+            }
+        ],
+        [
+            {
+                "email": "owner@example.test",
+                "response_status": "accepted",
+                "response_status_explicit": True,
+            }
+        ],
+        [
+            {
+                "email": "owner@example.test",
+                "response_status": "needsAction",
+                "response_status_explicit": 1,
+            }
+        ],
+    ):
+        records[0]["event_metadata"]["attendee_status_provenance"] = malformed
+        refused = await query_calendar_invitations(db, **read_args)
+        assert refused.rows == [] and refused.status_available is False
+    records[:] = [stale]
+    final_restored = await query_calendar_invitations(db, **read_args)
+    assert len(final_restored.rows) == 1 and final_restored.status_available is True
+
 
 async def test_invitations_pagination_validation_and_honest_source_failures(app, monkeypatch):
     from butlers.api.read_models.calendar_workspace_v1 import CalendarConflictScan
 
     rows = [_invitation_row(title=f"Invite {i}") for i in range(3)]
-    app, _ = _build_app(app, workspace_rows={"general": rows})
+    app, db = _build_app(app, workspace_rows={"general": rows})
     first = (await _get_invitations(app, limit=2)).json()["data"]
     assert len(first["entries"]) == 2 and first["has_more"] is True
     second = (await _get_invitations(app, limit=2, cursor=first["next_cursor"])).json()["data"]
     assert len(second["entries"]) == 1 and second["has_more"] is False
     assert second["next_cursor"] is None
+    original_fanout = db.fan_out_with_status.side_effect
+
+    async def related_lookup_failure(query, args=(), butler_names=None):
+        if "e.origin_ref = ANY($1::text[])" in query:
+            raise RuntimeError("synthetic related-copy query failure")
+        return await original_fanout(query, args, butler_names)
+
+    db.fan_out_with_status.side_effect = related_lookup_failure
+    related_unknown = (await _get_invitations(app)).json()["data"]
+    assert len(related_unknown["entries"]) == 3 and related_unknown["issues_available"] is False
+    assert "calendar events" in related_unknown["sources_degraded"]
+    db.fan_out_with_status.side_effect = original_fanout
+    related_restored = (await _get_invitations(app)).json()["data"]
+    assert len(related_restored["entries"]) == 3 and related_restored["issues_available"] is True
     assert not (
         {r["entry_id"] for r in first["entries"]} & {r["entry_id"] for r in second["entries"]}
     )

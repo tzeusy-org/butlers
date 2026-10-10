@@ -1257,12 +1257,16 @@ def invitation_status(row: Mapping[str, Any]) -> str:
     attendees = metadata.get("attendees")
     if not isinstance(attendees, list):
         return "unknown" if not metadata else "excluded"
-    own = [a for a in attendees if isinstance(a, Mapping) and a.get("self") is True]
+    own = [
+        (index, a)
+        for index, a in enumerate(attendees)
+        if isinstance(a, Mapping) and a.get("self") is True
+    ]
     if not own:
         return "excluded"
     if len(own) != 1:
         return "unknown"
-    attendee = own[0]
+    attendee_index, attendee = own[0]
     if attendee.get("organizer") is True:
         return "excluded"
     email = attendee.get("email")
@@ -1288,9 +1292,55 @@ def invitation_status(row: Mapping[str, Any]) -> str:
     status = attendee.get("response_status", attendee.get("responseStatus"))
     if status in ("accepted", "declined", "tentative"):
         return "excluded"
-    if status != "needsAction" or attendee.get("response_status_explicit") is not True:
+    provenance = metadata.get("attendee_status_provenance")
+    if not isinstance(provenance, list) or len(provenance) != len(attendees):
+        return "unknown"
+    evidence = provenance[attendee_index]
+    if (
+        status != "needsAction"
+        or not isinstance(evidence, Mapping)
+        or evidence.get("email") != email
+        or evidence.get("response_status") != status
+        or evidence.get("response_status_explicit") is not True
+    ):
         return "unknown"
     return "eligible"
+
+
+async def _query_invitation_copies(
+    db: DatabaseManager, *, predicate: str, args: tuple[Any, ...]
+) -> tuple[list[CalendarWorkspaceRow], list[str]]:
+    """Read only relevant provider copies, without pre-dedup eligibility filters."""
+    sql = f"""
+        SELECT {WORKSPACE_COLUMNS}
+        FROM calendar_event_instances AS i
+        JOIN calendar_events AS e ON e.id = i.event_id
+        JOIN calendar_sources AS s ON s.id = i.source_id
+        LEFT JOIN LATERAL (
+            SELECT cursor_name, last_synced_at, last_success_at, last_error_at, last_error,
+                   full_sync_required, updated_at
+            FROM calendar_sync_cursors
+            WHERE source_id = s.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+        ) AS c ON TRUE
+        WHERE s.lane = 'user' AND ({SOURCE_TYPE_SQL}) = 'provider_event'
+          AND ({predicate})
+        ORDER BY i.starts_at ASC, i.id ASC
+    """
+    try:
+        results, failed = await db.fan_out_with_status(
+            sql, args, butler_names=db.butlers_with_module("calendar")
+        )
+    except Exception:
+        # A related-copy lookup failure must name uncertainty, while allowing
+        # the caller to retain the successfully observed window rows.
+        return [], ["calendar events"]
+    return [
+        row_to_workspace(row, db_butler=name)
+        for name, records in results.items()
+        for row in records
+    ], failed
 
 
 async def query_calendar_invitations(
@@ -1301,21 +1351,47 @@ async def query_calendar_invitations(
     cursor: tuple[datetime, UUID] | None = None,
     limit: int = 201,
 ) -> CalendarInvitationRead:
-    """Dedup the bounded provider window BEFORE RSVP admission or page slicing.
+    """Resolve current copies before window, RSVP and page admission.
 
-    Filtering unanswered copies in SQL first would resurrect a stale unanswered
-    copy whose newest provider projection now says accepted. The existing radar
-    also scans this complete bounded window, so both surfaces retain its actual
-    canonical occurrence IDs. No provider call or write takes place here.
+    The bounded window discovers candidate identities, including tombstones.
+    A second fan-out retrieves their relevant same-origin copies across schemas,
+    even when the freshest non-recurring copy moved outside that window. Keep
+    recurring identity tied to its original occurrence start as the existing
+    workspace dedup does. Browse/radar queries retain their existing predicates.
     """
     try:
-        rows, failed = await query_calendar_workspace(
-            db,
-            view="user",
-            start=start,
-            end=end,
-            source_type="provider_event",
+        rows, failed = await _query_invitation_copies(
+            db, predicate="i.starts_at < $1 AND i.ends_at > $2", args=(end, start)
         )
+        origins = sorted(
+            {row.origin_ref for row in rows if row.origin_ref and not row.recurrence_rule}
+        )
+        occurrences = sorted(
+            {
+                (row.origin_ref, row.instance_starts_at)
+                for row in rows
+                if row.origin_ref and row.recurrence_rule
+            }
+        )
+        if origins or occurrences:
+            related, related_failed = await _query_invitation_copies(
+                db,
+                predicate="""
+                    (NULLIF(e.recurrence_rule, '') IS NULL AND e.origin_ref = ANY($1::text[]))
+                    OR (NULLIF(e.recurrence_rule, '') IS NOT NULL AND
+                        (e.origin_ref, i.starts_at) IN
+                        (SELECT * FROM UNNEST($2::text[], $3::timestamptz[])))
+                """,
+                args=(
+                    origins,
+                    [origin for origin, _ in occurrences],
+                    [stamp for _, stamp in occurrences],
+                ),
+            )
+            rows = list(
+                {(row.db_butler, row.instance_id): row for row in [*rows, *related]}.values()
+            )
+            failed = sorted(set(failed) | set(related_failed))
     except Exception:
         return CalendarInvitationRead([], ["calendar events"], False)
     flattened = [shallow_asdict(row) for row in rows]
@@ -1326,6 +1402,8 @@ async def query_calendar_invitations(
     eligible: list[dict[str, Any]] = []
     available = True
     for row in deduped:
+        if row["instance_starts_at"] >= end or row["instance_ends_at"] <= start:
+            continue
         state = invitation_status(row)
         if state == "unknown":
             available = False

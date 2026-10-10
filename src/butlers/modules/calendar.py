@@ -8170,9 +8170,12 @@ class CalendarModule(Module):
                 "butler_name": event.butler_name,
                 "organizer": event.organizer,
                 "transparency": event.transparency,
-                "attendees": [
+                "attendees": [self._attendee_to_payload(attendee) for attendee in event.attendees],
+                # Projection-only companion: existing attendee/tool payloads stay exact.
+                "attendee_status_provenance": [
                     {
-                        **self._attendee_to_payload(attendee),
+                        "email": attendee.email,
+                        "response_status": attendee.response_status.value,
                         "response_status_explicit": attendee._response_status_explicit,
                     }
                     for attendee in event.attendees

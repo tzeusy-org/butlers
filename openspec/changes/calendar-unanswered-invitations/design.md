@@ -9,7 +9,9 @@ The dashboard reads projections; provider interaction stays with CalendarModule.
 The old Google parser writes `needsAction` for explicit, absent and malformed
 responseStatus. Keep AttendeeInfo and MCP payload defaults, track validity
 separately while parsing, and persist a literal `response_status_explicit`
-boolean beside projected attendees. Only literal true plus exact needsAction
+boolean in a separate ordered `attendee_status_provenance` companion binding
+email and normalized status. Projected attendees remain exactly the unchanged
+tool payloads. Only matching literal true plus exact needsAction
 admits an unanswered self attendee. Unmarked legacy normalized/raw needsAction,
 missing or malformed candidate status is unknown, omitted, and degrades admission.
 No read retroactively repairs it. Known accepted/declined/tentative entries,
@@ -19,8 +21,9 @@ no-self, solo/self-organizer and cancelled entries remain excluded.
 
 Use the existing 90-day half-open overlap window, provider-event source type,
 fan-out status and deterministic source ownership. Deduplicate the complete
-window using the workspace/radar strategy before status admission and keyset
-slicing; a stale unanswered duplicate must not resurrect a newer accepted copy.
+window and relevant same-origin copies using the workspace/radar strategy before
+final window/status admission and keyset slicing; a stale unanswered duplicate
+must not resurrect a newer accepted, cancelled or moved-outside-window copy.
 Order by starts_at and instance UUID. The opaque cursor binds window and timezone
 to that position; limit is 1..200. has_more/next_cursor describe remaining eligible
 rows, not source completeness. Concurrent projection refreshes may alter a page,

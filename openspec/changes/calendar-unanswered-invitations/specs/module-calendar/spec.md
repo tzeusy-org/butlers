@@ -14,6 +14,7 @@ Scope: v1-mandatory
 - **WHEN** a provider attendee carries a valid explicit responseStatus
 - **THEN** projection retains the exact normalized response_status and a literal true response_status_explicit marker
 - **AND** self and organizer remain actual provider-copy flags
+- **AND** existing projected attendees stay exactly equal to the unchanged tool payloads; a separate ordered attendee_status_provenance companion binds each marker to its exact email and normalized status
 
 #### Scenario: Default and malformed statuses remain unknown
 - **WHEN** a provider attendee omits responseStatus or supplies a malformed value
