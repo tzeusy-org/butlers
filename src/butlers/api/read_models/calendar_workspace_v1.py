@@ -31,6 +31,7 @@ Version marker:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Mapping
@@ -46,6 +47,7 @@ from butlers.api.db import DatabaseManager
 from butlers.core.temporal.calendar_provenance import (
     counts_toward_owner_load,
     is_calendar_analysis_candidate,
+    is_explicit_butler_generated,
 )
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
@@ -1218,6 +1220,119 @@ class CalendarConflictScan:
 
     issues: list[DetectedIssue]
     available: bool = True
+
+
+@dataclass
+class CalendarInvitationRead:
+    """Eligible current rows and content-blind admission/source uncertainty."""
+
+    rows: list[dict[str, Any]]
+    failed_butlers: list[str]
+    status_available: bool = True
+
+
+def _invitation_metadata(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    return value if isinstance(value, Mapping) else {}
+
+
+def invitation_status(row: Mapping[str, Any]) -> str:
+    """Return eligible/excluded/unknown without inferring the model's default.
+
+    This is invitation admission, deliberately separate from radar attendance:
+    an unanswered legacy copy cannot prove provider intent, whereas the radar
+    continues to include all events except its existing explicit exclusions.
+    """
+    if any(
+        row.get(key) in ("cancelled", "canceled") for key in ("instance_status", "event_status")
+    ):
+        return "excluded"
+    metadata = _invitation_metadata(row.get("event_metadata"))
+    if is_explicit_butler_generated(metadata):
+        return "excluded"
+    attendees = metadata.get("attendees")
+    if not isinstance(attendees, list):
+        return "unknown" if not metadata else "excluded"
+    own = [a for a in attendees if isinstance(a, Mapping) and a.get("self") is True]
+    if not own:
+        return "excluded"
+    if len(own) != 1:
+        return "unknown"
+    attendee = own[0]
+    if attendee.get("organizer") is True:
+        return "excluded"
+    email = attendee.get("email")
+    own_email = email.strip().casefold() if isinstance(email, str) else ""
+    if not own_email:
+        return "unknown"
+    organizer = metadata.get("organizer")
+    external_organizer = (
+        isinstance(organizer, str)
+        and bool(organizer.strip())
+        and organizer.strip().casefold() != own_email
+    )
+    other_attendee = any(
+        isinstance(a, Mapping)
+        and a.get("self") is not True
+        and isinstance(a.get("email"), str)
+        and bool(a["email"].strip())
+        and a["email"].strip().casefold() != own_email
+        for a in attendees
+    )
+    if not external_organizer and not other_attendee:
+        return "excluded"
+    status = attendee.get("response_status", attendee.get("responseStatus"))
+    if status in ("accepted", "declined", "tentative"):
+        return "excluded"
+    if status != "needsAction" or attendee.get("response_status_explicit") is not True:
+        return "unknown"
+    return "eligible"
+
+
+async def query_calendar_invitations(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    cursor: tuple[datetime, UUID] | None = None,
+    limit: int = 201,
+) -> CalendarInvitationRead:
+    """Dedup the bounded provider window BEFORE RSVP admission or page slicing.
+
+    Filtering unanswered copies in SQL first would resurrect a stale unanswered
+    copy whose newest provider projection now says accepted. The existing radar
+    also scans this complete bounded window, so both surfaces retain its actual
+    canonical occurrence IDs. No provider call or write takes place here.
+    """
+    try:
+        rows, failed = await query_calendar_workspace(
+            db,
+            view="user",
+            start=start,
+            end=end,
+            source_type="provider_event",
+        )
+    except Exception:
+        return CalendarInvitationRead([], ["calendar events"], False)
+    flattened = [shallow_asdict(row) for row in rows]
+    flattened.sort(key=lambda row: (row["instance_starts_at"], row["instance_id"]))
+    rules = await load_dedup_rules(db)
+    pins = await load_keep_separate_keys(db)
+    deduped, _ = _dedup_workspace_rows(flattened, strategy=rules.match_strategy, keep_separate=pins)
+    eligible: list[dict[str, Any]] = []
+    available = True
+    for row in deduped:
+        state = invitation_status(row)
+        if state == "unknown":
+            available = False
+        elif state == "eligible":
+            if cursor is None or (row["instance_starts_at"], row["instance_id"]) > cursor:
+                eligible.append(row)
+    return CalendarInvitationRead(eligible[:limit], failed, available)
 
 
 async def query_calendar_conflicts(

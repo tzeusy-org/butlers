@@ -52,6 +52,8 @@ import type {
   CalendarDuplicatesResponse,
   ConflictScanParams,
   ConflictScanResponse,
+  CalendarInvitationsParams,
+  CalendarInvitationsResponse,
   CalendarKeepSeparateRequest,
   CalendarKeepSeparateResponse,
   CalendarPrepResponse,
@@ -1600,6 +1602,19 @@ export function getCalendarWorkspaceConflicts(
     sp.set("overloaded_day_hours", String(params.overloaded_day_hours));
   return apiFetch<ApiResponse<ConflictScanResponse>>(
     `/calendar/workspace/conflicts?${sp.toString()}`,
+  );
+}
+
+/** Read-only projected invitations; no provider/RSVP action. */
+export function getCalendarInvitations(
+  params: CalendarInvitationsParams,
+): Promise<ApiResponse<CalendarInvitationsResponse>> {
+  const sp = new URLSearchParams({ start: params.start, end: params.end });
+  if (params.timezone) sp.set("timezone", params.timezone);
+  if (params.limit != null) sp.set("limit", String(params.limit));
+  if (params.cursor) sp.set("cursor", params.cursor);
+  return apiFetch<ApiResponse<CalendarInvitationsResponse>>(
+    `/calendar/workspace/invitations?${sp.toString()}`,
   );
 }
 

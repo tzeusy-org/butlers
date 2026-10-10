@@ -370,6 +370,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Source enabled for sync
 - Source disabled
 - Reversed {} · undo {}
+- Invitation details unavailable. Try again shortly.
 - No writable calendar sources are available for user events.
 - Could not resolve calendar owner for this event.
 - Could not resolve butler event for this drag.
@@ -2258,7 +2259,19 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/calendar/CalendarVerdictOpener.tsx`
 
+- Loading invitations…
+- Refreshing invitations…
+- No unanswered invitations.
+- Conflict evidence
+- Conflict availability unknown
+- Opening invitation…
+- Close conflict evidence
+- Unanswered invitations
+- Calendar invitations
+- Show {} conflict for {}
+- Invitation conflict evidence
 - calendar workspace
+- calendar invitations
 - calendar source freshness
 - calendar conflict scan
 
@@ -4859,4 +4872,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3867*
+*Total strings: 3880*

@@ -45,6 +45,7 @@ export {
   getCalendarWorkspaceMeta,
   getCalendarWorkspaceDuplicates,
   getCalendarWorkspaceConflicts,
+  getCalendarInvitations,
   patchCalendarDedupRules,
   setCalendarKeepSeparate,
   searchCalendarWorkspace,

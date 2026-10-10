@@ -25,7 +25,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from croniter import croniter as _croniter
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.core.audit import write_audit_entry
@@ -719,9 +727,11 @@ def _extract_google_attendees(payload: Any) -> list[AttendeeInfo]:
 
             response_status_raw = entry.get("responseStatus")
             response_status = AttendeeResponseStatus.needs_action
+            response_status_explicit = False
             if isinstance(response_status_raw, str):
                 try:
                     response_status = AttendeeResponseStatus(response_status_raw.strip())
+                    response_status_explicit = True
                 except ValueError:
                     pass
 
@@ -739,17 +749,17 @@ def _extract_google_attendees(payload: Any) -> list[AttendeeInfo]:
             if isinstance(comment_raw, str) and (stripped := comment_raw.strip()):
                 comment = stripped
 
-            attendees.append(
-                AttendeeInfo(
-                    email=normalized_email,
-                    display_name=display_name,
-                    response_status=response_status,
-                    optional=optional,
-                    organizer=organizer,
-                    self_=self_,
-                    comment=comment,
-                )
+            attendee = AttendeeInfo(
+                email=normalized_email,
+                display_name=display_name,
+                response_status=response_status,
+                optional=optional,
+                organizer=organizer,
+                self_=self_,
+                comment=comment,
             )
+            attendee._response_status_explicit = response_status_explicit
+            attendees.append(attendee)
         elif isinstance(entry, str):
             normalized_email = entry.strip()
             if normalized_email:
@@ -1641,6 +1651,9 @@ class AttendeeInfo(BaseModel):
     organizer: bool = False
     self_: bool = Field(default=False, alias="self")
     comment: str | None = None
+    # Provider parsing provenance, deliberately absent from tool/model payloads.
+    # Manually constructed/defaulted attendees cannot certify provider status.
+    _response_status_explicit: bool = PrivateAttr(default=False)
 
 
 class CalendarEvent(BaseModel):
@@ -8157,7 +8170,13 @@ class CalendarModule(Module):
                 "butler_name": event.butler_name,
                 "organizer": event.organizer,
                 "transparency": event.transparency,
-                "attendees": [self._attendee_to_payload(attendee) for attendee in event.attendees],
+                "attendees": [
+                    {
+                        **self._attendee_to_payload(attendee),
+                        "response_status_explicit": attendee._response_status_explicit,
+                    }
+                    for attendee in event.attendees
+                ],
                 "created_at": event.created_at.isoformat() if event.created_at else None,
                 "updated_at": event.updated_at.isoformat() if event.updated_at else None,
             }

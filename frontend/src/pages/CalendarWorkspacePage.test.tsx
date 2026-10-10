@@ -11,6 +11,7 @@ import CalendarWorkspacePage from "@/pages/CalendarWorkspacePage";
 import {
   useAcceptCalendarProposal,
   useCalendarConflicts,
+  useCalendarInvitations,
   useCalendarOverlays,
   useCalendarMeetingPrep,
   useCalendarWorkspace,
@@ -29,6 +30,7 @@ import {
 
 vi.mock("@/hooks/use-calendar-workspace", () => ({
   useCalendarWorkspace: vi.fn(),
+  useCalendarInvitations: vi.fn(),
   useCalendarOverlays: vi.fn(() => ({
     isLoading: false,
     isError: false,
@@ -684,6 +686,11 @@ describe("CalendarWorkspacePage", () => {
     setUserMutationState();
     setPrimaryCalendarState();
     setEntryDetailState();
+    vi.mocked(useCalendarInvitations).mockReturnValue({
+      isPending: false, isFetching: false, isError: false, isPlaceholderData: false,
+      data: { pages: [{ data: { entries: [], issues_available: true, conflicts_available: true, sources_degraded: [], has_more: false, next_cursor: null } }], pageParams: [] },
+      hasNextPage: false, isFetchingNextPage: false, fetchNextPage: vi.fn(),
+    } as unknown as ReturnType<typeof useCalendarInvitations>);
     previewMutate.mockReset();
     setRecurrencePreviewState();
     vi.stubGlobal(
