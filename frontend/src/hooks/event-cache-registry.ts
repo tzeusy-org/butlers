@@ -207,6 +207,7 @@ const calendarPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["calendar-proposals"] });
   qc.invalidateQueries({ queryKey: ["calendar-duplicates"] });
   qc.invalidateQueries({ queryKey: ["calendar-conflicts"] });
+  qc.invalidateQueries({ queryKey: ["calendar-invitations"] });
   qc.invalidateQueries({ queryKey: ["calendar-workspace-entry"] });
   qc.invalidateQueries({ queryKey: ["calendar-workspace-search"] });
   qc.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });

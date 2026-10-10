@@ -42,11 +42,12 @@ import type {
   UnifiedCalendarSourceType,
 } from "@/api/types.ts";
 import { CALENDAR_UNDOABLE_ACTION_TYPES } from "@/api/types.ts";
-import { ApiError } from "@/api/index.ts";
+import { ApiError, getCalendarWorkspaceEntry } from "@/api/index.ts";
 import {
   useCalendarAccounts,
   useAcceptCalendarProposal,
   useCalendarConflicts,
+  useCalendarInvitations,
   useCalendarDayBriefing,
   useCalendarDuplicates,
   useCalendarOverlays,
@@ -2700,6 +2701,19 @@ export default function CalendarWorkspacePage() {
     { start: queryStart, end: queryEnd, timezone },
     { enabled: radarEnabled },
   );
+  const invitationsQuery = useCalendarInvitations({ start: queryStart, end: queryEnd, timezone });
+  const invitationPages = invitationsQuery.data?.pages;
+  const invitations = invitationPages
+    ? [...new Map(invitationPages.flatMap((page) => page.data.entries)
+      .map((entry) => [entry.entry_id, entry] as const)).values()]
+    : undefined;
+  const invitationsAvailable = invitationPages !== undefined && invitationPages.length > 0
+    && invitationPages.every((page) => page.data.issues_available);
+  const invitationConflictsAvailable = invitationPages !== undefined && invitationPages.length > 0
+    && invitationPages.every((page) => page.data.conflicts_available);
+  const invitationSourcesDegraded = invitationPages
+    ? [...new Set(invitationPages.flatMap((page) => page.data.sources_degraded))]
+    : undefined;
   const conflictScan = conflictsQuery.data?.data;
   const conflictIssues = useMemo(
     () => (radarEnabled && !conflictsQuery.isError ? (conflictScan?.issues ?? []) : []),
@@ -2980,6 +2994,23 @@ export default function CalendarWorkspacePage() {
   // Detail panel — replaces modal-only editing with a right-docked panel
   const [selectedEntry, setSelectedEntry] =
     useState<UnifiedCalendarEntry | null>(null);
+  const [invitationDetailLoading, setInvitationDetailLoading] = useState(false);
+
+  async function openInvitation(entryId: string) {
+    setInvitationDetailLoading(true);
+    try {
+      const response = await queryClient.fetchQuery({
+        queryKey: ["calendar-workspace-entry", entryId],
+        queryFn: () => getCalendarWorkspaceEntry(entryId),
+      });
+      if (response.data.entry_id !== entryId) throw new Error("Entry identity mismatch");
+      setSelectedEntry(response.data);
+    } catch {
+      toast.error("Invitation details unavailable. Try again shortly.");
+    } finally {
+      setInvitationDetailLoading(false);
+    }
+  }
 
   // Search command palette + jump-to-and-flash
   const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
@@ -4822,6 +4853,18 @@ export default function CalendarWorkspacePage() {
         conflictError={conflictsQuery.isError}
         conflictsAvailable={conflictsAvailable}
         conflicts={conflictIssues}
+        invitations={invitations}
+        invitationsLoading={invitationsQuery.isPending || invitationsQuery.isPlaceholderData}
+        invitationsRefreshing={invitationsQuery.isFetching}
+        invitationsError={invitationsQuery.isError}
+        invitationsAvailable={invitationsAvailable}
+        invitationConflictsAvailable={invitationConflictsAvailable}
+        invitationSourcesDegraded={invitationSourcesDegraded}
+        invitationsHasMore={invitationsQuery.hasNextPage}
+        invitationsLoadingMore={invitationsQuery.isFetchingNextPage}
+        onMoreInvitations={() => { void invitationsQuery.fetchNextPage(); }}
+        onOpenInvitation={(entryId) => { void openInvitation(entryId); }}
+        invitationDetailLoading={invitationDetailLoading}
       />
 
       {freshnessPlaque ? (

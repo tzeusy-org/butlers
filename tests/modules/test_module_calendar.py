@@ -2735,6 +2735,7 @@ class TestGoogleDateOnlyProjection:
 
         assert module._upsert_projection_event.await_args.kwargs["all_day"] is True
 
+    # Spec: REQ-module-calendar-028
     async def test_google_rsvp_and_transparency_survive_projection_into_radar_filter(self) -> None:
         """bu-q7vx1q.3: owner decline and free/busy reach metadata in the shape the radar reads."""
         from butlers.core.temporal.calendar_provenance import counts_toward_owner_load
@@ -2769,6 +2770,32 @@ class TestGoogleDateOnlyProjection:
         assert counts_toward_owner_load({**metadata, "transparency": "opaque"}) is False
         declined_removed = {**metadata, "attendees": [], "transparency": "opaque"}
         assert counts_toward_owner_load(declined_removed) is True
+
+        # The invitation read must not turn the model default into provider truth.
+        # Preserve the MCP payload while recording projection-only provenance.
+        for status, explicit in [("needsAction", True), (None, False), ("invalid", False)]:
+            attendee = {"email": "me@example.com", "self": True}
+            if status is not None:
+                attendee["responseStatus"] = status
+            parsed = _google_event_to_calendar_event(
+                {**payload, "attendees": [attendee]}, fallback_timezone="UTC"
+            )
+            assert parsed is not None
+            tool_payload = module._attendee_to_payload(parsed.attendees[0])
+            assert tool_payload["response_status"] == "needsAction"
+            assert "response_status_explicit" not in tool_payload
+            await module._project_provider_changes(
+                source_id=uuid.uuid4(),
+                provider_name="google",
+                calendar_id="primary",
+                updated_events=[parsed],
+                cancelled_ids=[],
+            )
+            projected = module._upsert_projection_event.await_args.kwargs["metadata"]
+            assert (
+                projected["attendee_status_provenance"][0]["response_status_explicit"] is explicit
+            )
+            assert projected["attendees"] == [tool_payload]
 
     def test_google_all_day_create_body_uses_date_boundaries(self) -> None:
         body = _build_google_event_body(

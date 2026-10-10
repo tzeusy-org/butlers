@@ -2,7 +2,7 @@
  * TanStack Query hooks for calendar workspace APIs.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
@@ -16,6 +16,7 @@ import {
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
   getCalendarWorkspaceConflicts,
+  getCalendarInvitations,
   getCalendarWorkspaceDuplicates,
   getCalendarWorkspaceEntry,
   getCalendarWorkspaceMeta,
@@ -38,6 +39,7 @@ import type {
   CalendarDuplicatesParams,
   CalendarDuplicatesResponse,
   ConflictScanParams,
+  CalendarInvitationsParams,
   CalendarKeepSeparateRequest,
   CalendarKeepSeparateResponse,
   CalendarProposalAcceptRequest,
@@ -303,6 +305,7 @@ export function useSyncCalendarWorkspace() {
     mutationFn: (body: CalendarWorkspaceSyncRequest) => syncCalendarWorkspace(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
     },
   });
@@ -331,6 +334,7 @@ export function useUndoCalendarWorkspaceMutation() {
     mutationFn: (actionId: string) => undoCalendarWorkspaceMutation(actionId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-audit"] });
     },
@@ -345,6 +349,7 @@ export function useMutateCalendarWorkspaceUserEvent() {
       mutateCalendarWorkspaceUserEvent(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
     },
   });
@@ -372,6 +377,7 @@ export function useMutateCalendarWorkspaceButlerEvent() {
       mutateCalendarWorkspaceButlerEvent(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
     },
   });
@@ -419,6 +425,7 @@ export function useCalendarProposals(
 function invalidateWorkspaceAndProposals(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.invalidateQueries({ queryKey: ["calendar-proposals"] });
   queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+  queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
   queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
 }
 
@@ -668,10 +675,24 @@ export function useCalendarConflicts(
   });
 }
 
+/** Keep successful invitation pages on refresh/error; every page retains availability. */
+export function useCalendarInvitations(params: Omit<CalendarInvitationsParams, "cursor">) {
+  const busAwareInterval = useBusAwarePollInterval();
+  return useInfiniteQuery({
+    queryKey: ["calendar-invitations", params],
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => getCalendarInvitations({ ...params, cursor: pageParam }),
+    getNextPageParam: (page) => page.data.has_more ? page.data.next_cursor ?? undefined : undefined,
+    refetchInterval: busAwareInterval,
+    placeholderData: (previousData) => previousData,
+  });
+}
+
 /** Invalidate the duplicate-review + main workspace caches after a dedup change. */
 function invalidateDuplicatesAndWorkspace(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.invalidateQueries({ queryKey: ["calendar-duplicates"] });
   queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+  queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
 }
 
 /**

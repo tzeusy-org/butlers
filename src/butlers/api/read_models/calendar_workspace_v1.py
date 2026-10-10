@@ -31,6 +31,7 @@ Version marker:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Mapping
@@ -46,6 +47,7 @@ from butlers.api.db import DatabaseManager
 from butlers.core.temporal.calendar_provenance import (
     counts_toward_owner_load,
     is_calendar_analysis_candidate,
+    is_explicit_butler_generated,
 )
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
@@ -1218,6 +1220,197 @@ class CalendarConflictScan:
 
     issues: list[DetectedIssue]
     available: bool = True
+
+
+@dataclass
+class CalendarInvitationRead:
+    """Eligible current rows and content-blind admission/source uncertainty."""
+
+    rows: list[dict[str, Any]]
+    failed_butlers: list[str]
+    status_available: bool = True
+
+
+def _invitation_metadata(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    return value if isinstance(value, Mapping) else {}
+
+
+def invitation_status(row: Mapping[str, Any]) -> str:
+    """Return eligible/excluded/unknown without inferring the model's default.
+
+    This is invitation admission, deliberately separate from radar attendance:
+    an unanswered legacy copy cannot prove provider intent, whereas the radar
+    continues to include all events except its existing explicit exclusions.
+    """
+    if any(
+        row.get(key) in ("cancelled", "canceled") for key in ("instance_status", "event_status")
+    ):
+        return "excluded"
+    metadata = _invitation_metadata(row.get("event_metadata"))
+    if is_explicit_butler_generated(metadata):
+        return "excluded"
+    attendees = metadata.get("attendees")
+    if not isinstance(attendees, list):
+        return "unknown" if not metadata else "excluded"
+    own = [
+        (index, a)
+        for index, a in enumerate(attendees)
+        if isinstance(a, Mapping) and a.get("self") is True
+    ]
+    if not own:
+        return "excluded"
+    if len(own) != 1:
+        return "unknown"
+    attendee_index, attendee = own[0]
+    if attendee.get("organizer") is True:
+        return "excluded"
+    email = attendee.get("email")
+    own_email = email.strip().casefold() if isinstance(email, str) else ""
+    if not own_email:
+        return "unknown"
+    organizer = metadata.get("organizer")
+    external_organizer = (
+        isinstance(organizer, str)
+        and bool(organizer.strip())
+        and organizer.strip().casefold() != own_email
+    )
+    other_attendee = any(
+        isinstance(a, Mapping)
+        and a.get("self") is not True
+        and isinstance(a.get("email"), str)
+        and bool(a["email"].strip())
+        and a["email"].strip().casefold() != own_email
+        for a in attendees
+    )
+    if not external_organizer and not other_attendee:
+        return "excluded"
+    status = attendee.get("response_status", attendee.get("responseStatus"))
+    if status in ("accepted", "declined", "tentative"):
+        return "excluded"
+    provenance = metadata.get("attendee_status_provenance")
+    if not isinstance(provenance, list) or len(provenance) != len(attendees):
+        return "unknown"
+    evidence = provenance[attendee_index]
+    if (
+        status != "needsAction"
+        or not isinstance(evidence, Mapping)
+        or evidence.get("email") != email
+        or evidence.get("response_status") != status
+        or evidence.get("response_status_explicit") is not True
+    ):
+        return "unknown"
+    return "eligible"
+
+
+async def _query_invitation_copies(
+    db: DatabaseManager, *, predicate: str, args: tuple[Any, ...]
+) -> tuple[list[CalendarWorkspaceRow], list[str]]:
+    """Read only relevant provider copies, without pre-dedup eligibility filters."""
+    sql = f"""
+        SELECT {WORKSPACE_COLUMNS}
+        FROM calendar_event_instances AS i
+        JOIN calendar_events AS e ON e.id = i.event_id
+        JOIN calendar_sources AS s ON s.id = i.source_id
+        LEFT JOIN LATERAL (
+            SELECT cursor_name, last_synced_at, last_success_at, last_error_at, last_error,
+                   full_sync_required, updated_at
+            FROM calendar_sync_cursors
+            WHERE source_id = s.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+        ) AS c ON TRUE
+        WHERE s.lane = 'user' AND ({SOURCE_TYPE_SQL}) = 'provider_event'
+          AND ({predicate})
+        ORDER BY i.starts_at ASC, i.id ASC
+    """
+    try:
+        results, failed = await db.fan_out_with_status(
+            sql, args, butler_names=db.butlers_with_module("calendar")
+        )
+    except Exception:
+        # A related-copy lookup failure must name uncertainty, while allowing
+        # the caller to retain the successfully observed window rows.
+        return [], ["calendar events"]
+    return [
+        row_to_workspace(row, db_butler=name)
+        for name, records in results.items()
+        for row in records
+    ], failed
+
+
+async def query_calendar_invitations(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    cursor: tuple[datetime, UUID] | None = None,
+    limit: int = 201,
+) -> CalendarInvitationRead:
+    """Resolve current copies before window, RSVP and page admission.
+
+    The bounded window discovers candidate identities, including tombstones.
+    A second fan-out retrieves their relevant same-origin copies across schemas,
+    even when the freshest non-recurring copy moved outside that window. Keep
+    recurring identity tied to its original occurrence start as the existing
+    workspace dedup does. Browse/radar queries retain their existing predicates.
+    """
+    try:
+        rows, failed = await _query_invitation_copies(
+            db, predicate="i.starts_at < $1 AND i.ends_at > $2", args=(end, start)
+        )
+        origins = sorted(
+            {row.origin_ref for row in rows if row.origin_ref and not row.recurrence_rule}
+        )
+        occurrences = sorted(
+            {
+                (row.origin_ref, row.instance_starts_at)
+                for row in rows
+                if row.origin_ref and row.recurrence_rule
+            }
+        )
+        if origins or occurrences:
+            related, related_failed = await _query_invitation_copies(
+                db,
+                predicate="""
+                    (NULLIF(e.recurrence_rule, '') IS NULL AND e.origin_ref = ANY($1::text[]))
+                    OR (NULLIF(e.recurrence_rule, '') IS NOT NULL AND
+                        (e.origin_ref, i.starts_at) IN
+                        (SELECT * FROM UNNEST($2::text[], $3::timestamptz[])))
+                """,
+                args=(
+                    origins,
+                    [origin for origin, _ in occurrences],
+                    [stamp for _, stamp in occurrences],
+                ),
+            )
+            rows = list(
+                {(row.db_butler, row.instance_id): row for row in [*rows, *related]}.values()
+            )
+            failed = sorted(set(failed) | set(related_failed))
+    except Exception:
+        return CalendarInvitationRead([], ["calendar events"], False)
+    flattened = [shallow_asdict(row) for row in rows]
+    flattened.sort(key=lambda row: (row["instance_starts_at"], row["instance_id"]))
+    rules = await load_dedup_rules(db)
+    pins = await load_keep_separate_keys(db)
+    deduped, _ = _dedup_workspace_rows(flattened, strategy=rules.match_strategy, keep_separate=pins)
+    eligible: list[dict[str, Any]] = []
+    available = True
+    for row in deduped:
+        if row["instance_starts_at"] >= end or row["instance_ends_at"] <= start:
+            continue
+        state = invitation_status(row)
+        if state == "unknown":
+            available = False
+        elif state == "eligible":
+            if cursor is None or (row["instance_starts_at"], row["instance_id"]) > cursor:
+                eligible.append(row)
+    return CalendarInvitationRead(eligible[:limit], failed, available)
 
 
 async def query_calendar_conflicts(

@@ -630,6 +630,29 @@ class ConflictScanResponse(BaseModel):
     issues_available: bool = True
 
 
+class CalendarInvitationEntry(BaseModel):
+    """One explicit unanswered provider occurrence; no RSVP/mutation authority."""
+
+    entry_id: UUID
+    title: str
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+    organizer: str | None = None
+    organizer_source: Literal["event", "attendee", "unknown"] = "unknown"
+    butler_name: str | None = None
+    conflict_issues: list[ConflictIssue] = Field(default_factory=list)
+
+
+class CalendarInvitationsResponse(BaseModel):
+    entries: list[CalendarInvitationEntry] = Field(default_factory=list)
+    issues_available: bool = True
+    conflicts_available: bool = True
+    sources_degraded: list[str] = Field(default_factory=list)
+    has_more: bool = False
+    next_cursor: str | None = None
+
+
 class CalendarButlerEventPreviewRequest(BaseModel):
     """Request payload for POST /api/calendar/workspace/butler-events/preview.
 

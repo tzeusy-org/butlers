@@ -1530,6 +1530,35 @@ export interface ConflictScanParams {
   overloaded_day_hours?: number;
 }
 
+export interface CalendarInvitationEntry {
+  entry_id: string;
+  title: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  organizer: string | null;
+  organizer_source: "event" | "attendee" | "unknown";
+  butler_name: string | null;
+  conflict_issues: ConflictIssue[];
+}
+
+export interface CalendarInvitationsResponse {
+  entries: CalendarInvitationEntry[];
+  issues_available: boolean;
+  conflicts_available: boolean;
+  sources_degraded: string[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface CalendarInvitationsParams {
+  start: string;
+  end: string;
+  timezone?: string;
+  limit?: number;
+  cursor?: string;
+}
+
 /** Body to pin/unpin a duplicate cluster as keep-separate. */
 export interface CalendarKeepSeparateRequest {
   cluster_key: string;

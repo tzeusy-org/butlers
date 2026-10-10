@@ -242,6 +242,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["calendar-workspace-audit"],
       ]),
     );
+    expect(keys(invalidateQueries)).toContainEqual(["calendar-invitations"]);
   });
 
   // Spec: REQ-core-fleet-events-013

@@ -1,3 +1,4 @@
+# Spec: REQ-dashboard-api-067
 """Tests for the calendar conflict & overcommitment radar (bu-q8o90x).
 
 Covers the two halves the bead's acceptance criteria require:
@@ -269,6 +270,10 @@ def _build_app(app, *, workspace_rows=None, proposal_rows=None, workspace_failed
             rows = workspace_rows
         elif "FROM calendar_event_proposals AS p" in query:
             rows = proposal_rows
+        elif "FROM calendar_sources AS s" in query:
+            rows = {
+                k: list({r["source_key"]: r for r in v}.values()) for k, v in workspace_rows.items()
+            }
         else:
             return {}
         if butler_names is not None:
@@ -696,3 +701,347 @@ async def test_conflicts_endpoint_rejects_oversized_window(app):
     app, _ = _build_app(app)
     resp = await _get(app, params={"start": "2026-01-01T00:00:00Z", "end": "2026-06-01T00:00:00Z"})
     assert resp.status_code == 400
+
+
+def _invitation_row(status="needsAction", *, explicit=True, **overrides):
+    row = _ws_row(entry_id=uuid4(), title="Invitation", start=_DAY)
+    row["title"] = f"Invitation {row['instance_id']}"
+    row["event_metadata"] = {
+        "source_type": "provider_event",
+        "organizer": "organizer@example.test",
+        "attendees": [
+            {
+                "email": "owner@example.test",
+                "self": True,
+                "response_status": status,
+            }
+        ],
+        "attendee_status_provenance": [
+            {
+                "email": "owner@example.test",
+                "response_status": status,
+                "response_status_explicit": explicit,
+            }
+        ],
+    }
+    row.update(overrides)
+    return row
+
+
+async def _get_invitations(app, **params):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.get("/api/calendar/workspace/invitations", params={**_PARAMS, **params})
+
+
+async def test_invitations_admit_explicit_provider_truth_and_earned_conflict(app):
+    """The actual query/GET excludes default, solo, cancelled and unrelated copies."""
+    answered = [_invitation_row(s) for s in ("accepted", "declined", "tentative")]
+    invited = _invitation_row()
+    unknown = [_invitation_row(None), _invitation_row("invalid"), _invitation_row(explicit=False)]
+    no_self = _invitation_row(event_metadata={"source_type": "provider_event", "attendees": []})
+    self_organizer = _invitation_row()
+    self_organizer["event_metadata"]["attendees"][0]["organizer"] = True
+    solo = _invitation_row()
+    solo["event_metadata"].pop("organizer")
+    cancelled = _invitation_row(instance_status="cancelled")
+    duplicate = {**invited, "instance_id": uuid4()}
+    partner = _ws_row(entry_id=uuid4(), title="Other meeting", start=_DAY + timedelta(minutes=10))
+    app, db = _build_app(
+        app,
+        workspace_rows={
+            "general": [
+                invited,
+                duplicate,
+                partner,
+                *answered,
+                *unknown,
+                no_self,
+                self_organizer,
+                solo,
+                cancelled,
+            ]
+        },
+    )
+    response = await _get_invitations(app)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert len(data["entries"]) == 1
+    entry = data["entries"][0]
+    assert entry["entry_id"] == str(min(invited["instance_id"], duplicate["instance_id"]))
+    assert entry["organizer"] == "organizer@example.test"
+    assert entry["organizer_source"] == "event"
+    assert entry["butler_name"] == "general"
+    assert entry["conflict_issues"]
+    assert all(
+        any(ref["entry_id"] == entry["entry_id"] for ref in issue["events"])
+        for issue in entry["conflict_issues"]
+    )
+    assert data["issues_available"] is False
+    assert "calendar invitation status" in data["sources_degraded"]
+    # Both normalized and raw status spellings need actual explicit provenance.
+    raw = _invitation_row()
+    a = raw["event_metadata"]["attendees"][0]
+    a["responseStatus"] = a.pop("response_status")
+    app, _ = _build_app(app, workspace_rows={"general": [raw]})
+    clean = (await _get_invitations(app)).json()["data"]
+    assert clean["issues_available"] is True
+    assert clean["entries"][0]["conflict_issues"] == []
+    assert clean["conflicts_available"] is True
+    malformed_self = _invitation_row()
+    malformed_self["event_metadata"]["attendees"][0].pop("email")
+    app, _ = _build_app(app, workspace_rows={"general": [malformed_self]})
+    malformed = (await _get_invitations(app)).json()["data"]
+    assert malformed["entries"] == [] and malformed["issues_available"] is False
+    generated = _invitation_row()
+    generated["event_metadata"]["butler_generated"] = " TRUE "
+    app, _ = _build_app(app, workspace_rows={"general": [generated]})
+    suppressed = (await _get_invitations(app)).json()["data"]
+    assert suppressed["entries"] == [] and suppressed["issues_available"] is True
+    fallback = _invitation_row()
+    fallback["event_metadata"].pop("organizer")
+    fallback["event_metadata"]["attendees"].append(
+        {"email": "host@example.test", "organizer": True, "display_name": "Host"}
+    )
+    fallback["event_metadata"]["attendee_status_provenance"].append({})
+    app, _ = _build_app(app, workspace_rows={"general": [fallback]})
+    observed = (await _get_invitations(app)).json()["data"]["entries"][0]
+    assert observed["organizer"] == "Host" and observed["organizer_source"] == "attendee"
+    fallback["event_metadata"]["attendees"][1].pop("organizer")
+    missing = (await _get_invitations(app)).json()["data"]["entries"][0]
+    assert missing["organizer"] is None and missing["organizer_source"] == "unknown"
+    app, _ = _build_app(app, workspace_rows={"general": [raw]})
+    raw["event_metadata"].pop("attendee_status_provenance")
+    legacy = (await _get_invitations(app)).json()["data"]
+    assert legacy["entries"] == [] and legacy["issues_available"] is False
+    # A fresh accepted copy wins over a stale unanswered copy before admission.
+    fresh = {
+        **invited,
+        "instance_id": uuid4(),
+        "instance_updated_at": _DAY + timedelta(days=1),
+        "event_metadata": _invitation_row("accepted")["event_metadata"],
+    }
+    app, _ = _build_app(app, workspace_rows={"general": [invited, fresh]})
+    settled = (await _get_invitations(app)).json()["data"]
+    assert settled["entries"] == [] and settled["issues_available"] is True
+    assert any("source_type" in call.args[0] for call in db.fan_out_with_status.await_args_list)
+
+    # Model the emitted predicates, rather than letting canned SQL rows hide an
+    # early cancellation/window filter. The real migrated companion owns SQL.
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from butlers.api.read_models.calendar_workspace_v1 import query_calendar_invitations
+    from butlers.modules.calendar import CalendarModule
+
+    stale = _invitation_row()
+    stale["instance_updated_at"] = _DAY
+    newest = deepcopy(stale)
+    newest.update(
+        instance_id=uuid4(),
+        event_id=uuid4(),
+        source_id=uuid4(),
+        source_key="provider:google:copy",
+        instance_updated_at=_DAY + timedelta(hours=1),
+    )
+    records = [stale, newest]
+    emitted = []
+
+    async def predicate_rows(query, args=(), butler_names=None):
+        emitted.append(query)
+        selected = deepcopy(records)
+        if "i.starts_at < $1 AND i.ends_at > $2" in query:
+            selected = [
+                r
+                for r in selected
+                if r["instance_starts_at"] < args[0] and r["instance_ends_at"] > args[1]
+            ]
+        elif "i.starts_at < $2" in query:
+            selected = [
+                r
+                for r in selected
+                if r["instance_starts_at"] < args[1] and r["instance_ends_at"] > args[2]
+            ]
+        if "COALESCE(i.status, e.status) != 'cancelled'" in query:
+            selected = [
+                r for r in selected if (r["instance_status"] or r["event_status"]) != "cancelled"
+            ]
+        if "e.origin_ref = ANY($1::text[])" in query:
+            occurrences = set(zip(args[1], args[2], strict=True))
+            selected = [
+                r
+                for r in selected
+                if (not r["recurrence_rule"] and r["origin_ref"] in args[0])
+                or (
+                    r["recurrence_rule"]
+                    and (r["origin_ref"], r["instance_starts_at"]) in occurrences
+                )
+            ]
+        return {"general": selected}, []
+
+    db.fan_out_with_status.side_effect = predicate_rows
+    read_args = {"start": _DAY, "end": _DAY + timedelta(days=1)}
+    before_cancel = await query_calendar_invitations(db, **read_args)
+    assert len(before_cancel.rows) == 1 and before_cancel.status_available is True
+
+    class TombstonePool:
+        async def fetchrow(self, query, *args):
+            if "to_regclass('calendar_sources')" in query:
+                return dict.fromkeys(
+                    (
+                        "has_sources",
+                        "has_events",
+                        "has_instances",
+                        "has_cursors",
+                        "has_action_log",
+                        "has_events_body",
+                        "has_events_source_butler",
+                        "has_events_source_session_id",
+                    ),
+                    True,
+                )
+            assert "UPDATE calendar_events" in query and "status = 'cancelled'" in query
+            assert args[:2] == (newest["source_id"], newest["origin_ref"])
+            newest["event_status"] = "cancelled"
+            return {"id": newest["event_id"]}
+
+        async def execute(self, query, *args):
+            assert "UPDATE calendar_event_instances" in query and "status = 'cancelled'" in query
+            assert args[0] == newest["event_id"]
+            newest["instance_status"] = "cancelled"
+            newest["instance_updated_at"] = _DAY + timedelta(hours=2)
+            return "UPDATE 1"
+
+    module = CalendarModule()
+    module._db = SimpleNamespace(pool=TombstonePool())
+    await module._project_provider_changes(
+        source_id=newest["source_id"],
+        provider_name="google",
+        calendar_id="copy",
+        updated_events=[],
+        cancelled_ids=[newest["origin_ref"]],
+    )
+    tombstone = await query_calendar_invitations(db, **read_args)
+    assert tombstone.rows == [] and tombstone.status_available is True
+    newest.update(instance_status="confirmed", event_status="confirmed")
+    restored = await query_calendar_invitations(db, **read_args)
+    assert len(restored.rows) == 1 and restored.status_available is True
+    newest["event_metadata"]["attendees"][0]["response_status"] = "accepted"
+    newest["instance_starts_at"] += timedelta(days=2)
+    newest["instance_ends_at"] += timedelta(days=2)
+    moved = await query_calendar_invitations(db, **read_args)
+    assert moved.rows == [] and moved.status_available is True
+    newest["instance_starts_at"] -= timedelta(days=2)
+    newest["instance_ends_at"] -= timedelta(days=2)
+    # An eligible moved copy is also outside the inbox, not resurrected at the old time.
+    newest["event_metadata"]["attendees"][0]["response_status"] = "needsAction"
+    newest["instance_starts_at"] += timedelta(days=2)
+    newest["instance_ends_at"] += timedelta(days=2)
+    moved_unanswered = await query_calendar_invitations(db, **read_args)
+    assert moved_unanswered.rows == [] and moved_unanswered.status_available is True
+    assert not any("LIMIT" in q.split("WHERE s.lane", 1)[-1] for q in emitted)
+    # Companion provenance cannot be transplanted across identities or statuses.
+    records[:] = [deepcopy(stale)]
+    for malformed in (
+        True,
+        [],
+        [
+            {
+                "email": "other@example.test",
+                "response_status": "needsAction",
+                "response_status_explicit": True,
+            }
+        ],
+        [
+            {
+                "email": "owner@example.test",
+                "response_status": "accepted",
+                "response_status_explicit": True,
+            }
+        ],
+        [
+            {
+                "email": "owner@example.test",
+                "response_status": "needsAction",
+                "response_status_explicit": 1,
+            }
+        ],
+    ):
+        records[0]["event_metadata"]["attendee_status_provenance"] = malformed
+        refused = await query_calendar_invitations(db, **read_args)
+        assert refused.rows == [] and refused.status_available is False
+    records[:] = [stale]
+    final_restored = await query_calendar_invitations(db, **read_args)
+    assert len(final_restored.rows) == 1 and final_restored.status_available is True
+
+
+async def test_invitations_pagination_validation_and_honest_source_failures(app, monkeypatch):
+    from butlers.api.read_models.calendar_workspace_v1 import CalendarConflictScan
+
+    rows = [_invitation_row(title=f"Invite {i}") for i in range(3)]
+    app, db = _build_app(app, workspace_rows={"general": rows})
+    first = (await _get_invitations(app, limit=2)).json()["data"]
+    assert len(first["entries"]) == 2 and first["has_more"] is True
+    second = (await _get_invitations(app, limit=2, cursor=first["next_cursor"])).json()["data"]
+    assert len(second["entries"]) == 1 and second["has_more"] is False
+    assert second["next_cursor"] is None
+    original_fanout = db.fan_out_with_status.side_effect
+
+    async def related_lookup_failure(query, args=(), butler_names=None):
+        if "e.origin_ref = ANY($1::text[])" in query:
+            raise RuntimeError("synthetic related-copy query failure")
+        return await original_fanout(query, args, butler_names)
+
+    db.fan_out_with_status.side_effect = related_lookup_failure
+    related_unknown = (await _get_invitations(app)).json()["data"]
+    assert len(related_unknown["entries"]) == 3 and related_unknown["issues_available"] is False
+    assert "calendar events" in related_unknown["sources_degraded"]
+    db.fan_out_with_status.side_effect = original_fanout
+    related_restored = (await _get_invitations(app)).json()["data"]
+    assert len(related_restored["entries"]) == 3 and related_restored["issues_available"] is True
+    assert not (
+        {r["entry_id"] for r in first["entries"]} & {r["entry_id"] for r in second["entries"]}
+    )
+    for params in (
+        {"cursor": "invalid"},
+        {"cursor": first["next_cursor"], "timezone": "UTC"},
+        {"limit": 201},
+        {"end": "2026-12-01T00:00:00Z"},
+        {"end": _PARAMS["start"]},
+        {"start": "2026-07-01T00:00:00"},
+        {"timezone": "invalid"},
+    ):
+        assert (await _get_invitations(app, **params)).status_code in (400, 422)
+    app, _ = _build_app(app, workspace_rows={"general": rows}, workspace_failed=["relationship"])
+    partial = (await _get_invitations(app)).json()["data"]
+    assert len(partial["entries"]) == 3 and partial["issues_available"] is False
+    assert "relationship" in partial["sources_degraded"]
+    app, _ = _build_app(app, workspace_failed=["general", "relationship"])
+    total = (await _get_invitations(app)).json()["data"]
+    assert total["entries"] == [] and total["issues_available"] is False
+    app, _ = _build_app(app)
+    empty = (await _get_invitations(app)).json()["data"]
+    assert empty["entries"] == [] and empty["issues_available"] is True
+    app, _ = _build_app(app, workspace_rows={"general": rows})
+    from butlers.api.routers import calendar_workspace
+
+    source_reader = calendar_workspace._fetch_sources
+    with monkeypatch.context() as patch:
+        patch.setattr(calendar_workspace, "_fetch_sources", AsyncMock(side_effect=RuntimeError))
+        missing_owner = (await _get_invitations(app)).json()["data"]
+        assert len(missing_owner["entries"]) == 3 and missing_owner["issues_available"] is False
+        assert all(entry["butler_name"] is None for entry in missing_owner["entries"])
+        assert "calendar sources" in missing_owner["sources_degraded"]
+    assert calendar_workspace._fetch_sources is source_reader
+    restored = (await _get_invitations(app)).json()["data"]
+    assert restored["issues_available"] is True
+    assert all(entry["butler_name"] == "general" for entry in restored["entries"])
+    monkeypatch.setattr(
+        "butlers.api.routers.calendar_workspace.query_calendar_conflicts",
+        AsyncMock(return_value=CalendarConflictScan([], False)),
+    )
+    unavailable = (await _get_invitations(app)).json()["data"]
+    assert len(unavailable["entries"]) == 3 and unavailable["issues_available"] is False
+    assert unavailable["conflicts_available"] is False
+    assert "calendar conflict scan" in unavailable["sources_degraded"]

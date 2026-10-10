@@ -107,6 +107,25 @@ None. The calendar module is a leaf module. When the approvals module is co-load
 
 ## Implementation Notes
 
+- `GET /api/calendar/workspace/invitations` reads the current provider projection
+  without provider requests or RSVP writes. Only an explicit `self=true`, exact
+  `needsAction` status and literal `response_status_explicit=true` marker admit an
+  unanswered occurrence. Google parsing retains this projection-only provenance in an ordered
+  `attendee_status_provenance` companion binding email and status; projected
+  attendees remain exactly the unchanged MCP payloads. Unmarked legacy/defaulted
+  status is unknown, omitted and suppresses empty/calm admission until ordinary
+  sync supplies genuine provenance; reads never backfill it.
+- Invitation lookup discovers bounded-window identities, then includes relevant
+  same-origin tombstones and moved copies before deduplication and final window,
+  eligibility and keyset slicing. A stale unanswered copy cannot resurrect a
+  newer accepted, cancelled or out-of-window copy. The window is at
+  most 90 days, limit at most 200, and cursors bind range/timezone. Organizer
+  absence stays unknown; an organizer-attendee fallback is labelled. Radar doors
+  contain only actually observed matching occurrence IDs. Source or conflict
+  failure retains successful rows with unavailable status and named degraded
+  sources. The Calendar strip preserves these states during refresh and has no
+  response action or mutation receipt; invitation response authority is separate.
+
 - `CalendarConfig` requires `provider`; `calendar_id` is optional and resolved at startup.
 - Core `scheduled_tasks` carries calendar-linkage columns (`timezone`, `start_at`, `end_at`,
   `until_at`, `display_title`, `calendar_event_id`) with bounds checks and a partial unique index on

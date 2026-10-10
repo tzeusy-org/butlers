@@ -45,6 +45,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarDuplicatesResponse,
     CalendarIcsImportedEvent,
     CalendarIcsImportResponse,
+    CalendarInvitationEntry,
+    CalendarInvitationsResponse,
     CalendarKeepSeparateRequest,
     CalendarKeepSeparateResponse,
     CalendarLinkedPerson,
@@ -97,6 +99,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     query_calendar_conflicts,
     query_calendar_entry_people,
     query_calendar_event_search,
+    query_calendar_invitations,
     query_calendar_overlays,
     query_calendar_prep,
     query_calendar_proposal_by_id,
@@ -1495,6 +1498,141 @@ async def get_workspace(
 # ---------------------------------------------------------------------------
 # Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
 # ---------------------------------------------------------------------------
+
+
+@router.get("/invitations", response_model=ApiResponse[CalendarInvitationsResponse])
+async def get_workspace_invitations(
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    timezone: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = Query(None, max_length=2048),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CalendarInvitationsResponse]:
+    """Read only explicit unanswered projection truth in the visible window."""
+    if start.tzinfo is None or end.tzinfo is None:
+        raise HTTPException(400, "start and end must include a timezone")
+    if end <= start or end - start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(400, "Range must be ordered and at most 90 days")
+    try:
+        display_tz = ZoneInfo(timezone) if timezone is not None else None
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise HTTPException(400, "Invalid timezone") from exc
+
+    window = {"start": start.isoformat(), "end": end.isoformat(), "timezone": timezone}
+    position = None
+    if cursor is not None:
+        try:
+            raw = base64.b64decode(cursor, altchars=b"-_", validate=True)
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or set(payload) != {"window", "position", "v"}:
+                raise ValueError
+            if type(payload["v"]) is not int or payload["v"] != 1 or payload["window"] != window:
+                raise ValueError
+            if not isinstance(payload["position"], str):
+                raise ValueError
+            position = _decode_workspace_cursor(payload["position"])
+        except (ValueError, TypeError, KeyError, binascii.Error, UnicodeDecodeError) as exc:
+            raise HTTPException(400, "Invalid invitation cursor for this window") from exc
+
+    invitation_read = await query_calendar_invitations(
+        db,
+        start=start,
+        end=end,
+        cursor=position,
+        limit=limit + 1,
+    )
+    degraded = set(invitation_read.failed_butlers)
+    if not invitation_read.status_available:
+        degraded.add("calendar invitation status")
+    try:
+        source_rows, source_failed = await _fetch_sources(db, lane="user")
+        degraded.update(source_failed)
+        owners = {
+            row["source_key"]: row.get("db_butler") or row.get("butler_name")
+            for row in _select_canonical_source_rows(
+                source_rows,
+                core_calendar_butlers=_calendar_core_enabled_butlers(),
+            )
+        }
+    except Exception:
+        owners = {}
+        degraded.add("calendar sources")
+    try:
+        scan = await query_calendar_conflicts(db, start=start, end=end, display_tz=display_tz)
+    except Exception:
+        scan = None
+    conflicts_available = scan is not None and scan.available
+    if not conflicts_available:
+        degraded.add("calendar conflict scan")
+    observed_issues = scan.issues if scan is not None else []
+    entries = []
+    for row in invitation_read.rows[:limit]:
+        if not owners.get(row["source_key"]):
+            degraded.add("calendar source ownership")
+        metadata = _normalize_json_object(row.get("event_metadata"))
+        organizer = metadata.get("organizer")
+        organizer_source = "event"
+        if not isinstance(organizer, str) or not organizer.strip():
+            organizer = None
+            organizer_source = "unknown"
+            for attendee in metadata.get("attendees", []):
+                if not isinstance(attendee, Mapping) or attendee.get("organizer") is not True:
+                    continue
+                label = (
+                    attendee.get("display_name")
+                    or attendee.get("displayName")
+                    or attendee.get("email")
+                )
+                if isinstance(label, str) and label.strip():
+                    organizer, organizer_source = label.strip(), "attendee"
+                    break
+        entry_id = str(row["instance_id"])
+        issues = [
+            ConflictIssue(
+                kind=issue.kind,
+                date=issue.date,
+                summary=issue.summary,
+                severity=issue.severity,
+                events=[ConflictEventRef(**vars(ref)) for ref in issue.events],
+                proposal_ids=list(issue.proposal_ids),
+            )
+            for issue in observed_issues
+            if any(ref.entry_id == entry_id for ref in issue.events)
+        ]
+        entries.append(
+            CalendarInvitationEntry(
+                entry_id=row["instance_id"],
+                title=row.get("title") or "Untitled",
+                start_at=row["instance_starts_at"],
+                end_at=row["instance_ends_at"],
+                timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
+                organizer=organizer.strip() if isinstance(organizer, str) else None,
+                organizer_source=organizer_source,
+                butler_name=owners.get(row["source_key"]),
+                conflict_issues=issues,
+            )
+        )
+    has_more = len(invitation_read.rows) > limit
+    next_cursor = None
+    if has_more:
+        last = invitation_read.rows[limit - 1]
+        payload = {
+            "v": 1,
+            "window": window,
+            "position": _encode_workspace_cursor(last["instance_starts_at"], last["instance_id"]),
+        }
+        next_cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+    return ApiResponse(
+        data=CalendarInvitationsResponse(
+            entries=entries,
+            issues_available=not degraded,
+            conflicts_available=conflicts_available,
+            sources_degraded=sorted(degraded),
+            has_more=has_more,
+            next_cursor=next_cursor,
+        )
+    )
 
 
 @router.get("/conflicts", response_model=ApiResponse[ConflictScanResponse])
