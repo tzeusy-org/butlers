@@ -449,6 +449,15 @@ def _install_serialized_testcontainers_run() -> None:
 
     def _serialized_run(self: object, *args: object, **kwargs: object) -> object:
         with _serialize_testcontainer_startup():
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                from scripts.ci_test_images import IMAGES, prepare
+
+                image = args[0] if args else kwargs.get("image")
+                required = [name for name, pin in IMAGES.items() if image == pin["alias"]]
+                if required:
+                    # Only an actual known container consumer acquires content.
+                    # Ryuk reaches this same boundary under its existing policy.
+                    prepare(required)
             return original_run(self, *args, **kwargs)
 
     _serialized_run.__butlers_serialized_start__ = True
