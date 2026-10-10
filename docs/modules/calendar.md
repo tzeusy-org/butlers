@@ -230,3 +230,11 @@ Only an applied pre-state earns Undo. The existing undo route reserves one
 server-owned inverse, including a retained `needsAction`, and uses the same
 approval tool, exact source and unchanged provider post-version. A lost inverse
 HTTP result does not offer another Undo. Existing CRUD inverses remain intact.
+
+Response review links use the existing approval dossier with the distinct
+`review_source=calendar:<owning-butler>` read selector. The server checks the
+complete configured approvals-source census and the exact command/pending
+private binding before selecting that pool. Missing, duplicate, degraded or
+changed bindings withhold review; the Messenger notification-review selector
+retains its separate admission. Rejected/expired approvals remain terminal on
+registered replay and cannot reappear as a new pending decision.

@@ -275,6 +275,12 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
             )
             == 0
         )
+        review = await client.get(f"/api/approvals/{command_id}?review_source=calendar:messenger")
+        assert review.status_code == 200 and review.json()["data"]["id"] == str(command_id)
+        wrong_review = await client.get(
+            f"/api/approvals/{command_id}?review_source=calendar:relationship"
+        )
+        assert wrong_review.status_code in {409, 503}
         replay = await client.post("/api/calendar/workspace/respond", json=request)
         assert replay.json()["data"]["status"] == "applied" and len(writes) == 1
         noop = await client.post(

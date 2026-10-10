@@ -22,6 +22,7 @@ export function CalendarResponsePanel({ entries, unavailable, onObserved }: {
 }) {
   const requests = useRef(new Map<string, CalendarResponseRequest>());
   const busy = useRef(new Set<string>());
+  const requestOwners = useRef(new Map<string, string>());
   const [pending, setPending] = useState(new Set<string>());
   const [receipts, setReceipts] = useState(new Map<string, Receipt>());
   const [errors, setErrors] = useState(new Map<string, string>());
@@ -50,6 +51,7 @@ export function CalendarResponsePanel({ entries, unavailable, onObserved }: {
       request = { entry_id: entry.entry_id, response_status: choice,
         request_id: crypto.randomUUID(), send_updates: "none" };
       requests.current.set(entry.entry_id, request);
+      requestOwners.current.set(entry.entry_id, entry.butler_name ?? "");
     }
     if (request.response_status !== choice) {
       setErrors((previous) => new Map(previous).set(entry.entry_id,
@@ -140,7 +142,7 @@ export function CalendarResponsePanel({ entries, unavailable, onObserved }: {
       <p role="status">{receipt.status === "applied" ? (receipt.inverse ? "Previous response restored." : "Response applied.") : receipt.status === "noop" ? "Response already matches; no change made."
         : receipt.status === "uncertain" ? "Response outcome uncertain; no second write will be attempted."
         : receipt.status === "failed" ? "Response rejected or unavailable; no applied receipt."
-        : receipt.status === "rejected" ? "Response approval rejected." : "Response awaiting approved execution."}
+        : receipt.status === "rejected" ? (receipt.reason === "response_approval_expired" ? "Response approval expired." : "Response approval rejected.") : "Response awaiting approved execution."}
         {receipt.status === "applied" && !receipt.projection_available ? " Calendar projection unavailable; the provider receipt is retained." : ""}</p>
       <button type="button" className={buttonClass}
         ref={(element) => { if (element) receiptButtons.current.set(entryId, element); else receiptButtons.current.delete(entryId); }}
@@ -156,6 +158,13 @@ export function CalendarResponsePanel({ entries, unavailable, onObserved }: {
       {review === entryId ? <div role="region" aria-label="Response receipt" className="rounded border border-border p-3">
         <p>Owning source: {receipt.source_butler}. Status: {receipt.status}.</p>
         <p>Command: {receipt.command_id}. Approval: {receipt.approval_id}.</p>
+        {receipt.approval_id === receipt.command_id && typeof receipt.approval_id === "string"
+          && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receipt.approval_id)
+          && requestOwners.current.get(entryId) === receipt.source_butler
+          && ["messenger", "relationship"].includes(receipt.source_butler)
+          ? <a className={buttonClass}
+            href={`/approvals/${encodeURIComponent(receipt.approval_id)}?review_source=${encodeURIComponent(`calendar:${receipt.source_butler}`)}`}>
+            Open approval dossier</a> : <p>Approval review unavailable; source or action identity is unverified.</p>}
         <button type="button" className={buttonClass} ref={closeReceipt} onClick={() => {
           setReview(null); receiptButtons.current.get(entryId)?.focus();
         }}>Close receipt</button>

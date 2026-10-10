@@ -57,6 +57,8 @@ it("binds contextual keyboard and real palette to one key, honest receipt and si
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Review response receipt" }));
   await user.click(screen.getByRole("button", { name: "Review response receipt" }));
   expect(screen.getByRole("region", { name: "Response receipt" }).textContent).toContain("messenger");
+  expect(screen.getByRole("link", { name: "Open approval dossier" }).getAttribute("href"))
+    .toBe(`/approvals/${receipt.approval_id}?review_source=calendar%3Amessenger`);
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close receipt" }));
   await user.click(screen.getByRole("button", { name: "Close receipt" }));
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Review response receipt" }));
@@ -102,4 +104,19 @@ it("refuses disabled capability and preserves an unknown request before exact-ke
   expect(vi.mocked(respondToCalendarInvitation).mock.calls.at(-1)?.[0]).toEqual(pendingRequest);
   expect(screen.getByRole("status").textContent).toContain("awaiting approved execution");
   expect(screen.queryByRole("button", { name: "Undo response" })).toBeNull();
+  for (const invalid of [
+    { ...receipt, approval_id: null },
+    { ...receipt, approval_id: "malformed" },
+    { ...receipt, approval_id: "6fa76e12-1e6d-499a-8767-69c393d8159d" },
+    { ...receipt, source_butler: "relationship" },
+  ]) {
+    cleanup();
+    vi.mocked(respondToCalendarInvitation).mockResolvedValue({ data: invalid, meta: {} });
+    render(<View />);
+    await userEvent.click(screen.getByRole("button", { name: "Accept invitation Actual invitation" }));
+    await userEvent.click(screen.getByRole("button", { name: "Review response receipt" }));
+    expect(screen.queryByRole("link", { name: "Open approval dossier" })).toBeNull();
+    expect(screen.getByText(/Approval review unavailable/)).toBeTruthy();
+  }
 });
+

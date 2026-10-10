@@ -288,6 +288,17 @@ async def test_registered_response_gate_parks_before_owner_rules_and_excludes_pr
     ] == "response_public_arguments_invalid"
     assert "error" in await wrapped(**arguments)
     assert private.prepare_and_park.await_count == 2
+    import uuid
+
+    events = AsyncMock()
+    monkeypatch.setattr("butlers.fleet_events.publish_fleet_event", events)
+    for terminal in ("rejected", "expired", "approved"):
+        private.prepare_and_park.return_value = {
+            "status": "approved" if terminal == "approved" else "rejected",
+            "command_id": str(uuid.uuid4()),
+        }
+        assert (await wrapped(**arguments, **dossier))["status"] != "pending_approval"
+    events.assert_not_awaited()
     resolve.assert_not_awaited()
     rules.assert_not_awaited()
     # The captured real pre-gate handler still requires the owning executor
@@ -510,6 +521,24 @@ async def test_response_command_admission_execution_fence_replay_and_projection(
     assert "error" in await prepare({**request, "response_status": "declined"})
     assert "error" in await prepare({**request, "_command_id": "caller"})
     command_id = uuid.UUID(admitted["command_id"])
+    for terminal in ("rejected", "expired", "approved"):
+        pool.pending[command_id]["status"] = terminal
+        expected = "approved" if terminal == "approved" else "rejected"
+        assert (await prepare(request))["status"] == expected
+        # Force the actual concurrent locked-row path, after the first read
+        # misses an already-admitted command/decision.
+        with monkeypatch.context() as race:
+            real_read = pool.fetchrow
+
+            async def missing_prelock(sql, *values):
+                if "idempotency_key" in sql:
+                    return None
+                return await real_read(sql, *values)
+
+            race.setattr(pool, "fetchrow", AsyncMock(side_effect=missing_prelock))
+            assert (await prepare(request))["status"] == expected
+    pool.pending[command_id]["status"] = "pending"
+    provider.respond_to_invitation.assert_not_awaited()
     args = pool.pending[command_id]["tool_args"]
     assert (await coordinator.execute(args))["error"] == "response_approval_required"
 

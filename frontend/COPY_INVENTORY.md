@@ -2264,6 +2264,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Check response outcome
 - Review response receipt
 - Undo response
+- Open approval dossier
+- Approval review unavailable; source or action identity is unverified.
 - Close receipt
 - Invitation responses
 - Respond to {}
@@ -4891,4 +4893,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3896*
+*Total strings: 3898*

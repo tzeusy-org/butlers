@@ -2465,6 +2465,68 @@ async def parse_quick_add_event(
     )
 
 
+async def _calendar_response_review_pool(db: DatabaseManager, action_id: UUID, owner: str):
+    """Authenticate read selection by complete own-source and command binding.
+
+    This read selector is not decision or execution authority. Messenger's
+    separate notification-review discriminator keeps its existing admission.
+    """
+    from butlers.modules.calendar_response import _digest
+
+    names = db.configured_butlers_with_module("approvals")
+    if (
+        not isinstance(names, list)
+        or not names
+        or len(names) > 64
+        or any(not isinstance(name, str) or not name for name in names)
+        or len(set(names)) != len(names)
+        or owner not in names
+    ):
+        raise HTTPException(status_code=503, detail="response_review_census_unavailable")
+    rows, failed = await db.fan_out_with_status(
+        "SELECT id FROM pending_actions WHERE id=$1", (action_id,), butler_names=names
+    )
+    if any(
+        len(values) > 1 or any(row.get("id") != action_id for row in values)
+        for values in rows.values()
+    ):
+        raise HTTPException(status_code=409, detail="response_review_owner_unverified")
+    matches = [name for name, values in rows.items() if values]
+    if failed:
+        raise HTTPException(status_code=503, detail="response_review_lookup_degraded")
+    if set(rows) != set(names) or len(matches) != 1 or matches[0] != owner:
+        raise HTTPException(status_code=409, detail="response_review_owner_unverified")
+    pool = db.pool(owner)
+    try:
+        command_row = await pool.fetchrow(
+            "SELECT action_type,action_payload FROM calendar_action_log WHERE id=$1", action_id
+        )
+        pending = await pool.fetchrow(
+            "SELECT tool_name,tool_args FROM pending_actions WHERE id=$1", action_id
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="response_review_unavailable") from None
+    payload = _normalize_json_object(command_row["action_payload"]) if command_row else {}
+    command = _normalize_json_object(payload.get("command"))
+    args = _normalize_json_object(pending["tool_args"]) if pending else {}
+    expected = {
+        **_normalize_json_object(command.get("arguments")),
+        "_command_id": str(action_id),
+        "_command_digest": payload.get("digest"),
+    }
+    if (
+        not command_row
+        or command_row["action_type"] != "workspace_user_respond"
+        or command.get("owner") != owner
+        or _digest(command) != payload.get("digest")
+        or not pending
+        or pending["tool_name"] != "calendar_respond"
+        or args != expected
+    ):
+        raise HTTPException(status_code=409, detail="response_review_binding_unverified")
+    return pool
+
+
 async def _respond_through_approval(
     *,
     arguments: dict[str, Any],
@@ -2511,7 +2573,7 @@ async def _respond_through_approval(
     command = _normalize_json_object(payload.get("command"))
     if command.get("owner") != butler_name:
         raise HTTPException(status_code=409, detail="response_command_owner_changed")
-    if result["status"] == "pending_approval":
+    if result["status"] in {"pending_approval", "approved"}:
         pending = await pool.fetchrow(
             "SELECT tool_name,tool_args,status FROM pending_actions WHERE id=$1", command_id
         )
@@ -2560,7 +2622,8 @@ async def _respond_through_approval(
         "SELECT action_payload,action_result FROM calendar_action_log WHERE id=$1", command_id
     )
     receipt = _normalize_json_object(current["action_result"]) if current else {}
-    phase = _normalize_json_object(current["action_payload"]).get("phase") if current else None
+    current_payload = _normalize_json_object(current["action_payload"]) if current else {}
+    phase = current_payload.get("phase")
     status = receipt.get("status") or (
         "uncertain" if phase in {"egress_started", "uncertain"} else result["status"]
     )
@@ -2569,13 +2632,13 @@ async def _respond_through_approval(
         command_id=command_id,
         approval_id=command_id,
         source_butler=butler_name,
-        reason=receipt.get("reason"),
+        reason=receipt.get("reason") or result.get("reason"),
         projection_available=receipt.get("projection_available") is True,
         undo_available=status == "applied"
         and isinstance(receipt.get("before"), dict)
         and not receipt.get("undo")
-        and not payload.get("inverse_claim")
-        and not command.get("inverse_of"),
+        and not current_payload.get("inverse_claim")
+        and not _normalize_json_object(current_payload.get("command")).get("inverse_of"),
     )
 
 

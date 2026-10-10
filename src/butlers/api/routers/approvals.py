@@ -2961,7 +2961,17 @@ async def get_approval_detail(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    if review_source is not None:
+    if review_source is not None and review_source.startswith("calendar:"):
+        from butlers.api.routers.calendar_workspace import _calendar_response_review_pool
+
+        owner = review_source.removeprefix("calendar:")
+        if owner not in {"messenger", "relationship"}:
+            raise HTTPException(
+                status_code=400, detail="Unsupported Calendar approval review source"
+            )
+        pool = await _calendar_response_review_pool(db_mgr, parsed_id, owner)
+        named_pools = [(owner, pool)]
+    elif review_source is not None:
         if review_source != "messenger":
             raise HTTPException(status_code=400, detail="Unsupported approval review source")
         admitted = await resolve_messenger_reviews(db_mgr, {parsed_id})

@@ -297,6 +297,19 @@ class CalendarResponseCoordinator:
             "command_id": str(command_id),
         }
 
+    def _approval_replay(self, command_id: uuid.UUID, status: str) -> dict[str, Any]:
+        if status in {"rejected", "expired"}:
+            return {
+                "status": "rejected",
+                "command_id": str(command_id),
+                "reason": "response_approval_" + status,
+            }
+        if status == "approved":
+            return {"status": "approved", "command_id": str(command_id)}
+        if status != "pending":
+            raise CalendarResponseError("response_approval_state_unavailable")
+        return self._pending(command_id)
+
     async def _existing(self, request: dict[str, str]) -> dict[str, Any] | None:
         row = await self.pool.fetchrow(
             "SELECT * FROM calendar_action_log WHERE idempotency_key = $1",
@@ -319,7 +332,7 @@ class CalendarResponseCoordinator:
         )
         if pending is None:
             raise CalendarResponseError("response_approval_unavailable")
-        return self._pending(row["id"])
+        return self._approval_replay(row["id"], pending["status"])
 
     async def prepare_and_park(
         self,
@@ -346,9 +359,12 @@ class CalendarResponseCoordinator:
             arguments = dict(request)
             if inverse is not None:
                 reservation = _object(inverse["action_payload"])
-                if reservation.get("phase") != "reserved" or reservation.get(
-                    "request_digest"
-                ) != _digest(request):
+                if reservation.get("phase") != "reserved":
+                    existing = await self._existing(request)
+                    if existing is not None:
+                        return existing
+                    raise CalendarResponseError("response_request_conflict")
+                if reservation.get("request_digest") != _digest(request):
                     raise CalendarResponseError("response_request_conflict")
                 inverse_of = reservation.get("inverse_of")
                 original = await self.pool.fetchrow(_COMMAND_SQL, uuid.UUID(inverse_of))
@@ -433,6 +449,13 @@ class CalendarResponseCoordinator:
                 pending = await connection.fetchrow(
                     "SELECT status FROM pending_actions WHERE id=$1", command_id
                 )
+                if pending is not None:
+                    receipt = _object(stored["action_result"])
+                    if receipt:
+                        return receipt
+                    if old.get("phase") in {"egress_started", "uncertain"}:
+                        return {"status": "uncertain", "command_id": str(command_id)}
+                    return self._approval_replay(command_id, pending["status"])
                 if pending is None:
                     await park_pending_action(
                         connection,
