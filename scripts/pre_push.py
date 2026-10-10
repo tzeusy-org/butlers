@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 HOOKS = ("pre-commit", "prepare-commit-msg", "post-checkout", "post-merge", "pre-push")
@@ -114,12 +115,22 @@ def config_origins(root: Path) -> bytes:
     return result.stdout
 
 
+@contextmanager
+def installation_lock(common: Path):
+    # Lock the existing directory inode; rollback leaves no new lock carrier.
+    fd = os.open(common, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def install(root: Path, *, uninstall: bool = False) -> None:
     common = common_dir(root)
     config = common / "config"
     state_path = common / STATE
-    with (common / "butlers-pre-push.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with installation_lock(common):
         origins = config_origins(root)
         if state_path.exists():
             try:

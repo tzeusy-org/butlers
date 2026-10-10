@@ -127,6 +127,8 @@ def test_installer_refuses_unknown_config_and_restores_absent_state(tmp_path, mo
     assert (root / ".git/config").read_bytes() == installed
     driver.install(root, uninstall=True)
     assert (root / ".git/config").read_bytes() == before
+    assert not (root / ".git/butlers-pre-push.json").exists()
+    assert not (root / ".git/butlers-pre-push.lock").exists()
     subprocess.run(
         ["git", "-C", str(root), "config", "extensions.worktreeConfig", "true"], check=True
     )
