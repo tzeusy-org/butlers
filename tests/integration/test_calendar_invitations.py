@@ -16,8 +16,15 @@ from butlers.api.db import DatabaseManager
 from butlers.api.read_models.calendar_workspace_v1 import query_calendar_invitations
 from butlers.api.routers.calendar_workspace import _get_db_manager
 from butlers.modules.calendar import CalendarModule, _google_event_to_calendar_event
+from tests.api.auth_helpers import create_authenticated_domain_app
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
+
+
+@pytest.fixture
+def app():
+    """Use the real authenticated domain app within this integration ancestry."""
+    return create_authenticated_domain_app()
 
 
 async def test_migrated_invitation_projection_query_and_get(migrated_core_postgres_pool, app):
