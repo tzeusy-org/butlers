@@ -7,9 +7,9 @@
 
 ## 2. Delivery and separately released implementation preparation
 
-- [ ] 2.1 Obtain genuine exact-head independent paired-contract review, relevant resulting-head gates, terminal protected merge queue and confirmed squash before declaring the contract delivered or releasing implementation.
-- [ ] 2.2 After separate implementation release, wire the actual committed park, typed routed refusal, dedicated writer column, verified read projection and feed door; retain every old business assertion and status/action boundary.
-- [ ] 2.3 Prove real migrated PostgreSQL same-action commit/readback, rollback/failed park, cross-source duplicate/unavailable refusal, existing tool/API/mounted compatibility and genuine independent completion-scope preparation without false SQL or no-op credit.
+- [x] 2.1 Obtain genuine exact-head independent paired-contract review, relevant resulting-head gates, terminal protected merge queue and confirmed squash before declaring the contract delivered or releasing implementation.
+- [x] 2.2 After separate implementation release, wire the actual committed park, typed routed refusal, dedicated writer column, verified read projection and feed door; retain every old business assertion and status/action boundary.
+- [x] 2.3 Prove real migrated PostgreSQL same-action commit/readback, rollback/failed park, cross-source duplicate/unavailable refusal, existing tool/API/mounted compatibility and genuine independent completion-scope preparation without false SQL or no-op credit.
 
 ## Mandatory administrative tail
 
