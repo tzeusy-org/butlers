@@ -166,6 +166,26 @@ Frontend tests run locally in a worktree: `scripts/setup_worktree.sh` falls back
 (including `vitest run -u` snapshot regeneration) runs for real. Playwright (`frontend-e2e`) needs a
 separate `playwright install --with-deps chromium`.
 
+### Composed local pre-push refusal
+
+`make install-hooks` opts the repository into the composed `.githooks` path.
+It preserves the five tracked managed Beads assets, refuses existing custom,
+global or worktree-specific configurations, and records the exact prior local
+config. `make uninstall-hooks` restores that exact config, refusing intervening
+config drift. Installation affects the common Git directory and therefore all
+worktrees; ROOT serializes actual fleet installation after review. SOURCE tests
+exercise disposable repositories only. No automatic installation occurs.
+
+The pre-push driver requires a clean committed source and fresh actual inventory
+when collection inputs change. It calls existing read-only predicates, preserves
+complete Git ref-update stdin and managed Beads status, confines guard/collection
+and pre-push delegate socket operations, and kills only its owned child groups.
+Unsupported tools, sources or hosts refuse. It never regenerates COPY or runs test
+bodies. See [composed pre-push](docs/operations/composed-pre-push.md) for precise
+survivors, supported source forms, installation and rollback. CI remains an
+independent authority; Git's own `--no-verify` facility is a limitation, not agent
+guidance. The required twenty-natural-push p95 below 30 seconds remains unearned.
+
 ### Cheap standing pre-push checks
 
 ```bash

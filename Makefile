@@ -278,3 +278,15 @@ bump-version:
 # This triggers the release workflow in CI.
 release-tag:
 	@python scripts/release_tag.py
+
+# Opt-in local refusal; CI independently enforces every survivor. These targets
+# never regenerate COPY, run test bodies, install deps, or configure on import.
+.PHONY: check-prepush install-hooks uninstall-hooks
+check-prepush:
+	.venv/bin/python scripts/pre_push.py check --base origin/main
+
+install-hooks:
+	.venv/bin/python scripts/pre_push.py install
+
+uninstall-hooks:
+	.venv/bin/python scripts/pre_push.py uninstall

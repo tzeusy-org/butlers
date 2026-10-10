@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Forward the owning checkout's unchanged managed asset and exact Git argv.
+root=$(git rev-parse --show-toplevel) || exit 1
+command -v bd >/dev/null 2>&1 || { echo 'hook refused: bd unavailable' >&2; exit 1; }
+[ -x "$root/.beads/hooks/pre-commit" ] || exit 1
+exec "$root/.beads/hooks/pre-commit" "$@"
