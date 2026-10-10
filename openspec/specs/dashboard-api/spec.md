@@ -1579,6 +1579,11 @@ pre-mutation state in `action_result`) and dispatch it through the **existing**
 calendar MCP tools with a **fresh `request_id`**; it SHALL NOT introduce a new
 MCP tool and SHALL NOT reverse an action that was never applied, was already
 undone, or whose pre-state is unavailable.
+For an applied workspace_user_respond action, this same endpoint SHALL use the same registered calendar_respond operation with a server-owned inverse reference and fresh request_id, not a second undo MCP tool. It MUST bind the exact owning source/account/occurrence/self, retained prior status and unchanged post-status/ETag, use the same verified approval and executor path, and admit at most one inverse write. A started uncertain inverse MUST retain its non-reacceptance fence; existing create/update/delete inverse behavior and all prior scenarios remain unchanged.
+
+ID: REQ-dashboard-api-070
+Source: Existing Calendar Mutation Undo Endpoint; bu-q7vx1q.18 AC4 and design.md approved response-only inverse composition.
+Scope: v1-mandatory
 
 #### Scenario: Undo an update reverse-applies the captured pre-state
 
@@ -1653,6 +1658,25 @@ undone, or whose pre-state is unavailable.
   whose inverse mutation has already been dispatched and recorded
 - **THEN** the endpoint fails fast (HTTP 409) reporting the action was already
   undone, rather than dispatching a second inverse
+
+#### Scenario: Response undo uses the same approved self-only operation
+
+- **WHEN** an applied workspace_user_respond receipt retains its prior self status and exact unchanged post-version
+- **THEN** the existing undo endpoint dispatches one newly approved calendar_respond inverse restoring only the recorded self status
+- **AND** server-recorded needsAction is allowed only as the inverse
+- **AND** no new undo tool or attendee/event-field replacement is introduced
+
+#### Scenario: Response undo refuses stale or unearned inverses
+
+- **WHEN** the original is failed/unknown/noop, prior state is absent, ownership is ambiguous or provider version/status/source changed
+- **THEN** the endpoint dispatches no inverse and reports the honest refusal
+- **AND** no guessed retention window or read-only provider match creates an applied original
+
+#### Scenario: Concurrent response inverse retains its start fence
+
+- **WHEN** concurrent undo or replay encounters an already claimed or uncertain started inverse
+- **THEN** only its one bound approved command can own the inverse attempt
+- **AND** no repeated egress or generic exception-based claim release occurs after start
 
 ### Requirement: Calendar Workspace Single-Entry Lookup
 
@@ -2484,3 +2508,52 @@ Scope: v1-mandatory
 - **WHEN** a prepared action is repeatedly read or a selected dossier is changed to another action
 - **THEN** origin remains bound to the actual action ID and owning source returned by that read
 - **AND** the read creates no approval, push, execution, origin backfill or other persistent mutation.
+
+### Requirement: Approved Calendar Invitation Response Surface
+
+The dashboard API SHALL expose authenticated occurrence-only POST /api/calendar/workspace/respond and mounted Accept/Decline/Tentative controls using one typed mutation handler. A verified click MUST compose the exact canonical pending command with the existing approval decision and owning shared executor, never raw provider dispatch or a caller bypass. Pending, rejected, uncertain, noop, applied and projection-unavailable outcomes MUST remain distinct, and an undo door MUST be earned only by a guarded applied receipt.
+
+ID: REQ-dashboard-api-069
+Source: bu-q7vx1q.18 original AC2,5,6; dashboard owner auth; module-calendar Approval-Bound Self Invitation Response; design.md
+Scope: v1-mandatory
+
+#### Scenario: Verified owner click decides and dispatches the exact parked command
+
+- **WHEN** an authenticated owner submits a valid response for an eligible workspace occurrence
+- **THEN** POST /api/calendar/workspace/respond parks the canonical owning command and uses the existing verified decision and shared executor for that exact pending id/digest
+- **AND** no standing rule or caller bypass is created
+- **AND** no effect precedes approved execution
+
+#### Scenario: Invalid admission is not a fabricated absence or authority
+
+- **WHEN** lookup is degraded/ambiguous, source identity changed, or caller injects actor, account, recipient, ETag or approval id
+- **THEN** the API refuses effect with a safe truthful admission error
+- **AND** missing capability is distinct from an empty invitation list
+- **AND** it performs no backfill, OAuth scope expansion or provider mutation
+
+#### Scenario: Response controls share one typed handler
+
+- **WHEN** the owner activates Accept, Decline or Tentative by keyboard, palette or contextual control
+- **THEN** one handler submits one response command and acknowledges pending state
+- **AND** double click reuses the request key
+- **AND** focus and accessible control names are preserved
+
+#### Scenario: Pending or uncertain response remains truthful
+
+- **WHEN** approval is pending/rejected or the provider effect is uncertain
+- **THEN** the mounted workspace keeps honest invitation/decision state and offers the matching review/error door
+- **AND** it adds no optimistic accepted badge, success receipt or enabled undo
+- **AND** degraded projection remains visible
+
+#### Scenario: Applied receipt is distinct from current projection
+
+- **WHEN** the own provider result verifies response while projection is unavailable or stale
+- **THEN** the API and mounted workspace show the applied receipt and projection availability separately
+- **AND** a replacement source/entry cannot receive the stale response
+- **AND** undo is offered only with valid guarded applied pre-state
+
+#### Scenario: Existing permission and radar behavior survives
+
+- **WHEN** response verbs and receipts are added to the calendar workspace
+- **THEN** existing invitation explicit-status admission, radar, entry details, CRUD permissions and loading/partial/clean-empty contracts remain intact
+- **AND** the new operation does not infer consent from missing response/push data or alter provider/tool defaults
