@@ -205,7 +205,7 @@ def validate_updates(raw: bytes, head: str) -> bytes:
         if set(oid) == {"0"}:
             if local != "(delete)":
                 raise Refusal("unsupported-ref")
-        elif not local.startswith("refs/heads/") or oid != head:
+        elif (local != "HEAD" and not local.startswith("refs/heads/")) or oid != head:
             raise Refusal("unchecked-ref-tree")
     return raw
 
@@ -215,10 +215,12 @@ def collection_required(paths: list[str]) -> bool:
     return any(not name.startswith(("docs/", "about/", "openspec/", "frontend/")) for name in paths)
 
 
-def guard_plan(paths: list[str]) -> list[tuple[str, list[str]]]:
+def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str, list[str]]]:
     python = sys.executable
     plan = [("lock", ["uv", "lock", "--check", "--offline"])]
-    py = [name for name in paths if name.endswith(".py")]
+    py = [
+        name for name in paths if name.endswith(".py") and (root is None or (root / name).is_file())
+    ]
     if py:
         plan += [
             ("ruff-check", [python, "-m", "ruff", "check", "--no-cache", *py]),
@@ -321,11 +323,11 @@ def check(root: Path, base: str) -> None:
         for name in git(root, "diff", "--name-only", "-z", base_oid, head).decode().split("\0")
         if name
     ]
-    py_paths = [name for name in paths if not name.endswith(".py") or (root / name).is_file()]
     before = tree_bodies(root)
     try:
-        for name, command in guard_plan(py_paths):
+        for name, command in guard_plan(paths, root=root):
             run_checked(name, command, root, confined=True)
+            print(f"pre-push checked: {name}", flush=True)
         run_checked(
             "session-links",
             [
@@ -372,7 +374,11 @@ def main() -> int:
     parser.add_argument("mode", choices=("install", "uninstall", "check", "hook"))
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("hook_args", nargs="*")
-    args = parser.parse_args()
+    args = (
+        parser.parse_args()
+        if sys.argv[1:2] != ["hook"]
+        else argparse.Namespace(mode="hook", base="origin/main", hook_args=sys.argv[2:])
+    )
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
 
     def interrupted(signum, frame):

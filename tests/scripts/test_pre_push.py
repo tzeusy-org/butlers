@@ -33,6 +33,8 @@ def test_ref_updates_require_actual_head_and_preserve_multi_ref_bytes():
         f"(delete) {'0' * 40} refs/heads/old {'b' * 40}\n"
     ).encode()
     assert driver.validate_updates(raw, head) == raw
+    alias = raw.replace(b"refs/heads/a", b"HEAD", 1)
+    assert driver.validate_updates(alias, head) == alias
     for invalid in (
         b"",
         raw.replace(head.encode(), b"c" * 40, 1),
@@ -71,6 +73,10 @@ def test_readonly_plan_executes_real_predicates_and_never_mutating_aggregate():
     assert command[-1] == "scripts/check_ci_test_shards.py"
     assert "fresh-inventory-partition-budget" not in dict(driver.guard_plan(["docs/x.md"]))
     assert "fresh-inventory-partition-budget" in dict(driver.guard_plan(["unknown.asset"]))
+    # Deletion still changes collection even though Ruff cannot read the path.
+    assert "fresh-inventory-partition-budget" in dict(
+        driver.guard_plan(["tests/deleted.py"], root=ROOT)
+    )
 
 
 def test_owned_process_failure_timeout_and_signal_cleanup(tmp_path):
@@ -80,6 +86,19 @@ def test_owned_process_failure_timeout_and_signal_cleanup(tmp_path):
     with pytest.raises(driver.Refusal):
         driver.run_checked("positioned-timeout", ["sh", "-c", "sleep 10"], tmp_path, timeout=0.1)
     assert driver.run_checked("restored", ["sh", "-c", "exit 0"], tmp_path) == 0
+    pid_file = tmp_path / "owned-pid"
+    driver.run_checked(
+        "owned-success",
+        ["sh", "-c", "sleep 30 </dev/null >/dev/null 2>&1 & echo $! > owned-pid"],
+        tmp_path,
+    )
+    pid = int(pid_file.read_text())
+    # Single atomic read tolerates reaping; a zombie cannot perform work.
+    try:
+        status = Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1].split()[0]
+    except FileNotFoundError:
+        status = "absent"
+    assert status in ("Z", "absent")
 
 
 def test_installer_refuses_unknown_config_and_restores_absent_state(tmp_path, monkeypatch):

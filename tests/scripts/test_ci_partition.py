@@ -87,7 +87,7 @@ def _weights(data: dict) -> dict:
 def test_partition_preserves_fresh_membership_with_unknown_weights(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """REQ-ci-shard-assurance-001/002/008: actual collector, not a glob/weights mirror."""
+    """REQ-ci-shard-assurance-001/002/008 and REQ-testing-052: actual collector, not a glob/weights mirror."""
     _corpus(tmp_path, monkeypatch)
     first = partition.collect_inventory(root=tmp_path)
     # Real hosted mismatch remains a refusal; fixture isolation does not weaken
