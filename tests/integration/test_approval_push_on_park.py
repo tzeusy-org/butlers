@@ -470,11 +470,22 @@ async def test_gate_park_atomically_admits_one_recoverable_presentation_without_
     async def connect_owner(name):
         async def initialize(conn):
             await register_jsonb_codec(conn)
+
+        async def setup(conn):
+            # Pool release resets session settings; re-establish the owning
+            # runtime boundary before every acquisition, including readback.
             await conn.execute(f'SET ROLE "butler_{name}_rw"')
             await conn.execute(f'SET search_path TO "{name}", public')
+            identity = await conn.fetchrow(
+                "SELECT current_user AS runtime_role, current_schema() AS owning_schema, "
+                "current_schemas(false) AS owning_path"
+            )
+            assert identity["runtime_role"] == f"butler_{name}_rw"
+            assert identity["owning_schema"] == name
+            assert identity["owning_path"] == [name, "public"]
 
         return await asyncpg.create_pool(
-            review_door_db_url, min_size=1, max_size=3, init=initialize
+            review_door_db_url, min_size=1, max_size=3, init=initialize, setup=setup
         )
 
     try:
