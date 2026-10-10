@@ -84,11 +84,11 @@ def asset_binding(root: Path) -> dict:
     bd = shutil.which("bd")
     if not bd:
         raise Refusal("bd-unavailable")
-    version = subprocess.run([bd, "--version"], capture_output=True)
-    if version.returncode or not version.stdout.startswith(b"bd version 1.3.1 (c1c4b642a)"):
-        raise Refusal("unsupported-bd-delegate")
     if hashlib.sha256(Path(bd).read_bytes()).hexdigest() != BD_SHA256:
         raise Refusal("unsupported-bd-binary")
+    version = subprocess.run([bd, "--version"], capture_output=True, timeout=5)
+    if version.returncode or not version.stdout.startswith(b"bd version 1.3.1 (c1c4b642a)"):
+        raise Refusal("unsupported-bd-delegate")
     result["bd"] = {
         "path": str(Path(bd).resolve()),
         "sha256": hashlib.sha256(Path(bd).read_bytes()).hexdigest(),
@@ -200,6 +200,7 @@ def install(root: Path, *, uninstall: bool = False) -> None:
             }
             temporary = state_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
+            temporary.chmod(mode)
             temporary.replace(state_path)
         except BaseException:
             config.write_bytes(before)

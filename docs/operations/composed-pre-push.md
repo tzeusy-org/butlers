@@ -16,7 +16,9 @@ composed pre-push driver runs guards first, then passes original complete stdin
 once to the actual managed pre-push asset. Other lifecycle entries preserve
 exact argv, status, cwd and `BD_IMPORT_AUTO=false` in the existing post-checkout
 and post-merge assets. Current bd 1.3.1 c1c4b642a is the supported inspected delegate;
-unknown versions refuse until independently rebound. Historical 1.0.4 behavior
+unknown versions refuse until independently rebound. Current bd intentionally chains
+post-merge with no arguments; the forwarder preserves the original managed-asset
+argv and that installed behavior. Historical 1.0.4 behavior
 is not current authority. The installed binary/body binding detects later drift.
 
 Supported pushes contain head refs at the exact checked HEAD, optionally alongside
