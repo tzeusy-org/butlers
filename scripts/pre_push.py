@@ -24,6 +24,7 @@ from pathlib import Path
 
 HOOKS = ("pre-commit", "prepare-commit-msg", "post-checkout", "post-merge", "pre-push")
 STATE = "butlers-pre-push.json"
+DISPATCHER = "butlers-pre-push-hooks"
 CHECK_TIMEOUT = 300
 OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 # Existing tracked assets are not regenerated or replaced by this installer.
@@ -141,32 +142,85 @@ def installation_lock(common: Path):
         os.close(fd)
 
 
+@contextmanager
+def recovery_signals():
+    # An inverse cannot be interrupted by a second catchable termination.
+    prior = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, prior)
+
+
+def dispatcher_bodies(directory: Path) -> dict:
+    if directory.is_symlink() or not directory.is_dir():
+        raise Refusal("installed-dispatcher-unavailable")
+    if {p.name for p in directory.iterdir()} != set(HOOKS):
+        raise Refusal("installed-dispatcher-drift")
+    result = {}
+    for name in HOOKS:
+        path = directory / name
+        body_digest(path)
+        result[name] = {"body_hex": path.read_bytes().hex(), "mode": path.stat().st_mode & 0o777}
+    return result
+
+
+def write_dispatcher(directory: Path, bodies: dict) -> None:
+    directory.mkdir(exist_ok=True)
+    for name, body in bodies.items():
+        path = directory / name
+        path.write_bytes(bytes.fromhex(body["body_hex"]))
+        path.chmod(body["mode"])
+
+
+def remove_dispatcher(directory: Path) -> None:
+    for name in HOOKS:
+        (directory / name).unlink(missing_ok=True)
+    directory.rmdir()
+
+
 def install(root: Path, *, uninstall: bool = False) -> None:
     common = common_dir(root)
     config = common / "config"
     state_path = common / STATE
+    dispatcher = common / DISPATCHER
     with installation_lock(common):
         origins = config_origins(root)
         if state_path.exists():
+            state_body = state_path.read_bytes()
+            state_mode = state_path.stat().st_mode & 0o777
             try:
-                state = json.loads(state_path.read_text())
+                state = json.loads(state_body)
                 installed = bytes.fromhex(state["installed_config_hex"])
                 prior = bytes.fromhex(state["prior_config_hex"])
                 if (
                     config.read_bytes() != installed
-                    or state["schema"] != 1
+                    or state["schema"] != 2
                     or origins.decode() != state["installed_origins"]
+                    or dispatcher_bodies(dispatcher) != state["dispatcher"]
                 ):
                     raise Refusal("installation-state-drift")
             except (KeyError, ValueError, TypeError):
                 raise Refusal("installation-state-malformed") from None
             if uninstall:
-                # Refuse concurrent edits rather than overwriting new config.
                 temporary = common / (STATE + ".restore")
-                temporary.write_bytes(prior)
-                temporary.chmod(state["prior_config_mode"])
-                temporary.replace(config)
-                state_path.unlink()
+                if temporary.exists():
+                    raise Refusal("installation-temporary-state-present")
+                try:
+                    temporary.write_bytes(prior)
+                    temporary.chmod(state["prior_config_mode"])
+                    temporary.replace(config)
+                    remove_dispatcher(dispatcher)
+                    state_path.unlink()
+                except BaseException:
+                    with recovery_signals():
+                        config.write_bytes(installed)
+                        config.chmod(state["installed_config_mode"])
+                        write_dispatcher(dispatcher, state["dispatcher"])
+                        state_path.write_bytes(state_body)
+                        state_path.chmod(state_mode)
+                        temporary.unlink(missing_ok=True)
+                    raise
             elif asset_binding(root) != state["assets"]:
                 raise Refusal("installation-asset-drift")
             return
@@ -191,35 +245,52 @@ def install(root: Path, *, uninstall: bool = False) -> None:
             raise Refusal("uncomposable-default-hook")
         if any((root / ".beads/hooks").glob("*.old")):
             raise Refusal("uncomposable-managed-chain")
-        if any(x.name not in HOOKS for x in (root / ".githooks").iterdir()):
-            raise Refusal("uncomposable-forwarder")
         assets = asset_binding(root)
         before = config.read_bytes()
         mode = config.stat().st_mode & 0o777
-        # Supported local config API; never --global or --worktree.
-        result = subprocess.run(
-            ["git", "-C", str(root), "config", "--local", "core.hooksPath", ".githooks"],
-            capture_output=True,
-        )
-        if result.returncode:
-            raise Refusal("installation-config-write-failed")
+        temporary = state_path.with_suffix(".tmp")
+        if temporary.exists() or dispatcher.exists() or dispatcher.is_symlink():
+            raise Refusal("installation-temporary-state-present")
+        bodies = {
+            name: {
+                "body_hex": (root / ".githooks" / name).read_bytes().hex(),
+                "mode": (root / ".githooks" / name).stat().st_mode & 0o777,
+            }
+            for name in HOOKS
+        }
         try:
+            # Common absolute dispatch keeps hooks present even when another
+            # owning worktree predates these assets. Its wrapper refuses missing
+            # owning code/runtime instead of Git silently skipping a hook.
+            write_dispatcher(dispatcher, bodies)
+            result = subprocess.run(
+                ["git", "-C", str(root), "config", "--local", "core.hooksPath", str(dispatcher)],
+                capture_output=True,
+            )
+            if result.returncode:
+                raise Refusal("installation-config-write-failed")
             state = {
-                "schema": 1,
+                "schema": 2,
                 "prior_config_hex": before.hex(),
                 "prior_config_mode": mode,
                 "prior_origins": origins.decode(),
                 "installed_config_hex": config.read_bytes().hex(),
+                "installed_config_mode": config.stat().st_mode & 0o777,
                 "installed_origins": config_origins(root).decode(),
                 "assets": assets,
+                "dispatcher": bodies,
             }
-            temporary = state_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
             temporary.chmod(mode)
             temporary.replace(state_path)
         except BaseException:
-            config.write_bytes(before)
-            config.chmod(mode)
+            with recovery_signals():
+                config.write_bytes(before)
+                config.chmod(mode)
+                temporary.unlink(missing_ok=True)
+                state_path.unlink(missing_ok=True)
+                if dispatcher.exists():
+                    remove_dispatcher(dispatcher)
             raise
 
 
@@ -340,7 +411,7 @@ def tree_bodies(root: Path) -> dict:
     return result
 
 
-def check(root: Path, base: str) -> None:
+def check(root: Path, base: str, *, expected_head: str | None = None) -> dict:
     if git(root, "status", "--porcelain", "--untracked-files=no").strip():
         raise Refusal("uncommitted-tracked-source")
     extras = git(root, "ls-files", "--others", "--exclude-standard", "-z").decode().split("\0")
@@ -349,6 +420,8 @@ def check(root: Path, base: str) -> None:
     if (root / ".venv").is_symlink() or not (root / ".venv/bin/python").is_file():
         raise Refusal("own-python-environment-unavailable")
     head = git(root, "rev-parse", "HEAD").decode().strip()
+    if expected_head is not None and head != expected_head:
+        raise Refusal("checked-ref-head-changed")
     base_oid = git(root, "rev-parse", "--verify", f"{base}^{{commit}}").decode().strip()
     # No deleted .py is passed to ruff; global predicates/collection still run.
     paths = [
@@ -375,31 +448,50 @@ def check(root: Path, base: str) -> None:
     finally:
         if tree_bodies(root) != before or git(root, "rev-parse", "HEAD").decode().strip() != head:
             raise Refusal("guard-source-side-effect")
+    return before
 
 
 def hook(root: Path, args: list[str]) -> None:
     state_path = common_dir(root) / STATE
     try:
         state = json.loads(state_path.read_text())
-        if state["assets"] != asset_binding(root):
+        if (
+            state["schema"] != 2
+            or state["assets"] != asset_binding(root)
+            or state["dispatcher"] != dispatcher_bodies(common_dir(root) / DISPATCHER)
+        ):
             raise Refusal("installed-assets-changed")
     except (OSError, ValueError, KeyError, TypeError):
         raise Refusal("installation-state-unavailable") from None
-    raw = validate_updates(sys.stdin.buffer.read(), git(root, "rev-parse", "HEAD").decode().strip())
-    check(root, "origin/main")
+    expected_head = git(root, "rev-parse", "HEAD").decode().strip()
+    raw = validate_updates(sys.stdin.buffer.read(), expected_head)
+    checked_source = check(root, "origin/main", expected_head=expected_head)
+
+    def unchanged():
+        return (
+            git(root, "rev-parse", "HEAD").decode().strip() == expected_head
+            and tree_bodies(root) == checked_source
+        )
+
+    if not unchanged():
+        raise Refusal("pre-delegate-source-changed")
     # The original exact stream is replayed once to the actual managed asset.
     # Temporary storage is outside the tracked checkout and closes on signals.
     with tempfile.TemporaryFile() as carrier:
         carrier.write(raw)
         carrier.seek(0)
-        status = run_checked(
-            "managed-pre-push",
-            [str(root / ".beads/hooks/pre-push"), *args],
-            root,
-            stdin=carrier,
-            confined=True,
-        )
-        assert status == 0
+        try:
+            status = run_checked(
+                "managed-pre-push",
+                [str(root / ".beads/hooks/pre-push"), *args],
+                root,
+                stdin=carrier,
+                confined=True,
+            )
+            assert status == 0
+        finally:
+            if not unchanged():
+                raise Refusal("managed-delegate-source-changed")
 
 
 def main() -> int:

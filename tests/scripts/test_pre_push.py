@@ -7,6 +7,7 @@ installed bd delegate are separately exercised in the author/reviewer receipts.
 from __future__ import annotations
 
 import importlib.util
+import io
 import subprocess
 from pathlib import Path
 
@@ -24,7 +25,7 @@ def _driver():
     return module
 
 
-def test_ref_updates_require_actual_head_and_preserve_multi_ref_bytes():
+def test_ref_updates_require_actual_head_and_preserve_multi_ref_bytes(tmp_path, monkeypatch):
     driver = _driver()
     head = "a" * 40
     raw = (
@@ -44,6 +45,93 @@ def test_ref_updates_require_actual_head_and_preserve_multi_ref_bytes():
         with pytest.raises(driver.Refusal):
             driver.validate_updates(invalid, head)
     assert driver.validate_updates(raw, head) == raw
+
+    # Actual Git commits position both check/delegation seams. Fixed healthy
+    # guards and a captured delegate isolate identity; no inventory/bd credit.
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / ".gitignore").write_text(".venv/\n")
+    (root / ".githooks").mkdir()
+    (root / ".beads/hooks").mkdir(parents=True)
+    for name in driver.HOOKS:
+        (root / ".githooks" / name).touch()
+    (root / ".venv/bin").mkdir(parents=True)
+    (root / ".venv/bin/python").touch()
+
+    def commit(value):
+        (root / "consumer.txt").write_text(value)
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Hook control",
+                "-c",
+                "user.email=hook@example.invalid",
+                "commit",
+                "-qm",
+                "owned source interleaving",
+            ],
+            check=True,
+        )
+        return driver.git(root, "rev-parse", "HEAD").decode().strip()
+
+    head = commit("A")
+    subprocess.run(
+        ["git", "-C", str(root), "update-ref", "refs/remotes/origin/main", head], check=True
+    )
+    monkeypatch.setattr(driver, "asset_binding", lambda root: {"fixture": "identity-only"})
+    monkeypatch.setattr(driver, "guard_plan", lambda paths, root=None: [])
+    driver.install(root)
+    actual_validate, actual_check = driver.validate_updates, driver.check
+    delegated = []
+
+    def execute(phase, negative):
+        head = driver.git(root, "rev-parse", "HEAD").decode().strip()
+        stream = (f"refs/heads/main {head} refs/heads/main {'0' * 40}\n").encode()
+        delegated.clear()
+
+        def validate(raw, expected):
+            result = actual_validate(raw, expected)
+            if negative and phase == "after-validation":
+                commit("after validation " + head)
+            return result
+
+        def check(*args, **kwargs):
+            result = actual_check(*args, **kwargs)
+            if negative and phase == "after-check":
+                commit("after check " + head)
+            return result
+
+        def run(name, command, root, **kwargs):
+            if name == "managed-pre-push":
+                delegated.append(kwargs["stdin"].read())
+                if negative and phase == "during-delegate":
+                    commit("during delegate " + head)
+            return 0
+
+        monkeypatch.setattr(driver, "validate_updates", validate)
+        monkeypatch.setattr(driver, "check", check)
+        monkeypatch.setattr(driver, "run_checked", run)
+        monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(stream)))
+        if negative:
+            with pytest.raises(driver.Refusal):
+                driver.hook(root, ["controlled", "controlled.invalid"])
+            assert delegated == ([stream] if phase == "during-delegate" else [])
+        else:
+            driver.hook(root, ["controlled", "controlled.invalid"])
+            assert delegated == [stream]
+
+    execute("stable", False)
+    for phase in ("after-validation", "after-check", "during-delegate"):
+        execute(phase, True)
+        execute("restored", False)
+    driver.install(root, uninstall=True)
 
 
 def test_readonly_plan_executes_real_predicates_and_never_mutating_aggregate():
@@ -142,16 +230,51 @@ def test_installer_refuses_unknown_config_and_restores_absent_state(tmp_path, mo
     # This isolates configuration mechanics only. Installed source/delegate
     # proof uses actual bodies/binary in separate full-source controls.
     monkeypatch.setattr(driver, "asset_binding", lambda root: {"fixture": "config-only"})
+    actual_run = subprocess.run
+
+    def interrupted_after_config_write(command, **kwargs):
+        result = actual_run(command, **kwargs)
+        if command[-4:-1] == ["config", "--local", "core.hooksPath"]:
+            raise driver.Refusal("interrupted")
+        return result
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(subprocess, "run", interrupted_after_config_write)
+        with pytest.raises(driver.Refusal):
+            driver.install(root)
+    assert (root / ".git/config").read_bytes() == before
+    assert not (root / ".git/butlers-pre-push.json").exists()
+    assert not (root / ".git/butlers-pre-push.tmp").exists()
     driver.install(root)
     installed = (root / ".git/config").read_bytes()
     driver.install(root)
     assert (root / ".git/config").read_bytes() == installed
     driver.install(worktree)
     assert (root / ".git/config").read_bytes() == installed
+    # Real config restore followed by an interruption must restore the whole
+    # installed state, so a later supported uninstall still works.
+    actual_replace = Path.replace
+
+    def interrupted_after_restore(path, destination):
+        result = actual_replace(path, destination)
+        if path.name == driver.STATE + ".restore":
+            raise driver.Refusal("interrupted")
+        return result
+
+    state_before = (root / ".git" / driver.STATE).read_bytes()
+    dispatcher_before = driver.dispatcher_bodies(root / ".git" / driver.DISPATCHER)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "replace", interrupted_after_restore)
+        with pytest.raises(driver.Refusal):
+            driver.install(worktree, uninstall=True)
+    assert (root / ".git/config").read_bytes() == installed
+    assert (root / ".git" / driver.STATE).read_bytes() == state_before
+    assert driver.dispatcher_bodies(root / ".git" / driver.DISPATCHER) == dispatcher_before
     driver.install(worktree, uninstall=True)
     assert (root / ".git/config").read_bytes() == before
     assert not (root / ".git/butlers-pre-push.json").exists()
     assert not (root / ".git/butlers-pre-push.lock").exists()
+    assert not (root / ".git" / driver.DISPATCHER).exists()
     subprocess.run(
         ["git", "-C", str(root), "config", "extensions.worktreeConfig", "true"], check=True
     )

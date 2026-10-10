@@ -4,11 +4,18 @@
 not install hooks in the canonical checkout or establish elapsed targets.
 
 Run `make install-hooks` only after serialized installation approval. The
-installer changes repository-local common `core.hooksPath` to `.githooks`, records
-prior config bytes/mode, and leaves managed assets untouched. Repeating installation
+installer copies the five exact forwarding bodies/modes into an owned common-Git
+directory and sets repository-local common `core.hooksPath` to that absolute
+dispatcher. Older or later owning worktrees still invoke the dispatcher and refuse
+missing owning code/runtime instead of silently skipping absent relative hooks.
+It records prior config bytes/mode and leaves managed assets untouched. Repeating installation
 is a no-op only for identical assets/config. `make uninstall-hooks` restores exact
 prior config bytes/mode and refuses intervening changes instead of overwriting
-new configuration. Reported config origins retain their exact scope/value while
+new configuration. Catchable interruptions in either installation or uninstall
+restore the complete prior transaction state and remove temporary carriers. An
+uninstall interruption preserves a supported installed state for retry; it never
+leaves restored config with stale state. SIGKILL/power-loss recovery is not claimed.
+Reported config origins retain their exact scope/value while
 relative and absolute names of the same common file share its resolved identity.
 Custom/global/worktree hooks, executable default hooks or
 unknown chains refuse before mutation. No global settings are changed.
@@ -27,7 +34,10 @@ Supported pushes contain head refs at the exact checked HEAD, optionally alongsi
 deletions. Multiple head updates are allowed only for that same fully checked
 tree. Tags, other trees, malformed input and dirty/untracked source refuse;
 ignored private artifacts and the worker gate lock remain untouched. There is
-no HEAD-only admission for an unscanned second tree. Missing origin/main refuses.
+no HEAD-only admission for an unscanned second tree. One immutable expected HEAD
+binds update parsing, checks and immediate managed delegation; full HEAD/body/mode
+checks before and after delegation refuse concurrent source changes. Missing
+origin/main refuses.
 
 ## Executing survivors
 
