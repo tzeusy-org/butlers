@@ -3729,9 +3729,9 @@ export function retryUnroutableAttention(
   );
 }
 
-export function getApprovalDetail(actionId: string): Promise<ApiResponse<ApprovalDetail>> {
+export function getApprovalDetail(actionId: string, reviewSource?: string): Promise<ApiResponse<ApprovalDetail>> {
   return apiFetch<ApiResponse<ApprovalDetail>>(
-    `/approvals/${encodeURIComponent(actionId)}`,
+    `/approvals/${encodeURIComponent(actionId)}${reviewSource !== undefined ? `?review_source=${encodeURIComponent(reviewSource)}` : ""}`,
   );
 }
 

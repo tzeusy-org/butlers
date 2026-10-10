@@ -160,6 +160,12 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   one arg constraint plus `expires_at` or `max_uses`); rules created from an action at those tiers
   default to `max_uses=1`.
 
+- A notification review link is a dossier locator, not an approval capability. The dashboard's
+  qualified `GET /api/approvals/{id}?review_source=messenger` repeats a bounded lookup over
+  every configured approvals source. A missing pool, failed read, duplicate UUID, or wrong source
+  withholds the dossier; ordinary unqualified lookup and decision permissions stay unchanged.
+  Configuration is retained before provisioning, so a failed pool cannot disappear from this check.
+
 ## Related Pages
 
 - [Module System](module-system.md)

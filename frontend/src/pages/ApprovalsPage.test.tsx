@@ -2131,6 +2131,23 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
 
     expect(getApprovalDetail).toHaveBeenCalledWith("a2");
     expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
+
+    vi.mocked(getApprovalDetail).mockClear();
+    act(() => root.unmount());
+    root = createRoot(container);
+    renderAt("/approvals/a2?review_source=messenger");
+    await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
+    expect(getApprovalDetail).toHaveBeenCalledWith("a2", "messenger");
+    expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
+    await flushUntil(() => qc.getQueryState(["approvals", "detail", "a2", "review-source", "messenger"])?.fetchStatus === "idle");
+    // An ordinary cached dossier cannot substitute for a refused source-bound GET.
+    vi.mocked(getApprovalDetail).mockRejectedValue(new Error("Review source unavailable"));
+    act(() => root.unmount());
+    root = createRoot(container);
+    renderAt("/approvals/a2?review_source=messenger");
+    await flushUntil(() => container.textContent?.includes("failed to load dossier") === true);
+    expect(container.textContent).toContain("failed to load dossier");
+    expect(container.querySelector('[data-testid="approval-dossier-risk"]')).toBeNull();
   });
 
   it("keeps the direct-link workspace from collapsing behind policy/history", async () => {

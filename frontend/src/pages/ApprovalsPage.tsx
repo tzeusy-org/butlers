@@ -572,6 +572,7 @@ function RailItem({
 function Dossier({
   actionId,
   verifiedDetail,
+  reviewSource,
   allowAbandon,
   allowPendingDecisionControls,
   onApprove,
@@ -590,6 +591,7 @@ function Dossier({
    * action after the verifier has established the current eligibility.
    */
   verifiedDetail?: ApprovalDetail;
+  reviewSource?: string;
   /** Stalled is a Retry-only lane; waiting/history keeps the existing abandon flow. */
   allowAbandon: boolean;
   /** A Stalled flat row must never reopen ordinary pending decision controls. */
@@ -614,10 +616,12 @@ function Dossier({
   const [showDefer, setShowDefer] = useState(false);
   const [denyReason, setDenyReason] = useState("");
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: Q.detail(actionId),
-    queryFn: () => getApprovalDetail(actionId),
+  const { data, isLoading, isFetching, error } = useQuery({
+    queryKey: reviewSource === undefined ? Q.detail(actionId) : [...Q.detail(actionId), "review-source", reviewSource],
+    queryFn: () => reviewSource === undefined ? getApprovalDetail(actionId) : getApprovalDetail(actionId, reviewSource),
     enabled: !!actionId && !verifiedDetail,
+    refetchOnMount: reviewSource !== undefined ? "always" : true,
+    retry: reviewSource !== undefined ? false : undefined,
   });
 
   function handleDefer() {
@@ -629,7 +633,7 @@ function Dossier({
     onDefer(h);
   }
 
-  if (!verifiedDetail && isLoading) {
+  if (!verifiedDetail && (isLoading || (reviewSource !== undefined && isFetching))) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
         loading…
@@ -1723,6 +1727,7 @@ export default function ApprovalsPage() {
   const { id: routeId } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const reviewSource = searchParams.get("review_source") ?? undefined;
   const activeLane: ApprovalLane = searchParams.get("state") === "stalled" ? "stalled" : "waiting";
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
   const [teachingActionId, setTeachingActionId] = useState<string | null>(null);
@@ -1831,8 +1836,8 @@ export default function ApprovalsPage() {
     isFetching: isStalledRouteVerificationFetching,
     isError: isStalledRouteVerificationError,
   } = useQuery({
-    queryKey: Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt),
-    queryFn: () => getApprovalDetail(routeId ?? ""),
+    queryKey: [...Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt), reviewSource],
+    queryFn: () => reviewSource === undefined ? getApprovalDetail(routeId ?? "") : getApprovalDetail(routeId ?? "", reviewSource),
     enabled: shouldVerifyStalledRoute,
     // A direct stalled URL is an authorization boundary, not a prefetch hint:
     // never inherit data from the ordinary dossier key and always make a new
@@ -2302,7 +2307,8 @@ export default function ApprovalsPage() {
           <Dossier
             key={dossierSelected}
             actionId={dossierSelected}
-            verifiedDetail={verifiedStalledRouteDetail}
+            verifiedDetail={reviewSource === undefined ? verifiedStalledRouteDetail : undefined}
+            reviewSource={reviewSource}
             allowAbandon={activeLane !== "stalled"}
             allowPendingDecisionControls={activeLane !== "stalled"}
             onApprove={() => approve(dossierSelected)}

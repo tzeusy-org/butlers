@@ -401,6 +401,99 @@ async def test_list_notifications_reports_source_available_on_success(app):
     body = resp.json()
     assert body["source_available"] is True
 
+    # Spec: REQ-dashboard-visibility-004; complete grouped admission, never metadata inference.
+    import copy
+
+    from butlers.core.approval_review import ApprovalReview
+
+    action_id = uuid4()
+    messenger = AsyncMock()
+    foreign = AsyncMock()
+    messenger.acquire = MagicMock()
+    foreign.acquire = MagicMock()
+    messenger_conn = AsyncMock()
+    foreign_conn = AsyncMock()
+    messenger.acquire.return_value.__aenter__.return_value = messenger_conn
+    foreign.acquire.return_value.__aenter__.return_value = foreign_conn
+    messenger_conn.fetch.return_value = [{"id": action_id}]
+    foreign_conn.fetch.return_value = []
+    mock_db.butlers_with_module.return_value = ["messenger", "general"]
+    mock_db.configured_butlers_with_module.return_value = ["messenger", "general"]
+    mock_db.configured_butler_names = ["messenger", "general"]
+    mock_db.schema_for_butler.side_effect = lambda name: name
+    mock_db.pool.side_effect = lambda name: {
+        "switchboard": _pool,
+        "messenger": messenger,
+        "general": foreign,
+    }[name]
+    row = _notification_row({"approval_review": ApprovalReview(action_id).as_dict()})
+    row["approval_review"] = ApprovalReview(action_id).as_dict()
+    _pool.fetch.return_value = [row, copy.deepcopy(row)]
+    _pool.fetchval.return_value = 2
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for path in ("/api/notifications", "/api/butlers/finance/notifications"):
+            response = await client.get(path)
+            assert response.status_code == 200
+            assert all(
+                item["approval_review_state"] == "available" for item in response.json()["data"]
+            )
+            assert all(
+                item["approval_review"] == ApprovalReview(action_id).as_dict()
+                for item in response.json()["data"]
+            )
+            assert messenger_conn.fetch.await_args.args[1] == [action_id]
+        assert messenger_conn.fetch.await_count == 2  # one batch/source/page, not one query/row
+        for failure in (
+            "duplicate",
+            "unavailable",
+            "wrong-source",
+            "missing",
+            "malformed",
+            "legacy",
+            "extra",
+        ):
+            messenger_conn.fetch.side_effect = None
+            foreign_conn.fetch.side_effect = None
+            messenger_conn.fetch.return_value = [{"id": action_id}]
+            foreign_conn.fetch.return_value = []
+            row["approval_review"] = ApprovalReview(action_id).as_dict()
+            if failure == "duplicate":
+                foreign_conn.fetch.return_value = [{"id": action_id}]
+            if failure == "unavailable":
+                foreign_conn.fetch.side_effect = RuntimeError("Synthetic read failure")
+            if failure == "wrong-source":
+                foreign_conn.fetch.return_value = [{"id": action_id}]
+                messenger_conn.fetch.return_value = []
+            if failure == "missing":
+                messenger_conn.fetch.return_value = []
+            if failure == "malformed":
+                row["approval_review"]["action_id"] = "invalid"
+            if failure == "legacy":
+                row["approval_review"] = None
+            if failure == "extra":
+                row["approval_review"]["private"] = "must not project"
+            _pool.fetch.return_value = [row]
+            response = await client.get("/api/notifications")
+            projected = response.json()["data"][0]
+            assert projected["approval_review"] is None
+            assert projected["approval_review_state"] == (
+                "none" if failure == "legacy" else "unavailable"
+            )
+        foreign_conn.fetch.side_effect = None
+        messenger_conn.fetch.return_value = [{"id": action_id}]
+        foreign_conn.fetch.return_value = []
+        row["approval_review"] = ApprovalReview(action_id).as_dict()
+        _pool.fetchrow.side_effect = None
+        _pool.fetchrow.return_value = row
+        app.dependency_overrides[get_cache] = lambda: BriefingCache(ttl_seconds=300)
+        response = await client.patch(f"/api/notifications/{row['id']}/read")
+        assert response.json()["data"]["approval_review_state"] == "available"
+        assert response.json()["data"]["status"] == "read"
+        response = await client.get("/api/notifications")
+        assert response.json()["data"][0]["approval_review_state"] == "available"
+
 
 async def test_notification_stats_reports_source_available_on_success(app):
     mock_db, _pool = _make_available_db()
