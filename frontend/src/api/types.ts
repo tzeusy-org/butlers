@@ -3457,6 +3457,8 @@ export interface ApprovalAction {
   agent_summary?: string | null;
   session_id?: string | null;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   decided_by?: string | null;
   decided_at?: string | null;
   execution_result?: Record<string, unknown> | null;
@@ -3512,6 +3514,8 @@ export interface ApprovalSummary {
   status: string;
   created_at: string;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   why?: string | null;
   /** Durable execution evidence used to distinguish eligible stalled rows. */
   execution_result?: Record<string, unknown> | null;
@@ -3588,6 +3592,8 @@ export interface ApprovalDetail {
   butler: string;
   created_at: string;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   why?: string | null;
   evidence?: ApprovalEvidence[];
   blast_radius?: ApprovalBlastRadius | null;

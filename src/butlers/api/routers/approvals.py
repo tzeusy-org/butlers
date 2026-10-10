@@ -456,8 +456,20 @@ async def _fetch_actions_with_delivery(
     return await connection.fetch(query, *args)
 
 
+def _approval_origin(value: Any) -> Literal["prepared"] | None:
+    """Expose only the exact stored classification, never infer it from delivery."""
+    return "prepared" if type(value) is str and value == "prepared" else None
+
+
 def _delivery_truth(row: Any, action: PendingAction) -> ApprovalDeliveryTruth | None:
-    if action.origin == "prepared":
+    if (
+        _approval_origin(action.origin) == "prepared"
+        and action.push_outcome is None
+        and row.get("delivery_intent_id") is None
+        and row.get("legacy_push_action_id") is None
+    ):
+        # An intended non-send has no delivery claim. Origin must not hide
+        # independently recorded legacy failure or durable delivery evidence.
         return None
     if row.get("delivery_intent_id") is None:
         source: Literal["legacy", "unknown"] = (
@@ -550,7 +562,7 @@ def _pending_action_to_api(
         evidence=action.evidence,
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
-        origin=action.origin,
+        origin=_approval_origin(action.origin),
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
@@ -627,6 +639,7 @@ def _pending_action_to_detail(
         target_contact=target_contact,
         session_id=str(action.session_id) if action.session_id else None,
         referenced_entities=referenced_entities or [],
+        origin=_approval_origin(action.origin),
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
@@ -654,6 +667,7 @@ def _pending_action_to_summary(
         ),
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
+        origin=_approval_origin(action.origin),
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,

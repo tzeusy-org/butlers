@@ -666,7 +666,10 @@ describe("ApprovalsPage — load-more", () => {
 
   it("renders the degraded note above the (incomplete) rows when a partial fan-out still returned rows (bu-jad4j.4)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
-      makeDegradedResponse([makeSummary("a1", "send_email")], ["finance"]) as AnyMock,
+      makeDegradedResponse(
+        [{ ...makeSummary("a1", "send_email"), origin: "prepared" }],
+        ["finance"],
+      ) as AnyMock,
     );
 
     renderPage();
@@ -677,6 +680,8 @@ describe("ApprovalsPage — load-more", () => {
     // Both the note and the surviving row render.
     expect(container.querySelector('[data-testid="approvals-queue-degraded"]')).not.toBeNull();
     expect(container.textContent).toContain("send email");
+    expect(container.querySelector('[data-testid="rail-item"] [aria-label="Approval origin: Prepared"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="approvals-queue-degraded"]')?.getAttribute("role")).toBe("alert");
   });
 
   it("keeps the honest empty state for a reachable-but-empty queue (mutation guard, bu-jad4j.4)", async () => {
@@ -851,6 +856,30 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
     expect(
       container.querySelector('[data-testid="rail-item"][data-push-failed]'),
     ).toBeNull();
+
+    // Spec: REQ-dashboard-approvals-004; classification is independent of
+    // status and notification. Refresh through the real query consumers.
+    for (const origin of ["prepared", null, undefined, "legacy", "PREPARED", true, {}]) {
+      vi.mocked(getApprovalsFlat).mockReturnValue(
+        makeApiResponse([{ ...makeSummary("a1"), origin, push_failed: false }]) as AnyMock,
+      );
+      vi.mocked(getApprovalDetail).mockReturnValue(
+        makeApiResponse({ ...(await makePendingDetail("a1")).data, origin }) as AnyMock,
+      );
+      await act(async () => {
+        await qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+        await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
+        await flush();
+      });
+      const label = origin === "prepared" ? "Prepared" : "Origin unknown";
+      expect(container.querySelectorAll(`[aria-label="Approval origin: ${label}"]`)).toHaveLength(2);
+      expect(container.querySelector('[data-testid="rail-item"]')?.textContent).toContain("pending");
+      expect(container.querySelector('[data-testid="dossier-push-failed"]')).toBeNull();
+      expect(container.querySelector('[data-testid="rail-item-push-failed"]')).toBeNull();
+      expect(approveApproval).not.toHaveBeenCalled();
+      expect(denyApproval).not.toHaveBeenCalled();
+      expect(deferApproval).not.toHaveBeenCalled();
+    }
   });
 
   it("renders the dossier push-failed alert when the selected approval's push failed", async () => {
@@ -876,6 +905,28 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
     expect(alertEl).not.toBeNull();
     expect(alertEl?.textContent).toContain("Legacy approval push reported failed");
     expect(alertEl?.textContent).not.toContain("never attempted");
+
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([
+        { ...makeSummary("a1"), origin: "prepared", push_failed: true },
+      ]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        ...(await makePendingDetail("a1")).data,
+        origin: "prepared",
+        push_outcome: "failed",
+        push_failed: true,
+      }) as AnyMock,
+    );
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+      await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
+      await flush();
+    });
+    expect(container.querySelectorAll('[aria-label="Approval origin: Prepared"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="rail-item-push-failed"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="dossier-push-failed"]')?.getAttribute("role")).toBe("alert");
   });
 
   it("links the target contact to its entity page, not the retired contact route", async () => {
@@ -2120,10 +2171,17 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
 
   it("selects the approval named in the URL, not the first-arrived item", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
-      makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
+      makeApiResponse([
+        makeSummary("a1"),
+        { ...makeSummary("a2"), origin: "prepared" },
+      ]) as AnyMock,
     );
     vi.mocked(getApprovalDetail).mockImplementation(
-      ((id: string) => makePendingDetail(id)) as AnyMock,
+      ((id: string) =>
+        makePendingDetail(id).then((response) => ({
+          ...response,
+          data: { ...response.data, origin: id === "a2" ? "prepared" : null },
+        }))) as AnyMock,
     );
 
     renderAt("/approvals/a2");
@@ -2131,6 +2189,9 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
 
     expect(getApprovalDetail).toHaveBeenCalledWith("a2");
     expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
+    await flushUntil(() => container.querySelectorAll('[aria-label="Approval origin: Prepared"]').length === 2);
+    expect(container.querySelector('[data-approval-id="a1"] [aria-label="Approval origin: Origin unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-approval-id="a2"] [aria-label="Approval origin: Prepared"]')).not.toBeNull();
 
     vi.mocked(getApprovalDetail).mockClear();
     act(() => root.unmount());

@@ -451,6 +451,18 @@ function DeliveryTruth({ delivery }: { delivery: ApprovalDeliveryTruth }) {
   );
 }
 
+function ApprovalOrigin({ origin }: { origin?: "prepared" | null }) {
+  const label = origin === "prepared" ? "Prepared" : "Origin unknown";
+  return (
+    <span
+      aria-label={`Approval origin: ${label}`}
+      className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground"
+    >
+      {label}
+    </span>
+  );
+}
+
 function RailItem({
   summary,
   selected,
@@ -517,6 +529,9 @@ function RailItem({
       </div>
       <div className="mt-0.5 text-sm font-medium truncate">
         {summary.tool_name.replace(/_/g, " ")}
+      </div>
+      <div className="mt-0.5">
+        <ApprovalOrigin origin={summary.origin} />
       </div>
       {pushFailed && (
         <div
@@ -859,6 +874,9 @@ function Dossier({
           >
             {statusLabel(detail.status)}
           </span>
+          <div className="mt-1">
+            <ApprovalOrigin origin={detail.origin} />
+          </div>
           {detail.push_failed && (
             <div
               role="alert"
