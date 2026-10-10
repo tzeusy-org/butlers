@@ -112,6 +112,11 @@ done
 
 if [ -n "${command}" ]; then
   case "${command}" in
+    *"owntracks_filtered_copy_births"*)
+      # This DB-free ordinary-backup fixture models a pre-retention DB.
+      # Presence is an availability precheck, not native export authority.
+      printf '0\\n'
+      ;;
     *"SET TRANSACTION SNAPSHOT"*)
       printf '%s\\n' 'scoped-export' >> "${log}"
       ;;
@@ -138,6 +143,9 @@ while IFS= read -r line; do
         */id)
           printf 'ABCDEF-012345\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-exported' >> "${log}"
+          ;;
+        */native-copy-state)
+          printf 'absent\\n' > "${output_file}"
           ;;
         */policy-count)
           printf '3\\n' > "${output_file}"
@@ -212,7 +220,9 @@ def backup_dir(tmp_path: Path) -> Path:
     return d
 
 
-def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path, bin_dir: Path):
+def test_successful_run_records_success_and_names_the_artifact(
+    backup_dir: Path, bin_dir: Path, capsys
+):
     proc = _run(backup_dir, bin_dir)
 
     assert proc.returncode == 0, proc.stderr
@@ -223,6 +233,59 @@ def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path,
     assert receipt["reason"] == "ok"
     assert receipt["exit_code"] == 0
     assert receipt["artifact"] == published[0].name
+
+    from butlers.testing.restore_diagnostics import emit_restore_diagnostic
+
+    private = "synthetic_private_restore_operand"
+    failed = subprocess.CompletedProcess(
+        [],
+        3,
+        "[restore] Auditing SECURITY DEFINER ownership ...\n" + private,
+        "ERROR: 42501\nNative copy restoration row differs\n" + private,
+    )
+    emit_restore_diagnostic(failed, stage="certified_restore")
+    emitted = capsys.readouterr().out
+    assert private not in emitted
+    report = json.loads(emitted.removeprefix("RESTORE_COMMAND_DIAGNOSTIC "))
+    assert report["returncode"] == 3 and report["stage"] == "certified_restore"
+    assert report["flags"]["definer_audit_started"] and report["flags"]["native_row_refused"]
+    assert report["sqlstates"]["42501"] and not report["flags"]["certified_done"]
+    emit_restore_diagnostic(
+        subprocess.CompletedProcess([], 0, "[restore] done", ""), stage="certified_restore"
+    )
+    healthy = json.loads(capsys.readouterr().out.removeprefix("RESTORE_COMMAND_DIAGNOSTIC "))
+    assert healthy["returncode"] == 0 and healthy["flags"]["certified_done"]
+    assert not any(healthy["sqlstates"].values())
+    # Actual client --file=- reports input offsets. Only fixed source stages
+    # and known codes escape; even a planted artifact body stays private.
+    artifact = "\n".join(
+        [
+            private,
+            "CREATE TEMP TABLE butlers_cost_claim_restore_rows (synthetic);",
+            "synthetic cost claim statement",
+            "-- Butlers scoped OwnTracks copy history",
+            "synthetic native statement " + private,
+        ]
+    )
+    emit_restore_diagnostic(
+        subprocess.CompletedProcess(
+            [],
+            3,
+            "",
+            "psql:<stdin>:1: ERROR: 42P01\n"
+            "psql:<stdin>:3: ERROR: 42501\n"
+            "psql:<stdin>:5: ERROR: 23503\n" + private,
+        ),
+        stage="raw_drill",
+        artifact=artifact,
+    )
+    located = capsys.readouterr().out
+    assert private not in located
+    fixed = json.loads(located.removeprefix("RESTORE_COMMAND_DIAGNOSTIC "))
+    assert fixed["flags"]["sql_error_seen"]
+    assert fixed["source_stage_codes"]["ordinary_dump"]["42P01"]
+    assert fixed["source_stage_codes"]["cost_claim_import"]["42501"]
+    assert fixed["source_stage_codes"]["native_copy_import"]["23503"]
 
 
 def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Path, bin_dir: Path):

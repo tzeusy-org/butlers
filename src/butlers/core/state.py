@@ -12,8 +12,14 @@ from typing import Any
 import asyncpg
 
 from butlers._sql_utils import escape_like_pattern
+from butlers.location_retention import POLICY_STATE_KEY
 
 logger = logging.getLogger(__name__)  # retained for potential future use
+
+
+def _refuse_retention_mutation(key: str) -> None:
+    if key == POLICY_STATE_KEY:
+        raise PermissionError("Use the authenticated location-retention policy control")
 
 
 def decode_jsonb(val: Any) -> Any:
@@ -53,6 +59,10 @@ class CASConflictError(Exception):
 
 async def state_get(pool: asyncpg.Pool, key: str) -> Any | None:
     """Return the JSONB value for *key*, or ``None`` if the key does not exist."""
+    if key == POLICY_STATE_KEY:
+        from butlers.chronicler.location_policy import read_policy
+
+        return await read_policy(pool)
     row = await pool.fetchval(
         "SELECT value FROM state WHERE key = $1",
         key,
@@ -71,6 +81,7 @@ async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
     Returns:
         The new version number for the row after the upsert.
     """
+    _refuse_retention_mutation(key)
     new_version: int = await pool.fetchval(
         """
         INSERT INTO state (key, value, updated_at, version)
@@ -113,6 +124,7 @@ async def state_compare_and_set(
         CASConflictError: If the stored version does not match *expected_version*,
             or the key does not exist.
     """
+    _refuse_retention_mutation(key)
     row = await pool.fetchrow(
         """
         UPDATE state
@@ -171,6 +183,7 @@ async def state_claim_if_changed(
     ``butlers.core_tools._domain_events.publish_domain_event_once`` for the
     reference caller.
     """
+    _refuse_retention_mutation(key)
     row = await pool.fetchrow(
         """
         INSERT INTO state (key, value, updated_at, version)
@@ -190,6 +203,7 @@ async def state_claim_if_changed(
 
 async def state_delete(pool: asyncpg.Pool, key: str) -> None:
     """Delete *key* from the state store.  No-op if the key does not exist."""
+    _refuse_retention_mutation(key)
     await pool.execute("DELETE FROM state WHERE key = $1", key)
 
 

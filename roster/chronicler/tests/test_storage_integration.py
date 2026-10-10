@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from sqlalchemy.dialects.postgresql import dialect
 
 from butlers.api.db import DatabaseManager
 from butlers.chronicler.adapters.sessions import (
@@ -316,6 +317,39 @@ async def _apply_chronicler_schema(pool) -> None:
         LEFT JOIN v_latest_overrides o
             ON o.target_kind = 'point_event' AND o.target_id = p.id
     """)
+
+    # Apply the actual bounded owning migration for all native retention
+    # dependencies. Do not hand-copy its policy, floor or tombstone tables.
+    spec = _importlib_util.spec_from_file_location(
+        "_storage_retention_027",
+        _Path(__file__).resolve().parents[1] / "migrations/027_location_retention.py",
+    )
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    schema = await pool.fetchval("SELECT current_schema()")
+    statements = []
+
+    class Bind:
+        dialect = dialect()
+
+        def execute(self, statement):
+            if str(statement) != "SELECT current_schema()":
+                raise AssertionError("unexpected migration fixture query")
+            return type("SchemaResult", (), {"scalar_one": lambda self: schema})()
+
+    class Operations:
+        def get_bind(self):
+            return Bind()
+
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    module.op = Operations()
+    module.upgrade()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for statement in statements:
+                await conn.execute(statement)
 
 
 @pytest.fixture

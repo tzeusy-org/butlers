@@ -304,16 +304,16 @@ async def session_create(
         _sanitize_json_value(prompt_provenance) if prompt_provenance is not None else None
     )
 
-    async def _insert(resolved_ingestion_event_id: str | None) -> uuid.UUID:
-        return await pool.fetchval(
-            """
+    async def _insert(writer: Any, resolved_ingestion_event_id: str | None) -> uuid.UUID:
+        statement = """
             INSERT INTO sessions
                 (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
                  complexity, resolution_source, effective_system_prompt, prompt_digest,
                  prompt_provenance, purpose_lane)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING id
-            """,
+            """
+        values = [
             sanitized_prompt,
             trigger_source,
             trace_id,
@@ -326,24 +326,115 @@ async def session_create(
             prompt_digest,
             safe_prompt_provenance,
             purpose_lane,
-        )
+        ]
+        if binding is not None or runtime_context is not None:
+            # Fixed source-selected receiving UUID; no request/session-string
+            # selector enters this branch. Ordinary INSERT shape is unchanged.
+            statement = statement.replace(
+                "prompt_provenance, purpose_lane)", "prompt_provenance, purpose_lane, id)"
+            ).replace("$10, $11, $12)", "$10, $11, $12, $13)")
+            values.append(binding.session_id if binding is not None else runtime_context.session)
+        return await writer.fetchval(statement, *values)
 
-    try:
-        session_id: uuid.UUID = await _insert(ingestion_event_id)
-    except asyncpg.ForeignKeyViolationError as exc:
-        constraint_name = getattr(exc, "constraint_name", None)
-        is_ingestion_event_fk = (
-            constraint_name == "sessions_ingestion_event_id_fkey"
-            or "sessions_ingestion_event_id_fkey" in str(exc)
-        )
-        if ingestion_event_id is None or not is_ingestion_event_fk:
-            raise
-        logger.warning(
-            "Session ingestion_event_id=%s no longer exists; creating session without "
-            "ingestion-event linkage",
-            ingestion_event_id,
-        )
-        session_id = await _insert(None)
+    async def insert_session(writer):
+        try:
+            session_id = await _insert(writer, ingestion_event_id)
+        except asyncpg.ForeignKeyViolationError as exc:
+            constraint_name = getattr(exc, "constraint_name", None)
+            is_ingestion_event_fk = (
+                constraint_name == "sessions_ingestion_event_id_fkey"
+                or "sessions_ingestion_event_id_fkey" in str(exc)
+            )
+            if ingestion_event_id is None or not is_ingestion_event_fk:
+                raise
+            logger.warning(
+                "Session ingestion_event_id=%s no longer exists; creating session without "
+                "ingestion-event linkage",
+                ingestion_event_id,
+            )
+            session_id = await _insert(writer, None)
+        return session_id
+
+    from butlers.chronicler.location_input_binding import (
+        _current_dispatch_input,
+        bind_dispatch_session,
+    )
+
+    binding = _current_dispatch_input.get()
+    from butlers.chronicler.location_memory_context import (
+        bind_context_session,
+        current_runtime_context,
+        verify_context_session,
+    )
+
+    runtime_context = current_runtime_context(pool)
+    if binding is not None:
+        from butlers.chronicler.location_retention import PolicyUnavailableError, native_copy_pool
+        from butlers.chronicler.storage import _lock_location_writes
+
+        if not binding.active:
+            raise PolicyUnavailableError("Native dispatch lifetime has ended")
+        if not native_copy_pool(pool):
+            raise PolicyUnavailableError("Native receiving pool is unavailable")
+        async with pool.acquire() as writer:
+            async with writer.transaction():
+                if await writer.fetchval("SELECT current_user") != "butler_chronicler_rw":
+                    raise PolicyUnavailableError("Native receiving identity differs")
+                await _lock_location_writes(writer)
+
+                # Keep the adopted FK fallback inside separate savepoints.
+                class SavepointWriter:
+                    async def fetchval(self, *args):
+                        async with writer.transaction():
+                            return await writer.fetchval(*args)
+
+                session_id = await insert_session(SavepointWriter())
+                await bind_dispatch_session(writer, session_id, sanitized_prompt)
+                await bind_context_session(writer, pool, session_id, sanitized_prompt)
+        async with pool.acquire() as committed:
+            observed = await committed.fetchval(
+                "SELECT receiving_session FROM location_native_dispatch_sessions "
+                "WHERE input_generation=$1 AND prompt_digest=$2",
+                binding.generation,
+                binding.prompt_digest,
+            )
+        if observed != session_id:
+            raise PolicyUnavailableError("Committed native session admission is unknown")
+    elif runtime_context is not None:
+        async with pool.acquire() as writer:
+            async with writer.transaction():
+                if runtime_context.ingress_input is not None:
+                    from butlers.core.location_ingress_copies import lock_ingress_census
+
+                    await lock_ingress_census(writer)
+                await runtime_context.runtime.lock_domain(writer)
+                session_id = await insert_session(writer)
+                await bind_context_session(writer, pool, session_id, sanitized_prompt)
+    else:
+        from butlers.chronicler.location_copy_pools import native_copy_pool
+
+        if native_copy_pool(pool):
+            from butlers.chronicler.location_policy import PolicyUnavailableError
+            from butlers.chronicler.storage import _lock_location_writes
+
+            # An opaque ordinary body is UNKNOWN, not a claimed native copy.
+            # Its actual configured writer must still serialize with the
+            # current frontier/deletion census, before the session row exists.
+            async with pool.acquire() as writer:
+                async with writer.transaction():
+                    if await writer.fetchval("SELECT current_user") != "butler_chronicler_rw":
+                        raise PolicyUnavailableError("Owning session writer identity differs")
+                    await _lock_location_writes(writer)
+
+                    class SavepointWriter:
+                        async def fetchval(self, *args):
+                            async with writer.transaction():
+                                return await writer.fetchval(*args)
+
+                    session_id = await insert_session(SavepointWriter())
+        else:
+            session_id = await insert_session(pool)
+    await verify_context_session(pool, session_id)
     logger.info("Session created: %s (trigger=%s, model=%s)", session_id, trigger_source, model)
 
     # Fan a "session started" event onto the multiplexed fleet event bus
@@ -415,35 +506,66 @@ async def session_complete(
     safe_tool_calls = _sanitize_json_value(tool_calls)
     safe_cost = _sanitize_json_value(cost) if cost is not None else None
 
-    row = await pool.fetchrow(
-        """
-        UPDATE sessions
-        SET result        = $2,
-            tool_calls    = $3,
-            duration_ms   = $4,
-            cost          = $5,
-            success       = $6,
-            error         = $7,
-            input_tokens  = $8,
-            output_tokens = $9,
-            cached_input_tokens   = $10,
-            cache_creation_tokens = $11,
-            completed_at  = now()
-        WHERE id = $1
-        RETURNING id, model
-        """,
-        session_id,
-        safe_output,
-        safe_tool_calls,
-        duration_ms,
-        safe_cost,
-        success,
-        safe_error,
-        input_tokens,
-        output_tokens,
-        cached_input_tokens,
-        cache_creation_tokens,
+    from butlers.chronicler.location_retention import (
+        lock_native_session_completion,
+        native_copy_pool,
     )
+
+    async def persist(writer, *, forgotten=False):
+        nonlocal safe_output, safe_tool_calls, safe_error
+        if forgotten:
+            safe_output = "[Location-derived output forgotten]"
+            safe_tool_calls = []
+            safe_error = (
+                "Location-derived failure evidence withheld" if safe_error is not None else None
+            )
+        return await writer.fetchrow(
+            """
+            UPDATE sessions
+            SET result        = $2,
+                tool_calls    = $3,
+                duration_ms   = $4,
+                cost          = $5,
+                success       = $6,
+                error         = $7,
+                input_tokens  = $8,
+                output_tokens = $9,
+                cached_input_tokens   = $10,
+                cache_creation_tokens = $11,
+                completed_at  = now()
+            WHERE id = $1
+            RETURNING id, model
+            """,
+            session_id,
+            safe_output,
+            safe_tool_calls,
+            duration_ms,
+            safe_cost,
+            success,
+            safe_error,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+            cache_creation_tokens,
+        )
+
+    from butlers.chronicler.location_memory_context import (
+        context_session_forgotten,
+        context_writer,
+    )
+
+    if native_copy_pool(pool) or context_writer(pool) is not None:
+        async with pool.acquire() as writer:
+            async with writer.transaction():
+                forgotten = (
+                    await lock_native_session_completion(writer, session_id)
+                    if native_copy_pool(pool)
+                    else False
+                )
+                forgotten = await context_session_forgotten(pool, writer, session_id) or forgotten
+                row = await persist(writer, forgotten=forgotten)
+    else:
+        row = await persist(pool)
     if row is None:
         raise ValueError(f"Session {session_id} not found")
 

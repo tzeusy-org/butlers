@@ -68,7 +68,7 @@ from butlers.config import (
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
 from butlers.core.scheduler import tick as _tick
-from butlers.core.spawner import Spawner
+from butlers.core.spawner import Spawner, SpawnerResult
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
 from butlers.core.tool_call_capture import (
@@ -572,6 +572,33 @@ class ButlerDaemon:
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
+        location_routes = [
+            mod.location_retention_route()
+            for mod in self._active_modules
+            if callable(getattr(mod, "location_retention_route", None))
+        ]
+        # Core receiving questions must not depend on optional Memory. Its own
+        # pool/schema and actual Switchboard client are constructor inputs;
+        # no fabricated Memory pool or caller source field enrolls this writer.
+        if not any(mod.name == "memory" for mod in self._active_modules):
+            from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+
+            client = self.switchboard_client
+            if self.config.name == "switchboard" and client is None:
+                client = LocalSwitchboardClient(self.mcp)
+            self._location_delegation_runtime = await NativeDelegationRuntime.create(
+                domain=self.db.pool,
+                name=self.config.name,
+                schema=self.db.schema or "public",
+                registry=client,
+            )
+            location_routes.append(self._location_delegation_runtime.route())
+        ingress_runtime = None
+        if self.config.name == "switchboard":
+            from butlers.core.location_ingress_copies import SwitchboardInputCopies
+
+            ingress_runtime = SwitchboardInputCopies(self.db.pool)
+            self._location_ingress_runtime = ingress_runtime
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -581,6 +608,13 @@ class ButlerDaemon:
             route_preflight=self._build_route_preflight(),
             fact_source_registry=getattr(self, "_fact_source_registry", None),
             fact_receiver_registry=self._fact_receiver_registry,
+            location_retention_adapters=[
+                mod.location_retention_admission
+                for mod in self._active_modules
+                if callable(getattr(mod, "location_retention_admission", None))
+            ],
+            location_retention_routes=location_routes,
+            location_ingress_runtime=ingress_runtime,
         )
         config = uvicorn.Config(
             app,
@@ -712,8 +746,22 @@ class ButlerDaemon:
         route_preflight: Any | None = None,
         fact_source_registry: Any | None = None,
         fact_receiver_registry: Any | None = None,
+        location_retention_routes: list[Any] | None = None,
+        location_retention_adapters: list[Any] | None = None,
+        location_ingress_runtime: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
+        if location_ingress_runtime is not None:
+            from butlers.core.location_ingress_copies import (
+                SwitchboardInputCopies,
+                install_ingress_middleware,
+            )
+
+            if butler_name != "switchboard" or not isinstance(
+                location_ingress_runtime, SwitchboardInputCopies
+            ):
+                raise RuntimeError("Native ingress constructor differs")
+            install_ingress_middleware(mcp, location_ingress_runtime)
         apply_streamable_http_disconnect_patch()
         # Codex and other modern MCP clients use streamable HTTP at /mcp.
         streamable_app = mcp.http_app(path="/mcp", transport="streamable-http")
@@ -803,12 +851,35 @@ class ButlerDaemon:
             if not cls._attach_route_via_public_api(streamable_app, receiver_route):
                 streamable_app.routes.append(receiver_route)
 
+        for location_route in location_retention_routes or ():
+            if not cls._attach_route_via_public_api(streamable_app, location_route):
+                streamable_app.routes.append(location_route)
+
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,
             butler_name=butler_name,
             approval_push_runtime=approval_push_runtime,
         )
-        return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
+        for adapter in location_retention_adapters or ():
+            guarded_app = adapter(guarded_app)
+
+        from butlers.chronicler.location_catalog_copies import CatalogServerCopyLifetime
+
+        app = _McpSseDisconnectGuard(
+            CatalogServerCopyLifetime(guarded_app, butler_name=butler_name), butler_name=butler_name
+        )
+        if location_ingress_runtime is not None:
+            from butlers.core.location_ingress_copies import (
+                IngressServerLifetime,
+                SwitchboardInputCopies,
+            )
+
+            if butler_name != "switchboard" or not isinstance(
+                location_ingress_runtime, SwitchboardInputCopies
+            ):
+                raise RuntimeError("Native ingress constructor differs")
+            app = IngressServerLifetime(app, location_ingress_runtime)
+        return app
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.
@@ -2023,6 +2094,11 @@ class ButlerDaemon:
                 repo_root = _parent
                 break
 
+        from butlers.chronicler.location_input_binding import register_dispatch_runtime
+
+        if isinstance(self.spawner, Spawner):
+            register_dispatch_runtime(self.spawner, SpawnerResult)
+
         for mod in self._active_modules:
             wire_fn = getattr(mod, "wire_runtime", None)
             if wire_fn is None or not callable(wire_fn):
@@ -2030,7 +2106,7 @@ class ButlerDaemon:
             try:
                 client = self.switchboard_client
                 if (
-                    mod.name == "self_healing"
+                    mod.name in {"self_healing", "memory"}
                     and self.config is not None
                     and self.config.name == "switchboard"
                     and client is None

@@ -26,6 +26,8 @@ type Mode = "open" | "expanded" | "minimized"
 
 export interface FloatingMapMinimapProps
   extends Pick<MapWidgetInnerProps, "playheadPoint" | "trailPoints"> {
+  /** Actual managed point-query generation, not a server disposal receipt. */
+  privacyGeneration?: number
   /** Optional initial mode. @default "open" */
   initialMode?: Mode
 }
@@ -33,6 +35,7 @@ export interface FloatingMapMinimapProps
 export function FloatingMapMinimap({
   playheadPoint,
   trailPoints,
+  privacyGeneration,
   initialMode = "open",
 }: FloatingMapMinimapProps) {
   const [mode, setMode] = useState<Mode>(initialMode)
@@ -110,6 +113,7 @@ export function FloatingMapMinimap({
           points={[]}
           playheadPoint={playheadPoint}
           trailPoints={trailPoints}
+          privacyGeneration={privacyGeneration}
           height="h-full"
         />
       </div>

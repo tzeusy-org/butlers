@@ -395,6 +395,25 @@ class TestButlerStartupIntegration:
 
         # Exercise the actual daemon dispatcher rather than comparing it with
         # another mutable production catalog.
+        retention_tools = {
+            "location_retention_answer_plan",
+            "location_retention_close_source_answers",
+            "location_retention_source_answer_status",
+            "location_retention_prepare_answer",
+            "location_retention_answer_status",
+            "location_retention_prepare_questions",
+            "location_retention_question_status",
+            "location_retention_source_question_status",
+            "location_retention_question_owner_plan",
+            "location_retention_prepare_question_loan",
+            "location_retention_close_owned_questions",
+            "location_retention_observe_source_question",
+        }
+        assert retention_tools <= set(registered_tools)
+        assert all(registered_tools.count(name) == 1 for name in retention_tools)
+        # Keep the complete old surface predicate unchanged; the additive
+        # infrastructure members have their separate explicit registration check.
+        registered_tools = [name for name in registered_tools if name not in retention_tools]
         assert len(set(registered_tools)) == 72
         assert "schedule_toggle" in registered_tools
         assert {

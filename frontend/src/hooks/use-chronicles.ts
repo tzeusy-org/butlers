@@ -18,10 +18,18 @@
  * Tombstone defaults: include_tombstoned defaults to false in all hooks.
  */
 
+import { useEffect, useSyncExternalStore } from "react";
+import {
+  reconcileLocationPrivacy, subscribeLocationPrivacy,
+  getLocationPrivacySnapshot, getLocationPrivacyServerSnapshot,
+} from "./location-privacy";
+
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createChroniclerRoutine,
+  getLocationRetention,
+  putLocationRetention,
   deleteChroniclerRoutine,
   getChroniclerBalance,
   getChroniclerCorrectionPrompts,
@@ -450,12 +458,20 @@ export function useChroniclesPointEvents(
   params?: ChroniclerEventsParams,
   options?: ChroniclesHookOptions,
 ) {
-  return useQuery({
-    queryKey: chroniclesKeys.pointEvents(params),
-    queryFn: () => getChroniclerEvents(params),
+  const privacy = useSyncExternalStore(
+    subscribeLocationPrivacy, getLocationPrivacySnapshot, getLocationPrivacyServerSnapshot,
+  );
+  // Namespace actual requests by the managed privacy generation. An old
+  // promise or retained prop cannot be relabeled as a new response, even when
+  // a parent rerenders after reset or a fresh response has identical values.
+  const query = useQuery({
+    queryKey: [...chroniclesKeys.pointEvents(params), { privacyGeneration: privacy.generation }],
+    queryFn: ({ signal }) => getChroniclerEvents(params, signal),
+    placeholderData: undefined,
     refetchInterval: options?.refetchInterval ?? CHRONICLES_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
   });
+  return { ...query, locationPrivacyGeneration: privacy.generation };
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +533,36 @@ export function useDeleteChroniclesRoutine() {
     mutationFn: (routineId: string) => deleteChroniclerRoutine(routineId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
+    },
+  });
+}
+
+
+export function useLocationRetention() {
+  const cache = useQueryClient();
+  const result = useQuery({
+    queryKey: [...chroniclesKeys.all, "location-retention"],
+    queryFn: ({ signal }) => getLocationRetention(signal),
+    refetchInterval: CHRONICLES_POLL_DEFAULT_MS,
+    staleTime: 0,
+  });
+  const revision = result.data?.data.privacy_revision;
+  useEffect(() => {
+    void reconcileLocationPrivacy(cache, revision);
+  }, [cache, revision]);
+  return result;
+}
+
+export function useUpdateLocationRetention() {
+  const cache = useQueryClient();
+  return useMutation({
+    mutationFn: ({days, version}: {days: number; version: number}) => putLocationRetention(days, version),
+    onSuccess: async () => {
+      // Discard outstanding historical exact-trail responses before refreshing.
+      // Widening does not restore erased evidence or create a local TTL cache.
+      await cache.cancelQueries({ queryKey: chroniclesKeys.all });
+      cache.removeQueries({ queryKey: [...chroniclesKeys.all, "point-events"] });
+      await cache.invalidateQueries({ queryKey: chroniclesKeys.all });
     },
   });
 }

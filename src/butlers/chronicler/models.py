@@ -104,6 +104,10 @@ class SourceAdapterState:
     active: bool = False
     inactive_reason: str | None = None
     schema_version: int = 1
+    raw_evidence_retention: str | None = None
+    projected_evidence_retention: str | None = None
+    allowed_spatial_precision_m: int | None = None
+    source_tombstone_behavior: str | None = None
     registered_at: datetime | None = None
     updated_at: datetime | None = None
 

@@ -51,6 +51,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _sdk_failure_detail(exc: Exception, invocation: str) -> str:
+    """Restrict native ingress diagnostics; this supplies no disposal witness."""
+    from butlers.core.location_ingress_runtime import native_ingress_error_redaction
+
+    if native_ingress_error_redaction():
+        from butlers.chronicler.location_policy import closed_failure
+
+        category, failure_class, sqlstate = closed_failure(exc)
+        detail = f"category={category} sqlstate={sqlstate} class={failure_class}"
+        logger.error("ApiAdapter %s failed %s", invocation, detail)
+        return detail
+    logger.error("ApiAdapter %s failed: %s", invocation, exc, exc_info=True)
+    return str(exc)
+
+
 # Default timeout for a single Messages API call.
 _DEFAULT_TIMEOUT_SECONDS = 60
 
@@ -244,17 +260,17 @@ class ApiAdapter(RuntimeAdapter):
                 f"ApiAdapter invocation timed out after {effective_timeout} seconds"
             ) from None
         except Exception as exc:
-            logger.error("ApiAdapter invocation failed: %s", exc, exc_info=True)
+            error_detail = _sdk_failure_detail(exc, "invocation")
             self._last_process_info = {
                 "pid": None,
                 "exit_code": -1,
                 "command": cmd_for_log,
-                "stderr": str(exc),
+                "stderr": error_detail,
                 "runtime_type": "api",
-                "error_detail": str(exc),
+                "error_detail": error_detail,
                 "is_pre_tool_call": True,
             }
-            raise RuntimeError(f"ApiAdapter invocation failed: {exc}") from exc
+            raise RuntimeError(f"ApiAdapter invocation failed: {error_detail}") from exc
 
         self._last_process_info = {
             "pid": None,
@@ -362,17 +378,17 @@ class ApiAdapter(RuntimeAdapter):
                 f"ApiAdapter structured invocation timed out after {effective_timeout} seconds"
             ) from None
         except Exception as exc:
-            logger.error("ApiAdapter structured invocation failed: %s", exc, exc_info=True)
+            error_detail = _sdk_failure_detail(exc, "structured invocation")
             self._last_process_info = {
                 "pid": None,
                 "exit_code": -1,
                 "command": cmd_for_log,
-                "stderr": str(exc),
+                "stderr": error_detail,
                 "runtime_type": "api",
-                "error_detail": str(exc),
+                "error_detail": error_detail,
                 "is_pre_tool_call": True,
             }
-            raise RuntimeError(f"ApiAdapter structured invocation failed: {exc}") from exc
+            raise RuntimeError(f"ApiAdapter structured invocation failed: {error_detail}") from exc
 
         self._last_process_info = {
             "pid": None,

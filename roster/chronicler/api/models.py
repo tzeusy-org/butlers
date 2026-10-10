@@ -113,6 +113,10 @@ class SourceStateRow(BaseModel):
     inactive_reason: str | None = None
     last_run_at: datetime | None = None
     last_error: str | None = None
+    raw_evidence_retention: str | None = None
+    projected_evidence_retention: str | None = None
+    allowed_spatial_precision_m: int | None = None
+    source_tombstone_behavior: str | None = None
     subsource_checkpoints: list[SubsourceCheckpoint] | None = None
 
 
@@ -472,6 +476,9 @@ class EvidenceChainLink(BaseModel):
     """Human-readable label — the event title when present, else a
     ``"{source_name} {event_type}"`` fallback."""
     privacy: str
+    retention_state: str = "retained"
+    spatial_precision_m: int | None = None
+    retention_receipt: str | None = None
 
 
 class ActivityEvidenceChain(BaseModel):

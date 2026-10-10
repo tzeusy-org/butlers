@@ -6,6 +6,7 @@ import { ownerFetch } from "./owner-session";
  */
 
 import type {
+  LocationRetentionStatus,
   CandidateIdentityFact,
   ApprovalAction,
   ApprovalActionsResponse,
@@ -6107,6 +6108,7 @@ export function postChroniclerEpisodeExplain(
 /** Fetch paginated Chronicler point events. Defaults: include_tombstoned=false. */
 export function getChroniclerEvents(
   params?: ChroniclerEventsParams,
+  signal?: AbortSignal,
 ): Promise<{ data: ChroniclerPointEvent[]; meta: { total: number; offset: number; limit: number; has_more: boolean } }> {
   const sp = new URLSearchParams();
   if (params?.source_name) sp.set("source_name", params.source_name);
@@ -6118,7 +6120,7 @@ export function getChroniclerEvents(
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return apiFetch(qs ? `/chronicler/events?${qs}` : "/chronicler/events");
+  return apiFetch(qs ? `/chronicler/events?${qs}` : "/chronicler/events", { signal });
 }
 
 // ── Chronicler routines (bu-whhll.9 / bu-whhll.11) ─────────────────────────
@@ -7276,4 +7278,16 @@ export function getIdentityDecision(entityId: string, factId: string): Promise<{
   fact_id: string; decision: "adopt" | "reject"; decided_at: string; replayed: boolean;
 }> {
   return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/decision`);
+}
+
+
+/** Owner policy and actual last receipt. A failed fetch cannot imply expiration. */
+export function getLocationRetention(signal?: AbortSignal): Promise<{data: LocationRetentionStatus}> {
+  return apiFetch("/chronicler/location-retention", { signal });
+}
+
+export function putLocationRetention(days: number, expectedVersion: number): Promise<{data: Pick<LocationRetentionStatus, "days" | "version">}> {
+  return apiFetch("/chronicler/location-retention", {
+    method: "PUT", body: JSON.stringify({ days, expected_version: expectedVersion }),
+  });
 }

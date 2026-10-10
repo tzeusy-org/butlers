@@ -183,6 +183,7 @@ async def _reconcile_return_task(
     answer: str,
     wake_key: str,
     answer_digest: str,
+    create_task: Any = None,
 ) -> dict[str, Any]:
     task_name = _task_name_for(ledger_id)
 
@@ -246,7 +247,9 @@ async def _reconcile_return_task(
     until_at = target_time + timedelta(minutes=1)
 
     try:
-        task_id = await schedule_create(pool, task_name, cron, prompt, until_at=until_at)
+        task_id = await (create_task or schedule_create)(
+            pool, task_name, cron, prompt, until_at=until_at
+        )
     except ValueError:
         # Deterministic-name collision: another concurrent delegate_wake call
         # (or a crash-replay) won the race between our lookup and insert.
@@ -326,7 +329,14 @@ async def handle_delegate_wake(
     ``delegation_ledger.verify_wake_callback``), but this function repeats
     every check itself rather than trusting that upstream gate.
     """
-    row = await get_delegation(pool, ledger_id)
+    from butlers.core.delegation_source import create_answer_schedule, receive_answer
+
+    # Locators select only the constructor's private, source-verified current
+    # admission. The full question/answer read and scheduled prompt processing
+    # follow its independently committed input reservation.
+    native = await receive_answer(pool, uuid.UUID(str(ledger_id)), wake_key)
+    admission = native[1] if native is not None else None
+    row = native[0] if native is not None else await get_delegation(pool, ledger_id)
     if row is None:
         return {"status": "error", "error": f"No delegation_ledger row for id={ledger_id!r}."}
     if row["status"] != "answered":
@@ -364,8 +374,30 @@ async def handle_delegate_wake(
     # could otherwise silently desynchronize wake_key from answer_digest).
     answer_digest = row.get("answer_digest") or compute_answer_digest(answer)
 
-    await advance_wake_callback_routed(pool, ledger_id, wake_key)
+    async def write_return(conn, canonical):
+        await advance_wake_callback_routed(conn, ledger_id, wake_key)
 
+        async def create_task(actual, *args, **kwargs):
+            # The original name-collision reconciliation must survive an
+            # actual unique violation without aborting this business TX.
+            async with actual.transaction():
+                return await schedule_create(actual, *args, **kwargs)
+
+        return await _reconcile_return_task(
+            conn,
+            ledger_id=ledger_id,
+            asking_butler=asking_butler,
+            target_butler=canonical["target_butler"],
+            question=canonical["question"],
+            answer=canonical["answer"],
+            wake_key=wake_key,
+            answer_digest=canonical["answer_digest"],
+            create_task=create_task,
+        )
+
+    if admission is not None:
+        return await create_answer_schedule(pool, admission, write_return)
+    await advance_wake_callback_routed(pool, ledger_id, wake_key)
     return await _reconcile_return_task(
         pool,
         ledger_id=ledger_id,

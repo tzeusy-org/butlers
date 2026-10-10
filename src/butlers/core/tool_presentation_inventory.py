@@ -69,7 +69,13 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "core",
         "delegation",
-        "delegate_receive delegate_wake",
+        "delegate_receive delegate_wake location_retention_answer_plan "
+        "location_retention_prepare_answer location_retention_answer_status "
+        "location_retention_close_source_answers location_retention_source_answer_status "
+        "location_retention_prepare_questions "
+        "location_retention_question_status location_retention_source_question_status "
+        "location_retention_observe_source_question location_retention_question_owner_plan "
+        "location_retention_prepare_question_loan location_retention_close_owned_questions",
         presentable=False,
         namespace="delegation_control",
     ),
@@ -231,6 +237,14 @@ TOOL_PRESENTATION_INVENTORY = (
         "memory_confirm memory_context memory_get memory_open_gaps memory_recall memory_search "
         "memory_store_episode memory_store_fact memory_store_rule",
     ),
+    *_declare(
+        "memory",
+        "direct",
+        "location_catalog_loan_body location_retention_prepare_copy location_retention_copy_status",
+        presentable=False,
+        posture="eager",
+        namespace="location_retention",
+    ),
     *_declare("memory", "feedback", "memory_forget memory_mark_harmful memory_mark_helpful"),
     *_declare(
         "memory",
@@ -293,6 +307,18 @@ TOOL_PRESENTATION_INVENTORY = (
     ),
     *_declare("whatsapp", "messages", "whatsapp_reply_to_message whatsapp_send_message"),
     # Roster modules.
+    *_declare(
+        "chronicler",
+        "retention",
+        "chronicler_location_retention_batches chronicler_location_retention_status",
+        presentable=False,
+    ),
+    *_declare(
+        "switchboard",
+        "routing",
+        "owntracks_retention_source_forget owntracks_retention_source_receipt",
+        presentable=False,
+    ),
     *_declare(
         "chronicler",
         "chronicle",

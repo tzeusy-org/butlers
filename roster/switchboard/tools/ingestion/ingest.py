@@ -990,8 +990,33 @@ async def ingest_v1(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                if envelope.source.provider == "owntracks":
+                    from butlers.core.location_ingress_copies import lock_registered_ingress_writer
+
+                    await lock_registered_ingress_writer(pool, conn)
+
                 # Serialise concurrent inserts for the same dedupe_key
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedupe_key)
+
+                if envelope.source.provider == "owntracks":
+                    # A committed source-copy floor survives original row
+                    # pruning. Replaying the exact native dedup identity may
+                    # locate its historical acceptance, never refill raw data.
+                    from butlers.location_retention import logical_digest
+
+                    forgotten_source = await conn.fetchrow(
+                        "SELECT request_id FROM location_retention_source_floors "
+                        "WHERE dedupe_digest=$1",
+                        logical_digest(dedupe_key),
+                    )
+                    if forgotten_source is not None:
+                        return IngestAcceptedResponse(
+                            request_id=forgotten_source["request_id"],
+                            status="accepted",
+                            duplicate=True,
+                            triage_decision=None,
+                            triage_target=None,
+                        )
 
                 # Also lock on content-hash key to serialize cross-connector races
                 inner_content_hash_key = (
@@ -1073,6 +1098,15 @@ async def ingest_v1(
                     attachments_value,
                     lifecycle_state,
                 )
+
+                if envelope.source.provider == "owntracks":
+                    from butlers.core.location_ingress_copies import (
+                        capture_canonical_ingress_source,
+                    )
+
+                    await capture_canonical_ingress_source(
+                        pool, conn, request_id, request_context, raw_payload, normalized_text
+                    )
 
                 # Insert canonical ingestion event — same UUID7, same transaction.
                 # This row is the durable, normalised first-class record of every

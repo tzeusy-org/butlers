@@ -11,6 +11,7 @@ Classes:
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import logging
@@ -43,6 +44,32 @@ _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL = {
 }
 
 _MANUAL_DAY_CLOSE_ALLOWED_TOOLS = frozenset({"chronicler_day_close_bundle"})
+
+
+async def _finish_failed_tool_copy(handle: Any, primary: BaseException) -> None:
+    """Best-effort error receipt without replacing the handler's primary error.
+
+    A failed receipt leaves its durable input/loans unresolved. Cancellation
+    also retains the original cancellation; this does not attest disposal.
+    Successful-handler receipts use the strict path and may still refuse a result.
+    """
+    from butlers.chronicler.location_policy import closed_failure
+    from butlers.chronicler.location_tool_copies import finish_tool_copy
+
+    try:
+        await finish_tool_copy(handle, failed=True)
+    except asyncio.CancelledError:
+        if not isinstance(primary, asyncio.CancelledError):
+            raise  # A new cancellation during cleanup still cancels the task.
+        logger.warning("Native cancelled tool failure receipt unavailable")
+    except Exception as secondary:
+        category, label, state = closed_failure(secondary)
+        logger.warning(
+            "Native tool failure receipt unavailable (category=%s class=%s sqlstate=%s)",
+            category,
+            label,
+            state,
+        )
 
 
 def _manual_day_close_tool_policy(*, butler_name: str, tool_name: str) -> dict[str, Any] | None:
@@ -169,6 +196,19 @@ def _tool_input_fingerprint(fn: Any, args: tuple[Any, ...], kwargs: dict[str, An
     return fingerprint_tool_call_payload(payload)
 
 
+def _native_http_copy_handler(handler: Any, butler: str):
+    """Install verified request cells before any instrumentation or handler."""
+
+    @functools.wraps(handler)
+    async def bound(*args, **kwargs):
+        from butlers.chronicler.location_catalog_copies import native_http_copy_context
+
+        with native_http_copy_context(butler):
+            return await handler(*args, **kwargs)
+
+    return bound
+
+
 class _SpanWrappingMCP:
     """Proxy around FastMCP that logs and span-wraps module tool handlers.
 
@@ -275,10 +315,21 @@ class _SpanWrappingMCP:
                         )
                         return disabled_result
 
+                from butlers.chronicler.location_tool_copies import (
+                    begin_tool_copy,
+                    finish_tool_copy,
+                )
+
+                copy_handle = await begin_tool_copy(
+                    self._butler_name, self._module_name, resolved_tool_name, input_fingerprint
+                )
                 try:
                     with tool_span(resolved_tool_name, butler_name=self._butler_name):
                         result = await fn(*args, **kwargs)
-                except Exception as exc:
+                except BaseException as exc:
+                    if not isinstance(exc, Exception):
+                        await _finish_failed_tool_copy(copy_handle, exc)
+                        raise
                     capture_tool_call(
                         tool_name=resolved_tool_name,
                         module_name=self._module_name,
@@ -293,8 +344,10 @@ class _SpanWrappingMCP:
                         tool_name=resolved_tool_name,
                         exc=exc,
                     )
+                    await _finish_failed_tool_copy(copy_handle, exc)
                     raise
 
+                await finish_tool_copy(copy_handle, result)
                 capture_tool_call(
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,
@@ -306,7 +359,9 @@ class _SpanWrappingMCP:
                 return result
 
             try:
-                registered = original_decorator(instrumented)
+                registered = original_decorator(
+                    _native_http_copy_handler(instrumented, self._butler_name)
+                )
             except Exception as exc:
                 self._registration_failures[resolved_tool_name] = type(exc).__name__
                 raise
@@ -372,9 +427,20 @@ class _ToolCallLoggingMCP:
                         result_payload=policy_result,
                     )
                     return policy_result
+                from butlers.chronicler.location_tool_copies import (
+                    begin_tool_copy,
+                    finish_tool_copy,
+                )
+
+                copy_handle = await begin_tool_copy(
+                    self._butler_name, self._module_name, resolved_tool_name, input_fingerprint
+                )
                 try:
                     result = await fn(*args, **kwargs)
-                except Exception as exc:
+                except BaseException as exc:
+                    if not isinstance(exc, Exception):
+                        await _finish_failed_tool_copy(copy_handle, exc)
+                        raise
                     capture_tool_call(
                         tool_name=resolved_tool_name,
                         module_name=self._module_name,
@@ -389,7 +455,9 @@ class _ToolCallLoggingMCP:
                         tool_name=resolved_tool_name,
                         exc=exc,
                     )
+                    await _finish_failed_tool_copy(copy_handle, exc)
                     raise
+                await finish_tool_copy(copy_handle, result)
                 capture_tool_call(
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,
@@ -401,7 +469,9 @@ class _ToolCallLoggingMCP:
                 return result
 
             try:
-                registered = original_decorator(instrumented)
+                registered = original_decorator(
+                    _native_http_copy_handler(instrumented, self._butler_name)
+                )
             except Exception as exc:
                 self._registration_failures[resolved_tool_name] = type(exc).__name__
                 raise

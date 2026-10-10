@@ -46,6 +46,24 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """List registered butlers, optionally filtered by routing eligibility."""
         return await _registry.list_butlers(module._get_pool(), routable_only=routable_only)
 
+    @_tool("routing")
+    async def owntracks_retention_source_forget(decision_id: uuid.UUID) -> dict[str, Any]:
+        """Apply a registered Chronicler decision to a proven native skipped report.
+
+        The UUID locates the original immutable plan; callers supply no raw
+        selectors or verdict. Routed/busy/ambiguous cohorts remain held.
+        """
+        from butlers.core.location_copy_retention import forget_skipped_source
+
+        return await forget_skipped_source(module._get_pool(), decision_id)
+
+    @_tool("routing")
+    async def owntracks_retention_source_receipt(decision_id: uuid.UUID) -> dict[str, Any]:
+        """Read an independently committed source-copy receipt; no raw coordinates."""
+        from butlers.core.location_copy_retention import read_source_receipt
+
+        return await read_source_receipt(module._get_pool(), decision_id)
+
     # =================================================================
     # Connector lifecycle tools
     # =================================================================

@@ -110,7 +110,7 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
     [windowFrom, windowTo],
   );
 
-  const { data: pointEventsData } = useChroniclesPointEvents(pointEventsParams, {
+  const { data: pointEventsData, locationPrivacyGeneration } = useChroniclesPointEvents(pointEventsParams, {
     refetchInterval,
   });
   const pointEvents = useMemo(() => pointEventsData?.data ?? [], [pointEventsData]);
@@ -211,7 +211,8 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
           </div>
         </Section>
 
-        <FloatingMapMinimap playheadPoint={playheadPoint} trailPoints={trailPoints} />
+        <FloatingMapMinimap playheadPoint={playheadPoint} trailPoints={trailPoints}
+          privacyGeneration={locationPrivacyGeneration} />
       </MapPanContext.Provider>
 
       <Section eyebrow="Where the time went">

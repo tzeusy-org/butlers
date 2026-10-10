@@ -237,3 +237,148 @@ def test_list_episodes_sql_uses_any_for_participant_entity_id() -> None:
     assert any("::uuid" in c for c in any_clauses), (
         "The ANY(participant_entity_ids) clause must cast the parameter with ::uuid"
     )
+
+
+async def test_location_api_export_birth_commits_before_response_and_unknown_refuses():
+    """REQ-location-retention-005/006; actual API producer, software-only SQL double."""
+    from contextlib import asynccontextmanager
+
+    from butlers.chronicler import location_retention
+
+    row = _episode_row(source_name="owntracks.points", episode_type="movement")
+    births = []
+    dispositions = {}
+    trace = []
+    unknown = False
+    schema = "chronicler"
+
+    class Conn:
+        @asynccontextmanager
+        async def transaction(self):
+            trace.append("transaction")
+            yield
+            trace.append("commit")
+
+        async def fetchrow(self, query, *args):
+            if "location_retention_policy" in query:
+                return {"days": 30, "version": 1, "spatial_scheme_version": 1, "updated_at": _NOW}
+            if "location_native_api_dispositions" in query:
+                return dispositions.get(args[0])
+            return row
+
+        async def fetch(self, query, *args):
+            assert "location_projection_outputs" in query
+            return [{"output_id": row["id"]}]
+
+        async def execute(self, query, *args):
+            if "INSERT INTO location_native_copy_births" in query:
+                births.append(args)
+                trace.append("birth")
+            if "INSERT INTO location_native_api_dispositions" in query:
+                dispositions[args[0]] = {
+                    "server_request": args[1],
+                    "producer_kind": args[2],
+                    "body_digest": args[3],
+                    "receipt_id": args[4],
+                }
+                trace.append("server_lifetime_disposition")
+
+        async def fetchval(self, query, *args):
+            if "current_schema()" in query:
+                return schema
+            if "location_native_api_dispositions" in query:
+                trace.append("disposition_readback")
+                return dispositions.get(args[0], {}).get("receipt_id")
+            if "location_retention_frontiers" in query:
+                return False
+            assert "location_native_copy_births" in query
+            if "receiving_server_request" in query:
+                return sum(b[0] == args[0] and b[8] == args[1] and b[3] == args[2] for b in births)
+            if len(args) == 1:
+                return sum(b[0] == args[0] for b in births)
+            trace.append("readback")
+            return 0 if unknown else sum(b[0] == args[0] for b in births)
+
+    conn = Conn()
+
+    class Pool:
+        async def fetchrow(self, query, *args):
+            return row
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield conn
+
+    db = MagicMock(spec=DatabaseManager)
+    pool = Pool()
+    db.pool.return_value = pool
+    location_retention._api_copy_pools.add(pool)  # Test-only configuration, not actual role proof.
+    app = create_app(api_key="")
+    for butler, module in app.state.butler_routers:
+        if butler == "chronicler":
+            app.dependency_overrides[module._get_db_manager] = lambda: db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        path = f"/api/chronicler/episodes/{row['id']}?runtime_session_id=forged"
+        response = await client.get(path)
+        assert response.status_code == 200
+        assert response.json()["source_name"] == "owntracks.points"
+        assert trace[:4] == ["transaction", "birth", "commit", "readback"]
+        assert trace.index("server_lifetime_disposition") > trace.index("readback")
+        assert trace[-1] == "disposition_readback"
+        assert dispositions[births[-1][0]]["server_request"] == births[-1][8]
+        assert births[-1][8] is not None  # Native ASGI scope, never caller query/principal.
+        assert births[-1][5] is None  # Existing API identity is not a receiving runtime.
+        assert births[-1][4] is True and births[-1][7] == "api_export"
+        unknown = True
+        response = await client.get(path)
+        assert response.status_code == 500 and "owntracks.points" not in response.text
+        unknown = False
+        schema = "unrelated"
+        before = len(births)
+        assert (await client.get(path)).status_code == 500
+        assert len(births) == before
+        schema = "chronicler"
+        assert (await client.get(path)).status_code == 200
+    from butlers.chronicler.location_export_lifetime import _current_location_export
+
+    async def interrupted_app(scope, receive, send):
+        async def failed_send(message):
+            if message.get("type") == "http.response.body":
+                raise RuntimeError("Synthetic interrupted export")
+            await send(message)
+
+        await app(scope, receive, failed_send)
+
+    prior_count = len(births)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=interrupted_app), base_url="http://test"
+    ) as client:
+        with pytest.raises(Exception, match="Synthetic interrupted export"):
+            await client.get(path)
+    assert len(births) > prior_count and births[-1][0] not in dispositions
+    assert _current_location_export.get() is None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get(path)).status_code == 200
+    assert births[-1][0] in dispositions
+    from butlers.chronicler.location_export_lifetime import LocationExportLifetimeMiddleware
+
+    async def unfinished_source(scope, receive, send):
+        async def native_reader(actual):
+            return [row]
+
+        await location_retention.capture_api_read(pool, "episode", native_reader)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"partial", "more_body": True})
+
+    async def consume(message):
+        return None
+
+    await LocationExportLifetimeMiddleware(unfinished_source)(
+        {"type": "http", "path": "/api/chronicler/episodes"}, None, consume
+    )
+    assert births[-1][0] not in dispositions and _current_location_export.get() is None
+    location_retention._api_copy_pools.discard(pool)

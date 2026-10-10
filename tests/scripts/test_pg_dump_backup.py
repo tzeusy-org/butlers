@@ -43,10 +43,12 @@ from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.owntracks_copy_history import COPY_HISTORY_TABLES, plant_copy_history
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "deploy" / "backup" / "pg_dump.sh"
@@ -60,6 +62,12 @@ _BACKUP_IMAGE = "postgres:17-alpine"
 _FAKE_PSQL_SNAPSHOT_HOLDER = """#!/bin/sh
 set -eu
 
+for arg in "$@"; do
+  if [ "${arg}" = "-c" ]; then
+    printf '0\\n'
+    exit 0
+  fi
+done
 output_file=""
 while IFS= read -r line; do
   case "${line}" in
@@ -70,6 +78,7 @@ while IFS= read -r line; do
       case "${output_file}" in
         */id) printf 'ABCDEF-012345\\n' > "${output_file}" ;;
         */policy-count) printf '3\\n' > "${output_file}" ;;
+        */native-copy-state) printf 'absent\\n' > "${output_file}" ;;
       esac
       output_file=""
       ;;
@@ -142,6 +151,20 @@ _EXPECTED_SCOPED_DATA_TABLES = {
     "public.cost_claim_events",
 }
 
+_EXPECTED_NATIVE_COPY_TABLES = {
+    "connectors.owntracks_filtered_copy_" + suffix
+    for suffix in ("births", "floors", "batches", "members")
+} | {
+    "connectors.owntracks_input_" + suffix
+    for suffix in ("server_births", "server_ends", "copy_births", "copy_ends")
+}
+
+
+def _read_native_copy_tables() -> set[str]:
+    match = re.search(r'^BACKUP_NATIVE_COPY_TABLES="([^\"]*)"$', _SCRIPT.read_text(), re.MULTILINE)
+    assert match is not None
+    return set(match.group(1).split())
+
 
 def _read_backup_sets() -> tuple[set[str], set[str], set[str]]:
     """Parse the exclusion and included-RLS sets declared in the backup script."""
@@ -173,11 +196,131 @@ def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
         if not line.lstrip().startswith("#")
     ]
     assert not [line for line in code if "--enable-row-security" in line]
+    assert _read_native_copy_tables() == _EXPECTED_NATIVE_COPY_TABLES
+    assert all(t not in _read_backup_sets()[1] for t in _EXPECTED_NATIVE_COPY_TABLES)
+    assert any("SET ROLE connector_writer;" in line for line in code)
+    assert any("native_copy_history_owner" in line for line in code)
+    assert any(" IN ACCESS SHARE MODE;" in line for line in code)
+    assert any("Native copy restoration cohort differs" in line for line in code)
     _excluded_schemas, _excluded_tables, scoped_data_tables = _read_backup_sets()
     assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES
     assert any('--snapshot="${BACKUP_SNAPSHOT}"' in line for line in code)
     for table in scoped_data_tables:
         assert any('"--exclude-table-data=${table}"' in line for line in code)
+    _assert_closed_certificate_stage_diagnostic()
+    _assert_native_capture_parser()
+
+
+def _assert_native_capture_parser() -> None:
+    """Execute the actual certificate extractor, not a copied parser."""
+    from tempfile import TemporaryDirectory
+
+    script = (_REPO_ROOT / "scripts" / "pg_restore.sh").read_text()
+    start = script.index('awk -v state="$AUDIT_DIR/native_presence"')
+    program = script[start:].split(" '\n", 1)[1].split("\n  ' | LC_ALL=C sort", 1)[0]
+    native = "".join(
+        f"CREATE TABLE connectors.owntracks_filtered_copy_{name} (\n"
+        for name in ("births", "floors", "batches", "members")
+    )
+    inputs = "".join(
+        f"CREATE TABLE connectors.owntracks_input_{name} (\n"
+        for name in ("server_births", "server_ends", "copy_births", "copy_ends")
+    )
+    cohort = "COPY butlers_owntracks_copy_restore_rows FROM stdin;\nsynthetic-row\n\\.\n"
+    with TemporaryDirectory() as directory:
+        state, count = Path(directory) / "state", Path(directory) / "count"
+
+        def run(body):
+            state.unlink(missing_ok=True)
+            count.unlink(missing_ok=True)
+            return subprocess.run(
+                ["awk", "-v", f"state={state}", "-v", f"input_state={count}", program],
+                input=body,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        ordinary = run("")
+        assert ordinary.returncode == 0
+        assert state.read_text() == "absent\n"
+        assert count.read_text() == "4\n"
+        for tables, expected in ((native, "4\n"), (native + inputs, "8\n")):
+            healthy = run(tables + cohort)
+            assert healthy.returncode == 0
+            assert healthy.stdout == "synthetic-row\n"
+            assert state.read_text() == "present\n"
+            assert count.read_text() == expected
+        for malformed in (
+            native,
+            native + cohort + cohort,
+            native + cohort[:-3],
+            native + inputs.splitlines(keepends=True)[0] + cohort,
+            inputs + cohort,
+            native + native.splitlines(keepends=True)[0] + cohort,
+            native.replace("CREATE TABLE connectors.owntracks_filtered_copy_members (\n", "")
+            + cohort,
+        ):
+            refused = run(malformed)
+            assert refused.returncode == 7
+            assert not state.exists()
+            assert not count.exists()
+        restored = run(native + inputs + cohort)
+        assert restored.returncode == 0
+        assert state.read_text() == "present\n"
+        assert count.read_text() == "8\n"
+
+
+def _assert_closed_certificate_stage_diagnostic() -> None:
+    """Actual classifier positions only fixed certificate stderr stages/codes."""
+    from contextlib import redirect_stdout
+    from io import StringIO
+
+    from butlers.testing.restore_diagnostics import emit_restore_diagnostic
+
+    output = StringIO()
+    private = "synthetic-private-stderr-not-for-diagnostic"
+    result = subprocess.CompletedProcess(
+        [],
+        1,
+        "no SECURITY DEFINER function in 'public' fell to\n",
+        "RETENTION_NATIVE_CERT_STAGE=input_read\n"
+        "psql:<stdin>:82: ERROR:  42P01\n"
+        f"RETENTION_NATIVE_CERT_STAGE={private}\nERROR:  42501 {private}\n",
+    )
+    with redirect_stdout(output):
+        emit_restore_diagnostic(result, stage="certified_restore")
+    diagnostic = json.loads(output.getvalue().split("RESTORE_COMMAND_DIAGNOSTIC ")[1])
+    assert diagnostic["certificate_stage_codes"]["input_read"]["42P01"] is True
+    assert diagnostic["certificate_stage_codes"]["point_check"]["42P01"] is False
+    assert not any(row["42501"] for row in diagnostic["certificate_stage_codes"].values())
+    assert private not in output.getvalue()
+    assert diagnostic["certificate_marker_seen"] == {
+        "posture": False,
+        "filtered_read": False,
+        "input_read": True,
+        "point_check": False,
+    }
+    assert not any(diagnostic["certificate_capture_seen"].values())
+    # Prior SQL errors must not be attributed to a later capture-only refusal.
+    output = StringIO()
+    capture_only = subprocess.CompletedProcess(
+        [],
+        1,
+        "no SECURITY DEFINER function in 'public' fell to\nERROR: 42P01\n",
+        "RETENTION_NATIVE_CERT_CAPTURE=begin\n",
+    )
+    with redirect_stdout(output):
+        emit_restore_diagnostic(capture_only, stage="certified_restore")
+    diagnostic = json.loads(output.getvalue().split("RESTORE_COMMAND_DIAGNOSTIC ")[1])
+    assert diagnostic["certificate_capture_seen"] == {
+        "begin": True,
+        "validated": False,
+        "observer": False,
+    }
+    assert not any(diagnostic["certificate_marker_seen"].values())
+    assert not any(any(row.values()) for row in diagnostic["certificate_stage_codes"].values())
+    assert diagnostic["sqlstates"]["42P01"] is True
 
 
 @pytest.mark.unit
@@ -194,7 +337,12 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     stub = fake_bin / "pg_dump"
-    stub.write_text('#!/bin/sh\necho "stub failure" >&2\nexit 1\n', encoding="utf-8")
+    reached = tmp_path / "pg-dump-reached"
+    stub.write_text(
+        '#!/bin/sh\nprintf reached > "$BACKUP_TEST_FAILURE_WITNESS"\n'
+        'echo "stub failure" >&2\nexit 1\n',
+        encoding="utf-8",
+    )
     stub.chmod(0o755)
     psql_stub = fake_bin / "psql"
     psql_stub.write_text(_FAKE_PSQL_SNAPSHOT_HOLDER, encoding="utf-8")
@@ -203,6 +351,7 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
     backup_dir = tmp_path / "backups"
     env = {
         **os.environ,
+        "BACKUP_TEST_FAILURE_WITNESS": str(reached),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "BACKUP_DIR": str(backup_dir),
     }
@@ -212,6 +361,7 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "FAILED" in result.stderr
+    assert reached.read_text() == "reached"
     assert list(backup_dir.glob("butlers_*.sql.gz")) == []
     # The one trace a failed run does leave, and must (bu-xrqyu): an artifact
     # that was never published looks exactly like one that was not due yet.
@@ -313,7 +463,11 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         return schema in excluded_schemas or qualified in excluded_tables
 
     missed = sorted(
-        rel for rel in fenced if not _is_excluded(rel) and rel not in scoped_data_tables
+        rel
+        for rel in fenced
+        if not _is_excluded(rel)
+        and rel not in scoped_data_tables
+        and rel not in _read_native_copy_tables()
     )
     assert not missed, (
         "These relations are fenced away from the backup role but are not "
@@ -339,6 +493,7 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
     )
 
     assert scoped_data_tables <= fenced
+    assert _read_native_copy_tables() <= fenced
     policy_rows = _fetch_rows(
         bootstrapped_db_url,
         """
@@ -465,6 +620,7 @@ def test_script_produces_a_verifiable_artifact(
                 (claim_id,),
             )
             conn.exec_driver_sql("RESET ROLE")
+            plant_copy_history(conn)
             mapping_entity = conn.exec_driver_sql(
                 "INSERT INTO public.entities (canonical_name, entity_type) "
                 "VALUES ('Backup mapping fixture', 'person') RETURNING id"
@@ -499,6 +655,18 @@ def test_script_produces_a_verifiable_artifact(
 
     with gzip.open(artifacts[0], "rt", encoding="utf-8", errors="replace") as handle:
         dump = handle.read()
+
+    assert "-- Butlers scoped OwnTracks copy history" in dump
+    for table in _read_native_copy_tables():
+        assert f"CREATE TABLE {table} " in dump
+        assert f"COPY {table} " not in dump
+    assert "SET ROLE connector_writer;" in dump
+    assert "Native copy restoration cohort differs" in dump
+    for table in COPY_HISTORY_TABLES:
+        name = table.split(".", 1)[1]
+        rows = [line for line in dump.splitlines() if f"\t{name}\t" in line]
+        assert rows  # Nonempty planted history must really enter staging.
+        assert all(json.loads(bytes.fromhex(line.split("\t", 2)[2])) for line in rows)
 
     # Ordinary application data is present ...
     assert "CREATE TABLE public.entities" in dump
@@ -557,6 +725,37 @@ def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
                 "DROP POLICY IF EXISTS cost_claims_backup_regression ON public.cost_claims"
             )
         engine.dispose()
+
+    # The distinct owner-readable native stream must also refuse a restrictive
+    # policy and resume its same real producer once that policy is restored.
+    engine = create_engine(bootstrapped_db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "CREATE POLICY native_copy_backup_regression ON "
+                "connectors.owntracks_filtered_copy_births AS RESTRICTIVE "
+                "FOR SELECT USING(false)"
+            )
+        native_dir = tmp_path / "native"
+        native_dir.mkdir()
+        refused = _run_backup_script(
+            bootstrapped_db_url, native_dir, str(postgres_container.get_exposed_port(5432))
+        )
+        assert refused.returncode != 0
+        assert "native copy history does not admit complete snapshot export" in refused.stderr
+        assert not list(native_dir.glob("butlers_*.sql.gz"))
+    finally:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "DROP POLICY IF EXISTS native_copy_backup_regression "
+                "ON connectors.owntracks_filtered_copy_births"
+            )
+        engine.dispose()
+    restored = _run_backup_script(
+        bootstrapped_db_url, native_dir, str(postgres_container.get_exposed_port(5432))
+    )
+    assert restored.returncode == 0
+    assert len(list(native_dir.glob("butlers_*.sql.gz"))) == 1
 
 
 @pytest.mark.db
@@ -619,6 +818,31 @@ def test_scoped_export_rejects_a_policy_changed_between_precheck_and_snapshot(
             if time.monotonic() >= deadline:
                 pytest.fail("backup did not reach the deterministic pre-snapshot barrier")
             time.sleep(0.05)
+
+        # The exact native table lock is established before the exported
+        # snapshot. Observe its actual PostgreSQL holder; a proxy barrier alone
+        # would not prove that the preceding FIFO command was executed yet.
+        deadline = time.monotonic() + 5
+        with engine.connect() as conn:
+            while not conn.exec_driver_sql(
+                "SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a "
+                "ON a.pid=l.pid WHERE l.relation="
+                "'connectors.owntracks_filtered_copy_births'::regclass "
+                "AND l.mode='AccessShareLock' AND l.granted "
+                "AND a.application_name='butlers-native-copy-backup')"
+            ).scalar_one():
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            conn.exec_driver_sql("SET lock_timeout='250ms'")
+            try:
+                with pytest.raises(DBAPIError) as blocked:
+                    conn.exec_driver_sql(
+                        "ALTER POLICY native_copy_history_owner ON "
+                        "connectors.owntracks_filtered_copy_births USING(false)"
+                    )
+                assert blocked.value.orig.pgcode == "55P03"
+            finally:
+                conn.exec_driver_sql("RESET lock_timeout")
 
         with engine.connect() as conn:
             conn.exec_driver_sql(

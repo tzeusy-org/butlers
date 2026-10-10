@@ -45,6 +45,7 @@ pinned here:
 from __future__ import annotations
 
 import gzip
+import json
 import os
 import re
 import shutil
@@ -64,6 +65,8 @@ from butlers.testing.migration import (
     create_migration_db,
     migration_db_name,
 )
+from butlers.testing.owntracks_copy_history import COPY_HISTORY_TABLES, plant_copy_history
+from butlers.testing.restore_diagnostics import emit_restore_diagnostic
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RESTORE_SCRIPT = _REPO_ROOT / "scripts" / "pg_restore.sh"
@@ -170,6 +173,7 @@ def source_db_url(postgres_container) -> str:
                 (claim_id,),
             )
             conn.exec_driver_sql("RESET ROLE")
+            plant_copy_history(conn)
             mapping_entity = conn.exec_driver_sql(
                 "INSERT INTO public.entities (canonical_name, entity_type) "
                 "VALUES ('Restore mapping fixture', 'person') RETURNING id"
@@ -319,15 +323,25 @@ def _run_restore_script(
     documented fallback when ``--password`` is not given, rather than through
     the flag — a restore drill's password has no business in a process table.
     """
-    return _docker_client(
+    result = _docker_client(
         backup,
         'export POSTGRES_PASSWORD="$PGPASSWORD_FOR_TEST"; '
+        # Test-only code-only diagnostics apply to the real child client. The
+        # SQL, roles, error-stop policy and restoration assertions are unchanged.
+        'psql() { for arg; do case "$arg" in -c|--command|--command=*) '
+        'command psql --set=VERBOSITY=sqlstate "$@"; return;; esac; done; '
+        'command psql --set=VERBOSITY=sqlstate --file=- "$@"; }; export -f psql; '
         "bash /pg_restore.sh /backup.sql.gz "
         "--host host.docker.internal "
         f"--port {target.port} --user {target.login} "
         f"--target-db {target_db} --drop-existing",
         password=target.password,
     )
+
+    emit_restore_diagnostic(
+        result, stage="certified_restore", artifact=gzip.decompress(backup.read_bytes()).decode()
+    )
+    return result
 
 
 def _raw_restore(
@@ -522,7 +536,7 @@ def test_restore_script_refuses_to_certify_a_laundered_restore(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
-    backup_artifact: Path, source_db_url: str, postgres_container
+    backup_artifact: Path, source_db_url: str, postgres_container, tmp_path: Path, capsys
 ) -> None:
     """A restore the script certifies has no definer function on the restorer.
 
@@ -547,6 +561,27 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         admin_url=admin_url,
     )
     db_name = "butlers_restore_certified"
+
+    # The ordinary pg_dump stream sets session row_security=off. The appended
+    # constrained-role importer must explicitly APPLY the unchanged FORCE-RLS
+    # policies, not inherit the dump's mode that raises when policies apply.
+    # Neutralize only this producer setting in the SAME actual artifact/client.
+    original_artifact = gzip.decompress(backup_artifact.read_bytes()).decode()
+    native_mode = "\\if :butlers_native_copy_restore_authorized\nBEGIN;\nSET LOCAL row_security=on;"
+    assert original_artifact.count(native_mode) == 1
+    neutralized = tmp_path / "native-row-security-off.sql.gz"
+    neutralized.write_bytes(
+        gzip.compress(
+            original_artifact.replace(
+                native_mode, native_mode.replace("row_security=on", "row_security=off"), 1
+            ).encode()
+        )
+    )
+    capsys.readouterr()
+    refused_native = _run_restore_script(neutralized, target, "butlers_restore_native_mode_off")
+    diagnostic = json.loads(capsys.readouterr().out.split("RESTORE_COMMAND_DIAGNOSTIC ")[-1])
+    assert refused_native.returncode != 0
+    assert diagnostic["source_stage_codes"]["native_copy_import"]["42501"]
 
     result = _run_restore_script(backup_artifact, target, db_name)
     assert result.returncode == 0, (
@@ -638,6 +673,88 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         )
         assert restored_posture == source_posture
         assert restored_posture[0].startswith("true/true/"), restored_posture
+
+    for relation in COPY_HISTORY_TABLES:
+        # Exact full rows, not counts alone: every native generation, digest,
+        # original timestamp, policy binding and permanent floor survives.
+        source_rows = _query(
+            source_db_url,
+            f"SELECT to_jsonb(t)::text FROM {relation} t ORDER BY to_jsonb(t)::text",
+        )
+        restored_rows = _query(
+            restored_url,
+            f"SELECT to_jsonb(t)::text FROM {relation} t ORDER BY to_jsonb(t)::text",
+        )
+        assert source_rows and restored_rows == source_rows
+        source_posture = _query(
+            source_db_url,
+            "SELECT relrowsecurity::text||'/'||relforcerowsecurity::text||'/'||"
+            "pg_get_userbyid(relowner) FROM pg_class WHERE oid="
+            f"'{relation}'::regclass",
+        )
+        restored_posture = _query(
+            restored_url,
+            "SELECT relrowsecurity::text||'/'||relforcerowsecurity::text||'/'||"
+            "pg_get_userbyid(relowner) FROM pg_class WHERE oid="
+            f"'{relation}'::regclass",
+        )
+        assert restored_posture == source_posture
+        assert restored_posture[0].startswith("true/true/")
+    boundary = create_engine(restored_url, isolation_level="AUTOCOMMIT")
+    try:
+        with boundary.connect() as conn:
+            conn.exec_driver_sql("SET ROLE connector_writer")
+            assert (
+                conn.exec_driver_sql(
+                    "SELECT count(*) FROM connectors.owntracks_filtered_copy_births"
+                ).scalar_one()
+                > 0
+            )
+            with pytest.raises(DBAPIError) as permanent:
+                conn.exec_driver_sql("DELETE FROM connectors.owntracks_filtered_copy_floors")
+            assert permanent.value.orig.pgcode == "P0001"
+            conn.exec_driver_sql("SET ROLE butler_general_rw")
+            for relation in COPY_HISTORY_TABLES:
+                try:
+                    visible = conn.exec_driver_sql(f"SELECT count(*) FROM {relation}").scalar_one()
+                except DBAPIError as denied:
+                    assert denied.orig.pgcode == "42501"
+                    visible = 0
+                assert visible == 0
+            with pytest.raises(DBAPIError) as denied:
+                conn.exec_driver_sql("DELETE FROM connectors.owntracks_filtered_copy_floors")
+            assert denied.value.orig.pgcode == "42501"
+    finally:
+        boundary.dispose()
+
+    # Neutralize only the actual scoped import while retaining its original
+    # nonempty staging cohort and every schema/ownership statement. The actual
+    # supported script must refuse even though the old ownership audit passes.
+    # Its normal counterpart above proves all original rows really restored.
+    dump = gzip.decompress(backup_artifact.read_bytes()).decode("utf-8")
+    admission = (
+        "SELECT coalesce(pg_catalog.pg_has_role(current_user,\n"
+        "  pg_catalog.to_regrole('connector_writer'),'MEMBER'),false)\n"
+        "  AS butlers_native_copy_restore_authorized \\gset"
+    )
+    assert dump.count(admission) == 1
+    withheld = tmp_path / "native-import-withheld.sql.gz"
+    withheld.write_bytes(
+        gzip.compress(
+            dump.replace(
+                admission, "SELECT false AS butlers_native_copy_restore_authorized \\gset"
+            ).encode("utf-8")
+        )
+    )
+    withheld_name = "butlers_restore_native_withheld"
+    rejected = _run_restore_script(withheld, target, withheld_name)
+    assert rejected.returncode != 0
+    assert "native copy history restoration is not certified" in rejected.stderr
+    assert _query(
+        target.url(withheld_name),
+        "SELECT count(*)::text FROM connectors.owntracks_filtered_copy_births",
+    ) == ["0"]
+    assert _query(target.url(withheld_name), _DEFINER_FUNCTIONS_OWNED_BY_SQL, login=login) == []
 
     restore_function_posture = _query(
         restored_url,

@@ -43,6 +43,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.chronicler.location_session_exports import session_body_fan_out
 from butlers.core.spawner import SESSION_CANCELLED_ERROR
 
 logger = logging.getLogger(__name__)
@@ -472,8 +473,8 @@ async def query_session_summaries_keyset_fan_out(
         f"ORDER BY started_at DESC, id DESC LIMIT {limit + 1}"
     )
 
-    data_results, failed = await db.fan_out_with_status(
-        data_sql, tuple(keyset_args), butler_names=butler_names
+    data_results, failed = await session_body_fan_out(
+        db, data_sql, tuple(keyset_args), butler_names=butler_names
     )
 
     merged: list[SessionSummaryRow] = []
@@ -654,7 +655,8 @@ async def query_session_detail_fan_out(
         pool that was unreachable, so a not-found result over a partial fan-out
         can be reported as a 503 rather than a false 404.
     """
-    results, failed = await db.fan_out_with_status(
+    results, failed = await session_body_fan_out(
+        db,
         f"SELECT {DETAIL_COLUMNS} FROM sessions WHERE id = $1",
         (session_id,),
     )
@@ -675,7 +677,8 @@ async def query_session_prompt_receipt_fan_out(
     session_id: UUID,
 ) -> FanOutPromptReceiptResult:
     """Find one persisted prompt receipt without widening ordinary reads."""
-    results, failed = await db.fan_out_with_status(
+    results, failed = await session_body_fan_out(
+        db,
         f"SELECT {PROMPT_RECEIPT_COLUMNS} FROM sessions WHERE id = $1",
         (session_id,),
     )

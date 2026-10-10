@@ -6975,6 +6975,10 @@ export interface ChroniclerEvidenceChainLink {
   /** Human-readable label — the event title, else a source/type fallback. */
   descriptor: string;
   privacy: string;
+  /** Actual owning tombstone state; policy age does not populate this. */
+  retention_state?: "retained" | "forgotten";
+  spatial_precision_m?: number | null;
+  retention_receipt?: string | null;
 }
 
 /** Response envelope for GET /api/chronicler/episodes/{id}/evidence-chain. */
@@ -10576,4 +10580,30 @@ export interface FactAttribution {
 
 export interface CandidateIdentityFact extends ContactFact {
   validity: "candidate";
+}
+
+
+/** Authoritative policy plus latest measured retention attempt, never a UI TTL. */
+export interface LocationRetentionStatus {
+  /** Count of immutable committed coarsening/disposal transitions; never a deadline. */
+  privacy_revision?: string;
+  days: number;
+  version: number;
+  updated_at: string;
+  precision_after_forgetting_m: number;
+  widening_restores_forgotten_points: false;
+  prepared_decisions_may_finish: true;
+  status: string;
+  reason_code: string | null;
+  receipt: string | null;
+  attempt_started_at?: string;
+  completion_at?: string | null;
+  cutoff?: string;
+  prepared_count?: number;
+  deleted_count?: number;
+  blocked_count?: number | null;
+  unknown_count?: number | null;
+  overdue_count?: number | null;
+  holder_pending_count?: number | null;
+  counts_observed_at?: string | null;
 }

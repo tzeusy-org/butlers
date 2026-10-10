@@ -357,6 +357,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                         request_id,
                     )
 
+        content_blind = channel == "owntracks" or source.get("provider") == "owntracks"
         routing_failed = False
         _routing_error_detail: str | None = None
 
@@ -423,17 +424,40 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             )
             if result.classification_error or result.routing_error or result.failed_targets:
                 routing_failed = True
-                _parts = [p for p in [result.classification_error, result.routing_error] if p]
-                if result.failed_targets:
-                    _parts.append(f"failed_targets: {result.failed_targets}")
+                if content_blind:
+                    _parts = []
+                    if result.classification_error:
+                        _parts.append("classification_error")
+                    if result.routing_error:
+                        _parts.append("routing_error")
+                    if result.failed_targets:
+                        _parts.append(f"failed_targets:{len(result.failed_targets)}")
+                else:
+                    _parts = [p for p in [result.classification_error, result.routing_error] if p]
+                    if result.failed_targets:
+                        _parts.append(f"failed_targets: {result.failed_targets}")
                 _routing_error_detail = "; ".join(_parts) if _parts else "routing failed"
         except Exception as _proc_exc:
             routing_failed = True
-            _routing_error_detail = f"{type(_proc_exc).__name__}: {_proc_exc}"
-            logger.exception(
-                "Background pipeline processing failed for request_id=%s",
-                request_id,
-            )
+            if content_blind:
+                failure_class = type(_proc_exc).__name__
+                _routing_error_detail = f"pipeline_exception:{failure_class}"
+                logger.error(
+                    "Background pipeline processing failed for request_id=%s failure_class=%s",
+                    request_id,
+                    failure_class,
+                )
+            else:
+                _routing_error_detail = f"{type(_proc_exc).__name__}: {_proc_exc}"
+                logger.exception(
+                    "Background pipeline processing failed for request_id=%s",
+                    request_id,
+                )
+
+        if routing_failed:
+            from butlers.core.location_ingress_copies import retain_ingress_processing_failure
+
+            retain_ingress_processing_failure()
 
         # Mark the ingestion event as failed/replay_failed, or complete a
         # pending replay back to ingested. Shielded (see
@@ -485,8 +509,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         }
         if control is not None:
             envelope["control"] = control
+        from butlers.core.location_ingress_copies import bind_accepted_input, reserve_ingest_input
+
         try:
+            captured_input = await reserve_ingest_input(pool, envelope)
             result = await ingest_v1(pool, envelope, policy_evaluator=_global_policy_evaluator)
+            await bind_accepted_input(captured_input, result.request_id)
         except ValueError as exc:
             return {"status": "error", "error": str(exc)}
 
@@ -526,6 +554,26 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             )
             if normalized_text or _attachments:
                 if buffer is not None:
+                    native_queue = {}
+                    if captured_input is not None:
+                        runtime, parent = captured_input
+                        queue_body = {
+                            "request_id": str(result.request_id),
+                            "message_text": normalized_text,
+                            "source": source,
+                            "event": event,
+                            "sender": sender,
+                            "attachments": _attachments,
+                            "payload_type": _payload_type,
+                            "triage_decision": result.triage_decision,
+                            "triage_target": result.triage_target,
+                        }
+                        queued_copy = await runtime.reserve_child(parent, queue_body, kind=2)
+                        # This constructor-owned reservation survives SDK end
+                        # and backpressure. Its worker/disposal producer must
+                        # settle the exact original allocation; absence never
+                        # qualifies an unknown queued processing holder.
+                        native_queue["_native_ingress"] = (runtime, queued_copy, queue_body)
                     buffer.enqueue(
                         request_id=str(result.request_id),
                         message_inbox_id=result.request_id,
@@ -538,11 +586,26 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                         attachments=_attachments,
                         payload_type=_payload_type,
                         policy_tier=_policy_tier,
+                        **native_queue,
                     )
                 else:
                     # Fallback: unbounded create_task (buffer not wired)
-                    asyncio.create_task(
-                        _process_ingested_message(
+                    from butlers.core.location_ingress_copies import spawn_ingest_processing
+
+                    copied = {
+                        "request_id": str(result.request_id),
+                        "message_text": normalized_text,
+                        "source": source,
+                        "event": event,
+                        "sender": sender,
+                        "message_inbox_id": str(result.request_id),
+                        "triage_decision": result.triage_decision,
+                        "triage_target": result.triage_target,
+                        "attachments": _attachments,
+                    }
+
+                    async def process_native_copy():
+                        return await _process_ingested_message(
                             pipeline=pipeline,
                             request_id=str(result.request_id),
                             message_text=normalized_text,
@@ -553,9 +616,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                             triage_decision=result.triage_decision,
                             triage_target=result.triage_target,
                             attachments=_attachments,
-                        ),
-                        name=f"ingest-route-{result.request_id}",
+                        )
+
+                    processing = await spawn_ingest_processing(
+                        captured_input, copied, process_native_copy
                     )
+                    processing.set_name(f"ingest-route-{result.request_id}")
 
         return result.model_dump(mode="json")
 

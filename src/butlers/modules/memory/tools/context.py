@@ -170,7 +170,9 @@ async def _fetch_recent_episodes(
         LIMIT ${len(params)}
     """
     try:
-        rows = await pool.fetch(sql, *params)
+        from butlers.chronicler.location_memory_copies import capture_memory_rows
+
+        rows = await capture_memory_rows(pool, "episodes", sql, tuple(params))
         return [dict(r) for r in rows]
     except Exception:
         logger.debug("Recent episodes query failed", exc_info=True)
@@ -513,6 +515,9 @@ async def memory_context(
         )
     )
 
+    from butlers.chronicler.location_memory_context import observe_context_rows
+
+    observe_context_rows(pool, "facts", profile_facts + task_facts)
     await _attribute_owner_anchored_facts(pool, task_facts)
 
     # --- 3. Fetch active rules ---
@@ -529,6 +534,8 @@ async def memory_context(
         )
     )
 
+    observe_context_rows(pool, "rules", rules)
+
     # --- 4. Optionally fetch recent episodes ---
     recent_episodes: list[dict[str, Any]] = []
     if include_recent_episodes:
@@ -536,12 +543,16 @@ async def memory_context(
             pool, butler, tenant_id, allowed_sensitivities=allowed_sensitivities
         )
 
+    observe_context_rows(pool, "episodes", recent_episodes)
+
     # --- 5. Optionally fetch cross-butler fleet knowledge ---
     fleet_knowledge: list[dict[str, Any]] = []
     if include_fleet_knowledge:
         fleet_knowledge = await _fetch_fleet_knowledge(
             pool, embedding_engine, trigger_prompt, butler, tenant_id, read_policy
         )
+
+    observe_context_rows(pool, "catalog", fleet_knowledge)
 
     # --- Assemble sections ---
     sections: list[str] = [preamble]

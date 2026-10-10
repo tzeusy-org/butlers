@@ -1,0 +1,1887 @@
+# OwnTracks location retention
+
+The adopted requirement is a 30-day raw-evidence horizon, shortened only through
+the authenticated owner control to an integer from 1 through 30. A policy
+cutoff is not evidence of deletion. Unprojected, ambiguous, open, unavailable
+or unverified copies remain held and overdue; status must disclose that delay.
+This is the narrowly owner-released location decision, not authorization to
+prune sessions, audits, other providers or independent owner corrections.
+
+## Installed source stage
+
+`core_264` follows protected `core_265` (which follows `core_261`); `chronicler_027` follows
+`chronicler_026`. The connector freezes its original effective birth, raw
+identity/revision/digests and the actual accepted request locator. Legacy rows
+without accepted-source evidence remain ineligible. Native point, place and
+SSID projection write their typed contribution, actual output-body digest,
+carry, coverage and checkpoint on the same Chronicler transaction. The shared
+policy lock precedes sorted adapter locks. The private replay head recovers an
+interrupted SSID UUID cursor across bounded actual source pages, without
+promoting legacy unknown accepted lineage to forgetting authority. Malformed native carries fail the
+transaction instead of becoming an empty successful carry.
+
+The six-hour deterministic Chronicler schedule commits an attempt before work.
+Preparation fixes at most 256 eligible raw generations and the exact policy
+version/cutoff/manifest. It coarsens typed movement/place summaries to the
+versioned approximately 150-metre geographic scheme while preserving measured
+metrics. It never fabricates missing path length. All complete contributors to a changed summary are validated before reduction,
+including contributors outside the first 256-row plan. Their current digests
+advance in the same transaction through an immutable previous-to-reduced
+transition; original native generation and prior frozen plans stay unchanged.
+An unrelated output edit still refuses preparation. Prepared decisions survive a
+later widening. The singleton API uses a strict owner-authenticated CAS;
+generic model/state mutation of its reserved key is refused. The dashboard
+shows measured receipts separately from policy and confirms irreversible
+shortening against the currently observed version.
+
+The daemon scheduler supplies its configured Switchboard MCP client through
+its existing private context. The native job requests only the fixed owning
+`owntracks_retention_source_forget` tool, then independently calls its receipt
+reader. A successful action response does not prove commit. Switchboard reads
+the stored plan from the registered Chronicler, binds actual accepted content,
+locks the native deduplication keys, and permits only the canonical terminal
+skip branch with no source session. Redaction, permanent replay floor and
+receipt commit together; the reader uses a separate pool acquisition. Routed,
+busy, errored, absent, legacy or mismatched ingress is refused. Other providers
+and metadata-only ingestion audit records remain intact.
+
+## Source-owned copy and disposal stages
+
+The deterministic scheduled entry now reaches the actual raw receipt
+reconciliation, legacy-cache classification, bound native-copy disposition,
+point-event disposal and conditional READY engines. Each stage has its own
+committed readback. The connector header plus every exact member and count
+must match the original grant; lost acknowledgement resumes the same IDs.
+Only actual source-ledger counts contribute to measured deletion.
+
+Native Chronicler list/get/day-close and gap-interview readers capture actual
+typed input generations before emission. Actual API event/episode/linked-event
+and evidence-chain readers, explain inputs, day-close prose and briefing prose
+capture source-owned exports on their fixed API pool. API pools retain their
+existing identity; no new principal, grant or receiving-runtime privilege is
+created. Unconfigured non-database adapters retain ordinary reader compatibility
+and supply no lineage, role, closure or SQL proof.
+
+The fixed API ASGI middleware creates its private request scope. A final-body
+send followed by delegate completion can settle only that source-owned server
+response lifetime. Its actual producer stores a matching immutable disposition,
+then independently reads it back; the Chronicler separately observes it under
+its own role. Interrupted streams, missing source binding or an unknown receipt
+remain held. A client ACK, principal string, browser purge field or arbitrary
+user download supplies no terminal authority. This cohort does not expand into
+cryptographic remote-browser erasure. P7 separately requires actual managed
+dashboard cache, MapLibre, late-response and current/archive invalidation.
+
+Settled successful native receiving sessions with complete exclusive inputs can
+have their source-derived results/tool trace/process diagnostics and bound cache
+bodies disposed under policy-first writer locks. Active, failed, mixed, changed,
+unbound and unknown-lineage copies remain held. Late completion/process-log/
+day-close writers on the exact registered live owning pool cannot refill an
+already disposed generation. Session IDs, prompts, times, outcome/usage and
+non-content process fields retain their existing independent provenance.
+
+Legacy cache observations retain only exact body digests. Citations and time
+windows do not assign raw-source lineage. A genuine native writer records the
+old local body before writing and binds the new persisted body to its actual
+captured inputs in the same transaction; only that exact local replacement
+receives a receipt. This says nothing about other stored/processing copies.
+
+## Native Memory and registered catalog frontier
+
+The configured Memory module installs its actual domain and separately configured
+Memory pools at startup. A native session-result reservation commits and is read
+back before embedding; the actual episode INSERT and frozen content-body binding
+share its owning writer transaction. The content profile excludes only the
+explicit operational reference, expiry, lease and consolidation counters. It
+still binds content, metadata, vector, authority and all remaining fields.
+Disposal independently checks active leases, exact producer-captured bundle
+membership, actual derived artifacts and inert-link endpoint dispositions.
+
+The native consolidation path re-reads the complete claimed episode and existing
+fact/rule bundle, captures immutable parents and a prompt binding before runtime
+dispatch, and finalizes actual artifact bodies at the protected executor's owning
+transaction after provenance/link/state writes. The actual registered owning
+consolidation runner additionally captures its full episode/fact/rule claim
+bundle before prompt rendering, after the policy-first claim locks. It commits
+and independently reads back that reservation before runtime admission. Native
+runner unwind can settle only its own processing copy; runtime, tool, catalog
+and stored descendants retain their independent holders. Actual hosted
+role/rollback/concurrency proof remains required.
+
+Shared catalog selection retains the original relevance, sensitivity and limit
+query while first selecting metadata. A configured Chronicler catalog body is
+then loaned through the actual registered Switchboard `route` tool to the owning
+`location_catalog_loan_body(loan_id)` tool. Registered constructor metadata-control
+routes exchange only bounded challenge/prepare metadata. The Switchboard outer
+admission verifies the fixed source's online committed receiver challenge before
+instrumentation and forwards an ephemeral private capability only for the exact
+loan/tool/target. The source outer admission independently consumes that live
+receiver challenge, re-reads its own canonical generation/body and strips the
+header before delegation. Private capabilities are not public arguments, actor
+strings, SQL roles, durable signing keys or logs. Supported cross-container
+endpoint resolution uses the existing MCP URL helpers.
+
+Owning `location_retention_prepare_copy(decision_id)` and
+`location_retention_copy_status(decision_id, receipt_id)` return only stored,
+committed own-writer receipts through Switchboard. Source receipts cannot proxy a
+consumer's erasure. Final native server response plus delegate completion closes
+only its own transient server copy; interruption does not. Runtime-context,
+unbound-processing and stored descendants remain held until their actual owning
+admission/disposal paths are complete. Exact artifact/source generations and all
+historic consumer loans enter the immutable sealed frontier. A later generation
+or loan invalidates an earlier incomplete census, and opaque legacy catalog
+bodies block closure. Public catalog fields are cleared using the existing owning
+UPDATE permission; no catalog DELETE grant or private peer SQL is added.
+
+## Mandatory unfinished work
+
+The complete source-corpus/frontier producer and all owning routed/filtered/
+error/input-bundle/legacy-copy dispositions are still mandatory engineering
+work. No native complete frontier is currently sealed. Missing lineage, active
+holders or unknown committed receipts preserve both connector raw source and
+Chronicle point-event raw bodies. The newly invoked disposal/READY engines
+cannot substitute a local receipt, injected frontier, empty query or policy
+clock for complete current ownership. Genuine all-closed source-to-registered-
+MCP-to-real-role deletion, independent supported process/topology, restart,
+late-arrival, replay and browser/runtime controls remain unproven and required.
+This is an incomplete source stage, not permanent refusal as delivered erasure.
+
+The typed tombstone/expired-link producer preserves summaries, IDs and measured
+path/duration, creates only minimal approximately150-metre descriptors, and
+checks complete current contributor generations before exact point deletion.
+That transaction is unreachable while full closure is unknown. Existing raw
+points remain readable and overdue; the UI never applies a deadline filter to
+conceal them. Legacy precision and unknown lineage are held, not called forgotten.
+Existing error precedence and unrelated owner conditions remain intact; zero
+projected blockers cannot resolve standing lag while copy completeness is unknown.
+
+The connector consumes only a genuinely stored READY grant, using existing
+`connector_writer`, sorted raw locks, a finite database-clock lease and exact
+immutable members with tombstones/receipt in the same raw DELETE transaction.
+Chronicler has only the existing approved SELECT on the two committed receipt
+tables, not raw DELETE or tombstone writes. Digests bind metadata; they are not
+authentication. Existing trusted host/daemon/PostgreSQL/MCP boundaries apply;
+same-UID hostile process isolation is not provided.
+
+## Proof and recovery
+
+Focused software tests validate their named scopes. The migrated native test
+is authored but not yet executed locally. Source-to-MCP, real runtime roles,
+committed readback, current holder generations, independent supported process
+topologies and recorded/live privacy controls are unproven until actual owning
+receipts exist. No live purge, backup, restore or deployment is authorized by
+this source report. All original S1/S2/S3 outcomes remain mandatory and unmet.
+
+Retry an unknown commit with the same decision/batch/receipt identities; never
+prepare a replacement set to explain a lost acknowledgement. Permanent floors
+and decision history survive source retries. Populated floor/history downgrade
+refuses and requires roll-forward. Restored history has no certified admission
+in this stage; preserve the unknown status rather than infer validity from row
+presence. See the active `enforce-owntracks-location-retention` change for the
+full normative contract and unchecked remaining tasks.
+
+## Replay and correction proof positions
+
+Empty own core264 downgrade retains inert local tables. Re-upgrade validates
+exact own table identity/columns/constraints against the resolved core
+foundation `state` table owner, rather than the current invocation login. The
+local state is preferred and a malformed local relation refuses; an absent local
+state may use only the actual shared `public.state` in the adopted independently
+positioned shared-predecessor replay topology. Both table creation and replay validation use that same anchor,
+with an existing target namespace and a regular, stored-owner relation. A newly
+created own ledger is assigned to that existing migration-writer identity; an
+existing wrong-owner relation is never transferred/adopted. Managed replay may
+run under the already approved bootstrap identity while keeping the original
+canonical owner. Fixed failure diagnostics expose only kind/canonical-owner/
+current-owner/session/SET-capability booleans. No role or membership is added.
+The installer replaces only the same owning
+function and converges its own triggers. Populated receipts/floors still refuse
+downgrade; protected historical fences are unchanged. The existing migrated
+species now positions two empty replays, a distinct-schema replay, more than
+256 genuine native contributors across two plans, separately acquired durable
+readback, current-generation tamper refusal and unknown-frontier raw survival.
+These authored controls are SQL proof only when the exact hosted node executes.
+The fixture's synthetic accepted locators do not prove online source admission.
+
+SSID two-connection waiters observe the actual policy-first/adapter lock path,
+not an obsolete prefixed mutex. Rollback injection still reaches all five
+persistence boundaries, and exposed diagnostics are the closed
+location_projection_failed code, never exception/provider strings. Internal
+diagnostics identify only predetermined projection stages, a fixed category and
+validated five-character SQLSTATE; preparation retains its original exception
+and closed outcome. These diagnostics do not certify runtime success. The
+independent drift fixture includes all four registration fields, and the storage
+fixture executes the actual bounded Chronicler027 DDL for native policy, floor,
+tombstone and permanent-history dependencies. Synthetic producer capture is
+source parity only; the real migrated/view/role contracts remain required. Genuine
+optional unavailability preserves prior projection/checkpoint and marks the
+source inactive; a successful empty read stays an active positive.
+
+## Native processing and runtime-context continuation
+
+The actual native consolidation claim/read boundaries now reserve immutable
+full episode/fact/rule bundles under qualified owning policy-first locks.
+Claims commit and are independently read back before prompt rendering. Scope
+completion records only the ended Python processing lifetime; the catalog,
+runtime and stored descendant holders remain separate. Incomplete claims are
+included in the actual source census and keep raw evidence held.
+
+The daemon privately registers its actual Spawner and result type. Memory's
+startup captures its actual configured domain and Memory schema/role and
+same-database witness. The Spawner reserves its own receiving session before
+context recall, commits the full composed session binding before runtime
+admission, and captures stored episode descendants on the actual writer.
+Runtime/server finalizers supply only their own terminal receipts. The scheduled
+Chronicler entry invokes own-context disposal before ordinary native-session
+reduction. It preserves independent instructions/provenance while reducing the
+exact unchanged source context suffix and disposing complete closed native
+input/output/episodes. Late owning writers check the committed disposition.
+Other butlers receive no read of Chronicler private policy through this hook.
+
+The ancestry census now resolves input generations through dispatch_parents.
+All captured parents must have their exact committed disposition; any changed,
+fresh, independent, mixed, leased, active or unknown descendant remains held.
+Unbound routed/tool descendants and mutating tool descendants without native
+terminal bindings remain mandatory unfinished work; their mere classification
+as unavailable is not delivery. The existing all-closed engine controls do not
+prove online source admission or complete runtime erasure. Real roles,
+concurrent commits, registered routing, native processing callbacks and durable
+readback still require exact hosted/native evidence.
+
+The separate private-claim fixture now uses migrated Chronicler and configured
+chronicler_mem schemas in the same database instead of describing a private
+Memory pool as the domain pool. It preserves every prior claimant/retry
+assertion and provides no new role or grant. Software-only read classification
+preserves actual ordinary rows, but refuses canonical projection/native-copy
+ancestry regardless of display label. Fixed diagnostic classes and SQLSTATE
+are emitted at actual failure boundaries without exception arguments. These
+changes do not establish the causes of the previous hosted failures or certify
+SQL success.
+
+
+### Native artifact continuation and current proof limits
+
+The registered Memory writer now freezes newly inserted facts/rules with the
+actual runtime context and complete canonical body before that transaction
+commits. No model provenance field or asserted actor supplies this binding.
+An exclusive Chronicle-owned context with every real parent and unchanged
+full bundle can publish through the existing catalog generation and routed
+prepare/body/status plane. Catalog backfill uses the same configured writer
+and binds its actual emitted IDs; it cannot skip native ancestry by using a
+wholesale INSERT. Other-source or mixed contexts retain their own held
+boundary and do not borrow Chronicle's private authority.
+
+Own unchanged unexposed artifacts can be disposed with their context, including
+existing owning graph projections. Catalog artifacts require their genuine
+loan/consumer dispositions first. Child disposal checks actual ended-runtime
+and finished-processing receipts and selected/fenced parent generations before
+the parent becomes terminal; requiring that parent terminal receipt first
+would create a cycle. Separate readback confirms actual body removal. Changed
+versions, other contexts, links, unknown operations and unclosed catalog copies
+remain held. Routed/mixed descendant completeness and real SQL/online behavior
+are still mandatory unfinished proof, not completed erasure.
+
+The earlier hosted head9bf had7 failing cases and1 setup error. The SSID
+source-selection helper incorrectly read a field absent from the actual
+ProjectionCheckpoint model; it now reads durable carry on the same locked
+writer. Two software fixtures now install the daemon's constructor registration
+without weakening production refusal. Registered legacy/public-schema API
+readers use actual ordinary-source ancestry classification; projected/native
+rows still refuse before emission. These corrections are software-tested and
+remain unproven in the next hosted migrated run. No local SQL, live purge,
+provider, backup or restore action was performed.
+
+
+### Native tool copies and reached-failure continuation
+
+The two actual MCP execution wrappers reserve a private tool generation from
+only the configured runtime and admitted private receiving invocation. The
+full input fingerprint commits and is independently read back before the
+handler runs; the actual result commits before it is returned. Catalog loans
+bind on that same owning lifetime writer. Ordinary unregistered tooling keeps
+its existing behavior and gains no receiving authority from a session string.
+
+Full context disposal matches every executed input/result exactly, includes
+all late loans in the selected cohort, and preserves unfinished/error, changed,
+mixed and unresolved mutating paths. The catalog selected-row producer marks
+actual independent rows as mixed. New Chronicle artifacts snapshot the whole
+original context and later native tool inputs/parents in a separate generation;
+the original bundle is never rewritten. Publication refreshes the actual
+catalog head after final canonical artifact capture in the same transaction.
+Other-source native publication still needs its real owning protocol and cannot
+borrow Chronicle's private source tables. That unresolved mechanism remains a
+mandatory source obligation; safe refusal alone is not delivered erasure.
+
+Exact d5acc hosted evidence has4 failures and1 timeout error. Five earlier named
+failures passed there; two original PostgreSQL cases, two new reached cases and
+the degraded sibling timeout remain unresolved at that SHA. Current fixes align
+the disposable SSID dataset's native cursor/coverage reset and the real policy
+row transactionid-lock observer, without relaxing overlap, rollback or roles.
+New artifact/tool history tables participate in exact replay owner/shape checks
+and immutable history triggers. Owning PostgreSQL controls remain unrun locally;
+software controls, collection and mock transactions do not certify them.
+
+Native Memory read continuation keeps exact episode source content separate from mutable reference counters. The configured owning Memory producer records actual selected parent/body and receiving-session births before bytes return. Private tool witnesses become exclusive only after all selected inputs are known; a nonempty independent or currently unclassified fact/rule selection preserves the complete receiving context. Same-name calls retain full one-to-one input/result matching and each applicable read witness must be exclusive.
+
+Handler failure capture precedes receipt cleanup. A secondary unavailable failure receipt leaves holders unresolved and preserves the original handler error/cancellation. A new task cancellation during cleanup propagates. Successful-result receipt failures continue to refuse result return. These source mechanisms do not establish real-role or all-holder completion before actual hosted/online proof.
+
+Actual native fact/rule writers now additionally freeze a nullable content-v1 witness beside the original immutable full-body digest. Only reference_count and last_referenced_at vary under this profile. Old NULL history is not filled from current data. Local selected reads compare the locked canonical body and immutable exclusive parent bundle; changed content/authority/metadata, unknown ancestry or prepared source generations retain/refuse their copies. Existing configured owning Memory roles and same-database registration remain required, and no peer schema or new grant is authorized.
+
+The dated 673e preparation diagnostic reached mixed INTEGER assignment and
+BIGINT arithmetic parameter inference. The current query explicitly casts every
+counter assignment and arithmetic use to INTEGER, matching the installed
+columns. At ecb3 the hosted owning test passed preparation, separately committed
+counter readback and the original policy/immutability controls before failing
+the later tombstone read-refusal assertion; the whole node has not passed.
+Session process-log
+enrichment supplies SQL text to both the ordinary and actual Chronicler capture
+adapter. At 673e all six owning sibling-pool PostgreSQL cases passed, including
+the previously timed-out detail case. That positive does not establish the old
+physical timeout mechanism or complete retention delivery.
+
+The connector now reads both the immutable batch header and all member
+dispositions after its own COMMIT, including on ACK-loss/restart replay. Missing,
+duplicate, foreign or unknown members and inconsistent counts refuse completed
+receipt return. An expired old lease can recover an already complete same-batch
+receipt; it cannot authorize new deletion. The existing grouped migrated
+contract extends through the real connector_writer engine, expired-lease
+tombstone rollback, raw deletion, separate readback and Chronicler replay
+reconciliation. Its accepted-source IDs and remote frontier are planted test
+data, so that authored SQL species remains distinct from actual online
+admission, and remains unrun locally.
+
+Bootstrap's generic connector-table default SELECT applies to newly created
+tables too. The retention migration and the post-broad bootstrap block now
+converge only the new connector tombstone's Chronicler privileges, leaving
+approved raw/header/member observations and connector_writer ownership intact.
+The original tombstone read refusal, raw SELECT positive and raw DELETE
+negative remain in the same real-role species before and after production
+bootstrap replay. The prior ecb3 hosted refusal genuinely failed with DID NOT
+RAISE; this correction still needs its exact-head hosted survivor.
+
+At 85b7 the same hosted owning test passed the tombstone/raw/receipt role
+controls before and after bootstrap replay, then failed the later payload
+generation-refusal control. That control now selects a genuinely complete
+contributor with a committed first/second coarsening transition and requires
+a healthy nonempty cohort before planting the tamper. The original corruption
+refusal and exact restored-cohort positive remain. An unpositioned previous
+candidate is still an inference, not a proved physical cause; connector DELETE
+and later full-holder controls were not reached in that failed test.
+
+Private catalog admission checks received byte type and remaining capacity
+before extending its bounded buffer. Oversized single or accumulated chunks
+never transiently exceed that owned limit; generic streaming and valid private
+admission keep their existing behavior. A positioned old after-copy check
+still returned 503 but allocated262145 bytes against the262144 limit. Actual
+buffer instrumentation catches that RED; restored overflow refusals and a
+valid companion pass. This software control is not online or SQL proof.
+
+Native consolidation now rereads every actual full canonical episode/fact/rule
+under the policy-first writer before prompt admission. All producer-owned body
+and exclusive parent witnesses enter the complete immutable bundle; valid
+previously derived facts/rules are not permanently treated as independent solely
+because of their table type. An independent, changed, missing or legacy-unknown
+selected input keeps the entire bundle mixed. Every actual parent generation
+remains captured, and a disposed or prepared parent refuses new sensitive prompt
+admission. This does not promote a model citation, row ID or context label into
+lineage, and actual hosted native role/processing/descendant closure remains
+required.
+
+Configured owning Memory confirm/retraction/retry/retirement/endorsement and
+rule-feedback writers now take the policy-first lock on their actual existing
+connection before their canonical target row and current prepared-source parent
+check. The single-update confirm helper retains unconfigured pool compatibility.
+A caller-supplied schema must match the actual constructor-owned Memory schema;
+a prepared source, unavailable check or mismatched identity prevents the write.
+Native derivation writers follow the actual input-generation-to-parent relation,
+not an equality between two distinct generation namespaces. Context-derived
+writes also refuse an already selected native receiving-session parent. These
+fences confer neither exclusive mutation lineage nor terminal erasure; changed
+content/authority/feedback and routed or unclassified mutations retain their
+required independent source/descendant witnesses.
+
+Native artifact writers and Memory read producers now use the same exact
+receiving-invocation registration and deadline check as native tool admission.
+A typed cell's target/session fields, an equal copied cell, an expired cell or
+a cell removed by the native finalizer cannot create a producer birth. This
+check runs before selected Memory bytes or artifact writer locks. Constructor-
+owned admitted runtime contexts retain their distinct native authority. The
+paired software control neutralizes only identity-membership checking: the
+actual writer then fails to refuse a typed unregistered cell; restored writer
+and reader refusal controls plus a genuinely registered-cell companion pass.
+Those registry/SQL doubles prove source wiring only, not online admission,
+PostgreSQL roles or whole copy closure.
+
+The exact e007 hosted node advanced through the healthy nonempty generation
+control and its restored positive, then reached actual point disposal. Its
+closed failure was a TypeError during privacy-generation hashing after the
+point row had become a minimal tombstone. The adopted tombstone contains a
+BYTEA logical-source digest. Native canonicalization now represents bytes
+as a typed hex object, retaining that binding and every remaining semantic
+field rather than dropping it or stringifying arbitrary objects. Existing
+software controls exercise the actual point-missing/tombstone lookup, stable
+replay, changed-byte/changed-body/hex-string negatives and the disposal phase
+revision update. Removing only bytes handling produces the original JSON
+TypeError; restoration passes. This source-positioned control is not the
+required hosted real-Postgres disposal/raw-deletion survivor.
+
+Native consolidation processing completion now preserves the runner's
+original error or cancellation when an ordinary secondary receipt operation
+fails, records only a fixed unknown-disposition diagnostic, and leaves the
+missing receipt unresolved. Successful processing still raises a failed
+completion witness; a new cancellation during completion is never swallowed.
+The native processing-ended receipt attests only that Python processing scope,
+not runtime/session/catalog or persisted descendant disposal. Paired old
+secondary-error replacement RED and restored primary/cancellation/metadata
+success controls run in the same existing software species.
+
+
+The actual configured Memory writer now appends immutable digest-only body
+transitions for native facts/rules in the same policy-first business transaction.
+Each transition freezes its original artifact generation, contiguous revision,
+previous transition and exact before/after content digests. Original bodies and
+parent bundles remain frozen. Actual native reads, consolidation, catalog source
+checks and disposal verify the complete chain, including every mixed predecessor.
+Only fixed lifecycle effects retain exclusivity; freeform body/authority,
+endorsement and independent metadata edits retain their mixed history. That
+means this lifecycle verifier cannot close them; their lawful source-copy
+reduction/disposition and independent-content preservation remain mandatory.
+It is not a permanent hold substitute for implementing that terminal path. Legacy NULL
+content witnesses are never filled from the changed current row. Idempotent
+content does not create a version. The exact transition is read back from a
+separate acquisition after COMMIT before returning the business result; failure
+reports unknown rather than pretending rollback of an already committed write.
+
+The fixed DatabaseManager constructor can enroll its actual existing Chronicler
+API writer with the TOML-derived own Memory schema and frozen current role/domain.
+The transaction-local Memory view reverts on COMMIT/rollback. This enrollment
+creates no role, grant, receiving incarnation, source loan or runtime authority.
+Ordinary unconfigured pools retain their existing behavior. The existing real
+migrated Memory claim species now carries a separate configured-schema chain,
+immutability and rollback control with explicitly planted original lineage;
+it is locally UNRUN and does not prove remote ingress or runtime-role isolation.
+The fixed API constructor and all mutation/tool descendants still require their
+actual hosted/online witnesses; the body chain alone does not complete runtime
+holder disposal or whole erasure.
+
+At exact a3f8 normal CI all eleven official sanitized JUnit artifacts had zero
+failures/errors. The owning migrated-role contract passed in17.110s, including
+finite-lease rollback, raw DELETE, complete same-batch header/member readback and
+separate Chronicler reconciliation. Its remote frontier and accepted-source IDs
+are planted SQL-engine controls. Actual registered all-holder admission, managed
+browser invalidation and protected whole delivery remain distinct and UNMET.
+
+
+Native mutation input and terminal continuation records a separate digest-only
+input generation for each actual registered tool and locked artifact before the
+business write. The SAME transaction captures all original parents and the
+actual before/after body; a separate acquisition reads that immutable input and
+all parent births after COMMIT before the handler result returns. API writer
+registration does not supply a receiving tool or create these input births.
+A genuinely separate execution gets its own tool generation; ACK loss does not
+refresh the old artifact or rewrite the original report.
+
+The receiving runtime requires every applicable successful mutating call's
+one-to-one full input/result witness, its exact immutable artifact-input link,
+and that artifact's own terminal receipt under the same plan. Every input parent
+must be selected, exclusive, unchanged and present in the exact count; missing,
+extra, mixed or unrelated parents retain the context. Later own native artifacts
+inherit actual completed mutation inputs as well as the original context and
+late read loans. Only a fully reduced stored receiving body together with its
+same-plan full context disposition permits the native local-copy receipt handoff.
+An empty tool record or forged placeholder is insufficient. Independent base
+instructions remain unchanged. These source mechanisms do not close unresolved
+freeform/mixed changes or delegated/routed copies by themselves.
+
+Dated d96e normal37777726662 has genuine official all11 JUnit0FAIL0ERROR:
+the existing migrated Memory claim/mutation species passed8.922s and the complete
+retention engine species passed22.361s. Those planted input/source fixtures prove
+their SQL engine and writer compatibility, not real registered all-holder ingress,
+managed browser invalidation or protected whole delivery. The new mutation-input
+and terminal continuation requires its own exact-head hosted evidence. Full
+mixed/borrowed/routed/delegated descendant closure remains mandatory SOURCE and
+proof work; no permanent refusal substitutes for lawful own-copy reduction.
+
+
+The mutation-input ancestry producer also verifies the immutable original
+dispatch parent_count against the complete declared parent set. It observes
+every birth for each declared generation with LEFT JOIN and checks each digest,
+rather than allowing an INNER JOIN to silently drop a missing or mismatched
+birth. Missing, extra or mismatched ancestry refuses before input capture or
+business mutation. The existing software native-confirm node positions a
+frozen two-parent bundle with one missing birth: the prior INNER JOIN genuinely
+fails to raise, while the corrected full two-parent companion passes. The same
+existing migrated SQL species retains its original one-parent positive and adds
+separate planted missing/digest/extra/full-two-parent controls. That new SQL is
+locally unrun and needs its exact current hosted witness.
+
+
+Standalone Chronicle storage can precede runtime-core installation. Its new
+mutation-input table therefore does not assume the runtime tool-intent parent
+already exists. The actual Chronicle and core264 migration phases use one fixed
+own-schema dependency installer: when both actual tables exist it adds or checks
+the exact validated nondeferrable FK, refusing a differing constraint. Existing
+history is not rewritten or cleared. Core264 downgrade retains its additive
+runtime tables and populated-history refusal; no dependency is removed by this
+correction. A native mutation producer checks that exact installed FK before
+reading its registered intent or creating an input. Runtime tools cannot provision
+it. Ordinary standalone views remain available without granting native input
+admission. The real migrated species positions a missing-FK refusal beside the
+trusted installer restoration and the existing actual writer positives; new SQL
+remains unrun locally until the exact hosted receipt. Exact f4cb official evidence
+was0FAIL20setupERROR, with source-bound UndefinedTableError for the absent parent;
+its extended Memory and engine nodes were unreached, not positive evidence.
+
+Complete native ancestry also applies at the actual selected-row Memory reader,
+consolidation prompt capture, inherited catalog-context producer and owning episode
+disposal. Each reads the original frozen parent count and preserves all declared
+parents, including a native header with no surviving parent births. Missing,
+changed-digest or extra ancestry refuses before another copied input or terminal
+receipt; a smaller successful join is never a replacement cohort. Truly independent
+rows remain distinct from incomplete native records. Complete two-parent positives
+and empty/missing/digest/extra negatives are positioned in the existing software and
+migrated species; new migrated controls remain locally UNRUN until exact hosted
+readback. No peer namespace, role or caller-selected source proof is introduced.
+
+The installer and native admission check the complete tool-generation FK set,
+including an extra differently named FK beside the expected valid FK. Only one
+exact validated, nondeferrable NO ACTION dependency qualifies; extra or differing
+constraints refuse before any input/business write. Existing migrated controls
+plant the extra dependency and a differing deferrability profile, prove installer
+and native refusal, then restore the exact-one source installation and read it
+back separately. Those new controls are hosted-only, not locally executed SQL.
+
+
+### Native delegated-question source birth (active source continuation)
+
+The configured owning CatalogCopyRuntime registers a private ledger writer on
+its actual domain pool. An active registered `core.delegate_ask` tool selects
+that writer and its real receiving session; caller actor/session/ledger fields
+cannot enroll it or switch to an unrelated pool/Connection. Ordinary callers
+without an active native producer retain the existing Pool/Connection behavior.
+The owning writer locks policy before reading the actual context and every own
+native/catalog parent, refuses disposed or prepared inputs, and captures the
+full frozen question frame plus its immutable complete parent set before the
+public ledger insert in the SAME transaction. A separate committed acquisition
+reads header, canonical question and every parent before dispatch can proceed.
+The original context loan set is reconstructed with its stored context, system
+and prompt digests and compared to the immutable bundle digest. A missing loan
+lifetime cannot shrink that original bundle. Later stored tool inputs require
+each exact owning loan and lifetime digest; repeated identical loans deduplicate
+without hiding a missing or changed dependency. Sessions seed their actual
+system prompt before input binding; fixture code cannot rewrite that frozen body.
+Rollback removes both births and ledger body. Unknown acknowledgement preserves
+the committed copy and refuses dispatch; it never fabricates rollback.
+
+The body profile binds asking/target butlers, exact question, catalog match and
+score, and metadata. Mutable status/reason are business outcomes and do not
+replace that original body. Mixed/unknown parent flags remain nonexclusive.
+Actual delegate_receive additionally compares question/asking with the canonical
+ledger before scheduling; this is necessary integrity, **not** receiving-source
+authority. Native question history remains in the all-holder frontier after its
+source session ends. A terminal public status, cleared question or vanished
+parent cannot stand in for the exact question/body/decision/manifest terminal
+receipt. Borrowed catalog loans cannot be closed while their question descendants
+remain unresolved.
+
+The active receiving implementation now uses the existing Switchboard route
+for the question body and constructor-fixed registry endpoints for bounded
+metadata-only challenges. Public ledger/loan/task UUIDs select stored rows;
+they cannot supply a principal, verifier address or private admission. The source
+locks its own policy and canonical question/complete parents, calls the live
+receiver outside SQL, then rechecks and commits the exact source delivery. The
+receiver commits and separately reads back its exact source generation/body,
+receiving incarnation and own input before the schedule writer can copy prompt
+bytes. Source and receiver failures retain unknown committed copies.
+
+Infrastructure `delegate_receive` traffic has no local CLI invocation. Its real
+registered handler instead uses the daemon constructor's live ASGI request cell,
+with identity membership and the exact configured target. An actual CLI invocation
+retains its real session/tool binding when present. The private schema requires
+those CLI fields together, or the actual server request; it creates no fake
+runtime session. Native ASGI completion commits only that server-copy receipt,
+never remote-recipient erasure. Cloned cells and caller actor/session/ACK fields
+cannot mint the receiving birth.
+
+Both normal scheduler ticks and the manual registered schedule trigger reserve
+the full dispatched prompt before model processing. The stored schedule/body is
+checked against its immutable receiver map and a fresh fixed source/receiver
+challenge. Policy-first committed claim/readback precedes dispatch; a native
+pre-context intent then binds that claim into the actual composed session writer.
+Seasonal, continuity or independent additions remain nonexclusive. A forwarded
+question retains this received-question parent as well as every original native
+dispatch parent, even if a current mirror birth is absent. Missing intent/context,
+loan/lifetime, body, digest or parent evidence refuses rather than shrinking the
+bundle. Successful unbound runtime processing cannot return a completed result.
+
+A failed secondary lifetime witness preserves the original handler error or
+cancellation and leaves the copy unresolved. Successful processing still refuses
+a missing lifetime witness. The current same-process software controls use fixed
+endpoint/SQL doubles and planted inputs; they are not registered network or real
+role proof. The existing migrated Memory source node remains a separate hosted
+requirement, including the complete adopted core236 system/digest/provenance
+receipt seeded by the actual session producer before immutable binding.
+
+Question answer/wake/resuming copies, lawful mixed-copy terminal reconciliation,
+receiver restart/recovery and the full registered all-holder terminal path remain
+required source and proof work. No terminal producer is credited by its table,
+a server response or a successful schedule alone. All original outcomes and
+browser/registered all-closed deletion requirements remain mandatory and unmet.
+No new runtime role, grant or peer-private SQL is used.
+
+The daemon now installs an owning question-only runtime on its actual domain
+pool when Memory is not configured. It captures the current namespace/role
+before serving, binds the same core writer/context registry, and closes those
+private lifetimes during shutdown. It supplies no Memory pool, schema, receiver
+or catalog authority. Missing Switchboard discovery makes the registered
+metadata exchange unavailable; it never invents a local CLI or peer endpoint.
+Core source/context/tool transactions recheck the actual captured identity.
+The shared bounded metadata transport retains constructor-fixed Switchboard
+discovery, while question bodies remain on the existing routed tool path.
+These installed source paths are awaiting exact-head SQL/registered delivery
+proof; question/answer/wake/restart and lawful mixed terminal disposal remain
+required unfinished SOURCE, not completed retention. The prior 3ead hosted
+parent/session assertion remains unresolved. Boolean-only diagnostics preserve
+the original assertion and expose no UUID, digest, body, SQL argument or row.
+
+
+### Configured ordinary questions and native answers
+
+The installed core-only receiver cannot classify a question from missing native
+history or a caller's ordinary label. The actual Relationship birthday job now
+renders only its fixed prose and server-selected future date, writes that
+private source generation and public ledger under the same policy-first/date
+dedup transaction, and separately reads both back after COMMIT before the
+existing Switchboard route. The source validates the persisted renderer/date/
+body against canonical data and challenges the actual constructor pending
+receiver. That receiver rechecks its own live request/tool and canonical body
+after the exchange. Missing, changed and mixed source evidence refuses; this
+positive classification does not attest any location-derived descendant.
+Legacy unconfigured Pool/Connection calls retain their original contract.
+
+The first accepted native answer now freezes the complete answering tool input
+on the actual atomic answer/wake writer. The same owning input reconstruction
+covers original dispatch parents, frozen context loans, later selected tool
+loans and inherited receiving-question inputs for both question and answer
+births. Answer/body/parent history is immutable. Duplicate/unaccepted writes
+leave it unchanged; rollback and unknown separate readback remain distinct.
+The native point and catalog-loan censuses include these answer generations;
+answer terminal reconciliation, wake/receiving descendants and lawful mixed
+copy disposal remain mandatory unfinished source work rather than completion
+inferred from a birth or public terminal ledger status.
+
+Exact c288 hosted evidence supersedes the prior parent-failure location guess:
+the current Memory node reached the permanent core-header trigger and failed
+its fixture's Chronicle-specific message expectation. The fixture now expects
+the actual fixed core message and separately reads the unchanged digest. The
+trigger and UPDATE remain. Its hidden-argument software fixture now enrolls
+and restores the actual constructor writer registry instead of only the old
+Memory-runtime map; original fingerprints, privacy, ordering and refusal
+assertions remain. These corrections and the new first-answer/ordinary schema
+controls require fresh exact-head hosted SQL and registered transport evidence;
+software doubles do not establish those outcomes.
+
+The scheduled owning source now reduces an unanswered native question ledger only after the full captured parent cohort matches the stored plan, every actual receiving loan has its exact committed owning observation, the source context/server lifetime ended, the source session completed with unchanged frozen prompt/system, and the original core Tool has its successful exclusive result witness. The fixed unanswered profile preserves nonempty independent metadata, answers and wake/return copies. It writes the reduced question and failed status with its exact immutable original-body/plan receipt in one policy-first transaction, then separately reads back the actual reduction. Pending-only dispatch and routed-only answer guards cannot revive that expired row. The source receipt closes only ledger/receiver copies, not the original Tool records or composed context. Each current-plan frontier also requires the context's exact independent receipt; context reduction admits a delegate_ask record only through full one-to-one input/result matching and that Tool's actual source dispositions. Committed producer readbacks set the private read-observed bit; unknown ACK never does. Processed receivers, answer/return/wake descendants, recursive/mixed closure and historical receipt reuse remain separately required source work. These changes have no local SQL or online authority proof until actual exact-head witnesses.
+
+
+At the dated 4628 source checkpoint, the core-only receiving question context path composed at owning question preparation after the permanent input floor commits. It selects the actual registered NativeDelegationRuntime and its fixed schema/role; configured Memory runtimes retain their separate owning writer. Exact admitted input, pre-context intent, original full frozen bundle, ended claim/context/server lifetimes and completed unchanged session are required. The narrow question-only profile refuses any additional tools, catalog input, episodes, artifacts, child questions or answers. It reduces only the selected prompt/result/process-log copy, preserves independent configured system/provenance, commits its own immutable context receipt and separately reads back the full reduction and preserved system. Replay reuses the receipt and still rejects a retained/corrupted process log. The receiver receipt remains independent and is rechecked afterward. NULL/empty stored tool calls cannot discard an actual private executed-tool witness. Tool-bearing core copies, configured Memory receiver disposal, answers/return/wake, recursive or mixed descendants remain required source work rather than delivered by this narrow profile.
+
+The b228 hosted Memory species failed at its new source-question plan-output INSERT SELECT DISTINCT with a closed DatatypeMismatchError. The successor explicitly casts its decision/raw/session UUID expressions and integer source revision; no role or ancestry predicate is relaxed. Current software controls are separate from pending exact-head migrated-role execution. The original b228 inventory nodes actually passed, and the dated Memory failure remains retained; no local SQL execution or inferred full SQL survivor is claimed.
+
+
+The continuation after 4628 adds configured Memory receiving-question selection at the same actual prepare boundary. The runtime must still be the current constructor's `_runtimes[memory]` and domain context writer. Its own committed floor, admitted source/loan/body/incarnation and complete original claim/bundle establish receiving ancestry. The captured claim must equal the original pre-context reservation; a missing or different reservation cannot be hidden by a smaller joined cohort; another butler's Chronicle-private births cannot substitute. Other Memory/catalog/tool inputs and downstream artifacts keep their existing whole-body checks and independent dispositions. Question-derived artifact writes now select that actual own pre-context generation at the same owning writer. The existing migrated species adds both configured Memory and core-only receiving profiles, with an actual Memory episode writer and separate committed episode/binding/disposal readbacks; its private source input cells remain planted SQL-engine fixtures rather than online enrollment proof.
+
+The terminal context carrier now adds nullable reduced-system/provenance digests in the existing owned core264 schema; trusted schema convergence does not backfill historical receipt rows. Every new core/Memory reduction freezes its expected independent system/provenance in the same immutable receipt. The configured Memory completion wrapper independently rereads the actual role, reduced session, those original witnesses and minimized process log even on replay. Changed or missing reduction witnesses and retained diagnostics remain unavailable. NULL old witnesses are unknown, not permission to reconstruct or re-enroll a receipt. This preserves existing principals/roles/ACL and the current core264→265 public migration chain. Tool-bearing core receivers, answer/return/wake, recursive or mixed descendants, complete registered all-holder/browser/native/protected witnesses remain mandatory. This current source delta is not evidence that all receiving or mixed copies have closed.
+
+
+The exact 4628 hosted Memory failure was the source-defined RuntimeError `Native answer source producer is unavailable` at the new late-answer fixture, not a SQL privilege/type failure. The continuation preserves configured eligible answers' private-producer requirement. Only an actual policy-first owning transaction that locks the canonical status/assigned target and observes definitive rejection or its immutable source-question disposition returns the existing None result without any copied-text read, business mutation or answer birth. No registry is removed or authority inferred from a caller actor. A routed eligible row without a source still refuses; a late source-floor replay preserves the original canonical sentinel. Current controls must reach those source predicates; successor hosted SQL remains separate from this correction.
+
+The exact 0ff2 hosted configured-Memory disposal case reached AmbiguousColumnError after the earlier late-answer correction. Its tool-loan query joined the input and lifetime on explicit columns, then used USING against their duplicate left-side loan/digest names. The successor qualifies the loan against the original tool input ID and digest, retaining the same lifetime, holder and owning role predicates. This source correction has scoped software evidence; genuine migrated execution remains a separate exact-head hosted requirement. Current return-admission work is still unfinished and is not credited by this repair.
+
+The dated `1aba03e02` hosted run reached the later mixed-mutation fixture after
+configured Memory disposal; the authenticated failure was the existing
+`PolicyUnavailableError` for a prepared native source generation. The owning
+fixture now exercises its unchanged legitimate mixed annotation and frozen
+body-chain assertions before its delegation helper prepares that generation.
+It separately attempts the same configured writer after preparation and
+requires refusal plus independent unchanged row, transition count and original
+body readbacks. The production prepared-output fence is unchanged. This is a
+positioned fixture correction; genuine current migrated execution remains
+required, and neither delivery nor all-holder closure follows from it.
+
+
+The answer/return continuation freezes `native_answer.v1` on the actual first-answer
+connection. It binds the full original ledger/question frame, sender/target/answering
+butlers, answer digest and immutable wake key, independently of mutable wake ACKs.
+Historical NULL bundles remain unknown. Constructor-owned `answer_challenge`,
+`answer_source` and `answer_delivery` metadata operations reuse the existing fixed
+registered control plane; they neither accept caller endpoints nor deliver copied
+answer bodies over a private side channel. The actual wake handler first commits and
+reads back its own attempt, verifies the source's immutable loan/current body, then
+reserves its exact receiving input before consuming the shared canonical ledger body.
+The actual task and full-prompt binding commit together on the owning connection.
+A footer match cannot replace full-prompt equality; unknown separate readback cannot
+return a successful task witness.
+
+Return scheduling captures every stored receiving binding, including multiple
+bindings for one deterministic task. The owning scheduler checks each source loan,
+freezes the complete parent set/count/classification/body/incarnation bundle, and
+separately reads it back before the actual runtime composes a prompt. The original
+pre-context claim and full composed context carry every returned parent into later
+native question/answer and Memory artifact births. Mixed returned input keeps the
+whole context nonexclusive. Processing-end and context-end receipts settle only
+those exact producer lifetimes. Current software controls exercise the real wake
+handler and scheduler/context entries with explicitly planted admission/owning
+rows, including full-body substitution, missing cohort, mixed parent, unknown ACK,
+secondary receipt failure and fresh cancellation. These are not online registered
+source enrollment or genuine SQL witnesses.
+
+The following receiving increment now installs fixed registered answer plan,
+prepare and status readers. The owning source reconstructs every original parent,
+full canonical bundle and loan/source incarnation through Switchboard. Receiver
+preparation freezes the complete immutable source/loan/ledger/bundle/decision and
+both-incarnation floor before further sensitive input or scheduling. An immutable
+qualification can commit later for the same binding after sibling closure becomes
+known; it is not a terminal receipt. The actual ASGI finalizer separately closes
+only its exact committed server attempt. A receiving Tool/context and every
+reserved processing/context descendant still need independent owning completion.
+An unchanged stored return task is reduced and disabled with the owning disposition;
+separate full floor/receipt/task readback gates success and replay reuses the receipt.
+Core-only and configured Memory return context paths compare all original claim
+parents, qualified floors and full composed bundle. The core-only profile preserves
+independent instructions/provenance, and the configured Memory profile reuses its
+own complete descendant engine. Missing or mixed siblings keep the whole context.
+No peer SQL, caller source verdict, new role or service credential is introduced.
+New strict software controls plant closed, interrupted, changed-task, missing-sibling,
+unknown-readback and replay cases. The existing migrated Memory group now includes
+owning floor/server/task/rollback/history controls; it remains UNRUN locally and
+requires exact-head hosted evidence. This increment does not yet connect the source
+answer reducer/reconciliation to all receiving observations or finish lawful mixed
+and Tool/runtime descendant closure. Server, original tool/session, scheduled task and all
+further native/Memory/catalog descendants remain separate required holders; the
+existing raw-source frontier remains blocked when their receipts are absent.
+The new schema, actual registered route/deployment and independent process controls
+remain unproven until exact-head hosted/online evidence reaches them. Every original
+outcome and P5 obligation remains mandatory; source implementation and these scoped
+controls do not authorize live purge, native archive, protected delivery or closure.
+
+
+Shared answer tasks retain their original full prompt until every actual task claim,
+including an earlier sibling-only claim, and every qualified receiving lifetime
+has its own completion. A live sibling cannot be overlooked by a current-generation
+claim query. This keeps the original bundle reconstructable while context disposal
+is pending; later closure can use the original reduced-task receipt on replay.
+The locator-only `delegate_wake` profile checks the exact two input locators, every
+actual same-name execution record against private input/result witnesses, the fixed
+success-only metadata result and its actual owning task. It settles only that Tool's
+transient processing, never an independent model context or a scheduled body copy.
+The new two-sibling/earlier-claim interleaving controls are positioned in the existing
+migrated species and remain hosted-only proof obligations. Software neutralization
+of the shared-task lifetime guard goes red with the original prompt still required.
+
+
+The current answer source path uses fixed registered
+`location_retention_close_source_answers` and
+`location_retention_source_answer_status` tools. The scheduled entry discovers
+owners from immutable question loans and invokes each owning reducer through
+Switchboard. Each source owner reads the actual receiver prepare/status,
+compares every loan generation/body/both incarnations under its own writer lock,
+commits its own append-only observation and rereads it separately. Network
+requests never run inside the owning transaction; a pending receiver yields no
+observation. No peer-private SQL, new role or grant supplies this protocol.
+
+Only after all current receiving loans close and the exact source Tool input,
+result and frozen ended context/server lifetime match may the source reduce its
+canonical answer. The same transaction freezes original answer/bundle/question
+and wake reference bytes plus the actual reduced-body digest. It preserves the
+question and wake/answer identities, and rereads the full committed profile and
+original ancestry before returning or replaying the same receipt. Nullable old
+prototype receipt fields stay unknown rather than being filled from current
+rows. This child receipt cannot attest the source runtime context or Tool record.
+The configured full context engine separately requires every original source
+answer of each selected delegate_answer Tool and its one-to-one full private
+input/result witnesses before that context can close.
+
+The existing migrated Memory species now adds a genuine first-answer writer
+with planted native input lineage, then missing receiving observation/unfinished
+source lifetime negatives, atomic body/receipt rollback, independent body and
+original-reference readback, immutable observation refusal, exact reduced-body
+tamper/refusal/restoration and same-ID replay. Remote observations are planted
+SQL-engine inputs; this is not online registered receiving erasure proof. These
+new controls remain unrun locally and await their exact hosted source head.
+Recursive answered-question and lawful mixed/routed copies, full restart and
+real registered all-holder/browser/protected outcomes remain mandatory; this
+source increment does not label them delivered or permanently substitute hold.
+
+
+The source question child now freezes a full reduced question/reference digest
+beside its immutable original body and generation receipt. That snapshot covers
+preserved catalog and metadata fields too; changing them cannot be hidden by a
+generic reduced question string or terminal status. The registered
+`location_retention_source_question_status` reader resolves only own stored
+receipts through its actual constructor, then checks the full reduced profile,
+original plan/body and every original selected parent under own locks. Separate
+committed readback is required on every replay. Old NULL reduced profiles stay
+unknown; no current-row backfill is authorized.
+
+Its current implemented profile is the original unanswered source child. It
+neither certifies receiver/runtime/answer copies nor permits an answered or
+mixed ledger to enter that profile. The original answered-question scope still
+requires full cross-owner answer/question observations and its own lawful
+reducer, together with recursive context/borrowed/routed closure. The existing
+owning migrated species adds preserved-metadata tamper/refusal/restoration and
+source-reader readback to its original producer/receiver/rollback assertions;
+those new controls remain unrun locally until exact hosted evidence.
+
+The following source increment extends that dated unanswered-only profile to an
+exact answered child. The scheduled Chronicle owner invokes the original stored
+answer target through Switchboard's registered close/status tools, validates the
+original question digest, answer generation/body/bundle, immutable wake identity,
+decision and manifest, then commits its own immutable answer observation under
+its policy-first lock and reads it separately. With all original question loans,
+source lifetimes and exact private `delegate_ask` input/result closed, it reduces
+only its own question; the answer remains the answer owner's reduced child and
+the answered/wake identities survive. Nonempty independent metadata and unknown
+or mixed ancestry still require their own lawful dispositions.
+
+After that question transaction, `location_retention_observe_source_question`
+selects only the answer owner's stored receipt. Its pre-reduction frozen question
+owner chooses the fixed registered reader; caller arguments cannot supply a peer,
+body or terminal verdict. The question reader must name the corresponding answer
+generation and original answer receipt. The answer owner compares the original
+question digest and full reduced reference, commits its separate observation and
+reads it back before accepting the reduced question on future status/context
+reads. A lost ACK resumes these same two receipts before attempting original
+answer reads, rather than refilling an original reference from a placeholder.
+This ordering prevents a question/answer receipt cycle. Legacy NULL owner or
+reference history cannot authenticate a changed question. Each child receipt
+remains separate from runtime/session/Tool and receiving-copy dispositions.
+
+The existing owning SQL species now calls the actual answer reducer and faults
+its actual receipt INSERT after its actual UPDATE using the same acquired physical
+connection. A separate acquisition must observe the original answer and no
+receipt, followed by the same restored producer's positive. The prior handwritten
+rollback remains a diagnostic companion, not producer-atomicity proof. This new
+SQL control and current two-owner schema/registration are hosted-unrun until an
+exact current candidate executes them. Software doubles and planted engine rows
+prove only their positioned predicates; they do not certify registered online
+remote holders, lawful full mixed-copy erasure, browser or protected delivery.
+
+The `dcd0524` hosted Memory species reached the original unanswered ledger
+positive and failed there; its answered-child and actual producer receipt-fault
+controls were downstream and did not run. That planted fixture reused a session
+with an earlier unfinished private `delegate_ask`, while recording only its two
+later successful asks. The complete private/recorded matching guard remains
+unchanged. The fixture now captures the earlier ask's actual input fingerprint,
+finishes that planted call through the native result producer and retains its
+matching record when completing the same session. An unfinished or omitted
+same-name private sibling still refuses; the full matching trace has a positive
+companion. This is a source-positioned fixture correction, not current SQL or
+online proof. Recursive/borrowed question, mixed-copy and all-holder closure
+remain required source work and all original outcomes remain unfulfilled.
+
+The next recursive source increment installs `location_retention_question_owner_plan`,
+`location_retention_prepare_question_loan` and
+`location_retention_close_owned_questions` in the existing non-presentable
+`delegation_control` representation. Each selects the constructor's actual
+registered owning writer. Its root decision is read through Switchboard; its
+source name and incarnation come from that constructor and the original admitted
+input, rather than caller arguments. Every original parent participates in the
+owning cohort, including missing/different/duplicate ancestry. A received-parent
+floor qualifies that input under the exact root manifest; it does not attest a
+finished receiver or context. Each original receiving loan needs its own fixed
+registered preparation/status response, exact original identity comparison,
+immutable local observation and separate committed readback.
+
+The generic ledger child closes before its copied context. Receiving preparation
+and catalog preparation invoke the actual owning-child reconciler before their
+context disposers. Core-only and configured Memory context disposal accept an
+executed question/answer Tool only when its complete private/recorded input and
+result match and every actual same-Tool ledger child has its own full immutable
+reduced profile. A successful sibling, partial parent join, raw status, reduced
+marker or missing source history supplies no substitute. All independent
+metadata, stored artifacts, other inputs and unresolved lifetimes remain held.
+The original source question and answer identities are not reminted from reduced
+prose. Actual nested answered-question reconciliation uses the same fixed owning
+answer close/status and reciprocal original-to-reduced observation protocol.
+
+Reentrant owning reconciliation returns pending without a receipt and clears its
+constructor-owned in-process guard in `finally`; it does not wait indefinitely on
+reciprocal registered calls. A subsequent invocation recomputes the original
+cohort. The new own question-loan observation table retains immutable original
+loan/decision/manifest/receiver-receipt binding. The former fixed Chronicle-only
+receiving-floor CHECK becomes a nonempty stored source name, with narrowly exact
+old-shape evolution and full installed-column/constraint/owner verification.
+That field remains a binding value; only the actual admitted source and its fixed
+registered current reader can qualify it. No role, grant, principal or peer
+private schema is added.
+
+Current software controls exercise full borrowed siblings, missing parents,
+changed floor/digest/incarnation/body, complete reduced child profiles and
+reentrant pending behavior. The existing migrated species additionally calls the
+actual generic question reducer, faults its real receipt INSERT after its real
+body UPDATE, checks untouched original body/no receipt from another acquisition,
+and restores the same producer for reduction and replay. Receiver observations
+in that SQL engine control are explicitly planted, not online attestations.
+Those current schema/engine controls remain hosted-unrun until their exact head
+executes. Legacy/unaccepted source association recovery, lawful mixed prose and
+metadata reduction, full registered online recursive/all-holder closure and
+managed browser/protected delivery remain mandatory unfinished obligations.
+
+### Interrupted recursive receiving attempts
+
+The owning receiver now freezes the original canonical source selector at the
+actual receiving birth lock after re-reading the full ledger body, target and
+status. Its private nullable column is immutable with the attempt. Legacy NULLs
+remain unknown and are never refilled. `location_retention_prepare_question_loan`
+accepts an optional receiving-generation locator so an original source loan can
+select an interrupted attempt that never admitted its input. The stored selector
+chooses only the existing fixed registered owner-plan tool; the complete original
+loan, source/body, receiving generation/current incarnation and root manifest
+must match before the actual receiver floor or terminal disposition commits.
+
+A terminal unaccepted server copy still requires that receiver's exact actual
+server-ended receipt and no active native receiving lifetime. It does not attest
+the remote recipient. Admitted copies keep every processing/Tool/context/child
+obligation. The producer's separate readback, immutable selector refusal, legacy
+NULL survival and exact replay controls extend the existing migrated species;
+they are authored SQL engine controls, not online registration evidence, and
+remain unrun until the exact successor executes hosted. Missing attempts/source
+selectors, mixed input or interrupted contexts remain unknown. Full registered
+recursive/all-holder, lawful mixed-copy and managed browser/native/protected
+closure remain mandatory beyond this bounded interrupted-attempt path.
+
+### Scheduled question copy before caller-context termination
+
+An admitted CLI receive previously required its caller context to close before
+reducing its separately scheduled child, while that context could not qualify
+its receive call without the child being disposed. The actual owning task
+producer now has a separate disposition stage. It requires the complete stored
+receiving floor, current constructor incarnation, unchanged original task,
+finished native server or actual private handler result and every assigned
+processing/context receipt. Its reduced task and immutable original/reduced
+prompt receipt commit together and are checked from another acquisition.
+
+The task receipt closes only that scheduled copy. The caller context requires
+all original receiving attempts, complete same-name private/recorded Tool
+matching, exact successful scheduled-result metadata and each full task
+receipt. A missing admitted attempt, error or mixed result, changed body or
+unmatched sibling does not qualify. The final receiver then checks the exact
+partial task receipt while separately requiring its caller context and every
+other lifetime; it does not treat the reduced prompt as a terminal receipt.
+
+Current strict software controls plant live server/processing holds, actual
+producer receipt-write faults, healthy replay and lost readback, plus same-name
+sibling/full-floor/current-body/result negatives. The existing migrated species
+adds a fault at the actual producer's receipt INSERT after its actual task
+UPDATE, a different acquisition's original-task/no-receipt survivor and restored
+actual-producer/readback/replay. These new SQL controls remain hosted-unrun.
+Failed/unaccepted CLI contexts, lawful mixed descendants and complete online,
+browser and protected/native erasure remain required continuation work.
+
+
+### Native handler rejection stage
+
+The fixed receiving handler now records a separate private rejection stage only
+when its actual source reservation has already born the immutable canonical
+attempt and then returns before admission or scheduling. The reservation passes
+a private single-use exception capability to that same configured writer and
+active Tool. A matching error string does not select a stage. The producer
+refuses an admitted row, a scheduled child, stale identity, unknown COMMIT or
+missing separate readback; it never clears a previous mixed-input flag.
+
+Caller-context qualification still requires the independently obtained original
+owning source floor, full attempt census and exact private input/result witness
+for every same-Tool sibling. The new receipt attests only this failed handler
+processing copy; caller context and final receiving lifetime close separately.
+A source preparation failure before source loan COMMIT remains an actionable
+reconciliation gap: the stage must not invent that missing loan or floor.
+
+Screened software controls exercise the actual handler and producer, same-text
+forgery, admission-unknown refusal, receipt rollback, lost readback, mixed-input
+preservation and exact floor/result/sibling profiles. The existing migrated
+species adds actual producer receipt fault and separate rollback/restored
+readbacks, immutable history, and the explicit absence of a final receiving
+receipt while its caller context remains open. Those new SQL controls are
+hosted-unrun. Full failed/routed/mixed closure, online all-holder admission,
+browser invalidation and protected/native delivery remain required work.
+
+
+### Original-question receiving fence and complete attempt census
+
+The configured receiving target now writes `location_received_question_source_floors` from the fixed owning source plan. It verifies the full current canonical question profile and freezes original source/ledger/generation/body plus decision/manifest before a separate committed readback. Birth and admission both check that fence: a fresh call cannot exchange or schedule, and a source RPC already in flight cannot admit after the fence commits. Rejected handler digests and lifetimes remain separately recorded rather than being treated as erased.
+
+The owning prepare result includes a complete left-joined attempt census. Legacy unknown source, unaccepted attempt, missing floor/receipt, current-incarnation mismatch or live private processing remains pending. The source invokes the actual target even when no source loan has been recorded, and compares the exact source and root binding on the fixed route. A fence is admission prevention; it is not a terminal disposal receipt. No missing source loan is synthesized. Disposition-only interrupted-source recovery, full recursive/mixed/runtime/online/browser/protected closure and all original raw deletion acceptance remain mandatory and unfulfilled.
+
+The added grouped migrated control plants an exact terminal attempt solely to test census SQL, then adds an unresolved original sibling and separately reads both back. It is not a registered remote producer or erasure witness. Current software controls cover actual handler prebirth and in-flight admission refusal plus complete census pending/closed semantics. Current source-floor SQL controls remain unexecuted until exact-head hosted evidence.
+
+
+### Disposition-only rejected-attempt recovery
+
+Recursive source owners now call the existing hidden receiving preparation tool with a ledger locator even when their delivery-loan list is empty. The receiver derives the stored canonical target/source, reads that source's actual registered native owner plan, and rechecks its original generation/body/root binding under the owning fence transaction. The request supplies no source or actor.
+
+`location_received_question_recoveries` is a separate removal-only binding for an actual unaccepted receiving birth, qualified by its committed source fence and native rejection-stage or ended-server witness. It contains no loan ID and cannot authorize delivery or scheduling. The separate recovery-terminal ledger still requires the caller/server/context lifetime to have ended; the floor alone is not a terminal receipt. Admitted or uncertain input, existing task, active private work, legacy source and stale incarnation remain unavailable. Caller qualification still compares the complete actual Tool input/result and same-Tool attempt census. The original source compares the fixed target's census; there is no source-loan absence shortcut.
+
+The existing migrated species adds an actual recovery-producer receipt fault after its real INSERT on the same acquired connection, with separate surviving binding/no-terminal readback and restored replay/census positive. The server-ended witness and input rows are planted for SQL-engine coverage, not actual online ASGI proof. Current extended SQL remains unexecuted until exact-head hosted evidence. Current software source-fence/recovery and recursive target controls are separate from complete registered online, mixed/legacy/runtime, managed browser/cache, all-holder raw deletion and protected/native outcomes; all original obligations remain mandatory.
+
+
+Catalog publication, native loan-body delivery and artifact disposal now reread
+the original artifact dispatch header, every declared parent and each actual
+birth on the same owning writer. Full artifact/catalog holder and frontier
+reads validate all native artifact headers first; a missing parent or digest
+mismatch cannot disappear through the selected-output join. The current
+software control invokes the actual terminal producer, refuses partial/extra
+ancestry before deletion, faults its receipt write and verifies restored replay.
+The existing migrated two-parent species extends the same query with healthy
+and partial ancestry readbacks; that new SQL extension remains unrun until
+its exact-head hosted receipt. Freeform mixed annotations remain preserved;
+this ancestry guard is no substitute for their lawful own-copy reduction,
+registered online admission, complete all-holder erasure or protected delivery.
+
+
+### Managed map generation continuation
+
+The actual point-event query now binds its cache key and AbortSignal to the
+managed privacy generation. The drilldown forwards that exact generation with
+its derived trail/playhead through the minimap to the MapLibre wrapper. A reset
+that settles before its parent replaces old props keeps the old map unmounted;
+cloning those props cannot make them fresh. An actual new-generation request may
+render allowed points even when values are identical. The owning React tests
+plant old geometry, settle the fence with old props retained, reject an obsolete
+late transport result and retain a fresh-point positive. These are synthetic
+API/MapLibre managed-copy controls, not actual browser/GPU, server erasure,
+registered all-holder closure or whole acceptance. All original P7 runtime and
+other P1–P9 obligations remain mandatory.
+
+
+### Registered catalog transport control
+
+The existing migrated Memory species now includes an authored registered local
+TCP control using the actual Memory search/source tools and Switchboard route,
+normal span instrumentation, module-owned outer guards and separate configured
+Chronicler/Finance/Switchboard domain-role pools. Chronicle's configured private
+`chronicler_mem` pool keeps the existing no-SET-ROLE exception; consumers receive
+no private schema grant. Governing migrations and the existing disposable trusted
+bootstrap establish the fixture, with no copied DDL/new principal or private-peer
+query credited as receiver evidence. An actual catalog write freezes the planted
+original native artifact, and the real routed body must match its complete stored
+profile. Separate source/consumer acquisitions compare the original loan, digest
+and receiving incarnation; native server completion proves only source-owned
+response lifetime. Existing UUID-only access and invented private-header controls
+refuse beside this positioned positive. This extension is authored but SQL/TCP
+UNRUN until exact-head hosted evidence. Original native ingest is planted, and
+independent-process deployment, arbitrary recipients, other holders, mixed/legacy
+descendants and complete source forgetting remain separately mandatory UNMET.
+
+
+### Managed browser current/archive control
+
+The authored Playwright control uses the actual Chronicles page, query hooks,
+shortening interaction and MapLibre/WebGL lifecycle. It plants old current and
+archive queries, holds fresh transport responses during invalidation, requires
+the old canvas to disconnect and its actual context to be lost, then admits a
+new generation with equal coordinates. Revisiting the old archived day must
+request the new generation and display its genuinely empty synthetic response.
+The fixture still reports incomplete dependent removal and unconfirmed deletion.
+There is no MapLibre replacement, GPU skip or widened runtime timeout. Tile
+requests are intercepted with a local blank raster and domain API replies are
+explicitly synthetic. This is authored browser evidence UNRUN until exact-head
+hosted execution; static collection/type checks cannot attest runtime erasure.
+Even a future browser PASS will establish this managed UI lifetime only, not
+upstream raw deletion, real authenticated retention policy, registered all-holder
+closure, other recipients or the whole original P1–P9/S1–S3 acceptance.
+
+
+The first hosted browser attempt reached the deliberate obsolete-request
+assertion but did not plant that request: the production query client keeps
+queries fresh for 30 seconds. The corrected fixture advances only its browser
+Date clock by 31 seconds before archive-to-current navigation, positioning a
+normal stale-query refetch without sleeping or changing policy freshness. The
+policy revision stays zero until the real UI PUT. This clock is test positioning,
+never deletion or source-disposition evidence; the old request must still be
+cancelled and all original canvas/context/archive/fresh assertions remain.
+
+Native catalog failures now report only fixed source-stage, closed exception
+class/category/validated SQLSTATE and admission-presence booleans. Outer refusal
+remains HTTP503 and receive exceptions still propagate with pending state cleared;
+no exception text, tool arguments, endpoint, capability, row or body is emitted.
+The first hosted registered transport attempt failed at the actual consumer tool
+call with cause unknown. These diagnostics position that failure and do not
+quiet it or credit a healthy routed/SQL result.
+
+
+### Stateful MCP per-request native copy cells
+
+The installed MCP SDK runs a stateful session in its initialization task and
+carries each later HTTP Request as per-message metadata. The native outer ASGI
+server/admission constructors now attach their private live cells to that actual
+Request scope after verification. Both production instrumentation wrappers read
+only this carrier before logging/handler execution, validate the fixed target and
+exact active server-map identity, install its native cells and reset them on exit.
+Generic HTTP calls clear copied initialization cells; direct/stdio calls keep
+their existing private in-process contract. An expired server, closed runtime,
+wrong target or caller header-only Request cannot rehydrate admission. This
+retains online challenge, current generation/body and actual owning lifetime
+requirements. The later a791 hosted attempt classified its actual routed-body
+refusal as policy_unavailable with both route and loan admission absent. This
+positions the missing per-call carrier; it does not attest a healthy corrected
+path. Separate-task loan and Switchboard-route software positives in both actual
+wrappers retain ended-server/header-only negatives; the fresh registered
+transport/SQL witness remains pending at this successor.
+
+The next browser control also corrects its exact setter wire assertion to the
+actual client/server `expected_version` field. Its earlier `version` assertion
+was a fixture mismatch, retained as a dated failed control. The current version
+value, shortening interaction, old/fresh geometry, cancellation and all archive
+assertions remain; no browser/runtime success is inferred from this correction.
+
+
+### Registered catalog terminal receipt control
+
+The source prepare/status reader now runs the same complete original artifact
+ancestry census before deriving its loan cohort. A missing original parent,
+birth or digest cannot be converted by an inner join into a smaller complete
+consumer input. This runs within the existing policy-first source transaction,
+without caller authority, peer private SQL or a new grant.
+
+The existing migrated registered transport helper additionally registers the
+actual Chronicler source-status tool beside Memory, then exercises source to
+Switchboard to owning consumer prepare/status and independent committed receipt
+readbacks. Its source plan/raw metadata and native origin are explicitly planted
+engine inputs, not accepted OwnTracks evidence. Missing decision and receipt
+locators refuse beside the intended complete owning-copy positive and replay;
+the original fact survives. These new TCP/SQL controls are hosted UNRUN until
+the exact owning node passes, and even then only attest this registered
+system-owned response-copy protocol. They do not prove remote recipient disposal,
+actual daemon/CLI ingress, READY, raw erasure or every holder's closure.
+
+
+The a791 hosted ordinary health/general core replay later reached own core264's
+same-schema-only state owner lookup and raised NoResultFound. The resolved-anchor
+correction preserves every ownership/kind/shape/ACL/populated-history refusal;
+no owner is inferred from the caller, and existing objects are never reassigned.
+The existing migrated transport species now calls the actual public core chain,
+then verifies the actual public core head and its source-defined predecessor265
+ancestry, independently stamps only that already-applied shared predecessor, and
+runs health/general through own264, asserting absent local state and ledger owner
+equality to actual public.state. It does not stamp past the failing own revision. These new complete-chain controls are hosted UNRUN until
+the exact named species executes; the older failure remains dated evidence.
+
+
+The local-state absence in this replay is not evidence that fresh core001
+`CREATE TABLE IF NOT EXISTS` skips local creation because a later search-path
+table exists. PostgreSQL 17 checks existing relations in the creation namespace
+([official namespace implementation](https://raw.githubusercontent.com/postgres/postgres/REL_17_STABLE/src/backend/catalog/namespace.c)).
+The actual protected core255 control uses an independently stamped health
+version after shared predecessors. The correction supports that established
+replay while fresh local foundations retain local-anchor priority.
+
+
+The 9850 registered terminal positive reached the full global ancestry census
+and correctly refused the preceding species' deliberately retained malformed
+artifact bundles. The same existing species now explicitly proves that global
+refusal, then uses a separate database created by the actual migration factory
+for its healthy registered cohort. No immutable history is deleted or repaired,
+and no artifact-specific filter narrows the source frontier. The registered
+positive remains hosted UNRUN at this correction; reaching a real routed body
+in the earlier failure is not a terminal receipt or all-holder success.
+
+
+## Current registered native artifact closure controls
+
+The source uses the actual fixed configured Memory writer to remove an unchanged
+exclusive native artifact only after every assigned original catalog loan has
+its server lifetime and registered consumer receipt. The same transaction
+reduces the retained shared discovery body/vectors, deletes the native artifact
+and commits immutable source receipts. A retained receipt alone cannot certify
+a changed current discovery body or head: the frontier independently reads the
+actual selected catalog rows in complete 64-row keyset pages, their exact
+source/artifact identity and current disposed head, and requires the fixed empty/null reduced profile. Missing rows,
+raw summary/title/vector restoration and unqualified current heads keep closure
+unknown. No later body or receipt is inferred from absence.
+
+The existing registered transport species now calls this actual producer before
+consumer reconciliation and requires the original native fact to survive. After
+actual routed consumer prepare/status and separate receipts, its constructor-
+configured pool proxy forwards every query to the actual acquired writer and
+faults only after the producer's real source receipt INSERT. Separate
+acquisitions must find the original fact/catalog body and no source receipt.
+The restored same producer must delete the selected native fact, reduce the
+catalog, preserve a separately planted ordinary fact and return the same source
+receipt on replay. A disposable retained-title tamper must make the actual
+frontier refuse; restoring its exact reduced profile must qualify again.
+
+These new SQL/TCP controls are unexecuted until the exact hosted owning node
+passes. Their origin/retention plan is explicitly synthetic; even a PASS attests
+only this native artifact/catalog/server/consumer cohort and real atomic writer.
+It does not certify actual OwnTracks acceptance, independent mixed prose,
+raw-point deletion, every runtime/legacy holder, remote-recipient erasure or
+whole retention delivery. All original obligations remain mandatory.
+
+## Current frontier reuse and faithful artifact fault seam
+
+The current predicate rechecks actual opaque own session/cache rows even when
+an immutable frontier was sealed earlier. A later unknown body preserves point
+and raw source evidence. The configured ordinary Chronicler session writer now
+uses the same policy-first producer fence before INSERT, including its existing
+FK fallback savepoints; it does not classify that input or mint native lineage.
+Unconfigured unrelated session behavior retains its existing contract.
+
+The existing hosted SQL species positions a real blocked owning session writer
+behind the actual policy holder, checks its missing pre-COMMIT row from another
+acquisition, and then plants its committed opaque body after a sealed frontier.
+Both that body and a separately planted late opaque cache must prevent reuse
+and point deletion while raw/point counts and the original frontier remain.
+Only the disposable test owner removes those synthetic sentinels to restore
+the healthy engine companion; that is fixture cleanup, not a legacy-erasure
+producer or receipt. The new current SQL controls remain unexecuted until their
+exact hosted node passes. Permanent refusal does not fulfill the full original
+legacy/mixed/runtime closure obligation.
+
+The preceding 7d722 artifact fixture used a forwarding pool proxy. The actual
+strict CatalogCopyRuntime constructor refused that non-asyncpg pool at
+wire_runtime before the producer fault controls; none received SQL credit.
+The corrected fixture retains a genuine constructor-configured asyncpg.Pool
+and uses only its native connection_class to execute real SQL before the fixed
+receipt-INSERT fault. It also checks actual receiver enrollment. Product pool,
+constructor, role and registry guards remain unchanged. Earlier proxy wording
+above is dated failed-fixture history, not the current installed protocol.
+
+
+Selected catalog metadata reduction
+-----------------------------------
+
+The shared catalog's tenant_id, memory_type, retention_class and sensitivity
+columns are unconstrained strings. They can carry copied source content; their
+names do not establish a content-blind authority boundary. The owning reducer
+now validates the original catalog/artifact generation and full source identity
+before touching the exact locked selected shadow. After its actual exclusive
+parent/holder conditions close, it invalidates that shadow, clears tenant_id to
+an empty value, derives type from the fixed validated facts/rules table, and
+clears class and sensitivity with text, vectors and references. The empty tenant
+belongs only to this invalidated discovery shadow; this is no active tenant,
+principal, registry or runtime-role reassignment. Source UUID/schema/table/butler
+and original receipts are preserved. Active unselected catalog generations and
+independent canonical facts remain unchanged.
+
+The current-body check rejects refilled labels, wrong source identities and an
+active profile. Existing registered SQL/rollback controls now retain full before
+and after rows, plant an active unselected complete native catalog sibling and
+an independent fact, and require both to survive unchanged while only the
+selected shadow is reduced. The same current classifier has planted refilled
+label negatives and restored healthy companions. These new SQL controls remain
+UNRUN until their exact hosted head; f1a6's genuine registered producer rollback,
+late-holder and role positives are earlier scoped evidence. Original complete
+all-holder/source/privacy/native/protected outcomes remain mandatory UNMET.
+
+
+The scheduled native retention entry now records an actual terminal attempt after its bounded preparation/disposal/reconciliation work. Its configured Chronicle writer holds current policy first, then the existing connector source mutex; it reobserves overdue and projection-blocked **point** counts at the attempt cutoff and keeps their difference as holder-pending candidates. Outstanding-plan count is only an eligibility check, never the displayed point counter. Healthy completion requires every page of a nonempty original plan cohort, each current sealed holder frontier and full immutable grant/disposal/raw batch receipt, every original raw batch member, and actual raw absence. Empty tables, a complete-state flag, an old timestamp or a transport-only counter do not certify zero unknowns. Opaque late own sessions/cache, incomplete plans/source, inaccessible roles, changed policy or unknown COMMIT/readback retain unknown/failure with truthful durable completion. The receipt is an as-of source/copy observation; it does not attest remote browsers, arbitrary downloads or subsequent writes. Replaying this exact completed attempt cannot overwrite its committed receipt; a new attempt must repeat the current census.
+
+This increment's existing grouped migrated species uses a separately migrated healthy database, real owning/connector roles and actual native adapters, grants, connector forgetting and reconciliation. It calls the actual completion producer under a disposable completion-write fault, independently checks the original run survived, restores the same producer and requires a nonempty successful completion. Empty, incomplete and later opaque holders have separate unknown companions. Synthetic accepted locators and a planted remote terminal observation remain SQL-engine fixtures, not proof of registered original ingress or remote disposition. The current completion SQL controls are UNRUN until exact-head hosted evidence. The earlier `6d291558` registered artifact/profile rollback and role/replay scope passed its own exact normal CI; that dated scope does not qualify this completion increment. All original four outcomes, S1–S3, P1–P9 and V1–V6 remain mandatory and unfulfilled at the whole-feature level; native sync/archive, independent review and protected delivery remain separate.
+
+
+The `d05fa157` hosted completion extension failed before any new producer controls: its async helper invoked the synchronous migrated-database provisioning helper, whose extension bootstrap uses `asyncio.run`. The separate healthy database now provisions in a synchronous module fixture before entering the async owning node. This is fixture placement only; current policy/source/role/receipt/COMMIT producer and every original assertion stay intact. No prior producer success is inferred; successor completion SQL remains UNRUN until its exact hosted result.
+
+
+### Native filtered-copy preparation checkpoint
+
+The OwnTracks device constructor now uses a private buffer adapter. Actual
+location rows and immutable birth metadata commit on the same existing
+`connector_writer` transaction; a different acquisition checks the exact birth
+before it is credited. Transition/waypoint and other-provider behavior remains
+independent. The existing fixed Chronicler batches tool accepts an optional
+`phase="copies"` for the full immutable pre-READY plan; its default `ready`
+response keeps the existing grant shape. This is a locator/manifest transport,
+not caller identity, a grant, or an actor/ready assertion.
+
+The owning stored-copy reducer validates actual current raw generations,
+canonical endpoint/event/raw bodies, every matching filtered row and original
+birth. Missing legacy birth or changed copied metadata refuses. Reduction of
+payload, sender/device/event display, preview and error fields, permanent
+logical-source floors and full immutable member/header receipts commit together.
+Separate acquisitions verify the full original selected floor set, exact member
+count and actual current reduced row bodies. A receipt alongside a refilled body
+refuses. Native frontier sealing and point disposal now require this necessary
+stored-copy observation. The private configured buffers receive their matching
+floor only after that committed readback; independent sources remain intact.
+
+This checkpoint does not yet close the actual active webhook/request/replay or
+all routed source lifetimes. Those source-owned birth/lifetime/floor/admission
+hooks remain required SOURCE, distinct from stored-copy receipts. It cannot
+certify remote recipients or browser erasure, and all four original outcomes
+remain UNMET. New real-role birth/reducer/receipt-fault/readback and permanent
+reduction controls are positioned in the existing migrated SQL species, not run
+locally. The prior exact 3f91 hosted run37896861117 is genuinely successful,
+including completion producer27.300s and registered Memory40.156s; it does not
+qualify this new filtered-copy source.
+
+The four new shared metadata tables enforce existing-role FORCE RLS and exact
+installed table/constraint identity. Ordinary pg_dump uses row_security=off,
+which cannot dump these forced relations. A temporary exact four-table exclusion
+keeps ordinary raw and Chronicler evidence available at this intermediate SOURCE
+checkpoint. **Their permanent history is not yet exported/restored**: actual
+scoped owner-stage export/restore, row parity, real-role policy preservation and
+restore admission are mandatory ongoing source work. Omission is not the final
+recovery fix, a full backup claim, erasure proof or merge-ready behavior. No live
+backup, restore or purge was performed or authorized by this source change.
+
+
+### Scoped native history recovery source
+
+The d30b stored-copy checkpoint's temporary four-table exclusion is dated,
+intermediate history. Current source removes that omission. The four exact
+metadata tables keep schema, ownership, constraints, FORCE RLS and immutable
+triggers in ordinary pg_dump; only their data travels through a separate
+hex-JSON staging stream in the same exported snapshot. The actual snapshot
+holder first locks those four relations in ACCESS SHARE mode, allowing ordinary
+writes while excluding policy/table DDL until both exports finish. Its presence
+precheck alone grants no admission; the locked full owner/policy proof must
+still match. A database before this
+migration may have none of the four tables. Partial installation, a different
+stored owner, absent existing connector membership, extra/restrictive policies
+or a changed owner-read expression refuses publication. The exact three
+cost-claim stream and every other fail-loud exclusion remain unchanged.
+
+The native history reader is an explicit permissive SELECT policy for only the
+actual stored table owner. Runtime source writes still require the existing
+connector role; Chronicler sees only content-free batch/member observations.
+Broad bootstrap grants cannot expose birth/floor generations through FORCE RLS.
+The trusted own installer also converges purpose-specific ACLs on these four
+new relations; runtime roles cannot install or repair them.
+
+Restore checks existing connector-role membership, uses one transaction and
+fixed relation names, rejects unknown or NULL staging selectors and validates
+full typed rows before insertion. Births precede floors, batches and FK members.
+Two-direction EXCEPT ALL checks retain multiplicity and exact full-row equality;
+an existing different or extra cohort aborts. No new role, generic importer,
+definer capability, BYPASSRLS or schema-owner transfer is introduced. JSON
+staging keeps original generations, digests, timestamps and permanent floors.
+UTC export/restore representation avoids altering timestamp interpretation.
+
+Existing real backup/restore species now plant a nonempty four-table FK-linked
+history, compare all restored rows and FORCE RLS/owner posture, preserve the
+original raw/application dump and cost-claim assertions, and position a real
+restrictive-policy refusal beside the restored actual backup producer. The
+existing race species observes the actual native snapshot-holder lock and
+requires concurrent owner-policy alteration to fail with lock-not-available
+before retaining the original distinct cost-claim policy-race refusal. Runtime
+floor DELETE and unrelated runtime read/write negatives remain. These extended
+backup/restore controls are currently SQL/sidecar UNRUN until authentic exact-head
+hosted evidence. Preservation of stored history is not admission of old active
+leases, old live server incarnations or restored remote holders. Full fresh
+source/holder reconciliation and current native restore admission remain
+mandatory; every original whole outcome stays UNMET.
+
+
+### Raw diagnostic restore and native recovery certification
+
+The appended native stream preserves the caller's psql error-stop mode. It
+uses an existing-role membership conditional and starts its native import
+transaction only after staging and positive membership. A deliberately bare,
+unfenced raw restore may therefore continue its ordinary diagnostic path while
+reporting unavailable native replay; that is not native recovery certification.
+The original SECURITY DEFINER ownership audit remains first and unchanged.
+
+The supported restore script independently reads this artifact's one complete
+native staging block, then acquires a separate read-only snapshot under the
+existing connector role after actual owner/FORCE RLS/exact policy checks.
+It compares the complete hex-JSON row cohort in both directions, with original
+timestamps, every field and multiplicity preserved. Missing staging for present
+native schemas, missing rows, duplicate source/target rows, changed fields or
+unavailable posture cannot certify recovery, including for an empty source
+cohort. No artifact selector reaches SQL text and the guard never prints rows.
+This certifies stored metadata recovery only; current active source/holder
+admission remains required and every whole original outcome remains UNMET.
+
+Actual 254d hosted role instrumentation failed before installer repair because
+its new count probe lacked SELECT permission. It did not demonstrate a copied
+birth leak or actual bootstrap widening. Current controls observe actual ACL
+posture; a disposable test-only existing-role SELECT grant then positions forced
+RLS against the already planted birth before trusted installation restores the
+original ACL refusal. The new psycopg2-backed snapshot/restore controls use the
+actual driver's pgcode, preserving exact 55P03/P0001/42501 expectations. These
+new SQL corrections await current exact-head hosted execution; no local Docker
+access, backup, restore or authority widening is inferred.
+
+### Reached recovery and expiry controls (94bd successor)
+
+The authentic 94bd run reached the stored-copy expiry check. An old device
+`tst` persisted by the real writer today has a current immutable `retention_at`
+when receipt skew exceeds four hours; it is not immediately eligible for an
+older policy cutoff. The owning SQL species now retains that genuine fresh
+source and verifies refusal, then creates a separate deliberately aged
+historical engine fixture at its initial INSERT for the receipt/fault controls.
+No immutable row is patched and no authoritative live clock is claimed for the
+synthetic historical fixture.
+
+The two reached restore return-code failures remain causally unknown until
+new evidence. Their existing command boundaries now emit only the actual
+integer return code and predefined stage/category booleans, with fixed known
+SQLSTATE flags if the real client includes them. They never print command
+arguments, SQL, row bodies or arbitrary error text through that diagnostic.
+Absent categories remain unknown. Original full-history, ownership, failure
+and role assertions remain mandatory; diagnostics do not certify replay.
+
+The later code-only client diagnostics separated native-import SQLSTATE 42501
+from an earlier ordinary-dump 42P01. The ordinary dump sets session
+`row_security=off`; the native importer now sets `SET LOCAL row_security=on`
+inside its existing transaction before using `connector_writer`. This applies
+the unchanged forced policies and exact role, with no grant or ownership change.
+PostgreSQL's [row-security contract](https://www.postgresql.org/docs/17/ddl-rowsecurity.html)
+states that `off` raises when policies would filter a query. The existing actual
+restore species neutralizes only this setting in the same artifact, requires a
+native-import 42501 refusal, then retains the full original healthy restore and
+row/posture controls. Those new causal controls still require exact-head hosted
+execution; this source correction does not claim the ordinary missing-relation
+cause or certify recovery.
+
+
+The current input continuation extends the scoped history family to eight
+connector-owned metadata tables. The four new tables contain content-free
+server generations and exact canonical input digests, bundle counts/kinds,
+producer incarnations, and immutable ended receipts. The fixed OwnTracks
+constructor reserves the server lifetime before authenticated body receive;
+webhook processing has its own original generation. Native replay reserves its
+reader lifetime before stored payload selection and releases the source/row
+transaction before transport. The ordinary non-native test adapter remains an
+explicit compatibility path and produces no native admission evidence.
+
+The original immutable point INSERT freezes `source_input_generation`; it never
+backfills an old point. Preparation and deletion read that stored generation,
+every original same-source bundle and applicable server header under the source
+mutex. Inner ASGI return, a client ACK, elapsed time or a process restart is not
+an end. End observers retain the same private identities through unknown ACK
+and retry only actually observed ends. Interrupted/restarted source lifetimes
+remain an unresolved source obligation; current stored history cannot certify
+the restored active incarnation. Remote recipients are outside this server
+lifetime receipt's authority.
+
+The native processing observer follows the actual main-loop Task, including
+its cancellation unwind. Completing or cancelling the cross-thread transport
+Future cannot end that Task's copy. The submitting source reserves its private
+processing hold before publishing the coroutine; only a definite submission
+failure after closing the never-issued coroutine clears that hold. Shutdown
+first closes new admission, joins its own server off the owning event loop and
+allows actual processing Tasks to unwind while that loop and pool remain live.
+Its finite waits or cancellation requests never certify an end. The original
+private binding and every unresolved durable birth remain pending on an
+interrupted shutdown; only actually observed Task ends and separate committed
+readbacks can settle them. Missing restart reconciliation is still an unmet
+source obligation, not a timeout-based disposal policy.
+
+The point reference is checked at the original immutable INSERT and by the
+post-import current generation/body checks; it is not a nullable-history FK
+installed ahead of ordinary raw-table COPY. The eight metadata tables retain
+their actual foreign keys, FORCE RLS and existing owning-role policies. Backup
+locks the complete installed family before exporting the snapshot, then
+imports full row history under the fixed constrained role and explicitly
+applied policies. Four-table predecessor compatibility never silently omits an
+installed input family. Certification rejects partial families, duplicate or
+changed rows, and differing non-NULL point/input lineage. No NULL legacy
+reference is filled and no restored receipt creates runtime admission.
+
+The grouped real-Postgres species now authors actual input producer birth and
+end faults, separate committed readbacks, private binding/body refusals and
+actual Task-end harness positives under the configured connector Pool. Existing
+synthetic projection/deletion fixtures carry clearly labelled completed engine
+cells at their original INSERT; those cells do not attest actual source/online
+admission. The extended eight-table SQL/restore species is currently unrun
+locally. Scoped software positives and dated hosted four-table results do not
+qualify the new input recovery, cancellation/restart reconciliation, complete
+online source frontier or whole retention outcome.
+
+
+### Eight-table certificate diagnostic continuation
+
+The current eight-table source run reached the actual configured input producer
+birth/end, real-role and receipt-fault controls. Its whole gate still failed:
+the old static inventory expected only four tables, and independent native
+restore certification returned SQLSTATE 42P01 after the definer audit passed.
+The static inventory now preserves its original four entries and includes the
+exact four new input tables. This corrects the declared inventory rather than
+omitting history or weakening the fail-loud dump contract.
+
+The certificate script emits only four fixed stage labels to stderr before
+its posture, filtered-row, input-row and point-reference queries. The existing
+disposable command classifier reports only closed stage/code booleans, never
+SQL, rows, identifiers, arbitrary exception text or command arguments. A
+missing relation's actual identity and cause remain unknown until that current
+command reaches the diagnostic. No error-stop, policy, role, full-history
+comparison or certification refusal is changed by this diagnostic increment.
+
+
+### Switchboard receiving queue and handler lifetime
+
+The fixed Switchboard daemon now installs its own configured pool/role input
+writer before serving. It commits and independently reads a content-free server
+header before forwarding POST bytes on both supported MCP transports. A bounded
+classification buffer forwards generic bytes unchanged. For a canonical
+OwnTracks `ingest` call it commits and reads the original full envelope/dedup
+queue binding before delivering the final body frame to the SDK. Unclassified,
+duplicate-key or over-cap native input cannot create a later birth; ordinary
+nonlocation SDK calls retain their original behavior.
+
+The constructor-installed SDK middleware claims that same private queued
+allocation before FunctionTool validation and delegation. Its separate immutable
+handler generation/incarnation and committed readback precede processing. An
+SSE HTTP 202, POST completion, connector end, accepted UUID or public request
+field cannot close the queued SDK holder. The actual original SDK Task's end
+must commit its own receipt against the original queued birth and handler claim;
+cancellation requests, restart and missing/readback-unknown history do not end it.
+The canonical accepted row is independently bound before routing, including its
+full envelope/normalized digest. The owning source reducer takes the same
+control-first mutex and requires the complete nonempty original binding/claim/
+handler-end/server-end cohort; legacy, unbound, changed or partial history holds.
+
+Focused software positions final-frame reservation, HTTP-ended-before-handler
+SSE ordering, actual FastMCP middleware claim, missing claim refusal and ordinary
+nonlocation compatibility. Configured real-role migration, registered loopback
+webhook through both streamable HTTP and SSE, canonical acceptance and separate
+readbacks are authored extensions of the existing engine species and remain
+UNRUN for this unpublished increment. They do not attest a phone, remote user,
+actual fleet routed runtime, all-holder erasure or full original completion.
+
+### Certificate diagnostic boundary after 0000aff
+
+The actual 0000aff normal run failed only the certified restore species. Its
+closed 42P01 flag and post-audit refusal did not identify a failing query: all
+query-stage maps were empty. The next classifier reports only fixed stderr
+marker-presence booleans and shell capture boundaries (begin, validated,
+observer). Artifact-capture failure and earlier ordinary-stream SQL errors must
+not be attributed to a certificate query without its actual marker. SQL,
+roles, stop policy, restored cohort comparisons and original success/refusal
+controls are unchanged; relation/stage/cause remain unknown until actual evidence.
+
+
+The receiving continuation now distinguishes three private input kinds: SDK queue,
+actual buffer queued object, and separate processing Task. Direct fallback reserves
+and reads back its copied bundle before Task publication. Hot buffer enqueue reserves
+its original parent and full queued fields before publication; the worker claims that
+object and a separate processing input before invoking the existing consumer. After
+that processing Task unwinds, the fixed producer clears the actual queued payload
+references and retains a private cleared-object witness while committed end readback
+is retried. A long-lived worker's completion is never the queued object's receipt.
+Secondary receipt failure preserves the primary handler error or cancellation;
+successful processing still fails if its disposition witness cannot be read back.
+The full census rejects missing or changed parent/body/handler bindings.
+
+These are ongoing SOURCE mechanisms. Cold scanner recovery, refused/full-queue copies,
+interrupted unbound generations and actual routed target/runtime descendants still need
+their own original binding and lawful terminal producer; this increment does not mark
+them closed or grant READY. The existing real-role HTTP helper now positions a held
+actual buffer/processing pair beside committed end readbacks and an unchanged live
+worker. That authored extension is SQL/registered-transport UNRUN until exact hosted
+evidence. All original four outcomes and complete P1–P9 obligations remain mandatory.
+
+
+The continuing receiving source now records the canonical first writer in
+`location_ingress_inbox_sources`, inside the same owning transaction as the
+original inbox INSERT and shared ingestion event. It takes the receiving control
+lock before existing dedup/row locks. Binding and cold recovery require that exact
+SDK generation, key and full canonical body; they do not derive ancestry from row
+existence or UUID ordering. The actual scanner Task reserves/readbacks its lifetime
+before source reads, and queued recovery publishes only after its original-parent
+and complete-body metadata have separately committed. Configured ordinary recovery
+compares every source selector and key to the original shared admission record;
+missing or mismatched admission remains unavailable. This does not classify all
+routed or inherited non-OwnTracks descendants as ordinary.
+
+The fixed buffer producer now clears an exact unclaimed rejected/full-queue object
+and abandoned queued objects after workers unwind at shutdown. A separate actual
+disposal Task records their claim/end after field clearing. Active claimed or
+changed objects are retained. Every repeated handler claim independently rechecks
+the committed original handler/incarnation before processing; an in-memory claim
+from an earlier unknown readback cannot authorize a retry.
+
+The existing registered HTTP/real-role helper corrects both independently reviewed
+808 fixture defects: its real FastMCP decorator forwards named-tool keyword
+arguments exactly like the daemon, and its inbox key read uses
+`request_context->>'dedupe_key'`. A software control executes that exact helper,
+restores the old keyword contract to reproduce the named-tool TypeError, and restores
+the genuine registration positive. The authored SQL extension invokes the actual
+canonical source producer on the actual acquired business connection, faults after
+its real receipt INSERT, reads absent inbox/stamp from another acquisition, then
+restores the same producer and checks the complete committed source body. This new
+SQL/transport extension is UNRUN until its exact hosted owning case executes.
+Current 808 hosted failure reached registration, so it proves neither the later
+column read nor queued/processing SQL. All original four outcomes/P1–P9 remain
+mandatory UNMET; interrupted histories and routed target/runtime/loan holders remain
+independent source and proof obligations.
+
+The continuing source distinguishes a completed processing Task from disposal
+of its retained error/result. An actual Task may keep an independently copied
+payload in its exception traceback or cached result. Such a Task now withholds
+its kind-3 processing end; the separately cleared kind-2 queue object can still
+settle. The configured pipeline callback also marks its original processing
+copy unresolved after a caught failure or failed pipeline result, even though
+that callback returns `None`. The real SDK middleware holds a failed input
+before an outer SDK handler can catch its error, and the actual ASGI producer
+holds its failed server scope. These constructor-owned markers can only
+withhold an end. They neither prove cleanup nor close a log, remote runtime,
+routed result or another descendant, and primary error identity is preserved.
+
+Existing owning software controls use real Tasks, the configured callback,
+actual FastMCP middleware and actual ASGI wrapper, with metadata/claim I/O
+explicitly modeled. Healthy companions close their own copy; planted retained
+tracebacks/results and caught failures remain pending. Neutralizing the actual
+Task, callback or SDK hold reproduces semantic failures. This is software
+evidence only, without configured-role SQL or registered HTTP qualification.
+The full lawful error/log/runtime disposal path remains required source work;
+permanent refusal does not fulfill the original four outcomes.
+
+
+The initial source profile above admitted only the canonical skip branch. The
+current owning reducer additionally admits the actual metadata-only terminal:
+matching canonical lifecycle, policy-bypass decision/summary and final-state
+receipt, request-only outcomes, original accepted body and complete ended ingress
+census, and no source session. It retains the historical `switchboard_skipped`
+storage category for this fixed no-dispatch profile; it preserves actual lifecycle
+and audit metadata. This does not classify a label, absent session or caller
+verdict as lineage, nor close routed/error/runtime copies. Contradictory decisions,
+unknown holders, routed outcomes or changed body remain refused before reduction.
+The existing owning software species executes both valid terminals and their
+refusal/rollback/replay companions against metadata doubles. The migrated TCP
+species additionally positions actual accepted input/role/current body, canonical
+lifecycle writer, source reducer/floor/receipt and separate readbacks; its plan and
+policy-branch selection are explicitly planted and do not prove registered
+Chronicler plan admission or classifier behavior. This extension remains SQL
+UNRUN until its own exact published hosted case executes. All original four
+outcomes and complete native/runtime/online/all-holder obligations remain UNMET.
+
+
+The actual OwnTracks classification pipeline now follows its content-blind
+observability path: no precise input preview, model-output log or exception
+traceback/text on structured, dispatch, policy-route or empty-route failure.
+The actual registered direct-ingest callback keeps fixed class/category/count
+failure metadata for OwnTracks; unrelated ordinary diagnostics remain unchanged.
+Existing owning software controls exercise the real registered callback and
+pipeline failure paths with synthetic precise input, alongside ordinary and
+healthy routing companions. These controls use modeled DB/adapter/event I/O.
+Preventing new diagnostic copies does not dispose old logs, exception objects or
+runtime descendants. In particular the prior private unresolved-error marker is
+still a hold, never a terminal receipt or complete erasure claim. Full lawful
+log/error/routed/runtime/mixed closure remains active SOURCE work and UNMET.
+
+
+The raw classifier continuation captures the actual live ingress kind3 processing
+producer in the configured Spawner pre-context boundary. A new immutable owning
+`location_ingress_runtime_inputs` relation freezes its original claimed
+copy/handler/incarnation and canonical accepted body, actual runtime input/session
+and full classifier prompt digest on the SAME pre-context transaction. The ingress
+control lock precedes the configured catalog/context lock. Independent committed
+readback precedes copied prompt processing; the actual session writer rechecks the
+same original prompt. This local content-free history is installed and validated
+by the still-private core264 with its ordinary backup path and permanent-history
+trigger. No existing role, grant, principal or foreign namespace changes.
+
+The original full source census now includes every recorded runtime and requires
+its separate disposition plus unchanged current reduced session, system and
+provenance. Processing/context end cannot substitute. Captured raw classifier
+ancestry deliberately does not mark arbitrary history, routing instructions or
+Memory inputs exclusive. Full lawful classifier/Memory/routed/log/error/mixed
+reduction and independent content preservation remain mandatory active SOURCE
+work. Structured adapter invocation and actual routed target admission need their
+own further producer bindings; this relation does not attest them or model/provider
+erasure. Missing configured constructor or original ancestry fails before new
+runtime processing rather than inventing a public selector or REQUEST authority.
+
+Two existing software owners exercise the actual pre-context writer/session
+binding and source census with explicit metadata doubles, including missing or
+mismatched ancestry, disposed source, same-writer fault rollback, unknown committed
+readback, changed composed prompt, scope/Task/registry mismatch and refilled or
+unfinished runtime companions. The existing migrated TCP species authors an
+actual core-only configured Pool/constructor and registered ingress processing
+positive, actual INSERT fault/separate acquisition/restored reservation, actual
+session writer and source hold after original ingress lifetimes end. Its classifier
+body is synthetic and no model/provider or configured Memory is invoked. This new
+SQL extension remains UNRUN until exact-head hosted execution. All four original
+outcomes, all36 native scenarios and full all-holder/registered/role/browser/recovery
+acceptance remain UNMET; the published de0d and prior db730 receipts qualify only
+their separately dated scopes.
+
+The registered SSE transport fixture qualifies the connector's original input
+cohort after its actual webhook server teardown and owning end reconciliation,
+separately from Switchboard SDK handler/server completion. Only the two fixed
+active source-cohort categories are retried; missing or malformed original
+ancestry still refuses. Teardown and elapsed time do not manufacture a terminal
+receipt. The existing software control holds an actual middleware Task open and
+then restores its original end callback; genuine registered SQL qualification
+remains required at the corrected exact head.
+
+The actual API runtime adapter now applies the content-blind failure boundary
+before both structured and ordinary invocation diagnostics or process metadata
+can persist provider exception arguments. The inherited private ingress cell
+only restricts diagnostics, including in copied child Tasks; it grants no
+admission, source classification or terminal authority. Ordinary API errors keep
+their existing detail. Native input failures retain the wrapper/failover fields
+and original SDK causal exception while emitting only fixed class/category/code.
+This prevents a new diagnostic copy; retained exception frames, SDK response
+objects and existing logs still require their own lawful disposition. Existing
+adapter owners exercise both actual paths with synthetic SDK errors, prior
+production source red/restored positives, ordinary companions and successful
+metadata reset. No provider or SQL invocation supplies proof in that scope.
+
+
+The actual structured classifier reserves every SDK attempt before invocation,
+including schema retries, under the same constructor-owned original ingress
+processing source. Its complete prompt/system/tool-schema digests and accepted
+canonical generation/body commit under the policy-first writer and receive
+independent readback before the SDK is called. The actual returned tool-call
+body and text then receive immutable input-bound output capture and separate
+committed readback before any local route/tool executes. Admission or output
+readback failure cannot be converted to the ordinary fallback catch. Ordinary
+unconfigured nonlocation classification keeps its existing path. These
+content-free own-schema relations use the existing owner and permanent-history
+installer; no source label, caller verdict, returned locator or REQUEST context
+creates producer authority.
+
+The owning software companion models missing original ancestry, same-writer
+input/output faults, unknown durable readback, a refused SDK/route and a restored
+actual classifier positive with metadata/SDK doubles. The same existing real
+Pool species authors actual input/output INSERT faults after the real writes,
+rollback survival from a separate acquisition, restored producers and immutable
+body companions; those new SQL controls remain UNRUN until exact-head hosted
+execution. Input or result capture is ancestry, not SDK disposal or a routing
+receipt. Every captured attempt remains held in the original source census
+until its SDK/processing/result/routed descendants have separate lawful native
+dispositions. Their terminal implementation remains active SOURCE work; this
+hold cannot count as delivering erasure. All four original outcomes and full
+registered/role/browser/recovery/independent-topology acceptance remain UNMET.
+
+
+The configured structured SDK invocation now has its own actual gated Task.
+The original live processing producer records and independently reads its exact
+input/task/handler/incarnation claim before releasing that Task to invoke the
+adapter. Claim admission is outside the adapter failover catch. The Task returns
+only None; its reply remains a separate private holder. A healthy original Task
+with no exception/cancellation receives an immutable same-input/task end receipt
+and separate committed readback before its reply transfers to the classifier.
+That receipt covers only the SDK coroutine; output/result, routing and parent
+processing copies remain separate obligations. Failed or cancelled Tasks remain
+unresolved, preserving original primary exception identity and traceback-held
+input rather than treating Task.done as disposal. Neither a public UUID nor a
+caller completion field may select that private constructor-owned binding.
+
+Existing software owners exercise the actual gate/child Task, unknown claim and
+end readbacks before consumers, healthy transfer, failed traceback holder and
+cancellation refusal using modeled metadata and SDK callbacks. The existing real
+Pool species authors actual claim/end receipt INSERT faults after their writes,
+separate surviving body/absent-end readbacks, restored original producer and
+immutable receipt, plus original failed Task/no-end. These SQL extensions remain
+UNRUN until fresh exact-head hosted proof. The returned body and error holders
+are not erased by this partial lifetime proof; their lawful terminal processing,
+all original mixed/routed/log/recovery/native obligations remain active SOURCE.
+
+
+The in-process structured tool resolver and handler now restrict diagnostics
+when their actual inherited private ingress processing scope is present, even
+when that scope is stale. Only fixed category/class/validated SQLSTATE data
+reach the warning and returned error fields; ordinary unconfigured calls keep
+their original detail. This restriction grants no dispatch, source, actor or
+terminal authority. The actual handler's primary exception and traceback are
+preserved and remain unresolved copies; preventing a new log/result error copy
+cannot settle them or their processing/routed descendants. The nearest existing
+sync-tool owner executes ordinary detail and native resolver/handler companions;
+the actual prior implementation produces a planted sentinel assertion RED,
+with byte-exact restoration PASS. These are software error-copy controls, not
+registered route, role, SQL or all-holder disposal proof.
+
+
+Each actual native structured attempt now owns an immutable JSON wire of its
+complete tool schema before reservation. The owning reserve consumes one fresh
+reconstruction and the actual gated SDK consumes another reconstruction of that
+same wire; a shared nested schema mutation across claim/readback awaits cannot
+change the consumed admitted body. Prompt/system strings and original model,
+timeout, ordinary adapter parameters and schema-retry behavior are preserved.
+A source-owned software companion changes the actual shared nested tool schema
+only after the real SDK preparation/claim readback; the old classifier consumes
+the mismatched body and fails, while the restored snapshot reaches the actual
+adapter/route positive. It restores the shared schema in every outcome. This
+binds the actual invocation body at the modeled boundary, not provider or SQL
+execution proof.
+
+The actual MessagePipeline now propagates native CopyFloorUnavailable witness
+failures through both its structured-to-CLI and outer-to-general fallback
+barriers. A failed input/output/SDK-end witness cannot trigger a new unbound
+copied prompt in either lane. Original generic RuntimeError classification
+fallback remains positive. The existing fallback owner positions native
+refusal with original exception identity and no CLI/general invocation; its
+actual old producer is DIDNOTRAISE RED and restored positive. This exception
+only refuses processing and grants no source/currentness/terminal authority.
+
+
+The actual classifier now propagates a start-witness refusal before its generic
+SDK invocation-error catch. The existing owning software control removes only
+the original private binding at the actual start seam: the real producer refuses
+with its original exception, before SDK invocation or routing. Restoring that
+binding and cancelling the still-gated test Task is test cleanup, never an end
+receipt. Ordinary generic SDK invocation-error fallback remains compatible.
+
+A healthy original SDK producer whose end committed but independent ACK is
+unknown may revalidate its complete original input/task/handler/incarnation birth
+and reuse that same committed end receipt. It must independently observe that
+receipt before transferring its unchanged reply; a changed Task, handler,
+incarnation or end binding refuses without another receipt or body transfer.
+Successful transfer removes the private binding, so public identifiers, restarted
+Tasks and a second completed transfer cannot reuse this recovery path. The
+existing real-Pool species authors a lost ACK after observing the actual commit,
+then separately reads the surviving original receipt and recovers through the
+same original producer. This current extension remains hosted UNRUN. Receipt
+recovery closes only the SDK coroutine, not copied result, route, processing,
+provider, retained exception or any other descendant. Their lawful terminal
+mechanisms and all four original outcomes remain active SOURCE work.
+
+
+The fixed original processing observer now has a separate local structured-frame
+receipt path. It starts from every captured input with LEFT JOINs to its original
+accepted source, SDK birth/end and output, validates the complete cohort before
+writing, and records its unchanged input/task/handler/incarnation/output binding.
+Only the actual original healthy parent Task with no cached result, exception or
+cancellation, no retained failure marker and no private SDK reply/failed holder
+may qualify that local receipt. Missing original SDK ends, output or source
+bindings refuse; a smaller surviving cohort cannot replace the original set.
+Unknown independent readback retains the original private observer. Its same
+receipt set is revalidated on retry before releasing that observer. If the
+original COMMIT ACK is lost and the write did not persist, only that same
+original private observer may retry the complete unchanged set with its original
+planned receipt UUIDs; a different stored receipt refuses. No historical
+completion timestamp or replacement receipt is inferred.
+
+This is local classifier-frame disposition only. The original healthy processing
+Task's own end remains separate from a pending SDK/result holder; it cannot proxy
+that holder's end. A pending local cohort retains the original observer while
+the distinct parent end may commit. SQL failure rolls back both new local and
+parent receipts. No local receipt attests an adapter/provider cache, remote
+receiver, routed runtime, persisted result or error/log descendant. The final
+source census still withholds all-copy closure until those actual distinct
+profiles are installed and proven. This refusal is an intermediate enforcement
+state, not delivery of the original erasure obligation.
+
+The existing software owner uses actual Tasks with planted cached-result and
+traceback holders, a complete two-attempt positive, missing original SDK end,
+held SDK reply, partial independent readback, changed receipt and same-receipt
+retry. Its receipt INSERT fault models rollback and restored positive through
+the actual reconciler. A separate registered ingress helper authors a genuinely
+new healthy owning processing Task and injects failure after its actual local
+receipt INSERT on a real Connection, then requires separate surviving original
+bindings/absent receipt and restored same-producer committed readbacks. Current
+new SQL/registered lifetime and whole erasure evidence remain UNRUN until exact
+head hosted proof; these controls do not invoke a provider or routed receiver.
+
+
+Native structured output is now privately reconstructed from an immutable JSON
+snapshot before capture/readback or token-accounting awaits. The actual tool
+handler consumes that owned body, rather than an adapter-retained mutable alias.
+The existing owner changes the original returned nested argument only after
+actual output capture/readback: the previous producer executes the changed
+argument and fails original consumed-body equality; the snapshot reaches the
+unchanged captured-body positive. Ordinary unconfigured output remains unchanged.
+This binds consumption, not routed receiver or provider disposal.
+
+Local disposition prevalidates every planned/stored receipt UUID before any
+INSERT. The two-entry owning reconciler control plants a restorable missing first
+receipt and a different second receipt with otherwise valid bindings. The prior
+loop writes the first before refusal; the corrected loop preserves both rows and
+write count, retaining the original observer. Healthy complete sibling closure
+and same-original receipt retry remain positive. These software controls model
+metadata; genuine role/transaction/registered receipt proof remains hosted UNRUN.

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // ---------------------------------------------------------------------------
 // Tests for MapWidget — bu-ig72b.14
 //
@@ -8,6 +9,8 @@
 // (same pattern as existing component tests in this codebase).
 // ---------------------------------------------------------------------------
 
+import { act } from "react"
+import { createRoot } from "react-dom/client"
 import { afterAll, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
@@ -24,13 +27,31 @@ afterAll(() => vi.unstubAllEnvs())
 // Must be hoisted — vi.mock is hoisted automatically by vitest.
 // ---------------------------------------------------------------------------
 
+const mapState = vi.hoisted(() => ({ maps: [] as Array<{
+  removed: boolean;
+  sources: Record<string, { data: unknown; setData: (data: unknown) => void }>;
+}> }));
+
 vi.mock("maplibre-gl", async () => {
   class MockMap {
+    removed = false;
+    sources: Record<string, { data: unknown; setData: (data: unknown) => void }> = {};
+    layers = new Set<string>();
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(..._args: unknown[]) {}
+    constructor(..._args: unknown[]) { mapState.maps.push(this); }
+    addSource(id: string, source: { data: unknown }) {
+      const installed = { data: source.data, setData(data: unknown) { this.data = data; } };
+      this.sources[id] = installed;
+    }
+    addLayer(layer: { id: string }) { this.layers.add(layer.id); }
+    getSource(id: string) { return this.sources[id]; }
+    getLayer(id: string) { return this.layers.has(id) ? {} : undefined; }
+    setLayoutProperty() {}
+    setStyle() {}
+    flyTo() {}
     isStyleLoaded() { return true }
     fitBounds() {}
-    remove() {}
+    remove() { this.removed = true; this.sources = {}; }
     on() {}
     off() {}
   }
@@ -441,3 +462,80 @@ describe("MapWidgetInner trail-only render (bu-2xpqt)", () => {
     expect(html).not.toContain("No activity recorded for this window")
   })
 })
+
+
+it("disposes planted managed map geometry during a privacy fence and renders fresh allowed data", async () => {
+  // REQ-location-retention-007; mounted DOM/MapLibre-call control, not live GPU/server proof.
+  const { MapWidget } = await import("./MapWidget");
+  const { QueryClient } = await import("@tanstack/react-query");
+  const { reconcileLocationPrivacy, getLocationPrivacySnapshot } = await import("@/hooks/location-privacy");
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const key = ["chronicles", "point-events", { window: "archive" }];
+  const originalGeneration = getLocationPrivacySnapshot().generation;
+  const old = [{ lat: 1.31415926, lng: 103.81234567 }, { lat: 1.32, lng: 103.82 }];
+  const fresh = [{ lat: 3.14159265, lng: 104.12345678 }, { lat: 3.15, lng: 104.13 }];
+  cache.setQueryData(key, old);
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(<MapWidget points={[]} trailPoints={old} privacyGeneration={originalGeneration} />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const planted = mapState.maps.at(-1)!;
+    expect(planted).toBeDefined();
+    expect(JSON.stringify(planted.sources["owntracks-trail"].data)).toContain("1.31415926");
+    let settle!: () => void;
+    const reset = vi.spyOn(cache, "resetQueries").mockImplementationOnce(async (...args) => {
+      await new Promise<void>((resolve) => { settle = resolve; });
+      reset.mockRestore();
+      return cache.resetQueries(...args);
+    });
+    let transition!: Promise<void>;
+    await act(async () => {
+      transition = reconcileLocationPrivacy(cache, "1");
+      await Promise.resolve();
+    });
+    expect(planted.removed).toBe(true);
+    expect(planted.sources).toEqual({});
+    expect(host.querySelector('[data-testid="map-container"]')).toBeNull();
+    await act(async () => {
+      // Settle reset while the parent still retains its old prop snapshot.
+      // Unmounting old GPU sources is insufficient if they are recreated now.
+      settle();
+      await transition;
+    });
+    expect(host.querySelector('[data-testid="map-container"]')).toBeNull();
+    expect(mapState.maps.filter((map) => !map.removed)).toHaveLength(0);
+    await act(async () => {
+      root.render(<MapWidget points={[]} trailPoints={old.map(point => ({ ...point }))}
+        privacyGeneration={originalGeneration} />);
+    });
+    expect(host.querySelector('[data-testid="map-container"]')).toBeNull();
+    expect(mapState.maps.filter((map) => !map.removed)).toHaveLength(0);
+    await act(async () => {
+      root.render(<MapWidget points={[]} trailPoints={fresh}
+        privacyGeneration={getLocationPrivacySnapshot().generation} />);
+    });
+    const current = mapState.maps.at(-1)!;
+    expect(current).not.toBe(planted);
+    expect(current.removed).toBe(false);
+    expect(JSON.stringify(current.sources["owntracks-trail"].data)).toContain("3.14159265");
+    expect(JSON.stringify(current.sources)).not.toContain("1.31415926");
+    expect(cache.getQueryData(key)).toBeUndefined();
+    await act(async () => {
+      // A genuinely new allowed fix may have the same coordinates as an old
+      // one. Freshness belongs to the actual query generation, not values.
+      root.render(<MapWidget points={[]} trailPoints={old.map(point => ({ ...point }))}
+        privacyGeneration={getLocationPrivacySnapshot().generation} />);
+    });
+    expect(mapState.maps.at(-1)).toBe(current);
+    expect(current.removed).toBe(false);
+    expect(JSON.stringify(current.sources["owntracks-trail"].data)).toContain("1.31415926");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    cache.clear();
+  }
+});

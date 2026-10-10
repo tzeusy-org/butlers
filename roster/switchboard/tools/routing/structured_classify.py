@@ -45,6 +45,7 @@ executing an unvalidated decision.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -324,6 +325,18 @@ def _validate_tool_calls(calls: list[dict[str, Any]]) -> bool:
     return all(_validate_tool_call(call) for call in calls)
 
 
+def _native_local_failure_detail(exc: Exception) -> str | None:
+    """Private inherited input restricts diagnostics; it grants no authority."""
+    from butlers.core.location_ingress_runtime import native_ingress_error_redaction
+
+    if not native_ingress_error_redaction():
+        return None
+    from butlers.chronicler.location_policy import closed_failure
+
+    category, failure_class, sqlstate = closed_failure(exc)
+    return f"category={category} sqlstate={sqlstate} class={failure_class}"
+
+
 async def _execute_tool_call(mcp_server: Any, call: dict[str, Any]) -> dict[str, Any]:
     """Execute one validated tool_use block in-process against the local FastMCP
     server — no subprocess, no HTTP round trip. Reuses the SAME registered tool
@@ -350,8 +363,12 @@ async def _execute_tool_call(mcp_server: Any, call: dict[str, Any]) -> dict[str,
             tool_obj = await tool_obj
     except KeyError:
         tool_obj = None
-    except Exception:
-        logger.exception("structured_classify: failed to resolve local tool %s", name)
+    except Exception as exc:
+        restricted = _native_local_failure_detail(exc)
+        if restricted is None:
+            logger.exception("structured_classify: failed to resolve local tool %s", name)
+        else:
+            logger.warning("structured_classify: local tool resolution failed %s", restricted)
         tool_obj = None
 
     if tool_obj is None:
@@ -377,8 +394,13 @@ async def _execute_tool_call(mcp_server: Any, call: dict[str, Any]) -> dict[str,
             if inspect.isawaitable(result):
                 result = await result
     except Exception as exc:
-        logger.warning("structured_classify: local execution of %s failed: %s", name, exc)
-        result = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        restricted = _native_local_failure_detail(exc)
+        if restricted is None:
+            logger.warning("structured_classify: local execution of %s failed: %s", name, exc)
+            result = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        else:
+            logger.warning("structured_classify: local execution failed %s", restricted)
+            result = {"status": "error", "error": restricted}
 
     return {**call, "result": result}
 
@@ -479,18 +501,95 @@ async def try_structured_classification(
         attempt_exc: Exception | None = None
 
         for schema_attempt in range(2):  # one retry on schema-invalid output only
-            try:
-                tool_calls, text, usage = await adapter.invoke_structured(
-                    prompt=effective_prompt,
-                    system_prompt=system_prompt,
-                    tools=tools,
+            from butlers.core.location_copy_retention import CopyFloorUnavailable
+            from butlers.core.location_ingress_runtime import (
+                capture_structured_ingress_output,
+                current_ingress_runtime_input,
+                finish_structured_ingress_sdk,
+                prepare_structured_ingress_sdk,
+                reserve_structured_ingress_input,
+                start_structured_ingress_sdk,
+            )
+
+            # Native admission is outside the adapter's retry/fallback catch.
+            # Unknown input COMMIT cannot be converted to an untracked SDK call.
+            native_tools_wire = None
+            if current_ingress_runtime_input(pool) is not None:
+                try:
+                    # The immutable owning wire is the same body hashed for
+                    # admission and reconstructed inside the gated SDK Task.
+                    # Shared schema dictionaries may change across the awaits.
+                    native_tools_wire = json.dumps(tools, ensure_ascii=False, allow_nan=False)
+                except (TypeError, ValueError):
+                    raise CopyFloorUnavailable("ingress_structured_tools_unknown") from None
+            native_input = await reserve_structured_ingress_input(
+                pool,
+                prompt=effective_prompt,
+                system_prompt=system_prompt,
+                tools=json.loads(native_tools_wire) if native_tools_wire is not None else tools,
+            )
+            native_sdk = await prepare_structured_ingress_sdk(pool, native_input)
+
+            def invoke(
+                original_adapter=adapter,
+                original_prompt=effective_prompt,
+                original_system=system_prompt,
+                original_tools=tools,
+                original_wire=native_tools_wire,
+                original_model=model_id,
+                original_timeout=session_timeout_s,
+            ):
+                # Retries cannot rewrite the retained failed Task's original
+                # invocation closure. These are fixed owning attempt inputs.
+                return original_adapter.invoke_structured(
+                    prompt=original_prompt,
+                    system_prompt=original_system,
+                    tools=json.loads(original_wire)
+                    if original_wire is not None
+                    else original_tools,
                     env={},
-                    model=model_id,
-                    timeout=session_timeout_s,
+                    model=original_model,
+                    timeout=original_timeout,
                 )
+
+            try:
+                if native_sdk is None:
+                    tool_calls, text, usage = await invoke()
+                else:
+                    await start_structured_ingress_sdk(pool, native_sdk, invoke)
+            except CopyFloorUnavailable:
+                # A start/claim witness refusal is not an SDK invocation error.
+                # Preserve it so neither this loop nor its caller can fall back.
+                raise
             except Exception as exc:  # classified below, after the retry loop
                 attempt_exc = exc
                 break
+
+            if native_sdk is not None:
+                tool_calls, text, usage = await finish_structured_ingress_sdk(pool, native_sdk)
+
+            if native_input is not None:
+                try:
+                    # The adapter may retain mutable returned dictionaries.
+                    # Own the consumed output before capture/readback awaits,
+                    # exactly as the admitted input owns its original wire.
+                    frozen_output = json.loads(
+                        json.dumps(
+                            {"tool_calls": tool_calls, "text": text},
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    raise CopyFloorUnavailable("ingress_structured_output_body_unknown") from None
+                tool_calls, text = frozen_output["tool_calls"], frozen_output["text"]
+
+            # The actual result must have committed original input lineage
+            # before any local route/tool consumes a copied SDK decision.
+            # A failed witness cannot turn into an untracked fallback call.
+            await capture_structured_ingress_output(
+                pool, native_input, tool_calls=tool_calls, text=text
+            )
 
             if usage:
                 input_tokens = usage.get("input_tokens")

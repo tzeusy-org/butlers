@@ -96,6 +96,19 @@ Every row on `point_events`, `episodes`, and `overrides` carries:
 - `tombstone_at` (timestamptz, nullable) — soft-delete marker; rows past
   tombstone are excluded from default views.
 
+### Conditional OwnTracks evidence retention
+
+The owner-released location contract allows a 30-day or authenticated shorter
+raw horizon only after causal projection and all owning copy holders close.
+Chronicler prepares immutable metadata and coarsens its own summaries; the
+existing connector writer alone deletes connector raw evidence. Chronicler
+may SELECT only `connectors.owntracks_retention_batches` and
+`connectors.owntracks_retention_batch_rows` for separately committed receipts,
+in addition to its existing raw read surface. This is no foreign write or
+routing/ingress authority. Missing receipts or incomplete projection remain
+unknown/overdue. The source stage leaves READY/all-copy deletion unfinished;
+policy deadlines must not be displayed as measured forgetting.
+
 ### D2: Source Compatibility Contracts
 
 Each source adapter MUST declare a **compatibility record** before projection

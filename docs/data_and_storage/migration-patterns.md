@@ -437,3 +437,47 @@ their separate authority contract or equate the trusted migration owner with run
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
 - [State Store](state-store.md) -- The `state` table created by core migrations
+
+
+### OwnTracks retention history
+
+`core_264` follows protected `core_265` (which descends `core_261`) and adds connector-owned immutable source birth,
+lineage, tombstones and committed receipts plus per-owning-schema source-copy
+history. `chronicler_027` follows `chronicler_026` and adds owning policy,
+projection coverage, decisions and floors. These revisions create no principal
+or LOGIN. Receipt SELECT is limited to Chronicler; raw DELETE stays with the
+existing connector writer. Source-copy ledgers live in each owning schema and
+do not grant peer SQL writes. Trigger bodies use `pg_catalog,pg_temp` and
+qualified installed functions. A populated history/floor downgrade refuses;
+never erase floors to repair a revision. Actual migration/role controls must
+execute before reporting installed authority or recovery proof.
+
+Empty core264 rollback retains inert own ledgers. Its installer accepts only the
+exact own table columns/constraints and the established resolved core
+writer owner before
+converging functions/triggers; populated history still requires roll-forward.
+Chronicler privacy preparation preserves every contributor's original output
+generation and records monotone previous-to-reduced transitions in the same
+transaction, including contributors outside the current bounded plan.
+
+Retained core264 local ledgers use the actual core foundation `state` relation's
+established migration-writer owner as the catalog identity anchor. A local state
+relation takes precedence; its wrong kind or identity refuses. Only when local
+state is absent may the fixed shared `public.state` anchor be used: the adopted
+shared-predecessor replay can independently position a schema version after
+public core predecessors without having run its own local foundation. The target namespace must
+exist, and the selected state must be a regular table with a stored owner. No
+invocation identity, namespace owner, inferred runtime role or peer table can
+substitute. A managed replay's invoking login need not be the retained owner.
+Only newly created ledgers receive that existing owner; retained wrong-owner,
+kind, columns and constraints still fail closed. Replay does not transfer
+existing objects, grant membership, erase floors or bypass populated refusal.
+
+
+Retention core264 is an additive successor of the actually protected core265
+conversation-identity split (which descends261). Revision numbers are identifiers,
+not a topological-order requirement: this reviewed chain has one core head264.
+Its empty replay controls stop at265 and preserve the governed foreign split;
+no private custody/calendar revision or held capture259 is incorporated. Online
+migration still requires the current reviewed-bootstrap admission and its
+independent point-of-use guards.

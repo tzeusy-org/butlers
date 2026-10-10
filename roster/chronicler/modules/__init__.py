@@ -16,7 +16,8 @@ per-source roll-up, and hard cardinality caps before returning structured JSON
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -68,6 +69,11 @@ class ChroniclerModuleConfig(BaseModel):
 # reusing this `name` to override cadence — TOML wins on cadence, not
 # existence.
 _DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "chronicler_location_retention",
+        "cron": "35 */6 * * *",
+        "job_name": "chronicler_location_retention",
+    },
     {
         # Weekly, Sunday 03:30 (owner's effective timezone — see
         # `ensure_module_default_schedule`): mines the prior weeks' activity
@@ -143,6 +149,10 @@ class ChroniclerModule(Module):
         blob_store: Any = None,
     ) -> None:
         self._db = db
+        from butlers.chronicler.location_retention import register_native_copy_pool
+
+        if db is not None and getattr(db, "schema", None) == "chronicler":
+            register_native_copy_pool(db.pool)
         await self._register_default_schedules(db)
 
     async def _register_default_schedules(self, db: Any) -> None:
@@ -181,6 +191,10 @@ class ChroniclerModule(Module):
                 )
 
     async def on_shutdown(self) -> None:
+        from butlers.chronicler.location_retention import unregister_native_copy_pool
+
+        if self._db is not None:
+            unregister_native_copy_pool(self._db.pool)
         self._db = None
 
     def _get_pool(self) -> Any:
@@ -196,6 +210,28 @@ class ChroniclerModule(Module):
 
 def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
     """Register Chronicler read and bundle tools on *mcp*."""
+
+    @mcp.tool()
+    async def chronicler_location_retention_batches(
+        phase: Literal["ready", "copies"] = "ready",
+    ) -> list[dict[str, Any]]:
+        """Read stored ready OwnTracks decisions without caller raw selectors.
+
+        Metadata locators are consumed by the native registered connector
+        outside its transaction. They do not certify caller source identity.
+        """
+        from butlers.chronicler.location_retention import filtered_copy_plans, ready_batches
+
+        if phase == "copies":
+            return await filtered_copy_plans(module._get_pool())
+        return await ready_batches(module._get_pool())
+
+    @mcp.tool()
+    async def chronicler_location_retention_status(decision_id: UUID) -> dict[str, Any]:
+        """Read the actual stored decision state; missing is unavailable."""
+        from butlers.chronicler.location_retention import plan_status
+
+        return await plan_status(module._get_pool(), decision_id)
 
     # ------------------------------------------------------------------
     # chronicler_list_events
@@ -238,15 +274,20 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             return datetime.fromisoformat(s)
 
         pool = module._get_pool()
-        rows = await list_point_events(
-            pool,
-            occurred_from=_parse_dt(occurred_from),
-            occurred_to=_parse_dt(occurred_to),
-            source_name=source_name,
-            event_type=event_type,
-            limit=limit,
-            offset=offset,
-        )
+        from butlers.chronicler.location_retention import capture_native_read
+
+        async def native_reader(conn):
+            return await list_point_events(
+                conn,
+                occurred_from=_parse_dt(occurred_from),
+                occurred_to=_parse_dt(occurred_to),
+                source_name=source_name,
+                event_type=event_type,
+                limit=limit,
+                offset=offset,
+            )
+
+        rows = await capture_native_read(pool, "point_event", native_reader)
         from dataclasses import asdict
 
         return {"data": [asdict(r) for r in rows], "count": len(rows)}
@@ -296,18 +337,23 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             return datetime.fromisoformat(s)
 
         pool = module._get_pool()
-        rows = await list_episodes(
-            pool,
-            start_from=_parse_dt(start_from),
-            start_to=_parse_dt(start_to),
-            source_name=source_name,
-            episode_type=episode_type,
-            participant_entity_id=(
-                UUID(participant_entity_id) if participant_entity_id not in (None, "") else None
-            ),
-            limit=limit,
-            offset=offset,
-        )
+        from butlers.chronicler.location_retention import capture_native_read
+
+        async def native_reader(conn):
+            return await list_episodes(
+                conn,
+                start_from=_parse_dt(start_from),
+                start_to=_parse_dt(start_to),
+                source_name=source_name,
+                episode_type=episode_type,
+                participant_entity_id=(
+                    UUID(participant_entity_id) if participant_entity_id not in (None, "") else None
+                ),
+                limit=limit,
+                offset=offset,
+            )
+
+        rows = await capture_native_read(pool, "episode", native_reader)
         from dataclasses import asdict
 
         return {"data": [asdict(r) for r in rows], "count": len(rows)}
@@ -334,7 +380,14 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         from butlers.chronicler.storage import get_episode
 
         pool = module._get_pool()
-        ep = await get_episode(pool, UUID(episode_id))
+        from butlers.chronicler.location_retention import capture_native_read
+
+        async def native_reader(conn):
+            row = await get_episode(conn, UUID(episode_id))
+            return [] if row is None else [row]
+
+        rows = await capture_native_read(pool, "episode", native_reader)
+        ep = rows[0] if rows else None
         if ep is None:
             return {"error": "not_found"}
         from dataclasses import asdict
@@ -527,7 +580,12 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
                 priority="low", current_time=now_local, prefs=prefs, channel="telegram"
             )
 
-        episodes = await list_episodes(pool, start_from=start_at, start_to=end_at, limit=1000)
+        from butlers.chronicler.location_retention import capture_native_read
+
+        async def native_reader(conn):
+            return await list_episodes(conn, start_from=start_at, start_to=end_at, limit=1000)
+
+        episodes = await capture_native_read(pool, "episode", native_reader)
         episode_dicts = [asdict(ep) for ep in episodes]
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -656,18 +714,18 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         # Fetch with a generous DB-level cap to avoid unbounded scans.
         db_limit = max(500, max_episodes * 5, max_events * 5)
 
-        episodes = await list_episodes(
-            pool,
-            start_from=start_at,
-            start_to=end_at,
-            limit=db_limit,
-        )
-        events = await list_point_events(
-            pool,
-            occurred_from=start_at,
-            occurred_to=end_at,
-            limit=db_limit,
-        )
+        from butlers.chronicler.location_retention import capture_native_read
+
+        async def native_episodes(conn):
+            return await list_episodes(conn, start_from=start_at, start_to=end_at, limit=db_limit)
+
+        async def native_events(conn):
+            return await list_point_events(
+                conn, occurred_from=start_at, occurred_to=end_at, limit=db_limit
+            )
+
+        episodes = await capture_native_read(pool, "episode", native_episodes)
+        events = await capture_native_read(pool, "point_event", native_events)
 
         from dataclasses import asdict
 

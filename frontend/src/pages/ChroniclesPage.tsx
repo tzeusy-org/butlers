@@ -43,6 +43,7 @@ import { KpiStrip } from "@/components/overview/KpiStrip";
 import { AttentionList, type AttentionListItem } from "@/components/overview/AttentionList";
 import { Section } from "@/components/ui/Section";
 import { ChroniclesDrilldownPanel } from "@/components/chronicles/ChroniclesDrilldownPanel";
+import { LocationRetentionControl } from "@/components/chronicles/LocationRetentionControl";
 import { RecentDaysIndex } from "@/components/chronicles/RecentDaysIndex";
 import {
   clampIsoDay,
@@ -404,6 +405,7 @@ export default function ChroniclesPage() {
       error={isError ? new Error("Failed to load chronicles briefing.") : null}
       onRetry={() => void refetch()}
     >
+      <LocationRetentionControl />
       <div className="grid max-w-[1280px] gap-10 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] lg:gap-14">
         {/* Left column: Voice surface */}
         <div className="space-y-6">

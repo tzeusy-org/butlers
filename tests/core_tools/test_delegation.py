@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -24,7 +24,9 @@ from butlers.core_tools._delegation import register_delegation_tools
 pytestmark = pytest.mark.unit
 
 
-def _register(butler_name: str = "finance", butler_type=ButlerType.BUTLER, switchboard_client=None):
+def _register(
+    butler_name: str = "finance", butler_type=ButlerType.BUTLER, switchboard_client=None, pool=None
+):
     registered: dict[str, callable] = {}
 
     def _core_tool(_group: str, **_kwargs):
@@ -38,7 +40,7 @@ def _register(butler_name: str = "finance", butler_type=ButlerType.BUTLER, switc
     daemon = SimpleNamespace(switchboard_client=switchboard_client)
     ctx = ToolContext(
         daemon=daemon,
-        pool=AsyncMock(),
+        pool=pool if pool is not None else AsyncMock(),
         spawner=None,
         butler_name=butler_name,
         butler_type=butler_type,
@@ -246,7 +248,14 @@ class TestDelegateReceive:
         monkeypatch.setattr(
             _delegation,
             "get_delegation",
-            AsyncMock(return_value={"target_butler": "relationship", "status": "pending"}),
+            AsyncMock(
+                return_value={
+                    "target_butler": "relationship",
+                    "status": "pending",
+                    "question": "Who is Alice's employer?",
+                    "asking_butler": "finance",
+                }
+            ),
         )
         schedule_mock = AsyncMock(return_value=uuid.uuid4())
         monkeypatch.setattr(_delegation, "_schedule_create", schedule_mock)
@@ -262,6 +271,22 @@ class TestDelegateReceive:
         _pool, task_name, cron, prompt = schedule_mock.await_args.args
         assert task_name == "delegate-answer-ledger-8"
         assert cron is not None
+        before = schedule_mock.await_count
+        for question, actor in [
+            ("substituted body", "finance"),
+            ("Who is Alice's employer?", "forged"),
+        ]:
+            refused = await registered["delegate_receive"](
+                ledger_id="ledger-8",
+                question=question,
+                asking_butler=actor,
+            )
+            assert (
+                refused["status"] == "error"
+                and refused["error"] == "Delegated question body differs."
+            )
+        assert schedule_mock.await_count == before
+        await _assert_native_received_question_schedule(monkeypatch)
         assert "ledger-8" in prompt
         assert "delegate_answer" in prompt
 
@@ -577,3 +602,920 @@ class TestDispatchViaSwitchboardEnvelope:
 
         assert error == "wake_key does not match the ledger row's immutable wake key."
         assert retryable is False
+
+
+async def _assert_native_received_question_schedule(monkeypatch):
+    """Actual handler/source/receiver callbacks; SQL/HTTP doubles, no online authority claim."""
+    from contextlib import asynccontextmanager
+    from copy import copy, deepcopy
+
+    # Actual core constructor/writer lifetime with pool/SQL doubles. This
+    # proves no Memory prerequisite and fixed own-role refusals, not real SQL.
+    import asyncpg
+
+    from butlers.chronicler.location_delegation_copies import (
+        NativeDelegationWriter,
+        question_digest,
+    )
+    from butlers.chronicler.location_delegation_receivers import (
+        prepare_question_source,
+        question_challenge,
+        schedule_received_question,
+        verify_question_delivery,
+    )
+    from butlers.chronicler.location_delegation_runtime import NativeDelegationRuntime
+    from butlers.chronicler.location_memory_context import context_writer
+    from butlers.chronicler.location_policy import PolicyUnavailableError
+    from butlers.chronicler.location_tool_copies import _current_tool_copy, _ToolCopy
+    from butlers.core.delegation_source import _writers, clear_writer, register_writer
+
+    own_pool = MagicMock(spec=asyncpg.Pool)
+    own_pool.is_closing.return_value = False
+    own_conn = AsyncMock()
+    namespace, role = "relationship", "butler_relationship_rw"
+    own_conn.fetchval.side_effect = lambda query: (
+        namespace if query == "SELECT current_schema()" else role
+    )
+    own_pool.acquire.return_value.__aenter__.return_value = own_conn
+    core = await NativeDelegationRuntime.create(
+        domain=own_pool, name="relationship", schema="relationship", registry=AsyncMock()
+    )
+    try:
+        assert _writers[own_pool] is core.delegation_writer
+        assert context_writer(own_pool) is core and not hasattr(core, "memory")
+        await core.lock_domain(own_conn)
+        assert own_conn.execute.await_count == 1
+        role = "other_owning_role"
+        with pytest.raises(PolicyUnavailableError, match="owning writer differs"):
+            await core.lock_domain(own_conn)
+        assert own_conn.execute.await_count == 1
+        role = "butler_relationship_rw"
+        namespace = "other_private_namespace"
+        with pytest.raises(PolicyUnavailableError, match="owning namespace differs"):
+            await NativeDelegationRuntime.create(
+                domain=own_pool, name="relationship", schema="relationship", registry=AsyncMock()
+            )
+        assert _writers[own_pool] is core.delegation_writer
+        namespace = "relationship"
+        await core.lock_domain(own_conn)
+        assert own_conn.execute.await_count == 2
+    finally:
+        core.close()
+    assert own_pool not in _writers and context_writer(own_pool) is None
+    with pytest.raises(PolicyUnavailableError, match="owning writer differs"):
+        await core.lock_domain(own_conn)
+
+    ledger, question, parent = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    canonical = dict(
+        id=ledger,
+        asking_butler="chronicler",
+        target_butler="relationship",
+        question="synthetic source question",
+        catalog_match_id=None,
+        catalog_score=None,
+        status="pending",
+        metadata={"synthetic": True},
+    )
+    body_digest = question_digest(canonical)
+    trace = []
+
+    class Pool:
+        def __init__(self, name):
+            self.name = name
+            self.inputs, self.loans, self.schedules, self.tasks = {}, {}, {}, {}
+            self.attempts, self.floors, self.dispositions = {}, {}, {}
+            self.unknown_terminal = False
+            self.claims, self.ended, self.contexts, self.context_bindings = {}, {}, {}, {}
+            self.witness_failure = False
+            self.server_finished = {}
+            self.refusals = {}
+            self.source_floors = {}
+            self.question_intents = {}
+            self.transaction_active = False
+            self.fenced = False
+            self.unknown = False
+            self.native_missing = False
+            self.ordinary = None
+
+        @asynccontextmanager
+        async def acquire(self):
+            trace.append(self.name + ":acquire")
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            previous = deepcopy(
+                (
+                    self.inputs,
+                    self.loans,
+                    self.schedules,
+                    self.tasks,
+                    self.attempts,
+                    self.floors,
+                    self.dispositions,
+                )
+            )
+            self.transaction_active = True
+            try:
+                yield
+            except BaseException:
+                (
+                    self.inputs,
+                    self.loans,
+                    self.schedules,
+                    self.tasks,
+                    self.attempts,
+                    self.floors,
+                    self.dispositions,
+                ) = previous
+                trace.append(self.name + ":rollback")
+                raise
+            else:
+                trace.append(self.name + ":commit")
+            finally:
+                self.transaction_active = False
+
+        async def fetchrow(self, sql, *args):
+            if "FROM location_received_delegation_floors f" in sql:
+                if self.unknown_terminal:
+                    return None
+                for gen, receipt in self.dispositions.items():
+                    if self.floors[gen]["decision_id"] == args[0] and receipt == args[1]:
+                        return self.floors[gen] | {"receipt_id": receipt}
+                return None
+            if "FROM location_received_question_refusals" in sql:
+                return self.refusals.get(args[0])
+            if "FROM location_received_question_task_dispositions" in sql:
+                return None  # Exact newly installed table, no planted partial receipt.
+            if "FROM location_received_delegation_floors" in sql:
+                return self.floors.get(args[0])
+            if "FROM location_received_delegation_attempts" in sql:
+                return self.attempts.get(args[0])
+            if "FROM location_received_delegation_schedules s" in sql and "FOR UPDATE OF t" in sql:
+                entry = self.schedules.get(args[0])
+                if entry is None:
+                    return None
+                return entry | {"prompt": self.tasks[entry["task_id"]], "enabled": True}
+
+            if "FROM location_received_delegation_schedules s" in sql:
+                entry = next((r for r in self.schedules.values() if r["task_id"] == args[0]), None)
+                if entry is None:
+                    return None
+                return dict(
+                    self.inputs[entry["receiving_generation"]],
+                    **entry,
+                    scheduled_prompt=self.tasks[args[0]],
+                )
+            if "FROM location_received_delegation_inputs i" in sql:
+                entry = self.schedules.get(args[0])
+                if entry is None or entry["task_id"] != args[1]:
+                    return None
+                return self.inputs[args[0]] | entry
+            if "FROM location_received_delegation_claims" in sql:
+                return self.claims.get(args[0])
+            if "FROM location_runtime_context_bindings" in sql:
+                return self.context_bindings.get(args[0])
+            if "FROM scheduled_tasks" in sql:
+                return {"prompt": self.tasks[args[0]]} if args[0] in self.tasks else None
+            if "FROM public.delegation_ledger" in sql:
+                return canonical.copy()
+            if "FROM location_ordinary_delegation_inputs" in sql:
+                return self.ordinary
+            if "FROM location_native_delegation_inputs" in sql:
+                if self.native_missing:
+                    return None
+                return dict(
+                    ledger_id=ledger,
+                    question_generation=question,
+                    body_digest=body_digest,
+                    parent_count=1,
+                    exclusive_input=True,
+                )
+            if "FROM location_native_delegation_loans" in sql:
+                return self.loans.get(args[0])
+            if "FROM location_received_delegation_inputs" in sql:
+                if self.unknown and not self.transaction_active:
+                    return None
+                return self.inputs.get(args[0])
+            if "FROM location_received_delegation_schedules" in sql:
+                return self.schedules.get(args[0])
+            raise AssertionError("unexpected receiver/source row")
+
+        async def fetch(self, sql, *args):
+            if "FROM location_native_delegation_inputs" in sql:
+                # This receiver fixture owns no outgoing question header;
+                # original source data resides in the distinct source pool.
+                assert self.name == "receiver"
+                return []
+            if "FROM location_native_question_answer_observations" in sql:
+                assert self.name == "receiver"
+                return []
+            assert "location_native_delegation_parents" in sql
+            return [
+                dict(parent_kind="native_copy", parent_generation=parent, parent_digest=b"p" * 32)
+            ]
+
+        async def fetchval(self, sql, *args):
+            if "FROM location_received_question_source_floors" in sql:
+                assert args == (canonical["asking_butler"], ledger)
+                return tuple(args) in self.source_floors
+            if (
+                "FROM location_received_delegation_inputs" in sql
+                and "location_received_delegation_schedules" in sql
+            ):
+                return args[0] in self.inputs or args[0] in self.schedules
+            if "FROM location_received_delegation_dispositions" in sql:
+                return self.dispositions.get(args[0])
+            if "FROM location_received_delegation_floors" in sql:
+                attempt = self.attempts.get(args[0])
+                return args[0] in self.floors or (
+                    attempt is not None
+                    and (attempt["source_name"], attempt["ledger_id"]) in self.source_floors
+                )
+            if "FROM location_received_delegation_attempts" in sql:
+                row = self.attempts.get(args[0])
+                if "ledger_id=$2" in sql:
+                    return row is not None and (
+                        row["ledger_id"],
+                        row["body_digest"],
+                        row["receiving_incarnation"],
+                        row["source_name"],
+                    ) == tuple(args[1:])
+                return row is not None and (row["body_digest"], row["server_request"]) == tuple(
+                    args[1:]
+                )
+            if "EXISTS(SELECT 1 FROM scheduled_tasks" in sql:
+                return self.tasks[args[0]] == args[1]
+            if "JOIN location_runtime_context_dispositions" in sql:
+                return False  # No planted context disposition; claims alone do not close it.
+            if "EXISTS(SELECT 1 FROM location_received_delegation_claims c" in sql:
+                return any(c["receiving_generation"] == args[0] for c in self.claims.values())
+
+            if "EXISTS(SELECT 1 FROM location_native_delegation_inputs" in sql:
+                return not self.native_missing
+            if "location_runtime_context_question_intents" in sql:
+                return self.question_intents.get(args[0])
+            if "location_received_delegation_claims_ended" in sql:
+                return self.ended.get(args[0])
+            if "location_received_delegation_server_finished" in sql:
+                return (
+                    args[0] in self.server_finished
+                    if "EXISTS" in sql
+                    else self.server_finished.get(args[0])
+                )
+            if "location_received_delegation_inputs" in sql:
+                row = self.inputs.get(args[0])
+                return (
+                    row is not None
+                    and row["body_digest"] == args[1]
+                    and row["server_request"] == args[2]
+                )
+            if "JOIN location_runtime_context_dispositions" in sql:
+                return False
+            if "location_received_delegation_contexts" in sql:
+                return any(row["claim_generation"] == args[0] for row in self.contexts.values())
+            if "location_runtime_tool_intents" in sql:
+                return True
+            if "location_native_delegation_dispositions" in sql:
+                return False
+            if "location_native_copy_births" in sql:
+                return self.fenced
+            if "SELECT prompt FROM scheduled_tasks" in sql:
+                return self.tasks.get(args[0])
+            raise AssertionError("unexpected receiver/source value")
+
+        async def execute(self, sql, *args):
+            assert self.transaction_active
+            if "INSERT INTO location_received_delegation_attempts" in sql:
+                trace.append("receiver:attempt-birth")
+                self.attempts[args[0]] = dict(
+                    zip(
+                        (
+                            "receiving_generation",
+                            "ledger_id",
+                            "body_digest",
+                            "receiving_incarnation",
+                            "receiving_session",
+                            "tool_generation",
+                            "server_request",
+                            "source_name",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_question_refusals" in sql:
+                trace.append("receiver:rejection-stage")
+                self.refusals[args[0]] = dict(
+                    zip(
+                        (
+                            "receiving_generation",
+                            "tool_generation",
+                            "receiving_incarnation",
+                            "body_digest",
+                            "result_digest",
+                            "receipt_id",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_delegation_floors" in sql:
+                trace.append("receiver:floor")
+                self.floors.setdefault(
+                    args[0],
+                    dict(
+                        zip(
+                            (
+                                "receiving_generation",
+                                "decision_id",
+                                "manifest_digest",
+                                "source_name",
+                                "question_generation",
+                                "ledger_id",
+                                "loan_id",
+                                "body_digest",
+                                "receiving_incarnation",
+                            ),
+                            args,
+                        )
+                    ),
+                )
+            elif "INSERT INTO location_received_delegation_dispositions" in sql:
+                trace.append("receiver:terminal")
+                self.dispositions[args[0]] = args[1]
+            elif "UPDATE scheduled_tasks SET enabled=false" in sql:
+                trace.append("receiver:reduce")
+                self.tasks[args[0]] = args[1]
+            elif "INSERT INTO location_native_delegation_loans" in sql:
+                trace.append("source:loan-birth")
+                self.loans[args[0]] = dict(
+                    zip(
+                        (
+                            "loan_id",
+                            "question_generation",
+                            "receiver_name",
+                            "receiving_incarnation",
+                            "receiving_generation",
+                            "body_digest",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_delegation_inputs" in sql:
+                trace.append("receiver:input-birth")
+                self.inputs[args[0]] = dict(
+                    zip(
+                        (
+                            "receiving_generation",
+                            "ledger_id",
+                            "source_name",
+                            "source_incarnation",
+                            "question_generation",
+                            "loan_id",
+                            "body_digest",
+                            "receiving_incarnation",
+                            "parent_count",
+                            "exclusive_input",
+                            "receiving_session",
+                            "tool_generation",
+                            "server_request",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_delegation_schedules" in sql:
+                trace.append("receiver:schedule-birth")
+                self.schedules[args[0]] = dict(
+                    zip(("receiving_generation", "task_id", "prompt_digest"), args)
+                )
+            elif "INSERT INTO location_received_delegation_server_finished" in sql:
+                self.server_finished[args[0]] = args[3]
+            elif "INSERT INTO location_received_delegation_claims_ended" in sql:
+                if self.witness_failure:
+                    raise RuntimeError("planted secondary lifetime failure")
+                self.ended[args[0]] = args[1]
+            elif "INSERT INTO location_received_delegation_claims" in sql:
+                self.claims[args[0]] = dict(
+                    zip(
+                        (
+                            "claim_generation",
+                            "receiving_generation",
+                            "task_id",
+                            "prompt_digest",
+                            "receiving_incarnation",
+                            "exclusive_input",
+                        ),
+                        args,
+                    )
+                )
+            elif "INSERT INTO location_received_delegation_contexts" in sql:
+                self.contexts[args[0]] = dict(
+                    zip(
+                        (
+                            "input_generation",
+                            "claim_generation",
+                            "receiving_session",
+                            "bundle_digest",
+                        ),
+                        args,
+                    )
+                )
+            else:
+                raise AssertionError("unexpected receiver/source write")
+
+    source_pool, receiver_pool = Pool("source"), Pool("receiver")
+
+    def runtime(pool, name):
+        async def lock_domain(conn):
+            assert conn is pool and conn.transaction_active
+            trace.append(pool.name + ":policy")
+
+        async def endpoint(selected):
+            if source_runtime.name == "chronicler" and receiver_runtime.name == "relationship":
+                assert selected in {"chronicler", "relationship"}
+            else:
+                assert selected in {"relationship", "finance"}
+            return "fixed:" + selected
+
+        return SimpleNamespace(
+            domain=pool,
+            name=name,
+            active=True,
+            incarnation=uuid.uuid4(),
+            lock_domain=lock_domain,
+            endpoint=endpoint,
+        )
+
+    source_runtime, receiver_runtime = (
+        runtime(source_pool, "chronicler"),
+        runtime(receiver_pool, "relationship"),
+    )
+    source_writer, receiver_writer = (
+        NativeDelegationWriter(source_runtime),
+        NativeDelegationWriter(receiver_runtime),
+    )
+
+    async def source_exchange(endpoint, token, body):
+        if source_runtime.name == "chronicler":
+            assert endpoint == "fixed:relationship"
+        else:
+            assert endpoint == "fixed:" + receiver_runtime.name
+        return await question_challenge(receiver_writer, token, body)
+
+    async def receiver_exchange(endpoint, token, body):
+        if receiver_runtime.name == "relationship":
+            assert endpoint == "fixed:chronicler"
+        else:
+            assert endpoint == "fixed:" + source_runtime.name
+        if body["op"] == "question_delivery":
+            return await verify_question_delivery(source_writer, token, body)
+        return await prepare_question_source(source_writer, token, body)
+
+    source_runtime.delegation_writer, receiver_runtime.delegation_writer = (
+        source_writer,
+        receiver_writer,
+    )
+    source_runtime.exchange, receiver_runtime.exchange = source_exchange, receiver_exchange
+    register_writer(receiver_pool, receiver_writer)
+    tool = _ToolCopy(receiver_runtime, uuid.uuid4(), uuid.uuid4(), "delegate_receive", "core")
+    token = _current_tool_copy.set(tool)
+    registered = _register(butler_name="relationship", pool=receiver_pool)
+    monkeypatch.setattr(_delegation, "get_delegation", AsyncMock(return_value=canonical))
+
+    async def create(conn, name, cron, prompt, **kwargs):
+        if not conn.transaction_active:
+            async with conn.transaction():
+                return await create(conn, name, cron, prompt, **kwargs)
+        assert conn is receiver_pool and conn.transaction_active
+        trace.append("receiver:schedule-write")
+        task = uuid.uuid4()
+        conn.tasks[task] = prompt
+        return task
+
+    monkeypatch.setattr(_delegation, "_schedule_create", create)
+
+    async def receive():
+        return await registered["delegate_receive"](
+            ledger_id=str(ledger),
+            question=canonical["question"],
+            asking_butler=canonical["asking_butler"],
+        )
+
+    try:
+        with pytest.raises(PolicyUnavailableError, match="receiver challenge differs"):
+            await question_challenge(
+                receiver_writer,
+                "caller-nonce",
+                {
+                    "op": "question_challenge",
+                    "ledger_id": str(ledger),
+                    "source": "chronicler",
+                    "body_digest": body_digest.hex(),
+                },
+            )
+        from butlers.chronicler.location_delegation_receivers import reserve_received_question
+
+        # Actual canonical body under the birth lock supersedes a stale DTO.
+        # No attempt/source selector is frozen from the stale selected bytes.
+        for key, changed in (("asking_butler", "other"), ("question", "changed selected body")):
+            stale = canonical | {key: changed}
+            with pytest.raises(PolicyUnavailableError):
+                await reserve_received_question(receiver_writer, stale)
+            assert receiver_pool.attempts == {} and source_pool.loans == {}
+        result = await receive()
+        assert result["status"] == "scheduled"
+        assert (
+            len(source_pool.loans) == len(receiver_pool.inputs) == len(receiver_pool.schedules) == 1
+        )
+        receiving = next(iter(receiver_pool.inputs.values()))
+        bound = receiver_pool.schedules[receiving["receiving_generation"]]
+        assert (
+            receiver_pool.attempts[receiving["receiving_generation"]]["source_name"]
+            == canonical["asking_butler"]
+        )
+        assert (
+            receiving["body_digest"] == body_digest
+            and receiving["tool_generation"] == tool.generation
+        )
+        assert (
+            receiving["receiving_session"] == tool.session
+            and bound["task_id"] in receiver_pool.tasks
+        )
+        assert trace.index("source:loan-birth") < trace.index("receiver:input-birth")
+        assert trace.index("receiver:input-birth") < trace.index("receiver:schedule-write")
+        assert not receiver_writer.pending and not receiver_writer.receiving
+        committed = deepcopy((source_pool.loans, receiver_pool.inputs, receiver_pool.schedules))
+        source_pool.fenced = True
+        refused = await receive()
+        assert refused["status"] == "error"
+        assert (source_pool.loans, receiver_pool.inputs, receiver_pool.schedules) == committed
+        source_pool.fenced = False
+        receiver_pool.unknown = True
+        refused = await receive()
+        assert refused["status"] == "error"
+        assert len(source_pool.loans) == len(receiver_pool.inputs) == 2
+        assert len(receiver_pool.schedules) == 1  # Unknown committed input never schedules prompt.
+        receiver_pool.unknown = False
+        assert (await receive())["status"] == "scheduled"
+        # A copied private object cannot enter a schedule through matching UUID fields.
+        import time
+
+        from butlers.chronicler.location_delegation_receivers import _ReceivedQuestion
+
+        fake = _ReceivedQuestion(
+            receiver_writer, uuid.uuid4(), ledger, body_digest, time.monotonic() + 10
+        )
+        with pytest.raises(PolicyUnavailableError, match="schedule lifetime differs"):
+            await schedule_received_question(copy(fake), "synthetic", AsyncMock())
+        import hashlib
+
+        from butlers.chronicler.location_delegation_processing import (
+            bind_question_context,
+            current_scheduled_question,
+            scheduled_question_scope,
+        )
+
+        async def dispatch_body(prompt):
+            admitted = current_scheduled_question(receiver_pool)
+            assert admitted is not None and admitted.active
+            generation, session = uuid.uuid4(), uuid.uuid4()
+            receiver_pool.context_bindings[generation] = {
+                "receiving_session": session,
+                "bundle_digest": hashlib.sha256(b"frozen").digest(),
+            }
+            receiver_pool.question_intents[generation] = admitted.generation
+            async with receiver_pool.transaction():
+                await bind_question_context(
+                    receiver_pool,
+                    SimpleNamespace(
+                        runtime=receiver_runtime, generation=generation, session=session
+                    ),
+                    prompt,
+                )
+            assert receiver_pool.contexts[generation]["claim_generation"] == admitted.generation
+
+        task = bound["task_id"]
+        prompt = receiver_pool.tasks[task]
+        async with scheduled_question_scope(receiver_pool, task, prompt):
+            await dispatch_body(prompt)
+        assert len(receiver_pool.claims) == len(receiver_pool.ended) == 1
+        assert current_scheduled_question(receiver_pool) is None
+        # Independent additions preserve the whole prompt, but cannot claim
+        # exclusive ancestry for lawful erasure.
+        async with scheduled_question_scope(receiver_pool, task, prompt + " independent context"):
+            assert current_scheduled_question(receiver_pool).exclusive is False
+            await dispatch_body(prompt + " independent context")
+        # Policy fencing reaches the source before any receiving claim/body.
+        before = len(receiver_pool.claims)
+        source_pool.fenced = True
+        with pytest.raises(PolicyUnavailableError, match="parent is fenced"):
+            async with scheduled_question_scope(receiver_pool, task, prompt):
+                pytest.fail("fenced input must not dispatch")
+        assert len(receiver_pool.claims) == before
+        source_pool.fenced = False
+        receiver_pool.tasks[task] = "caller substituted task prompt"
+        with pytest.raises(PolicyUnavailableError, match="input source differs"):
+            async with scheduled_question_scope(receiver_pool, task, prompt):
+                pytest.fail("changed task must not dispatch")
+        receiver_pool.tasks[task] = prompt
+        # Secondary witness failure preserves primary error and cancellation,
+        # while successful processing cannot return an unknown lifetime.
+        receiver_pool.witness_failure = True
+        with pytest.raises(ValueError, match="planted primary handler failure"):
+            async with scheduled_question_scope(receiver_pool, task, prompt):
+                raise ValueError("planted primary handler failure")
+        import asyncio
+
+        with pytest.raises(asyncio.CancelledError):
+            async with scheduled_question_scope(receiver_pool, task, prompt):
+                raise asyncio.CancelledError
+        with pytest.raises(RuntimeError, match="secondary lifetime failure"):
+            async with scheduled_question_scope(receiver_pool, task, prompt):
+                await dispatch_body(prompt)
+        receiver_pool.witness_failure = False
+        with pytest.raises(PolicyUnavailableError, match="runtime input is unbound"):
+            async with scheduled_question_scope(receiver_pool, task, prompt):
+                pass
+        async with scheduled_question_scope(receiver_pool, task, prompt):
+            await dispatch_body(prompt)
+        assert current_scheduled_question(receiver_pool) is None
+        assert not receiver_writer.pending
+        from butlers.chronicler.location_catalog_copies import (
+            CatalogServerCopyLifetime,
+            _server_copy_scope,
+            _ServerCopyScope,
+        )
+
+        # Genuine infrastructure traffic has no receiving CLI invocation. Its
+        # actual constructor-fixed ASGI lifetime must survive the online source
+        # challenge, birth and same-writer schedule before response completion.
+        cli_token = _current_tool_copy.set(None)
+        emitted = []
+
+        async def native_handler(scope, request, send):
+            result = await receive()
+            assert result["status"] == "scheduled"
+            active = _server_copy_scope.get()
+            selected = next(reversed(receiver_pool.inputs.values()))
+            assert selected["server_request"] == active.request
+            assert selected["tool_generation"] is None and selected["receiving_session"] is None
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"synthetic receipt"})
+
+        try:
+            app = CatalogServerCopyLifetime(native_handler, butler_name="relationship")
+            before = len(receiver_pool.inputs)
+            await app({"type": "http"}, AsyncMock(), AsyncMock(side_effect=emitted.append))
+            assert len(receiver_pool.inputs) == before + 1
+            actual_input = next(reversed(receiver_pool.inputs.values()))
+            assert actual_input["receiving_generation"] in receiver_pool.server_finished
+            assert _server_copy_scope.get() is None
+            fake_scope = _ServerCopyScope(uuid.uuid4(), [], target="relationship")
+            fake_token = _server_copy_scope.set(fake_scope)
+            before = len(receiver_pool.inputs)
+            try:
+                assert (await receive())["status"] == "error"
+                assert len(receiver_pool.inputs) == before
+            finally:
+                _server_copy_scope.reset(fake_token)
+        finally:
+            _current_tool_copy.reset(cli_token)
+        # Real registered receiving tools, software SQL/transport doubles:
+        # an unprocessed server/task copy can close after its actual attempt
+        # lifetime. A locator, active lifetime or missing attempt cannot close.
+        from butlers.chronicler.location_copy_transport import routed_owning_tool
+        from butlers.chronicler.location_delegation_disposal import _REDUCED_TASK
+
+        terminal_decision = uuid.uuid4()
+        loan = source_pool.loans[actual_input["loan_id"]]
+        question_row = {
+            "question_generation": str(question),
+            "ledger_id": str(ledger),
+            "body_digest": body_digest.hex(),
+            "parent_count": 1,
+            "complete_input": True,
+            "loans": [{k: v.hex() if isinstance(v, bytes) else str(v) for k, v in loan.items()}],
+        }
+        plan = {
+            "decision_id": str(terminal_decision),
+            "manifest_digest": (b"m" * 32).hex(),
+            "question_cohort": [question_row],
+        }
+
+        async def routed_source(tool_name, args):
+            assert tool_name == "route"
+            assert args == {
+                "target_butler": "chronicler",
+                "tool_name": "chronicler_location_retention_status",
+                "args": {"decision_id": str(terminal_decision)},
+            }
+            return {"result": plan}
+
+        receiver_runtime.registry = SimpleNamespace(call_tool=routed_source)
+        receiver_runtime.routed_tool = lambda target, tool_name, args: routed_owning_tool(
+            receiver_runtime,
+            target,
+            tool_name,
+            args,
+        )
+        receipt_tool = registered["location_retention_prepare_questions"]
+        status_tool = registered["location_retention_question_status"]
+        generation = actual_input["receiving_generation"]
+        terminal_task = receiver_pool.schedules[generation]["task_id"]
+        saved_finished = receiver_pool.server_finished.pop(generation)
+        assert (await receipt_tool(terminal_decision))["receipt_ids"] == []
+        assert generation in receiver_pool.floors and generation not in receiver_pool.dispositions
+        assert receiver_pool.tasks[terminal_task] != _REDUCED_TASK
+        before_claims = len(receiver_pool.claims)
+        with pytest.raises(PolicyUnavailableError, match="receiving input is fenced"):
+            async with scheduled_question_scope(
+                receiver_pool,
+                terminal_task,
+                receiver_pool.tasks[terminal_task],
+            ):
+                await dispatch_body(receiver_pool.tasks[terminal_task])
+        assert len(receiver_pool.claims) == before_claims
+        receiver_pool.server_finished[generation] = saved_finished
+        original_task = receiver_pool.tasks[terminal_task]
+        receiver_pool.tasks[terminal_task] += " independent change"
+        with pytest.raises(PolicyUnavailableError, match="task body changed"):
+            await receipt_tool(terminal_decision)
+        assert generation not in receiver_pool.dispositions
+        receiver_pool.tasks[terminal_task] = original_task
+        trace.clear()
+        closed = await receipt_tool(terminal_decision)
+        assert len(closed["receipt_ids"]) == 1
+        receipt = uuid.UUID(closed["receipt_ids"][0])
+        observed = await status_tool(terminal_decision, receipt)
+        assert observed["body_digest"] == body_digest.hex()
+        assert observed["loan_id"] == str(loan["loan_id"])
+        assert observed["receiving_generation"] == str(generation)
+        assert receiver_pool.tasks[terminal_task] == _REDUCED_TASK
+        assert trace.index("receiver:floor") < trace.index("receiver:reduce")
+        assert trace.index("receiver:reduce") < trace.index("receiver:terminal")
+        assert trace.index("receiver:terminal") < trace.index("receiver:commit")
+        assert (await receipt_tool(terminal_decision)) == closed
+        receiver_pool.unknown_terminal = True
+        with pytest.raises(PolicyUnavailableError, match="receipt is unavailable"):
+            await status_tool(terminal_decision, receipt)
+        receiver_pool.unknown_terminal = False
+        # Exact incarnation/source/body are mandatory, not a caller verdict.
+        question_row["complete_input"] = False
+        with pytest.raises(PolicyUnavailableError, match="cohort differs"):
+            await receipt_tool(terminal_decision)
+        question_row["complete_input"] = True
+        # The actual installed handler can attest only its fixed rejection
+        # stage after durable attempt birth and before any scheduling call.
+        # A same-message ordinary exception before birth has no such witness.
+        original_exchange = receiver_runtime.exchange
+        refusal_tool = _ToolCopy(
+            receiver_runtime, uuid.uuid4(), uuid.uuid4(), "delegate_receive", "core"
+        )
+        refusal_token = _current_tool_copy.set(refusal_tool)
+        before_inputs, before_tasks = len(receiver_pool.inputs), len(receiver_pool.tasks)
+        before_refusals = len(receiver_pool.refusals)
+
+        async def rejected_exchange(*args):
+            raise PolicyUnavailableError("planted fixed source refusal")
+
+        receiver_runtime.exchange = rejected_exchange
+        try:
+            result = await receive()
+            assert result == dict(status="error", error="Native question input is unavailable.")
+            assert len(receiver_pool.refusals) == before_refusals + 1
+            rejection = next(
+                r
+                for r in receiver_pool.refusals.values()
+                if r["tool_generation"] == refusal_tool.generation
+            )
+            assert rejection["body_digest"] == body_digest
+            assert refusal_tool.read_observed and not refusal_tool.mixed_inputs
+            assert (
+                len(receiver_pool.inputs) == before_inputs
+                and len(receiver_pool.tasks) == before_tasks
+            )
+            assert not receiver_writer.pending and not receiver_writer.receiving
+        finally:
+            receiver_runtime.exchange = original_exchange
+            _current_tool_copy.reset(refusal_token)
+        # The full source fence blocks both a new reservation and the actual
+        # admission COMMIT after an in-flight source exchange. These planted
+        # SQL cells prove causal ordering, not authenticated root enrollment.
+        floor_key = (canonical["asking_butler"], ledger)
+        before_inputs, before_tasks = len(receiver_pool.inputs), len(receiver_pool.tasks)
+        before_refusals = len(receiver_pool.refusals)
+        rpc_calls = []
+        fenced_tool = _ToolCopy(
+            receiver_runtime, uuid.uuid4(), uuid.uuid4(), "delegate_receive", "core"
+        )
+        fenced_token = _current_tool_copy.set(fenced_tool)
+
+        async def never_exchange(*args):
+            rpc_calls.append("unwanted")
+            return await original_exchange(*args)
+
+        try:
+            receiver_pool.source_floors[floor_key] = {"planted": "original source floor"}
+            receiver_runtime.exchange = never_exchange
+            assert (await receive())["status"] == "error"
+            assert rpc_calls == [] and fenced_tool.read_observed
+            assert len(receiver_pool.refusals) == before_refusals + 1
+            assert (
+                len(receiver_pool.inputs) == before_inputs
+                and len(receiver_pool.tasks) == before_tasks
+            )
+        finally:
+            receiver_pool.source_floors.pop(floor_key, None)
+            receiver_runtime.exchange = original_exchange
+            _current_tool_copy.reset(fenced_token)
+        raced_tool = _ToolCopy(
+            receiver_runtime, uuid.uuid4(), uuid.uuid4(), "delegate_receive", "core"
+        )
+        raced_token = _current_tool_copy.set(raced_tool)
+        before_loans = len(source_pool.loans)
+
+        async def raced_exchange(*args):
+            prepared = await original_exchange(*args)
+            receiver_pool.source_floors[floor_key] = {
+                "planted": "floor committed during source RPC"
+            }
+            return prepared
+
+        try:
+            receiver_runtime.exchange = raced_exchange
+            assert (await receive())["status"] == "error"
+            assert raced_tool.read_observed and not receiver_writer.pending
+            assert len(source_pool.loans) == before_loans + 1  # The real source half committed.
+            assert (
+                len(receiver_pool.inputs) == before_inputs
+                and len(receiver_pool.tasks) == before_tasks
+            )
+            assert len(receiver_pool.refusals) == before_refusals + 2
+        finally:
+            receiver_pool.source_floors.pop(floor_key, None)
+            receiver_runtime.exchange = original_exchange
+            _current_tool_copy.reset(raced_token)
+        # Installed constructor ordinary ingress requires a positive fixed
+        # source-owned job birth. Neither missing native data nor a caller's
+        # ordinary label can manufacture that classification.
+        from datetime import date
+
+        from butlers.chronicler.location_ordinary_delegation import birthday_fields
+
+        source_runtime.name, receiver_runtime.name = "relationship", "finance"
+        canonical.clear()
+        canonical.update(birthday_fields(date(2026, 4, 1)), id=ledger, status="pending")
+        body_digest = question_digest(canonical)
+        source_pool.native_missing = True
+        source_pool.ordinary = {
+            "source_generation": uuid.uuid4(),
+            "ledger_id": ledger,
+            "render_date": date(2026, 4, 1),
+            "producer_kind": "birthday_gift_budget_ask",
+            "body_digest": body_digest,
+        }
+        registered = _register(butler_name="finance", pool=receiver_pool)
+        # Reuse the actual registered infrastructure request lifetime; no
+        # receiving CLI ContextVar is invented for a deterministic job.
+        cli_token = _current_tool_copy.set(None)
+        before_inputs, before_loans = len(receiver_pool.inputs), len(source_pool.loans)
+        try:
+
+            async def ordinary_handler(scope, request, send):
+                result = await receive()
+                assert result["status"] == "scheduled"
+                await send({"type": "http.response.start", "status": 200, "headers": []})
+                await send({"type": "http.response.body", "body": b"synthetic receipt"})
+
+            app = CatalogServerCopyLifetime(ordinary_handler, butler_name="finance")
+            await app({"type": "http"}, AsyncMock(), AsyncMock())
+            assert len(receiver_pool.inputs) == before_inputs
+            assert len(source_pool.loans) == before_loans
+            assert not receiver_writer.pending
+            # These failures pass through the same real pending/source
+            # challenge path, not a fabricated ordinary verdict response.
+            for mode in ("missing", "body", "mixed"):
+                original = source_pool.ordinary.copy()
+                if mode == "missing":
+                    source_pool.ordinary = None
+                elif mode == "body":
+                    source_pool.ordinary["body_digest"] = b"x" * 32
+                else:
+                    source_pool.native_missing = False
+
+                async def refused_handler(scope, request, send):
+                    assert (await receive())["status"] == "error"
+                    await send({"type": "http.response.body", "body": b""})
+
+                await CatalogServerCopyLifetime(refused_handler, butler_name="finance")(
+                    {"type": "http"}, AsyncMock(), AsyncMock()
+                )
+                source_pool.ordinary = original
+                source_pool.native_missing = True
+                assert len(receiver_pool.inputs) == before_inputs
+                assert len(source_pool.loans) == before_loans
+            await app({"type": "http"}, AsyncMock(), AsyncMock())
+        finally:
+            _current_tool_copy.reset(cli_token)
+    finally:
+        _current_tool_copy.reset(token)
+        clear_writer(receiver_pool, receiver_writer)

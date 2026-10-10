@@ -177,3 +177,16 @@ terminal-status rows older than `ttl_days` (default 90).
 `recorded_at` is older than `ttl_days`.  It enforces the 90-day floor:
 `ttl_days < 90` raises `ValueError`.
 `job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
+
+
+## Owner-released OwnTracks exception
+
+The explicit location decision permits conditional forgetting of exact
+OwnTracks evidence after 30 days, or an authenticated owner-selected shorter
+integer horizon. It does not extend to other providers, sessions, audit history
+or unrelated corrections. Projection lag and unknown copy lineage prevent
+raw deletion and must expose overdue retention. Reduced geographic summaries
+and legitimate legs remain, with measured metrics and approximately 150-metre
+precision after forgetting. Policy expiry is not a measured purge receipt.
+The current source stage leaves readiness and complete deletion unfinished;
+see [OwnTracks location retention](owntracks-location-retention.md).

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -11,7 +12,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
-from butlers.chronicler import storage
+from butlers.chronicler import location_projection, storage
 from butlers.chronicler.adapters import owntracks_ssid as owntracks_ssid_module
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
 from butlers.chronicler.adapters.owntracks_ssid import (
@@ -54,6 +55,13 @@ async def pool(migrated_db_url: str):
     )
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
+    # The actual native replay/cursor/coverage belongs to this same disposable
+    # source dataset. Preserve it within a test; a fixture's fresh raw UUIDs
+    # cannot resume a previous test's durable cursor.
+    await p.execute(
+        "TRUNCATE TABLE location_projection_heads,location_projection_cursors,"
+        "location_projection_coverage,location_projection_outputs CASCADE"
+    )
     await p.execute("DELETE FROM state WHERE key = $1", SSID_PLACE_STATE_KEY)
     await seed_source_registry(p, sources=INITIAL_SOURCES)
     yield p
@@ -388,6 +396,18 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
         )
     )
     task: asyncio.Task | None = None
+    writer_pid: int | None = None
+
+    class ObservedWriterPool:
+        @asynccontextmanager
+        async def acquire(self):
+            nonlocal writer_pid
+            async with pool.acquire() as conn:
+                writer_pid = conn.get_server_pid()
+                yield conn
+
+        def __getattr__(self, name: str):
+            return getattr(pool, name)
 
     try:
         async with pool.acquire() as blocker:
@@ -395,24 +415,29 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
                 await blocker.execute(
                     """
                     SELECT pg_advisory_xact_lock(
-                        hashtextextended('chronicler.projection:' || $1, 0)
+                        hashtextextended($1, 0)
                     )
                     """,
-                    SOURCE_NAME,
+                    "owntracks.points",
                 )
-                task = asyncio.create_task(adapter.run(pool=pool, chronicler_pool=pool))
+                task = asyncio.create_task(
+                    adapter.run(pool=pool, chronicler_pool=ObservedWriterPool())
+                )
 
                 async with asyncio.timeout(5):
-                    while not await pool.fetchval(
+                    while writer_pid is None or not await pool.fetchval(
                         """
                         SELECT EXISTS (
                             SELECT 1
                             FROM pg_locks
-                            WHERE locktype = 'advisory'
-                              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                            WHERE pid = $1 AND locktype IN ('transactionid','advisory')
+                              AND ((locktype='transactionid' AND database IS NULL)
+                        OR (locktype='advisory' AND database=(
+                          SELECT oid FROM pg_database WHERE datname=current_database())))
                               AND NOT granted
                         )
-                        """
+                        """,
+                        writer_pid,
                     ):
                         await asyncio.sleep(0.01)
 
@@ -441,6 +466,7 @@ async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
         min_size=2,
         max_size=2,
         init=register_jsonb_codec,
+        server_settings={"application_name": "ssid-constrained-proof"},
     )
     first_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     second_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
@@ -480,8 +506,12 @@ async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
                 SELECT EXISTS (
                     SELECT 1
                     FROM pg_locks
-                    WHERE locktype = 'advisory'
-                      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                    WHERE locktype IN ('transactionid','advisory')
+                              AND pid IN (SELECT pid FROM pg_stat_activity
+                                WHERE application_name='ssid-constrained-proof')
+                      AND ((locktype='transactionid' AND database IS NULL)
+                        OR (locktype='advisory' AND database=(
+                          SELECT oid FROM pg_database WHERE datname=current_database())))
                       AND NOT granted
                 )
                 """
@@ -571,7 +601,7 @@ async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
             raise RuntimeError(injected_message)
 
         monkeypatch.setattr(
-            owntracks_ssid_module,
+            location_projection,
             "mark_source_active",
             fail_after_source_active,
             raising=False,
@@ -588,14 +618,14 @@ async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
                 raise RuntimeError(injected_message)
 
         monkeypatch.setattr(
-            owntracks_ssid_module,
+            location_projection,
             "upsert_checkpoint",
             fail_after_success_checkpoint,
             raising=False,
         )
 
     failed_result = await replay_adapter.run(pool=pool, chronicler_pool=pool)
-    assert failed_result.error == injected_message
+    assert failed_result.error == "location_projection_failed"
 
     failed_checkpoint = await pool.fetchrow(
         """
@@ -611,7 +641,7 @@ async def test_mapping_replay_failure_rolls_back_every_persistence_boundary(
     assert failed_checkpoint["last_success_at"] == successful_checkpoint["last_success_at"]
     assert failed_checkpoint["rows_projected"] == successful_checkpoint["rows_projected"]
     assert failed_checkpoint["run_count"] == successful_checkpoint["run_count"] + 1
-    assert failed_checkpoint["last_error"] == injected_message
+    assert failed_checkpoint["last_error"] == "location_projection_failed"
 
     after_failure = await pool.fetch(
         """

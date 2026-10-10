@@ -139,6 +139,7 @@ from butlers.api.routers.timeline import router as timeline_router
 from butlers.api.routers.timeline_saved_views import router as timeline_saved_views_router
 from butlers.api.routers.webhooks import router as webhooks_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
+from butlers.chronicler.location_export_lifetime import LocationExportLifetimeMiddleware
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
 from butlers.core.definer_search_path import (
     compute_unpinned_definers,
@@ -622,6 +623,8 @@ def create_app(
     cors_origins: list[str] | None = None,
     static_dir: str | Path | None = None,
     api_key: str | None = None,
+    *,
+    chronicler_spawner: object | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -640,7 +643,20 @@ def create_app(
         Effective configured automation key, otherwise read from the environment.
         An empty value selects keyless authentication; it never disables owner
         authentication. The authoritative database mode must agree.
+    chronicler_spawner:
+        Optional already-started in-process Chronicler Spawner with its exact
+        source-registered pool. The fixed adapter captures API input lineage
+        before actual session/runtime admission; independent API mode keeps
+        the existing unavailable-dispatch door.
     """
+    # Optional existing in-process deployment composition. Standalone APIs
+    # retain their original unavailable-dispatch dependency. This constructor
+    # receives an actual owning Spawner, never an HTTP caller callback.
+    native_chronicler_dispatch = None
+    if chronicler_spawner is not None:
+        from butlers.chronicler.location_input_binding import NativeLocationDispatch
+
+        native_chronicler_dispatch = NativeLocationDispatch(chronicler_spawner)
     if cors_origins is None:
         _default = os.environ.get("DASHBOARD_CORS_ORIGINS", "http://localhost:41173")
         cors_origins = [o.strip() for o in _default.split(",") if o.strip()]
@@ -722,6 +738,7 @@ def create_app(
     # Last registration is outermost: authentication precedes general audit,
     # CORS, exception reflection, routers and protected body reads.
     app.add_middleware(OwnerAuthMiddleware, config=app.state.owner_auth_config)
+    app.add_middleware(LocationExportLifetimeMiddleware)
 
     # --- Auto-discovered Butler Routers ---
     # Discover and mount roster/{butler}/api/router.py routers
@@ -803,6 +820,10 @@ def create_app(
     # Mount after static/core routers so dynamic routes cannot shadow
     # fixed API paths like /api/oauth/*.
     for butler_name, router_module in butler_routers:
+        if butler_name == "chronicler" and native_chronicler_dispatch is not None:
+            app.dependency_overrides[router_module._get_day_close_dispatch_fn] = lambda: (
+                native_chronicler_dispatch
+            )
         app.include_router(router_module.router)
         logger.info(
             "Mounted butler router: %s (prefix=%s)", butler_name, router_module.router.prefix

@@ -2492,6 +2492,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Failed to load the evidence chain.
 - Confidence
 - No corroborating signals linked to this activity.
+- Evidence expired
 - Private signal
 - Linked events
 - Failed to load events.
@@ -2549,6 +2550,21 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Filter Gantt categories
 - Gantt timeline
 - {}: no data this period
+
+## `frontend/src/components/chronicles/LocationRetentionControl.tsx`
+
+- Checking location retention…
+- Location retention could not be confirmed. Exact points may remain.
+- Retry retention status
+- = 1 && days
+- Last attempt
+- After forgetting, summaries retain approximately 150 m precision. Increasing the period cannot restore forgotten points; already prepared deletions may finish.
+- Keep exact trail for
+- Cancel
+- Eligible exact points may be permanently forgotten sooner. This cannot be undone.
+- Choose a whole number from 1 to 30.
+- Retention was not saved. Reloaded the current policy; review it before retrying.
+- Location retention
 
 ## `frontend/src/components/chronicles/ManualRefreshButton.tsx`
 

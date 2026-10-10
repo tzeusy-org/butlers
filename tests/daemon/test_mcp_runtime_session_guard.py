@@ -117,9 +117,11 @@ async def test_runtime_session_guard_maps_request_mcp_session_header() -> None:
     from butlers.core import fact_authority
 
     seen_reports = []
+    seen_copy_bindings = []
 
     async def report_app(scope, receive, send):
         seen_reports.append(fact_authority.current_fact_write_context().authority)
+        seen_copy_bindings.append(fact_authority._current_copy_invocation.get())
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
@@ -166,6 +168,13 @@ async def test_runtime_session_guard_maps_request_mcp_session_header() -> None:
             _discard_send,
         )
         assert seen_reports == ["third_party", "owner", "third_party", "third_party"]
+        assert [binding is not None for binding in seen_copy_bindings] == [
+            False,
+            True,
+            False,
+            False,
+        ]
+        assert fact_authority._current_copy_invocation.get() is None
         assert fact_authority._current_report.get() is None
     finally:
         fact_authority.settle_invocation(token)

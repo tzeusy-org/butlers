@@ -430,6 +430,24 @@ describe("EpisodeDrawerContent evidence chain", () => {
     expect(html).toContain("evidence-link-pe-1")
     expect(html).toContain("Near the gym")
     expect(html).toContain("supports")
+    // An actual typed expired link is separate from genuine retained evidence.
+    _evidenceChainData = {
+      ..._evidenceChainData as object,
+      links: [
+        {event_id:"expired-event",source_name:"owntracks.points",event_type:"location",
+         occurred_at:"2026-04-25T08:00:00Z",relation:"supports",privacy:"normal",
+         descriptor:"Exact location evidence forgotten",retention_state:"forgotten",
+         spatial_precision_m:150,retention_receipt:"opaque-own-receipt"},
+        {event_id:"fresh-event",source_name:"calendar",event_type:"meeting",
+         occurred_at:"2026-04-25T09:00:00Z",relation:"supports",privacy:"normal",
+         descriptor:"New independent signal",retention_state:"retained"},
+      ],
+    }
+    const expired = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+    expect(expired).toContain("Evidence expired")
+    expect(expired).toContain("Exact location evidence forgotten")
+    expect(expired).toContain("New independent signal")
+    expect(expired).not.toContain("Near the gym")
   })
 
   it("masks a sensitive evidence link's descriptor", () => {

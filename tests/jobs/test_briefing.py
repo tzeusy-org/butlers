@@ -702,6 +702,8 @@ class TestRelationshipFinanceBirthdayGiftAskSeed:
         pool.conn.execute.assert_awaited_once()
         assert "pg_advisory_xact_lock" in pool.conn.execute.await_args.args[0]
 
+        await _assert_configured_birthday_delegation(monkeypatch)
+
     async def test_duplicate_run_dedupes_via_origin_key(self, monkeypatch):
         import butlers.jobs.briefing as briefing_mod
 
@@ -762,3 +764,164 @@ class TestRelationshipFinanceBirthdayGiftAskSeed:
         envelope = mock_write.call_args[0][1]
         assert envelope["has_updates"] is True
         assert result["delegation_ask"]["status"] == "error"
+
+
+async def _assert_configured_birthday_delegation(monkeypatch):
+    """Actual job and birth/route split with SQL doubles, not real PG proof."""
+    from contextlib import asynccontextmanager
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    import butlers.jobs.briefing as briefing
+    from butlers.chronicler.location_delegation_copies import NativeDelegationWriter
+    from butlers.chronicler.location_tool_copies import _current_tool_copy
+    from butlers.core.delegation_source import clear_writer, register_writer
+    from butlers.core_tools import _delegation
+
+    trace = []
+
+    class Pool:
+        def __init__(self):
+            self.ledger, self.birth = None, None
+            self.active = False
+            self.unknown = False
+            self.fail_birth = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            before = deepcopy((self.ledger, self.birth))
+            self.active = True
+            try:
+                yield
+            except BaseException:
+                self.ledger, self.birth = before
+                trace.append("rollback")
+                raise
+            else:
+                trace.append("commit")
+            finally:
+                self.active = False
+
+        async def fetchrow(self, sql, *args):
+            if "COUNT(*)" in sql:
+                trace.append("count")
+                return {"cnt": 2}
+            if "public.delegation_ledger" in sql:
+                trace.append("readback")
+                return self.ledger
+            if "location_ordinary_delegation_inputs" in sql:
+                return None if self.unknown else self.birth
+            raise AssertionError("unexpected fixed job read")
+
+        async def fetchval(self, sql, *args):
+            if "INSERT INTO public.delegation_ledger" in sql:
+                assert self.active and self.birth is None
+                trace.append("ledger_birth")
+                self.ledger = dict(
+                    id=args[0],
+                    asking_butler=args[1],
+                    question=args[2],
+                    target_butler=args[3],
+                    status="pending",
+                    metadata=args[4],
+                    catalog_match_id=None,
+                    catalog_score=None,
+                )
+                return args[0]
+            if "location_native_delegation_inputs" in sql:
+                return False
+            if "metadata->>'origin_key'" in sql:
+                trace.append("dedup")
+                return self.ledger["id"] if self.ledger is not None else None
+            raise AssertionError("unexpected fixed job selector")
+
+        async def execute(self, sql, *args):
+            if "INSERT INTO location_ordinary_delegation_inputs" in sql:
+                assert self.active
+                if self.fail_birth:
+                    raise RuntimeError("planted birth failure")
+                trace.append("classification_birth")
+                self.birth = dict(
+                    source_generation=args[0],
+                    ledger_id=args[1],
+                    render_date=args[2],
+                    body_digest=args[3],
+                    producer_kind="birthday_gift_budget_ask",
+                )
+            elif "pg_advisory_xact_lock" in sql:
+                assert self.active
+                trace.append("date_lock")
+            elif "UPDATE public.delegation_ledger" in sql:
+                self.ledger["status"] = args[1]
+            else:
+                raise AssertionError("unexpected fixed job write")
+
+    pool = Pool()
+
+    async def lock(conn):
+        assert conn is pool and pool.active
+        trace.append("policy")
+
+    runtime = SimpleNamespace(domain=pool, name="relationship", active=True, lock_domain=lock)
+    writer = NativeDelegationWriter(runtime)
+    register_writer(pool, writer)
+
+    async def route(client, selected, asking, **kwargs):
+        assert selected is pool and not pool.active
+        assert pool.birth is not None and pool.ledger["question"] == kwargs["args"]["question"]
+        trace.append("route")
+        return None, False
+
+    monkeypatch.setattr(_delegation, "_dispatch_via_switchboard", route)
+    try:
+        result = await briefing._relationship_finance_birthday_gift_ask(
+            pool, today_dt=_DATE_2026_03_25
+        )
+        assert result["status"] == "routed"
+        assert trace.index("policy") < trace.index("date_lock") < trace.index("dedup")
+        assert (
+            trace.index("ledger_birth")
+            < trace.index("classification_birth")
+            < trace.index("commit")
+        )
+        assert trace.index("commit") < trace.index("readback") < trace.index("route")
+        assert (
+            await briefing._relationship_finance_birthday_gift_ask(pool, today_dt=_DATE_2026_03_25)
+        )["status"] == "already_asked"
+        assert trace.count("route") == 1
+        # An interrupted own birth rolls back the canonical question too;
+        # unknown separate readback refuses before transport.
+        for failure in ("birth", "readback", "native"):
+            pool.ledger, pool.birth = None, None
+            trace.clear()
+            pool.fail_birth = failure == "birth"
+            pool.unknown = failure == "readback"
+            token = (
+                _current_tool_copy.set(SimpleNamespace(generation=uuid4()))
+                if failure == "native"
+                else None
+            )
+            try:
+                assert (
+                    await briefing._relationship_finance_birthday_gift_ask(
+                        pool, today_dt=_DATE_2026_03_25
+                    )
+                )["status"] == "error"
+                assert "route" not in trace
+                if failure == "birth":
+                    assert pool.ledger is None and pool.birth is None and "rollback" in trace
+            finally:
+                if token is not None:
+                    _current_tool_copy.reset(token)
+        pool.ledger, pool.birth = None, None
+        pool.fail_birth = pool.unknown = False
+        assert (
+            await briefing._relationship_finance_birthday_gift_ask(pool, today_dt=_DATE_2026_03_25)
+        )["status"] == "routed"
+    finally:
+        clear_writer(pool, writer)

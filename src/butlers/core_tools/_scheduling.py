@@ -305,10 +305,18 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                         run_at=now,
                         timezone=task_timezone,
                     )
-                    result = await daemon._dispatch_scheduled_task(
-                        trigger_source=f"schedule:{name}",
-                        prompt=prepared_prompt,
-                        complexity=task_complexity,
+                    from butlers.core.delegation_source import dispatch_scheduled_question
+
+                    result = await dispatch_scheduled_question(
+                        pool,
+                        task_uuid,
+                        prepared_prompt,
+                        daemon._dispatch_scheduled_task,
+                        {
+                            "trigger_source": f"schedule:{name}",
+                            "prompt": prepared_prompt,
+                            "complexity": task_complexity,
+                        },
                     )
                     await _run_completion_hook(
                         runtime_context.completion_hooks,

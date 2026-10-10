@@ -488,7 +488,26 @@ async def write_day_close_cache(
                 # Otherwise an invalid candidate can inspect an absent/invalid
                 # row, a concurrent valid writer can commit, and the stale
                 # invalid path can overwrite that valid prose.
+                from butlers.chronicler.location_retention import (
+                    lock_native_session_completion,
+                    native_copy_pool,
+                )
+
+                if native_copy_pool(pool):
+                    from butlers.chronicler.storage import _lock_location_writes
+
+                    await _lock_location_writes(conn)
+                    native_session = getattr(result, "session_id", None)
+                    if native_session is not None and await lock_native_session_completion(
+                        conn, native_session
+                    ):
+                        raise RuntimeError("Native cache input has been disposed")
                 await lock_day_close_cache_tuple(conn, day_date, tz_name)
+                legacy_observation = None
+                if native_copy_pool(pool):
+                    from butlers.chronicler.location_retention import observe_legacy_cache
+
+                    legacy_observation = await observe_legacy_cache(conn, cache_key)
 
                 if invalid_reason is not None:
                     existing = await conn.fetchrow(
@@ -529,6 +548,13 @@ async def write_day_close_cache(
                         date_label=date_label,
                         invalid_reason=invalid_reason,
                     )
+                    if native_copy_pool(pool):
+                        from butlers.chronicler.location_retention import bind_native_cache_inputs
+
+                        await bind_native_cache_inputs(conn, cache_key, result)
+                        from butlers.chronicler.location_retention import record_legacy_replacement
+
+                        await record_legacy_replacement(conn, cache_key, legacy_observation)
                     logger.warning(
                         "day_close_writer: contained invalid candidate for %s (%s)",
                         cache_key,
@@ -546,6 +572,13 @@ async def write_day_close_cache(
                     date_label=date_label,
                     invalid_reason=None,
                 )
+                if native_copy_pool(pool):
+                    from butlers.chronicler.location_retention import bind_native_cache_inputs
+
+                    await bind_native_cache_inputs(conn, cache_key, result)
+                    from butlers.chronicler.location_retention import record_legacy_replacement
+
+                    await record_legacy_replacement(conn, cache_key, legacy_observation)
         logger.info(
             "day_close_writer: wrote tier2_cache[%s] (%d provenance refs)",
             cache_key,

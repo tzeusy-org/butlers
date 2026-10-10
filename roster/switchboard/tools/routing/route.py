@@ -547,6 +547,9 @@ async def route(
                         if tool_name == "route.execute"
                         else {}
                     )
+                    from butlers.chronicler.location_catalog_copies import catalog_transport_headers
+
+                    headers.update(catalog_transport_headers(target_butler, tool_name, route_args))
                     if headers:
                         # A capability is request-specific: never share the
                         # endpoint-cached MCP session with unrelated reports.

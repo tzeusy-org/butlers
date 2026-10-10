@@ -6,8 +6,8 @@ import { renderToStaticMarkup } from "react-dom/server"
 // MapWidget pulls in maplibre-gl on lazy import; stub it so server-rendered
 // markup tests don't spin up a real map.
 vi.mock("./MapWidget", () => ({
-  MapWidget: ({ height }: { height?: string }) => (
-    <div data-testid="map-widget-stub" className={height} />
+  MapWidget: ({ height, privacyGeneration }: { height?: string; privacyGeneration?: number }) => (
+    <div data-testid="map-widget-stub" data-privacy-generation={privacyGeneration} className={height} />
   ),
 }))
 
@@ -77,8 +77,10 @@ describe("FloatingMapMinimap", () => {
       <FloatingMapMinimap
         trailPoints={[{ lng: 103.8, lat: 1.35 }]}
         playheadPoint={{ lng: 103.8, lat: 1.35 }}
+        privacyGeneration={17}
       />,
     )
     expect(html).toContain('data-testid="map-widget-stub"')
+    expect(html).toContain('data-privacy-generation="17"')
   })
 })

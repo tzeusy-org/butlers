@@ -604,6 +604,8 @@ BEGIN
     FOREACH _table IN ARRAY ARRAY[
         'steam_play_history',
         'owntracks_points',
+        'owntracks_retention_batches',
+        'owntracks_retention_batch_rows',
         'home_assistant_history'
     ] LOOP
         IF EXISTS (
@@ -617,6 +619,20 @@ BEGIN
             );
         END IF;
     END LOOP;
+
+    -- Retention's permanent connector source floor is not an approved
+    -- Chronicler evidence surface. Converge this exact owned table after the
+    -- generic connector-read grants above, including on a bootstrap rerun.
+    -- Batch headers and all member dispositions remain explicit SELECT
+    -- observations; none of them conveys connector mutation authority.
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = _connector_schema
+          AND table_name = 'owntracks_retention_tombstones'
+    ) THEN
+        REVOKE ALL PRIVILEGES ON connectors.owntracks_retention_tombstones
+            FROM butler_chronicler_rw;
+    END IF;
 
     -- Connector role: write access to connector schema, switchboard operational
     -- tables, and shared public tables.

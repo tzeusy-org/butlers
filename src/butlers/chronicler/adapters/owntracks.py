@@ -64,6 +64,13 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
+from butlers.chronicler.location_projection import (
+    ProjectionConnection,
+    record_closed_carry,
+    record_closed_output,
+    record_contribution,
+    run_projection,
+)
 from butlers.chronicler.models import (
     Episode,
     Layer,
@@ -79,6 +86,7 @@ from butlers.chronicler.storage import (
     upsert_episode,
     upsert_point_event,
 )
+from butlers.location_retention import content_digest, path_increment
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +131,19 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 f"clock_skew_threshold_hours must be non-negative, got {clock_skew_threshold_hours}"
             )
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
+
+    def retention_mapping_revision(self) -> bytes:
+        return content_digest(
+            {
+                "adapter": self.source_name,
+                "version": 1,
+                "gap_minutes": self.movement_gap_minutes,
+                "skew_seconds": self.clock_skew_threshold.total_seconds(),
+            }
+        )
+
+    async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
+        return await run_projection(self, chronicler_pool=chronicler_pool)
 
     async def project(
         self,
@@ -170,6 +191,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             event = await self._project_point_event(chronicler_pool, normalized_row)
             if event is not None and event.id is not None:
                 event_id_by_key[normalized_row["idempotency_key"]] = event.id
+                record_contribution([normalized_row["id"]], [event.id], output_kind="point_event")
             result.rows_projected += 1
             result.point_events += 1
 
@@ -179,6 +201,34 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             # Resolve owner entity_id once per adapter run (not per row).
             entity_id = await resolve_owner_entity_id(pool)
             prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+            # A newly observed native gap can close a prior carry. Wall-clock
+            # age or an unrelated stored episode cannot supply that witness.
+            first_by_endpoint = {}
+            for fix in sorted(valid_rows, key=lambda row: row["recorded_at"]):
+                first_by_endpoint.setdefault(fix["endpoint_identity"], fix)
+            for endpoint, fix in first_by_endpoint.items():
+                carry = prior_carryover.get(endpoint)
+                if not isinstance(carry, dict) or "path_m" not in carry:
+                    continue
+                if (
+                    type(carry["path_m"]) not in (int, float)
+                    or not math.isfinite(carry["path_m"])
+                    or carry["path_m"] < 0
+                    or type(carry.get("point_count")) is not int
+                    or carry["point_count"] <= 0
+                ):
+                    continue
+                try:
+                    prior_end = datetime.fromisoformat(carry["end_at"])
+                    native_ids = carry["raw_ids"]
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if (
+                    isinstance(native_ids, list)
+                    and prior_end.tzinfo is not None
+                    and fix["ts"] - prior_end > timedelta(minutes=self.movement_gap_minutes)
+                ):
+                    record_closed_carry(native_ids)
             episodes_closed, new_carryover = await self._project_movement_episodes(
                 chronicler_pool,
                 valid_rows,
@@ -318,6 +368,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         gracefully per RFC 0014 optional-schema guard.
         """
         del since_id
+        if isinstance(pool, ProjectionConnection):
+            return pool.location_rows
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -535,7 +587,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
         new_carryover: dict = {}
 
-        for seg in segments:
+        for segment_index, seg in enumerate(segments):
             seg_rows: list[dict[str, Any]] = seg["rows"]
             seg_source_ref: str | None = seg["source_ref"]
             seg_prior_start_at: datetime | None = seg["prior_start_at"]
@@ -549,7 +601,30 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             effective_start_at: datetime = seg_prior_start_at if seg_prior_start_at else first["ts"]
             end_at: datetime = last["ts"]
             endpoint_identity: str = first["endpoint_identity"]
-            point_count = len(seg_rows)
+            prior_metrics = prior_carryover.get(endpoint_identity, {}) if seg_source_ref else {}
+            prior_count = prior_metrics.get("point_count")
+            prior_path = prior_metrics.get("path_m")
+            metrics_known = not seg_source_ref or (
+                type(prior_count) is int
+                and prior_count > 0
+                and type(prior_path) in (int, float)
+                and math.isfinite(prior_path)
+                and prior_path >= 0
+                and "end_lat" in prior_metrics
+                and "end_lon" in prior_metrics
+            )
+            point_count = len(seg_rows) + (prior_count if metrics_known and seg_source_ref else 0)
+            path_m = float(prior_path) if metrics_known and seg_source_ref else 0.0
+            previous_point = (
+                (float(prior_metrics["end_lat"]), float(prior_metrics["end_lon"]))
+                if metrics_known and seg_source_ref
+                else None
+            )
+            for fix in seg_rows:
+                current_point = (float(fix["lat"]), float(fix["lon"]))
+                if previous_point is not None:
+                    path_m += path_increment(previous_point, current_point)
+                previous_point = current_point
 
             # Defensive guard: device clock skew can produce an inverted episode
             # even after recorded_at sorting (e.g. when the prior-batch carryover
@@ -587,6 +662,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "end_lat": float(last["lat"]),
                 "end_lon": float(last["lon"]),
             }
+
+            if metrics_known:
+                payload["path_m"] = path_m
+                payload["duration_seconds"] = (end_at - effective_start_at).total_seconds()
 
             # Evidence chain: the GPS location point events that make up this
             # segment (those projected in THIS batch — cross-batch carryover
@@ -635,6 +714,21 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                             event_id=event_id,
                             relation=LinkRelation.EVIDENCE,
                         )
+            is_open = not any(
+                later["rows"][0]["endpoint_identity"] == endpoint_identity
+                for later in segments[segment_index + 1 :]
+            )
+            record_contribution(
+                [r["id"] for r in seg_rows],
+                [ep_id] if ep_id is not None else [],
+                pending=is_open or not metrics_known,
+            )
+            native_raw_ids = [str(r["id"]) for r in seg_rows]
+            if metrics_known and seg["source_ref"]:
+                native_raw_ids = [*prior_metrics.get("raw_ids", []), *native_raw_ids]
+            if not is_open and metrics_known and ep_id is not None:
+                record_closed_output(ep_id)
+                record_closed_carry(native_raw_ids)
             episodes_upserted += 1
 
             # The last segment may be open (continues into the next batch).
@@ -646,6 +740,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "end_at": end_at.isoformat(),
                 "start_lat": effective_start_lat,
                 "start_lon": effective_start_lon,
+                "end_lat": float(last["lat"]),
+                "end_lon": float(last["lon"]),
+                "point_count": point_count,
+                "raw_ids": native_raw_ids,
+                **({"path_m": path_m} if metrics_known else {}),
             }
 
         return episodes_upserted, new_carryover

@@ -2538,7 +2538,11 @@ async def tick(
                     }
                     if max_token_budget is not None:
                         dispatch_kwargs["max_token_budget"] = max_token_budget
-                    dispatch_result = await dispatch_fn(**dispatch_kwargs)
+                    from butlers.core.delegation_source import dispatch_scheduled_question
+
+                    dispatch_result = await dispatch_scheduled_question(
+                        pool, task_id, dispatched_prompt, dispatch_fn, dispatch_kwargs
+                    )
                     result = dispatch_result
                 elif dispatch_mode == _DISPATCH_MODE_JOB:
                     result = await dispatch_fn(

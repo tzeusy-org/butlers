@@ -51,6 +51,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
+from uuid import UUID
 
 from pydantic import Field
 
@@ -191,6 +192,32 @@ async def dispatch_delegated_ask(
         metadata=metadata,
     )
 
+    return await route_recorded_delegated_ask(
+        pool,
+        switchboard_client,
+        ledger_id=ledger_id,
+        asking_butler=asking_butler,
+        target_butler=target_butler,
+        question=question,
+    )
+
+
+async def route_recorded_delegated_ask(
+    pool: Any,
+    switchboard_client: Any,
+    *,
+    ledger_id: str,
+    asking_butler: str,
+    target_butler: str,
+    question: str,
+) -> dict:
+    """Route an already committed owning birth through the existing transport.
+
+    The native deterministic producer verifies its private birth separately
+    before entering here. This helper supplies no classification or authority.
+    Generic Pool/Connection callers keep the original dispatch contract.
+    """
+
     async def _fail(error_text: str, *, retryable: bool = False) -> dict:
         try:
             await mark_dispatch_outcome(pool, ledger_id, status="failed", reason=error_text)
@@ -265,6 +292,155 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
     daemon = ctx.daemon
     pool = ctx.pool
     butler_name = ctx.butler_name
+
+    def receiving_runtime():
+        from butlers.core.delegation_source import _writers
+
+        writer = _writers.get(pool)
+        if writer is None or not writer.runtime.active or writer.runtime.name != butler_name:
+            raise RuntimeError("Native receiving constructor is unavailable")
+        return writer.runtime
+
+    @_core_tool("delegation")
+    async def location_retention_prepare_questions(
+        decision_id: UUID, ledger_id: UUID | None = None
+    ) -> dict:
+        """Dispose this receiver's stored question copies for the owning source plan.
+
+        A decision UUID is only a locator. The fixed constructor reads the
+        actual source through Switchboard, fences late inputs and requires
+        its own finished lifetimes and separate committed readback. Optional
+        ledger selects stored canonical target/source only; that source's
+        actual native owner plan must independently prove the full generation.
+        No caller source, missing loan or stored name supplies authority.
+        """
+        from butlers.chronicler.location_delegation_disposal import prepare_question_receivers
+
+        return await prepare_question_receivers(receiving_runtime(), decision_id, ledger_id)
+
+    @_core_tool("delegation")
+    async def location_retention_question_owner_plan(decision_id: UUID) -> dict:
+        """Read this actual question owner's complete original source cohort.
+
+        The fixed constructor reads the root decision through Switchboard.
+        This locator supplies no source, actor, endpoint or terminal verdict.
+        """
+        from butlers.chronicler.location_question_recursive import question_owner_plan
+
+        return await question_owner_plan(receiving_runtime(), decision_id)
+
+    @_core_tool("delegation")
+    async def location_retention_prepare_question_loan(
+        decision_id: UUID, loan_id: UUID, receiving_generation: UUID | None = None
+    ) -> dict:
+        """Prepare an admitted loan or exactly bound interrupted receiving attempt.
+
+        Stored input or birth selector chooses the fixed owning source.
+        The optional receiving locator cannot supply authority or refill a
+        legacy NULL selector. Unknown receiving association produces no receipt.
+        Complete child and context lifetimes
+        remain mandatory before the separate committed terminal readback.
+        """
+        from butlers.chronicler.location_question_recursive import prepare_question_loan
+
+        return await prepare_question_loan(
+            receiving_runtime(), decision_id, loan_id, receiving_generation
+        )
+
+    @_core_tool("delegation")
+    async def location_retention_close_owned_questions(decision_id: UUID) -> dict:
+        """Reconcile this owner's stored original receiving loans and question copies.
+
+        No caller-selected peer or copied receipt establishes closure. Each
+        original parent, receiver status and own ledger body must match.
+        """
+        from butlers.chronicler.location_question_recursive import close_owned_questions
+
+        return await close_owned_questions(receiving_runtime(), decision_id)
+
+    @_core_tool("delegation")
+    async def location_retention_question_status(decision_id: UUID, receipt_id: UUID) -> dict:
+        """Read this receiver's immutable generation/body/manifest-bound receipt."""
+        from butlers.chronicler.location_delegation_disposal import question_receiver_status
+
+        return await question_receiver_status(receiving_runtime(), decision_id, receipt_id)
+
+    @_core_tool("delegation")
+    async def location_retention_source_question_status(
+        decision_id: UUID, receipt_id: UUID
+    ) -> dict:
+        """Read only this question owner's original and complete reduced ledger profile.
+
+        A locator supplies no source/plan/actor or receiving completion. The
+        live owning constructor and immutable body/ancestry readback are required.
+        """
+        from butlers.chronicler.location_delegation_disposal import source_question_status
+
+        return await source_question_status(receiving_runtime(), decision_id, receipt_id)
+
+    @_core_tool("delegation")
+    async def location_retention_answer_plan(decision_id: UUID) -> dict:
+        """Read this answer owner's complete cohort for the fixed source decision.
+
+        A decision UUID selects stored state. The actual constructor obtains
+        Chronicle's policy plan through Switchboard; no caller-provided plan,
+        actor, source verdict or peer-private SQL supplies ancestry.
+        """
+        from butlers.chronicler.location_answer_disposal import answer_source_plan
+
+        return await answer_source_plan(receiving_runtime(), decision_id)
+
+    @_core_tool("delegation")
+    async def location_retention_prepare_answer(decision_id: UUID, loan_id: UUID) -> dict:
+        """Fence and dispose this receiver's exact stored answer loan.
+
+        Locators select only actual constructor-owned attempts and fixed
+        Switchboard source readers. An unresolved holder returns no receipt.
+        """
+        from butlers.chronicler.location_answer_disposal import prepare_answer_receiver
+
+        return await prepare_answer_receiver(receiving_runtime(), decision_id, loan_id)
+
+    @_core_tool("delegation")
+    async def location_retention_answer_status(decision_id: UUID, receipt_id: UUID) -> dict:
+        """Read this receiver's complete immutable answer floor and receipt."""
+        from butlers.chronicler.location_answer_disposal import answer_receiver_status
+
+        return await answer_receiver_status(receiving_runtime(), decision_id, receipt_id)
+
+    @_core_tool("delegation")
+    async def location_retention_observe_source_question(
+        decision_id: UUID, answer_receipt: UUID, question_receipt: UUID
+    ) -> dict:
+        """Observe this answer's frozen question owner, never a caller-selected peer.
+
+        Locators supply no body or terminal verdict. Both own immutable answer
+        and actual fixed registered question status must match before COMMIT.
+        """
+        from butlers.chronicler.location_answer_sources import observe_source_question
+
+        return await observe_source_question(
+            receiving_runtime(), decision_id, answer_receipt, question_receipt
+        )
+
+    @_core_tool("delegation")
+    async def location_retention_close_source_answers(decision_id: UUID) -> dict:
+        """Reconcile stored receiver loans and reduce only this owner's exact answers.
+
+        The fixed constructor obtains the actual Chronicle source plan through
+        Switchboard. Receiver lifetimes and source contexts remain independent;
+        this locator supplies no plan, actor, endpoint or disposal verdict.
+        """
+        from butlers.chronicler.location_answer_sources import close_source_answers
+
+        return await close_source_answers(receiving_runtime(), decision_id)
+
+    @_core_tool("delegation")
+    async def location_retention_source_answer_status(decision_id: UUID, receipt_id: UUID) -> dict:
+        """Read original-reference and reduced-body witnesses from this answer owner."""
+        from butlers.chronicler.location_answer_sources import source_answer_status
+
+        return await source_answer_status(receiving_runtime(), decision_id, receipt_id)
 
     @_core_tool("delegation")
     @tool_span("delegate_ask", butler_name=butler_name)
@@ -393,6 +569,26 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             # double-schedule an answering task for the same ledger row.
             return {"status": f"already_{row['status']}", "ledger_id": ledger_id}
 
+        # The public ledger is an integrity selector, never receiving-copy
+        # authority. Still, it must not schedule caller-substituted bytes in
+        # place of the actual admitted question. Native source/receiver
+        # reservation remains a separate owning boundary.
+        if row.get("question") != question or row.get("asking_butler") != asking_butler:
+            return {"status": "error", "error": "Delegated question body differs."}
+        from butlers.core.delegation_source import create_question_schedule, receive_question
+
+        try:
+            question_input = await receive_question(pool, row)
+        except Exception as failure:
+            from butlers.core.delegation_source import reject_question_receive
+
+            try:
+                await reject_question_receive(pool, failure)
+            except Exception:
+                # The actual primary refusal stays the public outcome; failed
+                # stage COMMIT/readback creates no observed/exclusive witness.
+                pass
+            return {"status": "error", "error": "Native question input is unavailable."}
         now = datetime.now(UTC)
         target_time = now + timedelta(minutes=1)
         cron = f"{target_time.minute} {target_time.hour} {target_time.day} {target_time.month} *"
@@ -403,13 +599,19 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             "Answer it using your own domain's knowledge/memory, then call the "
             f'delegate_answer tool with ledger_id="{ledger_id}" and your answer text.'
         )
-        try:
-            task_id = await _schedule_create(
-                pool,
+
+        async def write_question_schedule(conn):
+            return await _schedule_create(
+                conn,
                 f"delegate-answer-{ledger_id}",
                 cron,
                 prompt,
                 until_at=until_at,
+            )
+
+        try:
+            task_id = await create_question_schedule(
+                pool, question_input, prompt, write_question_schedule
             )
         except Exception as exc:
             return {
