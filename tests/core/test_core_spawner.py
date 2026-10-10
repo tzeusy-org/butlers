@@ -3809,11 +3809,13 @@ class TestCancelSession:
 
             def __init__(self, unwind_delay: float) -> None:
                 super().__init__(delay=100, capture=True)
+                self.invoke_entered = asyncio.Event()
                 self.cancel_received = asyncio.Event()
                 self._unwind_delay = unwind_delay
 
             async def invoke(self, *args: Any, **kwargs: Any) -> Any:
                 try:
+                    self.invoke_entered.set()
                     return await super().invoke(*args, **kwargs)
                 except asyncio.CancelledError:
                     self.cancel_received.set()
@@ -3838,6 +3840,9 @@ class TestCancelSession:
                     await asyncio.sleep(0.01)
                 else:
                     pytest.fail("invoke_task never registered for session_id")
+
+                # Registration can precede the adapter's cancellation handler.
+                await asyncio.wait_for(adapter.invoke_entered.wait(), timeout=5.0)
 
                 # Owner-initiated Stop: cancels invoke_task, but the adapter
                 # takes its time (unwind_delay) to actually unwind.
