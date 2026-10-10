@@ -24,4 +24,3 @@ Scope: v1-mandatory
 - **WHEN** a legacy projected needsAction attendee lacks explicit-status provenance
 - **THEN** the invitation read omits that ambiguous candidate and reports admission unavailable
 - **AND** no provider request, backfill, RSVP write or projection rewrite is performed
-
