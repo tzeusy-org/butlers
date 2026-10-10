@@ -3576,6 +3576,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Channel
 - Message
 - Time
+- Review approval
+- Approval review unavailable.
 - Dismiss
 - No notifications found.
 - Notifications
@@ -4873,4 +4875,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3881*
+*Total strings: 3883*

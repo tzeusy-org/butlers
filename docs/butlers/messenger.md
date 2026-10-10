@@ -28,3 +28,10 @@ specified in [`messenger-tracking-retirement`](../../openspec/specs/messenger-tr
   need an authoritative `request_context.source_thread_identity`, never `request_id`, and channel
   policies such as WhatsApp `send_enabled` apply on both paths. Retries expose only allowlisted
   validation classes; raw provider errors stay in logs and audit.
+
+- A committed recipient park emits a typed same-request/channel Messenger review reference.
+  Switchboard's internal writer stores that bounded reference beside the failed notification in
+  one INSERT; its public notification log tool has no review-reference input. Caller metadata,
+  error text, failed parking, and legacy rows cannot create a review door. Logging failure leaves
+  the committed park intact and does not retry delivery. The feed opens the adopted approval
+  dossier only after complete unique-source admission, and the destination repeats that check.

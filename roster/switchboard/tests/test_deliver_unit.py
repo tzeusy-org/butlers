@@ -1082,6 +1082,87 @@ class TestDeliverNotifyRouting:
         assert inner_ctx["source_sender_identity"] == "user-123"
         assert inner_ctx["source_thread_identity"] == "chat-123"
 
+        # Spec: REQ-core-notify-032; a routed, bound refusal owns the failed-row reference.
+        import copy
+
+        from butlers.core.approval_review import ApprovalReview
+        from butlers.tools.switchboard.notification.log import log_notification
+
+        action_id = uuid.uuid4()
+        request_id = notify_request["request_context"]["request_id"]
+        refusal = {
+            "schema_version": "route_response.v1",
+            "status": "error",
+            "request_context": {"request_id": request_id},
+            "error": {"class": "validation_error", "message": "Parked", "retryable": False},
+            "result": {
+                "notify_response": {
+                    "schema_version": "notify_response.v1",
+                    "status": "error",
+                    "request_context": {"request_id": request_id},
+                    "delivery": {"channel": "telegram"},
+                    "error": {"class": "validation_error", "message": "Parked", "retryable": False},
+                    "approval_review": ApprovalReview(action_id).as_dict(),
+                }
+            },
+        }
+        mutants = [refusal]
+        for area, key, value in (
+            ("outer", "request_id", str(uuid.uuid4())),
+            ("context", "request_id", str(uuid.uuid4())),
+            ("delivery", "channel", "email"),
+            ("reference", "butler", "relationship"),
+            ("reference", "action_id", "not-a-uuid"),
+            ("reference", "extra", "private"),
+        ):
+            mutant = copy.deepcopy(refusal)
+            nested = mutant["result"]["notify_response"]
+            target = {
+                "outer": mutant["request_context"],
+                "context": nested["request_context"],
+                "delivery": nested["delivery"],
+                "reference": nested["approval_review"],
+            }[area]
+            target[key] = value
+            mutants.append(mutant)
+        for index, response in enumerate(mutants):
+            attempt_pool = _make_mock_pool(
+                fetchrow_side_effect=[
+                    [],
+                    _registry_row("messenger"),
+                    _notif_id_row(),
+                ]
+            )
+            failed = await deliver(
+                attempt_pool,
+                source_butler="health",
+                notify_request=notify_request,
+                metadata={"approval_review": ApprovalReview(action_id).as_dict()},
+                call_fn=AsyncMock(return_value=response),
+            )
+            assert failed["status"] == "failed"
+            insert = next(
+                call
+                for call in attempt_pool.fetchrow.await_args_list
+                if "INSERT INTO switchboard.notifications" in call.args[0]
+            )
+            if index == 0:
+                assert insert.args[-1] == ApprovalReview(action_id).as_dict()
+                assert "approval_review" in insert.args[0]
+                assert insert.args[6] == "failed"
+            else:
+                assert len(insert.args) == 10  # SQL + the unchanged nine ordinary parameters
+                assert "approval_review" not in insert.args[0]
+        with pytest.raises(TypeError):
+            await log_notification(
+                pool,
+                "health",
+                "telegram",
+                "synthetic",
+                "Synthetic",
+                approval_review=ApprovalReview(action_id),
+            )
+
     async def test_notify_route_context_preserves_request_id_lineage(self) -> None:
         """Route envelope request_id matches the original notify request_context request_id."""
         from butlers.tools.switchboard import deliver

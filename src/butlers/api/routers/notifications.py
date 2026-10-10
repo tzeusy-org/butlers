@@ -24,6 +24,7 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from butlers.api.approval_review import project_notification_reviews
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginationMeta
@@ -195,6 +196,7 @@ _EFFECTIVE_STATUS_CASE_SQL = (
 async def _query_notifications(
     pool: asyncpg.Pool,
     *,
+    db: DatabaseManager | None = None,
     offset: int,
     limit: int,
     butler: str | None = None,
@@ -265,6 +267,7 @@ async def _query_notifications(
         data_sql = (
             f"SELECT id, source_butler, channel, recipient, message, metadata, "
             f"status, error, session_id, trace_id, created_at, "
+            "to_jsonb(notifications)->'approval_review' AS approval_review, "
             f"{_EFFECTIVE_STATUS_CASE_SQL} AS effective_status "
             f"FROM notifications{where_clause} "
             f"ORDER BY created_at DESC "
@@ -282,6 +285,7 @@ async def _query_notifications(
         )
         return _empty_notification_page(offset=offset, limit=limit, source_available=False)
 
+    review_states = await project_notification_reviews(db, rows)
     notifications = [
         NotificationSummary(
             id=row["id"],
@@ -296,8 +300,10 @@ async def _query_notifications(
             session_id=row["session_id"],
             trace_id=row["trace_id"],
             created_at=row["created_at"],
+            approval_review=review[0],
+            approval_review_state=review[1],
         )
-        for row in rows
+        for row, review in zip(rows, review_states, strict=True)
     ]
 
     return NotificationListResponse(
@@ -338,6 +344,7 @@ async def list_notifications(
     try:
         return await _query_notifications(
             pool,
+            db=db,
             offset=offset,
             limit=limit,
             butler=butler,
@@ -386,6 +393,7 @@ async def list_butler_notifications(
     try:
         return await _query_notifications(
             pool,
+            db=db,
             offset=offset,
             limit=limit,
             butler=name,
@@ -593,7 +601,8 @@ async def mark_notification_read(
             WHERE id = $1
               AND {notification_recovery_exclusion_sql()}
             RETURNING id, source_butler, channel, recipient, message, metadata,
-                      status, error, session_id, trace_id, created_at
+                      status, error, session_id, trace_id, created_at,
+                      to_jsonb(notifications)->'approval_review' AS approval_review
             """,
             notification_id,
         )
@@ -619,6 +628,7 @@ async def mark_notification_read(
     else:
         cache.invalidate_all()
 
+    review = (await project_notification_reviews(db, [row]))[0]
     return ApiResponse(
         data=NotificationSummary(
             id=row["id"],
@@ -633,6 +643,8 @@ async def mark_notification_read(
             session_id=row["session_id"],
             trace_id=row["trace_id"],
             created_at=row["created_at"],
+            approval_review=review[0],
+            approval_review_state=review[1],
         )
     )
 

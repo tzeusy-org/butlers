@@ -27,6 +27,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 
+from butlers.api.approval_review import resolve_messenger_reviews
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -2951,6 +2952,7 @@ async def dismiss_suggestion(
 @router.get("/{action_id}")
 async def get_approval_detail(
     action_id: str,
+    review_source: str | None = None,
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalDetail]:
     """Full dossier for one approval — GET /api/approvals/{id}."""
@@ -2959,7 +2961,15 @@ async def get_approval_detail(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    if review_source is not None:
+        if review_source != "messenger":
+            raise HTTPException(status_code=400, detail="Unsupported approval review source")
+        admitted = await resolve_messenger_reviews(db_mgr, {parsed_id})
+        if parsed_id not in admitted:
+            raise HTTPException(status_code=503, detail="Messenger approval review unavailable")
+        named_pools = [admitted[parsed_id]]
+    else:
+        named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
     if not named_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 

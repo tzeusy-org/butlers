@@ -270,6 +270,19 @@ export function NotificationFeed({
                   </p>
                 )}
               </ExpandableDetail>
+              {n.approval_review_state === "available" &&
+                n.approval_review?.butler === "messenger" &&
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(n.approval_review.action_id) && (
+                  <Link
+                    className="mt-1 inline-block text-xs text-primary underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                    to={`/approvals/${encodeURIComponent(n.approval_review.action_id)}?review_source=messenger`}
+                  >
+                    Review approval
+                  </Link>
+                )}
+              {n.approval_review_state === "unavailable" && (
+                <p className="mt-1 text-xs text-muted-foreground">Approval review unavailable.</p>
+              )}
               {(n.session_id || n.trace_id) && (
                 <div className="mt-1 flex items-center gap-3 text-xs">
                   {n.session_id && (

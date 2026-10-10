@@ -2121,6 +2121,47 @@ async def test_detail_returns_typed_decision_dossier_fields(app):
                 if origin == "prepared":
                     assert item["delivery"] is None
     conn.execute.assert_not_awaited()
+    # Spec: REQ-dashboard-visibility-004; qualified dossiers repeat complete unique source lookup.
+    db = app.dependency_overrides[_get_db_manager]()
+    own_pool = db.pool.return_value
+    # _app_with_mock_db's acquisition context owns the existing connection.
+    async with own_pool.acquire() as own:
+        own.fetch.return_value = [{"id": row["id"]}]
+    foreign = AsyncMock()
+    foreign.acquire = MagicMock()
+    foreign_conn = AsyncMock()
+    foreign.acquire.return_value.__aenter__.return_value = foreign_conn
+    foreign_conn.fetch.return_value = []
+    db.pool.side_effect = lambda name: {"messenger": own_pool, "general": foreign}[name]
+    db.butlers_with_module.return_value = ["messenger", "general"]
+    db.configured_butlers_with_module.return_value = ["messenger", "general"]
+    db.configured_butler_names = ["messenger", "general"]
+    db.schema_for_butler.return_value = None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        url = f"/api/approvals/{row['id']}?review_source=messenger"
+        response = await client.get(url)
+        assert response.status_code == 200
+        assert response.json()["data"]["butler"] == "messenger"
+        for kind in ("duplicate", "unavailable", "missing", "wrong-source"):
+            own.fetch.return_value = [{"id": row["id"]}]
+            foreign_conn.fetch.return_value = []
+            foreign_conn.fetch.side_effect = None
+            if kind == "duplicate":
+                foreign_conn.fetch.return_value = [{"id": row["id"]}]
+            if kind == "unavailable":
+                foreign_conn.fetch.side_effect = RuntimeError("Synthetic source failure")
+            if kind in {"missing", "wrong-source"}:
+                own.fetch.return_value = []
+            if kind == "wrong-source":
+                foreign_conn.fetch.return_value = [{"id": row["id"]}]
+            assert (await client.get(url)).status_code == 503
+        foreign_conn.fetch.side_effect = None
+        foreign_conn.fetch.return_value = []
+        own.fetch.return_value = [{"id": row["id"]}]
+        assert (await client.get(url)).status_code == 200
+        assert (await client.get(url.replace("messenger", "general"))).status_code == 400
 
 
 async def test_detail_preserves_failed_push_delivery_state(app):

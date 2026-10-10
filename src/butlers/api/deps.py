@@ -485,6 +485,9 @@ async def init_db_manager(
     params = _db_params_from_env()
     mgr = DatabaseManager(**params)
 
+    for cfg, _ in resolved_butler_db_names:
+        mgr.register_configured_modules(cfg.name, cfg.modules)
+
     for cfg, resolved_db_name in resolved_butler_db_names:
         try:
             db = Database.from_env(cfg.db_name or "butlers")

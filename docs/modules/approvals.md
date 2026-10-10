@@ -168,6 +168,11 @@ independent of status, expiry, permissions and delivery evidence. Intended
 non-send without delivery evidence is not a failed push, while independently
 recorded failure or uncertain delivery remains visible even for a prepared action.
 
+- A notification review link is a dossier locator, not an approval capability. The dashboard's
+  qualified `GET /api/approvals/{id}?review_source=messenger` repeats a bounded lookup over
+  every configured approvals source. A missing pool, failed read, duplicate UUID, or wrong source
+  withholds the dossier; ordinary unqualified lookup and decision permissions stay unchanged.
+  Configuration is retained before provisioning, so a failed pool cannot disappear from this check.
 
 ## Related Pages
 

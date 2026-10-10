@@ -76,6 +76,26 @@ def migrated_db_url(postgres_container) -> str:
     )
 
 
+@pytest.fixture(scope="module")
+def review_door_db_url(postgres_container) -> str:
+    """Current actual owning chains; bootstrap supplies existing runtime roles."""
+    from butlers.migrations import run_migrations
+
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        ["core", "approvals"],
+        schemas={"core": "messenger", "approvals": "messenger"},
+    )
+    for schema, chains in (
+        ("general", ("core", "approvals")),
+        ("switchboard", ("core", "switchboard")),
+    ):
+        for chain in chains:
+            asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
+    return db_url
+
+
 @pytest.fixture
 async def approval_push_pool(migrated_db_url: str):
     """Return a clean JSONB-aware pool with approval pushes enabled."""
@@ -366,6 +386,7 @@ async def _never_execute(**_kwargs: object) -> dict[str, object]:
 # Spec: REQ-approval-delivery-intent-recovery-001, REQ-module-approvals-001; gate action and initial presentation commit together without egress.
 async def test_gate_park_atomically_admits_one_recoverable_presentation_without_sending(
     approval_push_pool: asyncpg.Pool,
+    review_door_db_url: str,
 ) -> None:
     """Park creates durable action/presentation state without live delivery."""
     dispatch = AsyncMock()
@@ -429,6 +450,238 @@ async def test_gate_park_atomically_admits_one_recoverable_presentation_without_
     assert same_id.duplicate is True
     assert same_id.intent_id is not None
     assert same_id.action_key == row["action_key"]
+
+    # Spec: REQ-core-notify-032, REQ-dashboard-visibility-004; actual runtime roles and committed reads.
+    import httpx
+
+    from butlers.api.approval_review import resolve_messenger_reviews
+    from butlers.api.db import DatabaseManager
+    from butlers.api.routers import approvals as approval_routes
+    from butlers.api.routers import notifications as notification_routes
+    from butlers.core.approval_review import ApprovalReview
+    from butlers.tools.switchboard.notification.log import (
+        _log_notification_with_review,
+        log_notification,
+    )
+    from tests.api.auth_helpers import create_authenticated_domain_app
+
+    pools = {}
+
+    async def connect_owner(name):
+        async def initialize(conn):
+            await register_jsonb_codec(conn)
+
+        async def setup(conn):
+            # Pool release resets session settings; re-establish the owning
+            # runtime boundary before every acquisition, including readback.
+            await conn.execute(f'SET ROLE "butler_{name}_rw"')
+            await conn.execute(f'SET search_path TO "{name}", public')
+            identity = await conn.fetchrow(
+                "SELECT current_user AS runtime_role, current_schema() AS owning_schema, "
+                "current_schemas(false) AS owning_path"
+            )
+            assert identity["runtime_role"] == f"butler_{name}_rw"
+            assert identity["owning_schema"] == name
+            assert identity["owning_path"] == [name, "public"]
+
+        return await asyncpg.create_pool(
+            review_door_db_url, min_size=1, max_size=3, init=initialize, setup=setup
+        )
+
+    try:
+        for name in ("messenger", "general", "switchboard"):
+            pools[name] = await connect_owner(name)
+        messenger_pool = pools["messenger"]
+        switchboard_pool = pools["switchboard"]
+        committed_id = uuid.uuid4()
+        admission = await park_pending_action(
+            messenger_pool,
+            action_id=committed_id,
+            tool_name="telegram_send_message",
+            tool_args={"chat_id": "synthetic", "text": "Synthetic review"},
+            agent_summary="Synthetic recipient park",
+            requested_at=datetime.now(UTC),
+            expires_at=None,
+            origin_butler="messenger",
+            approval_push_runtime=None,
+        )
+        assert admission.action_id == committed_id
+        async with messenger_pool.acquire() as independent:
+            assert (
+                await independent.fetchval(
+                    "SELECT id FROM pending_actions WHERE id=$1", committed_id
+                )
+                == committed_id
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await independent.fetchval("SELECT count(*) FROM switchboard.notifications")
+        ref = ApprovalReview(committed_id)
+        db = DatabaseManager()
+        db._pools = pools.copy()
+        db._butler_modules = {
+            "messenger": frozenset({"approvals"}),
+            "general": frozenset({"approvals"}),
+            "switchboard": frozenset(),
+        }
+        db._butler_schemas = {name: name for name in pools}
+        for name, modules in db._butler_modules.items():
+            db.register_configured_modules(name, modules)
+        app = create_authenticated_domain_app()
+        app.dependency_overrides[notification_routes._get_db_manager] = lambda: db
+        app.dependency_overrides[approval_routes._get_db_manager] = lambda: db
+
+        async def write_and_read(writer=_log_notification_with_review):
+            notification_id = await writer(
+                switchboard_pool,
+                approval_review=ref,
+                source_butler="health",
+                channel="telegram",
+                recipient="synthetic",
+                message="Synthetic blocked delivery",
+                status="failed",
+                error="Parked",
+            )
+            async with switchboard_pool.acquire() as independent:
+                stored = await independent.fetchrow(
+                    "SELECT status, approval_review FROM notifications WHERE id=$1",
+                    uuid.UUID(notification_id),
+                )
+            assert stored["approval_review"] == ref.as_dict()
+            assert stored["status"] == "failed"
+            return notification_id
+
+        notification_id = await write_and_read()
+
+        async def ordinary_writer(pool, *, approval_review, **kwargs):
+            return await log_notification(pool, **kwargs)
+
+        with pytest.raises(AssertionError):
+            await write_and_read(ordinary_writer)
+        restored_id = await write_and_read()
+        assert restored_id != notification_id
+        for invalid in (
+            {"action_id": str(committed_id), "butler": "general"},
+            {"action_id": str(committed_id), "butler": "messenger", "extra": "private"},
+            {"action_id": True, "butler": "messenger"},
+            [],
+            {},
+        ):
+            with pytest.raises(asyncpg.CheckViolationError):
+                await switchboard_pool.execute(
+                    "UPDATE notifications SET approval_review=$1::jsonb WHERE id=$2",
+                    invalid,
+                    uuid.UUID(notification_id),
+                )
+        assert (
+            await switchboard_pool.fetchval(
+                "SELECT approval_review FROM notifications WHERE id=$1", uuid.UUID(notification_id)
+            )
+            == ref.as_dict()
+        )
+        rolled_back_id = None
+        with pytest.raises(RuntimeError, match="Synthetic rollback"):
+            async with switchboard_pool.acquire() as conn, conn.transaction():
+                rolled_back_id = await _log_notification_with_review(
+                    conn,
+                    approval_review=ref,
+                    source_butler="health",
+                    channel="telegram",
+                    recipient="synthetic",
+                    message="Synthetic rollback",
+                    status="failed",
+                    error="Parked",
+                )
+                raise RuntimeError("Synthetic rollback")
+        assert (
+            await switchboard_pool.fetchval(
+                "SELECT count(*) FROM notifications WHERE id=$1", uuid.UUID(rolled_back_id)
+            )
+            == 0
+        )
+        assert (
+            await messenger_pool.fetchval(
+                "SELECT count(*) FROM pending_actions WHERE id=$1", committed_id
+            )
+            == 1
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            url = f"/api/approvals/{committed_id}?review_source=messenger"
+            assert (await client.get(url)).status_code == 200
+            response = await client.get("/api/notifications")
+            own = next(row for row in response.json()["data"] if row["id"] == notification_id)
+            assert (
+                own["approval_review"] == ref.as_dict()
+                and own["approval_review_state"] == "available"
+            )
+            await park_pending_action(
+                pools["general"],
+                action_id=committed_id,
+                tool_name="telegram_send_message",
+                tool_args={"chat_id": "synthetic", "text": "Synthetic duplicate"},
+                agent_summary="Synthetic duplicate",
+                requested_at=datetime.now(UTC),
+                expires_at=None,
+                origin_butler="general",
+                approval_push_runtime=None,
+            )
+            assert await resolve_messenger_reviews(db, {committed_id}) == {}
+            assert (await client.get(url)).status_code == 503
+            response = await client.get("/api/notifications")
+            assert (
+                next(row for row in response.json()["data"] if row["id"] == notification_id)[
+                    "approval_review_state"
+                ]
+                == "unavailable"
+            )
+            await pools["general"].execute("DELETE FROM pending_actions WHERE id=$1", committed_id)
+            unavailable = db._pools.pop("general")
+            assert (await client.get(url)).status_code == 503
+            db._pools["general"] = unavailable
+            assert (await client.get(url)).status_code == 200
+            wrong_id = uuid.uuid4()
+            await park_pending_action(
+                pools["general"],
+                action_id=wrong_id,
+                tool_name="telegram_send_message",
+                tool_args={},
+                agent_summary="Wrong-source sentinel",
+                requested_at=datetime.now(UTC),
+                expires_at=None,
+                origin_butler="general",
+                approval_push_runtime=None,
+            )
+            assert (
+                await client.get(f"/api/approvals/{wrong_id}?review_source=messenger")
+            ).status_code == 503
+        from butlers.tools.switchboard.notification.deliver import _log_notification_best_effort
+
+        with patch(
+            "butlers.tools.switchboard.notification.deliver._log_notification_with_review",
+            side_effect=RuntimeError("Synthetic logging failure"),
+        ):
+            assert (
+                await _log_notification_best_effort(
+                    switchboard_pool,
+                    approval_review=ref,
+                    source_butler="health",
+                    channel="telegram",
+                    recipient="synthetic",
+                    message="Synthetic logging failure",
+                    status="failed",
+                )
+                is None
+            )
+        assert (
+            await messenger_pool.fetchval(
+                "SELECT id FROM pending_actions WHERE id=$1", committed_id
+            )
+            == committed_id
+        )
+    finally:
+        for pool in pools.values():
+            await pool.close()
 
 
 # Spec: REQ-approval-delivery-intent-recovery-001; injected intent failure rolls back the pending action.

@@ -393,6 +393,8 @@ export interface NotificationSummary {
   session_id: string | null;
   trace_id: string | null;
   created_at: string;
+  approval_review?: { action_id: string; butler: "messenger" } | null;
+  approval_review_state?: "available" | "none" | "unavailable";
 }
 
 /** Health-check response. */

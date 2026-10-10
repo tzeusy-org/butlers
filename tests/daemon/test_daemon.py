@@ -1871,6 +1871,31 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
     assert call_kwargs["park_tool_name"] == expected_tool
     assert call_kwargs["park_tool_args"] == expected_args
 
+    # Spec: REQ-core-notify-032; only committed typed recipient parks emit a review reference.
+    refusal = result["result"]["notify_response"]
+    assert refusal.get("approval_review") == {"action_id": str(action_id), "butler": "messenger"}
+    assert refusal["delivery"]["channel"] == "email"
+    assert refusal["request_context"]["request_id"] == result["request_context"]["request_id"]
+    for reason, parked_id in (
+        ("parking_failed", action_id),
+        ("parked", None),
+        ("parked", str(action_id)),
+    ):
+        guard.return_value = EmailGuardDecision(
+            allowed=False,
+            reason=reason,
+            action_id=parked_id,
+            contact_desc="unknown contact",
+        )
+        with patch("butlers.core.approvals_hooks.check_email_recipient", new=guard):
+            rejected = await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={"prompt": "Deliver.", "context": {"notify_request": notify_request}},
+            )
+        assert rejected["status"] == "error"
+        assert "approval_review" not in rejected["result"]["notify_response"]
+
 
 async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path) -> None:
     """Messenger receives and rechecks dossier metadata from a deferred envelope."""
@@ -1940,6 +1965,51 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
     assert result["status"] == "ok"
     match_rules.assert_awaited_once()
     telegram_module._send_message.assert_awaited_once()
+
+    # Spec: REQ-core-notify-032; the same non-email adapter stays blocked after a park.
+    from butlers.modules.approvals.email_guard import EmailGuardDecision
+
+    action_id = uuid.uuid4()
+    blocked_guard = AsyncMock(
+        return_value=EmailGuardDecision(
+            allowed=False,
+            reason="parked",
+            action_id=action_id,
+            contact_desc="contact",
+        )
+    )
+    with patch("butlers.core.approvals_hooks.check_recipient", new=blocked_guard):
+        blocked = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "telegram",
+                            "message": "Requested update.",
+                            "recipient": "900800700",
+                        },
+                        "decision_dossier": {
+                            "why": "Requested update.",
+                            "evidence": [],
+                            "blast_radius": "contact",
+                            "reversibility": "compensable",
+                        },
+                    }
+                },
+            },
+        )
+    assert blocked["status"] == "error"
+    assert blocked["result"]["notify_response"].get("approval_review") == {
+        "action_id": str(action_id),
+        "butler": "messenger",
+    }
+    telegram_module._send_message.assert_awaited_once()  # No second provider effect.
 
 
 async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path: Path) -> None:

@@ -18,8 +18,12 @@ from butlers.core.approval_delivery_transport import (
     RecoveryAuthorityError,
     TrustedRecoveryContext,
 )
+from butlers.core.approval_review import review_from_notify_refusal
 from butlers.core.tool_call_capture import get_current_runtime_session_id
-from butlers.tools.switchboard.notification.log import log_notification
+from butlers.tools.switchboard.notification.log import (
+    _log_notification_with_review,
+    log_notification,
+)
 from butlers.tools.switchboard.registry.registry import (
     expected_route_target,
     receiver_route_cutover_enabled,
@@ -152,6 +156,9 @@ async def _log_notification_best_effort(pool: asyncpg.Pool, **kwargs: Any) -> st
     DSN or credential material.
     """
     try:
+        review = kwargs.pop("approval_review", None)
+        if review is not None:
+            return await _log_notification_with_review(pool, approval_review=review, **kwargs)
         return await log_notification(pool, **kwargs)
     except Exception as exc:  # noqa: BLE001 - evidence write is best-effort
         logger.warning("notification_log write failed (%s)", type(exc).__name__)
@@ -335,6 +342,11 @@ async def _deliver_via_notify_request(
         call_fn=call_fn,
     )
 
+    review = review_from_notify_refusal(
+        route_result.get("result"),
+        request_id=str(request_context.request_id),
+        channel=channel,
+    )
     transport = transport_result_from_envelope(route_result)
 
     if "error" in route_result:
@@ -365,6 +377,7 @@ async def _deliver_via_notify_request(
             error=error_msg,
             session_id=session_id,
             trace_id=_current_trace_id(),
+            approval_review=review,
         )
         result: dict[str, Any] = {
             "notification_id": notification_id,
@@ -396,6 +409,7 @@ async def _deliver_via_notify_request(
             error=error_msg,
             session_id=session_id,
             trace_id=_current_trace_id(),
+            approval_review=review,
         )
         nested_transport = (
             transport_result_from_envelope(route_response)
@@ -446,6 +460,7 @@ async def _deliver_via_notify_request(
             error=error_msg,
             session_id=session_id,
             trace_id=_current_trace_id(),
+            approval_review=review,
         )
         return {
             "notification_id": notification_id,

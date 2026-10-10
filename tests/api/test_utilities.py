@@ -64,6 +64,21 @@ class TestDatabaseAndDeps:
         assert mgr.memory_schema_for_butler("general") == "general"
         assert mgr.memory_schema_for_butler("chronicler") == "chronicler_mem"
 
+        # Review admission must retain a configured source whose pool fails.
+        mgr.register_configured_modules("messenger", frozenset({"approvals"}))
+        mock_create.side_effect = RuntimeError("Synthetic pool unavailable")
+        with pytest.raises(RuntimeError, match="Synthetic pool unavailable"):
+            await mgr.add_butler("offline", modules=frozenset({"approvals"}))
+        assert "offline" in mgr.configured_butler_names
+        assert "offline" not in mgr.butler_names
+        # Unknown legacy configuration remains unknown, not a false complete census.
+        assert mgr.configured_butlers_with_module("approvals") is None
+        complete = DatabaseManager()
+        complete.register_configured_modules("messenger", frozenset({"approvals"}))
+        complete.register_configured_modules("offline", frozenset({"approvals"}))
+        assert complete.configured_butlers_with_module("approvals") == ["messenger", "offline"]
+        assert complete.butlers_with_module("approvals") is None
+
     async def test_mcp_manager_raises_for_unregistered_and_lists_registered(self):
         mgr = MCPClientManager()
         with pytest.raises(ButlerUnreachableError):
@@ -98,7 +113,11 @@ class TestDatabaseAndDeps:
             caplog.at_level(logging.WARNING, logger="butlers.api.deps"),
         ):
             MockMgr.return_value = AsyncMock()
+            MockMgr.return_value.register_configured_modules = MagicMock()
             await init_db_manager([cfg])
+            MockMgr.return_value.register_configured_modules.assert_called_once_with(
+                "ghost", frozenset()
+            )
 
         warning_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("ghost" in msg for msg in warning_messages), (

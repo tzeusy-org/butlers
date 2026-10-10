@@ -17,6 +17,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.approval_review import ApprovalReview
+
 
 async def log_notification(
     pool: asyncpg.Pool,
@@ -86,5 +88,42 @@ async def log_notification(
         error,
         session_id,
         trace_id,
+    )
+    return str(row["id"])
+
+
+async def _log_notification_with_review(
+    pool: asyncpg.Pool,
+    *,
+    approval_review: ApprovalReview,
+    source_butler: str,
+    channel: str,
+    recipient: str,
+    message: str,
+    metadata: dict[str, Any] | None = None,
+    status: str = "failed",
+    error: str | None = None,
+    session_id: str | None = None,
+    trace_id: str | None = None,
+) -> str:
+    """Internal writer only; never registered or exposed by the public log tool."""
+    if not isinstance(approval_review, ApprovalReview) or status != "failed":
+        raise ValueError("Only a typed parked refusal may carry review correlation")
+    safe_metadata = json.loads(json.dumps(metadata, default=str)) if metadata else {}
+    row = await pool.fetchrow(
+        """INSERT INTO switchboard.notifications
+           (source_butler, channel, recipient, message, metadata, status, error,
+            session_id, trace_id, approval_review)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10::jsonb) RETURNING id""",
+        source_butler,
+        channel,
+        recipient,
+        message,
+        safe_metadata,
+        status,
+        error,
+        session_id,
+        trace_id,
+        approval_review.as_dict(),
     )
     return str(row["id"])

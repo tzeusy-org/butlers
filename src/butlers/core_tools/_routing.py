@@ -831,6 +831,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             error_class: str,
             message: str,
             retryable: bool | None = None,
+            approval_review: dict[str, str] | None = None,
         ) -> dict[str, Any]:
             resolved_retryable = (
                 _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
@@ -848,6 +849,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 notify_payload["request_context"] = {"request_id": request_id}
             if channel is not None:
                 notify_payload["delivery"] = {"channel": channel}
+            if approval_review is not None:
+                notify_payload["approval_review"] = approval_review
             return notify_payload
 
         def _dossier_error_response(
@@ -1760,11 +1763,15 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                     "Delivery remains blocked because approval parking failed; "
                                     "no pending action was created."
                                 )
-                            raise ValueError(
+                            from butlers.core.approval_review import ParkedApprovalRefusal
+
+                            raise ParkedApprovalRefusal(
                                 f"Delivery blocked: {channel} target '{gate_target}' is a "
                                 f"{decision.contact_desc} and no standing approval rule "
                                 f"matches. Parked for owner review on the approval "
-                                f"dashboard (action_id={decision.action_id})."
+                                f"dashboard (action_id={decision.action_id}).",
+                                decision=decision,
+                                butler=daemon.config.name,
                             )
 
             if channel == "telegram":
@@ -1863,11 +1870,15 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                     "Delivery remains blocked because approval parking failed; "
                                     "no pending action was created."
                                 )
-                            raise ValueError(
+                            from butlers.core.approval_review import ParkedApprovalRefusal
+
+                            raise ParkedApprovalRefusal(
                                 f"Delivery blocked: email target '{email_target}' is a "
                                 f"{decision.contact_desc} and no standing approval rule matches. "
                                 f"Parked for owner review on the approval dashboard "
-                                f"(action_id={decision.action_id})."
+                                f"(action_id={decision.action_id}).",
+                                decision=decision,
+                                butler=daemon.config.name,
                             )
 
                 raw_subject = notify_request.delivery.subject or {
@@ -1933,6 +1944,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 raise ValueError(f"Unsupported notify channel: {channel}")
 
         except ValueError as exc:
+            from butlers.core.approval_review import ParkedApprovalRefusal
+
+            review = exc.approval_review if isinstance(exc, ParkedApprovalRefusal) else None
             error_message = str(exc)
             return _route_error_response(
                 context_payload=route_context,
@@ -1943,6 +1957,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     channel=channel,
                     error_class="validation_error",
                     message=error_message,
+                    approval_review=review.as_dict() if review is not None else None,
                 ),
             )
         except TimeoutError:
