@@ -1,0 +1,113 @@
+{
+  "base": "event-base",
+  "scope": [
+    "roster/relationship/api/router.py"
+  ],
+  "removed": [
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_entities_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_entities_merge_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_entities_archive_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_delete_entity_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_queue_dismiss_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_entity_contacts_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_delete_entity_contact_fact_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_queue_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_search_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_entity_contacts_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_entity_neighbours_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_entity_activity_non_owner_403",
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_entity_facts_non_owner_403"
+  ],
+  "survivors": [
+    "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+  ],
+  "cluster": "relationship-owner-route-table",
+  "bead": "bu-ly3lv5.11.3",
+  "contract": {
+    "class": "authorization",
+    "cites": [
+      "openspec/specs/dashboard-relationship/spec.md#owner-only-authorization-for-entity-endpoints",
+      "REQ-testing-053"
+    ]
+  },
+  "mapping": {
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_entities_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_entities_merge_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_entities_archive_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_delete_entity_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_queue_dismiss_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_post_entity_contacts_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12aMutationNonOwner::test_delete_entity_contact_fact_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_queue_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_search_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_entity_contacts_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_entity_neighbours_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_entity_activity_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    },
+    "roster/relationship/tests/test_owner_authz_guardrail.py::TestClause12bPiiReadsNonOwner::test_get_entity_facts_non_owner_403": {
+      "survivors": [
+        "roster/relationship/tests/test_owner_authz_guardrail.py::test_entity_owner_route_survivor_table"
+      ],
+      "reason": "Additive route-policy candidate; every original owner remains until full executable evidence succeeds."
+    }
+  }
+}
