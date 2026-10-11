@@ -169,7 +169,8 @@ This is the `lineage` value, not a complete plan. Function identities are
 source-qualified names, including class/nested owners. Unchanged homes need
 no function row. A declared pair only identifies the two actual functions:
 the reader independently parses their signatures, defaults, decorators,
-keyword interface, source operations and control nesting. Ambiguous, missing
+return annotations, type parameters, keyword interface, source operations and
+control nesting. Ambiguous, missing
 or changed old operations refuse. Source coordinates select actual AST points;
 they never establish equivalence. Unmapped multiline/lambda or other unsupported
 source shapes remain unknown rather than disappearing from the account.

@@ -86,6 +86,10 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
                     "args": _normalized(node.args, names),
                     "keyword_names": [n.arg for n in (*node.args.args, *node.args.kwonlyargs)],
                     "decorators": [_normalized(n, names) for n in node.decorator_list],
+                    "returns": None if node.returns is None else _normalized(node.returns, names),
+                    "type_parameters": [
+                        _normalized(n, names) for n in getattr(node, "type_params", [])
+                    ],
                 }
             )
             signatures[identity] = signature

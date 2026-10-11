@@ -715,6 +715,23 @@ def test_fresh_paired_runtime_lineage_uses_each_source_and_named_owner(tmp_path)
 
     import condensation_lineage as lineage
 
+    annotated_pair = [
+        {
+            "before": {"path": "old.py", "function": "reply"},
+            "current": {"path": "new.py", "function": "reply"},
+        }
+    ]
+    for annotated, changed in (
+        ("def reply(value: int) -> int:\n    return value\n", "-> str"),
+        ("def reply[T: int](value: T) -> T:\n    return value\n", "T: str"),
+    ):
+        healthy = {"new.py": annotated}
+        lineage.alignment({"old.py": annotated}, healthy, annotated_pair)
+        corrupted = annotated.replace("-> int", changed).replace("T: int", changed)
+        with pytest.raises(consumer.EvidenceError, match="changed-or-missing-function"):
+            lineage.alignment({"old.py": annotated}, {"new.py": corrupted}, annotated_pair)
+        lineage.alignment({"old.py": annotated}, healthy, annotated_pair)
+
     for unbound in ({"mode": "paired", "scope": ["*.py"], "functions": []},):
         with pytest.raises(consumer.EvidenceError):
             lineage.request(unbound)
