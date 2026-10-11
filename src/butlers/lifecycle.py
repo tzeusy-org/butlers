@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 from typing import Any
@@ -534,8 +535,11 @@ async def run_startup(daemon: Any) -> None:
     # 16c. Start internal scheduler loop
     daemon._scheduler_loop_task = asyncio.create_task(daemon._scheduler_loop())
 
-    # 17. Start liveness reporter (all butlers, including switchboard)
-    daemon._liveness_reporter_task = asyncio.create_task(daemon._liveness_reporter_loop())
+    # 17. Legacy reporting is retained for flag-off and rollback deployments.
+    # Receiver-derived mode uses the independently supervised Dashboard observer;
+    # an unauthenticated daemon POST cannot renew that receiver evidence.
+    if os.environ.get("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER") != "1":
+        daemon._liveness_reporter_task = asyncio.create_task(daemon._liveness_reporter_loop())
 
     # The port is bound and local services are ready, but receiver-visible
     # route acceptance requires a committed L1 epoch.  A daemon that started

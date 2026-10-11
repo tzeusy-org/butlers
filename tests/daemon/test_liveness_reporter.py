@@ -12,6 +12,9 @@ Covers all acceptance criteria:
 Issue: butlers-976.3
 """
 
+# The docstring records the original butlers-976.3 scope. Current receiver-mode
+# lifecycle is covered below by REQ-butler-control-plane-liveness-006.
+
 from __future__ import annotations
 
 import asyncio
@@ -295,6 +298,62 @@ class TestLivenessReporterLifecycle:
             assert daemon2._liveness_reporter_task is not None
         finally:
             await daemon2.shutdown()
+
+    # Spec: REQ-butler-control-plane-liveness-006
+    async def test_receiver_mode_retires_legacy_writer_without_changing_boot_admission(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        flag = "BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER"
+        # Only the exact routing cutover value selects receiver authority.
+        # A planted reporter must actually execute in each retained legacy mode.
+        for index, value in enumerate(("0", "true", "")):
+            monkeypatch.setenv(flag, value)
+            legacy_dir = tmp_path / f"legacy-{index}"
+            legacy_dir.mkdir()
+            reporter = AsyncMock()
+            with patch.object(ButlerDaemon, "_liveness_reporter_loop", reporter):
+                legacy = await self._start_daemon(_make_butler_toml(legacy_dir))
+                try:
+                    assert isinstance(legacy._liveness_reporter_task, asyncio.Task)
+                    await asyncio.sleep(0)
+                    reporter.assert_awaited_once()
+                finally:
+                    await legacy.shutdown()
+                assert legacy._liveness_reporter_task is None
+
+        # The obsolete writer is absent for both kinds of daemon in receiver mode.
+        # Successful and failed boot admission still determine readiness, and the
+        # internal scheduler starts independently of either liveness writer.
+        monkeypatch.setenv(flag, "1")
+        for index, (name, registered) in enumerate(
+            (("test-butler", True), ("switchboard", True), ("test-butler", False))
+        ):
+            receiver_dir = tmp_path / f"receiver-{index}"
+            receiver_dir.mkdir()
+            reporter = AsyncMock()
+            registration = AsyncMock(return_value=registered)
+            with (
+                patch.object(ButlerDaemon, "_liveness_reporter_loop", reporter),
+                patch.object(ButlerDaemon, "_register_boot_epoch", registration),
+            ):
+                receiver = await self._start_daemon(_make_butler_toml(receiver_dir, name=name))
+                try:
+                    assert receiver._liveness_reporter_task is None
+                    registration.assert_awaited_once()
+                    assert receiver._accepting_connections is registered
+                    assert isinstance(receiver._scheduler_loop_task, asyncio.Task)
+                    assert not receiver._scheduler_loop_task.done()
+                    if registered:
+                        assert receiver._boot_registration_task is None
+                    else:
+                        assert isinstance(receiver._boot_registration_task, asyncio.Task)
+                    await asyncio.sleep(0)
+                    reporter.assert_not_awaited()
+                finally:
+                    await receiver.shutdown()
+                assert receiver._liveness_reporter_task is None
+                assert receiver._scheduler_loop_task is None
+                assert receiver._boot_registration_task is None
 
 
 # ---------------------------------------------------------------------------

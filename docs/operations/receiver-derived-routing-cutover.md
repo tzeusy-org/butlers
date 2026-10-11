@@ -1,6 +1,6 @@
 # Receiver-derived routing: dev cutover and rollback
 
-This is the L3 operator boundary for `REQ-butler-control-plane-liveness-002/004/008`
+This is the L3 operator boundary for `REQ-butler-control-plane-liveness-002/004/006/008`
 and `REQ-butler-switchboard-002/004`. The code defaults to legacy routing when
 `BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` is unset. The current k3s dev release
 sets it to `1` in `deploy/helm/butlers/values.dev.yaml` under `commonEnv`, which
@@ -46,11 +46,20 @@ Production activation remains a separate exact-environment decision.
   notification, or condition write. It is not exposed on the Dashboard and is
   not a substitute for Q4's cached public `/ready`.
 
+The daemon selects reporter lifecycle at startup from the same exact flag. With
+`1`, it sends no obsolete initial or periodic heartbeat POST; the Dashboard
+receiver observer and durable boot registration remain independent. With the
+flag unset or another value, the legacy reporter remains available with its
+existing failure and cancellation behavior. Its bare POST is still subject to
+owner authentication: a `401` is expected refusal, not proof that receiver
+observations failed or the fleet is down. No owner credential is supplied to
+the daemon.
+
 ## Writer and reader inventory
 
 | Surface | Ownership during dev cutover |
 | --- | --- |
-| `register_butler`, legacy read reconciliation, confirmed-route `last_seen_at` touch, old Dashboard heartbeat POST | May still write the legacy projection. None grants receiver-derived health or clears policy. The old TTL sweep is inert while the flag is `1`; the heartbeat POST remains owner-authenticated and rejected for daemon reporters. |
+| `register_butler`, legacy read reconciliation, confirmed-route `last_seen_at` touch, old Dashboard heartbeat POST | May still write the legacy projection. None grants receiver-derived health or clears policy. The old TTL sweep is inert while the flag is `1`; the heartbeat POST remains owner-authenticated. Receiver-mode daemons do not start its obsolete reporter; unauthorized calls are still rejected. |
 | `public.register_butler_boot` and `butler_boot_registrations` | Daemon role owns boot succession; immutable UUID-to-epoch receipt survives rollback. |
 | Dashboard periodic observer | Receiver evidence through L2's role-bound reserve/record operations. |
 | Switchboard on-demand route probe | The same L2 reserve/record operations, behind the dev cutover flag and only after non-health gates pass. |
@@ -76,7 +85,10 @@ For the k3s dev release, change the exact release's
 committed-image deployment workflow in [Kubernetes Deployment](kubernetes-deployment.md#deploy).
 Changing a host dotenv file or launching Compose does not change a running pod.
 
-For rollback, set the flag to `0` in the exact process deployment. Retain
+For rollback, set the flag to `0` in the exact process deployment and restart
+the affected processes through that deployment workflow so startup selects the
+legacy reporter again. This does not grant its POST any new authentication
+authority or guarantee its acceptance. Retain
 `sw_035`/`sw_036` policy and provenance, the `sw_037` QA read view, the restrictive
 legacy trigger, boot-registration ledger, and latest epoch. Recheck that the
 legacy projection still denies every paused, quarantined, or review-required
@@ -98,5 +110,6 @@ keep routing unavailable and escalate rather than widen eligibility.
 - The route flag governs candidate filtering, scheduled dispatch, recovery-notification admission,
   TTL sweeps and the board and heartbeat projections, which must agree. The dev chart enables
   the flag; shared chart defaults and Compose base services keep it off. Retained local Compose
-  hotreload enables it too. Keep the legacy heartbeat reporter
-  while any rollback path needs `last_seen_at`.
+  hotreload enables it too. Keep the legacy reporter implementation available
+  for flag-off and rollback startup; do not run it in receiver-authoritative
+  mode or infer receiver freshness from its POST result.
