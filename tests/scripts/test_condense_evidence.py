@@ -29,6 +29,10 @@ def _disposable_git_template(tmp_path, monkeypatch):
     info.mkdir(parents=True)
     (info / "exclude").write_text(".tmp/\n")
     monkeypatch.setenv("GIT_TEMPLATE_DIR", str(template))
+    if not os.environ.get("TEST_EVIDENCE_DIR"):
+        diagnostics = tmp_path / "closed-evidence"
+        diagnostics.mkdir()
+        monkeypatch.setenv("TEST_EVIDENCE_DIR", str(diagnostics))
 
 
 def _toy(tmp_path):
@@ -1500,6 +1504,27 @@ def test_setup_failure_is_unknown_with_durable_receipt(tmp_path):
     assert receipt["status"] == "UNKNOWN"
     assert "private operand" not in (tmp_path / "proof/receipt.json").read_text()
     assert (root / "toy.py").read_bytes() == before
+    assert _direct_producer_diagnostic()
+
+
+def _direct_producer_diagnostic():
+    diagnostics = [
+        evidence.strict_json(p)
+        for p in Path(os.environ["TEST_EVIDENCE_DIR"]).glob("condensation-refusal-*.json")
+    ]
+    producer_hash = hashlib.sha256(Path(evidence.__file__).read_bytes()).hexdigest()
+    matches = [
+        row
+        for row in diagnostics
+        if row["producer_binding"]
+        and row["producer_binding"]["program_sha256"] == producer_hash
+        and row["canonical_request_sha256"] == evidence.canonical(_config())
+    ]
+    assert matches and any(row["category"] == "worker-incomplete" for row in matches)
+    assert all(row["status"] == "UNKNOWN" for row in matches)
+    assert all("private operand" not in json.dumps(row) for row in matches)
+    assert all(len(row["producer_binding"]["nonce"]) == 64 for row in matches)
+    return True
 
 
 def test_literal_coverage_query_does_not_use_regex_contexts(tmp_path):

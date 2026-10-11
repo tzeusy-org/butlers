@@ -459,12 +459,18 @@ def _fresh_refusal_diagnostic(tmp_path):
         )
         raise pre_push.Refusal("condensation-proof:exit-1")
 
+    evidence_home = tmp_path / "diagnostic-evidence"
+    evidence_home.mkdir()
     with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("TEST_EVIDENCE_DIR", str(evidence_home))
         patch.setattr(pre_push, "run_checked", refused_child)
         assert ledger.main(["--repo-root", str(root), "--base", base]) == 1
     retained = list((root / ".tmp/condensation-ci").glob("run-*/proof-0-refusal.json"))
     assert len(retained) == 1
     diagnostic = ledger.strict_json(retained[0])
+    evidence_paths = list(evidence_home.glob("condensation-refusal-*.json"))
+    assert len(evidence_paths) == 1
+    assert ledger.strict_json(evidence_paths[0]) == diagnostic
     assert diagnostic["outer"] == "condensation-proof:exit-1"
     assert diagnostic["category"] == "worker-incomplete"
     assert diagnostic["canonical_request_sha256"] == ledger.canonical(
@@ -489,6 +495,20 @@ def _fresh_refusal_diagnostic(tmp_path):
     assert ledger.verify(root, base, [])["status"] == "PASS"
     assert _bounded_refusal_carriers(tmp_path)
     assert _bounded_refusal_publication(tmp_path)
+    # Repeat the same original tracked request with a distinct execution nonce.
+    # Exclusive publication must preserve both closed diagnostics.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("TEST_EVIDENCE_DIR", str(evidence_home))
+        (run / "receipt.json").write_text('{"status":"UNKNOWN","category":"worker-incomplete"}')
+        (run / "baseline.request.json").write_text(json.dumps({"nonce": "b" * 64}))
+        replay = ledger.fresh_proof_refusal(
+            retained[0].parent / "plan-0.json",
+            run,
+            ledger.input_record(root, "tests/condensation-plans/current.json"),
+            pre_push.Refusal("condensation-proof:exit-1"),
+        )
+    bodies = [ledger.strict_json(p) for p in evidence_home.glob("condensation-refusal-*.json")]
+    assert len(bodies) == 2 and diagnostic in bodies and replay in bodies
     return True
 
 
@@ -544,6 +564,32 @@ def _bounded_refusal_carriers(tmp_path):
     execute("oversized")
     receipt.write_text('{"status":"UNKNOWN","category":"worker-incomplete"}\n')
     execute("regular")
+
+    # The byte bound does not make valid, deeply nested JSON safe to decode
+    # or project. Exercise the actual descriptor reader in its own child.
+    deep = "[" * 10000 + "0" + "]" * 10000
+    receipt.write_text('{"category":' + deep + "}")
+    execute("deep-json")
+    receipt.write_text('{"category":' + "1" * 10000 + "}")
+    execute("integer-conversion")
+    receipt.write_text('{"status":"UNKNOWN","category":"worker-incomplete"}\n')
+    execute("regular")
+
+    # Each request/result/access carrier passes through that same reader.
+    config.write_text("{}\n")
+    for name, field, expected in [
+        ("baseline.request.json", "available", False),
+        ("baseline.json", "result_available", False),
+        ("baseline.access.json", "access_complete", None),
+    ]:
+        (run / "baseline.request.json").write_text(json.dumps({"nonce": "a" * 64}))
+        (run / "baseline.json").write_text("{}\n")
+        (run / "baseline.access.json").write_text("{}\n")
+        (run / name).write_text('{"private":' + deep + "}")
+        summary = ledger.fresh_proof_refusal(
+            config, run, {}, RuntimeError("condensation-proof:exit-1")
+        )
+        assert summary["worker_requests"][0][field] is expected
     return True
 
 

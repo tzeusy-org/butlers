@@ -303,6 +303,9 @@ Each diagnostic carrier is opened nonblocking without following its final
 symlink, then checked through that same descriptor for regular-file type and a
 bounded body. FIFOs, devices, directories, oversized bodies and malformed JSON
 remain unavailable diagnostics; none can block receipt recovery or admit a proof.
+Malformed conversion or excessive JSON/canonical-projection recursion also stays
+unavailable inside that descriptor lifetime. A byte limit alone does not make a
+nested diagnostic safe to decode or hash.
 Summary publication pins the original physical output directory before invoking
 that child and exclusively creates a new regular output through its descriptor.
 An occupied name (including a symlink, hardlink, FIFO or directory) is left
@@ -310,6 +313,22 @@ untouched; the same closed summary still prints beside the primary refusal.
 Publication never truncates a preexisting file or cleans up a pathname that the
 child can replace. A failed or partial output remains unavailable diagnostic
 custody, never proof admission or a replacement for the original refusal.
+When the existing hosted `TEST_EVIDENCE_DIR` is configured, the same fixed closed
+summary is also published there with the tracked request-record and closed-summary
+hashes as its name. Distinct execution nonces retain distinct diagnostics without
+replacing an earlier request carrier.
+The unit/affected evidence upload retains these JSON summaries because sanitized
+JUnit deliberately omits failure and stdout bodies. The extra carrier contains
+no child output, paths, operand text or new admission authority; unavailable or
+occupied evidence destinations preserve the original refusal. This enables a
+future source/request/nonce-bound diagnosis and does not identify the cause of
+an earlier hosted failure.
+Direct producer refusals use this same closed projection before returning or
+raising, including the original run nonce and available source head/tree/program
+hashes. Unknown source fields stay null. Diagnostic publication does not add CLI
+stdout or change the proof result, cleanup/restoration admission, signal-handler
+restoration, lock closure or original caller assertion. Successful proofs do not
+publish a refusal. No child traceback, operand or raw output enters that carrier.
 
 Recovery refuses a live owner, reused/live process identity, unknown group exit,
 indirect paths or changed journal bytes. It signals no later numeric PID. A

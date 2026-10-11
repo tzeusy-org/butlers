@@ -808,6 +808,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/runner-observation.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -1094,6 +1095,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/affected/selected-reference.json
             ${{ runner.temp }}/ci-artifacts/affected/selected-execution.json
             ${{ runner.temp }}/ci-artifacts/affected/selected-proof.json
+            ${{ runner.temp }}/ci-artifacts/affected/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true

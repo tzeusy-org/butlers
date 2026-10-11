@@ -34,6 +34,7 @@ from check_condensation_ledger import (
     canonical,
     execution_request_inputs,
     fields,
+    fresh_proof_refusal,
     git,
     git_environment,
     input_record,
@@ -1028,6 +1029,32 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
         raise EvidenceError("proof-unknown-see-durable-receipt") from exc
     finally:
         publish(output / "receipt.json", receipt)
+        if os.environ.get("TEST_EVIDENCE_DIR") and receipt.get("status") != "PASS":
+            # A direct Python caller may fail before the required reader runs.
+            # Publish only the shared closed diagnostic, preserving the proof's
+            # original result/error and ordinary CLI stdout contract.
+            try:
+                fresh_proof_refusal(
+                    config,
+                    output,
+                    {
+                        "producer_binding": {
+                            "head": locals().get("initial_head"),
+                            "tree": locals().get("initial_tree"),
+                            "program_sha256": hashlib.sha256(
+                                Path(__file__).read_bytes()
+                            ).hexdigest(),
+                            "nonce": nonce,
+                        }
+                    },
+                    EvidenceError("direct-producer-refusal"),
+                    publication_fd=-1,
+                    emit=False,
+                )
+            except (OSError, ValueError, TypeError, RecursionError, UnicodeError):
+                # Unavailable diagnostic custody cannot replace the primary
+                # proof refusal or change restoration/group-exit admission.
+                pass
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
         lock.close()

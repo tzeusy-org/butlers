@@ -1511,7 +1511,13 @@ def publish_refusal_summary(summary: dict, directory_fd: int, name: str) -> None
 
 
 def fresh_proof_refusal(
-    config: Path, run: Path, record: dict, refusal: Exception, *, publication_fd: int | None = None
+    config: Path | dict,
+    run: Path,
+    record: dict,
+    refusal: Exception,
+    *,
+    publication_fd: int | None = None,
+    emit: bool = True,
 ) -> dict:
     """Retain closed diagnostic identity without publishing child output or operands."""
     categories = {
@@ -1547,10 +1553,16 @@ def fresh_proof_refusal(
                     body = source.read(limit + 1)
                 if len(body) > limit:
                     return None
-                return _strict_json_body(body.decode())
+                value = _strict_json_body(body.decode())
+                # Decoding a bounded body does not prove that its nested
+                # values can be projected into canonical diagnostic hashes.
+                # Validate that operation while this carrier is still inside
+                # the unavailable-diagnostic boundary and descriptor lifetime.
+                canonical(value)
+                return value
             finally:
                 os.close(fd)
-        except (EvidenceError, OSError, UnicodeError):
+        except (ValueError, TypeError, RecursionError, OSError, UnicodeError):
             return None
 
     receipt = read(run / "receipt.json") or {}
@@ -1596,13 +1608,30 @@ def fresh_proof_refusal(
                 "probe_accesses": integer(access.get("probe_accesses")),
             }
         )
+    config_body = read(config) if isinstance(config, Path) else config
+    try:
+        config_hash = canonical(config_body)
+    except (ValueError, TypeError, RecursionError):
+        config_hash = canonical(None)
+    producer_binding = record.get("producer_binding")
+    fixed_binding = None
+    if isinstance(producer_binding, dict):
+        fixed_binding = {}
+        for key, digits in [("head", 40), ("tree", 40), ("program_sha256", 64), ("nonce", 64)]:
+            value = producer_binding.get(key)
+            fixed_binding[key] = (
+                value
+                if isinstance(value, str) and re.fullmatch("[0-9a-f]{" + str(digits) + "}", value)
+                else None
+            )
     outer = str(refusal)
     summary = {
         "kind": "fresh-condensation-proof-refusal",
         "outer": outer
         if outer in {"condensation-proof:timeout", "condensation-proof:exit-1"}
         else "unclassified",
-        "canonical_request_sha256": canonical(read(config)),
+        "canonical_request_sha256": config_hash,
+        "producer_binding": fixed_binding,
         "tracked_request_record_sha256": canonical(record),
         "receipt_available": bool(receipt),
         "status": status
@@ -1629,7 +1658,26 @@ def fresh_proof_refusal(
                 os.close(publication_fd)
             except OSError:
                 pass
-    print(json.dumps(summary, sort_keys=True))
+    # Hosted pytest sanitizes failure/stdout payloads. Retain only this same
+    # closed projection in its existing evidence directory so a refused inner
+    # proof remains diagnosable after the temporary subject is removed.
+    evidence_home = os.environ.get("TEST_EVIDENCE_DIR")
+    if evidence_home:
+        evidence_fd = _refusal_directory(Path(evidence_home))
+        try:
+            publish_refusal_summary(
+                summary,
+                evidence_fd,
+                "condensation-refusal-" + canonical(record) + "-" + canonical(summary) + ".json",
+            )
+        finally:
+            if evidence_fd >= 0:
+                try:
+                    os.close(evidence_fd)
+                except OSError:
+                    pass
+    if emit:
+        print(json.dumps(summary, sort_keys=True))
     return summary
 
 
