@@ -30,6 +30,7 @@ from check_condensation_ledger import (
     git_environment,
     input_record,
     public_path,
+    source_records,
     strict_json,
     test_path,
     tool_record,
@@ -448,23 +449,54 @@ def suite(
 
 
 def snapshot_base(root: Path, base: str, destination: Path) -> None:
-    """Copy exact Git files; refuse links and archive traversal before extraction."""
+    """Copy regular objects first, then confined Git links without dereferencing."""
     archive = subprocess.check_output(
         ["git", "-C", str(root), "archive", base], env=git_environment()
     )
     with tarfile.open(fileobj=io.BytesIO(archive)) as carrier:
-        for member in carrier:
+        members = carrier.getmembers()
+        links = {m.name for m in members if m.issym()}
+        paths = []
+        for member in members:
             name = public_path(member.name.rstrip("/"))
             target = destination / name
+            if any(str(parent) in links for parent in name.parents):
+                raise EvidenceError("indirect-base-source-parent")
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
             elif member.isfile():
+                paths.append(str(name))
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with carrier.extractfile(member) as stream:
                     target.write_bytes(stream.read())
                 target.chmod(member.mode & 0o777)
-            else:
+            elif not member.issym():
                 raise EvidenceError("indirect-base-source")
+        for member in members:
+            if member.issym():
+                name = public_path(member.name)
+                target = destination / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(member.linkname)
+                paths.append(str(name))
+        source_records(destination, sorted(paths))
+
+
+def snapshot_current(root: Path, destination: Path, inputs: list[dict]) -> None:
+    """Preserve link bodies/modes and complete target closure in an owned copy."""
+    for row in inputs:
+        if row["mode"] == "120000":
+            continue
+        target = destination / public_path(row["path"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / row["path"], target)
+    for row in inputs:
+        if row["mode"] == "120000":
+            target = destination / public_path(row["path"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(row["link"])
+    if source_records(destination, [r["path"] for r in inputs]) != inputs:
+        raise EvidenceError("owned-copy-source-mismatch")
 
 
 def artifact(path: Path, output: Path) -> dict:
@@ -534,7 +566,7 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
         initial_head = git(root, "rev-parse", "HEAD")
         initial_tree = git(root, "rev-parse", "HEAD^{tree}")
         paths = tracked_paths(root)
-        inputs = [input_record(root, p) for p in paths if (root / p).is_file()]
+        inputs = source_records(root, paths)
         scope = config["scope"]
         if not isinstance(scope, list) or not scope or len(set(scope)) != len(scope):
             raise EvidenceError("empty-or-aliased-scope")
@@ -548,6 +580,7 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 or Path(path).name.startswith("test_")
                 or Path(path).name == "conftest.py"
                 or path in {"scripts/condense_evidence.py", "scripts/check_condensation_ledger.py"}
+                or input_record(root, path)["mode"] == "120000"
             ):
                 raise EvidenceError("scope-not-owned-production-python-source")
         selections = {kind: config[kind] for kind in ["removed", "survivors"]}
@@ -580,18 +613,21 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
             for copy_root in copies.values():
                 copy_root.mkdir()
             snapshot_base(root, base, copies["removed"])
-            for path in paths:
-                src = root / public_path(path)
-                if src.is_file():
-                    dst = copies["survivors"] / path
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
+            snapshot_current(root, copies["survivors"], inputs)
             if any(
                 input_record(copies["removed"], p) != input_record(copies["survivors"], p)
                 for p in scope
             ):
                 raise EvidenceError("changed-production-scope-needs-independent-lineage-proof")
             base_paths = tracked_paths(root, base)
+            old_links = {
+                r["path"]: r
+                for r in source_records(copies["removed"], base_paths)
+                if r["mode"] == "120000"
+            }
+            new_links = {r["path"]: r for r in inputs if r["mode"] == "120000"}
+            if old_links != new_links:
+                raise EvidenceError("changed-source-link-needs-independent-lineage-proof")
             for path in set(base_paths) | set(paths):
                 # Test/helper edits are measured by the selected real populations.
                 # Other Python/config dependencies cannot silently change beneath

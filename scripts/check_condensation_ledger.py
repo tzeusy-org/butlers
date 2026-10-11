@@ -79,6 +79,29 @@ def public_path(value: str) -> Path:
 
 def input_record(root: Path, name: str) -> dict:
     path = root / public_path(name)
+    if any(p.is_symlink() for p in path.parents if p != root and root in p.parents):
+        raise EvidenceError("indirect-source-parent")
+    if path.is_symlink():
+        target = os.readlink(path)
+        if (
+            not target
+            or os.path.isabs(target)
+            or "\\" in target
+            or any(ord(c) < 32 or ord(c) == 127 for c in target)
+        ):
+            raise EvidenceError("unsafe-source-link")
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise EvidenceError("unresolved-source-link") from None
+        if root.resolve() not in resolved.parents:
+            raise EvidenceError("escaping-source-link")
+        return {
+            "path": name,
+            "sha256": hashlib.sha256(os.fsencode(target)).hexdigest(),
+            "mode": "120000",
+            "link": target,
+        }
     if path.is_symlink() or not path.is_file() or root.resolve() not in path.resolve().parents:
         raise EvidenceError("missing-or-indirect-input")
     return {
@@ -86,6 +109,22 @@ def input_record(root: Path, name: str) -> dict:
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "mode": "100755" if path.stat().st_mode & 0o111 else "100644",
     }
+
+
+def source_records(root: Path, paths: list[str]) -> list[dict]:
+    """Bind every tracked object; links resolve only into the tracked closure."""
+    records = [input_record(root, p) for p in paths]
+    names = set(paths)
+    for row in records:
+        if row["mode"] != "120000":
+            continue
+        target = (root / row["path"]).resolve(strict=True)
+        relative = str(target.relative_to(root.resolve()))
+        if relative not in names and not (
+            target.is_dir() and any(p.startswith(relative + "/") for p in names)
+        ):
+            raise EvidenceError("untracked-source-link-target")
+    return records
 
 
 def tool_record() -> dict:
@@ -437,7 +476,7 @@ def executable_proof(
         raise EvidenceError("duplicate-run")
     scope = binding["scope"]
     scope_inputs = [next(r for r in binding["inputs"] if r["path"] == p) for p in scope]
-    if len(scope_inputs) != len(scope):
+    if len(scope_inputs) != len(scope) or any(r["mode"] == "120000" for r in scope_inputs):
         raise EvidenceError("unbound-production-scope")
     baselines = {}
     expected_flags = [
@@ -649,10 +688,10 @@ def verify_ledger(
         raise EvidenceError("changed-installed-proof-tools")
     inputs = binding.get("inputs")
     identities(inputs, "path")
-    actual_paths = {p for p in tracked_paths(root) if (root / p).is_file()}
+    actual_paths = set(tracked_paths(root))
     if {r["path"] for r in inputs} != actual_paths:
         raise EvidenceError("incomplete-input-inventory")
-    if any(row != input_record(root, row["path"]) for row in inputs):
+    if inputs != source_records(root, tracked_paths(root)):
         raise EvidenceError("changed-input-body-or-mode")
     mandatory = {
         "uv.lock",

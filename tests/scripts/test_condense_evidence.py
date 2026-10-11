@@ -70,6 +70,46 @@ def _toy(tmp_path):
     return root
 
 
+def _tracked_link_subject(root):
+    assets = root / "assets"
+    assets.mkdir()
+    (assets / "body.txt").write_text("owned link body")
+    (root / "asset-home").symlink_to("assets", target_is_directory=True)
+    (root / "body-link").symlink_to("assets/body.txt")
+    (root / "body-chain").symlink_to("body-link")
+    (root / "source-link.py").symlink_to("toy.py")
+    owner = root / "tests/test_toy.py"
+    owner.write_text(
+        "from pathlib import Path\n"
+        + owner.read_text().replace(
+            "    assert reply(True) == 'accepted'\n",
+            "    assert reply(True) == 'accepted'\n"
+            "    assert (Path(__file__).parents[1] / 'asset-home/body.txt').read_text() "
+            "== 'owned link body'\n"
+            "    assert (Path(__file__).parents[1] / 'body-chain').read_text() "
+            "== 'owned link body'\n",
+        )
+    )
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "complete owned tracked links",
+        ],
+        check=True,
+    )
+
+
 def _config(removed="tests/test_toy.py::test_removed", survivor="tests/test_toy.py::test_survivor"):
     return {
         "base": "HEAD",
@@ -88,15 +128,16 @@ def _config(removed="tests/test_toy.py::test_removed", survivor="tests/test_toy.
 def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch):
     """REQ-testing-053: real carriers admit retained kills; falsified carriers and authority refuse."""
     root = _toy(tmp_path)
+    _tracked_link_subject(root)
     monkeypatch.setenv("COVERAGE_CORE", "sysmon")
     config = _config()
     before = (root / "toy.py").read_bytes()
     original_base = evidence.git(root, "rev-parse", "HEAD")
     owner = root / "tests/test_toy.py"
     original_owner = owner.read_text()
-    owner.write_text(
-        original_owner.replace("def test_removed():\n    assert reply(True) == 'accepted'\n", "")
-    )
+    removed_start = original_owner.index("def test_removed():")
+    removed_end = original_owner.index("def test_survivor():")
+    owner.write_text(original_owner[:removed_start] + original_owner[removed_end:])
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(
         [
@@ -134,6 +175,40 @@ def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch
     )
     admitted = consumer.verify(root, original_base, [tmp_path / "proof/ledger.json"])
     assert admitted["losses"] == 1 and admitted["ledger_clusters"] == 1
+    links = [r for r in saved["binding"]["inputs"] if r["mode"] == "120000"]
+    assert {r["path"] for r in links} == {"asset-home", "body-link", "body-chain", "source-link.py"}
+    assert all(r["sha256"] == hashlib.sha256(os.fsencode(r["link"])).hexdigest() for r in links)
+    link = root / "body-chain"
+    (tmp_path / "outside").write_text("external sentinel must remain unchanged")
+    (root / "assets/untracked.txt").write_text("untracked sentinel")
+    for target, category in (
+        ("assets/body.txt", "changed-input-body-or-mode"),
+        (str(tmp_path / "outside"), "unsafe-source-link"),
+        ("../outside", "escaping-source-link"),
+        ("assets/untracked.txt", "untracked-source-link-target"),
+        ("missing", "unresolved-source-link"),
+        ("body-chain", "unresolved-source-link"),
+    ):
+        link.unlink()
+        link.symlink_to(target)
+        try:
+            with pytest.raises(consumer.EvidenceError, match=category):
+                consumer.verify(root, original_base, [tmp_path / "proof/ledger.json"])
+        finally:
+            link.unlink()
+            link.symlink_to("body-link")
+        assert (
+            consumer.verify(root, original_base, [tmp_path / "proof/ledger.json"])["status"]
+            == "PASS"
+        )
+    linked_scope = copy.deepcopy(config)
+    linked_scope["scope"] = ["source-link.py"]
+    with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+        evidence.prove(root, linked_scope, tmp_path / "linked-scope")
+    refused = evidence.strict_json(tmp_path / "linked-scope/receipt.json")
+    assert refused["status"] == "UNKNOWN"
+    assert refused["category"] == "scope-not-owned-production-python-source"
+    assert (tmp_path / "outside").read_text() == "external sentinel must remain unchanged"
     with pytest.raises(consumer.EvidenceError, match="unproven"):
         consumer.verify(root, original_base, [])
     saved_path = tmp_path / "proof/ledger.json"

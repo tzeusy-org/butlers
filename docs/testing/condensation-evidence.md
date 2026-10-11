@@ -53,6 +53,15 @@ implementation refuses changed heads rather than inferring protected-union
 compatibility. A later verified reuse path must preserve dated proof identity
 and all relevant inputs; event names and cached counts grant no exemption.
 
+Tracked links are retained as Git mode120000 plus the hash and exact body of
+the link, including directory links. Copies write regular objects first and
+then recreate links without dereferencing them. Every link must resolve inside
+the complete tracked source closure. Absolute, escaping, dangling, cyclic or
+untracked targets refuse before execution. Changed links need independent
+lineage proof; a link cannot be a mutation scope or an indirect source parent.
+These checks preserve ordinary in-repository aliases without using host files
+as undeclared proof inputs.
+
 The stdlib source consumer examines `tests/` and `roster/*/tests/`, including
 assertions within retained names and their execution structure, parameters, local fixture/helper/marker
 context, class inheritance and ancestral conftests. Renames, moves and deleted

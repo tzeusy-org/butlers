@@ -166,10 +166,38 @@
               "mode": {
                 "enum": [
                   "100644",
-                  "100755"
+                  "100755",
+                  "120000"
                 ]
+              },
+              "link": {
+                "type": "string",
+                "minLength": 1
               }
-            }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "mode": {
+                      "const": "120000"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "link"
+                  ]
+                },
+                "else": {
+                  "not": {
+                    "required": [
+                      "link"
+                    ]
+                  }
+                }
+              }
+            ]
           }
         },
         "inputs_hash": {
