@@ -109,6 +109,13 @@ refuse. Helper additions retain every old statement in order; optional helper
 keyword probes are restricted to literal boolean/None defaults and literal probe
 keywords on an otherwise unchanged call.
 
+Creating a new nested function or lambda does not execute its body in the
+enclosing owner. Its local exits therefore do not become enclosing-owner exits.
+The compiler still checks its definition-time defaults, decorators and
+annotations, checks class bodies at their existing boundary, and preserves
+every old callback body's own statements and exits. This structural check only
+qualifies the fresh complete executing account; it is not a callback exemption.
+
 Added imports retain every original binding and origin in order. A new alias
 cannot shadow any original lexical name; wildcard changes and rebinding refuse.
 Appended test execution and appended fixture arguments may qualify an account
@@ -217,7 +224,13 @@ Definition-time defaults, decorators, argument/return annotations and type param
 retain their literal expressions; they cannot borrow the new function's parameter
 scope. Keyword interfaces stay exact. Enclosing bindings, namespace-observing calls
 and shadowing captures must retain their original lexical identity. Unsupported
-lambda/comprehension binding equivalence refuses rather than guessing. Synthetic
+lambda/comprehension binding equivalence refuses rather than guessing. A closed
+comprehension may retain literal captures of explicitly declared enclosing
+parameters or locals. Its iterator, target and condition bindings are checked
+in order; shadowing, unbound captures, nested scopes, assignment expressions,
+suspension and namespace observers remain unsupported. These captures are never
+alpha-renamed: actual unchanged spellings and source operations must still match,
+and full executing branch/mutation authority remains mandatory. Synthetic
 comparison slots cannot collide with a real Python global name.
 
 References to namespace/frame observers preserve spellings across their module,

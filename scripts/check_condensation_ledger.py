@@ -436,6 +436,11 @@ def literal_probe_value(value) -> bool:
 def preserving_statements(before: list, current: list) -> bool:
     def abrupt(value):
         if isinstance(value, dict):
+            if value.get("_node") in {"FunctionDef", "AsyncFunctionDef", "Lambda"}:
+                # Creating a callback does not execute its body in the owner.
+                # Defaults/decorators/annotations still belong to the enclosing
+                # definition-time execution and must retain their abrupt checks.
+                return any(abrupt(v) for k, v in value.items() if k != "body")
             return value.get("_node") in {
                 "Return",
                 "Raise",
