@@ -202,7 +202,10 @@ def test_path(path: str) -> bool:
 def ast_record(node):
     """A serializable, location-independent tree for conservative context mapping."""
     if isinstance(node, ast.AST):
-        return {"_node": type(node).__name__, **{k: ast_record(v) for k, v in ast.iter_fields(node)}}
+        return {
+            "_node": type(node).__name__,
+            **{k: ast_record(v) for k, v in ast.iter_fields(node)},
+        }
     if isinstance(node, list):
         return [ast_record(n) for n in node]
     return node
