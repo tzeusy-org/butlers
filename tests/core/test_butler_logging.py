@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from butlers.core.butler_logging import ButlerLogger, _level_rank
+from butlers.core.butler_logging import ButlerLogger, _level_rank, create_butler_logger
 
 pytestmark = pytest.mark.unit
 
@@ -94,7 +94,7 @@ async def test_log_info_writes_and_uppercases_level() -> None:
     # relation and cannot use an unverified/shared-user acquisition as proof.
     owned_pool, owned_conn = _make_pool()
     owned_conn.fetchval.return_value = True
-    owned = ButlerLogger(pool=owned_pool, schema="concierge", owning_schema="concierge")
+    owned = create_butler_logger(pool=owned_pool, schema="concierge", owning_schema="concierge")
     await owned.log("info", "owned sentinel")
     owned_sql = owned_conn.execute.call_args.args[0]
     assert 'INSERT INTO "concierge".butler_logs' in owned_sql

@@ -70,23 +70,22 @@ class ButlerLogger:
         ``butler_logs`` resolves correctly without a qualified prefix).
     schema:
         The butler schema name.  Used only for diagnostic log messages.
-    owning_schema:
-        The daemon's configured owning schema. When present, writes use its
-        qualified relation and verify the existing runtime role on acquisition.
-        Legacy schema-less callers retain their original pool lookup.
     min_level:
         Minimum level to persist.  Lines below this rank are silently dropped.
         Default ``"INFO"`` — DEBUG lines are not written unless explicitly
         lowered.
     """
 
+    # Direct construction retains the legacy diagnostic/search-path contract.
+    # Configured daemons select their owned relation through create_butler_logger.
+    _owning_schema: str | None = None
+    _log_table = "butler_logs"
+
     def __init__(
         self,
         pool: Any,  # asyncpg.Pool — typed loosely to avoid hard import at module level
         schema: str,
         min_level: str = "INFO",
-        *,
-        owning_schema: str | None = None,
     ) -> None:
         norm_min = min_level.upper()
         if norm_min not in _VALID_LEVELS:
@@ -96,14 +95,6 @@ class ButlerLogger:
         self._pool = pool
         self._schema = schema
         self._min_rank = _level_rank(norm_min)
-        # ``schema`` historically labels diagnostics only. Keep legacy pool
-        # behavior, but the configured daemon supplies its actual owned target
-        # so a missing local relation cannot fall through to public.
-        path = schema_search_path(owning_schema)
-        self._owning_schema = path.split(",", 1)[0] if path is not None else None
-        self._log_table = (
-            f'"{self._owning_schema}".butler_logs' if path is not None else "butler_logs"
-        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -242,6 +233,28 @@ class ButlerLogger:
                 self._schema,
                 exc_info=True,
             )
+
+
+def create_butler_logger(
+    pool: Any,
+    schema: str,
+    min_level: str = "INFO",
+    *,
+    owning_schema: str,
+) -> ButlerLogger:
+    """Select configured owning storage without changing the legacy constructor.
+
+    ``schema`` remains the diagnostic label. The independently validated actual
+    configuration supplies the qualified table and existing acquisition role.
+    This grants no privilege and preserves visible nonfatal write failures.
+    """
+    path = schema_search_path(owning_schema)
+    if path is None:
+        raise ValueError("Configured log storage requires an owning schema")
+    result = ButlerLogger(pool=pool, schema=schema, min_level=min_level)
+    result._owning_schema = path.split(",", 1)[0]
+    result._log_table = f'"{result._owning_schema}".butler_logs'
+    return result
 
 
 # ---------------------------------------------------------------------------

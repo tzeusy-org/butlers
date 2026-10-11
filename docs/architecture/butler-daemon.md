@@ -163,6 +163,15 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 
 ## Implementation Notes
 
+- Configured structured-log storage is selected by `create_butler_logger` from the daemon's
+  actual `db_schema`. It qualifies the owning table and verifies the existing runtime role
+  on each acquisition. Direct `ButlerLogger(pool, schema, min_level)` construction retains
+  legacy diagnostic/search-path behavior. The dashboard separately requires an explicit
+  pool/schema binding before calling the unchanged `schema_for_butler(name)` lookup:
+  registered `None` is legacy, while a missing binding returns unavailable rather than empty.
+  These seams do not create roles or privileges, change migration/readiness ordering, or
+  suppress visible write/read failures.
+
 - Fleet-event publication (`butlers.fleet_events.publish_fleet_event`) is lossy and bounded:
   pool acquisition/query work has a one-second budget. Caller-owned asyncpg connections use a
   transaction or nested savepoint; each isolation and cleanup step also has a one-second budget.

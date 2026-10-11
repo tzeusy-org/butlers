@@ -19,7 +19,7 @@ import shutil
 
 import pytest
 
-from butlers.core.butler_logging import ButlerLogger
+from butlers.core.butler_logging import ButlerLogger, create_butler_logger
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -158,7 +158,7 @@ async def test_migrated_owning_logs_preserve_roles_decoys_and_rollback(
             assert observed_setup[0][0] == observed_setup[1][0]
             assert observed_setup[0][1] == observed_setup[1][1] == unquote(parsed.username)
             request_id = uuid.uuid4()
-            owned = ButlerLogger(pool, "concierge", owning_schema="concierge")
+            owned = create_butler_logger(pool, "concierge", owning_schema="concierge")
             async with pool.acquire() as wrong_path_connection:
                 await wrong_path_connection.execute("SET search_path TO public")
 
@@ -168,7 +168,7 @@ async def test_migrated_owning_logs_preserve_roles_decoys_and_rollback(
 
                 # The actual acquired runtime connection remains role-bound.
                 # A misleading search_path must not redirect this real write.
-                await ButlerLogger(
+                await create_butler_logger(
                     SimpleNamespace(acquire=original_acquisition),
                     "concierge",
                     owning_schema="concierge",
@@ -244,7 +244,7 @@ async def test_migrated_owning_logs_preserve_roles_decoys_and_rollback(
             # A shared-login acquisition cannot borrow runtime writer authority.
             shared = manager.pool("concierge")
             caplog.clear()
-            await ButlerLogger(shared, "concierge", owning_schema="concierge").log(
+            await create_butler_logger(shared, "concierge", owning_schema="concierge").log(
                 "INFO", "unverified role must not write"
             )
             assert "failed to write log line" in caplog.text

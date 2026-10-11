@@ -202,7 +202,8 @@ async def test_logs_503_on_db_query_failure() -> None:
         legacy = await client.get("/api/butlers/legacy/logs")
         assert legacy.status_code == 200
         assert legacy.json()["lines"] == []
-        assert registered.schema_for_butler("legacy", require_binding=True) is None
+        registered.require_schema_binding("legacy")
+        assert registered.schema_for_butler("legacy") is None
 
 
 # ---------------------------------------------------------------------------

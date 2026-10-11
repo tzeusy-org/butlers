@@ -110,7 +110,8 @@ async def list_butler_logs(
     """
     try:
         pool = db.pool(name)
-        schema = db.schema_for_butler(name, require_binding=True)
+        db.require_schema_binding(name)
+        schema = db.schema_for_butler(name)
     except KeyError:
         raise HTTPException(
             status_code=503,

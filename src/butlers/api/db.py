@@ -203,19 +203,26 @@ class DatabaseManager:
             raise KeyError(f"No pool for butler: {butler_name}")
         return self._pools[butler_name]
 
-    def schema_for_butler(self, butler_name: str, *, require_binding: bool = False) -> str | None:
+    def schema_for_butler(self, butler_name: str) -> str | None:
         """Return the explicit schema configured for a butler's pool.
 
         ``None`` denotes a legacy database without a schema-scoped pool.  The
         caller must then preserve the database's unqualified-table semantics.
-        An owning reader may require that explicit binding: a missing entry
-        does not prove the retained pool was registered without a schema.
         """
         if butler_name not in self._pools:
             raise KeyError(f"No pool for butler: {butler_name}")
-        if require_binding and butler_name not in self._butler_schemas:
-            raise KeyError(f"No owning schema binding for butler: {butler_name}")
         return self._butler_schemas.get(butler_name)
+
+    def require_schema_binding(self, butler_name: str) -> None:
+        """Refuse an owning read without the pool's explicit schema binding.
+
+        A registered ``None`` retains legacy unqualified-table semantics.
+        A missing entry cannot establish that legacy configuration.
+        """
+        if butler_name not in self._pools:
+            raise KeyError(f"No pool for butler: {butler_name}")
+        if butler_name not in self._butler_schemas:
+            raise KeyError(f"No owning schema binding for butler: {butler_name}")
 
     def memory_schema_for_butler(self, butler_name: str) -> str | None:
         """Return the effective schema that owns a butler's memory relations.
