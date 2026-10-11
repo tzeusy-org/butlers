@@ -140,6 +140,15 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -544,6 +553,15 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -722,6 +740,15 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -850,6 +877,15 @@ jobs:
         with:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
+
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
 
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
@@ -1015,6 +1051,15 @@ jobs:
         with:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
+
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
 
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare

@@ -1018,6 +1018,242 @@ def _assert_definition_and_dependency_bindings(tmp_path):
             )
 
     _assert_execution_request_is_not_runtime_data(tmp_path / "request-role")
+    _assert_indirect_execution_boundaries(tmp_path / "indirect-boundaries")
+
+
+def _assert_indirect_execution_boundaries(tmp_path):
+    """Use actual fresh producer and required reader, including their children."""
+    tmp_path.mkdir()
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    source = Path(__file__).resolve().parents[2]
+    child = (
+        "import subprocess\nimport sys\nfrom pathlib import Path\n"
+        "def reply():\n"
+        "    value = subprocess.check_output([sys.executable, '-c', "
+        "\"import json,sys;print(json.load(open(sys.argv[1]))['cluster'])\", "
+        "str(Path(__file__).parent / 'tests/condensation-plans/current.json')], text=True)\n"
+        "    return int(value)\n"
+    )
+    for species in (
+        "child-request-same",
+        "child-request-paired",
+        "startup-request-same",
+        "startup-request-paired",
+        "native-request-same",
+        "native-request-paired",
+        "fresh-request-healthy",
+        "ordinary-child-healthy",
+        "alias-namespace",
+        "imported-frame-observer",
+        "operator-frame-observer",
+        "pure-local-alias-healthy",
+    ):
+        home = tmp_path / species
+        home.mkdir()
+        root = _toy(home)
+        shutil.copy2(source / "scripts/condensation_lineage.py", root / "scripts")
+        product = root / "toy.py"
+        namespace = species in {
+            "alias-namespace",
+            "imported-frame-observer",
+            "operator-frame-observer",
+        }
+        if species.startswith("child-request"):
+            before = child
+        elif species.startswith("startup-request"):
+            before = "import builtins\ndef reply():\n    return builtins._proof_value\n"
+            (root / "sitecustomize.py").write_text(
+                "import builtins,json\nfrom pathlib import Path\n"
+                "builtins._proof_value=int(json.loads((Path(__file__).parent/"
+                "'tests/condensation-plans/current.json').read_text())['cluster'])\n"
+            )
+        elif species.startswith("native-request"):
+            before = (
+                "import ctypes\nimport json\nfrom pathlib import Path\n"
+                "def reply():\n"
+                "    path = Path(__file__).parent/'tests/condensation-plans/current.json'\n"
+                "    libc = ctypes.CDLL(None)\n"
+                "    libc.fopen.argtypes = [ctypes.c_char_p, ctypes.c_char_p]\n"
+                "    libc.fopen.restype = ctypes.c_void_p\n"
+                "    libc.fread.argtypes = [ctypes.c_void_p, ctypes.c_size_t, "
+                "ctypes.c_size_t, ctypes.c_void_p]\n"
+                "    libc.fclose.argtypes = [ctypes.c_void_p]\n"
+                "    stream = libc.fopen(bytes(path), b'rb')\n"
+                "    buffer = ctypes.create_string_buffer(path.stat().st_size)\n"
+                "    libc.fread(buffer, 1, len(buffer), stream)\n"
+                "    libc.fclose(stream)\n"
+                "    return int(json.loads(buffer.raw)['cluster'])\n"
+            )
+        elif species == "ordinary-child-healthy":
+            before = (
+                "import subprocess\nimport sys\n"
+                "def reply():\n"
+                "    value = subprocess.check_output([sys.executable, '-c', 'print(1)'], text=True)\n"
+                "    return int(value)\n"
+            )
+        elif species == "alias-namespace":
+            before = "def reply(a=1, /):\n    observe = locals\n    return tuple(observe())\n"
+        elif species == "imported-frame-observer":
+            before = "from observer import observe\ndef reply(a=1, /):\n    return observe()\n"
+            (root / "observer.py").write_text(
+                "import inspect\ndef observe():\n"
+                "    return tuple(inspect.currentframe().f_back.f_locals)\n"
+            )
+        elif species == "operator-frame-observer":
+            before = "from observer import value\ndef reply(a=1, /):\n    return value+a\n"
+            (root / "observer.py").write_text(
+                "import inspect\nclass Value:\n    def __add__(self, other):\n"
+                "        return tuple(inspect.currentframe().f_back.f_locals)\nvalue=Value()\n"
+            )
+        elif species == "pure-local-alias-healthy":
+            before = "def reply(a=1, /):\n    value=a\n    return value\n"
+        else:
+            before = "def reply():\n    return 1\n"
+        product.write_text(before)
+        config = _config()
+        config.update(base="event-base", cluster="1")
+        if species in {"imported-frame-observer", "operator-frame-observer"}:
+            config["scope"] = ["toy.py", "observer.py"]
+        request = root / "tests/condensation-plans/current.json"
+        if "request" in species:
+            request.parent.mkdir()
+            request.write_text(json.dumps(config))
+        exact = (
+            "('a','observe')" if species == "alias-namespace" else "('a',)" if namespace else "1"
+        )
+        weak = "tuple" if namespace else "int"
+        owner = root / "tests/test_toy.py"
+        owner.write_text(
+            "from toy import reply\ndef test_removed():\n"
+            f"    assert reply()=={exact}\ndef test_survivor():\n"
+            f"    assert isinstance(reply(),{weak})\n"
+        )
+
+        def commit(message):
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "user.name=Proof",
+                    "-c",
+                    "user.email=proof@example.invalid",
+                    "commit",
+                    "-qm",
+                    message,
+                ],
+                check=True,
+            )
+
+        commit("original exact value and complete execution boundary")
+        base = evidence.git(root, "rev-parse", "HEAD")
+        changed = before.replace("reply(a=1", "reply(b=1").replace("value+a", "value+b")
+        changed = changed.replace("value=a", "value=b")
+        if namespace or species == "pure-local-alias-healthy":
+            product.write_text(changed)
+        elif request.exists():
+            request.write_text(json.dumps(dict(config, cluster="2")))
+        owner.write_text(
+            f"from toy import reply\ndef test_survivor():\n    assert isinstance(reply(),{weak})\n"
+        )
+        commit("remove exact assertion at actual indirect boundary")
+        config["base"] = base
+        if namespace or species.endswith("paired") or species == "pure-local-alias-healthy":
+            config["lineage"] = {
+                "mode": "paired",
+                "scope": config["scope"],
+                "functions": [
+                    {
+                        "before": {"path": "toy.py", "function": "reply"},
+                        "current": {"path": "toy.py", "function": "reply"},
+                    }
+                ],
+            }
+        if namespace or species.startswith(("child-request", "startup-request", "native-request")):
+            with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+                evidence.prove(root, config, home / "refused")
+            receipt = evidence.strict_json(home / "refused/receipt.json")
+            expected = (
+                "unsupported-indirect-namespace-binding"
+                if species in {"imported-frame-observer", "operator-frame-observer"}
+                else "changed-or-missing-function-lineage-signature"
+                if namespace
+                else "worker-incomplete"
+            )
+            assert receipt["category"] == expected and receipt["restored"] and receipt["cleanup"]
+            with pytest.raises(consumer.EvidenceError, match="unproven"):
+                consumer.verify(root, base, [])
+            if species.startswith("child-request"):
+                run = evidence.strict_json(home / "refused/removed-baseline.json")
+                assert run["request_boundary"]["descendant_execution"] is True
+                assert run["request_boundary"]["runtime_read"] is False
+            if not namespace:
+                run = evidence.strict_json(home / "refused/removed-baseline.json")
+                assert run["request_access"]["complete"] is True
+                assert run["request_access"]["probe_accesses"] > 0
+                assert run["request_access"]["accesses"] > 0
+                assert all(c["phases"]["call"] == "passed" for c in run["cases"])
+            assert product.read_text() == (changed if namespace else before)
+        else:
+            if species == "fresh-request-healthy":
+                actual_which = evidence.shutil.which
+                for label, observer, category in (
+                    ("unavailable", None, "request-access-observer-unavailable"),
+                    ("unobserved", actual_which("true"), "worker-incomplete"),
+                ):
+                    assert label == "unavailable" or observer is not None
+                    with pytest.MonkeyPatch.context() as patch:
+                        patch.setattr(
+                            evidence.shutil,
+                            "which",
+                            lambda name: observer if name == "strace" else actual_which(name),
+                        )
+                        with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+                            evidence.prove(root, config, home / label)
+                    receipt = evidence.strict_json(home / label / "receipt.json")
+                    assert receipt["category"] == category
+                    assert receipt["restored"] and receipt["cleanup"]
+                    with pytest.raises(consumer.EvidenceError, match="unproven"):
+                        consumer.verify(root, base, [])
+                    if label == "unobserved":
+                        access = evidence.strict_json(home / label / "removed-baseline.access.json")
+                        assert access["complete"] is False and access["probe_accesses"] == 0
+                    assert product.read_text() == before
+            proof = evidence.prove(root, config, home / "healthy")
+            assert proof["status"] == "PASS"
+            carrier = home / "healthy/ledger.json"
+            assert consumer.verify(root, base, [carrier])["losses"] == 1
+            saved = carrier.read_bytes()
+            bad = json.loads(saved)
+            bad["proof"]["runs"][0]["request_boundary"]["descendant_execution"] = True
+            carrier.write_text(json.dumps(bad))
+            try:
+                with pytest.raises(
+                    consumer.EvidenceError, match="execution-request-runtime-boundary"
+                ):
+                    consumer.verify(root, base, [carrier])
+            finally:
+                carrier.write_bytes(saved)
+            assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+            if "request" in species:
+                bad = json.loads(saved)
+                bad["proof"]["runs"][0]["request_access"]["probe_accesses"] = 0
+                carrier.write_text(json.dumps(bad))
+                try:
+                    with pytest.raises(
+                        consumer.EvidenceError, match="execution-request-access-observation"
+                    ):
+                        consumer.verify(root, base, [carrier])
+                finally:
+                    carrier.write_bytes(saved)
+                assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+            assert product.read_text() == (
+                changed if species == "pure-local-alias-healthy" else before
+            )
 
 
 def _assert_execution_request_is_not_runtime_data(tmp_path):

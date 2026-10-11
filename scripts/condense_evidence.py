@@ -12,14 +12,21 @@ import io
 import json
 import os
 import secrets
+import select
 import shutil
 import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from pathlib import Path
+
+# The owned launcher must not run project startup hooks before the external
+# request-access observer starts. Restore only this exact installed script home.
+if __name__ == "__main__" and sys.flags.isolated:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_condensation_ledger import (
     PROTECTED,
@@ -63,7 +70,7 @@ def owned_run(
     command: list[str], *, cwd: Path, env: dict, timeout: float, process_record: Path | None = None
 ) -> tuple[int, bool]:
     """Use the landed R1 completion admission for this exact owned child group."""
-    launched = [sys.executable, str(Path(__file__).resolve()), "_launch", *command]
+    launched = [sys.executable, "-I", str(Path(__file__).resolve()), "_launch", *command]
     child = subprocess.Popen(
         launched,
         cwd=cwd,
@@ -205,17 +212,26 @@ def worker(request: Path) -> int:
     )
     control_inputs = {str(root / public_path(p)) for p in config.get("control_inputs", [])}
     control_read = False
+    descendant_execution = False
 
     def guard_control_input(event, args):
-        nonlocal control_read
+        nonlocal control_read, descendant_execution
+        if control_inputs and event in {
+            "subprocess.Popen",
+            "os.system",
+            "os.fork",
+            "os.forkpty",
+            "os.exec",
+            "os.posix_spawn",
+        }:
+            # This worker's open audit cannot observe descendant reads. Keep
+            # their actual execution/lifecycle intact, but never certify an
+            # excluded request dependency without that isolation evidence.
+            descendant_execution = True
         if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):
             if os.path.realpath(os.fsdecode(args[0])) in control_inputs:
                 control_read = True
                 raise RuntimeError("execution-request-used-as-runtime-data")
-
-    # The hook belongs to this finite worker process. Even a caller which catches
-    # the refusal cannot turn a proof-control input into an admitted dependency.
-    sys.addaudithook(guard_control_input)
 
     class ProofPlugin:
         def pytest_deselected(self, items):
@@ -271,6 +287,11 @@ def worker(request: Path) -> int:
         os.environ["COVERAGE_CORE"] = "ctrace"
         cov.start()
         tracer = dict(cov.sys_info()).get("core", "UNKNOWN")
+        # Establish the installed tracer first: its sys_info reads platform
+        # metadata through an owned subprocess. No subject has been imported or
+        # invoked yet. Guard every subsequent event, before pytest's collection,
+        # configuration, fixture or call execution; there is no executor bypass.
+        sys.addaudithook(guard_control_input)
         args = [
             *selected,
             "-n",
@@ -311,6 +332,7 @@ def worker(request: Path) -> int:
     complete = (
         complete_collection
         and not control_read
+        and not descendant_execution
         and deselected == 0
         and tracer == "CTracer"
         and all(
@@ -339,6 +361,11 @@ def worker(request: Path) -> int:
             "measurement_root": str(root),
             "scope": config["scope"],
             "scope_inputs": [input_record(root, p) for p in config["scope"]],
+            "request_boundary": {
+                "inputs": sorted(config.get("control_inputs", [])),
+                "runtime_read": control_read,
+                "descendant_execution": descendant_execution,
+            },
             "tools": tool_record(),
         },
     )
@@ -456,21 +483,114 @@ def suite(
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["COVERAGE_CORE"] = "ctrace"
     command = [sys.executable, str(Path(__file__).resolve()), "_worker", str(request)]
-    code, cleaned = owned_run(
-        command,
-        cwd=copy_root,
-        env=env,
-        timeout=timeout,
-        process_record=output.with_suffix(".process.json"),
+    code, cleaned, access = request_access_run(
+        command, copy_root, request, output, env, timeout, control_inputs or set()
     )
+    if output.is_file():
+        result = strict_json(output)
+        result["request_access"] = access
+        result["complete"] = result["complete"] and access["complete"] and access["accesses"] == 0
+        publish(output, result)
     if code != 0 or not output.is_file():
         raise EvidenceError("worker-incomplete")
     result = strict_json(output)
+    if not access["complete"] or access["accesses"]:
+        raise EvidenceError("worker-incomplete")
     if result["complete"] is not True or result["core"] != "ctrace":
         raise EvidenceError("worker-phases-or-tracer-unknown")
     result["cleanup"] = cleaned
     publish(output, result)
     return result
+
+
+def request_access_run(command, root, request, output, env, timeout, inputs):
+    """Observe kernel file access from startup through owned group completion.
+
+    Only matched public request paths are traced. Raw syscall records stay in
+    the parent observer's RAM; a distinct actual request read proves the same
+    observer is live before an empty metadata-access result can be admitted.
+    """
+    access = {
+        "observer": "strace" if inputs else "not-required",
+        "inputs": sorted(inputs),
+        "accesses": 0,
+        "probe_accesses": 0,
+        "complete": not inputs,
+    }
+    process_record = output.with_suffix(".process.json")
+    if not inputs:
+        code, cleaned = owned_run(
+            command, cwd=root, env=env, timeout=timeout, process_record=process_record
+        )
+        return code, cleaned, access
+    tool = shutil.which("strace")
+    if tool is None:
+        raise EvidenceError("request-access-observer-unavailable")
+    pipe = output.with_suffix(".access-pipe")
+    os.mkfifo(pipe)
+    descriptor = os.open(pipe, os.O_RDWR | os.O_NONBLOCK)
+    stopped = threading.Event()
+    failed = threading.Event()
+    probe = ('"' + "".join("\\x" + format(b, "02x") for b in os.fsencode(request)) + '"').encode()
+
+    def collect():
+        pending = b""
+        try:
+            while True:
+                ready, _, _ = select.select([descriptor], [], [], 0.05)
+                if not ready:
+                    if stopped.is_set():
+                        break
+                    continue
+                chunk = os.read(descriptor, 65536)
+                pending += chunk
+                if len(pending) > 1024 * 1024:
+                    failed.set()
+                    pending = b""
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    if line:
+                        key = "probe_accesses" if probe in line else "accesses"
+                        access[key] += 1
+            if pending:
+                failed.set()
+        except (OSError, ValueError):
+            failed.set()
+
+    observer = threading.Thread(target=collect, name="owned-request-access", daemon=True)
+    observer.start()
+    traced = [
+        str(Path(tool).resolve()),
+        "-qq",
+        "-f",
+        "-xx",
+        "-s",
+        "0",
+        "-e",
+        "signal=none",
+        "-e",
+        "trace=%file",
+        "-o",
+        str(pipe),
+        "-P",
+        str(request),
+    ]
+    for name in sorted(inputs):
+        traced += ["-P", str(root / public_path(name))]
+    try:
+        code, cleaned = owned_run(
+            [*traced, *command], cwd=root, env=env, timeout=timeout, process_record=process_record
+        )
+    finally:
+        stopped.set()
+        observer.join(timeout=2)
+        os.close(descriptor)
+        pipe.unlink()
+    access["complete"] = (
+        cleaned and not observer.is_alive() and not failed.is_set() and access["probe_accesses"] > 0
+    )
+    publish(output.with_suffix(".access.json"), access)
+    return code, cleaned, access
 
 
 def snapshot_base(root: Path, base: str, destination: Path) -> None:

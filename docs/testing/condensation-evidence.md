@@ -183,6 +183,14 @@ and shadowing captures must retain their original lexical identity. Unsupported
 lambda/comprehension binding equivalence refuses rather than guessing. Synthetic
 comparison slots cannot collide with a real Python global name.
 
+References to namespace/frame observers preserve spellings across their module,
+including local and imported aliases. Renamed bindings are supported only in
+transparent linear local loads, literal assignments and direct returns. Other
+syntax can invoke user code through explicit calls, operators, descriptors,
+indexing, coercion, iteration or context protocols; this route refuses that
+unproved equivalence rather than selecting a safe callable, type or protocol by
+name. The actual producer and reader retain the healthy pure positional subset.
+
 Both modes compare the complete tracked dependency universe. Changed non-Python
 configuration/data or an unclassified input requires independent runtime proof;
 changed lock/environment inputs remain unsupported. A tracked execution request
@@ -192,6 +200,33 @@ alone gives no exemption. Each finite worker forbids that control object from
 being used as runtime data: even catching the access refusal leaves the run
 incomplete. Ordinary valid requests still execute through the original default
 reader. No metadata role authorizes a changed executed setting.
+
+That audit belongs to the finite Python worker. When excluded request inputs
+exist, an executed descendant makes the run UNKNOWN: its file reads are outside
+this audit, even if its output or pytest phases succeed. The original descendant
+execution and cleanup are preserved. Fresh no-child request proofs and ordinary
+child proofs without an excluded request role remain supported. Every run binds
+the exact recognized request-input set and records both runtime reads and
+descendant execution; the required reader rejects missing, different or positive
+boundary observations. This is conservative refusal, not a sandbox or a claim
+that child file access was isolated.
+
+Metadata-bearing runs also require the installed `strace` file-access observer,
+bound in the actual tool closure. The Python CI jobs explicitly install this
+system prerequisite when absent; local callers must provide it or receive
+UNKNOWN, and no local package installation is implicit. It starts before the worker interpreter, follows
+descendants, and filters exact original request-file identities at the kernel
+boundary. A distinct read of the worker's own request is its required positive
+probe; missing tools, unavailable tracing, incomplete completion or a missing
+probe are UNKNOWN. Project startup and libc reads therefore cannot escape via
+the earlier Python-hook window. The launcher uses isolated Python before this
+observer starts; the worker retains its original source paths and pytest command.
+Matched syscall text stays in the parent observer's RAM, and only closed counts
+and complete original input bindings are published. Any access to an excluded
+metadata input refuses, even when every actual pytest phase passes. The required
+reader checks this additional witness and does not infer isolation from an empty
+or absent trace. No metadata role permits an unsupported native/environment
+equivalence, and none of these software witnesses establishes SQL outcomes.
 
 Both full selected populations execute against their own source, with the same
 finite ctrace protocol. For each old owner, only its named current survivors may

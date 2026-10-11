@@ -96,6 +96,64 @@ def _normalized(node: ast.AST, names: dict[str, str]) -> str:
     return ast.dump(Parameters().visit(copy.deepcopy(node)), include_attributes=False)
 
 
+def _namespace_observed(node):
+    """A referenced observer can be aliased before its eventual invocation.
+
+    Preserve lexical spellings throughout its module rather than guessing which
+    function a local/imported/global alias or frame observer will inspect.
+    """
+    observers = {
+        "locals",
+        "vars",
+        "globals",
+        "eval",
+        "exec",
+        "_getframe",
+        "currentframe",
+        "f_locals",
+        "f_globals",
+        "co_varnames",
+    }
+    return any(
+        (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in observers)
+        or (isinstance(n, ast.Attribute) and n.attr in observers)
+        or (isinstance(n, ast.alias) and n.name in observers)
+        for n in ast.walk(node)
+    )
+
+
+def _transparent_binding_body(node, parameters):
+    """Prove only linear local loads, literal assignments and direct returns.
+
+    Everything else is unproved: even syntax without an explicit Call may invoke
+    user code through an operator, descriptor, index, coercion or control protocol.
+    This is a positive supported grammar, not a callable/type/name exemption.
+    """
+    known = set(parameters)
+
+    def value(item):
+        return (
+            item is None
+            or isinstance(item, ast.Constant)
+            or (isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load) and item.id in known)
+        )
+
+    for statement in node.body:
+        if isinstance(statement, ast.Pass):
+            continue
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+            continue
+        if isinstance(statement, ast.Return) and value(statement.value):
+            continue
+        if isinstance(statement, ast.Assign) and value(statement.value):
+            if not all(isinstance(target, ast.Name) for target in statement.targets):
+                return False
+            known.update(target.id for target in statement.targets)
+            continue
+        return False
+    return True
+
+
 def _function_signature(node, names, enclosing):
     arguments = copy.deepcopy(node.args)
     for arg in [
@@ -119,17 +177,7 @@ def _function_signature(node, names, enclosing):
             # Closure/definition-time resolution is not proved by positional
             # alpha-renaming. Preserve the enclosing lexical parameter binding.
             "enclosing_parameters": enclosing,
-            "observed_parameter_names": (
-                list(names)
-                if any(
-                    isinstance(n, ast.Call)
-                    and isinstance(n.func, ast.Name)
-                    and n.func.id in {"locals", "vars", "globals", "eval", "exec"}
-                    for statement in node.body
-                    for n in ast.walk(statement)
-                )
-                else []
-            ),
+            "observed_parameter_names": (list(names) if _namespace_observed(node) else []),
         }
     )
 
@@ -142,7 +190,8 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
     parameter rename is resolved by its actual positional/keyword binding.
     """
     tree = ast.parse(text)
-    lines, spans, exits, signatures = {}, {}, {}, {}
+    namespace_observed = _namespace_observed(tree)
+    lines, spans, exits, signatures, bindings = {}, {}, {}, {}, {}
 
     def visit(node, owner, names, controls):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -155,8 +204,15 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
             args += [n for n in (node.args.vararg, node.args.kwarg) if n is not None]
             # These are comparison tokens, never executable Python names. A
             # global literally named parameter_0 must not alias a local slot.
-            names = {n.arg: "$parameter_" + str(i) for i, n in enumerate(args)}
+            names = {
+                n.arg: n.arg if namespace_observed else "$parameter_" + str(i)
+                for i, n in enumerate(args)
+            }
             identity = aliases.get((path, owner), (path, owner))
+            bindings[identity] = {
+                "names": list(names),
+                "transparent": _transparent_binding_body(node, names),
+            }
             signature = _function_signature(node, names, enclosing)
             signatures[identity] = signature
             exits[-node.lineno] = (identity, "exit", signature)
@@ -238,7 +294,7 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
         visit(node, "", {}, [])
     unique = {line: canonical(markers[0]) for line, markers in lines.items() if len(markers) == 1}
     unique.update({line: canonical(marker) for line, marker in exits.items()})
-    return {"lines": unique, "spans": spans, "signatures": signatures}
+    return {"lines": unique, "spans": spans, "signatures": signatures, "bindings": bindings}
 
 
 def alignment(before: dict[str, str], current: dict[str, str], functions: list[dict]) -> dict:
@@ -273,6 +329,17 @@ def alignment(before: dict[str, str], current: dict[str, str], functions: list[d
         )
         if old is None or old != new:
             raise EvidenceError("changed-or-missing-function-lineage-signature")
+    bindings = {
+        side: {owner: body for p in profiles.values() for owner, body in p["bindings"].items()}
+        for side, profiles in points.items()
+    }
+    for owner in bindings["removed"].keys() & bindings["survivors"].keys():
+        old, new = (bindings[side][owner] for side in ("removed", "survivors"))
+        if old["names"] != new["names"] and not (old["transparent"] and new["transparent"]):
+            # A callable may inspect the caller's frame through an indirect or
+            # imported alias. This protocol proves no such isolation; do not
+            # invent a safe-call/name allowlist to authorize an alpha-renaming.
+            raise EvidenceError("unsupported-indirect-namespace-binding")
     return points
 
 

@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -166,6 +167,17 @@ def tool_record() -> dict:
                     "mode": path.stat().st_mode & 0o777,
                 }
             )
+    observer = shutil.which("strace")
+    if observer is not None:
+        path = Path(observer).resolve(strict=True)
+        rows.append(
+            {
+                "distribution": "owned-request-access-observer",
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "mode": path.stat().st_mode & 0o777,
+            }
+        )
     return {
         "python": sys.version,
         "pytest": importlib.metadata.version("pytest"),
@@ -1280,12 +1292,34 @@ def verify_ledger(
                 "measurement_root",
                 "scope",
                 "scope_inputs",
+                "request_boundary",
+                "request_access",
                 "tools",
                 "side",
                 "artifact",
                 "coverage_artifact",
             },
         )
+        boundary = run["request_boundary"]
+        fields(boundary, {"inputs", "runtime_read", "descendant_execution"})
+        if (
+            boundary["inputs"] != sorted(requests)
+            or boundary["runtime_read"] is not False
+            or boundary["descendant_execution"] is not False
+        ):
+            raise EvidenceError("execution-request-runtime-boundary-unproved")
+        access = run["request_access"]
+        fields(access, {"observer", "inputs", "accesses", "probe_accesses", "complete"})
+        if (
+            access["observer"] != ("strace" if requests else "not-required")
+            or access["inputs"] != sorted(requests)
+            or access["complete"] is not True
+            or type(access["accesses"]) is not int
+            or access["accesses"] != 0
+            or type(access["probe_accesses"]) is not int
+            or (access["probe_accesses"] <= 0 if requests else access["probe_accesses"] != 0)
+        ):
+            raise EvidenceError("execution-request-access-observation-unproved")
         if (
             run.get("complete") is not True
             or run.get("cleanup") is not True

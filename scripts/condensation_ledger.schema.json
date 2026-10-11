@@ -475,6 +475,8 @@
               "arcs",
               "scope",
               "scope_inputs",
+              "request_boundary",
+              "request_access",
               "tools",
               "core",
               "tracer",
