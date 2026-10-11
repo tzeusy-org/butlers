@@ -14,6 +14,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 
 HEX = re.compile(r"[0-9a-f]{64}")
@@ -223,6 +224,17 @@ def preserving_context(before, current) -> bool:
     # Old assertions and abrupt exits must remain literal, at the same nesting.
     if kind in {"Assert", "Return", "Raise", "Break", "Continue", "Yield", "YieldFrom"}:
         return False
+    if kind in {"Import", "ImportFrom"}:
+        # A new alias qualifies execution evidence only; existing bindings and
+        # their origins remain literal and cannot be shadowed or reordered.
+        old, new = before["names"], current["names"]
+        names = [a["asname"] or a["name"].split(".")[0] for a in new]
+        return (
+            all(before[k] == current[k] for k in before if k != "names")
+            and contains_ordered(old, new)
+            and len(names) == len(set(names))
+            and all(a["name"] != "*" for a in new)
+        )
     if kind == "arguments":
         if any(before[k] != current[k] for k in before if k not in {"kwonlyargs", "kw_defaults"}):
             return False
@@ -390,6 +402,8 @@ def test_shapes(path: str, text: str) -> dict[str, dict]:
                     ],
                     "assertions": assertions,
                     "args": ast.dump(node.args, include_attributes=False),
+                    "args_tree": ast_record(node.args),
+                    "statement_tree": [ast_record(n) for n in node.body],
                     "decorators": [
                         ast.dump(n, include_attributes=False) for n in node.decorator_list
                     ],
@@ -408,8 +422,63 @@ def contains_ordered(before: list, current: list) -> bool:
     return all(any(item == expected for item in iterator) for expected in before)
 
 
+def preserving_import_bindings(before: str, current: str) -> bool:
+    """New import bindings cannot shadow any original lexical name."""
+    old_tree, new_tree = ast.parse(before), ast.parse(current)
+
+    def bindings(tree):
+        result = []
+        for node in tree.body:
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            for alias in node.names:
+                if alias.name == "*":
+                    return None
+                result.append(
+                    (
+                        type(node).__name__,
+                        getattr(node, "module", None),
+                        getattr(node, "level", None),
+                        alias.name,
+                        alias.asname,
+                    )
+                )
+        return result
+
+    old, new = bindings(old_tree), bindings(new_tree)
+    if old == new:
+        return True
+    if old is None or new is None or not contains_ordered(old, new):
+        return False
+    protected = {n.id for n in ast.walk(old_tree) if isinstance(n, ast.Name)}
+    protected |= {n.arg for n in ast.walk(old_tree) if isinstance(n, ast.arg)}
+    protected |= {
+        n.name
+        for n in ast.walk(old_tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    protected |= {a[4] or (a[3].split(".")[0] if a[0] == "Import" else a[3]) for a in old}
+    names = [a[4] or (a[3].split(".")[0] if a[0] == "Import" else a[3]) for a in new]
+    return len(names) == len(set(names)) and all(
+        a in old or names[i] not in protected for i, a in enumerate(new)
+    )
+
+
+def preserving_owner_arguments(before: dict, current: dict) -> bool:
+    """Added fixture requests qualify execution; old signatures remain intact."""
+    if before == current:
+        return True
+    return (
+        all(before[k] == current[k] for k in before if k != "args")
+        and current["args"][: len(before["args"])] == before["args"]
+        and len({a["arg"] for a in current["args"]}) == len(current["args"])
+        and all(a["annotation"] is None for a in current["args"][len(before["args"]) :])
+        and not before["defaults"]
+    )
+
+
 def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None:
-    """Allow aliasing only for retained owners whose sole loss is additive context."""
+    """Qualify preserving additive owners for fresh execution, never exemption."""
     losses = destructive_changes(root, base)
     cache = {}
     for owner in owners:
@@ -420,11 +489,27 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
                 test_shapes(path, (root / path).read_text()),
             )
         old, new = (side.get(owner) for side in cache[path])
+        old_source = git(root, "show", f"{base}:{path}")
+        new_source = (root / path).read_text()
         if (
-            losses.get(owner) != "fixture-helper-or-marker-context-loss"
+            losses.get(owner)
+            not in {
+                None,
+                "fixture-helper-or-marker-context-loss",
+                "import-context-loss",
+                "test-execution-structure-change",
+                "fixture-or-parameter-change",
+            }
             or old is None
             or new is None
-            or old["body"] != new["body"]
+        ):
+            raise EvidenceError("same-owner-context-not-preserving")
+        if (
+            not preserving_import_bindings(old_source, new_source)
+            or old["decorators"] != new["decorators"]
+            or old["markers"] != new["markers"]
+            or not preserving_owner_arguments(old["args_tree"], new["args_tree"])
+            or not preserving_statements(old["statement_tree"], new["statement_tree"])
             or not preserving_statements(old["context_tree"], new["context_tree"])
         ):
             raise EvidenceError("same-owner-context-not-preserving")
@@ -729,13 +814,32 @@ def executable_proof(
         or lost != proof["mutation"]["lost"]
     ):
         raise EvidenceError("mutation-summary-mismatch")
-    before = {tuple(a) for rows in baselines["removed"]["arcs"].values() for a in rows}
-    after = {tuple(a) for rows in baselines["survivors"]["arcs"].values() for a in rows}
-    residue = [list(r) for r in sorted(before - after)]
-    if not before or not after:
-        raise EvidenceError("empty-measured-branch-population")
+    residue = named_coverage_residue(
+        baselines["removed"],
+        baselines["survivors"],
+        {row["node"]: row["survivors"] for row in removed},
+    )
     if proof["coverage"]["residue"] != residue or proof["coverage"]["residue_arcs"] != len(residue):
         raise EvidenceError("coverage-residue-summary-mismatch")
+
+
+def named_coverage_residue(before: dict, current: dict, mapping: dict) -> list:
+    """Unrelated selected owners cannot supply another owner's missing arcs."""
+
+    def owner_arcs(run, owners):
+        return {
+            tuple(arc)
+            for case in run["cases"]
+            if case["node"] in owners
+            for arc in run["arcs"][case["key"]]
+        }
+
+    if not owner_arcs(before, set(mapping)) or not owner_arcs(current, set(current["selection"])):
+        raise EvidenceError("empty-measured-branch-population")
+    residue = set()
+    for owner, named in mapping.items():
+        residue |= owner_arcs(before, {owner}) - owner_arcs(current, set(named))
+    return [list(arc) for arc in sorted(residue)]
 
 
 def verify_ledger(
@@ -1046,6 +1150,97 @@ def ci_binding(root: Path, *, event: str, base: str, expected_head: str, source_
     return base
 
 
+def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
+    """Execute current tracked requests, not cached receipt discovery or rebinding."""
+    from pre_push import Refusal, run_checked
+
+    paths = [
+        p
+        for p in tracked_paths(root)
+        if p.startswith("tests/condensation-plans/") and p.endswith(".json")
+    ]
+    ledgers = []
+    if not paths:
+        return ledgers
+    losses = destructive_changes(root, base)
+    for index, name in enumerate(paths):
+        plan_path = root / name
+        record = input_record(root, name)
+        if record["mode"] == "120000":
+            raise EvidenceError("indirect-condensation-plan")
+        plan = strict_json(plan_path)
+        fields(
+            plan,
+            {"base", "scope", "removed", "survivors", "cluster", "bead", "contract", "mapping"},
+        )
+        if plan["base"] != "event-base":
+            raise EvidenceError("plan-needs-fresh-event-base")
+        for key in ("scope", "removed", "survivors"):
+            rows = plan[key]
+            if (
+                not isinstance(rows, list)
+                or not rows
+                or any(not isinstance(row, str) or not row for row in rows)
+                or len(rows) != len(set(rows))
+            ):
+                raise EvidenceError("invalid-fresh-plan-selection")
+        if not isinstance(plan["mapping"], dict) or set(plan["mapping"]) != set(plan["removed"]):
+            raise EvidenceError("unmapped-fresh-plan-owner")
+        for row in plan["mapping"].values():
+            fields(row, {"survivors", "reason"})
+            if (
+                not isinstance(row["reason"], str)
+                or not row["reason"]
+                or not isinstance(row["survivors"], list)
+                or not row["survivors"]
+                or any(not isinstance(n, str) for n in row["survivors"])
+                or not set(row["survivors"]) <= set(plan["survivors"])
+            ):
+                raise EvidenceError("unmapped-fresh-plan-survivor")
+        fields(plan["contract"], {"class", "cites"})
+        if (
+            plan["contract"]["class"] not in PROTECTED
+            or not isinstance(plan["contract"]["cites"], list)
+            or not plan["contract"]["cites"]
+            or any(not isinstance(c, str) or not c for c in plan["contract"]["cites"])
+        ):
+            raise EvidenceError("invalid-fresh-plan-contract")
+        if not set(plan["removed"]) & set(losses):
+            # A request is relevant only to actual losses at this exact base.
+            # Its mere continued presence cannot manufacture an admission or
+            # force stale executions on later unrelated changes.
+            continue
+        # This is a new execution request at the admitted event base. No saved
+        # nonce/head/tree/SQLite carrier is edited or inferred from this request.
+        plan = dict(plan, base=base)
+        config = output / f"plan-{index}.json"
+        config.write_text(json.dumps(plan, sort_keys=True) + "\n")
+        run = output / f"proof-{index}"
+        try:
+            run_checked(
+                "condensation-proof",
+                [
+                    sys.executable,
+                    str(root / "scripts/condense_evidence.py"),
+                    "prove",
+                    "--repo-root",
+                    str(root),
+                    "--config",
+                    str(config),
+                    "--output",
+                    str(run),
+                ],
+                root,
+                timeout=70,
+            )
+        except Refusal:
+            raise EvidenceError("fresh-condensation-proof-refused") from None
+        if input_record(root, name) != record:
+            raise EvidenceError("plan-changed-during-execution")
+        ledgers.append(run / "ledger.json")
+    return ledgers
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -1068,9 +1263,18 @@ def main(argv=None):
             )
         elif args.expected_head or args.source_head:
             raise EvidenceError("incomplete-ci-binding")
-        result = verify(root, base, args.ledger)
+        home = root / ".tmp/condensation-ci"
+        home.mkdir(parents=True, exist_ok=True)
+        # Durable fresh outputs retain UNKNOWN/refusal and complete real carriers.
+        # This directory is not searched on a subsequent admission.
+        directory = Path(tempfile.mkdtemp(prefix="run-", dir=home))
+        fresh = fresh_plan_ledgers(root, base, directory)
+        result = verify(root, base, [*args.ledger, *fresh])
     except EvidenceError as exc:
         print(json.dumps({"status": "REFUSED", "category": str(exc)}))
+        return 1
+    except (KeyError, TypeError, ValueError, IndexError, StopIteration, UnicodeError, OSError):
+        print(json.dumps({"status": "REFUSED", "category": "invalid-structural-evidence"}))
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0

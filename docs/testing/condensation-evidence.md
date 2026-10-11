@@ -38,7 +38,9 @@ proof times are not routine-lane or historical condensation savings.
 
 A protected PASS requires nonempty actual branch arcs, zero residue, no waived
 normative arcs, and every removed owner's semantic mutant kill retained by one
-of its named survivors. Collection/setup/teardown errors, non-assertion failures,
+of its named survivors. Coverage is compared for each removed owner against
+only its named executing survivors. An unrelated selected owner cannot supply
+a missing branch, even when aggregate coverage and named mutation kills agree. Collection/setup/teardown errors, non-assertion failures,
 timeouts and uncertain cleanup are UNKNOWN. Each mutation is restored byte for
 byte and mode for mode before another mutation. The producer retains baseline,
 mutant and restored phase records and the actual CoverageData SQLite files. The
@@ -69,38 +71,76 @@ production files do not automatically allow protected test loss. A complete
 executing survivor account remains required. An empty ledger population is
 healthy only when the actual complete source scan finds no losses.
 
-## Retained owners with added helper observations
+## Retained owners with additive changes
 
-A stateful helper addition is still a context change. Unchanged test names,
-direct bodies or assertion totals alone cannot admit it. A retained owner may
-appear on both sides of a proof only when its entire direct body, parameters,
-decorators, markers, imports and mode remain preserved and the sole detected
-change is additive helper context. Every old helper statement must remain in
-order under the same control structure. Old assertions and abrupt exits remain
-literal. Added abrupt exits, wrapped old assertions, changed existing defaults
-or statements refuse. The narrow structural comparison permits new optional
-keyword probes with literal boolean/None defaults and added literal probe
-keywords on an otherwise unchanged call. It qualifies an executable account;
-it never grants a zero-ledger PASS.
+Unchanged names or assertion totals alone do not admit an additive change.
+A retained owner may appear on both sides of an executing proof when every old
+assertion, statement, control structure, decorator, marker and mode is retained.
+Old assertions and abrupt exits remain literal at the same nesting. Added abrupt
+exits, wrapped old assertions, changed existing defaults or replaced statements
+refuse. Helper additions retain every old statement in order; optional helper
+keyword probes are restricted to literal boolean/None defaults and literal probe
+keywords on an otherwise unchanged call.
 
-Use the existing plan format with the same complete impacted static owners in
-`removed` and `survivors`, and map each overlapping owner only to itself. Here
-`removed` means the old execution side, not permission to remove that test. Run
-the ordinary `prove` command against the exact before commit and verify its
-fresh ledger. Both full before/current parameter populations must have exactly
-the same opaque identities. Actual branch coverage, named semantic mutant
-kills and every restored setup/call/teardown remain required. Account for every
-impacted owner; unmapped helper context still refuses. Add the fresh carrier to
-the same required consumer invocation with `--ledger`; the CI invocation does
-not discover, trust or generate cached accounts automatically.
+Added imports retain every original binding and origin in order. A new alias
+cannot shadow any original lexical name; wildcard changes and rebinding refuse.
+Appended test execution and appended fixture arguments may qualify an account
+when old statements and arguments remain intact. Existing defaults cannot change.
+These structural conditions only qualify fresh execution. They grant no import,
+fixture, runtime or zero-ledger exemption. Both complete before/current opaque
+parameter populations, actual branches, named semantic kills and every restored
+setup/call/teardown must still agree.
 
-This path uses unchanged production/runtime lineage. Concurrent production or
-config changes still refuse with the existing independent-lineage requirement.
-The current retention helper comparison is a compatibility frontier, not an
-executed preservation proof: its twenty unchanged direct bodies qualify no
-runtime or SQL result. Broader fixture changes and arbitrary function rewrites
-cannot use this narrow additive path. Real migrated roles and other protected
-runtime evidence retain their ordinary requirements.
+Use complete impacted static owners in both `removed` and `survivors`, mapping
+each overlapping owner only to itself. Here `removed` means old execution, not
+permission to remove that test. Account for every affected owner. A manual fresh
+proof uses the ordinary `prove` command with an exact before commit, followed by
+`--ledger` on the same required consumer.
+
+For the actual default CI invocation, track a strict JSON execution request under
+`tests/condensation-plans/`. Use the same plan fields with `"base":"event-base"`.
+The request's `scope`, owners, mapping and governing citations are source-owned;
+it contains no claimed PASS, nonce or historical coverage. The same consumer
+first validates the actual CI union/head and resolves this request to that event's
+exact before commit, then invokes the actual producer in fresh owned copies.
+It reads the resulting SQLite/run carriers through its ordinary strict admission.
+Every run uses a new ignored `.tmp/condensation-ci/run-*` directory. That directory
+is retained for failures and recovery and is never searched for cached accounts.
+Malformed requests, incomplete proof or uncovered losses refuse. A request runs
+only when its declared old owners intersect actual losses at that exact base;
+retained unaffected owners in that request still execute and preserve their full
+population. Later unrelated changes do not rerun an obsolete proof or treat its
+request as an admission.
+A new public base causes new execution, not rebinding of an older ledger.
+
+For example, a retained imported owner uses this mapping within the existing full
+plan format:
+
+```json
+{
+  "base": "event-base",
+  "removed": ["tests/test_owner.py::test_owner"],
+  "survivors": ["tests/test_owner.py::test_owner"],
+  "mapping": {
+    "tests/test_owner.py::test_owner": {
+      "survivors": ["tests/test_owner.py::test_owner"],
+      "reason": "Complete original owner and bindings retained"
+    }
+  }
+}
+```
+
+The snippet omits required `scope`, `cluster`, `bead` and protected `contract`
+fields; it is not an executable complete request. Each proof keeps its existing
+finite60s budget. Multiple requests execute sequentially and retain their own
+carriers; no selector, CI predicate, general time cap or ordinary fork mode changes.
+
+Changed production/runtime or config dependencies still require independent
+lineage proof and cannot use this same-source route. This includes the dated
+backend805 comparison: its31 import changes, two execution extensions and two
+fixture additions are classifications, not proven preservation of concurrent
+production changes. Real migrated roles and other protected runtime evidence
+retain their ordinary requirements. A plan cannot make those changes context-only.
 
 ## Recovery and delivery
 
@@ -130,9 +170,9 @@ substitute for it.
 Genuine native preparation and ROOT release authorize the required guard.
 CI binds the exact pull-request union, merge-group head or main-push before/after
 commits. Missing/unsupported identities refuse; no event can use HEAD as its
-own before baseline. The current CI invocation supplies no historical ledgers:
-a real condensation must first wire its fresh same-head producer carriers into
-this consumer in the cluster change. Missing carriers refuse every observed
+own before baseline. The current CI invocation supplies no historical ledgers. Current tracked
+execution requests generate fresh exact-event carriers through this same consumer;
+a cluster change must provide its complete request and named mapping. Missing carriers refuse every observed
 loss; zero-loss source changes need no invented ledger. Supported baseline
 administration, archive and earned source task marks still need their separate
 ROOT release after actual source qualification. Fresh resulting-head review,

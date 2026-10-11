@@ -29,6 +29,7 @@ from check_condensation_ledger import (
     git,
     git_environment,
     input_record,
+    named_coverage_residue,
     public_path,
     same_owner_context_accounts,
     source_records,
@@ -736,11 +737,11 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                     output / "journal.json",
                     {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
                 )
-            before_arcs = {tuple(a) for arcs in baseline["removed"]["arcs"].values() for a in arcs}
-            after_arcs = {tuple(a) for arcs in baseline["survivors"]["arcs"].values() for a in arcs}
-            if not before_arcs or not after_arcs:
-                raise EvidenceError("empty-measured-branch-population")
-            residue = sorted(before_arcs - after_arcs)
+            residue = named_coverage_residue(
+                baseline["removed"],
+                baseline["survivors"],
+                {owner: row["survivors"] for owner, row in config["mapping"].items()},
+            )
             lost = sorted(set(killed["removed"]) - set(killed["survivors"]))
             # Check each removed owner against its named survivors, beyond the union of kills.
             for mutant_id in killed["removed"]:

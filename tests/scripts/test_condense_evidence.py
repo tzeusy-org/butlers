@@ -276,6 +276,149 @@ def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch
     finally:
         retained_product.write_bytes(before)
     assert consumer.verify(retained, retained_base, [context_ledger])["status"] == "PASS"
+    # Ordinary additive imports keep all original bindings but still require a
+    # fresh executable account. The actual default CLI discovers only tracked
+    # source requests; it does not search for or restamp previous proof outputs.
+    ordinary_home = tmp_path / "ordinary"
+    ordinary_home.mkdir()
+    ordinary = _toy(ordinary_home)
+    ordinary_product = ordinary / "toy.py"
+    ordinary_product.write_text(ordinary_product.read_text() + "\nunused_new_alias = object()\n")
+    ordinary_owner = ordinary / "tests/test_toy.py"
+
+    def ordinary_commit(message):
+        subprocess.run(["git", "-C", str(ordinary), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(ordinary),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "commit",
+                "-qm",
+                message,
+            ],
+            check=True,
+        )
+
+    ordinary_commit("unchanged available additional export")
+    ordinary_base = consumer.git(ordinary, "rev-parse", "HEAD")
+    ordinary_before = ordinary_owner.read_text()
+    ordinary_current = ordinary_before.replace(
+        "from toy import reply", "from toy import reply, unused_new_alias"
+    )
+    ordinary_owner.write_text(ordinary_current)
+    plan = _config()
+    plan.update(base="event-base", removed=owners, survivors=owners)
+    plan["mapping"] = {
+        n: {"survivors": [n], "reason": "same complete owner and original import bindings"}
+        for n in owners
+    }
+    plans = ordinary / "tests/condensation-plans"
+    plans.mkdir()
+    request = plans / "ordinary.json"
+    request.write_text(json.dumps(plan))
+    ordinary_commit("add import and current execution request")
+    with pytest.raises(consumer.EvidenceError, match="unproven"):
+        consumer.verify(ordinary, ordinary_base, [])
+    consumer.same_owner_context_accounts(ordinary, ordinary_base, set(owners))
+    assert consumer.main(["--repo-root", str(ordinary), "--base", ordinary_base]) == 0
+    first = set((ordinary / ".tmp/condensation-ci").glob("run-*/proof-0/ledger.json"))
+    assert len(first) == 1
+    assert consumer.verify(ordinary, ordinary_base, list(first))["status"] == "PASS"
+    # Real PR union uses a newer independent base; requests execute anew at that
+    # base/head, rather than rewriting the first carrier's nonce or identity.
+    source_head = consumer.git(ordinary, "rev-parse", "HEAD")
+    subprocess.run(
+        ["git", "-C", str(ordinary), "checkout", "-qb", "public", ordinary_base], check=True
+    )
+    (ordinary / "public-note.md").write_text("independent public history\n")
+    ordinary_commit("independent public note")
+    public_base = consumer.git(ordinary, "rev-parse", "HEAD")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ordinary),
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "merge",
+            "--no-ff",
+            "-qm",
+            "actual union",
+            source_head,
+        ],
+        check=True,
+    )
+    union = consumer.git(ordinary, "rev-parse", "HEAD")
+    assert (
+        consumer.main(
+            [
+                "--repo-root",
+                str(ordinary),
+                "--base",
+                public_base,
+                "--ci-event",
+                "pull_request",
+                "--expected-head",
+                union,
+                "--source-head",
+                source_head,
+            ]
+        )
+        == 0
+    )
+    all_carriers = set((ordinary / ".tmp/condensation-ci").glob("run-*/proof-0/ledger.json"))
+    second = all_carriers - first
+    assert len(second) == 1
+    before_request = consumer.strict_json(next(iter(first)))
+    after_request = consumer.strict_json(next(iter(second)))
+    assert before_request["binding"]["nonce"] != after_request["binding"]["nonce"]
+    assert after_request["binding"]["head"] == union
+    assert after_request["binding"]["base"] == public_base
+    with pytest.raises(consumer.EvidenceError, match="base-identity"):
+        consumer.verify(ordinary, public_base, list(first))
+    # Additional real fixture requests and appended execution also use fresh
+    # same-owner proof, never an argument/import/context exemption.
+    fixture_current = ordinary_current
+    for name in ("test_removed", "test_survivor", "test_error_only"):
+        fixture_current = fixture_current.replace(
+            f"def {name}():", f"def {name}(tmp_path):\n    assert tmp_path.is_dir()"
+        )
+    ordinary_owner.write_text(fixture_current)
+    ordinary_commit("added fixture and execution with original statements retained")
+    assert consumer.main(["--repo-root", str(ordinary), "--base", public_base]) == 0
+    ordinary_owner.write_text(ordinary_current)
+    # Unsafe old-binding changes, marker loss and early exits cannot request a
+    # context-only account. Removing the current request restores default refusal.
+    for body in (
+        ordinary_current.replace("reply, unused_new_alias", "reply as changed, unused_new_alias"),
+        ordinary_current.replace("reply, unused_new_alias", "reply, unused_new_alias as reply"),
+        ordinary_current.replace("def test_removed():", "def test_removed():\n    return"),
+    ):
+        ordinary_owner.write_text(body)
+        with pytest.raises(consumer.EvidenceError, match="same-owner-context-not-preserving"):
+            consumer.same_owner_context_accounts(ordinary, public_base, set(owners))
+        ordinary_owner.write_text(ordinary_current)
+    saved_request = request.read_bytes()
+    request.unlink()
+    assert consumer.main(["--repo-root", str(ordinary), "--base", public_base]) == 1
+    request.write_bytes(saved_request)
+    # A missing tracked request is not a generated or cache-backed green. An
+    # unchanged restored source has no loss and needs no request or execution.
+    ordinary_owner.write_text(ordinary_before)
+    assert consumer.verify(ordinary, public_base, [])["status"] == "PASS"
+    assert consumer.main(["--repo-root", str(ordinary), "--base", public_base]) == 0
+    ordinary_owner.write_text(ordinary_current)
     admitted = consumer.verify(root, original_base, [tmp_path / "proof/ledger.json"])
     assert admitted["losses"] == 1 and admitted["ledger_clusters"] == 1
     links = [r for r in saved["binding"]["inputs"] if r["mode"] == "120000"]
@@ -370,6 +513,77 @@ def test_distinct_status_owner_loses_kill_and_arcs(tmp_path):
     assert proof["coverage"]["residue_arcs"] > 0
     assert proof["mutation"]["lost"]
     assert proof["restored"] and proof["cleanup"]
+    # Named True-only coverage cannot borrow the unrelated selected False case.
+    named_home = tmp_path / "named"
+    named_home.mkdir()
+    named = _toy(named_home)
+    (named / "toy.py").write_text(
+        "def reply(flag):\n    if flag:\n        value = 'branch_a'\n    else:\n        value = 'branch_b'\n    return value\n"
+    )
+    owner = named / "tests/test_toy.py"
+    old = (
+        "from toy import reply\n"
+        "def test_removed():\n    assert reply(True) == 'branch_a'\n    assert reply(False) == 'branch_b'\n"
+        "def test_survivor():\n    assert reply(True) == 'branch_a'\n"
+        "def test_other():\n    assert reply(False) == 'branch_b'\n"
+    )
+    owner.write_text(old)
+
+    def commit_named(message):
+        subprocess.run(["git", "-C", str(named), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(named),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "commit",
+                "-qm",
+                message,
+            ],
+            check=True,
+        )
+
+    commit_named("both original branches")
+    base = evidence.git(named, "rev-parse", "HEAD")
+    owner.write_text(
+        old[: old.index("def test_removed():")] + old[old.index("def test_survivor():") :]
+    )
+    commit_named("candidate named mapping")
+    config = _config()
+    config.update(
+        base=base, survivors=["tests/test_toy.py::test_survivor", "tests/test_toy.py::test_other"]
+    )
+    missing = evidence.prove(named, config, tmp_path / "named-refused")
+    assert missing["status"] == "REFUSED"
+    assert missing["coverage"]["residue"] == [["toy.py", 2, 5], ["toy.py", 5, 6]]
+    assert missing["mutation"]["lost"] == []
+    config["mapping"]["tests/test_toy.py::test_removed"]["survivors"] = config["survivors"]
+    complete = evidence.prove(named, config, tmp_path / "named-complete")
+    assert complete["status"] == "PASS"
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    carrier = tmp_path / "named-complete/ledger.json"
+    assert consumer.verify(named, base, [carrier])["status"] == "PASS"
+    saved = carrier.read_bytes()
+    forged = consumer.strict_json(carrier)
+    forged["removed"][0]["survivors"] = ["tests/test_toy.py::test_survivor"]
+    carrier.write_text(json.dumps(forged))
+    with pytest.raises(consumer.EvidenceError, match="coverage-residue-summary-mismatch"):
+        consumer.verify(named, base, [carrier])
+    carrier.write_bytes(saved)
+    assert consumer.verify(named, base, [carrier])["status"] == "PASS"
+    config["mapping"]["tests/test_toy.py::test_removed"]["survivors"] = [
+        "tests/test_toy.py::test_survivor"
+    ]
+    config["survivors"] = ["tests/test_toy.py::test_survivor"]
+    unmapped_absent = evidence.prove(named, config, tmp_path / "named-unmapped-absent")
+    assert unmapped_absent["status"] == "REFUSED"
+    assert unmapped_absent["coverage"]["residue"] == missing["coverage"]["residue"]
 
 
 def test_setup_failure_is_unknown_with_durable_receipt(tmp_path):
