@@ -5,9 +5,9 @@
 - [x] 1.4 Obtain genuine independent preparation approval and ROOT's explicit administration/required-guard release.
 
 ## 2. Packet A source
-- [ ] 2.1 Implement and qualify actual exact-context branch and mutation producer with durable UNKNOWN/restore and bounded owned cleanup.
-- [ ] 2.2 Implement and qualify strict stdlib deletion/assertion/parameter survivor consumer and schema, preserving all protected behavior and old tests.
-- [ ] 2.3 Complete same-change documentation, proportional collection/planner/guards, meaningful existing-consumer controls and exact current source custody.
+- [x] 2.1 Implement and qualify actual exact-context branch and mutation producer with durable UNKNOWN/restore and bounded owned cleanup.
+- [x] 2.2 Implement and qualify strict stdlib deletion/assertion/parameter survivor consumer and schema, preserving all protected behavior and old tests.
+- [x] 2.3 Complete same-change documentation, proportional collection/planner/guards, meaningful existing-consumer controls and exact current source custody.
 
 Supported native sync/archive/readback follows truthful preparation and actual
 source qualification; it is not a future prerequisite checkbox. Fresh
