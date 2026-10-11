@@ -123,7 +123,7 @@ def _namespace_observed(node):
 
 
 def _transparent_binding_body(node, parameters):
-    """Prove only linear local loads, literal assignments and direct returns.
+    """Prove only linear loads, fresh local bindings and direct returns.
 
     Everything else is unproved: even syntax without an explicit Call may invoke
     user code through an operator, descriptor, index, coercion or control protocol.
@@ -148,7 +148,13 @@ def _transparent_binding_body(node, parameters):
         if isinstance(statement, ast.Assign) and value(statement.value):
             if not all(isinstance(target, ast.Name) for target in statement.targets):
                 return False
-            known.update(target.id for target in statement.targets)
+            for target in statement.targets:
+                # Releasing an existing reference can invoke user __del__ with
+                # access to this frame, even when the new value is a literal.
+                # Each target must be fresh, including within a chained bind.
+                if target.id in known:
+                    return False
+                known.add(target.id)
             continue
         return False
     return True

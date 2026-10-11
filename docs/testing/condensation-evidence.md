@@ -185,11 +185,21 @@ comparison slots cannot collide with a real Python global name.
 
 References to namespace/frame observers preserve spellings across their module,
 including local and imported aliases. Renamed bindings are supported only in
-transparent linear local loads, literal assignments and direct returns. Other
+transparent linear local loads, fresh local bindings and direct returns. An
+assignment to an already-bound parameter or local refuses: dropping its old
+reference can invoke an implicit finalizer that observes the frame, even when
+the assigned value is a literal. This restriction applies to every assignment
+target, including repeated targets in a chained assignment. Other
 syntax can invoke user code through explicit calls, operators, descriptors,
 indexing, coercion, iteration or context protocols; this route refuses that
 unproved equivalence rather than selecting a safe callable, type or protocol by
 name. The actual producer and reader retain the healthy pure positional subset.
+
+The existing paired-source and same-source owning tests share the complete
+independent boundary companions. Their allocation keeps the twelve indirect
+species and finalizer control outside the already substantial paired-runtime
+item, without removing a case, borrowing a proof, or changing the 300-second
+pytest item limit or the producer's 60-second subprocess limit.
 
 Both modes compare the complete tracked dependency universe. Changed non-Python
 configuration/data or an unclassified input requires independent runtime proof;

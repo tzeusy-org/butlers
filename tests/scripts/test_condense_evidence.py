@@ -614,6 +614,24 @@ def test_distinct_status_owner_loses_kill_and_arcs(tmp_path):
     assert unmapped_absent["status"] == "REFUSED"
     assert unmapped_absent["coverage"]["residue"] == missing["coverage"]["residue"]
 
+    # Keep complete indirect execution and lexical companions in this existing
+    # proof owner so neither item accumulates every independent subprocess run.
+    assert _assert_indirect_execution_boundaries(tmp_path / "indirect-boundaries") == {
+        "child-request-same": "worker-incomplete",
+        "child-request-paired": "worker-incomplete",
+        "startup-request-same": "worker-incomplete",
+        "startup-request-paired": "worker-incomplete",
+        "native-request-same": "worker-incomplete",
+        "native-request-paired": "worker-incomplete",
+        "fresh-request-healthy": "PASS",
+        "ordinary-child-healthy": "PASS",
+        "alias-namespace": "changed-or-missing-function-lineage-signature",
+        "imported-frame-observer": "unsupported-indirect-namespace-binding",
+        "operator-frame-observer": "unsupported-indirect-namespace-binding",
+        "pure-local-alias-healthy": "PASS",
+    }
+    assert _assert_finalizer_rebinding(tmp_path / "finalizer-rebinding") == "PASS"
+
 
 def test_fresh_paired_runtime_lineage_uses_each_source_and_named_owner(tmp_path):
     """REQ-testing-053: changed implementations need genuine paired runs, not an exemption."""
@@ -1018,12 +1036,12 @@ def _assert_definition_and_dependency_bindings(tmp_path):
             )
 
     _assert_execution_request_is_not_runtime_data(tmp_path / "request-role")
-    _assert_indirect_execution_boundaries(tmp_path / "indirect-boundaries")
 
 
 def _assert_indirect_execution_boundaries(tmp_path):
     """Use actual fresh producer and required reader, including their children."""
     tmp_path.mkdir()
+    outcomes = {}
     consumer = evidence.sys.modules["check_condensation_ledger"]
     source = Path(__file__).resolve().parents[2]
     child = (
@@ -1185,6 +1203,7 @@ def _assert_indirect_execution_boundaries(tmp_path):
                 else "worker-incomplete"
             )
             assert receipt["category"] == expected and receipt["restored"] and receipt["cleanup"]
+            outcomes[species] = receipt["category"]
             with pytest.raises(consumer.EvidenceError, match="unproven"):
                 consumer.verify(root, base, [])
             if species.startswith("child-request"):
@@ -1225,6 +1244,7 @@ def _assert_indirect_execution_boundaries(tmp_path):
                     assert product.read_text() == before
             proof = evidence.prove(root, config, home / "healthy")
             assert proof["status"] == "PASS"
+            outcomes[species] = proof["status"]
             carrier = home / "healthy/ledger.json"
             assert consumer.verify(root, base, [carrier])["losses"] == 1
             saved = carrier.read_bytes()
@@ -1254,6 +1274,102 @@ def _assert_indirect_execution_boundaries(tmp_path):
             assert product.read_text() == (
                 changed if species == "pure-local-alias-healthy" else before
             )
+    return outcomes
+
+
+def _assert_finalizer_rebinding(tmp_path):
+    """Implicit reference release must not hide a renamed frame from the reader."""
+    import condensation_lineage as lineage
+
+    tmp_path.mkdir()
+    root = _toy(tmp_path)
+    source = Path(__file__).resolve().parents[2]
+    shutil.copy2(source / "scripts/condensation_lineage.py", root / "scripts")
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    before = "def reply(a, /):\n    a=0\n    return a\n"
+    current = before.replace("a", "b")
+    product = root / "toy.py"
+    product.write_text(before)
+    (root / "observer.py").write_text(
+        "import sys\nseen=[]\nclass Observe:\n"
+        "    def __del__(self):\n        seen.append(tuple(sys._getframe(1).f_locals))\n"
+    )
+    owner = root / "tests/test_toy.py"
+    owner.write_text(
+        "from toy import reply\nfrom observer import Observe,seen\n"
+        "def test_removed():\n    seen.clear()\n    value=reply(Observe())\n"
+        "    assert value == 0\n    assert seen == [('a',)]\n"
+        "def test_survivor():\n    value=reply(Observe())\n    assert value == 0\n"
+    )
+
+    def commit(message):
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "commit",
+                "-qm",
+                message,
+            ],
+            check=True,
+        )
+
+    commit("original finalizer observes the overwritten parameter")
+    base = evidence.git(root, "rev-parse", "HEAD")
+    product.write_text(current)
+    owner.write_text(
+        "from toy import reply\nfrom observer import Observe,seen\n"
+        "def test_survivor():\n    value=reply(Observe())\n    assert value == 0\n"
+    )
+    commit("renamed overwrite loses the finalizer invariant")
+    config = _config()
+    config.update(
+        base=base,
+        scope=["toy.py", "observer.py"],
+        lineage={
+            "mode": "paired",
+            "scope": ["toy.py", "observer.py"],
+            "functions": [
+                {
+                    "before": {"path": "toy.py", "function": "reply"},
+                    "current": {"path": "toy.py", "function": "reply"},
+                },
+            ],
+        },
+    )
+    category = "unsupported-indirect-namespace-binding"
+    with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+        evidence.prove(root, config, tmp_path / "current-refusal")
+    assert evidence.strict_json(tmp_path / "current-refusal/receipt.json")["category"] == category
+    original = lineage._transparent_binding_body
+    try:
+        # The predecessor's exact supported grammar accepted this overwrite.
+        lineage._transparent_binding_body = lambda node, parameters: True
+        weak = evidence.prove(root, config, tmp_path / "neutralized")
+        assert weak["status"] == "PASS"
+        carrier = tmp_path / "neutralized/ledger.json"
+        assert consumer.verify(root, base, [carrier])["losses"] == 1
+    finally:
+        lineage._transparent_binding_body = original
+    with pytest.raises(consumer.EvidenceError, match=category):
+        consumer.verify(root, base, [carrier])
+    product.write_text(before)
+    commit("restore the exact original binding and finalizer behavior")
+    healthy = evidence.prove(root, config, tmp_path / "restored-healthy")
+    assert healthy["status"] == "PASS"
+    assert (
+        consumer.verify(root, base, [tmp_path / "restored-healthy/ledger.json"])["status"] == "PASS"
+    )
+    assert product.read_text() == before
+    return healthy["status"]
 
 
 def _assert_execution_request_is_not_runtime_data(tmp_path):
