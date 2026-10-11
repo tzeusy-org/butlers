@@ -53,11 +53,85 @@ def _normalized(node: ast.AST, names: dict[str, str]) -> str:
         def visit_Name(self, node):
             return ast.copy_location(ast.Name(id=names.get(node.id, node.id), ctx=node.ctx), node)
 
-        def visit_arg(self, node):
-            node.arg = names.get(node.arg, node.arg)
+        def visit_alias(self, node):
+            binding = node.asname or node.name.split(".")[0]
+            if binding in names:
+                node.asname = names[binding]
+            return node
+
+        def visit_ExceptHandler(self, node):
+            node.name = names.get(node.name, node.name)
             return self.generic_visit(node)
 
+        def visit_MatchAs(self, node):
+            node.name = names.get(node.name, node.name)
+            return self.generic_visit(node)
+
+        visit_MatchStar = visit_MatchAs
+
+        def visit_MatchMapping(self, node):
+            node.rest = names.get(node.rest, node.rest)
+            return self.generic_visit(node)
+
+        def visit_Lambda(self, node):
+            # A new lexical scope may shadow or capture these bindings. This
+            # protocol has no independent alpha-equivalence proof for it.
+            if any(isinstance(n, ast.Name) and n.id in names for n in ast.walk(node)):
+                raise EvidenceError("unsupported-lexical-source-binding")
+            return node
+
+        visit_ListComp = visit_Lambda
+        visit_SetComp = visit_Lambda
+        visit_DictComp = visit_Lambda
+        visit_GeneratorExp = visit_Lambda
+
+        def visit_FunctionDef(self, node):
+            # Nested definitions are visited under their own parameter scope by
+            # source_points, never rewritten using an outer parameter map.
+            return node
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+
     return ast.dump(Parameters().visit(copy.deepcopy(node)), include_attributes=False)
+
+
+def _function_signature(node, names, enclosing):
+    arguments = copy.deepcopy(node.args)
+    for arg in [
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+        *[n for n in (arguments.vararg, arguments.kwarg) if n is not None],
+    ]:
+        # Only the declarations belong to the new function's parameter scope.
+        # Defaults, annotations and decorators resolve outside that scope;
+        # type-parameter annotation scopes likewise are not its body bindings.
+        arg.arg = names[arg.arg]
+    return canonical(
+        {
+            "kind": type(node).__name__,
+            "args": _normalized(arguments, {}),
+            "keyword_names": [n.arg for n in (*node.args.args, *node.args.kwonlyargs)],
+            "decorators": [_normalized(n, {}) for n in node.decorator_list],
+            "returns": None if node.returns is None else _normalized(node.returns, {}),
+            "type_parameters": [_normalized(n, {}) for n in getattr(node, "type_params", [])],
+            # Closure/definition-time resolution is not proved by positional
+            # alpha-renaming. Preserve the enclosing lexical parameter binding.
+            "enclosing_parameters": enclosing,
+            "observed_parameter_names": (
+                list(names)
+                if any(
+                    isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Name)
+                    and n.func.id in {"locals", "vars", "globals", "eval", "exec"}
+                    for statement in node.body
+                    for n in ast.walk(statement)
+                )
+                else []
+            ),
+        }
+    )
 
 
 def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
@@ -76,22 +150,14 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
                 # A lambda has no stable declared owner; refuse if it supplies an arc.
                 return
             owner = owner + "." + node.name if owner else node.name
+            enclosing = names
             args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
             args += [n for n in (node.args.vararg, node.args.kwarg) if n is not None]
-            names = {n.arg: "parameter_" + str(i) for i, n in enumerate(args)}
+            # These are comparison tokens, never executable Python names. A
+            # global literally named parameter_0 must not alias a local slot.
+            names = {n.arg: "$parameter_" + str(i) for i, n in enumerate(args)}
             identity = aliases.get((path, owner), (path, owner))
-            signature = canonical(
-                {
-                    "kind": type(node).__name__,
-                    "args": _normalized(node.args, names),
-                    "keyword_names": [n.arg for n in (*node.args.args, *node.args.kwonlyargs)],
-                    "decorators": [_normalized(n, names) for n in node.decorator_list],
-                    "returns": None if node.returns is None else _normalized(node.returns, names),
-                    "type_parameters": [
-                        _normalized(n, names) for n in getattr(node, "type_params", [])
-                    ],
-                }
-            )
+            signature = _function_signature(node, names, enclosing)
             signatures[identity] = signature
             exits[-node.lineno] = (identity, "exit", signature)
             controls = []
@@ -103,12 +169,14 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
                 "class",
                 canonical(
                     {
-                        "bases": [_normalized(n, names) for n in node.bases],
-                        "keywords": [_normalized(n, names) for n in node.keywords],
-                        "decorators": [_normalized(n, names) for n in node.decorator_list],
+                        "bases": [_normalized(n, {}) for n in node.bases],
+                        "keywords": [_normalized(n, {}) for n in node.keywords],
+                        "decorators": [_normalized(n, {}) for n in node.decorator_list],
+                        "enclosing_parameters": names,
                     }
                 ),
             )
+            names = {}
         else:
             identity = aliases.get((path, owner or "<module>"), (path, owner or "<module>"))
             if isinstance(node, (ast.If, ast.While)):
@@ -159,7 +227,10 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
                     ),
                 ):
                     nested = [*controls, (marker, field)]
-                visit(child, owner, names, nested)
+                child_names = names
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and field != "body":
+                    child_names = {}
+                visit(child, owner, child_names, nested)
 
     # A module exit is stable only within its source-qualified module identity.
     exits[-1] = ((path, "<module>"), "exit", "module")

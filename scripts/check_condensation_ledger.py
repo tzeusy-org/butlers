@@ -241,6 +241,101 @@ def test_path(path: str) -> bool:
     )
 
 
+def validate_execution_request(plan: dict) -> None:
+    fields(
+        plan,
+        {"base", "scope", "removed", "survivors", "cluster", "bead", "contract", "mapping"}
+        | ({"lineage"} if "lineage" in plan else set()),
+    )
+    if "lineage" in plan:
+        import condensation_lineage as lineage
+
+        lineage.request(plan["lineage"])
+    if plan["base"] != "event-base":
+        raise EvidenceError("plan-needs-fresh-event-base")
+    for key in ("scope", "removed", "survivors"):
+        rows = plan[key]
+        if (
+            not isinstance(rows, list)
+            or not rows
+            or any(not isinstance(row, str) or not row for row in rows)
+            or len(rows) != len(set(rows))
+        ):
+            raise EvidenceError("invalid-fresh-plan-selection")
+    if not isinstance(plan["mapping"], dict) or set(plan["mapping"]) != set(plan["removed"]):
+        raise EvidenceError("unmapped-fresh-plan-owner")
+    for row in plan["mapping"].values():
+        fields(row, {"survivors", "reason"})
+        if (
+            not isinstance(row["reason"], str)
+            or not row["reason"]
+            or not isinstance(row["survivors"], list)
+            or not row["survivors"]
+            or any(not isinstance(n, str) for n in row["survivors"])
+            or not set(row["survivors"]) <= set(plan["survivors"])
+        ):
+            raise EvidenceError("unmapped-fresh-plan-survivor")
+    fields(plan["contract"], {"class", "cites"})
+    if (
+        plan["contract"]["class"] not in PROTECTED
+        or not isinstance(plan["contract"]["cites"], list)
+        or not plan["contract"]["cites"]
+        or any(not isinstance(c, str) or not c for c in plan["contract"]["cites"])
+    ):
+        raise EvidenceError("invalid-fresh-plan-contract")
+
+
+def execution_request_inputs(root: Path, inputs: list) -> set[str]:
+    """Recognize only a complete request consumed by this exact proof protocol.
+
+    A discovery path alone is not authority. The strict whole object must equal
+    the required consumer's complete request grammar; its full body/mode stays
+    bound, and workers forbid its use as runtime data.
+    """
+    result = set()
+    for row in inputs:
+        path = row["path"]
+        if (
+            path.startswith("tests/condensation-plans/")
+            and path.endswith(".json")
+            and row["mode"] in {"100644", "100755"}
+        ):
+            try:
+                candidate = strict_json(root / path)
+                validate_execution_request(candidate)
+            except EvidenceError:
+                continue
+            result.add(path)
+    return result
+
+
+def production_dependencies(
+    before: list, current: list, scope: list, paired, requests: set
+) -> None:
+    """Both producer and required reader refuse unproved changed dependencies."""
+    old = {r["path"]: r for r in before}
+    new = {r["path"]: r for r in current}
+    for path in set(old) | set(new):
+        if path in {
+            "scripts/condense_evidence.py",
+            "scripts/check_condensation_ledger.py",
+            "scripts/condensation_lineage.py",
+        } or test_path(path):
+            continue
+        if old.get(path) == new.get(path):
+            continue
+        if path in requests:
+            continue
+        if path in {"uv.lock", "pyproject.toml"}:
+            raise EvidenceError("changed-environment-needs-independent-installed-tools")
+        if not path.endswith(".py"):
+            raise EvidenceError("changed-non-python-dependency-needs-independent-runtime-proof")
+        if not paired:
+            raise EvidenceError("changed-production-dependency-needs-independent-lineage-proof")
+        if (path in old and path not in paired["scope"]) or (path in new and path not in scope):
+            raise EvidenceError("changed-dependency-outside-paired-scope")
+
+
 def ast_record(node):
     """A serializable, location-independent tree for conservative context mapping."""
     if isinstance(node, ast.AST):
@@ -1072,12 +1167,12 @@ def verify_ledger(
     if inputs != source_records(root, tracked_paths(root)):
         raise EvidenceError("changed-input-body-or-mode")
     paired = binding.get("lineage")
+    old = committed_records(root, binding["base"])
     if paired is not None:
         import condensation_lineage as lineage
 
         fields(paired, {"mode", "scope", "functions", "inputs"})
         lineage.request({k: v for k, v in paired.items() if k != "inputs"})
-        old = committed_records(root, binding["base"])
         if paired["inputs"] != old:
             raise EvidenceError("changed-before-lineage-inputs")
         old_by_path = {r["path"]: r for r in old}
@@ -1096,24 +1191,8 @@ def verify_ledger(
                     or Path(p).name == "conftest.py"
                 ):
                     raise EvidenceError("unbound-paired-production-scope")
-        for path in set(old_by_path) | set(new_by_path):
-            if path in {
-                "scripts/condense_evidence.py",
-                "scripts/check_condensation_ledger.py",
-                "scripts/condensation_lineage.py",
-            }:
-                continue
-            if test_path(path) or Path(path).name.startswith("test_"):
-                continue
-            if not path.endswith(".py") and path not in {"uv.lock", "pyproject.toml"}:
-                continue
-            if old_by_path.get(path) != new_by_path.get(path):
-                if path in {"uv.lock", "pyproject.toml"}:
-                    raise EvidenceError("changed-environment-needs-independent-installed-tools")
-                if (path in old_by_path and path not in paired["scope"]) or (
-                    path in new_by_path and path not in binding["scope"]
-                ):
-                    raise EvidenceError("changed-dependency-outside-paired-scope")
+    requests = execution_request_inputs(root, inputs)
+    production_dependencies(old, inputs, binding["scope"], paired, requests)
     mandatory = {
         "uv.lock",
         "pyproject.toml",
@@ -1346,47 +1425,7 @@ def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
         if record["mode"] == "120000":
             raise EvidenceError("indirect-condensation-plan")
         plan = strict_json(plan_path)
-        fields(
-            plan,
-            {"base", "scope", "removed", "survivors", "cluster", "bead", "contract", "mapping"}
-            | ({"lineage"} if "lineage" in plan else set()),
-        )
-        if "lineage" in plan:
-            import condensation_lineage as lineage
-
-            lineage.request(plan["lineage"])
-        if plan["base"] != "event-base":
-            raise EvidenceError("plan-needs-fresh-event-base")
-        for key in ("scope", "removed", "survivors"):
-            rows = plan[key]
-            if (
-                not isinstance(rows, list)
-                or not rows
-                or any(not isinstance(row, str) or not row for row in rows)
-                or len(rows) != len(set(rows))
-            ):
-                raise EvidenceError("invalid-fresh-plan-selection")
-        if not isinstance(plan["mapping"], dict) or set(plan["mapping"]) != set(plan["removed"]):
-            raise EvidenceError("unmapped-fresh-plan-owner")
-        for row in plan["mapping"].values():
-            fields(row, {"survivors", "reason"})
-            if (
-                not isinstance(row["reason"], str)
-                or not row["reason"]
-                or not isinstance(row["survivors"], list)
-                or not row["survivors"]
-                or any(not isinstance(n, str) for n in row["survivors"])
-                or not set(row["survivors"]) <= set(plan["survivors"])
-            ):
-                raise EvidenceError("unmapped-fresh-plan-survivor")
-        fields(plan["contract"], {"class", "cites"})
-        if (
-            plan["contract"]["class"] not in PROTECTED
-            or not isinstance(plan["contract"]["cites"], list)
-            or not plan["contract"]["cites"]
-            or any(not isinstance(c, str) or not c for c in plan["contract"]["cites"])
-        ):
-            raise EvidenceError("invalid-fresh-plan-contract")
+        validate_execution_request(plan)
         if not set(plan["removed"]) & set(losses):
             # A request is relevant only to actual losses at this exact base.
             # Its mere continued presence cannot manufacture an admission or

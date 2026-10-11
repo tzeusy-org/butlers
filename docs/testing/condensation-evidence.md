@@ -175,6 +175,24 @@ or changed old operations refuse. Source coordinates select actual AST points;
 they never establish equivalence. Unmapped multiline/lambda or other unsupported
 source shapes remain unknown rather than disappearing from the account.
 
+Parameter-slot normalization applies only to the owning body's proven bindings.
+Definition-time defaults, decorators, argument/return annotations and type parameters
+retain their literal expressions; they cannot borrow the new function's parameter
+scope. Keyword interfaces stay exact. Enclosing bindings, namespace-observing calls
+and shadowing captures must retain their original lexical identity. Unsupported
+lambda/comprehension binding equivalence refuses rather than guessing. Synthetic
+comparison slots cannot collide with a real Python global name.
+
+Both modes compare the complete tracked dependency universe. Changed non-Python
+configuration/data or an unclassified input requires independent runtime proof;
+changed lock/environment inputs remain unsupported. A tracked execution request
+qualifies only through the same complete strict validator used by the required
+consumer, with its full body and mode bound. Its discovery directory or suffix
+alone gives no exemption. Each finite worker forbids that control object from
+being used as runtime data: even catching the access refusal leaves the run
+incomplete. Ordinary valid requests still execute through the original default
+reader. No metadata role authorizes a changed executed setting.
+
 Both full selected populations execute against their own source, with the same
 finite ctrace protocol. For each old owner, only its named current survivors may
 supply measured branches or semantic kills. Every old branch endpoint must

@@ -21,6 +21,16 @@ import condense_evidence as evidence  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _disposable_git_template(tmp_path, monkeypatch):
+    """Keep actual generated carriers outside disposable commits, as the repo does."""
+    template = tmp_path / "git-template"
+    info = template / "info"
+    info.mkdir(parents=True)
+    (info / "exclude").write_text(".tmp/\n")
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(template))
+
+
 def _toy(tmp_path):
     root = tmp_path / "subject"
     root.mkdir()
@@ -840,6 +850,242 @@ def test_fresh_paired_runtime_lineage_uses_each_source_and_named_owner(tmp_path)
     fresh_value = consumer.strict_json(fresh[0])
     assert fresh_value["binding"]["nonce"] != consumer.strict_json(carrier)["binding"]["nonce"]
     assert consumer.verify(root, base, fresh)["status"] == "PASS"
+
+    _assert_definition_and_dependency_bindings(tmp_path / "lexical-and-config")
+
+
+def _assert_definition_and_dependency_bindings(tmp_path):
+    """Real paired/same-source producer and required-reader refusal with restoration."""
+    import ast
+
+    import condensation_lineage as lineage
+
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    for kind, mode in (("default", "paired"), ("config", "same-source"), ("config", "paired")):
+        home = tmp_path / (kind + "-" + mode)
+        home.mkdir(parents=True)
+        root = _toy(home)
+        source = Path(__file__).resolve().parents[2]
+        shutil.copy2(
+            source / "scripts/condensation_lineage.py", root / "scripts/condensation_lineage.py"
+        )
+        product = root / "toy.py"
+        if kind == "default":
+            before = "a=1\nb=2\n\ndef reply(a=a, /):\n    return a\n"
+            changed = "a=1\nb=2\n\ndef reply(b=b, /):\n    return b\n"
+            restored = changed.replace("b=b", "b=a")
+        else:
+            before = changed = restored = (
+                "from pathlib import Path\nimport json\n\ndef reply():\n"
+                "    return json.loads(Path(__file__).with_name('settings.json').read_text())['value']\n"
+            )
+            (root / "settings.json").write_text('{"value":1}\n')
+        product.write_text(before)
+        owner = root / "tests/test_toy.py"
+        owner.write_text(
+            "from toy import reply\ndef test_removed():\n    assert reply() == 1\n"
+            "def test_survivor():\n    assert isinstance(reply(), int)\n"
+        )
+
+        def commit(message):
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "user.name=Proof",
+                    "-c",
+                    "user.email=proof@example.invalid",
+                    "commit",
+                    "-qm",
+                    message,
+                ],
+                check=True,
+            )
+
+        commit("original definition/config binding and exact-value owner")
+        base = evidence.git(root, "rev-parse", "HEAD")
+        product.write_text(changed)
+        owner.write_text(
+            "from toy import reply\ndef test_survivor():\n    assert isinstance(reply(), int)\n"
+        )
+        if kind == "config":
+            (root / "settings.json").write_text('{"value":2}\n')
+        commit("planted changed binding with a weak integer survivor")
+        config = _config()
+        config["base"] = base
+        if mode == "paired":
+            config["lineage"] = {
+                "mode": "paired",
+                "scope": ["toy.py"],
+                "functions": [
+                    {
+                        "before": {"path": "toy.py", "function": "reply"},
+                        "current": {"path": "toy.py", "function": "reply"},
+                    }
+                ],
+            }
+        category = (
+            "changed-or-missing-function-lineage-signature"
+            if kind == "default"
+            else "changed-non-python-dependency-needs-independent-runtime-proof"
+        )
+        with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+            evidence.prove(root, config, home / "current-refusal")
+        assert evidence.strict_json(home / "current-refusal/receipt.json")["category"] == category
+        # Neutralize the exact new lexical/dependency predicate through the real
+        # producer and reader, then restore it before re-reading that same carrier.
+        signature = lineage._function_signature
+        dependencies = evidence.production_dependencies
+        reader_dependencies = consumer.production_dependencies
+
+        def wrong_signature(node, names, enclosing):
+            node = copy.deepcopy(node)
+
+            class WrongDefinitionScope(ast.NodeTransformer):
+                def visit_Name(self, item):
+                    return ast.copy_location(
+                        ast.Name(id=names.get(item.id, item.id), ctx=item.ctx), item
+                    )
+
+            node.args = WrongDefinitionScope().visit(node.args)
+            return signature(node, names, enclosing)
+
+        def ignored_configuration(old, new, scope, paired, requests):
+            dependencies(
+                [r for r in old if r["path"].endswith(".py")],
+                [r for r in new if r["path"].endswith(".py")],
+                scope,
+                paired,
+                requests,
+            )
+
+        try:
+            if kind == "default":
+                lineage._function_signature = wrong_signature
+            else:
+                evidence.production_dependencies = ignored_configuration
+                consumer.production_dependencies = ignored_configuration
+            weak = evidence.prove(root, config, home / "neutralized")
+            assert weak["status"] == "PASS"
+            carrier = home / "neutralized/ledger.json"
+            assert consumer.verify(root, base, [carrier])["losses"] == 1
+        finally:
+            lineage._function_signature = signature
+            evidence.production_dependencies = dependencies
+            consumer.production_dependencies = reader_dependencies
+        with pytest.raises(consumer.EvidenceError, match=category):
+            consumer.verify(root, base, [carrier])
+        product.write_text(restored)
+        if kind == "config":
+            (root / "settings.json").write_text('{"value":1}\n')
+        commit("restore actual original value with healthy local rename")
+        healthy = evidence.prove(root, config, home / "restored-healthy")
+        assert healthy["status"] == "PASS"
+        assert (
+            consumer.verify(root, base, [home / "restored-healthy/ledger.json"])["status"] == "PASS"
+        )
+        assert product.read_text() == restored
+
+    pair = [
+        {
+            "before": {"path": "a.py", "function": "reply"},
+            "current": {"path": "b.py", "function": "reply"},
+        }
+    ]
+    for before, changed in (
+        ("def reply(a: a, /):\n    return a\n", "def reply(b: b, /):\n    return b\n"),
+        ("@a\ndef reply(a, /):\n    return a\n", "@b\ndef reply(b, /):\n    return b\n"),
+        ("def reply(a, /) -> a:\n    return a\n", "def reply(b, /) -> b:\n    return b\n"),
+        ("def reply[T: a](a, /):\n    return a\n", "def reply[T: b](b, /):\n    return b\n"),
+        ("def reply(a, /):\n    return a\n", "def reply(b, /):\n    return parameter_0\n"),
+        ("def reply(a, /):\n    return locals()\n", "def reply(b, /):\n    return locals()\n"),
+        (
+            "def reply(a, /):\n    def inner():\n        return a\n    return inner()\n",
+            "def reply(b, /):\n    def inner():\n        return a\n    return inner()\n",
+        ),
+    ):
+        with pytest.raises(consumer.EvidenceError):
+            points = lineage.alignment({"a.py": before}, {"b.py": changed}, pair)
+            lineage.paired_mutants(
+                points,
+                evidence.generate_mutants({"a.py": before.encode()}),
+                evidence.generate_mutants({"b.py": changed.encode()}),
+            )
+
+    _assert_execution_request_is_not_runtime_data(tmp_path / "request-role")
+
+
+def _assert_execution_request_is_not_runtime_data(tmp_path):
+    tmp_path.mkdir()
+    root = _toy(tmp_path)
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    request = root / "tests/condensation-plans/current.json"
+    request.parent.mkdir()
+    request.write_text(json.dumps(dict(_config(), base="event-base")))
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "commit",
+            "-qm",
+            "actual source-owned execution request",
+        ],
+        check=True,
+    )
+    records = consumer.source_records(root, consumer.tracked_paths(root))
+    controls = consumer.execution_request_inputs(root, records)
+    assert controls == {"tests/condensation-plans/current.json"}
+    selected = [_config()["removed"][0], _config()["survivors"][0]]
+    original = (root / "toy.py").read_bytes()
+    healthy = evidence.suite(
+        root, selected, ["toy.py"], "1" * 64, tmp_path / "healthy.json", "healthy", 20, controls
+    )
+    assert healthy["complete"] and healthy["exit"] == 0
+    product = root / "toy.py"
+    product.write_text(
+        "from pathlib import Path\n"
+        + original.decode().replace(
+            "    if flag:\n",
+            "    try:\n"
+            "        Path(__file__).with_name('tests').joinpath('condensation-plans/current.json').read_text()\n"
+            "    except RuntimeError:\n        pass\n    if flag:\n",
+        )
+    )
+    try:
+        with pytest.raises(consumer.EvidenceError, match="worker-incomplete"):
+            evidence.suite(
+                root,
+                selected,
+                ["toy.py"],
+                "2" * 64,
+                tmp_path / "runtime-data.json",
+                "runtime-data",
+                20,
+                controls,
+            )
+        refused = evidence.strict_json(tmp_path / "runtime-data.json")
+        assert refused["complete"] is False and refused["exit"] == 0
+        assert all(c["phases"]["call"] == "passed" for c in refused["cases"])
+    finally:
+        product.write_bytes(original)
+    restored = evidence.suite(
+        root, selected, ["toy.py"], "3" * 64, tmp_path / "restored.json", "restored", 20, controls
+    )
+    assert restored["complete"] and restored["exit"] == 0
+    assert product.read_bytes() == original
 
 
 def test_setup_failure_is_unknown_with_durable_receipt(tmp_path):

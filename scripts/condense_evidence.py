@@ -25,11 +25,13 @@ from check_condensation_ledger import (
     PROTECTED,
     EvidenceError,
     canonical,
+    execution_request_inputs,
     fields,
     git,
     git_environment,
     input_record,
     named_coverage_residue,
+    production_dependencies,
     public_path,
     same_owner_context_accounts,
     source_records,
@@ -201,6 +203,19 @@ def worker(request: Path) -> int:
         data_file=str(output.with_suffix(".coverage")),
         config_file=False,
     )
+    control_inputs = {str(root / public_path(p)) for p in config.get("control_inputs", [])}
+    control_read = False
+
+    def guard_control_input(event, args):
+        nonlocal control_read
+        if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):
+            if os.path.realpath(os.fsdecode(args[0])) in control_inputs:
+                control_read = True
+                raise RuntimeError("execution-request-used-as-runtime-data")
+
+    # The hook belongs to this finite worker process. Even a caller which catches
+    # the refusal cannot turn a proof-control input into an admitted dependency.
+    sys.addaudithook(guard_control_input)
 
     class ProofPlugin:
         def pytest_deselected(self, items):
@@ -295,6 +310,7 @@ def worker(request: Path) -> int:
     public_cases = list(cases.values())
     complete = (
         complete_collection
+        and not control_read
         and deselected == 0
         and tracer == "CTracer"
         and all(
@@ -418,6 +434,7 @@ def suite(
     output: Path,
     id_: str,
     timeout: float,
+    control_inputs: set[str] | None = None,
 ) -> dict:
     request = output.with_suffix(".request.json")
     publish(
@@ -429,6 +446,7 @@ def suite(
             "nonce": nonce,
             "output": str(output),
             "id": id_,
+            "control_inputs": sorted(control_inputs or []),
         },
     )
     env = dict(os.environ)
@@ -667,36 +685,8 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
             new_links = {r["path"]: r for r in inputs if r["mode"] == "120000"}
             if old_links != new_links:
                 raise EvidenceError("changed-source-link-needs-independent-lineage-proof")
-            for path in set(base_paths) | set(paths):
-                # Test/helper edits are measured by the selected real populations.
-                # Other Python/config dependencies cannot silently change beneath
-                # a same-source branch/mutation comparison.
-                if path in {
-                    "scripts/condense_evidence.py",
-                    "scripts/check_condensation_ledger.py",
-                    "scripts/condensation_lineage.py",
-                }:
-                    continue
-                if test_path(path) or Path(path).name.startswith("test_"):
-                    continue
-                if not path.endswith(".py") and path not in {"uv.lock", "pyproject.toml"}:
-                    continue
-                if (
-                    path not in base_paths
-                    or path not in paths
-                    or input_record(copies["removed"], path)
-                    != input_record(copies["survivors"], path)
-                ):
-                    if not paired:
-                        raise EvidenceError(
-                            "changed-production-dependency-needs-independent-lineage-proof"
-                        )
-                    if path in {"uv.lock", "pyproject.toml"}:
-                        raise EvidenceError("changed-environment-needs-independent-installed-tools")
-                    if (path in base_paths and path not in scopes["removed"]) or (
-                        path in paths and path not in scope
-                    ):
-                        raise EvidenceError("changed-dependency-outside-paired-scope")
+            control_inputs = execution_request_inputs(root, inputs)
+            production_dependencies(before_inputs, inputs, scope, paired, control_inputs)
             publish(
                 output / "journal.json",
                 {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
@@ -708,7 +698,14 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 if remaining <= 0:
                     raise EvidenceError("proof-total-timeout")
                 run = suite(
-                    copies[kind], selections[kind], scopes[kind], nonce, path, label, remaining
+                    copies[kind],
+                    selections[kind],
+                    scopes[kind],
+                    nonce,
+                    path,
+                    label,
+                    remaining,
+                    control_inputs,
                 )
                 run["side"] = kind
                 publish(path, run)
