@@ -30,6 +30,7 @@ from check_condensation_ledger import (
     git_environment,
     input_record,
     public_path,
+    same_owner_context_accounts,
     source_records,
     strict_json,
     test_path,
@@ -592,8 +593,7 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
             for rows in selections.values()
         ):
             raise EvidenceError("selection-needs-static-whole-case-owners")
-        if set(selections["removed"]) & set(selections["survivors"]):
-            raise EvidenceError("aliased-case-owners")
+        overlap = set(selections["removed"]) & set(selections["survivors"])
         if set(config["mapping"]) != set(selections["removed"]):
             raise EvidenceError("unmapped-removed-owner")
         for node, row in config["mapping"].items():
@@ -604,7 +604,11 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 or not set(row["survivors"]) <= set(selections["survivors"])
             ):
                 raise EvidenceError("unmapped-survivor")
+            if node in overlap and row["survivors"] != [node]:
+                raise EvidenceError("same-owner-context-needs-exact-self-mapping")
         base = git(root, "rev-parse", config["base"])
+        if overlap:
+            same_owner_context_accounts(root, base, overlap)
         runs, baseline = [], {}
         killed = {"removed": [], "survivors": []}
         with tempfile.TemporaryDirectory(prefix="condense-owned-", dir=output) as directory:
@@ -672,6 +676,13 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 baseline[kind] = run
                 if {r["node"] for r in run["cases"]} != set(selections[kind]):
                     raise EvidenceError("missing-selected-case-owner")
+            for owner in overlap:
+                populations = [
+                    {(r["key"], r["node"]) for r in baseline[side]["cases"] if r["node"] == owner}
+                    for side in ("removed", "survivors")
+                ]
+                if populations[0] != populations[1]:
+                    raise EvidenceError("same-owner-case-population-change")
             generated = mutants(copies["removed"], scope)
             if not generated or len(generated) > 64:
                 raise EvidenceError("empty-or-unbounded-mutation-scope")

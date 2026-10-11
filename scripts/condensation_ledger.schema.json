@@ -59,6 +59,7 @@
       }
     },
     "removed": {
+      "description": "Old execution owners; overlap requires exact self-mapped retained context-only owners and complete executable before/current proof.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -95,6 +96,7 @@
       }
     },
     "survivors": {
+      "description": "Current execution owners; counts or shared names never authorize aliasing without the source-qualified context account.",
       "type": "array",
       "minItems": 1,
       "items": {

@@ -173,6 +173,109 @@ def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch
     consumer.executable_proof(
         tmp_path / "proof", saved["proof"], saved["binding"], saved["removed"], saved["survivors"]
     )
+
+    # Same retained owners may account for additive helper context only through
+    # complete before/current execution, branch arcs, kills and restoration.
+    retained_home = tmp_path / "retained"
+    retained_home.mkdir()
+    retained = _toy(retained_home)
+    retained_owner = retained / "tests/test_toy.py"
+    helper = (
+        "def observe(flag):\n"
+        "    def collect(value):\n"
+        "        result = reply(value)\n"
+        "        assert isinstance(result,str)\n"
+        "        return result\n"
+        "    result = collect(flag)\n"
+        "    return result\n"
+    )
+    body = retained_owner.read_text().replace("assert reply(", "assert observe(")
+    retained_owner.write_text(body.replace("def test_removed", helper + "def test_removed", 1))
+
+    def commit_retained(message):
+        subprocess.run(["git", "-C", str(retained), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(retained),
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-qm",
+                message,
+            ],
+            check=True,
+        )
+
+    commit_retained("retained source-owned helper")
+    retained_base = evidence.git(retained, "rev-parse", "HEAD")
+    old_retained = retained_owner.read_text()
+    current_retained = (
+        old_retained.replace("def collect(value):", "def collect(value, *, probe=False):")
+        .replace(
+            "        return result\n",
+            "        if probe:\n            assert result in ('accepted','error')\n"
+            "        return result\n",
+        )
+        .replace("result = collect(flag)", "result = collect(flag, probe=True)")
+    )
+    retained_owner.write_text(current_retained)
+    commit_retained("add context observation without changing old owners")
+    owners = [
+        "tests/test_toy.py::" + n for n in ("test_removed", "test_survivor", "test_error_only")
+    ]
+    context_plan = _config()
+    context_plan.update(base=retained_base, removed=owners, survivors=owners)
+    context_plan["mapping"] = {
+        n: {"survivors": [n], "reason": "retained complete owner with additive helper observation"}
+        for n in owners
+    }
+    with pytest.raises(consumer.EvidenceError, match="unproven"):
+        consumer.verify(retained, retained_base, [])
+    context_proof = evidence.prove(retained, context_plan, tmp_path / "context-proof")
+    assert context_proof["status"] == "PASS"
+    context_ledger = tmp_path / "context-proof/ledger.json"
+    assert consumer.verify(retained, retained_base, [context_ledger])["losses"] == 3
+    for changed in (
+        current_retained.replace("        assert isinstance(result,str)\n", ""),
+        current_retained.replace(
+            "        result = reply(value)\n",
+            "        return 'accepted'\n        result = reply(value)\n",
+        ),
+        current_retained.replace("def observe(flag):", "def observe(flag=False):"),
+        current_retained.replace(
+            "from toy import reply",
+            "from toy import reply\nimport pytest\npytestmark = pytest.mark.skip",
+        ),
+        current_retained.replace("assert observe(True) == 'accepted'", "assert True"),
+        current_retained.replace(
+            "        assert isinstance(result,str)\n",
+            "        if False:\n            assert isinstance(result,str)\n",
+        ),
+    ):
+        retained_owner.write_text(changed)
+        try:
+            with pytest.raises(consumer.EvidenceError, match="same-owner-context-not-preserving"):
+                consumer.verify(retained, retained_base, [context_ledger])
+        finally:
+            retained_owner.write_text(current_retained)
+        assert consumer.verify(retained, retained_base, [context_ledger])["status"] == "PASS"
+    retained_product = retained / "toy.py"
+    retained_product.write_text(retained_product.read_text().replace("'accepted'", "'changed'"))
+    try:
+        with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+            evidence.prove(retained, context_plan, tmp_path / "context-production-drift")
+        assert evidence.strict_json(tmp_path / "context-production-drift/receipt.json")[
+            "category"
+        ] == ("changed-production-scope-needs-independent-lineage-proof")
+    finally:
+        retained_product.write_bytes(before)
+    assert consumer.verify(retained, retained_base, [context_ledger])["status"] == "PASS"
     admitted = consumer.verify(root, original_base, [tmp_path / "proof/ledger.json"])
     assert admitted["losses"] == 1 and admitted["ledger_clusters"] == 1
     links = [r for r in saved["binding"]["inputs"] if r["mode"] == "120000"]

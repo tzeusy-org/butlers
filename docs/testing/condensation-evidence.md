@@ -69,6 +69,39 @@ production files do not automatically allow protected test loss. A complete
 executing survivor account remains required. An empty ledger population is
 healthy only when the actual complete source scan finds no losses.
 
+## Retained owners with added helper observations
+
+A stateful helper addition is still a context change. Unchanged test names,
+direct bodies or assertion totals alone cannot admit it. A retained owner may
+appear on both sides of a proof only when its entire direct body, parameters,
+decorators, markers, imports and mode remain preserved and the sole detected
+change is additive helper context. Every old helper statement must remain in
+order under the same control structure. Old assertions and abrupt exits remain
+literal. Added abrupt exits, wrapped old assertions, changed existing defaults
+or statements refuse. The narrow structural comparison permits new optional
+keyword probes with literal boolean/None defaults and added literal probe
+keywords on an otherwise unchanged call. It qualifies an executable account;
+it never grants a zero-ledger PASS.
+
+Use the existing plan format with the same complete impacted static owners in
+`removed` and `survivors`, and map each overlapping owner only to itself. Here
+`removed` means the old execution side, not permission to remove that test. Run
+the ordinary `prove` command against the exact before commit and verify its
+fresh ledger. Both full before/current parameter populations must have exactly
+the same opaque identities. Actual branch coverage, named semantic mutant
+kills and every restored setup/call/teardown remain required. Account for every
+impacted owner; unmapped helper context still refuses. Add the fresh carrier to
+the same required consumer invocation with `--ledger`; the CI invocation does
+not discover, trust or generate cached accounts automatically.
+
+This path uses unchanged production/runtime lineage. Concurrent production or
+config changes still refuse with the existing independent-lineage requirement.
+The current retention helper comparison is a compatibility frontier, not an
+executed preservation proof: its twenty unchanged direct bodies qualify no
+runtime or SQL result. Broader fixture changes and arbitrary function rewrites
+cannot use this narrow additive path. Real migrated roles and other protected
+runtime evidence retain their ordinary requirements.
+
 ## Recovery and delivery
 
 Every proof begins with a durable UNKNOWN receipt and owns separate full source

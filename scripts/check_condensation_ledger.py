@@ -199,6 +199,91 @@ def test_path(path: str) -> bool:
     )
 
 
+def ast_record(node):
+    """A serializable, location-independent tree for conservative context mapping."""
+    if isinstance(node, ast.AST):
+        return {"_node": type(node).__name__, **{k: ast_record(v) for k, v in ast.iter_fields(node)}}
+    if isinstance(node, list):
+        return [ast_record(n) for n in node]
+    return node
+
+
+def preserving_context(before, current) -> bool:
+    """Qualify an additive shape for executable proof, never for automatic PASS."""
+    if before == current:
+        return True
+    if not isinstance(before, dict) or not isinstance(current, dict):
+        return False
+    if set(before) != set(current) or before.get("_node") != current.get("_node"):
+        return False
+    kind = before["_node"]
+    # Old assertions and abrupt exits must remain literal, at the same nesting.
+    if kind in {"Assert", "Return", "Raise", "Break", "Continue", "Yield", "YieldFrom"}:
+        return False
+    if kind == "arguments":
+        if any(before[k] != current[k] for k in before if k not in {"kwonlyargs", "kw_defaults"}):
+            return False
+        old = list(zip(before["kwonlyargs"], before["kw_defaults"], strict=True))
+        new = list(zip(current["kwonlyargs"], current["kw_defaults"], strict=True))
+        if not contains_ordered(old, new):
+            return False
+        names = [a["arg"] for a, _ in new]
+        if len(names) != len(set(names)):
+            return False
+        return all((a, default) in old or literal_probe_value(default) for a, default in new)
+    if kind == "Call":
+        if before["func"] != current["func"] or before["args"] != current["args"]:
+            return False
+        old, new = before["keywords"], current["keywords"]
+        names = [k["arg"] for k in new]
+        return (
+            contains_ordered(old, new)
+            and None not in names
+            and len(names) == len(set(names))
+            and all(k in old or literal_probe_value(k["value"]) for k in new)
+        )
+    for key in before:
+        if key in {"body", "orelse", "finalbody"} and isinstance(before[key], list):
+            if not preserving_statements(before[key], current[key]):
+                return False
+        elif isinstance(before[key], dict):
+            if not preserving_context(before[key], current[key]):
+                return False
+        elif before[key] != current[key]:
+            return False
+    return True
+
+
+def literal_probe_value(value) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("_node") == "Constant"
+        and (value.get("value") is None or type(value.get("value")) is bool)
+    )
+
+
+def preserving_statements(before: list, current: list) -> bool:
+    def abrupt(value):
+        if isinstance(value, dict):
+            return value.get("_node") in {
+                "Return",
+                "Raise",
+                "Break",
+                "Continue",
+                "Yield",
+                "YieldFrom",
+            } or any(abrupt(v) for v in value.values())
+        return isinstance(value, list) and any(abrupt(v) for v in value)
+
+    position = 0
+    for statement in current:
+        if position < len(before) and preserving_context(before[position], statement):
+            position += 1
+        elif abrupt(statement):
+            return False
+    return position == len(before)
+
+
 def test_shapes(path: str, text: str) -> dict[str, dict]:
     try:
         tree = ast.parse(text)
@@ -217,6 +302,14 @@ def test_shapes(path: str, text: str) -> dict[str, dict]:
         )
         and not isinstance(n, ast.ClassDef)
     ]
+    context_tree = [
+        ast_record(n)
+        for n in tree.body
+        if not (
+            isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")
+        )
+        and not isinstance(n, ast.ClassDef)
+    ]
     markers = [
         ast.dump(n, include_attributes=False)
         for n in tree.body
@@ -225,7 +318,7 @@ def test_shapes(path: str, text: str) -> dict[str, dict]:
     ]
     result = {}
 
-    def visit(body, parents, inherited_context, inherited_markers):
+    def visit(body, parents, inherited_context, inherited_markers, inherited_tree):
         for node in body:
             if isinstance(node, ast.ClassDef):
                 class_header = canonical(
@@ -246,6 +339,15 @@ def test_shapes(path: str, text: str) -> dict[str, dict]:
                     )
                     and not isinstance(n, ast.ClassDef)
                 ]
+                class_tree = [class_header] + [
+                    ast_record(n)
+                    for n in node.body
+                    if not (
+                        isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and n.name.startswith("test_")
+                    )
+                    and not isinstance(n, ast.ClassDef)
+                ]
                 class_markers = [
                     ast.dump(n, include_attributes=False)
                     for n in node.body
@@ -257,6 +359,7 @@ def test_shapes(path: str, text: str) -> dict[str, dict]:
                     [*parents, node.name],
                     [*inherited_context, *class_context],
                     [*inherited_markers, *class_markers],
+                    [*inherited_tree, *class_tree],
                 )
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
                 "test_"
@@ -289,16 +392,39 @@ def test_shapes(path: str, text: str) -> dict[str, dict]:
                     ],
                     "imports": imports,
                     "context": inherited_context,
+                    "context_tree": inherited_tree,
                     "markers": inherited_markers,
                 }
 
-    visit(tree.body, [], context, markers)
+    visit(tree.body, [], context, markers, context_tree)
     return result
 
 
 def contains_ordered(before: list, current: list) -> bool:
     iterator = iter(current)
     return all(any(item == expected for item in iterator) for expected in before)
+
+
+def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None:
+    """Allow aliasing only for retained owners whose sole loss is additive context."""
+    losses = destructive_changes(root, base)
+    cache = {}
+    for owner in owners:
+        path = owner.split("::", 1)[0]
+        if path not in cache:
+            cache[path] = (
+                test_shapes(path, git(root, "show", f"{base}:{path}")),
+                test_shapes(path, (root / path).read_text()),
+            )
+        old, new = (side.get(owner) for side in cache[path])
+        if (
+            losses.get(owner) != "fixture-helper-or-marker-context-loss"
+            or old is None
+            or new is None
+            or old["body"] != new["body"]
+            or not preserving_statements(old["context_tree"], new["context_tree"])
+        ):
+            raise EvidenceError("same-owner-context-not-preserving")
 
 
 def destructive_changes(root: Path, base: str) -> dict[str, str]:
@@ -531,6 +657,14 @@ def executable_proof(
         for row in rows:
             if row["params"] != sum(r["node"] == row["node"] for r in baseline["cases"]):
                 raise EvidenceError("declared-case-multiplicity")
+    overlap = {r["node"] for r in removed} & {r["node"] for r in survivors}
+    for owner in overlap:
+        populations = [
+            {(r["key"], r["node"]) for r in baselines[side]["cases"] if r["node"] == owner}
+            for side in ("removed", "survivors")
+        ]
+        if populations[0] != populations[1]:
+            raise EvidenceError("same-owner-case-population-change")
     mutants = proof["mutation"]["mutants"]
     if proof["mutation"]["generated"] != len(mutants) or len(mutants) > 64:
         raise EvidenceError("mutation-population")
@@ -655,8 +789,11 @@ def verify_ledger(
                 raise EvidenceError("unresolved-contract-citation")
     removed = identities(value["removed"], "node")
     survivors = identities(value["survivors"], "node")
-    if removed & survivors or not survivors <= current.keys():
+    overlap = removed & survivors
+    if not survivors <= current.keys():
         raise EvidenceError("missing-or-aliased-survivor")
+    if overlap:
+        same_owner_context_accounts(root, base, overlap)
     for row in value["removed"]:
         fields(row, {"node", "params", "survivors", "reason"})
         integer(row.get("params"), 1)
@@ -668,6 +805,8 @@ def verify_ledger(
             raise EvidenceError("unmapped-survivor")
         if not isinstance(row.get("reason"), str) or not row["reason"]:
             raise EvidenceError("missing-reason")
+        if row["node"] in overlap and row["survivors"] != [row["node"]]:
+            raise EvidenceError("same-owner-context-needs-exact-self-mapping")
     for row in value["survivors"]:
         fields(row, {"node", "params"})
         integer(row.get("params"), 1)
