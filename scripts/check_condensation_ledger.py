@@ -11,7 +11,9 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -37,6 +39,13 @@ class EvidenceError(ValueError):
 
 
 def strict_json(path: Path) -> dict:
+    try:
+        return _strict_json_body(path.read_text())
+    except (OSError, UnicodeError) as exc:
+        raise EvidenceError("unreadable-json") from exc
+
+
+def _strict_json_body(body: str) -> dict:
     def pairs(values):
         result = {}
         for key, value in values:
@@ -47,11 +56,11 @@ def strict_json(path: Path) -> dict:
 
     try:
         value = json.loads(
-            path.read_text(),
+            body,
             object_pairs_hook=pairs,
             parse_constant=lambda _: (_ for _ in ()).throw(EvidenceError("nonfinite-json")),
         )
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except json.JSONDecodeError as exc:
         raise EvidenceError("unreadable-json") from exc
     if not isinstance(value, dict):
         raise EvidenceError("nonobject-json")
@@ -79,8 +88,14 @@ def public_path(value: str) -> Path:
 
 
 def input_record(root: Path, name: str) -> dict:
-    path = root / public_path(name)
-    if any(p.is_symlink() for p in path.parents if p != root and root in p.parents):
+    return _input_record_at(root.resolve(strict=True), name)
+
+
+def _input_record_at(root: Path, name: str) -> dict:
+    """Read each body/mode/link at a bound physical root; no inventory is cached."""
+    relative = public_path(name)
+    path = root / relative
+    if any((root / p).is_symlink() for p in relative.parents if p != Path(".")):
         raise EvidenceError("indirect-source-parent")
     if path.is_symlink():
         target = os.readlink(path)
@@ -95,7 +110,7 @@ def input_record(root: Path, name: str) -> dict:
             resolved = path.resolve(strict=True)
         except (OSError, RuntimeError):
             raise EvidenceError("unresolved-source-link") from None
-        if root.resolve() not in resolved.parents:
+        if root not in resolved.parents:
             raise EvidenceError("escaping-source-link")
         return {
             "path": name,
@@ -103,7 +118,7 @@ def input_record(root: Path, name: str) -> dict:
             "mode": "120000",
             "link": target,
         }
-    if path.is_symlink() or not path.is_file() or root.resolve() not in path.resolve().parents:
+    if path.is_symlink() or not path.is_file() or root not in path.resolve().parents:
         raise EvidenceError("missing-or-indirect-input")
     return {
         "path": name,
@@ -114,13 +129,14 @@ def input_record(root: Path, name: str) -> dict:
 
 def source_records(root: Path, paths: list[str]) -> list[dict]:
     """Bind every tracked object; links resolve only into the tracked closure."""
-    records = [input_record(root, p) for p in paths]
+    root = root.resolve(strict=True)
+    records = [_input_record_at(root, p) for p in paths]
     names = set(paths)
     for row in records:
         if row["mode"] != "120000":
             continue
         target = (root / row["path"]).resolve(strict=True)
-        relative = str(target.relative_to(root.resolve()))
+        relative = str(target.relative_to(root))
         if relative not in names and not (
             target.is_dir() and any(p.startswith(relative + "/") for p in names)
         ):
@@ -159,6 +175,17 @@ def tool_record() -> dict:
                     "mode": path.stat().st_mode & 0o777,
                 }
             )
+    observer = shutil.which("strace")
+    if observer is not None:
+        path = Path(observer).resolve(strict=True)
+        rows.append(
+            {
+                "distribution": "owned-request-access-observer",
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "mode": path.stat().st_mode & 0o777,
+            }
+        )
     return {
         "python": sys.version,
         "pytest": importlib.metadata.version("pytest"),
@@ -192,12 +219,141 @@ def git(root: Path, *args: str) -> str:
         raise EvidenceError("git-source-unavailable") from exc
 
 
+def committed_records(root: Path, ref: str) -> list[dict]:
+    """Read complete original Git bodies/modes without dereferencing old links."""
+    records = []
+    for row in git(root, "ls-tree", "-r", "-z", ref).split("\0"):
+        if not row:
+            continue
+        info, path = row.split("\t", 1)
+        mode, kind, blob = info.split()
+        public_path(path)
+        if kind != "blob" or mode not in {"100644", "100755", "120000"}:
+            raise EvidenceError("unsupported-before-source-object")
+        body = subprocess.check_output(
+            ["git", "-C", str(root), "cat-file", "blob", blob], env=git_environment()
+        )
+        record = {"path": path, "sha256": hashlib.sha256(body).hexdigest(), "mode": mode}
+        if mode == "120000":
+            record["link"] = body.decode()
+        records.append(record)
+    return sorted(records, key=lambda r: r["path"])
+
+
+def committed_body(root: Path, ref: str, path: str) -> bytes:
+    """Source mutation identity includes every original byte, including final LF."""
+    public_path(path)
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "show", ref + ":" + path],
+            stderr=subprocess.DEVNULL,
+            env=git_environment(),
+        )
+    except subprocess.CalledProcessError as exc:
+        raise EvidenceError("git-source-unavailable") from exc
+
+
 def test_path(path: str) -> bool:
     p = PurePosixPath(path)
     return p.suffix == ".py" and (
         p.parts[0] == "tests"
         or (len(p.parts) > 3 and p.parts[0] == "roster" and p.parts[2] == "tests")
     )
+
+
+def validate_execution_request(plan: dict) -> None:
+    fields(
+        plan,
+        {"base", "scope", "removed", "survivors", "cluster", "bead", "contract", "mapping"}
+        | ({"lineage"} if "lineage" in plan else set()),
+    )
+    if "lineage" in plan:
+        import condensation_lineage as lineage
+
+        lineage.request(plan["lineage"])
+    if plan["base"] != "event-base":
+        raise EvidenceError("plan-needs-fresh-event-base")
+    for key in ("scope", "removed", "survivors"):
+        rows = plan[key]
+        if (
+            not isinstance(rows, list)
+            or not rows
+            or any(not isinstance(row, str) or not row for row in rows)
+            or len(rows) != len(set(rows))
+        ):
+            raise EvidenceError("invalid-fresh-plan-selection")
+    if not isinstance(plan["mapping"], dict) or set(plan["mapping"]) != set(plan["removed"]):
+        raise EvidenceError("unmapped-fresh-plan-owner")
+    for row in plan["mapping"].values():
+        fields(row, {"survivors", "reason"})
+        if (
+            not isinstance(row["reason"], str)
+            or not row["reason"]
+            or not isinstance(row["survivors"], list)
+            or not row["survivors"]
+            or any(not isinstance(n, str) for n in row["survivors"])
+            or not set(row["survivors"]) <= set(plan["survivors"])
+        ):
+            raise EvidenceError("unmapped-fresh-plan-survivor")
+    fields(plan["contract"], {"class", "cites"})
+    if (
+        plan["contract"]["class"] not in PROTECTED
+        or not isinstance(plan["contract"]["cites"], list)
+        or not plan["contract"]["cites"]
+        or any(not isinstance(c, str) or not c for c in plan["contract"]["cites"])
+    ):
+        raise EvidenceError("invalid-fresh-plan-contract")
+
+
+def execution_request_inputs(root: Path, inputs: list) -> set[str]:
+    """Recognize only a complete request consumed by this exact proof protocol.
+
+    A discovery path alone is not authority. The strict whole object must equal
+    the required consumer's complete request grammar; its full body/mode stays
+    bound, and workers forbid its use as runtime data.
+    """
+    result = set()
+    for row in inputs:
+        path = row["path"]
+        if (
+            path.startswith("tests/condensation-plans/")
+            and path.endswith(".json")
+            and row["mode"] in {"100644", "100755"}
+        ):
+            try:
+                candidate = strict_json(root / path)
+                validate_execution_request(candidate)
+            except EvidenceError:
+                continue
+            result.add(path)
+    return result
+
+
+def production_dependencies(
+    before: list, current: list, scope: list, paired, requests: set
+) -> None:
+    """Both producer and required reader refuse unproved changed dependencies."""
+    old = {r["path"]: r for r in before}
+    new = {r["path"]: r for r in current}
+    for path in set(old) | set(new):
+        if path in {
+            "scripts/condense_evidence.py",
+            "scripts/check_condensation_ledger.py",
+            "scripts/condensation_lineage.py",
+        } or test_path(path):
+            continue
+        if old.get(path) == new.get(path):
+            continue
+        if path in requests:
+            continue
+        if path in {"uv.lock", "pyproject.toml"}:
+            raise EvidenceError("changed-environment-needs-independent-installed-tools")
+        if not path.endswith(".py"):
+            raise EvidenceError("changed-non-python-dependency-needs-independent-runtime-proof")
+        if not paired:
+            raise EvidenceError("changed-production-dependency-needs-independent-lineage-proof")
+        if (path in old and path not in paired["scope"]) or (path in new and path not in scope):
+            raise EvidenceError("changed-dependency-outside-paired-scope")
 
 
 def ast_record(node):
@@ -484,8 +640,14 @@ def preserving_owner_arguments(before: dict, current: dict) -> bool:
 
 
 def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None:
-    """Qualify preserving additive owners for fresh execution, never exemption."""
-    losses = destructive_changes(root, base)
+    """Qualify named owners for execution; the required guard still scans all owners.
+
+    This does not repeat the guard's entire unrelated suite scan inside each
+    finite proof. Every named body/context and actual ancestor remains checked;
+    an omitted destructive owner still refuses in complete consumer accounting.
+    """
+    old_records = {r["path"]: r for r in committed_records(root, base)}
+    current_paths = set(tracked_paths(root))
     cache = {}
     for owner in owners:
         path = owner.split("::", 1)[0]
@@ -498,20 +660,14 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
         old_source = git(root, "show", f"{base}:{path}")
         new_source = (root / path).read_text()
         if (
-            losses.get(owner)
-            not in {
-                None,
-                "fixture-helper-or-marker-context-loss",
-                "import-context-loss",
-                "test-execution-structure-change",
-                "fixture-or-parameter-change",
-            }
-            or old is None
+            old is None
             or new is None
+            or old_records[path]["mode"] != input_record(root, path)["mode"]
         ):
             raise EvidenceError("same-owner-context-not-preserving")
         if (
             not preserving_import_bindings(old_source, new_source)
+            or not contains_ordered(old["assertions"], new["assertions"])
             or old["decorators"] != new["decorators"]
             or old["markers"] != new["markers"]
             or not preserving_owner_arguments(old["args_tree"], new["args_tree"])
@@ -519,6 +675,18 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
             or not preserving_statements(old["context_tree"], new["context_tree"])
         ):
             raise EvidenceError("same-owner-context-not-preserving")
+        for ancestor in PurePosixPath(path).parents:
+            name = (ancestor / "conftest.py").as_posix()
+            if name not in old_records and name not in current_paths:
+                continue
+            if name not in old_records or name not in current_paths:
+                raise EvidenceError("same-owner-ancestral-fixture-change")
+            if input_record(root, name)["mode"] == "120000":
+                raise EvidenceError("indirect-fixture-source")
+            if old_records[name]["mode"] != input_record(root, name)["mode"] or ast.dump(
+                ast.parse(committed_body(root, base, name))
+            ) != ast.dump(ast.parse((root / name).read_bytes())):
+                raise EvidenceError("same-owner-ancestral-fixture-change")
 
 
 def destructive_changes(root: Path, base: str) -> dict[str, str]:
@@ -695,7 +863,13 @@ def coverage_arcs(path: Path, run: dict) -> dict:
 
 
 def executable_proof(
-    directory: Path, proof: dict, binding: dict, removed: list, survivors: list
+    directory: Path,
+    proof: dict,
+    binding: dict,
+    removed: list,
+    survivors: list,
+    *,
+    root: Path | None = None,
 ) -> None:
     runs = proof["runs"]
     by_id = {r["id"]: r for r in runs}
@@ -705,6 +879,32 @@ def executable_proof(
     scope_inputs = [next(r for r in binding["inputs"] if r["path"] == p) for p in scope]
     if len(scope_inputs) != len(scope) or any(r["mode"] == "120000" for r in scope_inputs):
         raise EvidenceError("unbound-production-scope")
+    paired = binding.get("lineage")
+    scopes = {"removed": paired["scope"] if paired else scope, "survivors": scope}
+    side_inputs = {
+        "removed": paired["inputs"] if paired else binding["inputs"],
+        "survivors": binding["inputs"],
+    }
+    scope_records = {
+        side: [next(r for r in records if r["path"] == p) for p in scopes[side]]
+        for side, records in side_inputs.items()
+    }
+    if paired:
+        import condensation_lineage as lineage
+
+        if root is None:
+            raise EvidenceError("missing-source-lineage-root")
+        before_sources = {
+            p: committed_body(root, binding["base"], p).decode() for p in scopes["removed"]
+        }
+        current_sources = {p: (root / p).read_bytes().decode() for p in scope}
+        points = lineage.alignment(before_sources, current_sources, paired["functions"])
+        expected_pairs = lineage.paired_mutants(
+            points,
+            lineage.generate_mutants({p: t.encode() for p, t in before_sources.items()}),
+            lineage.generate_mutants({p: t.encode() for p, t in current_sources.items()}),
+        )
+        expected_mutants = {old["id"]: (old, new) for old, new in expected_pairs}
     baselines = {}
     expected_flags = [
         "-n",
@@ -728,7 +928,7 @@ def executable_proof(
             raise EvidenceError("run-readback-mismatch")
         if (
             run["tools"] != binding["tools"]
-            or run["scope"] != scope
+            or run["scope"] != scopes.get(run["side"])
             or run["command_flags"] != expected_flags
         ):
             raise EvidenceError("changed-tool-scope-or-command")
@@ -748,7 +948,7 @@ def executable_proof(
         if actual_arcs != run["arcs"]:
             raise EvidenceError("branch-carrier-summary-mismatch")
         if run["id"] == side + "-baseline":
-            if run["exit"] != 0 or run["scope_inputs"] != scope_inputs:
+            if run["exit"] != 0 or run["scope_inputs"] != scope_records[side]:
                 raise EvidenceError("unhealthy-or-changed-baseline")
             baselines[side] = run
     if set(baselines) != {"removed", "survivors"}:
@@ -776,23 +976,12 @@ def executable_proof(
     for mutant in mutants:
         if (
             mutant["status"] != "RESTORED"
-            or mutant["path"] not in scope
+            or mutant["path"] not in scopes["removed"]
             or not HEX.fullmatch(mutant["id"])
         ):
             raise EvidenceError("unrestored-or-unbound-mutant")
-        before_input = next(r for r in scope_inputs if r["path"] == mutant["path"])
-        if (
-            mutant["before_sha256"] != before_input["sha256"]
-            or ("100755" if mutant["before_mode"] & 0o111 else "100644") != before_input["mode"]
-        ):
-            raise EvidenceError("mutation-journal-source-binding")
-        before_path = directory / public_path(mutant["before_file"])
-        if (
-            before_path.is_symlink()
-            or not before_path.is_file()
-            or hashlib.sha256(before_path.read_bytes()).hexdigest() != mutant["before_sha256"]
-        ):
-            raise EvidenceError("mutation-journal-before-mismatch")
+        if paired and mutant["id"] not in expected_mutants:
+            raise EvidenceError("unbound-paired-mutation")
         killed_owners = {}
         for side in baselines:
             label = mutant["id"] + "-" + side
@@ -801,11 +990,36 @@ def executable_proof(
                 raise EvidenceError("missing-mutation-or-restoration-run")
             run, restored = by_id[label], by_id[label + "-restored"]
             baseline = baselines[side]
+            change = mutant["current"] if paired and side == "survivors" else mutant
+            before_input = next(r for r in scope_records[side] if r["path"] == change["path"])
+            if (
+                change["before_sha256"] != before_input["sha256"]
+                or ("100755" if change["before_mode"] & 0o111 else "100644") != before_input["mode"]
+                or change["status"] != "RESTORED"
+            ):
+                raise EvidenceError("mutation-journal-source-binding")
+            before_path = directory / public_path(change["before_file"])
+            if (
+                before_path.is_symlink()
+                or not before_path.is_file()
+                or hashlib.sha256(before_path.read_bytes()).hexdigest() != change["before_sha256"]
+            ):
+                raise EvidenceError("mutation-journal-before-mismatch")
+            if paired:
+                actual = expected_mutants[mutant["id"]][0 if side == "removed" else 1]
+                if (
+                    any(
+                        change.get(k) != actual[k]
+                        for k in ("id", "path", "line", "column", "operator")
+                    )
+                    or change["after_sha256"] != hashlib.sha256(actual["body"]).hexdigest()
+                ):
+                    raise EvidenceError("changed-paired-mutation-operation")
             expected = [
-                dict(r, sha256=mutant["after_sha256"]) if r["path"] == mutant["path"] else r
-                for r in scope_inputs
+                dict(r, sha256=change["after_sha256"]) if r["path"] == change["path"] else r
+                for r in scope_records[side]
             ]
-            if run["scope_inputs"] != expected or restored["scope_inputs"] != scope_inputs:
+            if run["scope_inputs"] != expected or restored["scope_inputs"] != scope_records[side]:
                 raise EvidenceError("mutant-source-or-restoration-binding")
             population = {(r["key"], r["node"]) for r in baseline["cases"]}
             if {(r["key"], r["node"]) for r in run["cases"]} != population or restored[
@@ -822,15 +1036,22 @@ def executable_proof(
             lost.append(mutant["id"])
     if set(by_id) != expected_ids:
         raise EvidenceError("unexpected-run-population")
+    if paired and {m["id"] for m in mutants} != set(expected_mutants):
+        raise EvidenceError("incomplete-paired-mutation-population")
     if (
         any(kills[side] != proof["mutation"]["killed_by_" + side] for side in kills)
         or lost != proof["mutation"]["lost"]
     ):
         raise EvidenceError("mutation-summary-mismatch")
-    residue = named_coverage_residue(
-        baselines["removed"],
-        baselines["survivors"],
-        {row["node"]: row["survivors"] for row in removed},
+    mapping = {row["node"]: row["survivors"] for row in removed}
+    residue = (
+        lineage.residue(baselines["removed"], baselines["survivors"], mapping, points)
+        if paired
+        else named_coverage_residue(
+            baselines["removed"],
+            baselines["survivors"],
+            mapping,
+        )
     )
     if proof["coverage"]["residue"] != residue or proof["coverage"]["residue_arcs"] != len(residue):
         raise EvidenceError("coverage-residue-summary-mismatch")
@@ -934,7 +1155,20 @@ def verify_ledger(
     if (
         not isinstance(binding, dict)
         or set(binding)
-        != {"base", "head", "tree", "inputs", "inputs_hash", "nonce", "selection", "scope", "tools"}
+        != (
+            {
+                "base",
+                "head",
+                "tree",
+                "inputs",
+                "inputs_hash",
+                "nonce",
+                "selection",
+                "scope",
+                "tools",
+            }
+            | ({"lineage"} if "lineage" in binding else set())
+        )
         or binding.get("base") != git(root, "rev-parse", base)
     ):
         raise EvidenceError("base-identity")
@@ -952,6 +1186,33 @@ def verify_ledger(
         raise EvidenceError("incomplete-input-inventory")
     if inputs != source_records(root, tracked_paths(root)):
         raise EvidenceError("changed-input-body-or-mode")
+    paired = binding.get("lineage")
+    old = committed_records(root, binding["base"])
+    if paired is not None:
+        import condensation_lineage as lineage
+
+        fields(paired, {"mode", "scope", "functions", "inputs"})
+        lineage.request({k: v for k, v in paired.items() if k != "inputs"})
+        if paired["inputs"] != old:
+            raise EvidenceError("changed-before-lineage-inputs")
+        old_by_path = {r["path"]: r for r in old}
+        new_by_path = {r["path"]: r for r in inputs}
+        if {p: r for p, r in old_by_path.items() if r["mode"] == "120000"} != {
+            p: r for p, r in new_by_path.items() if r["mode"] == "120000"
+        }:
+            raise EvidenceError("changed-source-link-needs-independent-lineage-proof")
+        for side, scope in ((old_by_path, paired["scope"]), (new_by_path, binding["scope"])):
+            for p in scope:
+                if (
+                    p not in side
+                    or side[p]["mode"] == "120000"
+                    or test_path(p)
+                    or Path(p).name.startswith("test_")
+                    or Path(p).name == "conftest.py"
+                ):
+                    raise EvidenceError("unbound-paired-production-scope")
+    requests = execution_request_inputs(root, inputs)
+    production_dependencies(old, inputs, binding["scope"], paired, requests)
     mandatory = {
         "uv.lock",
         "pyproject.toml",
@@ -959,6 +1220,8 @@ def verify_ledger(
         "scripts/check_condensation_ledger.py",
         "scripts/pre_push.py",
     }
+    if paired:
+        mandatory.add("scripts/condensation_lineage.py")
     if not mandatory <= {r["path"] for r in inputs}:
         raise EvidenceError("missing-tool-or-config-binding")
     if (
@@ -1037,12 +1300,34 @@ def verify_ledger(
                 "measurement_root",
                 "scope",
                 "scope_inputs",
+                "request_boundary",
+                "request_access",
                 "tools",
                 "side",
                 "artifact",
                 "coverage_artifact",
             },
         )
+        boundary = run["request_boundary"]
+        fields(boundary, {"inputs", "runtime_read", "descendant_execution"})
+        if (
+            boundary["inputs"] != sorted(requests)
+            or boundary["runtime_read"] is not False
+            or boundary["descendant_execution"] is not False
+        ):
+            raise EvidenceError("execution-request-runtime-boundary-unproved")
+        access = run["request_access"]
+        fields(access, {"observer", "inputs", "accesses", "probe_accesses", "complete"})
+        if (
+            access["observer"] != ("strace" if requests else "not-required")
+            or access["inputs"] != sorted(requests)
+            or access["complete"] is not True
+            or type(access["accesses"]) is not int
+            or access["accesses"] != 0
+            or type(access["probe_accesses"]) is not int
+            or (access["probe_accesses"] <= 0 if requests else access["probe_accesses"] != 0)
+        ):
+            raise EvidenceError("execution-request-access-observation-unproved")
         if (
             run.get("complete") is not True
             or run.get("cleanup") is not True
@@ -1070,7 +1355,7 @@ def verify_ledger(
             type(seconds) not in {int, float} or not math.isfinite(seconds) or seconds < 0
         ):
             raise EvidenceError("nonexact-timing")
-    executable_proof(directory, proof, binding, value["removed"], value["survivors"])
+    executable_proof(directory, proof, binding, value["removed"], value["survivors"], root=root)
     return removed
 
 
@@ -1151,8 +1436,15 @@ def ci_binding(root: Path, *, event: str, base: str, expected_head: str, source_
         raise EvidenceError("ci-checkout-or-base-mismatch")
     parents = git(root, "rev-list", "--parents", "-n", "1", expected_head).split()[1:]
     if event == "pull_request":
-        if parents != [base, source_head]:
+        if len(parents) != 2 or parents[1] != source_head or parents[0] == source_head:
             raise EvidenceError("ci-pr-union-mismatch")
+        # The event's comparison base may precede the provider checkout's
+        # public parent. Keep that exact event base for the complete loss scan;
+        # independently prove the actual newer parent and resulting union.
+        git(root, "merge-base", "--is-ancestor", base, parents[0])
+        union_tree = git(root, "merge-tree", "--write-tree", parents[0], source_head)
+        if union_tree != git(root, "rev-parse", f"{expected_head}^{{tree}}"):
+            raise EvidenceError("ci-pr-union-tree-mismatch")
     elif event in {"merge_group", "push"}:
         if source_head != expected_head:
             raise EvidenceError("ci-event-head-mismatch")
@@ -1161,6 +1453,232 @@ def ci_binding(root: Path, *, event: str, base: str, expected_head: str, source_
     else:
         raise EvidenceError("unsupported-ci-event")
     return base
+
+
+def _refusal_directory(path: Path) -> int:
+    """Pin a physical diagnostic directory without following any path component."""
+    descriptor = -1
+    try:
+        absolute = Path(os.path.abspath(path))
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+        descriptor = os.open(absolute.anchor, flags)
+        for part in absolute.parts[1:]:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except OSError:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        return -1
+
+
+def publish_refusal_summary(summary: dict, directory_fd: int, name: str) -> None:
+    """Create only a new owned output; occupied names and failed writes stay unknown."""
+    descriptor = -1
+    try:
+        body = (json.dumps(summary, sort_keys=True) + "\n").encode()
+        if directory_fd < 0 or len(body) > 1024 * 1024:
+            return
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o666,
+            dir_fd=directory_fd,
+        )
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return
+        remaining = memoryview(body)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                return
+            remaining = remaining[written:]
+    except OSError:
+        pass
+    finally:
+        if descriptor >= 0:
+            # Never unlink a pathname a failed child can replace. Partial
+            # diagnostics are unavailable, never admission or primary errors.
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def fresh_proof_refusal(
+    config: Path | dict,
+    run: Path,
+    record: dict,
+    refusal: Exception,
+    *,
+    publication_fd: int | None = None,
+    emit: bool = True,
+) -> dict:
+    """Retain closed diagnostic identity without publishing child output or operands."""
+    categories = {
+        "proof-started",
+        "proof-timeout",
+        "proof-total-timeout",
+        "worker-incomplete",
+        "worker-phases-or-tracer-unknown",
+        "baseline-not-healthy",
+        "restored-baseline-not-healthy",
+        "owned-launch-identity-unknown",
+        "owned-group-completion-unknown",
+        "request-access-observer-unavailable",
+        "missing-selected-case-owner",
+        "same-owner-case-population-change",
+        "changed-case-population",
+        "nonsemantic-mutation-outcome",
+        "mutation-restore-unknown",
+        "live-source-changed-during-proof",
+    }
+
+    def read(path):
+        try:
+            # Validate the opened object, not a pathname checked before a
+            # blocking open. A failed child's FIFO or device is not a receipt.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(fd)
+                limit = 1024 * 1024
+                if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+                    return None
+                with os.fdopen(fd, "rb", closefd=False) as source:
+                    body = source.read(limit + 1)
+                if len(body) > limit:
+                    return None
+                value = _strict_json_body(body.decode())
+                # Decoding a bounded body does not prove that its nested
+                # values can be projected into canonical diagnostic hashes.
+                # Validate that operation while this carrier is still inside
+                # the unavailable-diagnostic boundary and descriptor lifetime.
+                canonical(value)
+                return value
+            finally:
+                os.close(fd)
+        except (ValueError, TypeError, RecursionError, OSError, UnicodeError):
+            return None
+
+    receipt = read(run / "receipt.json") or {}
+    category = receipt.get("category")
+    status = receipt.get("status")
+
+    def boolean(value):
+        return value if type(value) is bool else None
+
+    def integer(value):
+        return value if type(value) is int else None
+
+    requests = []
+    for path in sorted(run.glob("*.request.json")):
+        request = read(path)
+        if request is None:
+            requests.append({"available": False})
+            continue
+        nonce = request.get("nonce")
+        # Derive sibling carriers from the actual producer naming convention;
+        # never follow a path supplied by the child request or its output.
+        output = path.with_name(path.name.removesuffix(".request.json") + ".json")
+        result = read(output) or {}
+        access = read(output.with_suffix(".access.json")) or {}
+        boundary = result.get("request_boundary")
+        boundary = boundary if isinstance(boundary, dict) else {}
+        requests.append(
+            {
+                "available": True,
+                "canonical_request_sha256": canonical(request),
+                "nonce": nonce if isinstance(nonce, str) and HEX.fullmatch(nonce) else None,
+                "result_available": bool(result),
+                "complete": boolean(result.get("complete")),
+                "cleanup": boolean(result.get("cleanup")),
+                "core": "ctrace" if result.get("core") == "ctrace" else "unknown",
+                "exit": integer(result.get("exit")),
+                "selected": integer(result.get("selected")),
+                "deselected": integer(result.get("deselected")),
+                "runtime_read": boolean(boundary.get("runtime_read")),
+                "descendant_execution": boolean(boundary.get("descendant_execution")),
+                "access_complete": boolean(access.get("complete")),
+                "accesses": integer(access.get("accesses")),
+                "probe_accesses": integer(access.get("probe_accesses")),
+            }
+        )
+    config_body = read(config) if isinstance(config, Path) else config
+    try:
+        config_hash = canonical(config_body)
+    except (ValueError, TypeError, RecursionError):
+        config_hash = canonical(None)
+    producer_binding = record.get("producer_binding")
+    fixed_binding = None
+    if isinstance(producer_binding, dict):
+        fixed_binding = {}
+        for key, digits in [("head", 40), ("tree", 40), ("program_sha256", 64), ("nonce", 64)]:
+            value = producer_binding.get(key)
+            fixed_binding[key] = (
+                value
+                if isinstance(value, str) and re.fullmatch("[0-9a-f]{" + str(digits) + "}", value)
+                else None
+            )
+    outer = str(refusal)
+    summary = {
+        "kind": "fresh-condensation-proof-refusal",
+        "outer": outer
+        if outer in {"condensation-proof:timeout", "condensation-proof:exit-1"}
+        else "unclassified",
+        "canonical_request_sha256": config_hash,
+        "producer_binding": fixed_binding,
+        "tracked_request_record_sha256": canonical(record),
+        "receipt_available": bool(receipt),
+        "status": status
+        if isinstance(status, str) and status in {"UNKNOWN", "REFUSED", "PASS"}
+        else "unknown",
+        "category": category
+        if isinstance(category, str) and category in categories
+        else "unclassified",
+        "category_sha256": canonical(category),
+        "restored": boolean(receipt.get("restored")),
+        "cleanup": boolean(receipt.get("cleanup")),
+        "worker_requests": requests,
+    }
+    # This is diagnostic custody only. Missing/corrupt diagnostics never admit
+    # the failed proof, and the original categorical refusal remains primary.
+    own_descriptor = publication_fd is None
+    if own_descriptor:
+        publication_fd = _refusal_directory(run.parent)
+    try:
+        publish_refusal_summary(summary, publication_fd, run.name + "-refusal.json")
+    finally:
+        if own_descriptor and publication_fd >= 0:
+            try:
+                os.close(publication_fd)
+            except OSError:
+                pass
+    # Hosted pytest sanitizes failure/stdout payloads. Retain only this same
+    # closed projection in its existing evidence directory so a refused inner
+    # proof remains diagnosable after the temporary subject is removed.
+    evidence_home = os.environ.get("TEST_EVIDENCE_DIR")
+    if evidence_home:
+        evidence_fd = _refusal_directory(Path(evidence_home))
+        try:
+            publish_refusal_summary(
+                summary,
+                evidence_fd,
+                "condensation-refusal-" + canonical(record) + "-" + canonical(summary) + ".json",
+            )
+        finally:
+            if evidence_fd >= 0:
+                try:
+                    os.close(evidence_fd)
+                except OSError:
+                    pass
+    if emit:
+        print(json.dumps(summary, sort_keys=True))
+    return summary
 
 
 def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
@@ -1182,42 +1700,7 @@ def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
         if record["mode"] == "120000":
             raise EvidenceError("indirect-condensation-plan")
         plan = strict_json(plan_path)
-        fields(
-            plan,
-            {"base", "scope", "removed", "survivors", "cluster", "bead", "contract", "mapping"},
-        )
-        if plan["base"] != "event-base":
-            raise EvidenceError("plan-needs-fresh-event-base")
-        for key in ("scope", "removed", "survivors"):
-            rows = plan[key]
-            if (
-                not isinstance(rows, list)
-                or not rows
-                or any(not isinstance(row, str) or not row for row in rows)
-                or len(rows) != len(set(rows))
-            ):
-                raise EvidenceError("invalid-fresh-plan-selection")
-        if not isinstance(plan["mapping"], dict) or set(plan["mapping"]) != set(plan["removed"]):
-            raise EvidenceError("unmapped-fresh-plan-owner")
-        for row in plan["mapping"].values():
-            fields(row, {"survivors", "reason"})
-            if (
-                not isinstance(row["reason"], str)
-                or not row["reason"]
-                or not isinstance(row["survivors"], list)
-                or not row["survivors"]
-                or any(not isinstance(n, str) for n in row["survivors"])
-                or not set(row["survivors"]) <= set(plan["survivors"])
-            ):
-                raise EvidenceError("unmapped-fresh-plan-survivor")
-        fields(plan["contract"], {"class", "cites"})
-        if (
-            plan["contract"]["class"] not in PROTECTED
-            or not isinstance(plan["contract"]["cites"], list)
-            or not plan["contract"]["cites"]
-            or any(not isinstance(c, str) or not c for c in plan["contract"]["cites"])
-        ):
-            raise EvidenceError("invalid-fresh-plan-contract")
+        validate_execution_request(plan)
         if not set(plan["removed"]) & set(losses):
             # A request is relevant only to actual losses at this exact base.
             # Its mere continued presence cannot manufacture an admission or
@@ -1229,6 +1712,9 @@ def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
         config = output / f"plan-{index}.json"
         config.write_text(json.dumps(plan, sort_keys=True) + "\n")
         run = output / f"proof-{index}"
+        # Pin the original output directory before the child can replace any
+        # path. Publication uses this descriptor, not a post-child pathname.
+        publication_fd = _refusal_directory(output)
         try:
             run_checked(
                 "condensation-proof",
@@ -1246,8 +1732,15 @@ def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
                 root,
                 timeout=70,
             )
-        except Refusal:
+        except Refusal as exc:
+            fresh_proof_refusal(config, run, record, exc, publication_fd=publication_fd)
             raise EvidenceError("fresh-condensation-proof-refused") from None
+        finally:
+            if publication_fd >= 0:
+                try:
+                    os.close(publication_fd)
+                except OSError:
+                    pass
         if input_record(root, name) != record:
             raise EvidenceError("plan-changed-during-execution")
         ledgers.append(run / "ledger.json")

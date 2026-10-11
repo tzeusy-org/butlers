@@ -12,24 +12,35 @@ import io
 import json
 import os
 import secrets
+import select
 import shutil
 import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+# The owned launcher must not run project startup hooks before the external
+# request-access observer starts. Restore only this exact installed script home.
+if __name__ == "__main__" and sys.flags.isolated:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_condensation_ledger import (
     PROTECTED,
     EvidenceError,
     canonical,
+    execution_request_inputs,
     fields,
+    fresh_proof_refusal,
     git,
     git_environment,
     input_record,
     named_coverage_residue,
+    production_dependencies,
     public_path,
     same_owner_context_accounts,
     source_records,
@@ -58,10 +69,16 @@ def publish(path: Path, value: dict) -> None:
 
 
 def owned_run(
-    command: list[str], *, cwd: Path, env: dict, timeout: float, process_record: Path | None = None
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict,
+    timeout: float,
+    process_record: Path | None = None,
+    cancellation: threading.Event | None = None,
 ) -> tuple[int, bool]:
     """Use the landed R1 completion admission for this exact owned child group."""
-    launched = [sys.executable, str(Path(__file__).resolve()), "_launch", *command]
+    launched = [sys.executable, "-I", str(Path(__file__).resolve()), "_launch", *command]
     child = subprocess.Popen(
         launched,
         cwd=cwd,
@@ -80,7 +97,24 @@ def owned_run(
         child.stdin.write(b"1")
         child.stdin.close()
         try:
-            return child.wait(timeout=timeout), True
+            if cancellation is None:
+                return child.wait(timeout=timeout), True
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise EvidenceError("proof-timeout")
+                try:
+                    # Retain an actual completed child's result before acting on
+                    # sibling cancellation. The existing finite wait quantum
+                    # still bounds cancellation of a child that is running.
+                    return child.wait(timeout=min(0.1, remaining)), True
+                except subprocess.TimeoutExpired:
+                    if cancellation.is_set():
+                        completed = child.poll()
+                        if completed is not None:
+                            return completed, True
+                        raise InterruptedError
         except subprocess.TimeoutExpired:
             raise EvidenceError("proof-timeout") from None
     finally:
@@ -141,22 +175,23 @@ def _recover(output: Path) -> dict:
             except Refusal:
                 raise EvidenceError("recovery-owned-group-completion-unknown") from None
         for mutation in journal["mutations"]:
-            name = public_path(mutation["path"])
-            before = output / public_path(mutation["before_file"])
-            if (
-                before.is_symlink()
-                or hashlib.sha256(before.read_bytes()).hexdigest() != mutation["before_sha256"]
-            ):
-                raise EvidenceError("recovery-journal-body-mismatch")
             for side in ("removed", "survivors"):
+                record = mutation.get("current", mutation) if side == "survivors" else mutation
+                name = public_path(record["path"])
+                before = output / public_path(record["before_file"])
+                if (
+                    before.is_symlink()
+                    or hashlib.sha256(before.read_bytes()).hexdigest() != record["before_sha256"]
+                ):
+                    raise EvidenceError("recovery-journal-body-mismatch")
                 target = owned / side / name
                 if target.is_symlink() or owned not in target.resolve().parents:
                     raise EvidenceError("indirect-recovery-target")
                 target.write_bytes(before.read_bytes())
-                target.chmod(mutation["before_mode"])
+                target.chmod(record["before_mode"])
                 if (
                     target.read_bytes() != before.read_bytes()
-                    or target.stat().st_mode & 0o777 != mutation["before_mode"]
+                    or target.stat().st_mode & 0o777 != record["before_mode"]
                 ):
                     raise EvidenceError("recovery-restore-unknown")
         journal["status"] = "RESTORED"
@@ -200,6 +235,28 @@ def worker(request: Path) -> int:
         data_file=str(output.with_suffix(".coverage")),
         config_file=False,
     )
+    control_inputs = {str(root / public_path(p)) for p in config.get("control_inputs", [])}
+    control_read = False
+    descendant_execution = False
+
+    def guard_control_input(event, args):
+        nonlocal control_read, descendant_execution
+        if control_inputs and event in {
+            "subprocess.Popen",
+            "os.system",
+            "os.fork",
+            "os.forkpty",
+            "os.exec",
+            "os.posix_spawn",
+        }:
+            # This worker's open audit cannot observe descendant reads. Keep
+            # their actual execution/lifecycle intact, but never certify an
+            # excluded request dependency without that isolation evidence.
+            descendant_execution = True
+        if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):
+            if os.path.realpath(os.fsdecode(args[0])) in control_inputs:
+                control_read = True
+                raise RuntimeError("execution-request-used-as-runtime-data")
 
     class ProofPlugin:
         def pytest_deselected(self, items):
@@ -255,6 +312,11 @@ def worker(request: Path) -> int:
         os.environ["COVERAGE_CORE"] = "ctrace"
         cov.start()
         tracer = dict(cov.sys_info()).get("core", "UNKNOWN")
+        # Establish the installed tracer first: its sys_info reads platform
+        # metadata through an owned subprocess. No subject has been imported or
+        # invoked yet. Guard every subsequent event, before pytest's collection,
+        # configuration, fixture or call execution; there is no executor bypass.
+        sys.addaudithook(guard_control_input)
         args = [
             *selected,
             "-n",
@@ -294,6 +356,8 @@ def worker(request: Path) -> int:
     public_cases = list(cases.values())
     complete = (
         complete_collection
+        and not control_read
+        and not descendant_execution
         and deselected == 0
         and tracer == "CTracer"
         and all(
@@ -322,17 +386,21 @@ def worker(request: Path) -> int:
             "measurement_root": str(root),
             "scope": config["scope"],
             "scope_inputs": [input_record(root, p) for p in config["scope"]],
+            "request_boundary": {
+                "inputs": sorted(config.get("control_inputs", [])),
+                "runtime_read": control_read,
+                "descendant_execution": descendant_execution,
+            },
             "tools": tool_record(),
         },
     )
     return 0 if complete else 2
 
 
-def mutants(root: Path, scope: list[str]) -> list[dict]:
+def generate_mutants(sources: dict[str, bytes]) -> list[dict]:
     """Deterministic finite actual AST mutations; each changes one public source span."""
     result = []
-    for path in sorted(scope):
-        body = (root / public_path(path)).read_bytes()
+    for path, body in sorted(sources.items()):
         source = body.decode()
         lines = body.splitlines(keepends=True)
         for node in ast.walk(ast.parse(source)):
@@ -398,11 +466,16 @@ def mutants(root: Path, scope: list[str]) -> list[dict]:
                     "id": identity,
                     "path": path,
                     "line": node.lineno,
+                    "column": node.col_offset,
                     "operator": operator,
                     "body": changed_source.encode(),
                 }
             )
     return sorted(result, key=lambda r: r["id"])
+
+
+def mutants(root: Path, scope: list[str]) -> list[dict]:
+    return generate_mutants({p: (root / public_path(p)).read_bytes() for p in scope})
 
 
 def suite(
@@ -413,6 +486,8 @@ def suite(
     output: Path,
     id_: str,
     timeout: float,
+    control_inputs: set[str] | None = None,
+    cancellation: threading.Event | None = None,
 ) -> dict:
     request = output.with_suffix(".request.json")
     publish(
@@ -424,6 +499,7 @@ def suite(
             "nonce": nonce,
             "output": str(output),
             "id": id_,
+            "control_inputs": sorted(control_inputs or []),
         },
     )
     env = dict(os.environ)
@@ -433,21 +509,124 @@ def suite(
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["COVERAGE_CORE"] = "ctrace"
     command = [sys.executable, str(Path(__file__).resolve()), "_worker", str(request)]
-    code, cleaned = owned_run(
-        command,
-        cwd=copy_root,
-        env=env,
-        timeout=timeout,
-        process_record=output.with_suffix(".process.json"),
+    code, cleaned, access = request_access_run(
+        command, copy_root, request, output, env, timeout, control_inputs or set(), cancellation
     )
+    if output.is_file():
+        result = strict_json(output)
+        result["request_access"] = access
+        result["complete"] = result["complete"] and access["complete"] and access["accesses"] == 0
+        publish(output, result)
     if code != 0 or not output.is_file():
         raise EvidenceError("worker-incomplete")
     result = strict_json(output)
+    if not access["complete"] or access["accesses"]:
+        raise EvidenceError("worker-incomplete")
     if result["complete"] is not True or result["core"] != "ctrace":
         raise EvidenceError("worker-phases-or-tracer-unknown")
     result["cleanup"] = cleaned
     publish(output, result)
     return result
+
+
+def request_access_run(command, root, request, output, env, timeout, inputs, cancellation=None):
+    """Observe kernel file access from startup through owned group completion.
+
+    Only matched public request paths are traced. Raw syscall records stay in
+    the parent observer's RAM; a distinct actual request read proves the same
+    observer is live before an empty metadata-access result can be admitted.
+    """
+    access = {
+        "observer": "strace" if inputs else "not-required",
+        "inputs": sorted(inputs),
+        "accesses": 0,
+        "probe_accesses": 0,
+        "complete": not inputs,
+    }
+    process_record = output.with_suffix(".process.json")
+    if not inputs:
+        code, cleaned = owned_run(
+            command,
+            cwd=root,
+            env=env,
+            timeout=timeout,
+            process_record=process_record,
+            cancellation=cancellation,
+        )
+        return code, cleaned, access
+    tool = shutil.which("strace")
+    if tool is None:
+        raise EvidenceError("request-access-observer-unavailable")
+    pipe = output.with_suffix(".access-pipe")
+    os.mkfifo(pipe)
+    descriptor = os.open(pipe, os.O_RDWR | os.O_NONBLOCK)
+    stopped = threading.Event()
+    failed = threading.Event()
+    probe = ('"' + "".join("\\x" + format(b, "02x") for b in os.fsencode(request)) + '"').encode()
+
+    def collect():
+        pending = b""
+        try:
+            while True:
+                ready, _, _ = select.select([descriptor], [], [], 0.05)
+                if not ready:
+                    if stopped.is_set():
+                        break
+                    continue
+                chunk = os.read(descriptor, 65536)
+                pending += chunk
+                if len(pending) > 1024 * 1024:
+                    failed.set()
+                    pending = b""
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    if line:
+                        key = "probe_accesses" if probe in line else "accesses"
+                        access[key] += 1
+            if pending:
+                failed.set()
+        except (OSError, ValueError):
+            failed.set()
+
+    observer = threading.Thread(target=collect, name="owned-request-access", daemon=True)
+    observer.start()
+    traced = [
+        str(Path(tool).resolve()),
+        "-qq",
+        "-f",
+        "-xx",
+        "-s",
+        "0",
+        "-e",
+        "signal=none",
+        "-e",
+        "trace=%file",
+        "-o",
+        str(pipe),
+        "-P",
+        str(request),
+    ]
+    for name in sorted(inputs):
+        traced += ["-P", str(root / public_path(name))]
+    try:
+        code, cleaned = owned_run(
+            [*traced, *command],
+            cwd=root,
+            env=env,
+            timeout=timeout,
+            process_record=process_record,
+            cancellation=cancellation,
+        )
+    finally:
+        stopped.set()
+        observer.join(timeout=2)
+        os.close(descriptor)
+        pipe.unlink()
+    access["complete"] = (
+        cleaned and not observer.is_alive() and not failed.is_set() and access["probe_accesses"] > 0
+    )
+    publish(output.with_suffix(".access.json"), access)
+    return code, cleaned, access
 
 
 def snapshot_base(root: Path, base: str, destination: Path) -> None:
@@ -527,8 +706,10 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
     journal = []
     owned = None
     nonce = secrets.token_hex(32)
+    cancellation = threading.Event()
 
     def interrupted(_signum, _frame):
+        cancellation.set()
         raise InterruptedError
 
     for signum in [signal.SIGTERM, signal.SIGINT]:
@@ -549,7 +730,12 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
             "contract",
             "mapping",
         }
-        fields(config, required)
+        fields(config, required | ({"lineage"} if "lineage" in config else set()))
+        paired = config.get("lineage")
+        if paired is not None:
+            import condensation_lineage as lineage
+
+            lineage.request(paired)
         if any(
             not isinstance(config[k], str) or not config[k] for k in ("cluster", "bead", "base")
         ):
@@ -581,7 +767,12 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 or test_path(path)
                 or Path(path).name.startswith("test_")
                 or Path(path).name == "conftest.py"
-                or path in {"scripts/condense_evidence.py", "scripts/check_condensation_ledger.py"}
+                or path
+                in {
+                    "scripts/condense_evidence.py",
+                    "scripts/check_condensation_ledger.py",
+                    "scripts/condensation_lineage.py",
+                }
                 or input_record(root, path)["mode"] == "120000"
             ):
                 raise EvidenceError("scope-not-owned-production-python-source")
@@ -619,12 +810,31 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 copy_root.mkdir()
             snapshot_base(root, base, copies["removed"])
             snapshot_current(root, copies["survivors"], inputs)
-            if any(
+            if paired is None and any(
                 input_record(copies["removed"], p) != input_record(copies["survivors"], p)
                 for p in scope
             ):
                 raise EvidenceError("changed-production-scope-needs-independent-lineage-proof")
             base_paths = tracked_paths(root, base)
+            before_inputs = source_records(copies["removed"], base_paths)
+            scopes = {"removed": paired["scope"] if paired else scope, "survivors": scope}
+            if paired:
+                for path in scopes["removed"]:
+                    if (
+                        path not in base_paths
+                        or test_path(path)
+                        or Path(path).name.startswith("test_")
+                        or Path(path).name == "conftest.py"
+                        or input_record(copies["removed"], path)["mode"] == "120000"
+                    ):
+                        raise EvidenceError("before-scope-not-owned-production-python-source")
+                if any(r["current"]["path"] not in scope for r in paired["functions"]):
+                    raise EvidenceError("unbound-current-function-lineage")
+                points = lineage.alignment(
+                    {p: (copies["removed"] / p).read_bytes().decode() for p in scopes["removed"]},
+                    {p: (copies["survivors"] / p).read_bytes().decode() for p in scope},
+                    paired["functions"],
+                )
             old_links = {
                 r["path"]: r
                 for r in source_records(copies["removed"], base_paths)
@@ -633,25 +843,8 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
             new_links = {r["path"]: r for r in inputs if r["mode"] == "120000"}
             if old_links != new_links:
                 raise EvidenceError("changed-source-link-needs-independent-lineage-proof")
-            for path in set(base_paths) | set(paths):
-                # Test/helper edits are measured by the selected real populations.
-                # Other Python/config dependencies cannot silently change beneath
-                # a same-source branch/mutation comparison.
-                if path in {"scripts/condense_evidence.py", "scripts/check_condensation_ledger.py"}:
-                    continue
-                if test_path(path) or Path(path).name.startswith("test_"):
-                    continue
-                if not path.endswith(".py") and path not in {"uv.lock", "pyproject.toml"}:
-                    continue
-                if (
-                    path not in base_paths
-                    or path not in paths
-                    or input_record(copies["removed"], path)
-                    != input_record(copies["survivors"], path)
-                ):
-                    raise EvidenceError(
-                        "changed-production-dependency-needs-independent-lineage-proof"
-                    )
+            control_inputs = execution_request_inputs(root, inputs)
+            production_dependencies(before_inputs, inputs, scope, paired, control_inputs)
             publish(
                 output / "journal.json",
                 {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
@@ -662,16 +855,46 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise EvidenceError("proof-total-timeout")
-                run = suite(copies[kind], selections[kind], scope, nonce, path, label, remaining)
+                run = suite(
+                    copies[kind],
+                    selections[kind],
+                    scopes[kind],
+                    nonce,
+                    path,
+                    label,
+                    remaining,
+                    control_inputs,
+                    cancellation,
+                )
                 run["side"] = kind
                 publish(path, run)
                 run["artifact"] = artifact(path, output)
                 run["coverage_artifact"] = artifact(path.with_suffix(".coverage"), output)
-                runs.append(run)
                 return run
 
+            def execute_sides(label):
+                # The two source copies, requests, SQLite files and process groups
+                # are disjoint. Every phase still executes freshly under the same
+                # total deadline; joining both sides also completes failed cleanup.
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    pending = {kind: pool.submit(execute, kind, label(kind)) for kind in selections}
+                    try:
+                        sides = {future: kind for kind, future in pending.items()}
+                        observed = {
+                            sides[future]: future.result() for future in as_completed(sides)
+                        }
+                    except BaseException:
+                        cancellation.set()
+                        raise
+                # Completion order only controls prompt failure observation;
+                # successful carriers retain the original deterministic side order.
+                completed = {kind: observed[kind] for kind in selections}
+                runs.extend(completed.values())
+                return completed
+
+            baselines = execute_sides(lambda kind: kind + "-baseline")
             for kind in selections:
-                run = execute(kind, kind + "-baseline")
+                run = baselines[kind]
                 if run["exit"] != 0:
                     raise EvidenceError("baseline-not-healthy")
                 baseline[kind] = run
@@ -684,33 +907,44 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 ]
                 if populations[0] != populations[1]:
                     raise EvidenceError("same-owner-case-population-change")
-            generated = mutants(copies["removed"], scope)
+            generated = mutants(copies["removed"], scopes["removed"])
             if not generated or len(generated) > 64:
                 raise EvidenceError("empty-or-unbounded-mutation-scope")
-            for mutant in generated:
-                before = (copies["removed"] / mutant["path"]).read_bytes()
-                mode = (copies["removed"] / mutant["path"]).stat().st_mode & 0o777
-                saved = output / (mutant["id"] + ".before")
-                saved.write_bytes(before)
-                journal.append(
-                    {k: v for k, v in mutant.items() if k != "body"}
-                    | {
+            pairs = (
+                lineage.paired_mutants(points, generated, mutants(copies["survivors"], scope))
+                if paired
+                else [(m, m) for m in generated]
+            )
+            for mutant, current_mutant in pairs:
+                mutations = {"removed": mutant, "survivors": current_mutant}
+                originals, records = {}, {}
+                for kind, change in mutations.items():
+                    target = copies[kind] / change["path"]
+                    body, mode = target.read_bytes(), target.stat().st_mode & 0o777
+                    originals[kind] = (body, mode)
+                    saved = output / (mutant["id"] + "-" + kind + ".before")
+                    saved.write_bytes(body)
+                    records[kind] = {k: v for k, v in change.items() if k != "body"} | {
                         "before_file": saved.name,
-                        "before_sha256": hashlib.sha256(before).hexdigest(),
-                        "after_sha256": hashlib.sha256(mutant["body"]).hexdigest(),
+                        "before_sha256": hashlib.sha256(body).hexdigest(),
+                        "after_sha256": hashlib.sha256(change["body"]).hexdigest(),
                         "before_mode": mode,
                         "status": "UNKNOWN",
                     }
+                journal.append(
+                    records["removed"] | ({"current": records["survivors"]} if paired else {})
                 )
                 publish(
                     output / "journal.json",
                     {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
                 )
                 try:
-                    for copy_root in copies.values():
-                        (copy_root / mutant["path"]).write_bytes(mutant["body"])
+                    for kind, copy_root in copies.items():
+                        change = mutations[kind]
+                        (copy_root / change["path"]).write_bytes(change["body"])
+                    measured = execute_sides(lambda kind: mutant["id"] + "-" + kind)
                     for kind in selections:
-                        run = execute(kind, mutant["id"] + "-" + kind)
+                        run = measured[kind]
                         if {(r["key"], r["node"]) for r in run["cases"]} != {
                             (r["key"], r["node"]) for r in baseline[kind]["cases"]
                         }:
@@ -722,25 +956,34 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                         elif run["exit"] != 0:
                             raise EvidenceError("nonsemantic-mutation-outcome")
                 finally:
-                    for copy_root in copies.values():
-                        path = copy_root / mutant["path"]
-                        path.write_bytes(before)
+                    for kind, copy_root in copies.items():
+                        body, mode = originals[kind]
+                        path = copy_root / mutations[kind]["path"]
+                        path.write_bytes(body)
                         path.chmod(mode)
-                        if path.read_bytes() != before or path.stat().st_mode & 0o777 != mode:
+                        if path.read_bytes() != body or path.stat().st_mode & 0o777 != mode:
                             raise EvidenceError("mutation-restore-unknown")
+                restorations = execute_sides(lambda kind: mutant["id"] + "-" + kind + "-restored")
                 for kind in selections:
-                    restored = execute(kind, mutant["id"] + "-" + kind + "-restored")
+                    restored = restorations[kind]
                     if restored["exit"] != 0 or restored["cases"] != baseline[kind]["cases"]:
                         raise EvidenceError("restored-baseline-not-healthy")
                 journal[-1]["status"] = "RESTORED"
+                if paired:
+                    journal[-1]["current"]["status"] = "RESTORED"
                 publish(
                     output / "journal.json",
                     {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
                 )
-            residue = named_coverage_residue(
-                baseline["removed"],
-                baseline["survivors"],
-                {owner: row["survivors"] for owner, row in config["mapping"].items()},
+            mapping = {owner: row["survivors"] for owner, row in config["mapping"].items()}
+            residue = (
+                lineage.residue(baseline["removed"], baseline["survivors"], mapping, points)
+                if paired
+                else named_coverage_residue(
+                    baseline["removed"],
+                    baseline["survivors"],
+                    mapping,
+                )
             )
             lost = sorted(set(killed["removed"]) - set(killed["survivors"]))
             # Check each removed owner against its named survivors, beyond the union of kills.
@@ -766,6 +1009,8 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 "scope": scope,
                 "tools": baseline["removed"]["tools"],
             }
+            if paired:
+                binding["lineage"] = {**paired, "inputs": before_inputs}
             receipt = {
                 "status": "PASS" if not residue and not lost and killed["removed"] else "REFUSED",
                 "mode": "cov+mut",
@@ -844,6 +1089,32 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
         raise EvidenceError("proof-unknown-see-durable-receipt") from exc
     finally:
         publish(output / "receipt.json", receipt)
+        if os.environ.get("TEST_EVIDENCE_DIR") and receipt.get("status") != "PASS":
+            # A direct Python caller may fail before the required reader runs.
+            # Publish only the shared closed diagnostic, preserving the proof's
+            # original result/error and ordinary CLI stdout contract.
+            try:
+                fresh_proof_refusal(
+                    config,
+                    output,
+                    {
+                        "producer_binding": {
+                            "head": locals().get("initial_head"),
+                            "tree": locals().get("initial_tree"),
+                            "program_sha256": hashlib.sha256(
+                                Path(__file__).read_bytes()
+                            ).hexdigest(),
+                            "nonce": nonce,
+                        }
+                    },
+                    EvidenceError("direct-producer-refusal"),
+                    publication_fd=-1,
+                    emit=False,
+                )
+            except (OSError, ValueError, TypeError, RecursionError, UnicodeError):
+                # Unavailable diagnostic custody cannot replace the primary
+                # proof refusal or change restoration/group-exit admission.
+                pass
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
         lock.close()

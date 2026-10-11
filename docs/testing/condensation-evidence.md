@@ -27,14 +27,24 @@ opaque key; raw parameter identities and child error operands stay in RAM.
 Empty, skipped, deselected, incomplete or changed populations cannot pass.
 
 The removed population runs in the full exact Git base. Survivors run in a
-separate full current-source copy. Production scope must have identical bytes
-and modes. Changed implementations or Python/config dependencies need independent lineage
-proof and cannot use the current same-source producer. The two proof-tool files
+separate full current-source copy. The default route requires identical production bytes
+and modes. Changed implementations or Python dependencies need the explicit
+paired route below. Changed installed environments or links still refuse. The proof-tool files
 are current-bound execution machinery; their introduction grants no production
 dependency exemption. Ordinary tests retain their coverage core,
 markers and parallel defaults; only the isolated proof uses ctrace and `-n 0`.
 Its finite total budget defaults to60s and may be explicitly set up to300s. These
 proof times are not routine-lane or historical condensation savings.
+Within each baseline, mutant or restored phase, the two source sides execute
+concurrently in their separate owned copies. Each side still creates its own
+request, CoverageData SQLite file and process group; every phase executes anew.
+Both groups settle before mutation restoration or the next phase. An interruption
+or failed side cancels the other owned run and retains the existing cleanup and
+UNKNOWN requirements, within the same total budget. Completion from either side
+is observed promptly; successful carriers retain removed-then-survivors order
+regardless of completion order.
+Sibling cancellation retains an observed terminal child status while still
+stopping running children within the existing finite wait quantum.
 
 A protected PASS requires nonempty actual branch arcs, zero residue, no waived
 normative arcs, and every removed owner's semantic mutant kill retained by one
@@ -113,6 +123,16 @@ population. Later unrelated changes do not rerun an obsolete proof or treat its
 request as an admission.
 A new public base causes new execution, not rebinding of an older ledger.
 
+For a pull request, the event's exact comparison base and the checkout's actual
+public parent are separately bound. The comparison base must be an ancestor of
+the first parent; the second parent must be the exact event source head. The
+checkout tree must equal the freshly computed merge of those actual ordered
+parents. A provider checkout may include newer public history than the event
+payload. The complete loss scan and fresh requests still use the original event
+base, so that history cannot hide an unproved deletion. Wrong parents, unrelated
+bases or a forged union tree refuse before proof execution. Push and merge-group
+retain their existing exact-head and ancestor rules.
+
 For example, a retained imported owner uses this mapping within the existing full
 plan format:
 
@@ -136,11 +156,138 @@ finite60s budget. Multiple requests execute sequentially and retain their own
 carriers; no selector, CI predicate, general time cap or ordinary fork mode changes.
 
 Changed production/runtime or config dependencies still require independent
-lineage proof and cannot use this same-source route. This includes the dated
+lineage proof and cannot use the identical-source route. This includes the dated
 backend805 comparison: its31 import changes, two execution extensions and two
 fixture additions are classifications, not proven preservation of concurrent
 production changes. Real migrated roles and other protected runtime evidence
 retain their ordinary requirements. A plan cannot make those changes context-only.
+
+## Fresh paired production lineage
+
+Add an optional `lineage` object to the same complete plan when production
+operations move or gain additional execution. The top-level `scope` binds the
+complete current Python scope; `lineage.scope` binds the complete old scope.
+Every changed Python dependency must be explicitly included on each applicable
+side. The two full source universes and their Git bodies, modes and installed
+tools remain bound. Changed `uv.lock`, `pyproject.toml`, links and migration
+runtime do not qualify for this software route.
+
+```json
+{
+  "mode": "paired",
+  "scope": ["old_module.py"],
+  "functions": [
+    {
+      "before": {"path": "old_module.py", "function": "reply"},
+      "current": {"path": "new_module.py", "function": "reply"}
+    }
+  ]
+}
+```
+
+This is the `lineage` value, not a complete plan. Function identities are
+source-qualified names, including class/nested owners. Unchanged homes need
+no function row. A declared pair only identifies the two actual functions:
+the reader independently parses their signatures, defaults, decorators,
+return annotations, type parameters, keyword interface, source operations and
+control nesting. Ambiguous, missing
+or changed old operations refuse. Source coordinates select actual AST points;
+they never establish equivalence. Unmapped multiline/lambda or other unsupported
+source shapes remain unknown rather than disappearing from the account.
+
+Parameter-slot normalization applies only to the owning body's proven bindings.
+Definition-time defaults, decorators, argument/return annotations and type parameters
+retain their literal expressions; they cannot borrow the new function's parameter
+scope. Keyword interfaces stay exact. Enclosing bindings, namespace-observing calls
+and shadowing captures must retain their original lexical identity. Unsupported
+lambda/comprehension binding equivalence refuses rather than guessing. Synthetic
+comparison slots cannot collide with a real Python global name.
+
+References to namespace/frame observers preserve spellings across their module,
+including local and imported aliases. Renamed bindings are supported only in
+transparent linear local loads, fresh local bindings and direct returns. An
+assignment to an already-bound parameter or local refuses: dropping its old
+reference can invoke an implicit finalizer that observes the frame, even when
+the assigned value is a literal. This restriction applies to every assignment
+target, including repeated targets in a chained assignment. Other
+syntax can invoke user code through explicit calls, operators, descriptors,
+indexing, coercion, iteration or context protocols; this route refuses that
+unproved equivalence rather than selecting a safe callable, type or protocol by
+name. The actual producer and reader retain the healthy pure positional subset.
+
+The existing paired-source and same-source owning tests share the complete
+independent boundary companions. Their allocation keeps the twelve indirect
+species and finalizer control outside the already substantial paired-runtime
+item, without removing a case, borrowing a proof, or changing the 300-second
+pytest item limit or the producer's 60-second subprocess limit.
+
+Both modes compare the complete tracked dependency universe. Changed non-Python
+configuration/data or an unclassified input requires independent runtime proof;
+changed lock/environment inputs remain unsupported. A tracked execution request
+qualifies only through the same complete strict validator used by the required
+consumer, with its full body and mode bound. Its discovery directory or suffix
+alone gives no exemption. Each finite worker forbids that control object from
+being used as runtime data: even catching the access refusal leaves the run
+incomplete. Ordinary valid requests still execute through the original default
+reader. No metadata role authorizes a changed executed setting.
+
+That audit belongs to the finite Python worker. When excluded request inputs
+exist, an executed descendant makes the run UNKNOWN: its file reads are outside
+this audit, even if its output or pytest phases succeed. The original descendant
+execution and cleanup are preserved. Fresh no-child request proofs and ordinary
+child proofs without an excluded request role remain supported. Every run binds
+the exact recognized request-input set and records both runtime reads and
+descendant execution; the required reader rejects missing, different or positive
+boundary observations. This is conservative refusal, not a sandbox or a claim
+that child file access was isolated.
+
+Metadata-bearing runs also require the installed `strace` file-access observer,
+bound in the actual tool closure. The Python CI jobs explicitly install this
+system prerequisite when absent; local callers must provide it or receive
+UNKNOWN, and no local package installation is implicit. It starts before the worker interpreter, follows
+descendants, and filters exact original request-file identities at the kernel
+boundary. A distinct read of the worker's own request is its required positive
+probe; missing tools, unavailable tracing, incomplete completion or a missing
+probe are UNKNOWN. Project startup and libc reads therefore cannot escape via
+the earlier Python-hook window. The launcher uses isolated Python before this
+observer starts; the worker retains its original source paths and pytest command.
+Matched syscall text stays in the parent observer's RAM, and only closed counts
+and complete original input bindings are published. Any access to an excluded
+metadata input refuses, even when every actual pytest phase passes. The required
+reader checks this additional witness and does not infer isolation from an empty
+or absent trace. No metadata role permits an unsupported native/environment
+equivalence, and none of these software witnesses establishes SQL outcomes.
+
+Both full selected populations execute against their own source, with the same
+finite ctrace protocol. For each old owner, only its named current survivors may
+supply measured branches or semantic kills. Every old branch endpoint must
+retain its independently derived unique source operation. New operations may
+connect an old edge, but cannot skip or reorder another old operation. Every
+old generated mutation must have one uniquely matching operation/operator on
+the current side. Each side executes its own independently generated mutant
+body and restores its own original bytes and mode. The old/current mutation
+hashes and coordinates need not match; an arbitrary branch map, summary count,
+or copied old mutant body cannot substitute for this pairing.
+
+The producer qualifies the complete declared owners, their imports, helpers,
+arguments, markers, statements and every actual ancestral fixture. It does not
+repeat a scan of unrelated owners inside each finite execution. The required
+reader still scans the entire old and current test universe independently: a
+destructive owner omitted from the request refuses even if the declared proof
+passes. Neither a producer PASS nor a request's selected population replaces
+that complete accounting.
+
+The stdlib reader recomputes the pairing from the exact base Git bytes and
+current inputs, then verifies every literal SQLite/run carrier, named kill,
+full case population and restoration. Missing mapped branches or kills refuse;
+unhealthy baselines and unsupported/uncertain execution stay UNKNOWN. This
+proves only preservation of the named old contracts under the measured changes.
+Additional behavior still needs its owning assertions, genuine review and full
+gates. It grants no SQL, retirement, changed-environment or general semantic
+equivalence credit. Default CI accepts this same optional object in a tracked
+`event-base` request and generates fresh evidence through the existing producer;
+it never rebinds an older receipt. Existing budgets, event predicates, selectors
+and mandatory delivery remain unchanged.
 
 ## Recovery and delivery
 
@@ -154,6 +301,49 @@ the recorded owned copies:
 ```bash
 uv run --no-sync python scripts/condense_evidence.py recover .tmp/condensation-proof/unique-run
 ```
+
+When the fresh CI child refuses, the reader retains `proof-N-refusal.json`
+beside that child's directory and prints the same bounded diagnostic. It binds
+the canonical execution request and tracked source record, actual worker nonce,
+closed receipt category and scalar tracer/access-completion observations. Raw
+child output, paths, case identities and arbitrary error text are excluded;
+unknown or malformed values remain unknown. This diagnostic does not admit the
+proof or change the original categorical refusal or its deadlines.
+Each diagnostic carrier is opened nonblocking without following its final
+symlink, then checked through that same descriptor for regular-file type and a
+bounded body. FIFOs, devices, directories, oversized bodies and malformed JSON
+remain unavailable diagnostics; none can block receipt recovery or admit a proof.
+Malformed conversion or excessive JSON/canonical-projection recursion also stays
+unavailable inside that descriptor lifetime. A byte limit alone does not make a
+nested diagnostic safe to decode or hash.
+Summary publication pins the original physical output directory before invoking
+that child and exclusively creates a new regular output through its descriptor.
+An occupied name (including a symlink, hardlink, FIFO or directory) is left
+untouched; the same closed summary still prints beside the primary refusal.
+Publication never truncates a preexisting file or cleans up a pathname that the
+child can replace. A failed or partial output remains unavailable diagnostic
+custody, never proof admission or a replacement for the original refusal.
+When the existing hosted `TEST_EVIDENCE_DIR` is configured, the same fixed closed
+summary is also published there with the tracked request-record and closed-summary
+hashes as its name. Distinct execution nonces retain distinct diagnostics without
+replacing an earlier request carrier.
+The publication fault tests use a separate owned evidence namespace: their
+deliberately replaced outputs and write faults never enter the shared shard
+upload namespace. The direct-producer assertion likewise consumes only its
+invocation's namespace. Its unrelated-malformed-carrier companion remains
+untrusted; isolation does not turn malformed diagnostic output into proof.
+The unit/affected evidence upload retains these JSON summaries because sanitized
+JUnit deliberately omits failure and stdout bodies. The extra carrier contains
+no child output, paths, operand text or new admission authority; unavailable or
+occupied evidence destinations preserve the original refusal. This enables a
+future source/request/nonce-bound diagnosis and does not identify the cause of
+an earlier hosted failure.
+Direct producer refusals use this same closed projection before returning or
+raising, including the original run nonce and available source head/tree/program
+hashes. Unknown source fields stay null. Diagnostic publication does not add CLI
+stdout or change the proof result, cleanup/restoration admission, signal-handler
+restoration, lock closure or original caller assertion. Successful proofs do not
+publish a refusal. No child traceback, operand or raw output enters that carrier.
 
 Recovery refuses a live owner, reused/live process identity, unknown group exit,
 indirect paths or changed journal bytes. It signals no later numeric PID. A
