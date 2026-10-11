@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from butlers.core.butler_logging import ButlerLogger, _level_rank, create_butler_logger
+from butlers.core.butler_logging import ButlerLogger, _level_rank
 
 pytestmark = pytest.mark.unit
 
@@ -90,6 +90,8 @@ async def test_log_info_writes_and_uppercases_level() -> None:
     _, *args = conn.execute.call_args.args
     assert "INFO" in args  # level normalised to uppercase
     assert "hello world" in args
+    from butlers.core.butler_logging import create_butler_logger
+
     # REQ-core-telemetry-016: configured owning writes never borrow a public
     # relation and cannot use an unverified/shared-user acquisition as proof.
     owned_pool, owned_conn = _make_pool()

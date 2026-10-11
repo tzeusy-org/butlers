@@ -19,7 +19,7 @@ import shutil
 
 import pytest
 
-from butlers.core.butler_logging import ButlerLogger, create_butler_logger
+from butlers.core.butler_logging import ButlerLogger
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -92,6 +92,7 @@ async def test_migrated_owning_logs_preserve_roles_decoys_and_rollback(
     from alembic import command
     from butlers.api.db import DatabaseManager
     from butlers.api.routers.butler_logs import _get_db_manager
+    from butlers.core.butler_logging import create_butler_logger
     from butlers.db import Database
     from butlers.migrations import _build_alembic_config
     from butlers.testing.migration import create_migrated_test_db, migration_db_name
