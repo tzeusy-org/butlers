@@ -249,6 +249,41 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             )
             return {"recorded": result is not None}
 
+    @_tool("contacts_ingress")
+    async def contacts_report_channel(
+        subject: uuid.UUID,
+        channel_type: str,
+        channel_value: str,
+        primary: bool = False,
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Report one Contacts channel with target-fixed third-party provenance.
+
+        Candidate and pending_approval are incomplete outcomes. This exposes no
+        trusted source, reporter, confirmation or approved-executor parameter.
+        """
+        from butlers.tools.relationship.contacts_ingress import report_channel
+
+        return await report_channel(
+            module._get_pool(), subject, channel_type, channel_value, primary
+        )
+
+    @_tool("contacts_ingress")
+    async def contacts_resolve_channel(
+        channel_type: str,
+        channel_value: str,
+        request_id: uuid.UUID,
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Return unique/empty/ambiguous/unavailable for a complete Contacts lookup.
+
+        A request id correlates the response; it is not an authority token.
+        Generic identity resolution keeps its existing normalization and API.
+        """
+        from butlers.tools.relationship.contacts_ingress import resolve_channel
+
+        return await resolve_channel(module._get_pool(), channel_type, channel_value, request_id)
+
     # =================================================================
     # Contact tools (group: contacts)
     # =================================================================

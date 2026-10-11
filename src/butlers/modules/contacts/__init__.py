@@ -24,6 +24,7 @@ from butlers.google_credentials import (
 from butlers.modules.base import Module
 
 from .backfill import ContactBackfillEngine
+from .owner import ContactsOwner
 from .sync import (
     DEFAULT_FORCED_FULL_SYNC_DAYS,
     DEFAULT_GOOGLE_PERSON_FIELDS,
@@ -229,6 +230,12 @@ class ContactsModule(Module):
         self._db: Any = None
         self._providers: dict[str, ContactsProvider] = {}
         self._runtimes: dict[str, ContactsSyncRuntime] = {}
+        self._switchboard_client: Any = None
+        self._butler_name = ""
+
+    def wire_runtime(self, spawner: Any, repo_root: Any, *, switchboard_client: Any = None) -> None:
+        """Bind only daemon-supplied transport; initial unwired reads fail closed."""
+        self._switchboard_client = switchboard_client
 
     @property
     def name(self) -> str:
@@ -262,6 +269,7 @@ class ContactsModule(Module):
         """
         self._config = self._coerce_config(config)
         self._db = db
+        self._butler_name = butler_name
 
         module = self  # capture for closures
 
@@ -688,6 +696,7 @@ class ContactsModule(Module):
                     pool,
                     provider=provider.name,
                     account_id=account_id,
+                    owner=ContactsOwner(lambda: self._switchboard_client, self._butler_name),
                 )
                 sync_engine = ContactsSyncEngine(
                     provider=provider,
