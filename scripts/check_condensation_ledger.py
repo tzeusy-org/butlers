@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,13 @@ class EvidenceError(ValueError):
 
 
 def strict_json(path: Path) -> dict:
+    try:
+        return _strict_json_body(path.read_text())
+    except (OSError, UnicodeError) as exc:
+        raise EvidenceError("unreadable-json") from exc
+
+
+def _strict_json_body(body: str) -> dict:
     def pairs(values):
         result = {}
         for key, value in values:
@@ -48,11 +56,11 @@ def strict_json(path: Path) -> dict:
 
     try:
         value = json.loads(
-            path.read_text(),
+            body,
             object_pairs_hook=pairs,
             parse_constant=lambda _: (_ for _ in ()).throw(EvidenceError("nonfinite-json")),
         )
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except json.JSONDecodeError as exc:
         raise EvidenceError("unreadable-json") from exc
     if not isinstance(value, dict):
         raise EvidenceError("nonobject-json")
@@ -1428,8 +1436,15 @@ def ci_binding(root: Path, *, event: str, base: str, expected_head: str, source_
         raise EvidenceError("ci-checkout-or-base-mismatch")
     parents = git(root, "rev-list", "--parents", "-n", "1", expected_head).split()[1:]
     if event == "pull_request":
-        if parents != [base, source_head]:
+        if len(parents) != 2 or parents[1] != source_head or parents[0] == source_head:
             raise EvidenceError("ci-pr-union-mismatch")
+        # The event's comparison base may precede the provider checkout's
+        # public parent. Keep that exact event base for the complete loss scan;
+        # independently prove the actual newer parent and resulting union.
+        git(root, "merge-base", "--is-ancestor", base, parents[0])
+        union_tree = git(root, "merge-tree", "--write-tree", parents[0], source_head)
+        if union_tree != git(root, "rev-parse", f"{expected_head}^{{tree}}"):
+            raise EvidenceError("ci-pr-union-tree-mismatch")
     elif event in {"merge_group", "push"}:
         if source_head != expected_head:
             raise EvidenceError("ci-event-head-mismatch")
@@ -1463,10 +1478,22 @@ def fresh_proof_refusal(config: Path, run: Path, record: dict, refusal: Exceptio
 
     def read(path):
         try:
-            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
-                return None
-            return strict_json(path)
-        except (EvidenceError, OSError):
+            # Validate the opened object, not a pathname checked before a
+            # blocking open. A failed child's FIFO or device is not a receipt.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(fd)
+                limit = 1024 * 1024
+                if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+                    return None
+                with os.fdopen(fd, "rb", closefd=False) as source:
+                    body = source.read(limit + 1)
+                if len(body) > limit:
+                    return None
+                return _strict_json_body(body.decode())
+            finally:
+                os.close(fd)
+        except (EvidenceError, OSError, UnicodeError):
             return None
 
     receipt = read(run / "receipt.json") or {}

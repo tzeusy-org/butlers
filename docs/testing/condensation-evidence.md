@@ -113,6 +113,16 @@ population. Later unrelated changes do not rerun an obsolete proof or treat its
 request as an admission.
 A new public base causes new execution, not rebinding of an older ledger.
 
+For a pull request, the event's exact comparison base and the checkout's actual
+public parent are separately bound. The comparison base must be an ancestor of
+the first parent; the second parent must be the exact event source head. The
+checkout tree must equal the freshly computed merge of those actual ordered
+parents. A provider checkout may include newer public history than the event
+payload. The complete loss scan and fresh requests still use the original event
+base, so that history cannot hide an unproved deletion. Wrong parents, unrelated
+bases or a forged union tree refuse before proof execution. Push and merge-group
+retain their existing exact-head and ancestor rules.
+
 For example, a retained imported owner uses this mapping within the existing full
 plan format:
 
@@ -289,6 +299,10 @@ closed receipt category and scalar tracer/access-completion observations. Raw
 child output, paths, case identities and arbitrary error text are excluded;
 unknown or malformed values remain unknown. This diagnostic does not admit the
 proof or change the original categorical refusal or its deadlines.
+Each diagnostic carrier is opened nonblocking without following its final
+symlink, then checked through that same descriptor for regular-file type and a
+bounded body. FIFOs, devices, directories, oversized bodies and malformed JSON
+remain unavailable diagnostics; none can block receipt recovery or admit a proof.
 
 Recovery refuses a live owner, reused/live process identity, unknown group exit,
 indirect paths or changed journal bytes. It signals no later numeric PID. A

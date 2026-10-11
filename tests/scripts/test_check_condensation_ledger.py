@@ -234,6 +234,153 @@ def test_assertion_addition_preserves_original_order(tmp_path):
     assert ledger.verify(root, base, [])["status"] == "PASS"
 
     assert _fresh_refusal_diagnostic(tmp_path)
+    assert _ci_union_event_base(tmp_path)
+
+
+def _ci_union_event_base(tmp_path):
+    root = _repository(tmp_path / "union")
+
+    def command(*args, input=None):
+        return subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                *args,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            input=input,
+        ).stdout.strip()
+
+    base = command("rev-parse", "HEAD")
+    command("checkout", "-qb", "source")
+    (root / "source-note.md").write_text("Source branch.\n")
+    command("add", ".")
+    command("commit", "-qm", "source")
+    source = command("rev-parse", "HEAD")
+    command("checkout", "-qb", "public", base)
+    (root / "public-note.md").write_text("New public history.\n")
+    command("add", ".")
+    command("commit", "-qm", "public")
+    public = command("rev-parse", "HEAD")
+    command("merge", "--no-ff", "-qm", "provider union", "source")
+    union = command("rev-parse", "HEAD")
+    assert command("rev-list", "--parents", "-n", "1", union).split()[1:] == [public, source]
+    assert (
+        ledger.ci_binding(
+            root, event="pull_request", base=base, expected_head=union, source_head=source
+        )
+        == base
+    )
+    assert (
+        ledger.main(
+            [
+                "--repo-root",
+                str(root),
+                "--base",
+                base,
+                "--ci-event",
+                "pull_request",
+                "--expected-head",
+                union,
+                "--source-head",
+                source,
+            ]
+        )
+        == 0
+    )
+    assert (
+        ledger.ci_binding(
+            root, event="pull_request", base=public, expected_head=union, source_head=source
+        )
+        == public
+    )
+    # A valid ancestor cannot excuse a wrong source, reversed parents or a
+    # checkout whose body is not the exact merge of its declared parents.
+    with pytest.raises(ledger.EvidenceError):
+        ledger.ci_binding(
+            root, event="pull_request", base=base, expected_head=union, source_head=base
+        )
+    wrong_tree = command(
+        "commit-tree",
+        command("rev-parse", "source^{tree}"),
+        "-p",
+        public,
+        "-p",
+        source,
+        input="Not the declared union.\n",
+    )
+    command("checkout", "-q", "--detach", wrong_tree)
+    with pytest.raises(ledger.EvidenceError, match="ci-pr-union-tree-mismatch"):
+        ledger.ci_binding(
+            root, event="pull_request", base=base, expected_head=wrong_tree, source_head=source
+        )
+    reversed_union = command(
+        "commit-tree",
+        command("rev-parse", union + "^{tree}"),
+        "-p",
+        source,
+        "-p",
+        public,
+        input="Reversed original parents.\n",
+    )
+    command("checkout", "-q", "--detach", reversed_union)
+    with pytest.raises(ledger.EvidenceError):
+        ledger.ci_binding(
+            root, event="pull_request", base=base, expected_head=reversed_union, source_head=source
+        )
+    command("checkout", "-q", "--detach", union)
+    with pytest.raises(ledger.EvidenceError):
+        ledger.ci_binding(
+            root, event="pull_request", base=source, expected_head=union, source_head=source
+        )
+    assert (
+        ledger.ci_binding(
+            root, event="pull_request", base=base, expected_head=union, source_head=source
+        )
+        == base
+    )
+    # The full event-base scan still observes a deletion introduced in the
+    # public history; an exact merge alone cannot grant survivor admission.
+    command("checkout", "-q", "-b", "public-loss", public)
+    command("rm", "-q", "tests/test_owner.py")
+    command("commit", "-qm", "unproved public loss")
+    command("merge", "--no-ff", "-qm", "union with unproved loss", "source")
+    lost_union = command("rev-parse", "HEAD")
+    assert (
+        ledger.ci_binding(
+            root, event="pull_request", base=base, expected_head=lost_union, source_head=source
+        )
+        == base
+    )
+    assert (
+        ledger.main(
+            [
+                "--repo-root",
+                str(root),
+                "--base",
+                base,
+                "--ci-event",
+                "pull_request",
+                "--expected-head",
+                lost_union,
+                "--source-head",
+                source,
+            ]
+        )
+        == 1
+    )
+    command("checkout", "-q", "--detach", union)
+    assert ledger.verify(root, base, [])["status"] == "PASS"
+    return True
 
 
 def _fresh_refusal_diagnostic(tmp_path):
@@ -340,4 +487,60 @@ def _fresh_refusal_diagnostic(tmp_path):
         subprocess.check_output(["git", "-C", str(root), "show", "HEAD:tests/test_owner.py"])
     )
     assert ledger.verify(root, base, [])["status"] == "PASS"
+    assert _bounded_refusal_carriers(tmp_path)
+    return True
+
+
+def _bounded_refusal_carriers(tmp_path):
+    import os
+
+    home = tmp_path / "bounded"
+    home.mkdir()
+    config = home / "config.json"
+    config.write_text("{}\n")
+    run = home / "proof-0"
+    run.mkdir()
+    receipt = run / "receipt.json"
+    code = (
+        "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
+        "import check_condensation_ledger as l; from pre_push import Refusal; "
+        "value=l.fresh_proof_refusal(Path(sys.argv[2]),Path(sys.argv[3]),{},"
+        "Refusal('condensation-proof:exit-1')); "
+        "assert value['receipt_available'] is (sys.argv[4]=='regular'); "
+        "assert value['status']==('UNKNOWN' if sys.argv[4]=='regular' else 'unknown')"
+    )
+
+    def execute(kind):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                code,
+                str(Path(ledger.__file__).parent),
+                str(config),
+                str(run),
+                kind,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=2,
+        )
+        assert result.returncode == 0 and result.stderr == b""
+
+    receipt.write_text('{"status":"UNKNOWN","category":"worker-incomplete"}\n')
+    execute("regular")
+    receipt.unlink()
+    os.mkfifo(receipt)
+    execute("fifo")
+    receipt.unlink()
+    receipt.symlink_to(config)
+    execute("symlink")
+    receipt.unlink()
+    receipt.mkdir()
+    execute("directory")
+    receipt.rmdir()
+    receipt.write_text("x" * (1024 * 1024 + 1))
+    execute("oversized")
+    receipt.write_text('{"status":"UNKNOWN","category":"worker-incomplete"}\n')
+    execute("regular")
     return True
