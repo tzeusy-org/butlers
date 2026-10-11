@@ -654,6 +654,7 @@ def test_distinct_status_owner_loses_kill_and_arcs(tmp_path):
         "open-only": "complete",
         "no-access-child": "complete",
         "missing-original-exit": "UNKNOWN",
+        "unresolved-original-map": "UNKNOWN",
         **{name: "UNKNOWN" for name in ("partial", "unpaired", "unresolved", "reuse")},
     }
     assert _assert_observer_completion_failure(tmp_path / "observer-completion") == "PASS"
@@ -811,6 +812,39 @@ def _assert_full_request_descriptor_observation(tmp_path):
     finally:
         evidence.RequestAccessStream.consume = original_consume
     outcomes["missing-original-exit"] = "UNKNOWN"
+    # Actual file-backed mappings with lost descriptor provenance are UNKNOWN,
+    # even when the child, both real probes and every original actor exit succeed.
+    original_consume = evidence.RequestAccessStream.consume
+    altered_maps = [0]
+
+    def omit_file_map_provenance(self, record):
+        if b"mmap(" in record and b"MAP_ANONYMOUS" not in record:
+            changed = evidence.re.sub(rb"(\d+)<[^>]+>", rb"\1", record)
+            altered_maps[0] += changed != record
+            record = changed
+        return original_consume(self, record)
+
+    output = tmp_path / "unresolved-original-map.json"
+    evidence.publish(request, {"nonce": nonce})
+    output.with_suffix(".subject-probe").write_bytes(nonce.encode())
+    command = [
+        sys.executable,
+        "-c",
+        f"assert open({str(request)!r},'rb').read();"
+        f"assert open({str(output.with_suffix('.subject-probe'))!r},'rb').read()=={nonce.encode()!r};"
+        "assert 6*7==42",
+    ]
+    evidence.RequestAccessStream.consume = omit_file_map_provenance
+    try:
+        code, cleaned, unresolved = evidence.request_access_run(
+            command, tmp_path, request, output, dict(os.environ), 10, {input_name}
+        )
+        assert code == 0 and cleaned is True and altered_maps[0] > 0
+        assert unresolved["probe_accesses"] > 0 and unresolved["subject_probes"] == 1
+        assert unresolved["complete"] is False and unresolved["accesses"] == 0
+    finally:
+        evidence.RequestAccessStream.consume = original_consume
+    outcomes["unresolved-original-map"] = "UNKNOWN"
     # A complete stream's partial/unknown forms never yield a false zero.
     for species, record in (
         ("partial", b"7 read(3<unknown>, <unfinished ...>"),

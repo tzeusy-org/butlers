@@ -792,7 +792,9 @@ class RequestAccessStream:
                 and success
                 and (int(success[1]) > 0 or (name in {"mmap", "mmap2"} and result.startswith("0x")))
             ):
-                if name not in {"mmap", "mmap2"} and not re.search(r"\d+<[^>]+>", args):
+                if not re.search(r"\d+<[^>]+>", args) and (
+                    name not in {"mmap", "mmap2"} or "MAP_ANONYMOUS" not in args
+                ):
                     self.failed = True
                 if matched:
                     self.reads += 1
