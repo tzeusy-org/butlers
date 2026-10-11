@@ -140,6 +140,15 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -544,6 +553,15 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -722,6 +740,15 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -781,6 +808,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/runner-observation.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -850,6 +878,15 @@ jobs:
         with:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
+
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
 
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
@@ -1016,6 +1053,15 @@ jobs:
           path: .venv
           key: ${{ steps.environment-key.outputs.key }}
 
+      - name: Install request file-access observer
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
@@ -1049,6 +1095,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/affected/selected-reference.json
             ${{ runner.temp }}/ci-artifacts/affected/selected-execution.json
             ${{ runner.temp }}/ci-artifacts/affected/selected-proof.json
+            ${{ runner.temp }}/ci-artifacts/affected/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true

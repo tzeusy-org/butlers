@@ -198,6 +198,7 @@ risk_tier = "medium"
 # it today would also expose two writes the owner explicitly kept pruned.
 groups = [
     "contacts",
+    "contacts_ingress",  # fixed owning backfill report/read; no legacy-group expansion
     "contacts_extended",
     "interactions",
     "relationships",

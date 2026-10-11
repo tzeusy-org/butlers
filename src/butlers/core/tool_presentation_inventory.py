@@ -442,6 +442,12 @@ TOOL_PRESENTATION_INVENTORY = (
     ),
     *_declare(
         "relationship",
+        "contacts_ingress",
+        "contacts_report_channel contacts_resolve_channel",
+        presentable=False,
+    ),
+    *_declare(
+        "relationship",
         "contacts_extended",
         "address_add address_list address_remove address_update channel_list contact_archive "
         "contact_export_vcard contact_import_vcard contact_merge",

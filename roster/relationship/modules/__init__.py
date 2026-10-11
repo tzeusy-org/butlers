@@ -28,6 +28,7 @@ class RelationshipModuleConfig(ToolGroupMixin, BaseModel):
                address_add, address_list, address_update, address_remove,
                channel_add, channel_list, channel_search,
                contact_export_vcard, contact_import_vcard
+    contacts_ingress : contacts_report_channel, contacts_resolve_channel
     interactions : interaction_log, interaction_list, fact_set, fact_list
     relationships : relationship_add, relationship_list, relationship_remove,
                     relationship_type_get, relationship_types_list,
