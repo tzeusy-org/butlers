@@ -456,3 +456,10 @@ already inconsistent with the actual preserved eight-group test's 61+2 identity
 handlers=63. That inherited baseline discrepancy is retained and disclosed; this
 source stage does not rewrite its old requirement or count it as newly satisfied.
 The current production surface is the old actual 63 plus two ingress handlers.
+
+
+## Single current inventory and reversible historical transfers
+
+The baseline lacks permanent metadata for the existing Registered Tool Surface. ROOT serially reserved REQ-butler-relationship-002 with the exact Source/Scope in this private current delta. Only one active MODIFIED operation targets that requirement: this carrier. The obsolete meeting and future-Entity MODIFIED operations are physically retained verbatim in their original design documents and separate packet files. Each removal is inverted by those exact bytes, never by a scalar reconstruction. Every unrelated operation, all meeting scenarios, all five held Entity scenarios, Source References, original proposal/design prefixes and whole tasks are preserved.
+
+Published53d3 has60 domain+2identity+1unconditional=63. Immutable source804 additionally selects two contacts_ingress handlers for65; that source candidate does not turn unpublished native bookkeeping into public adoption. Conditional future69/71 are derived from the full named union of the exact eight-group/Contacts sets with the six held reads, never permission to activate them. The future mixed-group source includes two writes; its unchanged owner task0.1 and implementation tasks must precede selecting only the split reads. The earlier future65 comprised a different historical population and stays verbatim in history. No source, memory-module taxonomy, writer approval or Entity ownership changes are part of this candidate.
