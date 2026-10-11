@@ -436,6 +436,11 @@ def literal_probe_value(value) -> bool:
 def preserving_statements(before: list, current: list) -> bool:
     def abrupt(value):
         if isinstance(value, dict):
+            if value.get("_node") in {"FunctionDef", "AsyncFunctionDef", "Lambda"}:
+                # Creating a callback does not execute its body in the owner.
+                # Defaults/decorators/annotations still belong to the enclosing
+                # definition-time execution and must retain their abrupt checks.
+                return any(abrupt(v) for k, v in value.items() if k != "body")
             return value.get("_node") in {
                 "Return",
                 "Raise",
@@ -800,13 +805,13 @@ def identities(rows: list, field: str) -> set:
     return result
 
 
-def read_artifact(directory: Path, record: dict) -> Path:
+def read_artifact(directory: Path, record: dict, *, allow_empty: bool = False) -> Path:
     if not isinstance(record, dict) or set(record) != {"path", "sha256", "bytes"}:
         raise EvidenceError("artifact-fields")
     path = directory / public_path(record["path"])
     if path.is_symlink() or not path.is_file() or directory.resolve() not in path.resolve().parents:
         raise EvidenceError("missing-or-indirect-artifact")
-    integer(record["bytes"], 1)
+    integer(record["bytes"], 0 if allow_empty else 1)
     if (
         path.stat().st_size != record["bytes"]
         or hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]
@@ -889,6 +894,24 @@ def executable_proof(
         side: [next(r for r in records if r["path"] == p) for p in scopes[side]]
         for side, records in side_inputs.items()
     }
+    from condense_evidence import generate_mutants, mutation_batches
+
+    source_rows = proof["mutation"]["sources"]
+    identities(source_rows, "path")
+    if [row["path"] for row in source_rows] != scopes["removed"]:
+        raise EvidenceError("incomplete-mutation-source-population")
+    source_bodies = {}
+    for row, expected in zip(source_rows, scope_records["removed"], strict=True):
+        fields(row, {"path", "artifact"})
+        body = read_artifact(directory, row["artifact"], allow_empty=True).read_bytes()
+        if hashlib.sha256(body).hexdigest() != expected["sha256"]:
+            raise EvidenceError("mutation-source-body-binding")
+        if root is not None and body != committed_body(root, binding["base"], row["path"]):
+            raise EvidenceError("mutation-source-origin-binding")
+        source_bodies[row["path"]] = body
+    generated = generate_mutants(source_bodies)
+    expected_mutants = {row["id"]: (row, row) for row in generated}
+    ordered_mutants = [row["id"] for row in generated]
     if paired:
         import condensation_lineage as lineage
 
@@ -905,6 +928,16 @@ def executable_proof(
             lineage.generate_mutants({p: t.encode() for p, t in current_sources.items()}),
         )
         expected_mutants = {old["id"]: (old, new) for old, new in expected_pairs}
+        ordered_mutants = [old["id"] for old, _ in expected_pairs]
+    batches = mutation_batches(ordered_mutants)
+    expected_batches = [{**row, "status": "RESTORED"} for row in batches]
+    if not isinstance(proof["mutation"]["batches"], list):
+        raise EvidenceError("invalid-mutation-batches")
+    for row in proof["mutation"]["batches"]:
+        fields(row, {"index", "mutants", "id", "status"})
+        integer(row["index"])
+    if proof["mutation"]["batches"] != expected_batches:
+        raise EvidenceError("incomplete-or-changed-mutation-batches")
     baselines = {}
     expected_flags = [
         "-n",
@@ -967,7 +1000,10 @@ def executable_proof(
         if populations[0] != populations[1]:
             raise EvidenceError("same-owner-case-population-change")
     mutants = proof["mutation"]["mutants"]
-    if proof["mutation"]["generated"] != len(mutants) or len(mutants) > 64:
+    if (
+        proof["mutation"]["generated"] != len(generated)
+        or [row["id"] for row in mutants] != ordered_mutants
+    ):
         raise EvidenceError("mutation-population")
     identities(mutants, "id")
     expected_ids = {"removed-baseline", "survivors-baseline"}
@@ -980,7 +1016,7 @@ def executable_proof(
             or not HEX.fullmatch(mutant["id"])
         ):
             raise EvidenceError("unrestored-or-unbound-mutant")
-        if paired and mutant["id"] not in expected_mutants:
+        if mutant["id"] not in expected_mutants:
             raise EvidenceError("unbound-paired-mutation")
         killed_owners = {}
         for side in baselines:
@@ -1005,16 +1041,14 @@ def executable_proof(
                 or hashlib.sha256(before_path.read_bytes()).hexdigest() != change["before_sha256"]
             ):
                 raise EvidenceError("mutation-journal-before-mismatch")
-            if paired:
-                actual = expected_mutants[mutant["id"]][0 if side == "removed" else 1]
-                if (
-                    any(
-                        change.get(k) != actual[k]
-                        for k in ("id", "path", "line", "column", "operator")
-                    )
-                    or change["after_sha256"] != hashlib.sha256(actual["body"]).hexdigest()
-                ):
-                    raise EvidenceError("changed-paired-mutation-operation")
+            actual = expected_mutants[mutant["id"]][0 if side == "removed" else 1]
+            if (
+                any(
+                    change.get(k) != actual[k] for k in ("id", "path", "line", "column", "operator")
+                )
+                or change["after_sha256"] != hashlib.sha256(actual["body"]).hexdigest()
+            ):
+                raise EvidenceError("changed-paired-mutation-operation")
             expected = [
                 dict(r, sha256=change["after_sha256"]) if r["path"] == change["path"] else r
                 for r in scope_records[side]
@@ -1253,6 +1287,8 @@ def verify_ledger(
         {
             "seed",
             "generated",
+            "sources",
+            "batches",
             "mutants",
             "killed_by_removed",
             "killed_by_survivors",

@@ -383,6 +383,99 @@ def _ci_union_event_base(tmp_path):
     return True
 
 
+def test_callback_body_exits_do_not_exit_the_preserved_owner(tmp_path):
+    """REQ-testing-053: definition-time exits still refuse beside callback bodies."""
+    import ast
+
+    root = _repository(tmp_path)
+    path = root / "tests/test_owner.py"
+    original = path.read_text()
+    owner = "tests/test_owner.py::test_owner"
+    callbacks = (
+        "    def choose():\n        return value\n"
+        "    async def reject():\n        raise RuntimeError('synthetic callback')\n"
+        "    delayed = lambda: (yield value)\n"
+    )
+    healthy = original.replace("    assert value > 0\n", callbacks + "    assert value > 0\n")
+    path.write_text(healthy)
+    ledger.same_owner_context_accounts(root, "HEAD", {owner})
+    namespace = {}
+    exec(compile(healthy, str(path), "exec"), namespace)
+    namespace["test_owner"](1)
+    with pytest.raises(AssertionError):
+        namespace["test_owner"](0)
+
+    for outer in (
+        "    return\n",
+        "    raise RuntimeError('synthetic outer exit')\n",
+        "    yield value\n",
+        "    def callback(probe=(yield value)):\n        return probe\n",
+        "    @(yield value)\n    def callback():\n        return value\n",
+        "    class Immediate:\n        raise RuntimeError('synthetic class exit')\n",
+    ):
+        path.write_text(healthy.replace("    assert value > 0\n", outer + "    assert value > 0\n"))
+        with pytest.raises(ledger.EvidenceError, match="same-owner-context-not-preserving"):
+            ledger.same_owner_context_accounts(root, "HEAD", {owner})
+        path.write_text(healthy)
+        ledger.same_owner_context_accounts(root, "HEAD", {owner})
+    # Existing callback statements still retain their own literal exit/order.
+    old = ledger.ast_record(ast.parse("def callback():\n    return 1\n").body[0])
+    changed = ledger.ast_record(ast.parse("def callback():\n    return 0\n    return 1\n").body[0])
+    assert not ledger.preserving_context(old, changed)
+    path.write_text(original)
+    ledger.same_owner_context_accounts(root, "HEAD", {owner})
+
+
+def test_closed_comprehension_captures_retain_literal_lexical_identity():
+    """REQ-testing-053: captured frames cannot borrow parameter alpha-equivalence."""
+    import condensation_lineage as lineage
+    import condense_evidence as evidence
+
+    original = (
+        "def reply(items, /):\n"
+        "    observed = {item: item for item in items}\n"
+        "    if len(items) > 0:\n"
+        "        return [observed[item] for item in items if item in observed]\n"
+        "    return []\n"
+    )
+    current = original.replace("    if len(items)", "    pass\n    if len(items)")
+    pair = [
+        {
+            "before": {"path": "a.py", "function": "reply"},
+            "current": {"path": "b.py", "function": "reply"},
+        }
+    ]
+    points = lineage.alignment({"a.py": original}, {"b.py": current}, pair)
+    old_mutants = evidence.generate_mutants({"a.py": original.encode()})
+    new_mutants = evidence.generate_mutants({"b.py": current.encode()})
+    matched = lineage.paired_mutants(points, old_mutants, new_mutants)
+    assert len(matched) == len(old_mutants) and matched
+    namespace = {}
+    exec(current, namespace)
+    assert namespace["reply"]([1, 2]) == [1, 2]
+    assert namespace["reply"]([]) == []
+
+    for changed in (
+        original.replace("items", "renamed"),
+        original.replace("for item in items", "for items in items", 1),
+        original.replace("observed[item]", "missing[item]"),
+        original.replace("observed[item]", "globals()[item]"),
+        original.replace("observed[item]", "(lambda: items)()"),
+        original.replace("observed[item]", "(captured := items)"),
+        original.replace("observed[item]", "[child for child in items]"),
+        original.replace("if item in observed", "if item not in observed"),
+    ):
+        with pytest.raises(ledger.EvidenceError):
+            changed_points = lineage.alignment({"a.py": original}, {"b.py": changed}, pair)
+            lineage.paired_mutants(
+                changed_points, old_mutants, evidence.generate_mutants({"b.py": changed.encode()})
+            )
+        restored_points = lineage.alignment({"a.py": original}, {"b.py": current}, pair)
+        assert len(lineage.paired_mutants(restored_points, old_mutants, new_mutants)) == len(
+            old_mutants
+        )
+
+
 def _fresh_refusal_diagnostic(tmp_path):
     # Exercise the actual fresh-child refusal boundary without executing a
     # second expensive proof. Seeded child carriers are diagnostics, not proof.

@@ -48,7 +48,101 @@ def request(value: dict) -> None:
         new.add(b)
 
 
-def _normalized(node: ast.AST, names: dict[str, str]) -> str:
+def _lexical_bindings(node: ast.AST) -> set[str]:
+    """Declared names in this frame, excluding child lexical bodies/targets.
+
+    This identifies a lexical home, not definite assignment or runtime health.
+    Actual collection, execution, branches and mutation admission remain required.
+    """
+    known = set()
+
+    class Bindings(ast.NodeVisitor):
+        def visit_Name(self, item):
+            if isinstance(item.ctx, (ast.Store, ast.Del)):
+                known.add(item.id)
+
+        def visit_alias(self, item):
+            known.add(item.asname or item.name.split(".")[0])
+
+        def visit_ExceptHandler(self, item):
+            if item.name:
+                known.add(item.name)
+            self.generic_visit(item)
+
+        def visit_FunctionDef(self, item):
+            known.add(item.name)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+
+        def visit_Lambda(self, item):
+            return
+
+        visit_ListComp = visit_Lambda
+        visit_SetComp = visit_Lambda
+        visit_DictComp = visit_Lambda
+        visit_GeneratorExp = visit_Lambda
+
+        def visit_Global(self, item):
+            # A declaration without an independently visible source binding
+            # cannot manufacture a closed lexical home.
+            return
+
+        visit_Nonlocal = visit_Global
+
+    visitor = Bindings()
+    for statement in node.body:
+        visitor.visit(statement)
+    return known
+
+
+def _closed_comprehension(node: ast.AST, names: dict[str, str], known: set[str]) -> None:
+    """Retain literal captures; never alpha-rename a comprehension frame."""
+    if _namespace_observed(node) or any(
+        isinstance(n, (ast.NamedExpr, ast.Lambda, ast.Await, ast.Yield, ast.YieldFrom))
+        or (
+            n is not node
+            and isinstance(n, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp))
+        )
+        for n in ast.walk(node)
+    ):
+        raise EvidenceError("unsupported-lexical-source-binding")
+    bound = set(known) | set(names)
+    local = set()
+    for generator in node.generators:
+        if generator.is_async:
+            raise EvidenceError("unsupported-lexical-source-binding")
+        targets = list(ast.walk(generator.target))
+        if any(not isinstance(n, (ast.Name, ast.Tuple, ast.List, ast.Store)) for n in targets):
+            raise EvidenceError("unsupported-lexical-source-binding")
+        declared = {n.id for n in targets if isinstance(n, ast.Name)}
+        # Shadowing or repeated targets need their own equivalence protocol.
+        if declared & (bound | local):
+            raise EvidenceError("unsupported-lexical-source-binding")
+        if any(
+            isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in bound | local
+            for n in ast.walk(generator.iter)
+        ):
+            raise EvidenceError("unsupported-lexical-source-binding")
+        local |= declared
+        for condition in generator.ifs:
+            if any(
+                isinstance(n, ast.Name)
+                and isinstance(n.ctx, ast.Load)
+                and n.id not in bound | local
+                for n in ast.walk(condition)
+            ):
+                raise EvidenceError("unsupported-lexical-source-binding")
+    values = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+    if any(
+        isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in bound | local
+        for value in values
+        for n in ast.walk(value)
+    ):
+        raise EvidenceError("unsupported-lexical-source-binding")
+
+
+def _normalized(node: ast.AST, names: dict[str, str], known: set[str] | None = None) -> str:
     class Parameters(ast.NodeTransformer):
         def visit_Name(self, node):
             return ast.copy_location(ast.Name(id=names.get(node.id, node.id), ctx=node.ctx), node)
@@ -80,10 +174,16 @@ def _normalized(node: ast.AST, names: dict[str, str]) -> str:
                 raise EvidenceError("unsupported-lexical-source-binding")
             return node
 
-        visit_ListComp = visit_Lambda
-        visit_SetComp = visit_Lambda
-        visit_DictComp = visit_Lambda
-        visit_GeneratorExp = visit_Lambda
+        def visit_ListComp(self, node):
+            if any(isinstance(n, ast.Name) and n.id in names for n in ast.walk(node)):
+                _closed_comprehension(node, names, known or set())
+            # Even supported captures retain their literal lexical identity.
+            # This does not grant alpha-equivalence to operators or callables.
+            return node
+
+        visit_SetComp = visit_ListComp
+        visit_DictComp = visit_ListComp
+        visit_GeneratorExp = visit_ListComp
 
         def visit_FunctionDef(self, node):
             # Nested definitions are visited under their own parameter scope by
@@ -199,7 +299,7 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
     namespace_observed = _namespace_observed(tree)
     lines, spans, exits, signatures, bindings = {}, {}, {}, {}, {}
 
-    def visit(node, owner, names, controls):
+    def visit(node, owner, names, controls, known):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             if isinstance(node, ast.Lambda):
                 # A lambda has no stable declared owner; refuse if it supplies an arc.
@@ -214,6 +314,7 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
                 n.arg: n.arg if namespace_observed else "$parameter_" + str(i)
                 for i, n in enumerate(args)
             }
+            known = known | _lexical_bindings(node) | set(names)
             identity = aliases.get((path, owner), (path, owner))
             bindings[identity] = {
                 "names": list(names),
@@ -242,23 +343,23 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
         else:
             identity = aliases.get((path, owner or "<module>"), (path, owner or "<module>"))
             if isinstance(node, (ast.If, ast.While)):
-                operation = _normalized(node.test, names)
+                operation = _normalized(node.test, names, known)
             elif isinstance(node, (ast.For, ast.AsyncFor)):
                 operation = canonical(
-                    [_normalized(node.target, names), _normalized(node.iter, names)]
+                    [_normalized(node.target, names, known), _normalized(node.iter, names, known)]
                 )
             elif isinstance(node, (ast.With, ast.AsyncWith)):
-                operation = canonical([_normalized(n, names) for n in node.items])
+                operation = canonical([_normalized(n, names, known) for n in node.items])
             elif isinstance(node, ast.Try):
                 operation = canonical(
-                    [_normalized(n.type, names) if n.type else None for n in node.handlers]
+                    [_normalized(n.type, names, known) if n.type else None for n in node.handlers]
                 )
             elif isinstance(node, ast.ExceptHandler):
                 operation = canonical(
-                    [_normalized(node.type, names) if node.type else None, node.name]
+                    [_normalized(node.type, names, known) if node.type else None, node.name]
                 )
             else:
-                operation = _normalized(node, names)
+                operation = _normalized(node, names, known)
             marker = (identity, type(node).__name__, canonical([controls, operation]))
         if isinstance(node, (ast.stmt, ast.ExceptHandler)):
             lines.setdefault(node.lineno, []).append(marker)
@@ -266,7 +367,7 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
             spans[(node.lineno, node.col_offset)] = canonical(
                 [
                     marker,
-                    _normalized(node, names) if not isinstance(node, ast.stmt) else marker,
+                    _normalized(node, names, known) if not isinstance(node, ast.stmt) else marker,
                 ]
             )
         for field, children in ast.iter_fields(node):
@@ -292,12 +393,13 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
                 child_names = names
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and field != "body":
                     child_names = {}
-                visit(child, owner, child_names, nested)
+                visit(child, owner, child_names, nested, known)
 
     # A module exit is stable only within its source-qualified module identity.
     exits[-1] = ((path, "<module>"), "exit", "module")
+    known = _lexical_bindings(tree)
     for node in tree.body:
-        visit(node, "", {}, [])
+        visit(node, "", {}, [], known)
     unique = {line: canonical(markers[0]) for line, markers in lines.items() if len(markers) == 1}
     unique.update({line: canonical(marker) for line, marker in exits.items()})
     return {"lines": unique, "spans": spans, "signatures": signatures, "bindings": bindings}

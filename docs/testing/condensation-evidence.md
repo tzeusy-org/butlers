@@ -57,6 +57,23 @@ mutant and restored phase records and the actual CoverageData SQLite files. The
 stdlib consumer reads literal exact SQLite contexts and recomputes residue and
 named kills; JSON counts or PASS labels alone cannot replace those carriers.
 
+Whole production files can generate more than 64 finite mutations. The producer
+partitions the complete deterministic population into consecutive batches of at
+most 64, journaling each batch and restoring every mutation before continuing.
+The ledger carries complete original scope bodies with source-bound hashes. The
+reader runs the same source-owned generator against those bodies, verifies every
+operation and exact ordered batch, and requires all mutation and restoration
+phases. Omitting a source, batch or mutation, changing its operation, duplicating
+a batch or leaving one UNKNOWN refuses the entire account. A completed batch
+provides no partial admission and cannot be resumed or reused as current proof.
+
+Batch boundaries do not renew the one absolute proof deadline. The ordinary
+producer still defaults to 60 seconds, with the existing bounded diagnostic
+timeout option and owned cleanup. A complete large owner that exceeds that
+deadline remains UNKNOWN; batching proves no router timing, deletion safety or
+wall-clock gain by itself. All named survivors, protected arcs and kills must
+still qualify before any original test can be removed.
+
 Evidence binds the exact base/head/tree, complete tracked current inputs, actual installed coverage/pytest/plugin source fingerprints, tool
 and config bodies, selection, command predicates and fresh nonce. Store proof
 outputs outside Git in a fresh ignored directory. Committing a ledger changes
@@ -91,6 +108,13 @@ exits, wrapped old assertions, changed existing defaults or replaced statements
 refuse. Helper additions retain every old statement in order; optional helper
 keyword probes are restricted to literal boolean/None defaults and literal probe
 keywords on an otherwise unchanged call.
+
+Creating a new nested function or lambda does not execute its body in the
+enclosing owner. Its local exits therefore do not become enclosing-owner exits.
+The compiler still checks its definition-time defaults, decorators and
+annotations, checks class bodies at their existing boundary, and preserves
+every old callback body's own statements and exits. This structural check only
+qualifies the fresh complete executing account; it is not a callback exemption.
 
 Added imports retain every original binding and origin in order. A new alias
 cannot shadow any original lexical name; wildcard changes and rebinding refuse.
@@ -200,7 +224,13 @@ Definition-time defaults, decorators, argument/return annotations and type param
 retain their literal expressions; they cannot borrow the new function's parameter
 scope. Keyword interfaces stay exact. Enclosing bindings, namespace-observing calls
 and shadowing captures must retain their original lexical identity. Unsupported
-lambda/comprehension binding equivalence refuses rather than guessing. Synthetic
+lambda/comprehension binding equivalence refuses rather than guessing. A closed
+comprehension may retain literal captures of explicitly declared enclosing
+parameters or locals. Its iterator, target and condition bindings are checked
+in order; shadowing, unbound captures, nested scopes, assignment expressions,
+suspension and namespace observers remain unsupported. These captures are never
+alpha-renamed: actual unchanged spellings and source operations must still match,
+and full executing branch/mutation authority remains mandatory. Synthetic
 comparison slots cannot collide with a real Python global name.
 
 References to namespace/frame observers preserve spellings across their module,
