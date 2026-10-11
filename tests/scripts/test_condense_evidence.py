@@ -327,6 +327,14 @@ def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch
     with pytest.raises(consumer.EvidenceError, match="unproven"):
         consumer.verify(ordinary, ordinary_base, [])
     consumer.same_owner_context_accounts(ordinary, ordinary_base, set(owners))
+    wildcard_before = ordinary_before.replace("from toy import reply", "from toy import *")
+    assert consumer.preserving_import_bindings(wildcard_before, wildcard_before)
+    assert not consumer.preserving_import_bindings(
+        wildcard_before,
+        wildcard_before.replace(
+            "from toy import *", "from toy import *\nfrom toy import unused_new_alias"
+        ),
+    )
     assert consumer.main(["--repo-root", str(ordinary), "--base", ordinary_base]) == 0
     first = set((ordinary / ".tmp/condensation-ci").glob("run-*/proof-0/ledger.json"))
     assert len(first) == 1

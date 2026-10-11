@@ -446,9 +446,15 @@ def preserving_import_bindings(before: str, current: str) -> bool:
         return result
 
     old, new = bindings(old_tree), bindings(new_tree)
+    if old is None or new is None:
+        # Wildcard bindings are unknown, not two equal inventories. Only
+        # literal unchanged import statements preserve that existing boundary.
+        return [
+            ast.dump(n) for n in old_tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
+        ] == [ast.dump(n) for n in new_tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
     if old == new:
         return True
-    if old is None or new is None or not contains_ordered(old, new):
+    if not contains_ordered(old, new):
         return False
     protected = {n.id for n in ast.walk(old_tree) if isinstance(n, ast.Name)}
     protected |= {n.arg for n in ast.walk(old_tree) if isinstance(n, ast.arg)}
