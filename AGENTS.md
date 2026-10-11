@@ -116,6 +116,20 @@ No local gate command matches CI's scope; check which command produced a number.
   Exit 0 is the only acceptance criterion; no skip count is pass/fail.
 - `-q` prints no test names: confirm new files were collected, not skipped, with `-v` or `-q -rs`.
 
+### Condensation survivor evidence
+
+`make check-condensation-ledger` is the single read-only source admission guard
+for in-place assertion/parameter/fixture losses, moves and deletions across
+`tests/` and `roster/*/tests/`. It defaults to the actual `origin/main` base;
+CI supplies its exact event/base/checkout identities. A matching name, deleted
+product path, empty ledger directory or green count cannot excuse lost coverage.
+Before condensation, run the actual branch/mutation producer and retain every
+removed owner's executing survivor and complete case population. See
+[the evidence protocol](docs/testing/condensation-evidence.md). Fresh same-head
+carriers must be wired into the consumer for a real cluster change; the guard's
+current no-ledger CI invocation refuses every observed unproven loss. Migrated
+PostgreSQL/catalog authority and genuine review remain separate mandatory proof.
+
 ### Gate verdicts and long runs
 
 - `make test-qg*` run through `scripts/pytest_gate.py`, which leaves a `## pytest-gate exit=N`

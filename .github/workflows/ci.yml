@@ -356,6 +356,21 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_duplicate_toplevel_names.py
 
+      # Exact event/base/checkout admission precedes the complete tests+roster
+      # source scan. Counts, a retained name and a missing ledger directory cannot
+      # excuse loss; future condensation supplies fresh producer carriers.
+      - name: Require current executable condensation survivor evidence
+        id: condensation
+        if: ${{ !cancelled() }}
+        env:
+          CONDENSATION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          CONDENSATION_HEAD: ${{ github.sha }}
+          CONDENSATION_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after }}
+        run: |
+          uv run --no-sync python scripts/check_condensation_ledger.py \
+            --base "$CONDENSATION_BASE" --ci-event "$GITHUB_EVENT_NAME" \
+            --expected-head "$CONDENSATION_HEAD" --source-head "$CONDENSATION_SOURCE_HEAD"
+
       - name: Fail if any guard failed
         if: ${{ !cancelled() }}
         env:
@@ -375,6 +390,7 @@ jobs:
             frontend_copy_regenerate=${{ steps.frontend_copy_regenerate.outcome }}
             frontend_copy=${{ steps.frontend_copy.outcome }}
             duplicate_names=${{ steps.duplicate_names.outcome }}
+            condensation=${{ steps.condensation.outcome }}
         run: |
           failed=0
           while IFS= read -r line; do
