@@ -605,6 +605,226 @@ def test_distinct_status_owner_loses_kill_and_arcs(tmp_path):
     assert unmapped_absent["coverage"]["residue"] == missing["coverage"]["residue"]
 
 
+def test_fresh_paired_runtime_lineage_uses_each_source_and_named_owner(tmp_path):
+    """REQ-testing-053: changed implementations need genuine paired runs, not an exemption."""
+    root = _toy(tmp_path)
+    source = Path(__file__).resolve().parents[2]
+    shutil.copy2(
+        source / "scripts/condensation_lineage.py", root / "scripts/condensation_lineage.py"
+    )
+    owner = root / "tests/test_toy.py"
+    owner.write_text(
+        "from toy import reply\n"
+        "def test_removed():\n"
+        "    assert reply(True) == 'accepted'\n"
+        "    assert reply(False) == 'error'\n"
+        "def test_survivor():\n    assert reply(True) == 'accepted'\n"
+        "def test_other():\n    assert reply(False) == 'error'\n"
+        "def test_outside():\n    assert reply(True) == 'accepted'\n"
+    )
+    fixture = root / "conftest.py"
+    fixture.write_text("# Complete actual ancestral fixture source\nimport pytest\n")
+
+    def commit(message):
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "commit",
+                "-qm",
+                message,
+            ],
+            check=True,
+        )
+
+    commit("complete independent before source")
+    base = evidence.git(root, "rev-parse", "HEAD")
+    old_product = (root / "toy.py").read_bytes()
+    current_product = b"# Actual new source location\n\n" + old_product.replace(
+        b"    if flag:", b"    bool(flag)\n    if flag:"
+    )
+    (root / "primitive.py").write_bytes(current_product)
+    (root / "toy.py").write_text("from primitive import reply\n")
+    owner.write_text(
+        "from toy import reply\n"
+        + "def test_survivor():"
+        + owner.read_text().split("def test_survivor():", 1)[1]
+    )
+    config = _config()
+    config.update(
+        base=base,
+        scope=["toy.py", "primitive.py"],
+        removed=["tests/test_toy.py::test_removed", "tests/test_toy.py::test_other"],
+        survivors=["tests/test_toy.py::test_survivor", "tests/test_toy.py::test_other"],
+        lineage={
+            "mode": "paired",
+            "scope": ["toy.py"],
+            "functions": [
+                {
+                    "before": {"path": "toy.py", "function": "reply"},
+                    "current": {"path": "primitive.py", "function": "reply"},
+                },
+            ],
+        },
+    )
+    config["mapping"]["tests/test_toy.py::test_removed"]["survivors"] = config["survivors"]
+    config["mapping"]["tests/test_toy.py::test_other"] = {
+        "survivors": ["tests/test_toy.py::test_other"],
+        "reason": "Complete unchanged owner and actual inherited fixture remain executable",
+    }
+    plan = root / "tests/condensation-plans/paired.json"
+    plan.parent.mkdir()
+    plan.write_text(json.dumps(dict(config, base="event-base")))
+    commit("single-home source with exact fresh execution request")
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    missing = copy.deepcopy(config)
+    del missing["lineage"]
+    with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+        evidence.prove(root, missing, tmp_path / "lineage-missing")
+    assert evidence.strict_json(tmp_path / "lineage-missing/receipt.json")["category"] == (
+        "changed-production-scope-needs-independent-lineage-proof"
+    )
+    proof = evidence.prove(root, config, tmp_path / "paired-complete")
+    assert proof["status"] == "PASS"
+    assert proof["coverage"]["residue_arcs"] == 0 and proof["mutation"]["lost"] == []
+    carrier = tmp_path / "paired-complete/ledger.json"
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    assert proof["runs"][0]["scope_inputs"] != proof["runs"][1]["scope_inputs"]
+    for mutant in proof["mutation"]["mutants"]:
+        assert mutant["path"] == "toy.py" and mutant["current"]["path"] == "primitive.py"
+        assert mutant["before_sha256"] != mutant["current"]["before_sha256"]
+        assert mutant["status"] == mutant["current"]["status"] == "RESTORED"
+    assert (root / "primitive.py").read_bytes() == current_product
+
+    actual_fixture = fixture.read_bytes()
+    fixture.write_bytes(actual_fixture + b"pytestmark = pytest.mark.skip\n")
+    try:
+        with pytest.raises(consumer.EvidenceError, match="same-owner-ancestral-fixture-change"):
+            consumer.same_owner_context_accounts(root, base, {"tests/test_toy.py::test_other"})
+    finally:
+        fixture.write_bytes(actual_fixture)
+    consumer.same_owner_context_accounts(root, base, {"tests/test_toy.py::test_other"})
+
+    import condensation_lineage as lineage
+
+    for unbound in ({"mode": "paired", "scope": ["*.py"], "functions": []},):
+        with pytest.raises(consumer.EvidenceError):
+            lineage.request(unbound)
+    before_sources = {"toy.py": old_product.decode()}
+    current_sources = {
+        "primitive.py": current_product.decode(),
+        "toy.py": "from primitive import reply\n",
+    }
+    for corrupted in (
+        current_product.decode().replace("def reply(flag):", "def reply(other):"),
+        current_product.decode().replace("if flag:", "if not flag:"),
+    ):
+        with pytest.raises(consumer.EvidenceError):
+            points = lineage.alignment(
+                before_sources,
+                dict(current_sources, **{"primitive.py": corrupted}),
+                config["lineage"]["functions"],
+            )
+            lineage.paired_mutants(
+                points,
+                evidence.generate_mutants({"toy.py": old_product}),
+                evidence.generate_mutants({"primitive.py": corrupted.encode()}),
+            )
+    with pytest.raises(consumer.EvidenceError, match="ambiguous-source-function-identity"):
+        lineage.alignment(
+            before_sources,
+            dict(current_sources, **{"toy.py": old_product.decode()}),
+            config["lineage"]["functions"],
+        )
+
+    saved = carrier.read_bytes()
+    for corruption in ("old-input", "mutant", "unrelated-owner"):
+        value = consumer.strict_json(carrier)
+        if corruption == "old-input":
+            value["binding"]["lineage"]["inputs"][0]["sha256"] = "0" * 64
+        elif corruption == "mutant":
+            value["proof"]["mutation"]["mutants"][0]["current"]["after_sha256"] = "0" * 64
+        else:
+            value["removed"][0]["survivors"] = ["tests/test_toy.py::test_survivor"]
+        carrier.write_text(json.dumps(value))
+        with pytest.raises(consumer.EvidenceError):
+            consumer.verify(root, base, [carrier])
+        carrier.write_bytes(saved)
+        assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+
+    complete_owner = owner.read_bytes()
+    omitted = b"def test_outside():\n    assert reply(True) == 'accepted'\n"
+    assert omitted in complete_owner
+    owner.write_bytes(complete_owner.replace(omitted, b""))
+    commit("owned negative: destructive owner omitted from declared proof")
+    omitted_proof = evidence.prove(root, config, tmp_path / "omitted-owner")
+    assert omitted_proof["status"] == "PASS"
+    with pytest.raises(consumer.EvidenceError, match="unproven-test-or-assertion-loss"):
+        consumer.verify(root, base, [tmp_path / "omitted-owner/ledger.json"])
+    owner.write_bytes(complete_owner)
+    commit("restore whole omitted owner and source")
+    restored_proof = evidence.prove(root, config, tmp_path / "restored-owner")
+    assert restored_proof["status"] == "PASS"
+    carrier = tmp_path / "restored-owner/ledger.json"
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+
+    wrong = copy.deepcopy(config)
+    wrong["scope"] = ["primitive.py"]
+    with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+        evidence.prove(root, wrong, tmp_path / "unbound-bridge")
+    assert evidence.strict_json(tmp_path / "unbound-bridge/receipt.json")["category"] == (
+        "changed-dependency-outside-paired-scope"
+    )
+    product = root / "primitive.py"
+    healthy = product.read_bytes()
+    product.write_bytes(healthy.replace(b"'accepted'", b"'corrupted'"))
+    try:
+        with pytest.raises(consumer.EvidenceError, match="proof-unknown"):
+            evidence.prove(root, config, tmp_path / "actual-runtime-corruption")
+        assert evidence.strict_json(tmp_path / "actual-runtime-corruption/receipt.json")[
+            "category"
+        ] == ("baseline-not-healthy")
+    finally:
+        product.write_bytes(healthy)
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+
+    wrong = copy.deepcopy(config)
+    wrong["mapping"]["tests/test_toy.py::test_removed"]["survivors"] = [
+        "tests/test_toy.py::test_survivor"
+    ]
+    unmapped = evidence.prove(root, wrong, tmp_path / "paired-unmapped-false")
+    assert unmapped["status"] == "REFUSED"
+    assert unmapped["coverage"]["residue_arcs"] > 0 and unmapped["mutation"]["lost"]
+    # Default CLI discovers this exact source-owned request and creates new
+    # carriers. It neither searches our earlier outputs nor rebinds their nonce.
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts/check_condensation_ledger.py"),
+            "--repo-root",
+            str(root),
+            "--base",
+            base,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    fresh = list((root / ".tmp/condensation-ci").glob("run-*/proof-*/ledger.json"))
+    assert len(fresh) == 1
+    fresh_value = consumer.strict_json(fresh[0])
+    assert fresh_value["binding"]["nonce"] != consumer.strict_json(carrier)["binding"]["nonce"]
+    assert consumer.verify(root, base, fresh)["status"] == "PASS"
+
+
 def test_setup_failure_is_unknown_with_durable_receipt(tmp_path):
     """REQ-testing-053: malformed input and setup failures preserve scoped UNKNOWN."""
     root = _toy(tmp_path)

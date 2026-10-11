@@ -27,9 +27,9 @@ opaque key; raw parameter identities and child error operands stay in RAM.
 Empty, skipped, deselected, incomplete or changed populations cannot pass.
 
 The removed population runs in the full exact Git base. Survivors run in a
-separate full current-source copy. Production scope must have identical bytes
-and modes. Changed implementations or Python/config dependencies need independent lineage
-proof and cannot use the current same-source producer. The two proof-tool files
+separate full current-source copy. The default route requires identical production bytes
+and modes. Changed implementations or Python dependencies need the explicit
+paired route below. Changed installed environments or links still refuse. The proof-tool files
 are current-bound execution machinery; their introduction grants no production
 dependency exemption. Ordinary tests retain their coverage core,
 markers and parallel defaults; only the isolated proof uses ctrace and `-n 0`.
@@ -136,11 +136,74 @@ finite60s budget. Multiple requests execute sequentially and retain their own
 carriers; no selector, CI predicate, general time cap or ordinary fork mode changes.
 
 Changed production/runtime or config dependencies still require independent
-lineage proof and cannot use this same-source route. This includes the dated
+lineage proof and cannot use the identical-source route. This includes the dated
 backend805 comparison: its31 import changes, two execution extensions and two
 fixture additions are classifications, not proven preservation of concurrent
 production changes. Real migrated roles and other protected runtime evidence
 retain their ordinary requirements. A plan cannot make those changes context-only.
+
+## Fresh paired production lineage
+
+Add an optional `lineage` object to the same complete plan when production
+operations move or gain additional execution. The top-level `scope` binds the
+complete current Python scope; `lineage.scope` binds the complete old scope.
+Every changed Python dependency must be explicitly included on each applicable
+side. The two full source universes and their Git bodies, modes and installed
+tools remain bound. Changed `uv.lock`, `pyproject.toml`, links and migration
+runtime do not qualify for this software route.
+
+```json
+{
+  "mode": "paired",
+  "scope": ["old_module.py"],
+  "functions": [
+    {
+      "before": {"path": "old_module.py", "function": "reply"},
+      "current": {"path": "new_module.py", "function": "reply"}
+    }
+  ]
+}
+```
+
+This is the `lineage` value, not a complete plan. Function identities are
+source-qualified names, including class/nested owners. Unchanged homes need
+no function row. A declared pair only identifies the two actual functions:
+the reader independently parses their signatures, defaults, decorators,
+keyword interface, source operations and control nesting. Ambiguous, missing
+or changed old operations refuse. Source coordinates select actual AST points;
+they never establish equivalence. Unmapped multiline/lambda or other unsupported
+source shapes remain unknown rather than disappearing from the account.
+
+Both full selected populations execute against their own source, with the same
+finite ctrace protocol. For each old owner, only its named current survivors may
+supply measured branches or semantic kills. Every old branch endpoint must
+retain its independently derived unique source operation. New operations may
+connect an old edge, but cannot skip or reorder another old operation. Every
+old generated mutation must have one uniquely matching operation/operator on
+the current side. Each side executes its own independently generated mutant
+body and restores its own original bytes and mode. The old/current mutation
+hashes and coordinates need not match; an arbitrary branch map, summary count,
+or copied old mutant body cannot substitute for this pairing.
+
+The producer qualifies the complete declared owners, their imports, helpers,
+arguments, markers, statements and every actual ancestral fixture. It does not
+repeat a scan of unrelated owners inside each finite execution. The required
+reader still scans the entire old and current test universe independently: a
+destructive owner omitted from the request refuses even if the declared proof
+passes. Neither a producer PASS nor a request's selected population replaces
+that complete accounting.
+
+The stdlib reader recomputes the pairing from the exact base Git bytes and
+current inputs, then verifies every literal SQLite/run carrier, named kill,
+full case population and restoration. Missing mapped branches or kills refuse;
+unhealthy baselines and unsupported/uncertain execution stay UNKNOWN. This
+proves only preservation of the named old contracts under the measured changes.
+Additional behavior still needs its owning assertions, genuine review and full
+gates. It grants no SQL, retirement, changed-environment or general semantic
+equivalence credit. Default CI accepts this same optional object in a tracked
+`event-base` request and generates fresh evidence through the existing producer;
+it never rebinds an older receipt. Existing budgets, event predicates, selectors
+and mandatory delivery remain unchanged.
 
 ## Recovery and delivery
 
