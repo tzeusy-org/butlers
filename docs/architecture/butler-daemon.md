@@ -80,7 +80,9 @@ The daemon launches route-inbox recovery, the non-switchboard Switchboard heartb
 
 ### Phase 17: Start Liveness Reporting
 
-Finally, the liveness reporter begins periodic health pings and the daemon marks itself ready to accept connections.
+With `BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER=1`, the daemon does not start the legacy heartbeat POST reporter. The Dashboard API independently supervises exact-roster receiver probes; stopping the obsolete reporter does not establish healthy receiver evidence. With the flag unset or any other value, the existing reporter starts with its configured endpoint, payload and cadence for legacy and rollback deployments.
+
+In either mode, the daemon becomes ready to accept routed work only after its current boot epoch is durably registered. Failed registration keeps acceptance false and retries with the same process UUID. The internal scheduler starts independently of legacy reporting.
 
 ## Core Components
 
@@ -175,7 +177,7 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
   `MCP tool called (butler=%s module=%s tool=%s)` is parsed downstream; keep it stable.
 - `sessions_summary` must stay advertised (dashboard cost fan-out relies on the tool metadata) and
   raises `ValueError("Invalid period ...")` for an unsupported period.
-- The liveness reporter treats a heartbeat `404` as misconfiguration: one warning, then it stops.
+- In legacy mode, the liveness reporter stops after three consecutive heartbeat `404` responses. Other HTTP failures remain observable and nonfatal; a `401` never establishes healthy liveness or grants daemon authority.
 - `src/butlers/guards.py::_McpSseDisconnectGuard` suppresses `ClientDisconnect` only for
   `POST .../messages`; every other disconnect or exception still propagates.
 - `notify` normalises an omitted `message` to `""`, so `intent="react"` passes `notify.v1`
