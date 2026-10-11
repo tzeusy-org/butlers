@@ -137,7 +137,9 @@ async def run_startup(daemon: Any) -> None:
     from butlers.core.butler_logging import ButlerDBLogHandler, ButlerLogger
 
     db_log_schema = daemon.config.db_schema or daemon.config.name
-    butler_db_logger = ButlerLogger(pool=pool, schema=db_log_schema)
+    butler_db_logger = ButlerLogger(
+        pool=pool, schema=db_log_schema, owning_schema=daemon.config.db_schema
+    )
     daemon._db_log_handler = ButlerDBLogHandler(
         butler_logger=butler_db_logger,
         butler_name=daemon.config.name,

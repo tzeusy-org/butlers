@@ -79,3 +79,39 @@ def test_migration_covers_all_butler_schemas():
         "travel",
     }
     assert set(mod._BUTLER_SCHEMAS) == expected_schemas
+
+
+def test_forward_log_repair_uses_only_configured_own_target(monkeypatch) -> None:
+    """Actual new producer scopes SQL; this recorder is not PostgreSQL evidence."""
+    # REQ-core-telemetry-016
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    path = _MIGRATION_PATH.with_name("core_266_owned_butler_logs.py")
+    spec = importlib.util.spec_from_file_location("core_266", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.down_revision == "core_265"
+    config = Mock()
+    monkeypatch.setattr(mod.op, "get_context", lambda: SimpleNamespace(config=config))
+    sql = []
+    monkeypatch.setattr(mod.op, "execute", sql.append)
+    for target in (None, "", "public"):
+        config.get_main_option.return_value = target
+        mod.upgrade()
+        assert sql == []
+    config.get_main_option.return_value = "concierge"
+    mod.upgrade()
+    assert 'CREATE TABLE IF NOT EXISTS "concierge".butler_logs' in sql[1]
+    assert "pg_advisory_xact_lock" in sql[0]
+    assert "Incompatible owning structured-log columns" in sql[2]
+    assert "Incompatible owning structured-log indexes" in sql[-1]
+    assert not any("public.butler_logs" in statement for statement in sql)
+    before = list(sql)
+    mod.downgrade()
+    assert sql == before
+    config.get_main_option.return_value = "concierge; SELECT 1"
+    with pytest.raises(ValueError, match="Invalid structured-log owning"):
+        mod.upgrade()
+    assert sql == before

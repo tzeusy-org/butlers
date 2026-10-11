@@ -90,6 +90,22 @@ async def test_log_info_writes_and_uppercases_level() -> None:
     _, *args = conn.execute.call_args.args
     assert "INFO" in args  # level normalised to uppercase
     assert "hello world" in args
+    # REQ-core-telemetry-016: configured owning writes never borrow a public
+    # relation and cannot use an unverified/shared-user acquisition as proof.
+    owned_pool, owned_conn = _make_pool()
+    owned_conn.fetchval.return_value = True
+    owned = ButlerLogger(pool=owned_pool, schema="concierge", owning_schema="concierge")
+    await owned.log("info", "owned sentinel")
+    owned_sql = owned_conn.execute.call_args.args[0]
+    assert 'INSERT INTO "concierge".butler_logs' in owned_sql
+    owned_conn.fetchval.assert_awaited_once_with("SELECT current_user = $1", "butler_concierge_rw")
+    owned_conn.execute.reset_mock()
+    owned_conn.fetchval.return_value = False
+    await owned.log("INFO", "must not borrow authority")
+    owned_conn.execute.assert_not_awaited()
+    owned_conn.fetchval.return_value = True
+    await owned.log("INFO", "restored sentinel")
+    owned_conn.execute.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

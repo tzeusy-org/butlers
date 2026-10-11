@@ -32,6 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
+from butlers.db import schema_search_path
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ async def list_butler_logs(
     """
     try:
         pool = db.pool(name)
+        schema = db.schema_for_butler(name, require_binding=True)
     except KeyError:
         raise HTTPException(
             status_code=503,
@@ -146,9 +148,11 @@ async def list_butler_logs(
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
+    path = schema_search_path(schema)
+    table = f'"{path.split(",", 1)[0]}".butler_logs' if path is not None else "butler_logs"
     sql = (
         f"SELECT ts, level, msg, source, request_id, metadata"
-        f" FROM butler_logs{where}"
+        f" FROM {table}{where}"
         f" ORDER BY ts DESC"
         f" LIMIT ${idx}"
     )

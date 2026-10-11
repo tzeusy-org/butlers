@@ -42,6 +42,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from butlers.db import schema_search_path
+
 logger = logging.getLogger(__name__)
 
 # Ordered list of severity levels for >= comparisons.
@@ -68,6 +70,10 @@ class ButlerLogger:
         ``butler_logs`` resolves correctly without a qualified prefix).
     schema:
         The butler schema name.  Used only for diagnostic log messages.
+    owning_schema:
+        The daemon's configured owning schema. When present, writes use its
+        qualified relation and verify the existing runtime role on acquisition.
+        Legacy schema-less callers retain their original pool lookup.
     min_level:
         Minimum level to persist.  Lines below this rank are silently dropped.
         Default ``"INFO"`` — DEBUG lines are not written unless explicitly
@@ -79,6 +85,8 @@ class ButlerLogger:
         pool: Any,  # asyncpg.Pool — typed loosely to avoid hard import at module level
         schema: str,
         min_level: str = "INFO",
+        *,
+        owning_schema: str | None = None,
     ) -> None:
         norm_min = min_level.upper()
         if norm_min not in _VALID_LEVELS:
@@ -88,6 +96,14 @@ class ButlerLogger:
         self._pool = pool
         self._schema = schema
         self._min_rank = _level_rank(norm_min)
+        # ``schema`` historically labels diagnostics only. Keep legacy pool
+        # behavior, but the configured daemon supplies its actual owned target
+        # so a missing local relation cannot fall through to public.
+        path = schema_search_path(owning_schema)
+        self._owning_schema = path.split(",", 1)[0] if path is not None else None
+        self._log_table = (
+            f'"{self._owning_schema}".butler_logs' if path is not None else "butler_logs"
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -189,10 +205,16 @@ class ButlerLogger:
 
         try:
             async with self._pool.acquire() as conn:
+                if self._owning_schema is not None:
+                    role_matches = await conn.fetchval(
+                        "SELECT current_user = $1", f"butler_{self._owning_schema}_rw"
+                    )
+                    if role_matches is not True:
+                        raise RuntimeError("Structured log runtime role is not verified")
                 if ts is not None:
                     await conn.execute(
-                        """
-                        INSERT INTO butler_logs (ts, level, msg, source, request_id, metadata)
+                        f"""
+                        INSERT INTO {self._log_table} (ts, level, msg, source, request_id, metadata)
                         VALUES ($1, $2, $3, $4, $5::uuid, $6)
                         """,
                         ts,
@@ -204,8 +226,8 @@ class ButlerLogger:
                     )
                 else:
                     await conn.execute(
-                        """
-                        INSERT INTO butler_logs (level, msg, source, request_id, metadata)
+                        f"""
+                        INSERT INTO {self._log_table} (level, msg, source, request_id, metadata)
                         VALUES ($1, $2, $3, $4::uuid, $5)
                         """,
                         norm_level,
