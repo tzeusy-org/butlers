@@ -103,6 +103,7 @@ def test_forward_log_repair_uses_only_configured_own_target(monkeypatch) -> None
         assert sql == []
     config.get_main_option.return_value = "concierge"
     mod.upgrade()
+    assert len(sql) == 6
     assert 'CREATE TABLE IF NOT EXISTS "concierge".butler_logs' in sql[1]
     assert "pg_advisory_xact_lock" in sql[0]
     assert "Incompatible owning structured-log columns" in sql[2]

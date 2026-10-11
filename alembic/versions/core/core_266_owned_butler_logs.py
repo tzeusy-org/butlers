@@ -106,7 +106,8 @@ def upgrade() -> None:
             ) OR (SELECT count(*) FROM pg_attrdef WHERE adrelid = relation_oid) <> 3
                OR NOT EXISTS (
                    SELECT 1 FROM pg_attrdef WHERE adrelid = relation_oid AND adnum = 1
-                     AND pg_get_expr(adbin, adrelid) = format('nextval(%L::regclass)', serial_name)
+                     AND pg_get_expr(adbin, adrelid) =
+                         format('nextval(%L::regclass)', serial_name::regclass::text)
                ) OR (SELECT count(*) FROM pg_attrdef WHERE adrelid = relation_oid
                        AND adnum IN (2, 8) AND pg_get_expr(adbin, adrelid) = 'now()') <> 2 THEN
                 RAISE EXCEPTION 'Incompatible owning structured-log defaults or sequence';
