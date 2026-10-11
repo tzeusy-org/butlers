@@ -35,6 +35,12 @@ dependency exemption. Ordinary tests retain their coverage core,
 markers and parallel defaults; only the isolated proof uses ctrace and `-n 0`.
 Its finite total budget defaults to60s and may be explicitly set up to300s. These
 proof times are not routine-lane or historical condensation savings.
+Within each baseline, mutant or restored phase, the two source sides execute
+concurrently in their separate owned copies. Each side still creates its own
+request, CoverageData SQLite file and process group; every phase executes anew.
+Both groups settle before mutation restoration or the next phase. An interruption
+or failed side cancels the other owned run and retains the existing cleanup and
+UNKNOWN requirements, within the same total budget.
 
 A protected PASS requires nonempty actual branch arcs, zero residue, no waived
 normative arcs, and every removed owner's semantic mutant kill retained by one
@@ -317,6 +323,11 @@ When the existing hosted `TEST_EVIDENCE_DIR` is configured, the same fixed close
 summary is also published there with the tracked request-record and closed-summary
 hashes as its name. Distinct execution nonces retain distinct diagnostics without
 replacing an earlier request carrier.
+The publication fault tests use a separate owned evidence namespace: their
+deliberately replaced outputs and write faults never enter the shared shard
+upload namespace. The direct-producer assertion likewise consumes only its
+invocation's namespace. Its unrelated-malformed-carrier companion remains
+untrusted; isolation does not turn malformed diagnostic output into proof.
 The unit/affected evidence upload retains these JSON summaries because sanitized
 JUnit deliberately omits failure and stdout bodies. The extra carrier contains
 no child output, paths, operand text or new admission authority; unavailable or

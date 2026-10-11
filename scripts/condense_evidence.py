@@ -21,6 +21,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # The owned launcher must not run project startup hooks before the external
@@ -68,7 +69,13 @@ def publish(path: Path, value: dict) -> None:
 
 
 def owned_run(
-    command: list[str], *, cwd: Path, env: dict, timeout: float, process_record: Path | None = None
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict,
+    timeout: float,
+    process_record: Path | None = None,
+    cancellation: threading.Event | None = None,
 ) -> tuple[int, bool]:
     """Use the landed R1 completion admission for this exact owned child group."""
     launched = [sys.executable, "-I", str(Path(__file__).resolve()), "_launch", *command]
@@ -90,7 +97,18 @@ def owned_run(
         child.stdin.write(b"1")
         child.stdin.close()
         try:
-            return child.wait(timeout=timeout), True
+            if cancellation is None:
+                return child.wait(timeout=timeout), True
+            deadline = time.monotonic() + timeout
+            while not cancellation.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise EvidenceError("proof-timeout")
+                try:
+                    return child.wait(timeout=min(0.1, remaining)), True
+                except subprocess.TimeoutExpired:
+                    continue
+            raise InterruptedError
         except subprocess.TimeoutExpired:
             raise EvidenceError("proof-timeout") from None
     finally:
@@ -463,6 +481,7 @@ def suite(
     id_: str,
     timeout: float,
     control_inputs: set[str] | None = None,
+    cancellation: threading.Event | None = None,
 ) -> dict:
     request = output.with_suffix(".request.json")
     publish(
@@ -485,7 +504,7 @@ def suite(
     env["COVERAGE_CORE"] = "ctrace"
     command = [sys.executable, str(Path(__file__).resolve()), "_worker", str(request)]
     code, cleaned, access = request_access_run(
-        command, copy_root, request, output, env, timeout, control_inputs or set()
+        command, copy_root, request, output, env, timeout, control_inputs or set(), cancellation
     )
     if output.is_file():
         result = strict_json(output)
@@ -504,7 +523,7 @@ def suite(
     return result
 
 
-def request_access_run(command, root, request, output, env, timeout, inputs):
+def request_access_run(command, root, request, output, env, timeout, inputs, cancellation=None):
     """Observe kernel file access from startup through owned group completion.
 
     Only matched public request paths are traced. Raw syscall records stay in
@@ -521,7 +540,12 @@ def request_access_run(command, root, request, output, env, timeout, inputs):
     process_record = output.with_suffix(".process.json")
     if not inputs:
         code, cleaned = owned_run(
-            command, cwd=root, env=env, timeout=timeout, process_record=process_record
+            command,
+            cwd=root,
+            env=env,
+            timeout=timeout,
+            process_record=process_record,
+            cancellation=cancellation,
         )
         return code, cleaned, access
     tool = shutil.which("strace")
@@ -580,7 +604,12 @@ def request_access_run(command, root, request, output, env, timeout, inputs):
         traced += ["-P", str(root / public_path(name))]
     try:
         code, cleaned = owned_run(
-            [*traced, *command], cwd=root, env=env, timeout=timeout, process_record=process_record
+            [*traced, *command],
+            cwd=root,
+            env=env,
+            timeout=timeout,
+            process_record=process_record,
+            cancellation=cancellation,
         )
     finally:
         stopped.set()
@@ -671,8 +700,10 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
     journal = []
     owned = None
     nonce = secrets.token_hex(32)
+    cancellation = threading.Event()
 
     def interrupted(_signum, _frame):
+        cancellation.set()
         raise InterruptedError
 
     for signum in [signal.SIGTERM, signal.SIGINT]:
@@ -827,16 +858,31 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                     label,
                     remaining,
                     control_inputs,
+                    cancellation,
                 )
                 run["side"] = kind
                 publish(path, run)
                 run["artifact"] = artifact(path, output)
                 run["coverage_artifact"] = artifact(path.with_suffix(".coverage"), output)
-                runs.append(run)
                 return run
 
+            def execute_sides(label):
+                # The two source copies, requests, SQLite files and process groups
+                # are disjoint. Every phase still executes freshly under the same
+                # total deadline; joining both sides also completes failed cleanup.
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    pending = {kind: pool.submit(execute, kind, label(kind)) for kind in selections}
+                    try:
+                        completed = {kind: pending[kind].result() for kind in selections}
+                    except BaseException:
+                        cancellation.set()
+                        raise
+                runs.extend(completed.values())
+                return completed
+
+            baselines = execute_sides(lambda kind: kind + "-baseline")
             for kind in selections:
-                run = execute(kind, kind + "-baseline")
+                run = baselines[kind]
                 if run["exit"] != 0:
                     raise EvidenceError("baseline-not-healthy")
                 baseline[kind] = run
@@ -884,8 +930,9 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                     for kind, copy_root in copies.items():
                         change = mutations[kind]
                         (copy_root / change["path"]).write_bytes(change["body"])
+                    measured = execute_sides(lambda kind: mutant["id"] + "-" + kind)
                     for kind in selections:
-                        run = execute(kind, mutant["id"] + "-" + kind)
+                        run = measured[kind]
                         if {(r["key"], r["node"]) for r in run["cases"]} != {
                             (r["key"], r["node"]) for r in baseline[kind]["cases"]
                         }:
@@ -904,8 +951,9 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                         path.chmod(mode)
                         if path.read_bytes() != body or path.stat().st_mode & 0o777 != mode:
                             raise EvidenceError("mutation-restore-unknown")
+                restorations = execute_sides(lambda kind: mutant["id"] + "-" + kind + "-restored")
                 for kind in selections:
-                    restored = execute(kind, mutant["id"] + "-" + kind + "-restored")
+                    restored = restorations[kind]
                     if restored["exit"] != 0 or restored["cases"] != baseline[kind]["cases"]:
                         raise EvidenceError("restored-baseline-not-healthy")
                 journal[-1]["status"] = "RESTORED"

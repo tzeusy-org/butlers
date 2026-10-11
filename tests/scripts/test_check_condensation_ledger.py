@@ -493,8 +493,15 @@ def _fresh_refusal_diagnostic(tmp_path):
         subprocess.check_output(["git", "-C", str(root), "show", "HEAD:tests/test_owner.py"])
     )
     assert ledger.verify(root, base, [])["status"] == "PASS"
-    assert _bounded_refusal_carriers(tmp_path)
-    assert _bounded_refusal_publication(tmp_path)
+    # Fault publication deliberately replaces outputs and writes. Confine every
+    # actual old helper to an owned namespace, never the shard upload directory.
+    fault_evidence = tmp_path / "fault-evidence"
+    fault_evidence.mkdir()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("TEST_EVIDENCE_DIR", str(fault_evidence))
+        assert _bounded_refusal_carriers(tmp_path)
+        assert _bounded_refusal_publication(tmp_path)
+    assert list(fault_evidence.glob("condensation-refusal-*.json"))
     # Repeat the same original tracked request with a distinct execution nonce.
     # Exclusive publication must preserve both closed diagnostics.
     with pytest.MonkeyPatch.context() as patch:

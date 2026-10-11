@@ -180,6 +180,7 @@ def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch
     assert all(
         run["core"] == "ctrace" and run["complete"] and run["cleanup"] for run in proof["runs"]
     )
+    assert _disjoint_execution_phases(proof, config, tmp_path / "proof")
     assert (root / "toy.py").read_bytes() == before
     assert os.environ["COVERAGE_CORE"] == "sysmon"
     saved = evidence.strict_json(tmp_path / "proof/ledger.json")
@@ -1506,6 +1507,8 @@ def test_setup_failure_is_unknown_with_durable_receipt(tmp_path):
     assert (root / "toy.py").read_bytes() == before
     assert _direct_producer_diagnostic()
 
+    assert _direct_namespace_unchanged(tmp_path)
+
 
 def _direct_producer_diagnostic():
     diagnostics = [
@@ -1636,3 +1639,51 @@ def test_owned_timeout_leaves_unknown_and_no_active_group(tmp_path, outcome):
         if child.poll() is None:
             os.killpg(child.pid, signal.SIGKILL)
             child.wait(timeout=5)
+
+
+def _disjoint_execution_phases(proof, config, output):
+    # Every freshly executed side keeps its own request, SQLite file and group,
+    # including both baselines and both mutant/restored sides of every phase.
+    assert len(proof["runs"]) == 2 + 4 * len(proof["mutation"]["mutants"])
+    assert len({run["id"] for run in proof["runs"]}) == len(proof["runs"])
+    assert len({run["coverage_artifact"]["path"] for run in proof["runs"]}) == len(proof["runs"])
+    groups = set()
+    roots = {}
+    for run in proof["runs"]:
+        carrier = output / run["artifact"]["path"]
+        request = evidence.strict_json(carrier.with_suffix(".request.json"))
+        process = evidence.strict_json(carrier.with_suffix(".process.json"))
+        assert request["id"] == run["id"]
+        assert request["nonce"] == evidence.strict_json(output / "ledger.json")["binding"]["nonce"]
+        assert request["selection"] == config[run["side"]]
+        assert request["scope"] == run["scope"]
+        assert process["cleanup"] is True
+        assert process["identity"]["group"] not in groups
+        groups.add(process["identity"]["group"])
+        roots.setdefault(run["side"], set()).add(request["root"])
+    assert len(roots["removed"]) == len(roots["survivors"]) == 1
+    assert roots["removed"].isdisjoint(roots["survivors"])
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _own_direct_diagnostic_namespace(request, tmp_path, monkeypatch):
+    # Only this original diagnostic owner performs deliberate producer refusal.
+    # Other owners keep their ordinary hosted publication destination.
+    if request.function is test_setup_failure_is_unknown_with_durable_receipt:
+        foreign_evidence = tmp_path / "foreign-evidence"
+        foreign_evidence.mkdir()
+        foreign = foreign_evidence / "condensation-refusal-unrelated.json"
+        foreign.write_bytes(b"UNRELATED_SENTINEL\n")
+        monkeypatch.setenv("TEST_EVIDENCE_DIR", str(foreign_evidence))
+        own_evidence = tmp_path / "direct-evidence"
+        own_evidence.mkdir()
+        monkeypatch.setenv("TEST_EVIDENCE_DIR", str(own_evidence))
+
+
+def _direct_namespace_unchanged(tmp_path):
+    foreign = tmp_path / "foreign-evidence/condensation-refusal-unrelated.json"
+    assert foreign.read_bytes() == b"UNRELATED_SENTINEL\n"
+    assert list(foreign.parent.iterdir()) == [foreign]
+    assert list((tmp_path / "direct-evidence").glob("condensation-refusal-*.json"))
+    return True
