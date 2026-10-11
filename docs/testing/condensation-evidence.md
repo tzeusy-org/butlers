@@ -303,6 +303,13 @@ Each diagnostic carrier is opened nonblocking without following its final
 symlink, then checked through that same descriptor for regular-file type and a
 bounded body. FIFOs, devices, directories, oversized bodies and malformed JSON
 remain unavailable diagnostics; none can block receipt recovery or admit a proof.
+Summary publication pins the original physical output directory before invoking
+that child and exclusively creates a new regular output through its descriptor.
+An occupied name (including a symlink, hardlink, FIFO or directory) is left
+untouched; the same closed summary still prints beside the primary refusal.
+Publication never truncates a preexisting file or cleans up a pathname that the
+child can replace. A failed or partial output remains unavailable diagnostic
+custody, never proof admission or a replacement for the original refusal.
 
 Recovery refuses a live owner, reused/live process identity, unknown group exit,
 indirect paths or changed journal bytes. It signals no later numeric PID. A

@@ -1455,7 +1455,64 @@ def ci_binding(root: Path, *, event: str, base: str, expected_head: str, source_
     return base
 
 
-def fresh_proof_refusal(config: Path, run: Path, record: dict, refusal: Exception) -> dict:
+def _refusal_directory(path: Path) -> int:
+    """Pin a physical diagnostic directory without following any path component."""
+    descriptor = -1
+    try:
+        absolute = Path(os.path.abspath(path))
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+        descriptor = os.open(absolute.anchor, flags)
+        for part in absolute.parts[1:]:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except OSError:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        return -1
+
+
+def publish_refusal_summary(summary: dict, directory_fd: int, name: str) -> None:
+    """Create only a new owned output; occupied names and failed writes stay unknown."""
+    descriptor = -1
+    try:
+        body = (json.dumps(summary, sort_keys=True) + "\n").encode()
+        if directory_fd < 0 or len(body) > 1024 * 1024:
+            return
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o666,
+            dir_fd=directory_fd,
+        )
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return
+        remaining = memoryview(body)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                return
+            remaining = remaining[written:]
+    except OSError:
+        pass
+    finally:
+        if descriptor >= 0:
+            # Never unlink a pathname a failed child can replace. Partial
+            # diagnostics are unavailable, never admission or primary errors.
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def fresh_proof_refusal(
+    config: Path, run: Path, record: dict, refusal: Exception, *, publication_fd: int | None = None
+) -> dict:
     """Retain closed diagnostic identity without publishing child output or operands."""
     categories = {
         "proof-started",
@@ -1561,12 +1618,17 @@ def fresh_proof_refusal(config: Path, run: Path, record: dict, refusal: Exceptio
     }
     # This is diagnostic custody only. Missing/corrupt diagnostics never admit
     # the failed proof, and the original categorical refusal remains primary.
+    own_descriptor = publication_fd is None
+    if own_descriptor:
+        publication_fd = _refusal_directory(run.parent)
     try:
-        (run.parent / (run.name + "-refusal.json")).write_text(
-            json.dumps(summary, sort_keys=True) + "\n"
-        )
-    except OSError:
-        pass
+        publish_refusal_summary(summary, publication_fd, run.name + "-refusal.json")
+    finally:
+        if own_descriptor and publication_fd >= 0:
+            try:
+                os.close(publication_fd)
+            except OSError:
+                pass
     print(json.dumps(summary, sort_keys=True))
     return summary
 
@@ -1602,6 +1664,9 @@ def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
         config = output / f"plan-{index}.json"
         config.write_text(json.dumps(plan, sort_keys=True) + "\n")
         run = output / f"proof-{index}"
+        # Pin the original output directory before the child can replace any
+        # path. Publication uses this descriptor, not a post-child pathname.
+        publication_fd = _refusal_directory(output)
         try:
             run_checked(
                 "condensation-proof",
@@ -1620,8 +1685,14 @@ def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
                 timeout=70,
             )
         except Refusal as exc:
-            fresh_proof_refusal(config, run, record, exc)
+            fresh_proof_refusal(config, run, record, exc, publication_fd=publication_fd)
             raise EvidenceError("fresh-condensation-proof-refused") from None
+        finally:
+            if publication_fd >= 0:
+                try:
+                    os.close(publication_fd)
+                except OSError:
+                    pass
         if input_record(root, name) != record:
             raise EvidenceError("plan-changed-during-execution")
         ledgers.append(run / "ledger.json")

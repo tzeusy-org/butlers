@@ -488,6 +488,7 @@ def _fresh_refusal_diagnostic(tmp_path):
     )
     assert ledger.verify(root, base, [])["status"] == "PASS"
     assert _bounded_refusal_carriers(tmp_path)
+    assert _bounded_refusal_publication(tmp_path)
     return True
 
 
@@ -543,4 +544,130 @@ def _bounded_refusal_carriers(tmp_path):
     execute("oversized")
     receipt.write_text('{"status":"UNKNOWN","category":"worker-incomplete"}\n')
     execute("regular")
+    return True
+
+
+def _bounded_refusal_publication(tmp_path):
+    import stat
+
+    home = tmp_path / "publication"
+    home.mkdir()
+    child = home / "child.py"
+    child.write_text(
+        "import json,os,sys\nfrom pathlib import Path\n"
+        "run=Path(sys.argv[1]); kind=sys.argv[2]; run.mkdir()\n"
+        "foreign=run.parents[3]/'foreign'; foreign.mkdir()\n"
+        "sentinel=foreign/'sentinel'; sentinel.write_text('UNRELATED_SENTINEL\\n')\n"
+        "receipt={'status':'UNKNOWN','category':'worker-incomplete'}\n"
+        "(run/'receipt.json').write_text(json.dumps(receipt) if kind!='malformed' else '{}')\n"
+        "output=run.parent/(run.name+'-refusal.json')\n"
+        "if kind=='fifo': os.mkfifo(output)\n"
+        "if kind=='symlink': output.symlink_to(sentinel)\n"
+        "if kind=='hardlink': os.link(sentinel,output)\n"
+        "if kind=='directory': output.mkdir()\n"
+        "if kind=='occupied': output.write_text('OCCUPIED_SENTINEL\\n')\n"
+        "if kind=='parent-symlink':\n"
+        " original=run.parent; original.rename(original.with_name(original.name+'-original'))\n"
+        " original.symlink_to(foreign,target_is_directory=True)\n"
+        "sys.exit(1)\n"
+    )
+    code = (
+        "import json,sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
+        "import check_condensation_ledger as l; import pre_push; import os; "
+        "write=os.write; "
+        'exec("def fail_write(fd,body):\\n'
+        " if sys.argv[5] not in {'write-error','replaced-write-error'}: return write(fd,body)\\n"
+        " if sys.argv[5]=='replaced-write-error':\\n"
+        "  output=Path(os.readlink('/proc/self/fd/'+str(fd)))\\n"
+        "  output.unlink(); output.symlink_to(Path(sys.argv[3])/'foreign/sentinel')\\n"
+        " raise OSError('fixed-injected-write-failure')\"); "
+        "os.write=fail_write; real=pre_push.run_checked; "
+        'exec("def child(name,args,cwd,*,timeout):\\n'
+        " assert name=='condensation-proof' and timeout==70\\n"
+        " run=args[args.index('--output')+1]\\n"
+        ' return real(name,[sys.executable,sys.argv[2],run,sys.argv[5]],cwd,timeout=timeout)"); '
+        "pre_push.run_checked=child; "
+        "assert l.main(['--repo-root',sys.argv[3],'--base',sys.argv[4]])==1; "
+        "print('COMPLETE_REAL_CHILD_REFUSAL')"
+    )
+    for kind in (
+        "regular",
+        "fifo",
+        "symlink",
+        "hardlink",
+        "directory",
+        "occupied",
+        "parent-symlink",
+        "malformed",
+        "write-error",
+        "replaced-write-error",
+        "restored",
+    ):
+        root = _repository(home / kind)
+        base = ledger.git(root, "rev-parse", "HEAD")
+        owner = "tests/test_owner.py::test_owner"
+        plans = root / "tests/condensation-plans"
+        plans.mkdir()
+        (plans / "current.json").write_text(
+            json.dumps(
+                {
+                    "base": "event-base",
+                    "scope": ["tests/test_owner.py"],
+                    "removed": [owner],
+                    "survivors": [owner],
+                    "cluster": "diagnostic",
+                    "bead": "bu-ly3lv5.11",
+                    "contract": {"class": "wire", "cites": ["REQ-testing-053"]},
+                    "mapping": {owner: {"survivors": [owner], "reason": "diagnostic refusal"}},
+                }
+            )
+        )
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        test = root / "tests/test_owner.py"
+        test.write_text(test.read_text().replace("    assert value in (1,2)\n", ""))
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                code,
+                str(Path(ledger.__file__).parent),
+                str(child),
+                str(root),
+                base,
+                kind,
+            ],
+            capture_output=True,
+            timeout=3,
+        )
+        assert result.returncode == 0 and result.stderr == b""
+        assert b"COMPLETE_REAL_CHILD_REFUSAL" in result.stdout
+        assert b"fresh-condensation-proof-refused" in result.stdout
+        sentinel = root / "foreign/sentinel"
+        assert sentinel.read_text() == "UNRELATED_SENTINEL\n"
+        assert stat.S_ISREG(sentinel.stat().st_mode)
+        outputs = list((root / ".tmp/condensation-ci").glob("run-*/proof-0-refusal.json"))
+        if kind in {"regular", "malformed", "restored", "parent-symlink"}:
+            assert len(outputs) == 1
+            summary = ledger.strict_json(outputs[0])
+            assert summary["outer"] == "condensation-proof:exit-1"
+            assert summary["status"] == (
+                "unknown" if kind in {"malformed", "parent-symlink"} else "UNKNOWN"
+            )
+            assert not (root / "foreign/proof-0-refusal.json").exists()
+        elif kind == "write-error":
+            assert outputs[0].read_bytes() == b""
+        elif kind == "replaced-write-error":
+            assert outputs[0].is_symlink() and outputs[0].resolve() == sentinel.resolve()
+        elif kind == "fifo":
+            assert stat.S_ISFIFO(outputs[0].lstat().st_mode)
+        elif kind == "symlink":
+            assert outputs[0].is_symlink() and outputs[0].resolve() == sentinel.resolve()
+        elif kind == "hardlink":
+            assert outputs[0].stat().st_ino == sentinel.stat().st_ino
+        elif kind == "directory":
+            assert outputs[0].is_dir()
+        else:
+            assert outputs[0].read_text() == "OCCUPIED_SENTINEL\n"
+        # Every actual failed child is complete before bounded publication.
+        assert result.stdout.count(b'"kind": "fresh-condensation-proof-refusal"') == 1
     return True
