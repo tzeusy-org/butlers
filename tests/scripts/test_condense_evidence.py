@@ -636,6 +636,307 @@ def test_distinct_status_owner_loses_kill_and_arcs(tmp_path):
         "pure-local-alias-healthy": "PASS",
     }
     assert _assert_finalizer_rebinding(tmp_path / "finalizer-rebinding") == "PASS"
+    assert _assert_full_request_descriptor_observation(tmp_path / "kernel-descriptors") == {
+        **{
+            name: "observed-full-digest"
+            for name in (
+                "absolute",
+                "relative",
+                "cwd",
+                "dirfd",
+                "duplicate",
+                "reused",
+                "mapping",
+                "native",
+                "inherited",
+            )
+        },
+        "open-only": "complete",
+        "no-access-child": "complete",
+        "missing-original-exit": "UNKNOWN",
+        **{name: "UNKNOWN" for name in ("partial", "unpaired", "unresolved", "reuse")},
+    }
+    assert _assert_observer_completion_failure(tmp_path / "observer-completion") == "PASS"
+    assert _assert_source_owned_noaccess_child(tmp_path / "source-owned-child") == "PASS"
+
+
+def _assert_full_request_descriptor_observation(tmp_path):
+    """Read the complete planted digest through actual installed native children."""
+    tmp_path.mkdir()
+    request_body = b'{"source_owned":"whole synthetic request body"}\n'
+    digest = hashlib.sha256(request_body).hexdigest()
+    input_name = "current.json"
+    control = tmp_path / input_name
+    control.write_bytes(request_body)
+    nonce = "e" * 64
+    programs = {
+        "absolute": f"body=open({str(control)!r},'rb').read()",
+        "relative": f"body=open({input_name!r},'rb').read()",
+        "cwd": f"os.chdir({str(tmp_path.parent)!r});body=open({str(control.relative_to(tmp_path.parent))!r},'rb').read()",
+        "dirfd": f"d=os.open('.',os.O_RDONLY);f=os.open({input_name!r},os.O_RDONLY,dir_fd=d);body=os.read(f,4096);os.close(f);os.close(d)",
+        "duplicate": f"f=os.open({input_name!r},os.O_RDONLY);d=os.dup(f);os.close(f);body=os.read(d,4096);os.close(d)",
+        "reused": f"f=os.open(os.devnull,os.O_RDONLY);os.close(f);f=os.open({input_name!r},os.O_RDONLY);body=os.read(f,4096);os.close(f)",
+        "mapping": f"f=os.open({input_name!r},os.O_RDONLY);m=mmap.mmap(f,0,access=mmap.ACCESS_READ);body=m[:];m.close();os.close(f)",
+        "native": f"libc=ctypes.CDLL(None);libc.fopen.argtypes=[ctypes.c_char_p,ctypes.c_char_p];libc.fopen.restype=ctypes.c_void_p;libc.fread.argtypes=[ctypes.c_void_p,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_void_p];libc.fclose.argtypes=[ctypes.c_void_p];f=libc.fopen({input_name.encode()!r},b'rb');b=ctypes.create_string_buffer(4096);n=libc.fread(b,1,4096,f);body=b.raw[:n];libc.fclose(f)",
+    }
+    outcomes = {}
+    for species, operation in programs.items():
+        output = tmp_path / (species + ".json")
+        request = output.with_suffix(".request.json")
+        evidence.publish(request, {"nonce": nonce})
+        output.with_suffix(".subject-probe").write_bytes(nonce.encode())
+        program = (
+            "import os,hashlib,mmap,ctypes\n"
+            f"assert open({str(request)!r},'rb').read()\n"
+            f"assert open({str(output.with_suffix('.subject-probe'))!r},'rb').read()=={nonce.encode()!r}\n"
+            + operation
+            + "\n"
+            + f"assert hashlib.sha256(body).hexdigest()=={digest!r}\n"
+        )
+        code, cleaned, access = evidence.request_access_run(
+            [sys.executable, "-c", program],
+            tmp_path,
+            request,
+            output,
+            dict(os.environ),
+            10,
+            {input_name},
+        )
+        assert code == 0 and cleaned is True
+        assert access["complete"] is True and access["accesses"] > 0
+        assert access["reads"] > 0 and access["probe_accesses"] > 0
+        assert access["subject_probes"] == 1
+        assert all(actor["exited"] for actor in access["actors"])
+        outcomes[species] = "observed-full-digest"
+    # The same actual descriptor survives fork and is consumed in the child.
+    output = tmp_path / "inherited.json"
+    request = output.with_suffix(".request.json")
+    evidence.publish(request, {"nonce": nonce})
+    output.with_suffix(".subject-probe").write_bytes(nonce.encode())
+    program = (
+        "import os,hashlib\n"
+        f"assert open({str(request)!r},'rb').read()\n"
+        f"assert open({str(output.with_suffix('.subject-probe'))!r},'rb').read()=={nonce.encode()!r}\n"
+        f"f=os.open({input_name!r},os.O_RDONLY)\n"
+        "pid=os.fork()\n"
+        "if pid==0:\n"
+        f" assert hashlib.sha256(os.read(f,4096)).hexdigest()=={digest!r}\n"
+        " os.close(f);os._exit(0)\n"
+        "_,status=os.waitpid(pid,0)\nassert status==0\nos.close(f)\n"
+    )
+    code, cleaned, inherited = evidence.request_access_run(
+        [sys.executable, "-c", program],
+        tmp_path,
+        request,
+        output,
+        dict(os.environ),
+        10,
+        {input_name},
+    )
+    assert code == 0 and cleaned is True
+    assert inherited["complete"] is True and inherited["reads"] > 0
+    assert inherited["subject_descendants"] == 1 and len(inherited["actors"]) == 2
+    outcomes["inherited"] = "observed-full-digest"
+    # Open is not the positive read probe. A successful no-access child is
+    # supported only beside complete parent/child exits and both real probes.
+    for species, operation in (
+        ("open-only", f"f=os.open({input_name!r},os.O_RDONLY);os.close(f)"),
+        (
+            "no-access-child",
+            "import subprocess;subprocess.run([sys.executable,'-c','assert 6*7==42'],check=True)",
+        ),
+    ):
+        output = tmp_path / (species + ".json")
+        request = output.with_suffix(".request.json")
+        evidence.publish(request, {"nonce": nonce})
+        output.with_suffix(".subject-probe").write_bytes(nonce.encode())
+        program = (
+            "import os,sys\n"
+            f"assert open({str(request)!r},'rb').read()\n"
+            f"assert open({str(output.with_suffix('.subject-probe'))!r},'rb').read()=={nonce.encode()!r}\n"
+            + operation
+            + "\n"
+        )
+        code, cleaned, access = evidence.request_access_run(
+            [sys.executable, "-c", program],
+            tmp_path,
+            request,
+            output,
+            dict(os.environ),
+            10,
+            {input_name},
+        )
+        assert code == 0 and cleaned is True and access["complete"] is True
+        assert access["reads"] == 0
+        if species == "open-only":
+            assert access["accesses"] > 0
+        else:
+            assert access["accesses"] == 0 and access["subject_descendants"] == 1
+        outcomes[species] = "complete"
+    # Drop an actual exit from a genuine installed child stream. The full
+    # parent/read probes remain present, but no completed history is inferred.
+    original_consume = evidence.RequestAccessStream.consume
+    removed = []
+
+    def omit_original_exit(self, raw):
+        if not removed and b"+++ exited with" in raw:
+            removed.append(True)
+            return
+        original_consume(self, raw)
+
+    evidence.RequestAccessStream.consume = omit_original_exit
+    output = tmp_path / "missing-original-exit.json"
+    request = output.with_suffix(".request.json")
+    evidence.publish(request, {"nonce": nonce})
+    output.with_suffix(".subject-probe").write_bytes(nonce.encode())
+    program = (
+        "import subprocess,sys\n"
+        f"assert open({str(request)!r},'rb').read()\n"
+        f"assert open({str(output.with_suffix('.subject-probe'))!r},'rb').read()=={nonce.encode()!r}\n"
+        "subprocess.run([sys.executable,'-c','assert 6*7==42'],check=True)\n"
+    )
+    try:
+        code, cleaned, missing = evidence.request_access_run(
+            [sys.executable, "-c", program],
+            tmp_path,
+            request,
+            output,
+            dict(os.environ),
+            10,
+            {input_name},
+        )
+        assert code == 0 and cleaned is True and removed == [True]
+        assert missing["complete"] is False and missing["probe_accesses"] > 0
+        assert missing["accesses"] == 0 and missing["subject_probes"] == 1
+    finally:
+        evidence.RequestAccessStream.consume = original_consume
+    outcomes["missing-original-exit"] = "UNKNOWN"
+    # A complete stream's partial/unknown forms never yield a false zero.
+    for species, record in (
+        ("partial", b"7 read(3<unknown>, <unfinished ...>"),
+        ("unpaired", b"7 <... read resumed>NULL, 1) = 1"),
+        ("unresolved", b'7 read(3, "", 1) = 1'),
+        ("reuse", b"7 +++ exited with 0 +++"),
+    ):
+        observed = evidence.RequestAccessStream(tmp_path, {input_name}, request, output, nonce)
+        observed.consume(record)
+        observed.consume(b"7 +++ exited with 0 +++")
+        complete, _ = observed.finish()
+        assert complete is False
+        outcomes[species] = "UNKNOWN"
+    assert control.read_bytes() == request_body
+    return outcomes
+
+
+def _assert_observer_completion_failure(tmp_path):
+    """A real finished worker keeps closed custody beside the original primary."""
+    tmp_path.mkdir()
+    root = _toy(tmp_path)
+    plan = root / "tests/condensation-plans/current.json"
+    plan.parent.mkdir()
+    plan.write_text(json.dumps(dict(_config(), base="event-base")))
+    selected = [_config()["removed"][0], _config()["survivors"][0]]
+    controls = {"tests/condensation-plans/current.json"}
+    original = evidence.owned_run
+    primary = evidence.EvidenceError("planted-original-observer-completion-failure")
+
+    def completed_then_failure(*args, **kwargs):
+        code, cleanup = original(*args, **kwargs)
+        assert code == 0 and cleanup is True
+        raise primary
+
+    evidence.owned_run = completed_then_failure
+    output = tmp_path / "finished-then-refused.json"
+    try:
+        with pytest.raises(evidence.EvidenceError) as caught:
+            evidence.suite(
+                root, selected, ["toy.py"], "c" * 64, output, "finished-then-refused", 20, controls
+            )
+        assert caught.value is primary
+        result = evidence.strict_json(output)
+        assert result["complete"] is False
+        assert all(row["phases"]["call"] == "passed" for row in result["cases"])
+        assert result["request_access"]["complete"] is True
+        assert result["request_access"]["accesses"] == 0
+    finally:
+        evidence.owned_run = original
+    restored = evidence.suite(
+        root, selected, ["toy.py"], "d" * 64, tmp_path / "restored.json", "restored", 20, controls
+    )
+    assert restored["complete"] is True and restored["cleanup"] is True
+    return "PASS"
+
+
+def _assert_source_owned_noaccess_child(tmp_path):
+    """Actual source, complete mutation runs and the required reader qualify jointly."""
+    tmp_path.mkdir()
+    root = _toy(tmp_path)
+    product = root / "toy.py"
+    product.write_text(
+        "import subprocess,sys\n"
+        + product.read_text().replace(
+            "def reply(flag):\n",
+            "def reply(flag):\n"
+            "    subprocess.run([sys.executable,'-c','assert 6*7==42'],check=True)\n",
+        )
+    )
+    plan = root / "tests/condensation-plans/current.json"
+    plan.parent.mkdir()
+    plan.write_text(json.dumps(dict(_config(), base="event-base")))
+
+    def commit(title):
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "commit",
+                "-qm",
+                title,
+            ],
+            check=True,
+        )
+
+    commit("actual source-owned no-access child")
+    base = evidence.git(root, "rev-parse", "HEAD")
+    owner = root / "tests/test_toy.py"
+    before = owner.read_text()
+    owner.write_text(
+        before[: before.index("def test_removed():")]
+        + before[before.index("def test_survivor():") :]
+    )
+    commit("candidate retains complete named strong survivor")
+    config = dict(_config(), base=base)
+    proof = evidence.prove(root, config, tmp_path / "proof")
+    assert proof["status"] == "PASS"
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    carrier = tmp_path / "proof/ledger.json"
+    accepted = consumer.verify(root, base, [carrier])
+    assert accepted["status"] == "PASS" and accepted["losses"] == 1
+    ledger = evidence.strict_json(carrier)
+    assert all(
+        run["request_boundary"]["descendant_execution"] is True
+        and run["request_access"]["subject_descendants"] > 0
+        and run["request_access"]["accesses"] == 0
+        for run in ledger["proof"]["runs"]
+    )
+    saved = carrier.read_bytes()
+    for key, value in (("actors", []), ("subject_probes", 0), ("input_versions", [])):
+        altered = json.loads(saved)
+        altered["proof"]["runs"][0]["request_access"][key] = value
+        carrier.write_text(json.dumps(altered))
+        with pytest.raises(consumer.EvidenceError, match="request-access-observation-unproved"):
+            consumer.verify(root, base, [carrier])
+    carrier.write_bytes(saved)
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    return proof["status"]
 
 
 def test_fresh_paired_runtime_lineage_uses_each_source_and_named_owner(tmp_path):

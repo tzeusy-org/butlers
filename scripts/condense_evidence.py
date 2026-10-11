@@ -11,10 +11,12 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 import select
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -31,6 +33,7 @@ if __name__ == "__main__" and sys.flags.isolated:
 
 from check_condensation_ledger import (
     PROTECTED,
+    REQUEST_TRACE_OPTIONS,
     EvidenceError,
     canonical,
     execution_request_inputs,
@@ -76,6 +79,7 @@ def owned_run(
     timeout: float,
     process_record: Path | None = None,
     cancellation: threading.Event | None = None,
+    observer_cancel=None,
 ) -> tuple[int, bool]:
     """Use the landed R1 completion admission for this exact owned child group."""
     launched = [sys.executable, "-I", str(Path(__file__).resolve()), "_launch", *command]
@@ -114,6 +118,15 @@ def owned_run(
                         completed = child.poll()
                         if completed is not None:
                             return completed, True
+                        if observer_cancel is not None:
+                            # End only independently bound tracees first. Let the
+                            # observer record their actual exits inside the original
+                            # deadline; the ordinary group finally still settles all.
+                            observer_cancel(child.pid)
+                            try:
+                                child.wait(timeout=min(0.5, max(0, deadline - time.monotonic())))
+                            except subprocess.TimeoutExpired:
+                                pass
                         raise InterruptedError
         except subprocess.TimeoutExpired:
             raise EvidenceError("proof-timeout") from None
@@ -316,6 +329,12 @@ def worker(request: Path) -> int:
         # metadata through an owned subprocess. No subject has been imported or
         # invoked yet. Guard every subsequent event, before pytest's collection,
         # configuration, fixture or call execution; there is no executor bypass.
+        if control_inputs:
+            # This fixed read separates installed tracer setup from subject entry.
+            # Its own descriptor is observed externally; a caller flag is no proof.
+            with output.with_suffix(".subject-probe").open("rb") as probe:
+                if probe.read() != nonce.encode():
+                    raise EvidenceError("subject-observer-probe-mismatch")
         sys.addaudithook(guard_control_input)
         args = [
             *selected,
@@ -357,7 +376,6 @@ def worker(request: Path) -> int:
     complete = (
         complete_collection
         and not control_read
-        and not descendant_execution
         and deselected == 0
         and tracer == "CTracer"
         and all(
@@ -520,14 +538,32 @@ def suite(
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["COVERAGE_CORE"] = "ctrace"
     command = [sys.executable, str(Path(__file__).resolve()), "_worker", str(request)]
-    code, cleaned, access = request_access_run(
-        command, copy_root, request, output, env, timeout, control_inputs or set(), cancellation
-    )
-    if output.is_file():
-        result = strict_json(output)
-        result["request_access"] = access
-        result["complete"] = result["complete"] and access["complete"] and access["accesses"] == 0
-        publish(output, result)
+    if control_inputs:
+        output.with_suffix(".subject-probe").write_bytes(nonce.encode())
+    try:
+        code, cleaned, access = request_access_run(
+            command, copy_root, request, output, env, timeout, control_inputs or set(), cancellation
+        )
+    finally:
+        # Preserve the actual worker result when observation fails after publication.
+        # The closed incomplete observation remains diagnostic, never proof authority.
+        primary = sys.exc_info()[1]
+        observation = output.with_suffix(".access.json")
+        try:
+            if output.is_file() and observation.is_file():
+                result = strict_json(output)
+                access = strict_json(observation)
+                result["request_access"] = access
+                result["complete"] = (
+                    primary is None
+                    and result["complete"]
+                    and access["complete"]
+                    and access["accesses"] == 0
+                )
+                publish(output, result)
+        except (EvidenceError, OSError, ValueError, TypeError, KeyError):
+            if primary is None:
+                raise
     if code != 0 or not output.is_file():
         raise EvidenceError("worker-incomplete")
     result = strict_json(output)
@@ -540,40 +576,355 @@ def suite(
     return result
 
 
-def request_access_run(command, root, request, output, env, timeout, inputs, cancellation=None):
-    """Observe kernel file access from startup through owned group completion.
+# Full syscall streams stay in RAM. Only fixed counters, source body identities,
+# nonce-hashed actor identities, installed tool hashes and closed status escape.
 
-    Only matched public request paths are traced. Raw syscall records stay in
-    the parent observer's RAM; a distinct actual request read proves the same
-    observer is live before an empty metadata-access result can be admitted.
+
+def request_input_versions(root, inputs):
+    rows = []
+    for name in sorted(inputs):
+        path = root / public_path(name)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            # A source-bound original snapshot may predate request creation.
+            # Keep its absent pathname observed; creation/access still refuses.
+            if path.exists() or path.is_symlink():
+                raise EvidenceError("request-input-object-unproved") from None
+            rows.append({"path": name, "present": False, "sha256": None, "mode": None})
+            continue
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise EvidenceError("request-input-object-unproved")
+            body = bytearray()
+            while chunk := os.read(descriptor, 65536):
+                body.extend(chunk)
+            after = os.fstat(descriptor)
+
+            def identity(value):
+                return (
+                    value.st_dev,
+                    value.st_ino,
+                    value.st_mode,
+                    value.st_nlink,
+                    value.st_size,
+                    value.st_mtime_ns,
+                    value.st_ctime_ns,
+                )
+
+            if identity(info) != identity(after) or identity(
+                path.stat(follow_symlinks=False)
+            ) != identity(after):
+                raise EvidenceError("request-input-object-changed")
+            rows.append(
+                {
+                    "path": name,
+                    "present": True,
+                    "sha256": hashlib.sha256(body).hexdigest(),
+                    "mode": "100755" if info.st_mode & 0o111 else "100644",
+                }
+            )
+        finally:
+            os.close(descriptor)
+    return rows
+
+
+class RequestAccessStream:
+    """Reconcile complete installed strace records without retaining syscall payloads.
+
+    Kernel -yy annotations resolve cwd/dirfd/inherited/reused descriptors. A
+    matching pathname/alias operation is a refusal even before a successful read;
+    unresolved regular-file descriptors, PID reuse and unfinished histories are
+    UNKNOWN rather than zero. No executable or import identity grants an exemption.
     """
+
+    def __init__(self, root, inputs, request, output, nonce):
+        self.targets = {os.fsencode(root / public_path(name)) for name in inputs}
+        self.objects = {}
+        self.absent = set()
+        for path in self.targets:
+            try:
+                info = os.stat(path, follow_symlinks=False)
+            except FileNotFoundError:
+                self.absent.add(path)
+            else:
+                self.objects[path] = (info.st_dev, info.st_ino)
+        self.probe = os.fsencode(request)
+        self.subject = os.fsencode(output.with_suffix(".subject-probe"))
+        self.nonce = nonce
+        self.pending = {}
+        self.actors = set()
+        self.parents = {}
+        self.exits = set()
+        self.executables = {}
+        self.live = {}
+        self.accesses = self.reads = self.probes = self.subject_reads = 0
+        self.subject_children = 0
+        self.failed = False
+
+    @staticmethod
+    def paths(value):
+        return [
+            bytes.fromhex(token.replace("\\x", ""))
+            for token in re.findall(r"(?:\\x[0-9a-f]{2})+", value)
+        ]
+
+    def consume(self, raw):
+        try:
+            line = raw.decode("ascii")
+            match = re.fullmatch(r"(\d+) +(.+)", line)
+            if match is None:
+                self.failed = True
+                return
+            actor, statement = int(match[1]), match[2]
+            self.actors.add(actor)
+            if actor not in self.live:
+                identity = process_identity(actor)
+                if identity is not None:
+                    self.live[actor] = identity
+            if statement.startswith("+++ "):
+                if actor in self.exits or not re.fullmatch(
+                    r"\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+(?: \(core dumped\))?) \+\+\+",
+                    statement,
+                ):
+                    self.failed = True
+                self.exits.add(actor)
+                return
+            if actor in self.exits:
+                self.failed = True
+                return
+            if statement.endswith(" <unfinished ...>"):
+                if actor in self.pending:
+                    self.failed = True
+                self.pending[actor] = statement[: -len(" <unfinished ...>")]
+                return
+            resumed = re.match(r"<\.\.\. (\w+) resumed>(.*)", statement)
+            if resumed:
+                prefix = self.pending.pop(actor, None)
+                if prefix is None or not prefix.startswith(resumed[1] + "("):
+                    self.failed = True
+                    return
+                statement = prefix + resumed[2]
+            elif actor in self.pending:
+                self.failed = True
+                return
+            call = re.fullmatch(r"(\w+)\((.*)\) += (.+)", statement)
+            if call is None:
+                self.failed = True
+                return
+            name, args, result = call.groups()
+            success = re.match(r"(-?\d+)", result)
+            if name in {"clone", "clone3", "fork", "vfork"} and success and int(success[1]) > 0:
+                child = int(success[1])
+                if child in self.parents:
+                    self.failed = True
+                self.parents[child] = actor
+                if self.subject_reads:
+                    self.subject_children += 1
+            if name in {"unshare", "setns", "setsid", "setpgid", "chroot", "pivot_root"}:
+                self.failed = True
+            paths = self.paths(args + " " + result)
+            if name in {"execve", "execveat"} and success and int(success[1]) == 0:
+                if not paths or not paths[0].startswith(b"/"):
+                    self.failed = True
+                else:
+                    executable = Path(os.fsdecode(paths[0]))
+                    info = executable.stat()
+                    if not executable.is_file():
+                        self.failed = True
+                    self.executables[actor] = {
+                        "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                        "mode": stat.S_IMODE(info.st_mode),
+                    }
+            matched = bool(self.targets.intersection(paths))
+            for path in paths:
+                if path.startswith(b"/"):
+                    try:
+                        info = os.stat(path, follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if (info.st_dev, info.st_ino) in self.objects.values():
+                        matched = True
+            if name in {
+                "rename",
+                "renameat",
+                "renameat2",
+                "link",
+                "linkat",
+                "symlink",
+                "symlinkat",
+                "mount",
+                "umount",
+                "umount2",
+            }:
+                matched |= any(
+                    target.startswith(path.rstrip(b"/") + b"/")
+                    for path in paths
+                    for target in self.targets
+                    if path.startswith(b"/")
+                )
+            # Relative pathname candidates are conservative until kernel descriptor
+            # resolution proves otherwise. They never establish absence by spelling.
+            if not matched:
+                matched = any(
+                    not path.startswith(b"/") and target.endswith(b"/" + path)
+                    for path in paths
+                    for target in self.targets
+                    if path
+                )
+            if matched:
+                self.accesses += 1
+            reading = name in {
+                "read",
+                "readv",
+                "pread64",
+                "preadv",
+                "preadv2",
+                "mmap",
+                "mmap2",
+                "sendfile",
+                "splice",
+                "copy_file_range",
+            }
+            if (
+                reading
+                and success
+                and (int(success[1]) > 0 or (name in {"mmap", "mmap2"} and result.startswith("0x")))
+            ):
+                if name not in {"mmap", "mmap2"} and not re.search(r"\d+<[^>]+>", args):
+                    self.failed = True
+                if matched:
+                    self.reads += 1
+                if name not in {"mmap", "mmap2"} and self.probe in paths:
+                    self.probes += 1
+                if name not in {"mmap", "mmap2"} and self.subject in paths:
+                    self.subject_reads += 1
+            # A renamed/deleted regular descriptor cannot borrow its old spelling.
+            # File alias mutations involving an input already count as accesses;
+            # otherwise an unresolved/deleted descriptor refuses the observation.
+            if " (deleted)" in args or name in {
+                "io_uring_setup",
+                "io_uring_enter",
+                "io_uring_register",
+            }:
+                self.failed = True
+        except (OSError, ValueError, UnicodeError):
+            self.failed = True
+
+    def cancel_owned_tracees(self, group):
+        # Numeric PIDs alone grant no signaling authority. A current same-group
+        # process must match the original observed start identity exactly.
+        for actor, original in list(self.live.items()):
+            current = process_identity(actor)
+            if current is None or current["state"] in {"Z", "X"}:
+                continue
+            if current["group"] != group or current["start"] != original["start"]:
+                self.failed = True
+                continue
+            try:
+                os.kill(actor, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def finish(self):
+        roots = self.actors - self.parents.keys()
+        complete = (
+            not self.failed
+            and not self.pending
+            and len(roots) == 1
+            and self.actors == self.exits
+            and set(self.parents.values()) <= self.actors
+            and set(self.parents) <= self.actors
+            and self.probes > 0
+            and self.subject_reads > 0
+        )
+        for path, identity in self.objects.items():
+            try:
+                info = os.stat(path, follow_symlinks=False)
+                if (info.st_dev, info.st_ino) != identity:
+                    complete = False
+            except OSError:
+                complete = False
+        for path in self.absent:
+            if os.path.lexists(path):
+                complete = False
+        rows = []
+        for actor in sorted(self.actors):
+            original = actor
+            seen = set()
+            while (
+                original not in self.executables
+                and original in self.parents
+                and original not in seen
+            ):
+                seen.add(original)
+                original = self.parents[original]
+            executable = self.executables.get(original)
+            if executable is None:
+                complete = False
+
+            def key(pid):
+                return hashlib.sha256((self.nonce + "\0" + str(pid)).encode()).hexdigest()
+
+            rows.append(
+                {
+                    "key": key(actor),
+                    "parent": key(self.parents[actor]) if actor in self.parents else None,
+                    "executable": executable,
+                    "exited": actor in self.exits,
+                }
+            )
+        return complete, rows
+
+
+def request_access_run(command, root, request, output, env, timeout, inputs, cancellation=None):
     access = {
         "observer": "strace" if inputs else "not-required",
         "inputs": sorted(inputs),
         "accesses": 0,
         "probe_accesses": 0,
         "complete": not inputs,
+        "protocol": "full-stream-v1",
+        "reads": 0,
+        "subject_probes": 0,
+        "subject_descendants": 0,
+        "actors": [],
+        "input_versions": [],
+        "options_sha256": canonical(REQUEST_TRACE_OPTIONS),
+        "tool_sha256": None,
+        "version_sha256": None,
     }
+    carrier = output.with_suffix(".access.json")
+    publish(carrier, access)
     process_record = output.with_suffix(".process.json")
     if not inputs:
-        code, cleaned = owned_run(
-            command,
-            cwd=root,
-            env=env,
-            timeout=timeout,
-            process_record=process_record,
-            cancellation=cancellation,
+        return (
+            *owned_run(
+                command,
+                cwd=root,
+                env=env,
+                timeout=timeout,
+                process_record=process_record,
+                cancellation=cancellation,
+            ),
+            access,
         )
-        return code, cleaned, access
     tool = shutil.which("strace")
     if tool is None:
         raise EvidenceError("request-access-observer-unavailable")
+    tool = str(Path(tool).resolve())
+    access["tool_sha256"] = hashlib.sha256(Path(tool).read_bytes()).hexdigest()
+    version = subprocess.run([tool, "--version"], capture_output=True, timeout=5, check=True)
+    access["version_sha256"] = hashlib.sha256(version.stdout).hexdigest()
+    initial = request_input_versions(root, inputs)
+    access["input_versions"] = initial
+    nonce = strict_json(request)["nonce"]
+    stream = RequestAccessStream(root, inputs, request, output, nonce)
     pipe = output.with_suffix(".access-pipe")
     os.mkfifo(pipe)
     descriptor = os.open(pipe, os.O_RDWR | os.O_NONBLOCK)
     stopped = threading.Event()
-    failed = threading.Event()
-    probe = ('"' + "".join("\\x" + format(b, "02x") for b in os.fsencode(request)) + '"').encode()
 
     def collect():
         pending = b""
@@ -587,57 +938,54 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
                 chunk = os.read(descriptor, 65536)
                 pending += chunk
                 if len(pending) > 1024 * 1024:
-                    failed.set()
+                    stream.failed = True
                     pending = b""
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
                     if line:
-                        key = "probe_accesses" if probe in line else "accesses"
-                        access[key] += 1
+                        stream.consume(line)
             if pending:
-                failed.set()
+                stream.failed = True
         except (OSError, ValueError):
-            failed.set()
+            stream.failed = True
 
     observer = threading.Thread(target=collect, name="owned-request-access", daemon=True)
     observer.start()
-    traced = [
-        str(Path(tool).resolve()),
-        "-qq",
-        "-f",
-        "-xx",
-        "-s",
-        "0",
-        "-e",
-        "signal=none",
-        "-e",
-        "trace=%file",
-        "-o",
-        str(pipe),
-        "-P",
-        str(request),
-    ]
-    for name in sorted(inputs):
-        traced += ["-P", str(root / public_path(name))]
+    cleaned = False
     try:
         code, cleaned = owned_run(
-            [*traced, *command],
+            [tool, *REQUEST_TRACE_OPTIONS, "-o", str(pipe), *command],
             cwd=root,
             env=env,
             timeout=timeout,
             process_record=process_record,
             cancellation=cancellation,
+            observer_cancel=stream.cancel_owned_tracees,
         )
+        return_code = code
     finally:
         stopped.set()
         observer.join(timeout=2)
         os.close(descriptor)
         pipe.unlink()
-    access["complete"] = (
-        cleaned and not observer.is_alive() and not failed.is_set() and access["probe_accesses"] > 0
-    )
-    publish(output.with_suffix(".access.json"), access)
-    return code, cleaned, access
+        complete, actors = stream.finish()
+        access.update(
+            accesses=stream.accesses,
+            reads=stream.reads,
+            probe_accesses=stream.probes,
+            subject_probes=stream.subject_reads,
+            subject_descendants=stream.subject_children,
+            actors=actors,
+        )
+        try:
+            unchanged = request_input_versions(root, inputs) == initial
+        except (EvidenceError, OSError):
+            unchanged = False
+        if not cleaned and process_record.is_file():
+            cleaned = strict_json(process_record).get("cleanup") is True
+        access["complete"] = cleaned and complete and not observer.is_alive() and unchanged
+        publish(carrier, access)
+    return return_code, cleaned, access
 
 
 def snapshot_base(root: Path, base: str, destination: Path) -> None:
