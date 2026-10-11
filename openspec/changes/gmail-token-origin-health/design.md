@@ -14,7 +14,11 @@ The six caller bodies remain complete and unchanged. Actual synthetic HTTP respo
 
 ## Native preparation and delivery
 
-The delta contains the whole old Aggregated Health Status paragraph and Health model scenario plus exactly the three reviewed scenarios. No new requirement ID is allocated. Complete installed validation/generation/disposable application/no-op, refusal/restoration and physical/semantic inverse are preparation only. Tracked baseline sync/archive requires distinct genuine preparation approval and ROOT's separate administration release. No incomplete/cancelled archive exit0 counts as successful archive. Native delivery, exact resulting-source review, terminal normal/protected gates and actual squash remain future obligations; source tests do not earn them.
+The delta contains the whole old Aggregated Health Status paragraph and Health model scenario plus exactly the three reviewed scenarios. ROOT reserved `REQ-connector-gmail-001` for this same existing legacy aggregate after the current identifier census; this backfills metadata rather than allocating a new feature requirement. Complete installed validation/generation/disposable application/no-op, refusal/restoration and physical/semantic inverse are preparation only. Tracked baseline sync/archive requires distinct genuine preparation approval and ROOT's separate administration release. No incomplete/cancelled archive exit0 counts as successful archive. Native delivery, exact resulting-source review, terminal normal/protected gates and actual squash remain future obligations; source tests do not earn them.
+
+## Preserving metadata correction
+
+The original a06 preparation's unnumbered aggregate introduced a trace warning and an authoring/strict error. The independently reviewed source predicate remains unchanged. The reserved legacy ID, true design/canonical Source and `v1-mandatory` Scope now form contiguous metadata immediately after the complete normative prose and before all four unchanged scenarios. One blank separator between the old aggregate prose and approved classifier prose is removed to satisfy the installed paragraph grammar; every normative word and scenario body remains exact. The original raw requirement and inverse are retained in the correction evidence. An adjacent citation in the existing origin-classification behavioral test pins the same requirement without a new test species or assertion. No baseline, account, credential, retry, diagnostic, cache, provider or SQL authority changes.
 
 ## Rollback
 

@@ -1348,6 +1348,7 @@ def test_policy_evaluation_treats_bad_header_container_as_empty(
 
 
 # Spec: connector-gmail, Aggregated Health Status (gmail-token-origin-health).
+# Spec: REQ-connector-gmail-001
 def test_source_auth_classification_requires_response_bound_token_post() -> None:
     """Only the actual token POST supplies authority; diagnostics still survive."""
     token_url = "https://oauth2.googleapis.com/token"

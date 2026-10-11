@@ -5,8 +5,11 @@
 The Gmail connector SHALL expose a single aggregated health status covering
 every account loop, reporting the worst-case status across accounts together
 with per-account detail.
-
 The source-failure classifier SHALL report OAuth reauthorization only when the actual HTTP response is bound to a POST request to exactly `https://oauth2.googleapis.com/token` and its parsed top-level `error` is the literal `invalid_grant` or `unauthorized_client`. Gmail data-API failures, unavailable request provenance, wrong methods/origins, nested error codes and diagnostic text SHALL NOT supply reauthorization authority. Their existing failure remains visible as degraded source health. This does not authorize mutating shared account status, credential fallback, a new token retry, altered backoff or changed payload/privacy fields. A successful source call SHALL retain the existing healthy reset.
+
+ID: REQ-connector-gmail-001
+Source: openspec/changes/gmail-token-origin-health/design.md §§Governing authority and provenance / Minimal implementation; existing canonical connector-gmail Aggregated Health Status
+Scope: v1-mandatory
 
 #### Scenario: Exact token revocation remains actionable
 - **WHEN** the actual Gmail token POST returns a literal top-level revocation code
