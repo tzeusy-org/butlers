@@ -23,3 +23,9 @@ The original a06 preparation's unnumbered aggregate introduced a trace warning a
 ## Rollback
 
 Reverse the scoped source/test/documentation patch and active change. Preserve complete old callbacks/assertions/helpers/signatures/decorators/parameters/markers and all foreign native bodies/modes. The old data-origin misclassification deliberately reappears in restoration controls; restoration is not a correctness approval of old behavior.
+
+## Durable provenance and source-first delivery
+
+The requirement's Source cites the immutable 5eb4b330ec56c3e1c2d6db8cb7cdfeb547caefd7 design body and its Governing authority and provenance / Minimal implementation sections. That exact Git body already exists locally and survives later supported relocation of this active change. Its public permalink remains prospective until the authorized source branch is pushed and the exact remote commit, complete design body and both anchors are verified. The syntax-only trace consumer does not establish public availability.
+
+ROOT adopted the distinct exact-5eb metadata/citation preparation review on 2026-10-11 and released this metadata-only repair and source-first scoped publication. Preserve all normative words, four scenarios, source predicate, diagnostics and complete tests. The source prerequisite requires its own genuine resulting-head review, current normal, full protected queue and actual squash. Supported tracked application/archive remains a separately released stage after those earned events; its administration task and final cumulative delivery task stay unchecked while in progress. Derive the actual archive destination at execution and verify canonical metadata/scenarios, complete outside bodies, immutable provenance and whole inverse before claiming administration success. No future flag or cancelled archive supplies delivery evidence.
