@@ -1458,6 +1458,8 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             runtime._last_checkpoint_save,
         )
         primary = []
+        primary_args = []
+        primary_tracebacks = []
         requests = []
 
         async def transport(request):
@@ -1465,6 +1467,7 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             if len(requests) == 1:
                 if isinstance(failure, Exception):
                     primary.append(failure)
+                    primary_args.append(failure.args)
                     raise failure
                 response = httpx.Response(
                     400,
@@ -1478,6 +1481,8 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
                         original_raise()
                     except httpx.HTTPStatusError as exc:
                         primary.append(exc)
+                        primary_args.append(exc.args)
+                        primary_tracebacks.append(exc.__traceback__)
                         raise
 
                 response.raise_for_status = capture_primary
@@ -1491,7 +1496,17 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             ) as raised:
                 await runtime._fetch_message("m1")
             assert raised.value is primary[0]
-            assert raised.value.args == primary[0].args
+            assert raised.value.args == primary_args[0]
+            traceback_nodes = []
+            tb = raised.value.__traceback__
+            while tb is not None:
+                traceback_nodes.append(tb)
+                tb = tb.tb_next
+            assert any(tb.tb_frame.f_code.co_name == "_fetch_message" for tb in traceback_nodes)
+            if primary_tracebacks:
+                assert any(tb is primary_tracebacks[0] for tb in traceback_nodes)
+            else:
+                assert any(tb.tb_frame.f_code.co_name == "transport" for tb in traceback_nodes)
             state, description = runtime._get_health_state()
             assert state == "degraded"
             assert description is not None and expected_description in description
