@@ -105,4 +105,3 @@ dropped to weekly. An answer SHALL restore the daily cadence.
 
 - **WHEN** three consecutive prompt batches are unanswered
 - **THEN** a run within seven days of the last prompt proposes nothing
-
