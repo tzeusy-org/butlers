@@ -291,8 +291,18 @@ def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
     response = getattr(exc, "response", None)
     google_error = _format_google_error(response) if response is not None else None
     is_auth_revocation = False
-    if response is not None:
-        is_auth_revocation = google_oauth_requires_reauthorization(response)
+    if isinstance(response, httpx.Response):
+        try:
+            request = response.request
+        except RuntimeError:
+            request = None
+        # Only the actual response's token POST can supply reauthorization proof.
+        if (
+            request is not None
+            and request.method == "POST"
+            and str(request.url) == "https://oauth2.googleapis.com/token"
+        ):
+            is_auth_revocation = google_oauth_requires_reauthorization(response)
     description = google_error or f"{get_error_type(exc)}: {exc}"
     return is_auth_revocation, description
 

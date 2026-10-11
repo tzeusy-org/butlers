@@ -1345,3 +1345,205 @@ def test_policy_evaluation_treats_bad_header_container_as_empty(
 
     assert result.should_ingest is True
     assert result.policy_tier == POLICY_TIER_DEFAULT
+
+
+# Spec: connector-gmail, Aggregated Health Status (gmail-token-origin-health).
+def test_source_auth_classification_requires_response_bound_token_post() -> None:
+    """Only the actual token POST supplies authority; diagnostics still survive."""
+    token_url = "https://oauth2.googleapis.com/token"
+    cases = [
+        ("POST", token_url, {"error": "invalid_grant"}, True),
+        ("POST", token_url, {"error": "unauthorized_client"}, True),
+        ("GET", token_url, {"error": "invalid_grant"}, False),
+        ("PUT", token_url, {"error": "unauthorized_client"}, False),
+        ("POST", "http://oauth2.googleapis.com/token", {"error": "invalid_grant"}, False),
+        (
+            "POST",
+            "https://oauth2.googleapis.com.attacker.test/token",
+            {"error": "invalid_grant"},
+            False,
+        ),
+        ("POST", "https://attacker.test/token", {"error": "unauthorized_client"}, False),
+        ("POST", "https://oauth2.googleapis.com:444/token", {"error": "invalid_grant"}, False),
+        ("POST", "https://oauth2.googleapis.com/token/", {"error": "invalid_grant"}, False),
+        ("POST", "https://oauth2.googleapis.com/token?scope=x", {"error": "invalid_grant"}, False),
+        ("POST", "https://oauth2.googleapis.com/token#x", {"error": "invalid_grant"}, False),
+        ("POST", "https://oauth2.googleapis.com/t%6fken", {"error": "invalid_grant"}, False),
+        ("POST", "https://userinfo@oauth2.googleapis.com/token", {"error": "invalid_grant"}, False),
+        (
+            "GET",
+            "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            {"error": "invalid_grant"},
+            False,
+        ),
+        (
+            "POST",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+            {"error": "unauthorized_client"},
+            False,
+        ),
+        ("POST", token_url, {"error": {"code": "invalid_grant", "message": "nested"}}, False),
+        ("POST", token_url, {"error": "temporarily_unavailable"}, False),
+        ("POST", token_url, {"error": "INVALID_GRANT"}, False),
+        ("POST", token_url, {"error": "invalid_grant "}, False),
+        ("POST", token_url, {"error": None}, False),
+        ("POST", token_url, {"error": 1}, False),
+        ("POST", token_url, {"error": ["invalid_grant"]}, False),
+        ("POST", token_url, {"error_description": "invalid_grant"}, False),
+        ("POST", token_url, ["invalid_grant"], False),
+        ("POST", token_url, "invalid_grant", False),
+        ("POST", token_url, None, False),
+        ("POST", token_url, {}, False),
+    ]
+    for method, url, payload, actionable in cases:
+        request = httpx.Request(method, url)
+        response = httpx.Response(400, json=payload, request=request)
+        exc = httpx.HTTPStatusError("source failure", request=request, response=response)
+        result, description = _classify_source_api_error(exc)
+        assert result is actionable, (method, url, payload)
+        assert isinstance(description, str) and description
+
+    request = httpx.Request("POST", token_url)
+    for content in (b"", b"not json"):
+        response = httpx.Response(400, content=content, request=request)
+        exc = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(exc) == (False, "http_error: source failure")
+
+    # Exception metadata cannot replace the actual response's provenance.
+    for response in (
+        httpx.Response(400, json={"error": "invalid_grant"}),
+        httpx.Response(
+            400,
+            json={"error": "invalid_grant"},
+            request=httpx.Request("GET", "https://gmail.googleapis.com/data"),
+        ),
+    ):
+        exc = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(exc) == (False, "error=invalid_grant")
+
+
+async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """Real source callbacks keep diagnostics, metrics, isolated caches and reset."""
+    from butlers.connectors.metrics import get_error_type
+
+    failures = [
+        (
+            {"error": "invalid_grant", "error_description": "diagnostic"},
+            "error=invalid_grant, description=diagnostic",
+        ),
+        (
+            {"error": {"code": 503, "status": "UNAVAILABLE", "message": "retry later"}},
+            "code=503, status=UNAVAILABLE, message=retry later",
+        ),
+        (b"", "http_error:"),
+        (b"not json", "http_error:"),
+        (httpx.ReadTimeout("source timeout"), "timeout: source timeout"),
+    ]
+    for failure, expected_description in failures:
+        runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        sibling = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        runtime._metrics = MagicMock()
+        runtime._access_token = "synthetic-access"
+        runtime._token_expires_at = datetime.max.replace(tzinfo=UTC)
+        runtime._last_history_id = "cursor-preserved"
+        runtime._sent_ids_cache = frozenset({"sent-preserved"})
+        runtime._last_checkpoint_save = 123.0
+        before = (
+            runtime._access_token,
+            runtime._token_expires_at,
+            runtime._last_history_id,
+            runtime._sent_ids_cache,
+            runtime._last_checkpoint_save,
+        )
+        primary = []
+        requests = []
+
+        async def transport(request):
+            requests.append((request.method, str(request.url)))
+            if len(requests) == 1:
+                if isinstance(failure, Exception):
+                    primary.append(failure)
+                    raise failure
+                response = httpx.Response(
+                    400,
+                    **({"content": failure} if isinstance(failure, bytes) else {"json": failure}),
+                    request=request,
+                )
+                original_raise = response.raise_for_status
+
+                def capture_primary():
+                    try:
+                        original_raise()
+                    except httpx.HTTPStatusError as exc:
+                        primary.append(exc)
+                        raise
+
+                response.raise_for_status = capture_primary
+                return response
+            return httpx.Response(200, json={"id": "m1"}, request=request)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            runtime._http_client = client
+            with pytest.raises(
+                type(failure) if isinstance(failure, Exception) else httpx.HTTPStatusError
+            ) as raised:
+                await runtime._fetch_message("m1")
+            assert raised.value is primary[0]
+            assert raised.value.args == primary[0].args
+            state, description = runtime._get_health_state()
+            assert state == "degraded"
+            assert description is not None and expected_description in description
+            assert sibling._get_health_state() == ("healthy", None)
+            assert before == (
+                runtime._access_token,
+                runtime._token_expires_at,
+                runtime._last_history_id,
+                runtime._sent_ids_cache,
+                runtime._last_checkpoint_save,
+            )
+            assert requests == [
+                ("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1?format=full")
+            ]
+            runtime._metrics.record_source_api_call.assert_called_once_with(
+                api_method="messages.get", status="error"
+            )
+            runtime._metrics.record_error.assert_called_once_with(
+                error_type=get_error_type(primary[0]), operation="fetch_message"
+            )
+            assert await runtime._fetch_message("m1") == {"id": "m1"}
+            assert runtime._get_health_state() == ("healthy", None)
+            runtime._metrics.record_source_api_call.assert_called_with(
+                api_method="messages.get", status="success"
+            )
+
+    for code in ("invalid_grant", "unauthorized_client"):
+        runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        sibling = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        runtime._metrics = MagicMock()
+        requests = []
+
+        async def token_transport(request):
+            requests.append((request.method, str(request.url)))
+            if len(requests) == 1:
+                return httpx.Response(400, json={"error": code}, request=request)
+            return httpx.Response(
+                200,
+                json={"access_token": "synthetic-new", "expires_in": 3600, "token_type": "Bearer"},
+                request=request,
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(token_transport)) as client:
+            runtime._http_client = client
+            with pytest.raises(httpx.HTTPStatusError):
+                await runtime._get_access_token()
+            assert runtime._get_health_state() == ("error", f"error={code}")
+            assert sibling._get_health_state() == ("healthy", None)
+            assert runtime._access_token is None and runtime._token_expires_at is None
+            runtime._metrics.record_source_api_call.assert_called_once_with(
+                api_method="token_refresh", status="error"
+            )
+            assert await runtime._get_access_token() == "synthetic-new"
+            assert runtime._get_health_state() == ("healthy", None)
+            assert requests == [("POST", "https://oauth2.googleapis.com/token")] * 2
