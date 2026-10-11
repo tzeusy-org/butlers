@@ -141,22 +141,23 @@ def _recover(output: Path) -> dict:
             except Refusal:
                 raise EvidenceError("recovery-owned-group-completion-unknown") from None
         for mutation in journal["mutations"]:
-            name = public_path(mutation["path"])
-            before = output / public_path(mutation["before_file"])
-            if (
-                before.is_symlink()
-                or hashlib.sha256(before.read_bytes()).hexdigest() != mutation["before_sha256"]
-            ):
-                raise EvidenceError("recovery-journal-body-mismatch")
             for side in ("removed", "survivors"):
+                record = mutation.get("current", mutation) if side == "survivors" else mutation
+                name = public_path(record["path"])
+                before = output / public_path(record["before_file"])
+                if (
+                    before.is_symlink()
+                    or hashlib.sha256(before.read_bytes()).hexdigest() != record["before_sha256"]
+                ):
+                    raise EvidenceError("recovery-journal-body-mismatch")
                 target = owned / side / name
                 if target.is_symlink() or owned not in target.resolve().parents:
                     raise EvidenceError("indirect-recovery-target")
                 target.write_bytes(before.read_bytes())
-                target.chmod(mutation["before_mode"])
+                target.chmod(record["before_mode"])
                 if (
                     target.read_bytes() != before.read_bytes()
-                    or target.stat().st_mode & 0o777 != mutation["before_mode"]
+                    or target.stat().st_mode & 0o777 != record["before_mode"]
                 ):
                     raise EvidenceError("recovery-restore-unknown")
         journal["status"] = "RESTORED"
@@ -328,11 +329,10 @@ def worker(request: Path) -> int:
     return 0 if complete else 2
 
 
-def mutants(root: Path, scope: list[str]) -> list[dict]:
+def generate_mutants(sources: dict[str, bytes]) -> list[dict]:
     """Deterministic finite actual AST mutations; each changes one public source span."""
     result = []
-    for path in sorted(scope):
-        body = (root / public_path(path)).read_bytes()
+    for path, body in sorted(sources.items()):
         source = body.decode()
         lines = body.splitlines(keepends=True)
         for node in ast.walk(ast.parse(source)):
@@ -398,11 +398,16 @@ def mutants(root: Path, scope: list[str]) -> list[dict]:
                     "id": identity,
                     "path": path,
                     "line": node.lineno,
+                    "column": node.col_offset,
                     "operator": operator,
                     "body": changed_source.encode(),
                 }
             )
     return sorted(result, key=lambda r: r["id"])
+
+
+def mutants(root: Path, scope: list[str]) -> list[dict]:
+    return generate_mutants({p: (root / public_path(p)).read_bytes() for p in scope})
 
 
 def suite(
@@ -549,7 +554,12 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
             "contract",
             "mapping",
         }
-        fields(config, required)
+        fields(config, required | ({"lineage"} if "lineage" in config else set()))
+        paired = config.get("lineage")
+        if paired is not None:
+            import condensation_lineage as lineage
+
+            lineage.request(paired)
         if any(
             not isinstance(config[k], str) or not config[k] for k in ("cluster", "bead", "base")
         ):
@@ -581,7 +591,12 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 or test_path(path)
                 or Path(path).name.startswith("test_")
                 or Path(path).name == "conftest.py"
-                or path in {"scripts/condense_evidence.py", "scripts/check_condensation_ledger.py"}
+                or path
+                in {
+                    "scripts/condense_evidence.py",
+                    "scripts/check_condensation_ledger.py",
+                    "scripts/condensation_lineage.py",
+                }
                 or input_record(root, path)["mode"] == "120000"
             ):
                 raise EvidenceError("scope-not-owned-production-python-source")
@@ -619,12 +634,31 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 copy_root.mkdir()
             snapshot_base(root, base, copies["removed"])
             snapshot_current(root, copies["survivors"], inputs)
-            if any(
+            if paired is None and any(
                 input_record(copies["removed"], p) != input_record(copies["survivors"], p)
                 for p in scope
             ):
                 raise EvidenceError("changed-production-scope-needs-independent-lineage-proof")
             base_paths = tracked_paths(root, base)
+            before_inputs = source_records(copies["removed"], base_paths)
+            scopes = {"removed": paired["scope"] if paired else scope, "survivors": scope}
+            if paired:
+                for path in scopes["removed"]:
+                    if (
+                        path not in base_paths
+                        or test_path(path)
+                        or Path(path).name.startswith("test_")
+                        or Path(path).name == "conftest.py"
+                        or input_record(copies["removed"], path)["mode"] == "120000"
+                    ):
+                        raise EvidenceError("before-scope-not-owned-production-python-source")
+                if any(r["current"]["path"] not in scope for r in paired["functions"]):
+                    raise EvidenceError("unbound-current-function-lineage")
+                points = lineage.alignment(
+                    {p: (copies["removed"] / p).read_bytes().decode() for p in scopes["removed"]},
+                    {p: (copies["survivors"] / p).read_bytes().decode() for p in scope},
+                    paired["functions"],
+                )
             old_links = {
                 r["path"]: r
                 for r in source_records(copies["removed"], base_paths)
@@ -637,7 +671,11 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 # Test/helper edits are measured by the selected real populations.
                 # Other Python/config dependencies cannot silently change beneath
                 # a same-source branch/mutation comparison.
-                if path in {"scripts/condense_evidence.py", "scripts/check_condensation_ledger.py"}:
+                if path in {
+                    "scripts/condense_evidence.py",
+                    "scripts/check_condensation_ledger.py",
+                    "scripts/condensation_lineage.py",
+                }:
                     continue
                 if test_path(path) or Path(path).name.startswith("test_"):
                     continue
@@ -649,9 +687,16 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                     or input_record(copies["removed"], path)
                     != input_record(copies["survivors"], path)
                 ):
-                    raise EvidenceError(
-                        "changed-production-dependency-needs-independent-lineage-proof"
-                    )
+                    if not paired:
+                        raise EvidenceError(
+                            "changed-production-dependency-needs-independent-lineage-proof"
+                        )
+                    if path in {"uv.lock", "pyproject.toml"}:
+                        raise EvidenceError("changed-environment-needs-independent-installed-tools")
+                    if (path in base_paths and path not in scopes["removed"]) or (
+                        path in paths and path not in scope
+                    ):
+                        raise EvidenceError("changed-dependency-outside-paired-scope")
             publish(
                 output / "journal.json",
                 {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
@@ -662,7 +707,9 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise EvidenceError("proof-total-timeout")
-                run = suite(copies[kind], selections[kind], scope, nonce, path, label, remaining)
+                run = suite(
+                    copies[kind], selections[kind], scopes[kind], nonce, path, label, remaining
+                )
                 run["side"] = kind
                 publish(path, run)
                 run["artifact"] = artifact(path, output)
@@ -684,31 +731,41 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 ]
                 if populations[0] != populations[1]:
                     raise EvidenceError("same-owner-case-population-change")
-            generated = mutants(copies["removed"], scope)
+            generated = mutants(copies["removed"], scopes["removed"])
             if not generated or len(generated) > 64:
                 raise EvidenceError("empty-or-unbounded-mutation-scope")
-            for mutant in generated:
-                before = (copies["removed"] / mutant["path"]).read_bytes()
-                mode = (copies["removed"] / mutant["path"]).stat().st_mode & 0o777
-                saved = output / (mutant["id"] + ".before")
-                saved.write_bytes(before)
-                journal.append(
-                    {k: v for k, v in mutant.items() if k != "body"}
-                    | {
+            pairs = (
+                lineage.paired_mutants(points, generated, mutants(copies["survivors"], scope))
+                if paired
+                else [(m, m) for m in generated]
+            )
+            for mutant, current_mutant in pairs:
+                mutations = {"removed": mutant, "survivors": current_mutant}
+                originals, records = {}, {}
+                for kind, change in mutations.items():
+                    target = copies[kind] / change["path"]
+                    body, mode = target.read_bytes(), target.stat().st_mode & 0o777
+                    originals[kind] = (body, mode)
+                    saved = output / (mutant["id"] + "-" + kind + ".before")
+                    saved.write_bytes(body)
+                    records[kind] = {k: v for k, v in change.items() if k != "body"} | {
                         "before_file": saved.name,
-                        "before_sha256": hashlib.sha256(before).hexdigest(),
-                        "after_sha256": hashlib.sha256(mutant["body"]).hexdigest(),
+                        "before_sha256": hashlib.sha256(body).hexdigest(),
+                        "after_sha256": hashlib.sha256(change["body"]).hexdigest(),
                         "before_mode": mode,
                         "status": "UNKNOWN",
                     }
+                journal.append(
+                    records["removed"] | ({"current": records["survivors"]} if paired else {})
                 )
                 publish(
                     output / "journal.json",
                     {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
                 )
                 try:
-                    for copy_root in copies.values():
-                        (copy_root / mutant["path"]).write_bytes(mutant["body"])
+                    for kind, copy_root in copies.items():
+                        change = mutations[kind]
+                        (copy_root / change["path"]).write_bytes(change["body"])
                     for kind in selections:
                         run = execute(kind, mutant["id"] + "-" + kind)
                         if {(r["key"], r["node"]) for r in run["cases"]} != {
@@ -722,25 +779,33 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                         elif run["exit"] != 0:
                             raise EvidenceError("nonsemantic-mutation-outcome")
                 finally:
-                    for copy_root in copies.values():
-                        path = copy_root / mutant["path"]
-                        path.write_bytes(before)
+                    for kind, copy_root in copies.items():
+                        body, mode = originals[kind]
+                        path = copy_root / mutations[kind]["path"]
+                        path.write_bytes(body)
                         path.chmod(mode)
-                        if path.read_bytes() != before or path.stat().st_mode & 0o777 != mode:
+                        if path.read_bytes() != body or path.stat().st_mode & 0o777 != mode:
                             raise EvidenceError("mutation-restore-unknown")
                 for kind in selections:
                     restored = execute(kind, mutant["id"] + "-" + kind + "-restored")
                     if restored["exit"] != 0 or restored["cases"] != baseline[kind]["cases"]:
                         raise EvidenceError("restored-baseline-not-healthy")
                 journal[-1]["status"] = "RESTORED"
+                if paired:
+                    journal[-1]["current"]["status"] = "RESTORED"
                 publish(
                     output / "journal.json",
                     {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
                 )
-            residue = named_coverage_residue(
-                baseline["removed"],
-                baseline["survivors"],
-                {owner: row["survivors"] for owner, row in config["mapping"].items()},
+            mapping = {owner: row["survivors"] for owner, row in config["mapping"].items()}
+            residue = (
+                lineage.residue(baseline["removed"], baseline["survivors"], mapping, points)
+                if paired
+                else named_coverage_residue(
+                    baseline["removed"],
+                    baseline["survivors"],
+                    mapping,
+                )
             )
             lost = sorted(set(killed["removed"]) - set(killed["survivors"]))
             # Check each removed owner against its named survivors, beyond the union of kills.
@@ -766,6 +831,8 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 "scope": scope,
                 "tools": baseline["removed"]["tools"],
             }
+            if paired:
+                binding["lineage"] = {**paired, "inputs": before_inputs}
             receipt = {
                 "status": "PASS" if not residue and not lost and killed["removed"] else "REFUSED",
                 "mode": "cov+mut",

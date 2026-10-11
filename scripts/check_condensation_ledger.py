@@ -79,8 +79,14 @@ def public_path(value: str) -> Path:
 
 
 def input_record(root: Path, name: str) -> dict:
-    path = root / public_path(name)
-    if any(p.is_symlink() for p in path.parents if p != root and root in p.parents):
+    return _input_record_at(root.resolve(strict=True), name)
+
+
+def _input_record_at(root: Path, name: str) -> dict:
+    """Read each body/mode/link at a bound physical root; no inventory is cached."""
+    relative = public_path(name)
+    path = root / relative
+    if any((root / p).is_symlink() for p in relative.parents if p != Path(".")):
         raise EvidenceError("indirect-source-parent")
     if path.is_symlink():
         target = os.readlink(path)
@@ -95,7 +101,7 @@ def input_record(root: Path, name: str) -> dict:
             resolved = path.resolve(strict=True)
         except (OSError, RuntimeError):
             raise EvidenceError("unresolved-source-link") from None
-        if root.resolve() not in resolved.parents:
+        if root not in resolved.parents:
             raise EvidenceError("escaping-source-link")
         return {
             "path": name,
@@ -103,7 +109,7 @@ def input_record(root: Path, name: str) -> dict:
             "mode": "120000",
             "link": target,
         }
-    if path.is_symlink() or not path.is_file() or root.resolve() not in path.resolve().parents:
+    if path.is_symlink() or not path.is_file() or root not in path.resolve().parents:
         raise EvidenceError("missing-or-indirect-input")
     return {
         "path": name,
@@ -114,13 +120,14 @@ def input_record(root: Path, name: str) -> dict:
 
 def source_records(root: Path, paths: list[str]) -> list[dict]:
     """Bind every tracked object; links resolve only into the tracked closure."""
-    records = [input_record(root, p) for p in paths]
+    root = root.resolve(strict=True)
+    records = [_input_record_at(root, p) for p in paths]
     names = set(paths)
     for row in records:
         if row["mode"] != "120000":
             continue
         target = (root / row["path"]).resolve(strict=True)
-        relative = str(target.relative_to(root.resolve()))
+        relative = str(target.relative_to(root))
         if relative not in names and not (
             target.is_dir() and any(p.startswith(relative + "/") for p in names)
         ):
@@ -188,6 +195,40 @@ def git(root: Path, *args: str) -> str:
             text=True,
             env=git_environment(),
         ).strip()
+    except subprocess.CalledProcessError as exc:
+        raise EvidenceError("git-source-unavailable") from exc
+
+
+def committed_records(root: Path, ref: str) -> list[dict]:
+    """Read complete original Git bodies/modes without dereferencing old links."""
+    records = []
+    for row in git(root, "ls-tree", "-r", "-z", ref).split("\0"):
+        if not row:
+            continue
+        info, path = row.split("\t", 1)
+        mode, kind, blob = info.split()
+        public_path(path)
+        if kind != "blob" or mode not in {"100644", "100755", "120000"}:
+            raise EvidenceError("unsupported-before-source-object")
+        body = subprocess.check_output(
+            ["git", "-C", str(root), "cat-file", "blob", blob], env=git_environment()
+        )
+        record = {"path": path, "sha256": hashlib.sha256(body).hexdigest(), "mode": mode}
+        if mode == "120000":
+            record["link"] = body.decode()
+        records.append(record)
+    return sorted(records, key=lambda r: r["path"])
+
+
+def committed_body(root: Path, ref: str, path: str) -> bytes:
+    """Source mutation identity includes every original byte, including final LF."""
+    public_path(path)
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "show", ref + ":" + path],
+            stderr=subprocess.DEVNULL,
+            env=git_environment(),
+        )
     except subprocess.CalledProcessError as exc:
         raise EvidenceError("git-source-unavailable") from exc
 
@@ -484,8 +525,14 @@ def preserving_owner_arguments(before: dict, current: dict) -> bool:
 
 
 def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None:
-    """Qualify preserving additive owners for fresh execution, never exemption."""
-    losses = destructive_changes(root, base)
+    """Qualify named owners for execution; the required guard still scans all owners.
+
+    This does not repeat the guard's entire unrelated suite scan inside each
+    finite proof. Every named body/context and actual ancestor remains checked;
+    an omitted destructive owner still refuses in complete consumer accounting.
+    """
+    old_records = {r["path"]: r for r in committed_records(root, base)}
+    current_paths = set(tracked_paths(root))
     cache = {}
     for owner in owners:
         path = owner.split("::", 1)[0]
@@ -498,20 +545,14 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
         old_source = git(root, "show", f"{base}:{path}")
         new_source = (root / path).read_text()
         if (
-            losses.get(owner)
-            not in {
-                None,
-                "fixture-helper-or-marker-context-loss",
-                "import-context-loss",
-                "test-execution-structure-change",
-                "fixture-or-parameter-change",
-            }
-            or old is None
+            old is None
             or new is None
+            or old_records[path]["mode"] != input_record(root, path)["mode"]
         ):
             raise EvidenceError("same-owner-context-not-preserving")
         if (
             not preserving_import_bindings(old_source, new_source)
+            or not contains_ordered(old["assertions"], new["assertions"])
             or old["decorators"] != new["decorators"]
             or old["markers"] != new["markers"]
             or not preserving_owner_arguments(old["args_tree"], new["args_tree"])
@@ -519,6 +560,18 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
             or not preserving_statements(old["context_tree"], new["context_tree"])
         ):
             raise EvidenceError("same-owner-context-not-preserving")
+        for ancestor in PurePosixPath(path).parents:
+            name = (ancestor / "conftest.py").as_posix()
+            if name not in old_records and name not in current_paths:
+                continue
+            if name not in old_records or name not in current_paths:
+                raise EvidenceError("same-owner-ancestral-fixture-change")
+            if input_record(root, name)["mode"] == "120000":
+                raise EvidenceError("indirect-fixture-source")
+            if old_records[name]["mode"] != input_record(root, name)["mode"] or ast.dump(
+                ast.parse(committed_body(root, base, name))
+            ) != ast.dump(ast.parse((root / name).read_bytes())):
+                raise EvidenceError("same-owner-ancestral-fixture-change")
 
 
 def destructive_changes(root: Path, base: str) -> dict[str, str]:
@@ -695,7 +748,13 @@ def coverage_arcs(path: Path, run: dict) -> dict:
 
 
 def executable_proof(
-    directory: Path, proof: dict, binding: dict, removed: list, survivors: list
+    directory: Path,
+    proof: dict,
+    binding: dict,
+    removed: list,
+    survivors: list,
+    *,
+    root: Path | None = None,
 ) -> None:
     runs = proof["runs"]
     by_id = {r["id"]: r for r in runs}
@@ -705,6 +764,32 @@ def executable_proof(
     scope_inputs = [next(r for r in binding["inputs"] if r["path"] == p) for p in scope]
     if len(scope_inputs) != len(scope) or any(r["mode"] == "120000" for r in scope_inputs):
         raise EvidenceError("unbound-production-scope")
+    paired = binding.get("lineage")
+    scopes = {"removed": paired["scope"] if paired else scope, "survivors": scope}
+    side_inputs = {
+        "removed": paired["inputs"] if paired else binding["inputs"],
+        "survivors": binding["inputs"],
+    }
+    scope_records = {
+        side: [next(r for r in records if r["path"] == p) for p in scopes[side]]
+        for side, records in side_inputs.items()
+    }
+    if paired:
+        import condensation_lineage as lineage
+
+        if root is None:
+            raise EvidenceError("missing-source-lineage-root")
+        before_sources = {
+            p: committed_body(root, binding["base"], p).decode() for p in scopes["removed"]
+        }
+        current_sources = {p: (root / p).read_bytes().decode() for p in scope}
+        points = lineage.alignment(before_sources, current_sources, paired["functions"])
+        expected_pairs = lineage.paired_mutants(
+            points,
+            lineage.generate_mutants({p: t.encode() for p, t in before_sources.items()}),
+            lineage.generate_mutants({p: t.encode() for p, t in current_sources.items()}),
+        )
+        expected_mutants = {old["id"]: (old, new) for old, new in expected_pairs}
     baselines = {}
     expected_flags = [
         "-n",
@@ -728,7 +813,7 @@ def executable_proof(
             raise EvidenceError("run-readback-mismatch")
         if (
             run["tools"] != binding["tools"]
-            or run["scope"] != scope
+            or run["scope"] != scopes.get(run["side"])
             or run["command_flags"] != expected_flags
         ):
             raise EvidenceError("changed-tool-scope-or-command")
@@ -748,7 +833,7 @@ def executable_proof(
         if actual_arcs != run["arcs"]:
             raise EvidenceError("branch-carrier-summary-mismatch")
         if run["id"] == side + "-baseline":
-            if run["exit"] != 0 or run["scope_inputs"] != scope_inputs:
+            if run["exit"] != 0 or run["scope_inputs"] != scope_records[side]:
                 raise EvidenceError("unhealthy-or-changed-baseline")
             baselines[side] = run
     if set(baselines) != {"removed", "survivors"}:
@@ -776,23 +861,12 @@ def executable_proof(
     for mutant in mutants:
         if (
             mutant["status"] != "RESTORED"
-            or mutant["path"] not in scope
+            or mutant["path"] not in scopes["removed"]
             or not HEX.fullmatch(mutant["id"])
         ):
             raise EvidenceError("unrestored-or-unbound-mutant")
-        before_input = next(r for r in scope_inputs if r["path"] == mutant["path"])
-        if (
-            mutant["before_sha256"] != before_input["sha256"]
-            or ("100755" if mutant["before_mode"] & 0o111 else "100644") != before_input["mode"]
-        ):
-            raise EvidenceError("mutation-journal-source-binding")
-        before_path = directory / public_path(mutant["before_file"])
-        if (
-            before_path.is_symlink()
-            or not before_path.is_file()
-            or hashlib.sha256(before_path.read_bytes()).hexdigest() != mutant["before_sha256"]
-        ):
-            raise EvidenceError("mutation-journal-before-mismatch")
+        if paired and mutant["id"] not in expected_mutants:
+            raise EvidenceError("unbound-paired-mutation")
         killed_owners = {}
         for side in baselines:
             label = mutant["id"] + "-" + side
@@ -801,11 +875,36 @@ def executable_proof(
                 raise EvidenceError("missing-mutation-or-restoration-run")
             run, restored = by_id[label], by_id[label + "-restored"]
             baseline = baselines[side]
+            change = mutant["current"] if paired and side == "survivors" else mutant
+            before_input = next(r for r in scope_records[side] if r["path"] == change["path"])
+            if (
+                change["before_sha256"] != before_input["sha256"]
+                or ("100755" if change["before_mode"] & 0o111 else "100644") != before_input["mode"]
+                or change["status"] != "RESTORED"
+            ):
+                raise EvidenceError("mutation-journal-source-binding")
+            before_path = directory / public_path(change["before_file"])
+            if (
+                before_path.is_symlink()
+                or not before_path.is_file()
+                or hashlib.sha256(before_path.read_bytes()).hexdigest() != change["before_sha256"]
+            ):
+                raise EvidenceError("mutation-journal-before-mismatch")
+            if paired:
+                actual = expected_mutants[mutant["id"]][0 if side == "removed" else 1]
+                if (
+                    any(
+                        change.get(k) != actual[k]
+                        for k in ("id", "path", "line", "column", "operator")
+                    )
+                    or change["after_sha256"] != hashlib.sha256(actual["body"]).hexdigest()
+                ):
+                    raise EvidenceError("changed-paired-mutation-operation")
             expected = [
-                dict(r, sha256=mutant["after_sha256"]) if r["path"] == mutant["path"] else r
-                for r in scope_inputs
+                dict(r, sha256=change["after_sha256"]) if r["path"] == change["path"] else r
+                for r in scope_records[side]
             ]
-            if run["scope_inputs"] != expected or restored["scope_inputs"] != scope_inputs:
+            if run["scope_inputs"] != expected or restored["scope_inputs"] != scope_records[side]:
                 raise EvidenceError("mutant-source-or-restoration-binding")
             population = {(r["key"], r["node"]) for r in baseline["cases"]}
             if {(r["key"], r["node"]) for r in run["cases"]} != population or restored[
@@ -822,15 +921,22 @@ def executable_proof(
             lost.append(mutant["id"])
     if set(by_id) != expected_ids:
         raise EvidenceError("unexpected-run-population")
+    if paired and {m["id"] for m in mutants} != set(expected_mutants):
+        raise EvidenceError("incomplete-paired-mutation-population")
     if (
         any(kills[side] != proof["mutation"]["killed_by_" + side] for side in kills)
         or lost != proof["mutation"]["lost"]
     ):
         raise EvidenceError("mutation-summary-mismatch")
-    residue = named_coverage_residue(
-        baselines["removed"],
-        baselines["survivors"],
-        {row["node"]: row["survivors"] for row in removed},
+    mapping = {row["node"]: row["survivors"] for row in removed}
+    residue = (
+        lineage.residue(baselines["removed"], baselines["survivors"], mapping, points)
+        if paired
+        else named_coverage_residue(
+            baselines["removed"],
+            baselines["survivors"],
+            mapping,
+        )
     )
     if proof["coverage"]["residue"] != residue or proof["coverage"]["residue_arcs"] != len(residue):
         raise EvidenceError("coverage-residue-summary-mismatch")
@@ -934,7 +1040,20 @@ def verify_ledger(
     if (
         not isinstance(binding, dict)
         or set(binding)
-        != {"base", "head", "tree", "inputs", "inputs_hash", "nonce", "selection", "scope", "tools"}
+        != (
+            {
+                "base",
+                "head",
+                "tree",
+                "inputs",
+                "inputs_hash",
+                "nonce",
+                "selection",
+                "scope",
+                "tools",
+            }
+            | ({"lineage"} if "lineage" in binding else set())
+        )
         or binding.get("base") != git(root, "rev-parse", base)
     ):
         raise EvidenceError("base-identity")
@@ -952,6 +1071,49 @@ def verify_ledger(
         raise EvidenceError("incomplete-input-inventory")
     if inputs != source_records(root, tracked_paths(root)):
         raise EvidenceError("changed-input-body-or-mode")
+    paired = binding.get("lineage")
+    if paired is not None:
+        import condensation_lineage as lineage
+
+        fields(paired, {"mode", "scope", "functions", "inputs"})
+        lineage.request({k: v for k, v in paired.items() if k != "inputs"})
+        old = committed_records(root, binding["base"])
+        if paired["inputs"] != old:
+            raise EvidenceError("changed-before-lineage-inputs")
+        old_by_path = {r["path"]: r for r in old}
+        new_by_path = {r["path"]: r for r in inputs}
+        if {p: r for p, r in old_by_path.items() if r["mode"] == "120000"} != {
+            p: r for p, r in new_by_path.items() if r["mode"] == "120000"
+        }:
+            raise EvidenceError("changed-source-link-needs-independent-lineage-proof")
+        for side, scope in ((old_by_path, paired["scope"]), (new_by_path, binding["scope"])):
+            for p in scope:
+                if (
+                    p not in side
+                    or side[p]["mode"] == "120000"
+                    or test_path(p)
+                    or Path(p).name.startswith("test_")
+                    or Path(p).name == "conftest.py"
+                ):
+                    raise EvidenceError("unbound-paired-production-scope")
+        for path in set(old_by_path) | set(new_by_path):
+            if path in {
+                "scripts/condense_evidence.py",
+                "scripts/check_condensation_ledger.py",
+                "scripts/condensation_lineage.py",
+            }:
+                continue
+            if test_path(path) or Path(path).name.startswith("test_"):
+                continue
+            if not path.endswith(".py") and path not in {"uv.lock", "pyproject.toml"}:
+                continue
+            if old_by_path.get(path) != new_by_path.get(path):
+                if path in {"uv.lock", "pyproject.toml"}:
+                    raise EvidenceError("changed-environment-needs-independent-installed-tools")
+                if (path in old_by_path and path not in paired["scope"]) or (
+                    path in new_by_path and path not in binding["scope"]
+                ):
+                    raise EvidenceError("changed-dependency-outside-paired-scope")
     mandatory = {
         "uv.lock",
         "pyproject.toml",
@@ -959,6 +1121,8 @@ def verify_ledger(
         "scripts/check_condensation_ledger.py",
         "scripts/pre_push.py",
     }
+    if paired:
+        mandatory.add("scripts/condensation_lineage.py")
     if not mandatory <= {r["path"] for r in inputs}:
         raise EvidenceError("missing-tool-or-config-binding")
     if (
@@ -1070,7 +1234,7 @@ def verify_ledger(
             type(seconds) not in {int, float} or not math.isfinite(seconds) or seconds < 0
         ):
             raise EvidenceError("nonexact-timing")
-    executable_proof(directory, proof, binding, value["removed"], value["survivors"])
+    executable_proof(directory, proof, binding, value["removed"], value["survivors"], root=root)
     return removed
 
 
@@ -1184,8 +1348,13 @@ def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
         plan = strict_json(plan_path)
         fields(
             plan,
-            {"base", "scope", "removed", "survivors", "cluster", "bead", "contract", "mapping"},
+            {"base", "scope", "removed", "survivors", "cluster", "bead", "contract", "mapping"}
+            | ({"lineage"} if "lineage" in plan else set()),
         )
+        if "lineage" in plan:
+            import condensation_lineage as lineage
+
+            lineage.request(plan["lineage"])
         if plan["base"] != "event-base":
             raise EvidenceError("plan-needs-fresh-event-base")
         for key in ("scope", "removed", "survivors"):
