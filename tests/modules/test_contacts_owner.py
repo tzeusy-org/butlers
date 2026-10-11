@@ -13,7 +13,7 @@ import tomllib
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import structlog
@@ -277,6 +277,83 @@ async def test_transport_refusal_correlations_and_late_wiring():
         with pytest.raises(ContactsOwnerUnavailable, match="^contacts owner unavailable$"):
             await owner.report(uuid.uuid4(), "email", "a", False)
         assert client.call_tool.await_count == 1
+
+    # A complete typed empty result alone may reach name/new fallback. Omitting
+    # entity_id is transport uncertainty, even with the current request id.
+    contact = CanonicalContact(
+        external_id="transport-synthetic",
+        display_name="Transport Synthetic",
+        emails=[ContactEmail(value="empty@test")],
+    )
+    local_pool = SimpleNamespace(
+        fetchrow=AsyncMock(return_value=None), fetch=AsyncMock(return_value=[])
+    )
+    resolver = ContactBackfillResolver(
+        local_pool, provider="google", account_id="synthetic", owner=owner
+    )
+    for include_entity in [False, True, False, True]:
+
+        async def empty_response(name, request):
+            result = {"outcome": "empty", "request_id": request["args"]["request_id"]}
+            if include_entity:
+                result["entity_id"] = None
+            return SimpleNamespace(is_error=False, data={"result": result})
+
+        client.call_tool.side_effect = empty_response
+        local_pool.fetch.reset_mock()
+        if include_entity:
+            assert await resolver.resolve(contact) == (None, "new")
+            local_pool.fetch.assert_awaited_once()
+        else:
+            with pytest.raises(ContactsOwnerUnavailable):
+                await resolver.resolve(contact)
+            local_pool.fetch.assert_not_awaited()
+
+    # Actual daemon ordering: startup builds the runtime before registration
+    # binds its hosting name, and wire_runtime supplies its transport afterward.
+    contacts_package = importlib.import_module("butlers.modules.contacts")
+    for hosting_name in ["general", "health"]:
+        started = ContactsModule()
+        config = contacts_package.ContactsConfig(provider="google")
+        database = SimpleNamespace(pool=SimpleNamespace())
+        started._create_provider = AsyncMock(return_value=SimpleNamespace(name="google"))
+        with patch.object(contacts_package.ContactsSyncRuntime, "start", AsyncMock()):
+            await started.on_startup(config, database)
+        runtime_owner = started._runtimes["google"]._sync_engine._apply_contact._resolver._owner
+        with pytest.raises(ContactsOwnerUnavailable):
+            await runtime_owner.lookup("email", "empty@test")
+
+        requests = []
+
+        async def complete_empty(name, request):
+            requests.append((name, request))
+            return SimpleNamespace(
+                is_error=False,
+                data={
+                    "result": {
+                        "outcome": "empty",
+                        "entity_id": None,
+                        "request_id": request["args"]["request_id"],
+                    }
+                },
+            )
+
+        runtime_client = SimpleNamespace(call_tool=complete_empty)
+        started.wire_runtime(None, None, switchboard_client=runtime_client)
+        with pytest.raises(ContactsOwnerUnavailable):
+            await runtime_owner.lookup("email", "empty@test")
+        assert not requests
+        await started.register_tools(FastMCP("startup-source"), config, database, hosting_name)
+        assert await runtime_owner.lookup("email", "empty@test") is None
+        assert requests[0][0] == "route"
+        assert requests[0][1]["source_butler"] == hosting_name
+        assert requests[0][1]["target_butler"] == "relationship"
+        assert set(requests[0][1]) == {"source_butler", "target_butler", "tool_name", "args"}
+        assert set(requests[0][1]["args"]) == {"channel_type", "channel_value", "request_id"}
+        started.wire_runtime(None, None, switchboard_client=None)
+        with pytest.raises(ContactsOwnerUnavailable):
+            await runtime_owner.lookup("email", "empty@test")
+        assert len(requests) == 1
 
 
 async def test_actual_switchboard_route_and_mcp_argument_admission(monkeypatch):

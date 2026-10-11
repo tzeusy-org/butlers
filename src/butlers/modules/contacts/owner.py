@@ -19,13 +19,18 @@ class ContactsLookupAmbiguous(RuntimeError):
 class ContactsOwner:
     """Use the daemon's current client, including when wiring follows startup."""
 
-    def __init__(self, get_client: Callable[[], Any], source_butler: str) -> None:
+    def __init__(
+        self, get_client: Callable[[], Any], source_butler: str | Callable[[], str]
+    ) -> None:
         self._get_client = get_client
         self._source_butler = source_butler
 
     async def _call(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         client = self._get_client()
-        if client is None:
+        source_butler = (
+            self._source_butler() if callable(self._source_butler) else self._source_butler
+        )
+        if client is None or not isinstance(source_butler, str) or not source_butler:
             raise ContactsOwnerUnavailable("contacts owner unavailable")
         try:
             response = await asyncio.wait_for(
@@ -35,7 +40,7 @@ class ContactsOwner:
                         "target_butler": "relationship",
                         "tool_name": tool,
                         "args": args,
-                        "source_butler": self._source_butler,
+                        "source_butler": source_butler,
                     },
                 ),
                 timeout=30,
@@ -58,7 +63,7 @@ class ContactsOwner:
             "contacts_resolve_channel",
             {"channel_type": channel_type, "channel_value": value, "request_id": request_id},
         )
-        if result.get("request_id") != request_id:
+        if result.get("request_id") != request_id or "entity_id" not in result:
             raise ContactsOwnerUnavailable("contacts owner lookup unavailable")
         outcome, entity_id = result.get("outcome"), result.get("entity_id")
         if outcome == "unique" and isinstance(entity_id, str):

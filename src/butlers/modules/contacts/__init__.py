@@ -696,7 +696,9 @@ class ContactsModule(Module):
                     pool,
                     provider=provider.name,
                     account_id=account_id,
-                    owner=ContactsOwner(lambda: self._switchboard_client, self._butler_name),
+                    owner=ContactsOwner(
+                        lambda: self._switchboard_client, lambda: self._butler_name
+                    ),
                 )
                 sync_engine = ContactsSyncEngine(
                     provider=provider,
