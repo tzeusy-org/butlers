@@ -28,6 +28,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.modules.contacts.owner import ContactsLookupAmbiguous, ContactsOwner
 from butlers.modules.contacts.sync import CanonicalContact
 
 logger = logging.getLogger(__name__)
@@ -91,10 +92,18 @@ class ContactBackfillResolver:
     public.contacts is no longer joined or read.
     """
 
-    def __init__(self, pool: asyncpg.Pool, *, provider: str, account_id: str) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        provider: str,
+        account_id: str,
+        owner: ContactsOwner | None = None,
+    ) -> None:
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
+        self._owner = owner or ContactsOwner(lambda: None, "")
 
     async def resolve(self, contact: CanonicalContact) -> tuple[uuid.UUID | None, str]:
         """Resolve a canonical contact to a local entity ID.
@@ -116,14 +125,20 @@ class ContactBackfillResolver:
             primary_email = contact.emails[0]
         if primary_email is not None:
             lookup = primary_email.normalized_value or primary_email.value
-            local_id = await self._match_email(lookup)
+            try:
+                local_id = await self._match_email(lookup)
+            except ContactsLookupAmbiguous:
+                return None, "ambiguous_channel"
             if local_id is not None:
                 return local_id, "email"
 
         # 3. Phone match (exact or e164)
         for phone in contact.phones:
             lookup_value = phone.e164_normalized or phone.value
-            local_id = await self._match_phone(lookup_value)
+            try:
+                local_id = await self._match_phone(lookup_value)
+            except ContactsLookupAmbiguous:
+                return None, "ambiguous_channel"
             if local_id is not None:
                 return local_id, "phone"
 
@@ -156,56 +171,11 @@ class ContactBackfillResolver:
         return uuid.UUID(str(local_entity_id)) if local_entity_id is not None else None
 
     async def _match_email(self, email_value: str) -> uuid.UUID | None:
-        # Resolve via the triple store: a ``has-email`` fact's subject is the entity UUID.
-        normalized = email_value.strip().lower()
-        try:
-            row = await self._pool.fetchrow(
-                """
-                SELECT ef.subject AS entity_id
-                FROM relationship.entity_facts ef
-                JOIN public.entities e ON e.id = ef.subject
-                WHERE ef.predicate = 'has-email' AND ef.object_kind = 'literal'
-                  AND ef.validity = 'active' AND lower(ef.object) = $1
-                  AND e.entity_type = 'person'
-                  AND (e.metadata->>'merged_into') IS NULL
-                  AND (e.metadata->>'deleted_at') IS NULL
-                ORDER BY ef.created_at ASC NULLS LAST LIMIT 1
-                """,
-                normalized,
-            )
-        except Exception:  # noqa: BLE001 — degrade to "no match" if facts unreadable
-            return None
-        if row is None:
-            return None
-        return uuid.UUID(str(row["entity_id"]))
+        # REQ-module-contacts-002: unavailable is not permission to create a person.
+        return await self._owner.lookup("email", email_value)
 
     async def _match_phone(self, phone_value: str) -> uuid.UUID | None:
-        normalized = phone_value.strip()
-        # Fallback: strip non-digits for loose match
-        digits = "".join(c for c in normalized if c.isdigit() or c in "+")
-        try:
-            row = await self._pool.fetchrow(
-                """
-                SELECT ef.subject AS entity_id
-                FROM relationship.entity_facts ef
-                JOIN public.entities e ON e.id = ef.subject
-                WHERE ef.predicate = 'has-phone'
-                  AND ef.object_kind = 'literal'
-                  AND ef.validity    = 'active'
-                  AND (ef.object = $1 OR ef.object = $2)
-                  AND e.entity_type = 'person'
-                  AND (e.metadata->>'merged_into') IS NULL
-                  AND (e.metadata->>'deleted_at') IS NULL
-                ORDER BY ef.created_at ASC NULLS LAST LIMIT 1
-                """,
-                normalized,
-                digits,
-            )
-        except Exception:  # noqa: BLE001 — degrade to "no match" if facts unreadable
-            return None
-        if row is None:
-            return None
-        return uuid.UUID(str(row["entity_id"]))
+        return await self._owner.lookup("phone", phone_value)
 
     async def _match_name(self, display_name: str) -> list[uuid.UUID]:
         name_stripped = display_name.strip()
@@ -251,10 +221,12 @@ class ContactBackfillWriter:
         *,
         provider: str,
         account_id: str,
+        owner: ContactsOwner | None = None,
     ) -> None:
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
+        self._owner = owner or ContactsOwner(lambda: None, "")
         # Relationship-schema tables that may not exist in other butler schemas
         # (e.g. general, health). Populated lazily by _ensure_table_flags().
         self._table_flags: dict[str, bool] | None = None
@@ -623,29 +595,27 @@ class ContactBackfillWriter:
             entries.append(("telegram_user_id", contact.external_id, "has-handle", False))
 
         from butlers.core.fact_authority import FactWriteContext, _current_report
-        from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
 
         for type_, value, predicate, primary in entries:
             report_token = _current_report.set(FactWriteContext("third_party"))
             try:
-                await relationship_assert_fact(
-                    self._pool,
-                    entity_id,
-                    predicate,
-                    value,
-                    src="contacts-backfill",
-                    object_kind="literal",
-                    primary=primary,
-                )
-            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+                # REQ-module-contacts-001: fixed owner route, never a foreign pool.
+                result = await self._owner.report(entity_id, type_, value, primary)
+                if result["outcome"] in {"candidate", "pending_approval"}:
+                    logger.info(
+                        "contacts_channel_report_incomplete entity=%s ci_type=%s predicate=%s "
+                        "outcome=%s",
+                        entity_id,
+                        type_,
+                        predicate,
+                        result["outcome"],
+                    )
+            except Exception:  # noqa: BLE001 — preserve bulk progress without operands
                 logger.warning(
-                    "upsert_contact_info: relationship_assert_fact failed for entity %s "
-                    "(ci_type=%r, predicate=%r, value=%r) — channel fact not written",
+                    "contacts_channel_report_failed entity=%s ci_type=%s predicate=%s",
                     entity_id,
                     type_,
                     predicate,
-                    value,
-                    exc_info=True,
                 )
             finally:
                 _current_report.reset(report_token)
@@ -951,12 +921,17 @@ class ContactBackfillEngine:
         *,
         provider: str,
         account_id: str,
+        owner: ContactsOwner | None = None,
     ) -> None:
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
-        self._resolver = ContactBackfillResolver(pool, provider=provider, account_id=account_id)
-        self._writer = ContactBackfillWriter(pool, provider=provider, account_id=account_id)
+        self._resolver = ContactBackfillResolver(
+            pool, provider=provider, account_id=account_id, owner=owner
+        )
+        self._writer = ContactBackfillWriter(
+            pool, provider=provider, account_id=account_id, owner=owner
+        )
 
     async def __call__(self, contact: CanonicalContact) -> None:
         """Process one canonical contact: resolve, write, feed."""
@@ -979,7 +954,7 @@ class ContactBackfillEngine:
             await self._handle_tombstone(contact, local_id)
             return
 
-        if strategy == "ambiguous_name":
+        if strategy in {"ambiguous_name", "ambiguous_channel"}:
             # Cannot auto-merge; emit a review activity entry
             await self._emit_ambiguous_merge_activity(contact)
             return

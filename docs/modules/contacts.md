@@ -115,3 +115,37 @@ None. The contacts module is a leaf module.
 
 - [Module System](module-system.md)
 - [Identity Model](../concepts/identity-model.md) -- entity anchor, channel facts, resolution
+
+
+### Relationship ownership and bounded channel diagnostics
+
+Contacts keeps entity/profile/source-link work on its hosting pool. Channel reads
+and reports use the daemon's configured Switchboard client, a fixed Relationship
+destination, and the registered `contacts_resolve_channel` / `contacts_report_channel`
+operations in the production-enabled `contacts_ingress` group. Existing explicitly
+selected legacy groups keep their original members. The target uses its ordinary pool and the existing central writer,
+selecting `contacts-backfill` and a fresh third-party report itself. Subject UUIDs,
+provider locators and transport trace context supply no owner or approval authority.
+No foreign SQL fallback, extra grant, role switch or automatic retry is added.
+
+Source-link matching remains first. Email uses strip/lower normalization; phones
+retain the stripped exact and digits/plus alternatives. Only a completed empty
+owning lookup permits fallback to the next channel or local name/new-person path.
+Ambiguous matches refuse automatic merge, and unavailable or malformed responses
+leave the contact apply incomplete. Initial startup before runtime transport is
+wired follows the same unavailable rule. Generic identity resolution is unchanged.
+
+An applied contact counts local entity/source-link processing, not active channel
+facts. Candidate and pending-approval channel results remain explicitly incomplete
+and retain the central writer's ordinary adoption/decision rules. A timeout after
+a possible remote commit is uncertain; ordinary later replay uses the same central
+idempotency rules. Child calls remain outside the local provenance transaction;
+there is no distributed atomicity promise.
+
+Channel failures emit `contacts_channel_report_failed` with only entity UUID and
+internally selected channel type/predicate. They omit values, exception strings,
+tracebacks, chains, payloads and arbitrary failure-class labels. Failed entries
+continue to the next channel and restore temporary report context. Unrelated
+mandatory CRM sync events retain their existing fields. Historical rollout cause
+and historical log exposure remain unverified; this repair neither erases logs
+nor changes credentials, provider behavior or temporal cutover ownership.
