@@ -417,6 +417,17 @@ def test_actual_ctrace_arcs_and_removed_kills_are_retained(tmp_path, monkeypatch
         with pytest.raises(consumer.EvidenceError, match="same-owner-context-not-preserving"):
             consumer.same_owner_context_accounts(ordinary, public_base, set(owners))
         ordinary_owner.write_text(ordinary_current)
+    # Adding a separate import statement cannot silently shadow an old binding
+    # merely because all original import AST statements remain present.
+    ordinary_owner.write_text(
+        ordinary_before.replace(
+            "from toy import reply",
+            "from toy import reply\nfrom toy import unused_new_alias as reply",
+        )
+    )
+    with pytest.raises(consumer.EvidenceError, match="unproven"):
+        consumer.verify(ordinary, public_base, [])
+    ordinary_owner.write_text(ordinary_current)
     saved_request = request.read_bytes()
     request.unlink()
     assert consumer.main(["--repo-root", str(ordinary), "--base", public_base]) == 1

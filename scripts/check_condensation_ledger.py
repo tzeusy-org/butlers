@@ -533,10 +533,12 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
     }
     before = {}
     current = {}
+    imports_preserved = {}
     for path in paths:
         if not test_path(path):
             continue
-        old_shapes = test_shapes(path, git(root, "show", f"{base}:{path}"))
+        old_source = git(root, "show", f"{base}:{path}")
+        old_shapes = test_shapes(path, old_source)
         for shape in old_shapes.values():
             shape["mode"] = modes[path]
         before.update(old_shapes)
@@ -544,7 +546,9 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
         if f.exists():
             if f.is_symlink():
                 raise EvidenceError("indirect-test-source")
-            shapes = test_shapes(path, f.read_text())
+            new_source = f.read_text()
+            imports_preserved[path] = preserving_import_bindings(old_source, new_source)
+            shapes = test_shapes(path, new_source)
             mode = input_record(root, path)["mode"]
             for shape in shapes.values():
                 shape["mode"] = mode
@@ -571,7 +575,10 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
             )
         ):
             losses[key] = "test-execution-structure-change"
-        elif not contains_ordered(old["imports"], new["imports"]):
+        elif (
+            not contains_ordered(old["imports"], new["imports"])
+            or not imports_preserved[key.split("::", 1)[0]]
+        ):
             losses[key] = "import-context-loss"
         elif old["markers"] != new["markers"]:
             losses[key] = "marker-context-change"
