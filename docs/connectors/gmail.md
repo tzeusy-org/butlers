@@ -246,6 +246,11 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
   API and OAuth error payloads. Log its compact
   `code/status/reason/message` for `history.list` 404 cursor resets, other non-2xx `history.list`
   responses and failed token refreshes, before raising; never dump full payloads.
+- Source health reports actionable reauthorization only for a literal top-level
+  `invalid_grant` or `unauthorized_client` on the actual response-bound POST to
+  `https://oauth2.googleapis.com/token`. Data-API failures and missing or ambiguous request
+  provenance remain visible as degraded health, with Gmail's existing diagnostics and
+  successful reset. This classification never changes shared accounts or credentials.
 
 ### Known-contact query evidence
 
