@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -231,3 +232,112 @@ def test_assertion_addition_preserves_original_order(tmp_path):
         ledger.verify(root, "HEAD", [])
     command("checkout", "-q", "source")
     assert ledger.verify(root, base, [])["status"] == "PASS"
+
+    assert _fresh_refusal_diagnostic(tmp_path)
+
+
+def _fresh_refusal_diagnostic(tmp_path):
+    # Exercise the actual fresh-child refusal boundary without executing a
+    # second expensive proof. Seeded child carriers are diagnostics, not proof.
+    import pre_push
+
+    root = _repository(tmp_path / "diagnostic")
+    path = root / "tests/test_owner.py"
+    base = ledger.git(root, "rev-parse", "HEAD")
+    plan_dir = root / "tests/condensation-plans"
+    plan_dir.mkdir()
+    request = plan_dir / "current.json"
+    owner = "tests/test_owner.py::test_owner"
+    request.write_text(
+        json.dumps(
+            {
+                "base": "event-base",
+                "scope": ["tests/test_owner.py"],
+                "removed": [owner],
+                "survivors": [owner],
+                "cluster": "diagnostic",
+                "bead": "bu-ly3lv5.11",
+                "contract": {"class": "wire", "cites": ["REQ-testing-053"]},
+                "mapping": {owner: {"survivors": [owner], "reason": "diagnostic refusal"}},
+            }
+        )
+    )
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    path.write_text(path.read_text().replace("    assert value in (1,2)\n", ""))
+
+    def refused_child(name, arguments, cwd, *, timeout):
+        assert name == "condensation-proof" and cwd == root and timeout == 70
+        run = Path(arguments[arguments.index("--output") + 1])
+        run.mkdir()
+        (run / "receipt.json").write_text(
+            json.dumps(
+                {
+                    "status": "UNKNOWN",
+                    "category": "worker-incomplete",
+                    "restored": True,
+                    "cleanup": True,
+                    "private": "unpublished-operand",
+                }
+            )
+        )
+        (run / "baseline.request.json").write_text(
+            json.dumps(
+                {
+                    "nonce": "a" * 64,
+                    "output": "/untrusted/output",
+                    "private": "unpublished-operand",
+                }
+            )
+        )
+        (run / "baseline.json").write_text(
+            json.dumps(
+                {
+                    "complete": False,
+                    "core": "ctrace",
+                    "exit": 2,
+                    "selected": 2,
+                    "deselected": 0,
+                    "request_boundary": {"runtime_read": False, "descendant_execution": False},
+                }
+            )
+        )
+        (run / "baseline.access.json").write_text(
+            json.dumps(
+                {
+                    "complete": False,
+                    "accesses": 0,
+                    "probe_accesses": 0,
+                }
+            )
+        )
+        raise pre_push.Refusal("condensation-proof:exit-1")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(pre_push, "run_checked", refused_child)
+        assert ledger.main(["--repo-root", str(root), "--base", base]) == 1
+    retained = list((root / ".tmp/condensation-ci").glob("run-*/proof-0-refusal.json"))
+    assert len(retained) == 1
+    diagnostic = ledger.strict_json(retained[0])
+    assert diagnostic["outer"] == "condensation-proof:exit-1"
+    assert diagnostic["category"] == "worker-incomplete"
+    assert diagnostic["canonical_request_sha256"] == ledger.canonical(
+        ledger.strict_json(retained[0].parent / "plan-0.json")
+    )
+    worker = diagnostic["worker_requests"][0]
+    assert worker["nonce"] == "a" * 64 and worker["exit"] == 2
+    assert worker["access_complete"] is False and worker["probe_accesses"] == 0
+    assert "unpublished-operand" not in retained[0].read_text()
+    run = retained[0].parent / "proof-0"
+    (run / "receipt.json").write_text('{"status":[],"category":{"private":"unpublished-operand"}}')
+    malformed = ledger.fresh_proof_refusal(
+        request, run, {}, pre_push.Refusal("unpublished-operand")
+    )
+    assert malformed["outer"] == "unclassified" and malformed["status"] == "unknown"
+    assert malformed["category"] == "unclassified" and malformed["restored"] is None
+    assert "unpublished-operand" not in retained[0].read_text()
+    # Restore the original ordered source, not merely a green last assertion.
+    path.write_bytes(
+        subprocess.check_output(["git", "-C", str(root), "show", "HEAD:tests/test_owner.py"])
+    )
+    assert ledger.verify(root, base, [])["status"] == "PASS"
+    return True

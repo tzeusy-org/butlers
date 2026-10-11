@@ -282,6 +282,14 @@ the recorded owned copies:
 uv run --no-sync python scripts/condense_evidence.py recover .tmp/condensation-proof/unique-run
 ```
 
+When the fresh CI child refuses, the reader retains `proof-N-refusal.json`
+beside that child's directory and prints the same bounded diagnostic. It binds
+the canonical execution request and tracked source record, actual worker nonce,
+closed receipt category and scalar tracer/access-completion observations. Raw
+child output, paths, case identities and arbitrary error text are excluded;
+unknown or malformed values remain unknown. This diagnostic does not admit the
+proof or change the original categorical refusal or its deadlines.
+
 Recovery refuses a live owner, reused/live process identity, unknown group exit,
 indirect paths or changed journal bytes. It signals no later numeric PID. A
 recovered receipt stays UNKNOWN and requires a fresh proof. Concurrent runs do

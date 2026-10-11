@@ -1440,6 +1440,110 @@ def ci_binding(root: Path, *, event: str, base: str, expected_head: str, source_
     return base
 
 
+def fresh_proof_refusal(config: Path, run: Path, record: dict, refusal: Exception) -> dict:
+    """Retain closed diagnostic identity without publishing child output or operands."""
+    categories = {
+        "proof-started",
+        "proof-timeout",
+        "proof-total-timeout",
+        "worker-incomplete",
+        "worker-phases-or-tracer-unknown",
+        "baseline-not-healthy",
+        "restored-baseline-not-healthy",
+        "owned-launch-identity-unknown",
+        "owned-group-completion-unknown",
+        "request-access-observer-unavailable",
+        "missing-selected-case-owner",
+        "same-owner-case-population-change",
+        "changed-case-population",
+        "nonsemantic-mutation-outcome",
+        "mutation-restore-unknown",
+        "live-source-changed-during-proof",
+    }
+
+    def read(path):
+        try:
+            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                return None
+            return strict_json(path)
+        except (EvidenceError, OSError):
+            return None
+
+    receipt = read(run / "receipt.json") or {}
+    category = receipt.get("category")
+    status = receipt.get("status")
+
+    def boolean(value):
+        return value if type(value) is bool else None
+
+    def integer(value):
+        return value if type(value) is int else None
+
+    requests = []
+    for path in sorted(run.glob("*.request.json")):
+        request = read(path)
+        if request is None:
+            requests.append({"available": False})
+            continue
+        nonce = request.get("nonce")
+        # Derive sibling carriers from the actual producer naming convention;
+        # never follow a path supplied by the child request or its output.
+        output = path.with_name(path.name.removesuffix(".request.json") + ".json")
+        result = read(output) or {}
+        access = read(output.with_suffix(".access.json")) or {}
+        boundary = result.get("request_boundary")
+        boundary = boundary if isinstance(boundary, dict) else {}
+        requests.append(
+            {
+                "available": True,
+                "canonical_request_sha256": canonical(request),
+                "nonce": nonce if isinstance(nonce, str) and HEX.fullmatch(nonce) else None,
+                "result_available": bool(result),
+                "complete": boolean(result.get("complete")),
+                "cleanup": boolean(result.get("cleanup")),
+                "core": "ctrace" if result.get("core") == "ctrace" else "unknown",
+                "exit": integer(result.get("exit")),
+                "selected": integer(result.get("selected")),
+                "deselected": integer(result.get("deselected")),
+                "runtime_read": boolean(boundary.get("runtime_read")),
+                "descendant_execution": boolean(boundary.get("descendant_execution")),
+                "access_complete": boolean(access.get("complete")),
+                "accesses": integer(access.get("accesses")),
+                "probe_accesses": integer(access.get("probe_accesses")),
+            }
+        )
+    outer = str(refusal)
+    summary = {
+        "kind": "fresh-condensation-proof-refusal",
+        "outer": outer
+        if outer in {"condensation-proof:timeout", "condensation-proof:exit-1"}
+        else "unclassified",
+        "canonical_request_sha256": canonical(read(config)),
+        "tracked_request_record_sha256": canonical(record),
+        "receipt_available": bool(receipt),
+        "status": status
+        if isinstance(status, str) and status in {"UNKNOWN", "REFUSED", "PASS"}
+        else "unknown",
+        "category": category
+        if isinstance(category, str) and category in categories
+        else "unclassified",
+        "category_sha256": canonical(category),
+        "restored": boolean(receipt.get("restored")),
+        "cleanup": boolean(receipt.get("cleanup")),
+        "worker_requests": requests,
+    }
+    # This is diagnostic custody only. Missing/corrupt diagnostics never admit
+    # the failed proof, and the original categorical refusal remains primary.
+    try:
+        (run.parent / (run.name + "-refusal.json")).write_text(
+            json.dumps(summary, sort_keys=True) + "\n"
+        )
+    except OSError:
+        pass
+    print(json.dumps(summary, sort_keys=True))
+    return summary
+
+
 def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
     """Execute current tracked requests, not cached receipt discovery or rebinding."""
     from pre_push import Refusal, run_checked
@@ -1488,7 +1592,8 @@ def fresh_plan_ledgers(root: Path, base: str, output: Path) -> list[Path]:
                 root,
                 timeout=70,
             )
-        except Refusal:
+        except Refusal as exc:
+            fresh_proof_refusal(config, run, record, exc)
             raise EvidenceError("fresh-condensation-proof-refused") from None
         if input_record(root, name) != record:
             raise EvidenceError("plan-changed-during-execution")
