@@ -478,6 +478,17 @@ def mutants(root: Path, scope: list[str]) -> list[dict]:
     return generate_mutants({p: (root / public_path(p)).read_bytes() for p in scope})
 
 
+def mutation_batches(identifiers: list[str]) -> list[dict]:
+    """Partition the complete ordered population; a batch never grants partial admission."""
+    if not identifiers or len(set(identifiers)) != len(identifiers):
+        raise EvidenceError("empty-or-aliased-mutation-population")
+    batches = []
+    for offset in range(0, len(identifiers), 64):
+        row = {"index": len(batches), "mutants": identifiers[offset : offset + 64]}
+        batches.append({**row, "id": canonical(row), "status": "UNKNOWN"})
+    return batches
+
+
 def suite(
     copy_root: Path,
     selection: list[str],
@@ -908,72 +919,104 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 if populations[0] != populations[1]:
                     raise EvidenceError("same-owner-case-population-change")
             generated = mutants(copies["removed"], scopes["removed"])
-            if not generated or len(generated) > 64:
+            if not generated:
                 raise EvidenceError("empty-or-unbounded-mutation-scope")
+            sources = []
+            for path in scopes["removed"]:
+                saved = output / ("source-" + canonical(path) + ".before")
+                saved.write_bytes((copies["removed"] / path).read_bytes())
+                sources.append({"path": path, "artifact": artifact(saved, output)})
             pairs = (
                 lineage.paired_mutants(points, generated, mutants(copies["survivors"], scope))
                 if paired
                 else [(m, m) for m in generated]
             )
-            for mutant, current_mutant in pairs:
-                mutations = {"removed": mutant, "survivors": current_mutant}
-                originals, records = {}, {}
-                for kind, change in mutations.items():
-                    target = copies[kind] / change["path"]
-                    body, mode = target.read_bytes(), target.stat().st_mode & 0o777
-                    originals[kind] = (body, mode)
-                    saved = output / (mutant["id"] + "-" + kind + ".before")
-                    saved.write_bytes(body)
-                    records[kind] = {k: v for k, v in change.items() if k != "body"} | {
-                        "before_file": saved.name,
-                        "before_sha256": hashlib.sha256(body).hexdigest(),
-                        "after_sha256": hashlib.sha256(change["body"]).hexdigest(),
-                        "before_mode": mode,
-                        "status": "UNKNOWN",
-                    }
-                journal.append(
-                    records["removed"] | ({"current": records["survivors"]} if paired else {})
-                )
-                publish(
-                    output / "journal.json",
-                    {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
-                )
-                try:
-                    for kind, copy_root in copies.items():
-                        change = mutations[kind]
-                        (copy_root / change["path"]).write_bytes(change["body"])
-                    measured = execute_sides(lambda kind: mutant["id"] + "-" + kind)
+            batches = mutation_batches([old["id"] for old, _ in pairs])
+            for batch in batches:
+                if deadline - time.monotonic() <= 0:
+                    raise EvidenceError("proof-total-timeout")
+                offset = batch["index"] * 64
+                for mutant, current_mutant in pairs[offset : offset + 64]:
+                    mutations = {"removed": mutant, "survivors": current_mutant}
+                    originals, records = {}, {}
+                    for kind, change in mutations.items():
+                        target = copies[kind] / change["path"]
+                        body, mode = target.read_bytes(), target.stat().st_mode & 0o777
+                        originals[kind] = (body, mode)
+                        saved = output / (mutant["id"] + "-" + kind + ".before")
+                        saved.write_bytes(body)
+                        records[kind] = {k: v for k, v in change.items() if k != "body"} | {
+                            "before_file": saved.name,
+                            "before_sha256": hashlib.sha256(body).hexdigest(),
+                            "after_sha256": hashlib.sha256(change["body"]).hexdigest(),
+                            "before_mode": mode,
+                            "status": "UNKNOWN",
+                        }
+                    journal.append(
+                        records["removed"] | ({"current": records["survivors"]} if paired else {})
+                    )
+                    publish(
+                        output / "journal.json",
+                        {
+                            "owned_copy": str(owned),
+                            "status": "UNKNOWN",
+                            "mutations": journal,
+                            "batches": batches,
+                        },
+                    )
+                    try:
+                        for kind, copy_root in copies.items():
+                            change = mutations[kind]
+                            (copy_root / change["path"]).write_bytes(change["body"])
+                        measured = execute_sides(lambda kind: mutant["id"] + "-" + kind)
+                        for kind in selections:
+                            run = measured[kind]
+                            if {(r["key"], r["node"]) for r in run["cases"]} != {
+                                (r["key"], r["node"]) for r in baseline[kind]["cases"]
+                            }:
+                                raise EvidenceError("changed-case-population")
+                            if run["exit"] == 1 and any(
+                                r["phases"]["call"] == "assertion-failed" for r in run["cases"]
+                            ):
+                                killed[kind].append(mutant["id"])
+                            elif run["exit"] != 0:
+                                raise EvidenceError("nonsemantic-mutation-outcome")
+                    finally:
+                        for kind, copy_root in copies.items():
+                            body, mode = originals[kind]
+                            path = copy_root / mutations[kind]["path"]
+                            path.write_bytes(body)
+                            path.chmod(mode)
+                            if path.read_bytes() != body or path.stat().st_mode & 0o777 != mode:
+                                raise EvidenceError("mutation-restore-unknown")
+                    restorations = execute_sides(
+                        lambda kind: mutant["id"] + "-" + kind + "-restored"
+                    )
                     for kind in selections:
-                        run = measured[kind]
-                        if {(r["key"], r["node"]) for r in run["cases"]} != {
-                            (r["key"], r["node"]) for r in baseline[kind]["cases"]
-                        }:
-                            raise EvidenceError("changed-case-population")
-                        if run["exit"] == 1 and any(
-                            r["phases"]["call"] == "assertion-failed" for r in run["cases"]
-                        ):
-                            killed[kind].append(mutant["id"])
-                        elif run["exit"] != 0:
-                            raise EvidenceError("nonsemantic-mutation-outcome")
-                finally:
-                    for kind, copy_root in copies.items():
-                        body, mode = originals[kind]
-                        path = copy_root / mutations[kind]["path"]
-                        path.write_bytes(body)
-                        path.chmod(mode)
-                        if path.read_bytes() != body or path.stat().st_mode & 0o777 != mode:
-                            raise EvidenceError("mutation-restore-unknown")
-                restorations = execute_sides(lambda kind: mutant["id"] + "-" + kind + "-restored")
-                for kind in selections:
-                    restored = restorations[kind]
-                    if restored["exit"] != 0 or restored["cases"] != baseline[kind]["cases"]:
-                        raise EvidenceError("restored-baseline-not-healthy")
-                journal[-1]["status"] = "RESTORED"
-                if paired:
-                    journal[-1]["current"]["status"] = "RESTORED"
+                        restored = restorations[kind]
+                        if restored["exit"] != 0 or restored["cases"] != baseline[kind]["cases"]:
+                            raise EvidenceError("restored-baseline-not-healthy")
+                    journal[-1]["status"] = "RESTORED"
+                    if paired:
+                        journal[-1]["current"]["status"] = "RESTORED"
+                    publish(
+                        output / "journal.json",
+                        {
+                            "owned_copy": str(owned),
+                            "status": "UNKNOWN",
+                            "mutations": journal,
+                            "batches": batches,
+                        },
+                    )
+                batch["status"] = "RESTORED"
                 publish(
                     output / "journal.json",
-                    {"owned_copy": str(owned), "status": "UNKNOWN", "mutations": journal},
+                    {
+                        "owned_copy": str(owned),
+                        "status": "UNKNOWN",
+                        "mutations": journal,
+                        "batches": batches,
+                    },
                 )
             mapping = {owner: row["survivors"] for owner, row in config["mapping"].items()}
             residue = (
@@ -1026,6 +1069,8 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 "mutation": {
                     "seed": 0,
                     "generated": len(generated),
+                    "sources": sources,
+                    "batches": batches,
                     "mutants": journal,
                     "killed_by_removed": killed["removed"],
                     "killed_by_survivors": killed["survivors"],
@@ -1044,7 +1089,12 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 raise EvidenceError("live-source-changed-during-proof")
             publish(
                 output / "journal.json",
-                {"owned_copy": str(owned), "status": "RESTORED", "mutations": journal},
+                {
+                    "owned_copy": str(owned),
+                    "status": "RESTORED",
+                    "mutations": journal,
+                    "batches": batches,
+                },
             )
         ledger = {
             "schema": "condensation/v1",

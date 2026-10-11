@@ -1790,3 +1790,76 @@ def _direct_namespace_unchanged(tmp_path):
     assert list(foreign.parent.iterdir()) == [foreign]
     assert list((tmp_path / "direct-evidence").glob("condensation-refusal-*.json"))
     return True
+
+
+def test_complete_whole_owner_mutations_cross_batch_boundary(tmp_path):
+    """REQ-testing-053: all whole-owner mutants and restored phases remain mandatory."""
+    root = _toy(tmp_path)
+    path = root / "toy.py"
+    before = path.read_text()
+    count = len(evidence.generate_mutants({"toy.py": before.encode()}))
+    path.write_text(before + "1 == 1\n" * (65 - count))
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "complete finite whole-owner subject",
+        ],
+        check=True,
+    )
+    original = path.read_bytes()
+    assert len(evidence.generate_mutants({"toy.py": original})) == 65
+    # Use the existing explicit bounded diagnostic option; the ordinary producer
+    # default remains60 and this software subject earns no cluster timing claim.
+    proof = evidence.prove(root, _config(), tmp_path / "complete", timeout=240)
+    assert proof["status"] == "PASS"
+    assert proof["mutation"]["generated"] == 65
+    assert [len(row["mutants"]) for row in proof["mutation"]["batches"]] == [64, 1]
+    assert all(row["status"] == "RESTORED" for row in proof["mutation"]["batches"])
+    assert len(proof["runs"]) == 2 + 4 * 65
+    assert proof["coverage"]["residue_arcs"] == 0
+    assert proof["mutation"]["lost"] == []
+    assert path.read_bytes() == original
+    value = evidence.strict_json(tmp_path / "complete/ledger.json")
+    reader = evidence.sys.modules["check_condensation_ledger"]
+
+    def read(candidate):
+        reader.executable_proof(
+            tmp_path / "complete",
+            candidate,
+            value["binding"],
+            value["removed"],
+            value["survivors"],
+            root=root,
+        )
+
+    read(proof)
+    for corruption in ("missing", "duplicate", "order", "unfinished", "operation", "source"):
+        changed = copy.deepcopy(proof)
+        if corruption == "missing":
+            changed["mutation"]["mutants"].pop()
+            changed["mutation"]["generated"] -= 1
+            changed["mutation"]["batches"].pop()
+        elif corruption == "duplicate":
+            changed["mutation"]["batches"].append(changed["mutation"]["batches"][0])
+        elif corruption == "order":
+            changed["mutation"]["batches"].reverse()
+        elif corruption == "unfinished":
+            changed["mutation"]["batches"][-1]["status"] = "UNKNOWN"
+        elif corruption == "operation":
+            changed["mutation"]["mutants"][0]["after_sha256"] = "0" * 64
+        else:
+            changed["mutation"]["sources"] = []
+        with pytest.raises(evidence.EvidenceError):
+            read(changed)
+    read(proof)
