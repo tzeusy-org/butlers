@@ -27,4 +27,3 @@ The source-failure classifier SHALL report OAuth reauthorization only when the a
 - **WHEN** the Gmail connector's health is queried
 - **THEN** it returns: `status` (worst-case across all account loops), `uptime_seconds`, `active_accounts` (count), `account_health` (array of per-account status objects)
 - **AND** each per-account status includes: `email`, `endpoint_identity`, `status` (`healthy`/`degraded`/`error`), `last_checkpoint_save_at`, `last_ingest_submit_at`, `source_api_connectivity`, `error` (if any)
-
