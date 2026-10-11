@@ -40,7 +40,11 @@ concurrently in their separate owned copies. Each side still creates its own
 request, CoverageData SQLite file and process group; every phase executes anew.
 Both groups settle before mutation restoration or the next phase. An interruption
 or failed side cancels the other owned run and retains the existing cleanup and
-UNKNOWN requirements, within the same total budget.
+UNKNOWN requirements, within the same total budget. Completion from either side
+is observed promptly; successful carriers retain removed-then-survivors order
+regardless of completion order.
+Sibling cancellation retains an observed terminal child status while still
+stopping running children within the existing finite wait quantum.
 
 A protected PASS requires nonempty actual branch arcs, zero residue, no waived
 normative arcs, and every removed owner's semantic mutant kill retained by one

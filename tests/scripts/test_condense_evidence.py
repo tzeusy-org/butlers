@@ -1548,6 +1548,9 @@ def test_literal_coverage_query_does_not_use_regex_contexts(tmp_path):
 @pytest.mark.parametrize("outcome", ["timeout", "cancel", "crash"])
 def test_owned_timeout_leaves_unknown_and_no_active_group(tmp_path, outcome):
     """REQ-testing-053: timeout, cancellation and writer crash preserve owned recovery."""
+    assert outcome != "timeout" or _assert_either_side_failure_cancels(
+        tmp_path / "either-side-failure"
+    )
     if outcome == "timeout":
         with pytest.raises(evidence.EvidenceError, match="proof-timeout"):
             evidence.owned_run(
@@ -1641,10 +1644,110 @@ def test_owned_timeout_leaves_unknown_and_no_active_group(tmp_path, outcome):
             child.wait(timeout=5)
 
 
+def _assert_either_side_failure_cancels(tmp_path):
+    # Both orders execute the same real worker failure beside a sleeping worker.
+    # Observing only the first submitted future hides the second failure until
+    # timeout; the original incomplete worker category must survive cancellation.
+    tmp_path.mkdir()
+    for removed, survivor in (("sleeper", "failure"), ("failure", "sleeper")):
+        home = tmp_path / removed
+        home.mkdir()
+        root = _toy(home)
+        (root / "tests/test_toy.py").write_text(
+            "from toy import reply\nimport time\n"
+            "def test_sleeper():\n    time.sleep(30)\n"
+            "    assert reply(True) == 'accepted'\n"
+            "def test_failure():\n    raise RuntimeError('synthetic call failure')\n"
+        )
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "commit",
+                "-qm",
+                "owned concurrent failure",
+            ],
+            check=True,
+        )
+        config = _config(
+            "tests/test_toy.py::test_" + removed, "tests/test_toy.py::test_" + survivor
+        )
+        output = home / "proof"
+        with pytest.raises(evidence.EvidenceError, match="proof-unknown"):
+            evidence.prove(root, config, output, timeout=4)
+        receipt = evidence.strict_json(output / "receipt.json")
+        assert receipt == {
+            "status": "UNKNOWN",
+            "category": "worker-incomplete",
+            "restored": True,
+            "cleanup": True,
+        }
+        processes = [evidence.strict_json(p) for p in output.glob("*.process.json")]
+        assert len(processes) == 2 and all(p["cleanup"] for p in processes)
+        assert len({p["identity"]["group"] for p in processes}) == 2
+        assert not Path(evidence.strict_json(output / "journal.json")["owned_copy"]).exists()
+        failed = evidence.strict_json(
+            output / (("removed" if removed == "failure" else "survivors") + "-baseline.json")
+        )
+        assert failed["complete"] is False and failed["exit"] == 1
+    # Model the timeout notification racing with an actual terminal OS child.
+    # A sibling refusal must not discard that child's completed observer input.
+    cancellation = evidence.threading.Event()
+    actual_popen = evidence.subprocess.Popen
+    children = []
+
+    class TerminalAtTimeout:
+        def __init__(self, child):
+            self.child = child
+            self.notified = False
+
+        def __getattr__(self, name):
+            return getattr(self.child, name)
+
+        def wait(self, timeout):
+            code = self.child.wait(timeout=timeout)
+            if not self.notified:
+                self.notified = True
+                cancellation.set()
+                raise subprocess.TimeoutExpired("synthetic-terminal-child", timeout)
+            return code
+
+    def launch(*args, **kwargs):
+        child = actual_popen(*args, **kwargs)
+        children.append(child)
+        return TerminalAtTimeout(child)
+
+    record = tmp_path / "terminal-child.process.json"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(evidence.subprocess, "Popen", launch)
+        assert evidence.owned_run(
+            [sys.executable, "-I", "-c", "pass"],
+            cwd=tmp_path,
+            env=os.environ.copy(),
+            timeout=2,
+            process_record=record,
+            cancellation=cancellation,
+        ) == (0, True)
+    assert len(children) == 1 and children[0].poll() == 0
+    assert evidence.strict_json(record)["cleanup"] is True
+    return True
+
+
 def _disjoint_execution_phases(proof, config, output):
     # Every freshly executed side keeps its own request, SQLite file and group,
     # including both baselines and both mutant/restored sides of every phase.
     assert len(proof["runs"]) == 2 + 4 * len(proof["mutation"]["mutants"])
+    assert [run["side"] for run in proof["runs"]] == ["removed", "survivors"] * (
+        1 + 2 * len(proof["mutation"]["mutants"])
+    )
     assert len({run["id"] for run in proof["runs"]}) == len(proof["runs"])
     assert len({run["coverage_artifact"]["path"] for run in proof["runs"]}) == len(proof["runs"])
     groups = set()

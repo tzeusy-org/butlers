@@ -21,7 +21,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # The owned launcher must not run project startup hooks before the external
@@ -100,15 +100,21 @@ def owned_run(
             if cancellation is None:
                 return child.wait(timeout=timeout), True
             deadline = time.monotonic() + timeout
-            while not cancellation.is_set():
+            while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise EvidenceError("proof-timeout")
                 try:
+                    # Retain an actual completed child's result before acting on
+                    # sibling cancellation. The existing finite wait quantum
+                    # still bounds cancellation of a child that is running.
                     return child.wait(timeout=min(0.1, remaining)), True
                 except subprocess.TimeoutExpired:
-                    continue
-            raise InterruptedError
+                    if cancellation.is_set():
+                        completed = child.poll()
+                        if completed is not None:
+                            return completed, True
+                        raise InterruptedError
         except subprocess.TimeoutExpired:
             raise EvidenceError("proof-timeout") from None
     finally:
@@ -873,10 +879,16 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     pending = {kind: pool.submit(execute, kind, label(kind)) for kind in selections}
                     try:
-                        completed = {kind: pending[kind].result() for kind in selections}
+                        sides = {future: kind for kind, future in pending.items()}
+                        observed = {
+                            sides[future]: future.result() for future in as_completed(sides)
+                        }
                     except BaseException:
                         cancellation.set()
                         raise
+                # Completion order only controls prompt failure observation;
+                # successful carriers retain the original deterministic side order.
+                completed = {kind: observed[kind] for kind in selections}
                 runs.extend(completed.values())
                 return completed
 
