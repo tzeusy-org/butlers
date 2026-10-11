@@ -9,12 +9,28 @@ Preparation 1.3 includes the reserved same-legacy `REQ-connector-gmail-001` meta
 ## 2. Genuine preparation and supported administration
 
 - [x] 2.1 Obtain distinct genuine independent review of this exact source and complete native preparation.
-- [ ] 2.2 After ROOT's separate release, perform ordinary supported tracked sync/archive and complete readback/inverse without unchecked overrides.
+- [x] 2.2 Complete the separately released supported baseline application and its full source, scenario, mode, provenance, readback and inverse checks before archive.
 
 ## 3. Delivery
 
-- [ ] 3.1 Publish the coherent source/native administration PR and earn current normal, genuine resulting-head review, full protected merge_group and actual squash.
+- [x] 3.1 Publish the coherent source/native administration PR and earn current normal, genuine resulting-head review, full protected merge_group and actual squash.
 
 Mandatory delivery is not earned by local software or native preparation. Original14's complete seven/five-folded/P0–P9/A0–A7, SQL, catalog, hard metrics and remaining source obligations remain unchanged and open.
 
+## Historical source-first preparation note
+
+The following paragraph records the preparation stage before PR 4470 delivered the baseline application; its pending statements are historical.
+
 ROOT adopted the exact 5eb genuine metadata/citation preparation review on 2026-10-11. Source-first publication is a prerequisite to separately released administration: publish the scoped source and active preparation with the durable commit citation, verify its public design body and both anchors, and earn distinct resulting-source review, current normal, protected queue and squash. This publication does not complete 2.2 or the cumulative source/native delivery item 3.1. The metadata-only publication successor preserves the reviewed source and test bodies and revalidates the complete preparation; it does not self-approve its resulting head. Keep 2.2 and 3.1 unchecked while administration and its delivery are pending.
+
+## Delivered application and remaining archive acceptance
+
+The executing checklist above records completed prerequisites, not a successful archive. Item 2.2 now names the supported baseline application delivered by PR 4470: complete installed generation/application/no-op/readback and inverse, all 19 Gmail requirements and 86 scenarios, the reviewed source and test bodies, unchanged modes and immutable 5eb provenance. Distinct genuine review, current normal checks, the full protected merge_group run 38134525677 and the confirmed squash a06699b0012705b116961059ba9d5b90997c27c7 earned item 3.1 for that named application stage only. The original source-first stage was delivered by PR 4469. Neither check mark earns this procedural amendment's review or delivery.
+
+The original task 2.2 remains verbatim as mandatory postarchive acceptance:
+
+> 2.2 After ROOT's separate release, perform ordinary supported tracked sync/archive and complete readback/inverse without unchecked overrides.
+
+That complete original outcome remains open. The archive has not run successfully. This amendment must first earn distinct genuine resulting-head review, current normal checks, full protected merge_group and actual squash. After those delivered prerequisites and ROOT's separate archive release, ordinary installed `openspec archive gmail-token-origin-health --json` must succeed without unchecked overrides, followed by complete destination/date, active relocation, canonical requirement/scenario/provenance/body/mode readback and inverse. No force, `--yes`, `--skip-specs`, `--no-validate`, manual move or pending-task override substitutes for that outcome. The immutable public 5eb Source and both design anchors remain authoritative after relocation.
+
+This amendment's delivery and the subsequent archive's genuine review, current normal, full protected run and confirmed squash remain unearned. The postarchive acceptance is an outcome evaluated after the archive command, rather than an executing checkbox asking the command to complete itself. The ordinary task parser still counts every checkbox; no task is hidden in a fence or comment, and a complete prerequisite count is not archive or delivery evidence. The canonical administration criterion, source bug's six criteria and original14's full seven/five-folded/P0–P9/A0–A7 outcomes remain unchanged. ROOT alone accounts for closure after actual delivery.
