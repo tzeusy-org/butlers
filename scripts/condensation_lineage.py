@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 import copy
 
-from check_condensation_ledger import EvidenceError, canonical, fields, public_path
+from check_condensation_ledger import EvidenceError, canonical, fields, mutation_target, public_path
 
 
 def request(value: dict) -> None:
@@ -299,7 +299,7 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
     namespace_observed = _namespace_observed(tree)
     lines, spans, exits, signatures, bindings = {}, {}, {}, {}, {}
 
-    def visit(node, owner, names, controls, known):
+    def visit(node, owner, names, controls, known, mutation_controls):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             if isinstance(node, ast.Lambda):
                 # A lambda has no stable declared owner; refuse if it supplies an arc.
@@ -324,6 +324,7 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
             signatures[identity] = signature
             exits[-node.lineno] = (identity, "exit", signature)
             controls = []
+            mutation_controls = []
             marker = (identity, "entry", signature)
         elif isinstance(node, ast.ClassDef):
             owner = owner + "." + node.name if owner else node.name
@@ -364,11 +365,21 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
         if isinstance(node, (ast.stmt, ast.ExceptHandler)):
             lines.setdefault(node.lineno, []).append(marker)
         if hasattr(node, "lineno"):
-            spans[(node.lineno, node.col_offset)] = canonical(
-                [
-                    marker,
-                    _normalized(node, names, known) if not isinstance(node, ast.stmt) else marker,
-                ]
+            # Several AST nodes start at the same byte coordinate. Keep each
+            # literal target; the generator selects one by its whole preimage.
+            # Coordinates and raw syntax only select within this source. The
+            # point retains the existing lexical/control identity for pairing.
+            spans.setdefault((node.lineno, node.col_offset), []).append(
+                {
+                    "target": mutation_target(node),
+                    "point": canonical(
+                        [
+                            marker,
+                            _normalized(node, names, known),
+                        ]
+                    ),
+                    "context": canonical(mutation_controls),
+                }
             )
         for field, children in ast.iter_fields(node):
             children = children if isinstance(children, list) else [children]
@@ -376,6 +387,7 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
                 if not isinstance(child, ast.AST):
                     continue
                 nested = controls
+                mutation_nested = mutation_controls
                 if isinstance(
                     node,
                     (
@@ -390,16 +402,37 @@ def source_points(text: str, path: str, aliases: dict[tuple, tuple]) -> dict:
                     ),
                 ):
                     nested = [*controls, (marker, field)]
+                    # Equal loop/guard headers can own different executions.
+                    # Retain their whole literal control preimage and field;
+                    # an ordinal or line-number match cannot disambiguate them.
+                    mutation_nested = [
+                        *mutation_controls,
+                        (_normalized(node, names, known), field),
+                    ]
                 child_names = names
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and field != "body":
                     child_names = {}
-                visit(child, owner, child_names, nested, known)
+                visit(child, owner, child_names, nested, known, mutation_nested)
 
     # A module exit is stable only within its source-qualified module identity.
     exits[-1] = ((path, "<module>"), "exit", "module")
     known = _lexical_bindings(tree)
     for node in tree.body:
-        visit(node, "", {}, [], known)
+        visit(node, "", {}, [], known, [])
+    occurrences = {}
+    for candidates in spans.values():
+        for candidate in candidates:
+            point = candidate["point"]
+            occurrences[point] = occurrences.get(point, 0) + 1
+    for candidates in spans.values():
+        for candidate in candidates:
+            point = candidate["point"]
+            if occurrences[point] > 1:
+                # Refine a repeated semantic operation with its actual whole
+                # enclosing control preimage, never occurrence order/position.
+                # Equal contexts still collide and pairing refuses. A new or
+                # changed discriminator likewise cannot match an old point.
+                candidate["point"] = canonical([point, candidate["context"]])
     unique = {line: canonical(markers[0]) for line, markers in lines.items() if len(markers) == 1}
     unique.update({line: canonical(marker) for line, marker in exits.items()})
     return {"lines": unique, "spans": spans, "signatures": signatures, "bindings": bindings}
@@ -452,10 +485,23 @@ def alignment(before: dict[str, str], current: dict[str, str], functions: list[d
 
 
 def mutation_key(points: dict, row: dict) -> str:
-    point = points.get(row["path"], {}).get("spans", {}).get((row["line"], row["column"]))
-    if point is None:
+    target = row.get("target")
+    if (
+        not isinstance(target, dict)
+        or set(target) != {"kind", "end_line", "end_column", "preimage"}
+        or not isinstance(target["kind"], str)
+        or not isinstance(target["preimage"], str)
+        or type(target["end_line"]) is not int
+        or type(target["end_column"]) is not int
+    ):
+        raise EvidenceError("invalid-mutation-target")
+    candidates = points.get(row["path"], {}).get("spans", {}).get((row["line"], row["column"]), [])
+    selected = [p["point"] for p in candidates if p["target"] == target]
+    if not selected:
         raise EvidenceError("unmapped-mutation-source-operation")
-    return canonical([point, row["operator"]])
+    if len(selected) != 1:
+        raise EvidenceError("ambiguous-mutation-source-target")
+    return canonical([selected[0], row["operator"]])
 
 
 def paired_mutants(points: dict, before: list[dict], current: list[dict]) -> list[tuple]:

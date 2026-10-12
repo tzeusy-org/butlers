@@ -817,3 +817,121 @@ def _bounded_refusal_publication(tmp_path):
         # Every actual failed child is complete before bounded publication.
         assert result.stdout.count(b'"kind": "fresh-condensation-proof-refusal"') == 1
     return True
+
+
+def test_mutations_select_whole_targets_at_shared_coordinates():
+    """REQ-testing-053: a child at the same position cannot replace its mutation target."""
+    import condensation_lineage as lineage
+    import condense_evidence as evidence
+
+    original = (
+        "def reply(item):\n"
+        "    first = item.value == 1\n"
+        "    second = item[0] != 2\n"
+        "    if item.value:\n"
+        "        first = 3\n"
+        "    if item[0]:\n"
+        "        second = 4\n"
+        "    return first, second\n"
+    )
+    current = original.replace("    first =", "    pass\n    first =", 1)
+    points = lineage.alignment({"toy.py": original}, {"toy.py": current}, [])
+    old = evidence.generate_mutants({"toy.py": original.encode()})
+    new = evidence.generate_mutants({"toy.py": current.encode()})
+    keys = [lineage.mutation_key(points["removed"], row) for row in old]
+    assert len(set(keys)) == len(old)
+    matched = lineage.paired_mutants(points, old, new)
+    assert len(matched) == len(old) and matched
+
+    # Select the whole expression even when Attribute/Subscript chains have
+    # several nodes of the same kind and starting coordinate.
+    chained = (
+        "def reply(item):\n    if item.value.other:\n        item = item[0][1]\n    return item\n"
+    )
+    chained_points = lineage.alignment({"toy.py": chained}, {"toy.py": chained}, [])
+    mutations = evidence.generate_mutants({"toy.py": chained.encode()})
+    selected = next(m for m in mutations if m["operator"] == "negate-condition")
+    assert selected["target"]["kind"] == "Attribute"
+    assert "attr='other'" in selected["target"]["preimage"]
+    assert lineage.paired_mutants(chained_points, mutations, mutations)
+
+    # A literal preimage only selects within its parsed source; it cannot grant
+    # equivalence to a changed operator, bound name, child or enclosing guard.
+    import copy
+
+    for change in (
+        original.replace("== 1", "== 9"),
+        original.replace("!= 2", "== 2"),
+        original.replace("item.value", "item.other"),
+        original.replace("item[0]", "item[1]"),
+        original.replace("    first =", "    if item:\n        first =", 1),
+    ):
+        with pytest.raises(ledger.EvidenceError):
+            changed_points = lineage.alignment({"toy.py": original}, {"toy.py": change}, [])
+            lineage.paired_mutants(
+                points=changed_points,
+                before=old,
+                current=evidence.generate_mutants({"toy.py": change.encode()}),
+            )
+        assert len(lineage.paired_mutants(points, old, new)) == len(old)
+
+    for field, value in (("kind", "Name"), ("end_column", True), ("preimage", "Name(id='fake')")):
+        forged = copy.deepcopy(selected)
+        forged["target"][field] = value
+        with pytest.raises(ledger.EvidenceError):
+            lineage.mutation_key(chained_points["removed"], forged)
+    unmarked = {k: v for k, v in selected.items() if k != "target"}
+    with pytest.raises(ledger.EvidenceError, match="invalid-mutation-target"):
+        lineage.mutation_key(chained_points["removed"], unmarked)
+    # Genuine duplicate selections remain ambiguous; no first/last-match rule.
+    forged_points = copy.deepcopy(chained_points)
+    coordinate = (selected["line"], selected["column"])
+    candidates = forged_points["removed"]["toy.py"]["spans"][coordinate]
+    candidates.append(
+        copy.deepcopy(next(p for p in candidates if p["target"] == selected["target"]))
+    )
+    with pytest.raises(ledger.EvidenceError, match="ambiguous-mutation-source-target"):
+        lineage.mutation_key(forged_points["removed"], selected)
+
+    nested = (
+        "def reply(item):\n"
+        "    def inner(item):\n        if item == 1:\n            item = 2\n        return item\n"
+        "    if item == 1:\n        item = 2\n    return inner(item)\n"
+    )
+    renamed = nested.replace("def reply", "def other", 1)
+    aliases = [
+        {
+            "before": {"path": "a.py", "function": f},
+            "current": {"path": "b.py", "function": f.replace("reply", "other", 1)},
+        }
+        for f in ("reply", "reply.inner")
+    ]
+    nested_points = lineage.alignment({"a.py": nested}, {"b.py": renamed}, aliases)
+    before = evidence.generate_mutants({"a.py": nested.encode()})
+    after = evidence.generate_mutants({"b.py": renamed.encode()})
+    assert len(lineage.paired_mutants(nested_points, before, after)) == len(before)
+    assert len({lineage.mutation_key(nested_points["removed"], m) for m in before}) == len(before)
+    repeated = "def reply(item):\n    first = item == 1\n    second = item == 1\n    return first, second\n"
+    repeat_points = lineage.alignment({"toy.py": repeated}, {"toy.py": repeated}, [])
+    repeated_mutants = evidence.generate_mutants({"toy.py": repeated.encode()})
+    with pytest.raises(ledger.EvidenceError, match="ambiguous-paired-mutation"):
+        lineage.paired_mutants(repeat_points, repeated_mutants, repeated_mutants)
+
+    # Same loop headers have distinct complete executing control bodies. Their
+    # identity is not their ordinal, line or a first/last duplicate choice.
+    loops = (
+        "def reply(items):\n"
+        "    for item in items:\n        if item == 1:\n            continue\n        item += 2\n"
+        "    for item in items:\n        if item == 1:\n            continue\n        item += 3\n"
+        "    return items\n"
+    )
+    loop_points = lineage.alignment({"toy.py": loops}, {"toy.py": loops}, [])
+    loop_mutants = evidence.generate_mutants({"toy.py": loops.encode()})
+    assert len(lineage.paired_mutants(loop_points, loop_mutants, loop_mutants)) == len(loop_mutants)
+    changed_loop = loops.replace("item += 3", "item += 4")
+    with pytest.raises(ledger.EvidenceError, match="missing-paired-source-mutation"):
+        lineage.paired_mutants(
+            lineage.alignment({"toy.py": loops}, {"toy.py": changed_loop}, []),
+            loop_mutants,
+            evidence.generate_mutants({"toy.py": changed_loop.encode()}),
+        )

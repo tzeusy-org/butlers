@@ -39,6 +39,7 @@ from check_condensation_ledger import (
     git,
     git_environment,
     input_record,
+    mutation_target,
     named_coverage_residue,
     production_dependencies,
     public_path,
@@ -469,6 +470,7 @@ def generate_mutants(sources: dict[str, bytes]) -> list[dict]:
                     "column": node.col_offset,
                     "operator": operator,
                     "body": changed_source.encode(),
+                    "target": mutation_target(node),
                 }
             )
     return sorted(result, key=lambda r: r["id"])
