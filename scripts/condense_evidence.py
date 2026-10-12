@@ -561,7 +561,7 @@ def suite(
                     and access["accesses"] == 0
                 )
                 publish(output, result)
-        except (EvidenceError, OSError, ValueError, TypeError, KeyError):
+        except BaseException:
             if primary is None:
                 raise
     if code != 0 or not output.is_file():
@@ -896,6 +896,7 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
         "options_sha256": canonical(REQUEST_TRACE_OPTIONS),
         "tool_sha256": None,
         "version_sha256": None,
+        "finalization_failures": [],
     }
     carrier = output.with_suffix(".access.json")
     publish(carrier, access)
@@ -966,11 +967,28 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
         )
         return_code = code
     finally:
+        primary = sys.exc_info()[1]
+        finalization_error = None
+
+        def attempt(stage, operation):
+            nonlocal finalization_error
+            try:
+                return operation()
+            except BaseException as error:
+                # Finalization cannot replace the actual owned-run exception.
+                # Retain the first secondary object and only closed stage codes.
+                if finalization_error is None:
+                    finalization_error = error
+                if stage not in access["finalization_failures"]:
+                    access["finalization_failures"].append(stage)
+                return None
+
         stopped.set()
-        observer.join(timeout=2)
-        os.close(descriptor)
-        pipe.unlink()
-        complete, actors = stream.finish()
+        attempt("join", lambda: observer.join(timeout=2))
+        attempt("close", lambda: os.close(descriptor))
+        attempt("unlink", pipe.unlink)
+        finished = attempt("finish", stream.finish)
+        complete, actors = finished if finished is not None else (False, [])
         access.update(
             accesses=stream.accesses,
             reads=stream.reads,
@@ -979,14 +997,29 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
             subject_descendants=stream.subject_children,
             actors=actors,
         )
-        try:
-            unchanged = request_input_versions(root, inputs) == initial
-        except (EvidenceError, OSError):
-            unchanged = False
+        unchanged = attempt(
+            "input-binding", lambda: request_input_versions(root, inputs) == initial
+        )
         if not cleaned and process_record.is_file():
-            cleaned = strict_json(process_record).get("cleanup") is True
-        access["complete"] = cleaned and complete and not observer.is_alive() and unchanged
-        publish(carrier, access)
+            process = attempt("process-record", lambda: strict_json(process_record))
+            cleaned = process is not None and process.get("cleanup") is True
+        access["complete"] = (
+            cleaned
+            and complete
+            and not observer.is_alive()
+            and unchanged is True
+            and not access["finalization_failures"]
+        )
+        attempt("publication", lambda: publish(carrier, access))
+        if "publication" in access["finalization_failures"]:
+            access["complete"] = False
+            # A failure after atomic replacement may have left a prior view.
+            # Attempt one closed incomplete publication; never treat retry as proof.
+            attempt("publication", lambda: publish(carrier, access))
+        if finalization_error is not None:
+            access["complete"] = False
+            if primary is None:
+                raise finalization_error
     return return_code, cleaned, access
 
 

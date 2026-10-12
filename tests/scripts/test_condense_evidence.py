@@ -898,6 +898,190 @@ def _assert_observer_completion_failure(tmp_path):
         root, selected, ["toy.py"], "d" * 64, tmp_path / "restored.json", "restored", 20, controls
     )
     assert restored["complete"] is True and restored["cleanup"] is True
+    assert _assert_observer_finalization_stages(tmp_path / "finalization-stages") == "PASS"
+    return "PASS"
+
+
+def _assert_observer_finalization_stages(tmp_path):
+    """Actual finished workers preserve primaries and refuse failed finalization."""
+    tmp_path.mkdir()
+    selected = [_config()["removed"][0], _config()["survivors"][0]]
+    controls = {"tests/condensation-plans/current.json"}
+    for stage, pending in (
+        *(
+            (stage, True)
+            for stage in (
+                "join",
+                "close",
+                "unlink",
+                "finish",
+                "input-binding",
+                "process-record",
+                "publication",
+                "suite-publication",
+                "publication-after-write",
+                "suite-publication-after-write",
+            )
+        ),
+        ("unlink", False),
+        ("healthy", False),
+    ):
+        home = tmp_path / (stage + ("-primary" if pending else "-healthy"))
+        home.mkdir()
+        root = _toy(home)
+        plan = root / "tests/condensation-plans/current.json"
+        plan.parent.mkdir()
+        plan.write_text(json.dumps(dict(_config(), base="event-base")))
+        output = home / "run.json"
+        primary = evidence.EvidenceError("fixed-original-primary")
+        secondary = PermissionError("fixed-finalization-fault")
+        owned = evidence.owned_run
+        join = evidence.threading.Thread.join
+        close = evidence.os.close
+        open_ = evidence.os.open
+        unlink = Path.unlink
+        finish = evidence.RequestAccessStream.finish
+        versions = evidence.request_input_versions
+        strict = evidence.strict_json
+        publish = evidence.publish
+        captures = {
+            "descriptor": None,
+            "finished": False,
+            "faults": 0,
+            "versions": 0,
+            "publications": 0,
+        }
+
+        def fault():
+            captures["faults"] += 1
+            raise secondary
+
+        def completed(*args, **kwargs):
+            result = owned(*args, **kwargs)
+            assert result == (0, True)
+            captures["finished"] = True
+            if pending:
+                raise primary
+            return result
+
+        def observed_open(path, *args, **kwargs):
+            descriptor = open_(path, *args, **kwargs)
+            if path == output.with_suffix(".access-pipe"):
+                captures["descriptor"] = descriptor
+            return descriptor
+
+        def observed_join(self, *args, **kwargs):
+            if stage == "join" and self.name == "owned-request-access":
+                fault()
+            return join(self, *args, **kwargs)
+
+        def observed_close(descriptor):
+            if stage == "close" and descriptor == captures["descriptor"]:
+                fault()
+            return close(descriptor)
+
+        def observed_unlink(self, *args, **kwargs):
+            if stage == "unlink" and self == output.with_suffix(".access-pipe"):
+                fault()
+            return unlink(self, *args, **kwargs)
+
+        def observed_finish(self):
+            if stage == "finish":
+                fault()
+            return finish(self)
+
+        def observed_versions(*args):
+            captures["versions"] += 1
+            if stage == "input-binding" and captures["versions"] == 2:
+                fault()
+            return versions(*args)
+
+        def observed_strict(path):
+            if (
+                stage == "process-record"
+                and captures["finished"]
+                and path == output.with_suffix(".process.json")
+            ):
+                captures["faults"] += 1
+                path.write_text("{")
+            return strict(path)
+
+        def observed_publish(path, value):
+            if path == output.with_suffix(".access.json"):
+                captures["publications"] += 1
+                if stage == "publication" and captures["publications"] >= 2:
+                    fault()
+                if stage == "publication-after-write" and captures["publications"] >= 2:
+                    publish(path, value)
+                    fault()
+            if stage == "suite-publication" and path == output:
+                fault()
+            if stage == "suite-publication-after-write" and path == output:
+                publish(path, value)
+                fault()
+            return publish(path, value)
+
+        evidence.owned_run = completed
+        evidence.threading.Thread.join = observed_join
+        evidence.os.open = observed_open
+        evidence.os.close = observed_close
+        Path.unlink = observed_unlink
+        evidence.RequestAccessStream.finish = observed_finish
+        evidence.request_input_versions = observed_versions
+        evidence.strict_json = observed_strict
+        evidence.publish = observed_publish
+        try:
+            if stage == "healthy":
+                healthy = evidence.suite(
+                    root, selected, ["toy.py"], "e" * 64, output, stage, 20, controls
+                )
+                assert healthy["complete"] is True and healthy["cleanup"] is True
+                assert healthy["request_access"]["finalization_failures"] == []
+            else:
+                with pytest.raises(BaseException) as caught:
+                    evidence.suite(
+                        root, selected, ["toy.py"], "e" * 64, output, stage, 20, controls
+                    )
+                assert caught.value is (primary if pending else secondary)
+                expected_args = (
+                    ("fixed-original-primary",) if pending else ("fixed-finalization-fault",)
+                )
+                assert caught.value.args == expected_args
+                assert captures["faults"] == (
+                    2 if stage in {"publication", "publication-after-write"} else 1
+                )
+        finally:
+            evidence.owned_run = owned
+            evidence.threading.Thread.join = join
+            evidence.os.open = open_
+            evidence.os.close = close
+            Path.unlink = unlink
+            evidence.RequestAccessStream.finish = finish
+            evidence.request_input_versions = versions
+            evidence.strict_json = strict
+            evidence.publish = publish
+            if stage == "close":
+                close(captures["descriptor"])
+            if output.with_suffix(".access-pipe").exists():
+                unlink(output.with_suffix(".access-pipe"))
+        assert captures["finished"] is True
+        result = strict(output)
+        access = strict(output.with_suffix(".access.json"))
+        assert all(row["phases"]["call"] == "passed" for row in result["cases"])
+        if stage != "healthy":
+            if stage == "suite-publication":
+                assert "request_access" not in result
+            else:
+                assert result["complete"] is False
+            if stage not in {"publication", "suite-publication", "suite-publication-after-write"}:
+                assert access["complete"] is False
+                assert access["finalization_failures"] == [
+                    "publication" if stage == "publication-after-write" else stage
+                ]
+                assert access["probe_accesses"] > 0 and access["subject_probes"] == 1
+            if stage == "publication":
+                assert access["complete"] is False
+                assert captures["publications"] == 3
     return "PASS"
 
 
@@ -968,6 +1152,21 @@ def _assert_source_owned_noaccess_child(tmp_path):
         carrier.write_text(json.dumps(altered))
         with pytest.raises(consumer.EvidenceError, match="request-access-observation-unproved"):
             consumer.verify(root, base, [carrier])
+    original_run = ledger["proof"]["runs"][0]
+    run_carrier = carrier.parent / original_run["artifact"]["path"]
+    saved_run = run_carrier.read_bytes()
+    for value in (["close"], None, False, {}):
+        altered = json.loads(saved)
+        run = altered["proof"]["runs"][0]
+        run["request_access"]["finalization_failures"] = value
+        run_carrier.write_text(
+            json.dumps({k: v for k, v in run.items() if k not in {"artifact", "coverage_artifact"}})
+        )
+        run["artifact"] = evidence.artifact(run_carrier, carrier.parent)
+        carrier.write_text(json.dumps(altered))
+        with pytest.raises(consumer.EvidenceError, match="request-access-observation-unproved"):
+            consumer.verify(root, base, [carrier])
+    run_carrier.write_bytes(saved_run)
     carrier.write_bytes(saved)
     assert consumer.verify(root, base, [carrier])["status"] == "PASS"
     return proof["status"]

@@ -320,6 +320,17 @@ Raw syscall/path/argv/child text stays in the observer's RAM. Durable data is
 limited to fixed status/counts, public request body/mode bindings, opaque
 nonce-hashed actor relations, executable hashes/modes and version/options hashes.
 No software observation establishes SQL, whole-cluster or timing outcomes.
+Observer finalization preserves the identical pending primary exception through
+join, descriptor close, owned FIFO unlink, stream completion, input/process
+readback and diagnostic publication. Each failed stage records only its fixed
+`finalization_failures` code; any such failure leaves observation incomplete
+and the required reader refuses it. Finalization continues to retain already
+observed counts and attempt closed publication. If publication itself fails,
+one bounded incomplete-publication attempt preserves that status when possible;
+the last available carrier is diagnostic only; the failed whole invocation
+cannot admit proof. Without a pending primary, the first finalization exception
+is propagated after the remaining stages are attempted. Normal cleanup remains
+healthy, and missing or unsupported stream provenance never becomes complete.
 
 Both full selected populations execute against their own source, with the same
 finite ctrace protocol. For each old owner, only its named current survivors may

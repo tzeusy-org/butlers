@@ -176,6 +176,7 @@ def request_access_fields(access):
             "options_sha256",
             "tool_sha256",
             "version_sha256",
+            "finalization_failures",
         },
     )
 
@@ -187,6 +188,7 @@ def require_request_observation(access, boundary, requests, records):
         access["observer"] != ("strace" if requests else "not-required")
         or access["inputs"] != sorted(requests)
         or access["complete"] is not True
+        or access["finalization_failures"] != []
         or access["protocol"] != "full-stream-v1"
         or access["options_sha256"] != canonical(REQUEST_TRACE_OPTIONS)
         or any(

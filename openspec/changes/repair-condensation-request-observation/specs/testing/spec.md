@@ -41,6 +41,7 @@ Scope: v1-mandatory
 - **WHEN** an owned proof process fails, times out, is cancelled or crashes during a mutation
 - **THEN** a durable journal and scoped UNKNOWN receipt survive until exact file/mode restoration and owned process-group completion are attested
 - **AND** complete and incomplete request-access outcomes retain a fixed closed schema without raw syscall/path/argv/child text, preserve the original refusal and completed-child evidence, and independently settle both futures
+- **AND** each reachable observer join/close/unlink/finish/readback/publication failure preserves the identical pending primary exception, attempts remaining finalization stages and retains only fixed failed-stage codes plus actual observed counters; any failed or unavailable finalization/publication remains incomplete and cannot admit proof, while healthy finalization stays healthy
 - **AND** the live source, unrelated processes, environment and other proof runs remain untouched
 
 #### Scenario: Catalog and attestation cannot substitute for protected runtime proof
