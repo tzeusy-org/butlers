@@ -916,6 +916,7 @@ def _assert_observer_finalization_stages(tmp_path):
                 "unlink",
                 "finish",
                 "input-binding",
+                "process-stat",
                 "process-record",
                 "publication",
                 "suite-publication",
@@ -940,6 +941,7 @@ def _assert_observer_finalization_stages(tmp_path):
         close = evidence.os.close
         open_ = evidence.os.open
         unlink = Path.unlink
+        is_file = Path.is_file
         finish = evidence.RequestAccessStream.finish
         versions = evidence.request_input_versions
         strict = evidence.strict_json
@@ -985,6 +987,15 @@ def _assert_observer_finalization_stages(tmp_path):
                 fault()
             return unlink(self, *args, **kwargs)
 
+        def observed_is_file(self):
+            if (
+                stage == "process-stat"
+                and captures["finished"]
+                and self == output.with_suffix(".process.json")
+            ):
+                fault()
+            return is_file(self)
+
         def observed_finish(self):
             if stage == "finish":
                 fault()
@@ -1026,6 +1037,7 @@ def _assert_observer_finalization_stages(tmp_path):
         evidence.os.open = observed_open
         evidence.os.close = observed_close
         Path.unlink = observed_unlink
+        Path.is_file = observed_is_file
         evidence.RequestAccessStream.finish = observed_finish
         evidence.request_input_versions = observed_versions
         evidence.strict_json = observed_strict
@@ -1056,6 +1068,7 @@ def _assert_observer_finalization_stages(tmp_path):
             evidence.os.open = open_
             evidence.os.close = close
             Path.unlink = unlink
+            Path.is_file = is_file
             evidence.RequestAccessStream.finish = finish
             evidence.request_input_versions = versions
             evidence.strict_json = strict

@@ -322,7 +322,8 @@ nonce-hashed actor relations, executable hashes/modes and version/options hashes
 No software observation establishes SQL, whole-cluster or timing outcomes.
 Observer finalization preserves the identical pending primary exception through
 join, descriptor close, owned FIFO unlink, stream completion, input/process
-readback and diagnostic publication. Each failed stage records only its fixed
+availability and readback, and diagnostic publication. Process-record stat
+failures use the fixed `process-stat` stage code. Each failed stage records only its fixed
 `finalization_failures` code; any such failure leaves observation incomplete
 and the required reader refuses it. Finalization continues to retain already
 observed counts and attempt closed publication. If publication itself fails,

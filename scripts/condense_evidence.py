@@ -1000,7 +1000,8 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
         unchanged = attempt(
             "input-binding", lambda: request_input_versions(root, inputs) == initial
         )
-        if not cleaned and process_record.is_file():
+        process_present = not cleaned and attempt("process-stat", process_record.is_file)
+        if process_present:
             process = attempt("process-record", lambda: strict_json(process_record))
             cleaned = process is not None and process.get("cleanup") is True
         access["complete"] = (
