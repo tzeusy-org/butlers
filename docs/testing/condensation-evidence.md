@@ -273,32 +273,77 @@ being used as runtime data: even catching the access refusal leaves the run
 incomplete. Ordinary valid requests still execute through the original default
 reader. No metadata role authorizes a changed executed setting.
 
-That audit belongs to the finite Python worker. When excluded request inputs
-exist, an executed descendant makes the run UNKNOWN: its file reads are outside
-this audit, even if its output or pytest phases succeed. The original descendant
-execution and cleanup are preserved. Fresh no-child request proofs and ordinary
-child proofs without an excluded request role remain supported. Every run binds
-the exact recognized request-input set and records both runtime reads and
-descendant execution; the required reader rejects missing, different or positive
-boundary observations. This is conservative refusal, not a sandbox or a claim
-that child file access was isolated.
+The finite Python worker still refuses any runtime read of an excluded request,
+including a caught audit refusal. Its descendant event is evidence of execution,
+not evidence that the child could not read the input. A metadata-bearing child
+can qualify only with the complete external no-access protocol below; the
+required reader binds the Python descendant observation to actual post-entry
+kernel actors. A forged event, absent actor history or unsupported native child
+provenance refuses. Ordinary no-metadata children retain their existing behavior.
+No library, executable, import, suffix or body hash grants a child exemption.
 
-Metadata-bearing runs also require the installed `strace` file-access observer,
-bound in the actual tool closure. The Python CI jobs explicitly install this
-system prerequisite when absent; local callers must provide it or receive
-UNKNOWN, and no local package installation is implicit. It starts before the worker interpreter, follows
-descendants, and filters exact original request-file identities at the kernel
-boundary. A distinct read of the worker's own request is its required positive
-probe; missing tools, unavailable tracing, incomplete completion or a missing
-probe are UNKNOWN. Project startup and libc reads therefore cannot escape via
-the earlier Python-hook window. The launcher uses isolated Python before this
-observer starts; the worker retains its original source paths and pytest command.
-Matched syscall text stays in the parent observer's RAM, and only closed counts
-and complete original input bindings are published. Any access to an excluded
-metadata input refuses, even when every actual pytest phase passes. The required
-reader checks this additional witness and does not infer isolation from an empty
-or absent trace. No metadata role permits an unsupported native/environment
-equivalence, and none of these software witnesses establishes SQL outcomes.
+Metadata-bearing runs require installed `strace`, bound by executable body/mode
+in the existing tool closure and by version/options hashes in each observation.
+CI installs that prerequisite when absent; local callers receive UNKNOWN rather
+than installing or skipping it. The isolated launcher starts tracing before the
+worker interpreter. The observer consumes the full file, descriptor, process and
+memory syscall stream in RAM, with kernel-resolved descriptor annotations. It
+observes absolute and relative opens, actual cwd/dirfd resolution, duplicated,
+inherited and reused descriptors, libc reads and mmap. An open or pathname/alias
+operation involving an input is conservatively a refusal; a successful read has
+a separate counter and cannot borrow open-only evidence.
+
+Each original input must be a stable regular single-link object, with its full
+body/mode bound before and after execution and the same private device/inode
+identity retained. If the complete original Git inventory predates a current
+request's creation, its observation binds an explicit absent original object
+before and after, while retaining that pathname in the full access matcher.
+Creating, opening or consuming it still refuses. The current side must bind its
+actual present body/mode; a missing current object cannot borrow original
+absence. Kernel paths and actual object identities match accesses;
+relative unresolved candidates refuse conservatively. Input alias/ancestor
+renames are accesses, and deleted descriptors or unsupported namespace changes
+make observation UNKNOWN. Incomplete or unpaired records, unresolved read
+provenance, reused actors, missing exits, or unsupported tracing never become
+zero-access evidence. The observer reconciles original parent/child histories,
+including inherited executable identity, and every actual actor must exit.
+
+The worker's own original request must have a successful read as a live-observer
+probe. A distinct fixed nonce-body read immediately before the Python subject
+hook separates installed tracer setup from subject entry; both probes are
+mandatory. That marker grants no callable authority. Descendants qualify only
+when their complete source/dependency bindings, original actor graph, whole
+shutdown and zero actual input accesses all validate together in the required
+reader. Existing CTracer, pytest phases, mutation journal and SQLite authority
+remain necessary. Unsupported forms stay UNKNOWN rather than borrowing a
+library or executable allowlist.
+
+Prompt sibling cancellation preserves the original refusal and deadlines. It
+signals only currently live tracees whose original start identity and owning
+process group still match, allowing the observer to record their actual exits
+within the existing deadline. The existing whole-group finally still settles
+all owned processes. Missing or uncertain actor settlement remains incomplete;
+a completed diagnostic is not a successful proof.
+
+A closed incomplete observation is published before launch and merged onto an
+already-published actual worker result even when observation or cancellation
+raises. Absence remains UNKNOWN, and no diagnostic defaults authorize admission.
+Raw syscall/path/argv/child text stays in the observer's RAM. Durable data is
+limited to fixed status/counts, public request body/mode bindings, opaque
+nonce-hashed actor relations, executable hashes/modes and version/options hashes.
+No software observation establishes SQL, whole-cluster or timing outcomes.
+Observer finalization preserves the identical pending primary exception through
+join, descriptor close, owned FIFO unlink, stream completion, input/process
+availability and readback, and diagnostic publication. Process-record stat
+failures use the fixed `process-stat` stage code. Each failed stage records only its fixed
+`finalization_failures` code; any such failure leaves observation incomplete
+and the required reader refuses it. Finalization continues to retain already
+observed counts and attempt closed publication. If publication itself fails,
+one bounded incomplete-publication attempt preserves that status when possible;
+the last available carrier is diagnostic only; the failed whole invocation
+cannot admit proof. Without a pending primary, the first finalization exception
+is propagated after the remaining stages are attempted. Normal cleanup remains
+healthy, and missing or unsupported stream provenance never becomes complete.
 
 Both full selected populations execute against their own source, with the same
 finite ctrace protocol. For each old owner, only its named current survivors may

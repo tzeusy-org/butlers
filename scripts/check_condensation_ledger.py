@@ -144,6 +144,137 @@ def source_records(root: Path, paths: list[str]) -> list[dict]:
     return records
 
 
+REQUEST_TRACE_OPTIONS = (
+    "-q",
+    "-f",
+    "-yy",
+    "-xx",
+    "-s",
+    "0",
+    "-e",
+    "signal=none",
+    "-e",
+    "trace=%file,%desc,%process,%memory",
+)
+
+
+def request_access_fields(access):
+    fields(
+        access,
+        {
+            "observer",
+            "inputs",
+            "accesses",
+            "probe_accesses",
+            "complete",
+            "protocol",
+            "reads",
+            "subject_probes",
+            "subject_descendants",
+            "actors",
+            "input_versions",
+            "options_sha256",
+            "tool_sha256",
+            "version_sha256",
+            "finalization_failures",
+        },
+    )
+
+
+def require_request_observation(access, boundary, requests, records):
+    """Check the full source-bound observer protocol, never a diagnostic default."""
+    request_access_fields(access)
+    if (
+        access["observer"] != ("strace" if requests else "not-required")
+        or access["inputs"] != sorted(requests)
+        or access["complete"] is not True
+        or access["finalization_failures"] != []
+        or access["protocol"] != "full-stream-v1"
+        or access["options_sha256"] != canonical(REQUEST_TRACE_OPTIONS)
+        or any(
+            type(access[k]) is not int or access[k] < 0
+            for k in (
+                "accesses",
+                "probe_accesses",
+                "reads",
+                "subject_probes",
+                "subject_descendants",
+            )
+        )
+        or access["accesses"] != 0
+        or access["reads"] != 0
+    ):
+        raise EvidenceError("execution-request-access-observation-unproved")
+    if not requests:
+        if boundary["descendant_execution"] is not False:
+            raise EvidenceError("execution-request-runtime-boundary-unproved")
+        if (
+            access["probe_accesses"] != 0
+            or access["subject_probes"] != 0
+            or access["subject_descendants"] != 0
+            or access["actors"] != []
+            or access["input_versions"] != []
+            or access["tool_sha256"] is not None
+            or access["version_sha256"] is not None
+        ):
+            raise EvidenceError("execution-request-access-observation-unproved")
+        return
+    by_path = {row["path"]: row for row in records}
+    expected = [
+        {
+            "path": name,
+            "present": name in by_path,
+            "sha256": by_path[name]["sha256"] if name in by_path else None,
+            "mode": by_path[name]["mode"] if name in by_path else None,
+        }
+        for name in sorted(requests)
+    ]
+    observer = shutil.which("strace")
+    if observer is None:
+        raise EvidenceError("request-access-observer-unavailable")
+    tool = Path(observer).resolve(strict=True)
+    version = subprocess.run([str(tool), "--version"], capture_output=True, timeout=5, check=True)
+    if (
+        access["input_versions"] != expected
+        or access["probe_accesses"] <= 0
+        or access["subject_probes"] != 1
+        or access["tool_sha256"] != hashlib.sha256(tool.read_bytes()).hexdigest()
+        or access["version_sha256"] != hashlib.sha256(version.stdout).hexdigest()
+    ):
+        raise EvidenceError("execution-request-access-observation-unproved")
+    actors = access["actors"]
+    if not isinstance(actors, list) or not actors:
+        raise EvidenceError("execution-request-access-observation-unproved")
+    identities(actors, "key")
+    keys = {r["key"] for r in actors}
+    if not actors or len([r for r in actors if r["parent"] is None]) != 1:
+        raise EvidenceError("execution-request-access-observation-unproved")
+    for actor in actors:
+        fields(actor, {"key", "parent", "executable", "exited"})
+        if (
+            not HEX.fullmatch(actor["key"])
+            or actor["exited"] is not True
+            or (actor["parent"] is not None and actor["parent"] not in keys)
+        ):
+            raise EvidenceError("execution-request-access-observation-unproved")
+        executable = actor["executable"]
+        fields(executable, {"sha256", "mode"})
+        if not HEX.fullmatch(executable["sha256"]) or type(executable["mode"]) is not int:
+            raise EvidenceError("execution-request-access-observation-unproved")
+        seen = set()
+        current = actor
+        by_key = {r["key"]: r for r in actors}
+        while current["parent"] is not None:
+            if current["key"] in seen:
+                raise EvidenceError("execution-request-access-observation-unproved")
+            seen.add(current["key"])
+            current = by_key[current["parent"]]
+    if access["subject_descendants"] > len(actors) - 1:
+        raise EvidenceError("execution-request-access-observation-unproved")
+    if boundary["descendant_execution"] != (access["subject_descendants"] > 0):
+        raise EvidenceError("execution-request-runtime-boundary-unproved")
+
+
 def tool_record() -> dict:
     """Bind installed proof tools/plugins by actual files, without importing them."""
     names = {"coverage", "pytest"}
@@ -1360,21 +1491,16 @@ def verify_ledger(
         if (
             boundary["inputs"] != sorted(requests)
             or boundary["runtime_read"] is not False
-            or boundary["descendant_execution"] is not False
+            or type(boundary["descendant_execution"]) is not bool
         ):
             raise EvidenceError("execution-request-runtime-boundary-unproved")
         access = run["request_access"]
-        fields(access, {"observer", "inputs", "accesses", "probe_accesses", "complete"})
-        if (
-            access["observer"] != ("strace" if requests else "not-required")
-            or access["inputs"] != sorted(requests)
-            or access["complete"] is not True
-            or type(access["accesses"]) is not int
-            or access["accesses"] != 0
-            or type(access["probe_accesses"]) is not int
-            or (access["probe_accesses"] <= 0 if requests else access["probe_accesses"] != 0)
-        ):
-            raise EvidenceError("execution-request-access-observation-unproved")
+        require_request_observation(
+            access,
+            boundary,
+            requests,
+            old if run["side"] == "removed" else inputs,
+        )
         if (
             run.get("complete") is not True
             or run.get("cleanup") is not True
