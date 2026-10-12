@@ -1348,5 +1348,13 @@
       "digest": "82ddcab8c20b",
       "excerpt": "- **AND** the response includes `{\"status\": \"sent\", \"to\": ..., \"subject\": ...}`"
     }
+  ],
+  "relationship-fact-effective-time/butler-relationship/Relationship Butler Registered Tool Surface": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "5e2c30b8f566",
+      "excerpt": "The relationship butler SHALL expose its currently approved manifesto-owned personal CRM tool set. Its eight configur..."
+    }
   ]
 }
