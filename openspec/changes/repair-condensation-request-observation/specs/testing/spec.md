@@ -2,7 +2,7 @@
 
 ### Requirement: Condensation requires current executable survivor evidence
 
-The system MUST refuse condensation admission until exact source-bound survivor evidence preserves the removed behavior, complete case multiplicity and protected architecture, wire, privacy, authorization, retry, idempotency and migration outcomes. Neither test counts, similar text, source deletion, attestation nor coverage alone establishes that evidence. The consumer SHALL preserve the existing selection, budgets, default coverage core, required CI event predicates and full terminal merge-group gate.
+The system MUST refuse condensation admission until exact source-bound survivor evidence preserves the removed behavior, complete case multiplicity and protected architecture, wire, privacy, authorization, retry, idempotency and migration outcomes. Neither test counts, similar text, source deletion, attestation nor coverage alone establishes that evidence. The consumer SHALL preserve the existing selection, budgets, default coverage core, required CI event predicates and full terminal merge-group gate. Changed non-Python inputs SHALL remain bound through the complete tracked old/current union. An optional resource-exclusion account MAY qualify only the named software scope whose complete governed producer, required-reader and subject/descendant lifetimes have fresh independent source-bound observation, positive resource probes and no semantic resource use. Worker-only zero access, source hashes, role declarations and document/path/type/extension labels SHALL NOT establish that exclusion. Binding-only full-byte inventory operations SHALL remain explicitly distinguished from semantic consumption. A consumed or uncertain configuration, schema, native/executable input, governing obligation or installed environment SHALL remain refused or UNKNOWN until its actual independent authority route qualifies; measured runtime exclusion SHALL NOT substitute for normative preservation, schema compatibility, supported native administration or protected SQL outcomes. Every original coverage, mutation, case, privacy, deadline, process completion, restoration and delivery obligation SHALL remain intact. Complete execution images MAY be constructed through independently observed identity-preserving source transport. That account MUST retain the complete original/current object population, exact original and copied logical/physical versions, source-qualified operations, actual data and metadata accesses, and complete governed producer/required-reader/descendant closure. Copy consultation SHALL be recorded positively and separately from identity binding and semantic consumption; no actor/role/path/type label or same-body hash establishes it. Only the exact completely qualified transport operation MAY be distinguished from semantic use. Extra, unqualified, ambiguous or semantically consumed accesses SHALL remain refused or UNKNOWN, and complete ordinary copies, execution, named evidence, recovery, privacy and unchanged deadlines SHALL remain intact.
 
 ID: REQ-testing-053
 Source: bu-ly3lv5.11 preserving A82/B146 contract; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md Five-Minute Routine-Lane Target; AGENTS.md Test Scope Policy
@@ -58,6 +58,27 @@ Scope: v1-mandatory
 - **WHEN** the additive proof machinery and its private controls pass
 - **THEN** the first three real clusters, zero-residue/no-lost dogfood, shared-app isolation, original per-file/cluster and named before/after timing, supported native administration and current genuine/normal/protected/squash remain mandatory
 - **AND** the generic no-wall-clock-gain option applies only to its original timing paragraph
+
+#### Scenario: Complete resources and consumers have independently observed authority
+- **WHEN** a changed non-Python input is proposed for exclusion from a named software proof's semantic dependencies
+- **THEN** every exact old/current object or absence and every governed executing consumer lifetime is independently bound and observed with positive probes
+- **AND** omission, changed identity/body/type/mode, missing observation or worker-only absence refuses the account
+
+#### Scenario: Resource access outside subject call phases refuses
+- **WHEN** a governed producer, required reader, startup, collection, fixture, finalization, alias, descriptor, memory map or descendant consults the changed resource outside an independently qualified identity-binding or complete source-transport operation
+- **THEN** the exclusion account refuses even if every selected pytest call succeeds
+- **AND** incomplete or unsupported observation remains UNKNOWN without modifying ordinary execution to hide the access
+- **AND** complete source transport is positively recorded against every exact original/copied version and operation; extra or unqualified access cannot borrow that account
+
+#### Scenario: Governing schema and native authority is independent of runtime exclusion
+- **WHEN** a changed resource affects proof grammar, governing obligations, native behavior or installed runtime authority
+- **THEN** its actual independent compatibility, preservation and supported runtime or native route remains mandatory
+- **AND** no measured subject no-use, count, attestation or synthetic SQL grants that authority
+
+#### Scenario: Resource witnesses preserve every phase and recovery boundary
+- **WHEN** a resource-observed proof runs baseline, mutations, restoration and required-reader validation or is interrupted
+- **THEN** each actual side and phase retains its fresh completed source-bound witness alongside all original literal coverage, cases, named kills, journals and restoration
+- **AND** stale, partial, forged or unknown witnesses refuse within the unchanged deadlines and preserve primary failures, owned cleanup and opaque diagnostics
 
 ## Source References
 - Non-Negotiable Rule 4 (the daemon is deterministic infrastructure; it must be

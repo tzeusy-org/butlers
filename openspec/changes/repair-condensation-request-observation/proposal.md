@@ -8,3 +8,11 @@ Keep existing REQ-testing-053 and all nine complete scenarios. Bind complete RAM
 
 ## Impact
 Owned proof producer, required consumer, nearest existing test species and same-change evidence docs. No production API, SQL, new ID, native administration, condensation deletion or whole real-cluster/timing/delivery approval.
+
+## Complete-copy resource preparation (bu-ihitkl)
+
+The independently adopted resource-copy clarification extends this same active REQ-testing-053 carrier. Complete ordinary image construction must have a positively observed identity-preserving transport account, separate from byte-identity binding and semantic consultation. Preserve the nine delivered augmented scenarios, original normative paragraph/metadata/footer and four resource scenarios. No resource is admitted by this preparation.
+
+The strict version and operation grammar below governs a future single shared stdlib adapter and the existing producer/default required reader. Exact logical Git originals, live physical versions, copied physical versions, full source population, operation closure and complete parent/broker/reader/descendant lifetimes are distinct. Unsupported Git/config/filter/native operations, unqualified accesses and incomplete observation refuse. Changed governing/schema/native inputs require their independent authority even with measured software no-use.
+
+This source package implements no Python behavior and performs no spec application/archive or baseline overwrite. Expected runtime work remains Tests:+1~2-0; this preparation is Tests:+0~0-0. All nine daemon candidate frontiers, full13 and original roles/SQL/deployment/timing/protected-delivery outcomes remain open.
