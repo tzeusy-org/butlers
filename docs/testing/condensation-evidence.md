@@ -219,6 +219,18 @@ or changed old operations refuse. Source coordinates select actual AST points;
 they never establish equivalence. Unmapped multiline/lambda or other unsupported
 source shapes remain unknown rather than disappearing from the account.
 
+Each mutation records its selected target kind, end coordinate and complete
+literal AST preimage. The source index retains every node at a shared starting
+coordinate, so a child Name cannot overwrite an enclosing Compare, Attribute or
+Subscript. Selection must match exactly one actual target. Pairing retains the
+target's lexical owner, normalized operation and enclosing control fields. When
+the same semantic operation repeats, its complete enclosing control preimage
+must distinguish it on both sides; ordinal, line-number and first/last matches
+grant no equivalence. Identical or changed ambiguous contexts still refuse.
+The reader regenerates targets and full mutated bodies from the bound sources
+and verifies both journal sides, including each literal preimage. This static
+pairing does not replace executed branches, named kills or runtime proof.
+
 Parameter-slot normalization applies only to the owning body's proven bindings.
 Definition-time defaults, decorators, argument/return annotations and type parameters
 retain their literal expressions; they cannot borrow the new function's parameter

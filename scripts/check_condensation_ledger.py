@@ -805,6 +805,16 @@ def identities(rows: list, field: str) -> set:
     return result
 
 
+def mutation_target(node: ast.AST) -> dict:
+    """Literal target selector within one parsed source, never cross-source equivalence."""
+    return {
+        "kind": type(node).__name__,
+        "end_line": node.end_lineno,
+        "end_column": node.end_col_offset,
+        "preimage": ast.dump(node, include_attributes=False),
+    }
+
+
 def read_artifact(directory: Path, record: dict, *, allow_empty: bool = False) -> Path:
     if not isinstance(record, dict) or set(record) != {"path", "sha256", "bytes"}:
         raise EvidenceError("artifact-fields")
@@ -1046,6 +1056,7 @@ def executable_proof(
                 any(
                     change.get(k) != actual[k] for k in ("id", "path", "line", "column", "operator")
                 )
+                or canonical(change.get("target")) != canonical(actual["target"])
                 or change["after_sha256"] != hashlib.sha256(actual["body"]).hexdigest()
             ):
                 raise EvidenceError("changed-paired-mutation-operation")

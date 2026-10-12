@@ -1863,3 +1863,86 @@ def test_complete_whole_owner_mutations_cross_batch_boundary(tmp_path):
         with pytest.raises(evidence.EvidenceError):
             read(changed)
     read(proof)
+
+
+def test_paired_mutation_target_carriers_bind_actual_preimages(tmp_path):
+    """REQ-testing-053: real paired runs and the reader bind each selected whole target."""
+    root = _toy(tmp_path)
+    source = Path(__file__).resolve().parents[2]
+    shutil.copy2(
+        source / "scripts/condensation_lineage.py", root / "scripts/condensation_lineage.py"
+    )
+    product = (
+        "def reply(value):\n"
+        "    left = value.flag == True\n"
+        "    right = value.other != False\n"
+        "    if left and right:\n        return 1\n"
+        "    return 0\n"
+    )
+    (root / "toy.py").write_text(product)
+    owner = root / "tests/test_toy.py"
+    assertions = (
+        "    assert reply(SimpleNamespace(flag=True, other=True)) == 1\n"
+        "    assert reply(SimpleNamespace(flag=False, other=True)) == 0\n"
+        "    assert reply(SimpleNamespace(flag=True, other=False)) == 0\n"
+    )
+    imports = "from toy import reply\nfrom types import SimpleNamespace\n"
+    owner.write_text(
+        imports + "def test_removed():\n" + assertions + "def test_survivor():\n" + assertions
+    )
+
+    def commit(message):
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "commit",
+                "-qm",
+                message,
+            ],
+            check=True,
+        )
+
+    commit("complete original mutation targets")
+    base = evidence.git(root, "rev-parse", "HEAD")
+    (root / "toy.py").write_text(product.replace("    left =", "    pass\n    left =", 1))
+    owner.write_text(imports + "def test_survivor():\n" + assertions)
+    commit("paired source and named survivor")
+    config = _config()
+    config.update(base=base, lineage={"mode": "paired", "scope": ["toy.py"], "functions": []})
+    proof = evidence.prove(root, config, tmp_path / "target-proof")
+    assert proof["status"] == "PASS"
+    assert proof["mutation"]["generated"] == 5
+    assert proof["mutation"]["lost"] == [] and proof["coverage"]["residue"] == []
+    consumer = evidence.sys.modules["check_condensation_ledger"]
+    carrier = tmp_path / "target-proof/ledger.json"
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    saved = carrier.read_bytes()
+    for side in ("removed", "survivors"):
+        forged = consumer.strict_json(carrier)
+        row = next(
+            m for m in forged["proof"]["mutation"]["mutants"] if m["operator"] == "swap-comparison"
+        )
+        selected = row if side == "removed" else row["current"]
+        assert selected["target"]["kind"] == "Compare"
+        selected["target"]["kind"] = "Name"
+        carrier.write_text(json.dumps(forged))
+        with pytest.raises(consumer.EvidenceError, match="changed-paired-mutation-operation"):
+            consumer.verify(root, base, [carrier])
+        carrier.write_bytes(saved)
+        assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    forged = consumer.strict_json(carrier)
+    del forged["proof"]["mutation"]["mutants"][0]["target"]
+    carrier.write_text(json.dumps(forged))
+    with pytest.raises(consumer.EvidenceError, match="changed-paired-mutation-operation"):
+        consumer.verify(root, base, [carrier])
+    carrier.write_bytes(saved)
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
