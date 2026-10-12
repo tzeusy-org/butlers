@@ -46,6 +46,14 @@ regardless of completion order.
 Sibling cancellation retains an observed terminal child status while still
 stopping running children within the existing finite wait quantum.
 
+Each request-access stream may reuse pure decoding of identical hex tokens in
+RAM, bounded to 2,048 entries and 1 MiB of raw-token plus decoded-byte payload.
+FIFO eviction and oversized tokens use ordinary decoding; settlement clears
+and disables this private cache. Every record still matches afresh and evaluates
+its current actor, descriptor, alias, object, input version and access state.
+The cache contains no observation or verdict and publishes no tokens or paths.
+It changes no proof deadline or admission predicate and establishes no timing gain.
+
 A protected PASS requires nonempty actual branch arcs, zero residue, no waived
 normative arcs, and every removed owner's semantic mutant kill retained by one
 of its named survivors. Coverage is compared for each removed owner against

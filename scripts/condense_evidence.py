@@ -641,6 +641,9 @@ class RequestAccessStream:
     UNKNOWN rather than zero. No executable or import identity grants an exemption.
     """
 
+    _DECODE_CACHE_MAX_ENTRIES = 2048
+    _DECODE_CACHE_MAX_BYTES = 1024 * 1024
+
     def __init__(self, root, inputs, request, output, nonce):
         self.targets = {os.fsencode(root / public_path(name)) for name in inputs}
         self.objects = {}
@@ -664,6 +667,9 @@ class RequestAccessStream:
         self.accesses = self.reads = self.probes = self.subject_reads = 0
         self.subject_children = 0
         self.failed = False
+        self._decode_cache = {}
+        self._decode_cache_bytes = 0
+        self._decode_cache_lock = threading.Lock()
 
     @staticmethod
     def paths(value):
@@ -671,6 +677,46 @@ class RequestAccessStream:
             bytes.fromhex(token.replace("\\x", ""))
             for token in re.findall(r"(?:\\x[0-9a-f]{2})+", value)
         ]
+
+    def _paths(self, value):
+        paths = []
+        # Match every record afresh. Only immutable token decoding is reusable;
+        # actor, descriptor, alias, object and access decisions remain below.
+        for token in re.findall(r"(?:\\x[0-9a-f]{2})+", value):
+            with self._decode_cache_lock:
+                cache = self._decode_cache
+                decoded = cache.get(token) if cache is not None else None
+            if decoded is None:
+                decoded = bytes.fromhex(token.replace("\\x", ""))
+                size = len(token) + len(decoded)
+                with self._decode_cache_lock:
+                    if (
+                        cache is not None
+                        and cache is self._decode_cache
+                        and self._DECODE_CACHE_MAX_ENTRIES > 0
+                        and size <= self._DECODE_CACHE_MAX_BYTES
+                    ):
+                        # FIFO eviction bounds entry overhead and the exact
+                        # ASCII-token plus decoded-byte payload retained in RAM.
+                        while cache and (
+                            len(cache) >= self._DECODE_CACHE_MAX_ENTRIES
+                            or self._decode_cache_bytes + size > self._DECODE_CACHE_MAX_BYTES
+                        ):
+                            oldest = next(iter(cache))
+                            previous = cache.pop(oldest)
+                            self._decode_cache_bytes -= len(oldest) + len(previous)
+                        cache[token] = decoded
+                        self._decode_cache_bytes += size
+            paths.append(decoded)
+        return paths
+
+    def _clear_decode_cache(self):
+        with self._decode_cache_lock:
+            cache = self._decode_cache
+            self._decode_cache = None
+            self._decode_cache_bytes = 0
+            if cache is not None:
+                cache.clear()
 
     def consume(self, raw):
         try:
@@ -726,7 +772,7 @@ class RequestAccessStream:
                     self.subject_children += 1
             if name in {"unshare", "setns", "setsid", "setpgid", "chroot", "pivot_root"}:
                 self.failed = True
-            paths = self.paths(args + " " + result)
+            paths = self._paths(args + " " + result)
             if name in {"execve", "execveat"} and success and int(success[1]) == 0:
                 if not paths or not paths[0].startswith(b"/"):
                     self.failed = True
@@ -832,6 +878,7 @@ class RequestAccessStream:
                 pass
 
     def finish(self):
+        self._clear_decode_cache()
         roots = self.actors - self.parents.keys()
         complete = (
             not self.failed
@@ -989,7 +1036,14 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
         attempt("join", lambda: observer.join(timeout=2))
         attempt("close", lambda: os.close(descriptor))
         attempt("unlink", pipe.unlink)
-        finished = attempt("finish", stream.finish)
+
+        def finish_stream():
+            # Clear even if an injected or unavailable finish operation fails.
+            # Keep failures under the existing protected finalization stage.
+            stream._clear_decode_cache()
+            return stream.finish()
+
+        finished = attempt("finish", finish_stream)
         complete, actors = finished if finished is not None else (False, [])
         access.update(
             accesses=stream.accesses,
