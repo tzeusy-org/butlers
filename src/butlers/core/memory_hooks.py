@@ -52,6 +52,39 @@ _memory_forget_hook: Callable[..., Coroutine[Any, Any, dict[str, Any]]] | None =
 #: Registered by modules.memory on startup.
 _catalog_search_hook: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]] | None = None
 
+# Fast admission requires a started, owning module and held read authority.
+# Unlike the legacy catalog stub, an absent dependency is never an empty result.
+_fast_catalog_hooks: dict[str, Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]]] = {}
+
+
+def register_fast_answer_catalog(
+    butler_name: str, fn: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]]
+) -> None:
+    """Register an owning callback that captures its own pool and authority."""
+    _fast_catalog_hooks[_normalize_memory_session_owner(butler_name)] = fn
+
+
+def unregister_fast_answer_catalog(
+    butler_name: str, fn: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]]
+) -> None:
+    """An older module's shutdown cannot remove its replacement."""
+    owner = _normalize_memory_session_owner(butler_name)
+    if _fast_catalog_hooks.get(owner) is fn:
+        del _fast_catalog_hooks[owner]
+
+
+async def search_fast_answer_catalog(butler_name: str, query: str) -> dict[str, Any]:
+    """Return authoritative rows or bounded unavailability, never another pool."""
+    callback = _fast_catalog_hooks.get(_normalize_memory_session_owner(butler_name))
+    if callback is None:
+        return {"status": "unavailable", "reason": "catalog_runtime_unavailable"}
+    try:
+        rows = await callback(query)
+    except Exception:
+        # Do not emit exception operands, which may include query or content.
+        return {"status": "unavailable", "reason": "catalog_read_unavailable"}
+    return {"status": "ok", "rows": rows}
+
 
 @dataclass(frozen=True)
 class MemorySessionRuntime:

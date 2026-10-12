@@ -813,6 +813,7 @@ async def _stream_conversation_response(
         # Step 3: Poll for the conversation_reply message, with keepalive.
         start_ts = time.monotonic()
         last_keepalive_ts = start_ts
+        observed_intent_lane = None
         reply_row: dict[str, Any] | None = None
 
         while reply_row is None:
@@ -881,19 +882,32 @@ async def _stream_conversation_response(
 
             # Timeout guard — graceful: the thread stays open and a late reply
             # remains visible on the next history fetch/poll.
-            if now - start_ts >= _SESSION_TIMEOUT_S:
+            if message_id is not None:
+                try:
+                    lane = await shared_pool.fetchval(
+                        "SELECT public.dashboard_turn_intent_lane($1,NULL)", message_id
+                    )
+                    if observed_intent_lane is None and lane in ("answer", "non_answer"):
+                        observed_intent_lane = lane
+                except Exception:
+                    # A failed read cannot invent a lane or reset an observed deadline.
+                    pass
+            observation_timeout = 45.0 if observed_intent_lane == "answer" else _SESSION_TIMEOUT_S
+            if now - start_ts >= observation_timeout:
                 timeout_session_id = await _resolve_session_id(
                     db=db, routed_butler=routed_butler, request_id=request_id_str
                 )
                 logger.warning(
                     "No conversation_reply for conversation %s within %.0fs (routed_butler=%s)",
                     conversation_id,
-                    _SESSION_TIMEOUT_S,
+                    observation_timeout,
                     routed_butler,
                 )
                 yield _sse_error(
                     "SESSION_TIMEOUT",
-                    "No reply yet — inspect the session for details.",
+                    "No reply yet; this stream was waiting for an in-thread reply "
+                    f"(lane: {observed_intent_lane or 'unknown'}). "
+                    "This observation ended; execution may still be active.",
                     session_id=timeout_session_id,
                 )
                 yield _sse_done()

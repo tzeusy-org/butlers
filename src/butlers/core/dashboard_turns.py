@@ -17,7 +17,7 @@ from uuid import UUID
 
 import asyncpg
 
-DashboardTurnPhase = Literal["classification", "route"]
+DashboardTurnPhase = Literal["classification", "route", "fast_answer"]
 DashboardTurnTerminalState = Literal["completed", "failed"]
 
 
@@ -391,7 +391,7 @@ async def live_sessions(
         if session_id is None:
             raise RuntimeError("dashboard turn session id is missing")
         phase = str(row["phase"])
-        if phase not in {"classification", "route"}:
+        if phase not in {"classification", "route", "fast_answer"}:
             raise RuntimeError(f"invalid dashboard turn session phase: {phase!r}")
         sessions.append(
             DashboardTurnSession(

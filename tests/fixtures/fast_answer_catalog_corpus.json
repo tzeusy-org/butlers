@@ -1,0 +1,263 @@
+[
+  {
+    "label": "system_single",
+    "expected_owner": "concierge",
+    "rows": [
+      {
+        "id": "catalog-system_single-0",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-system_single-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "system_same_pair",
+    "expected_owner": "concierge",
+    "rows": [
+      {
+        "id": "catalog-system_same_pair-0",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-system_same_pair-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      },
+      {
+        "id": "catalog-system_same_pair-1",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-system_same_pair-1",
+        "rrf_score": 0.01,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "system_top_tie",
+    "expected_owner": "concierge",
+    "rows": [
+      {
+        "id": "catalog-system_top_tie-0",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-system_top_tie-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      },
+      {
+        "id": "catalog-system_top_tie-1",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-system_top_tie-1",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "system_third_lower_domain",
+    "expected_owner": "concierge",
+    "rows": [
+      {
+        "id": "catalog-system_third_lower_domain-0",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-system_third_lower_domain-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      },
+      {
+        "id": "catalog-system_third_lower_domain-1",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-system_third_lower_domain-1",
+        "rrf_score": 0.01,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      },
+      {
+        "id": "catalog-system_third_lower_domain-2",
+        "source_butler": "finance",
+        "source_schema": "finance",
+        "source_table": "sessions",
+        "source_id": "source-system_third_lower_domain-2",
+        "rrf_score": 0.001,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "domain_finance",
+    "expected_owner": null,
+    "rows": [
+      {
+        "id": "catalog-domain_finance-0",
+        "source_butler": "finance",
+        "source_schema": "finance",
+        "source_table": "sessions",
+        "source_id": "source-domain_finance-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "domain_health",
+    "expected_owner": null,
+    "rows": [
+      {
+        "id": "catalog-domain_health-0",
+        "source_butler": "health",
+        "source_schema": "health",
+        "source_table": "sessions",
+        "source_id": "source-domain_health-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "domain_relationship",
+    "expected_owner": null,
+    "rows": [
+      {
+        "id": "catalog-domain_relationship-0",
+        "source_butler": "relationship",
+        "source_schema": "relationship",
+        "source_table": "sessions",
+        "source_id": "source-domain_relationship-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "domain_calendar",
+    "expected_owner": null,
+    "rows": [
+      {
+        "id": "catalog-domain_calendar-0",
+        "source_butler": "general",
+        "source_schema": "general",
+        "source_table": "sessions",
+        "source_id": "source-domain_calendar-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "first_foreign",
+    "expected_owner": null,
+    "rows": [
+      {
+        "id": "catalog-first_foreign-0",
+        "source_butler": "finance",
+        "source_schema": "finance",
+        "source_table": "sessions",
+        "source_id": "source-first_foreign-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      },
+      {
+        "id": "catalog-first_foreign-1",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-first_foreign-1",
+        "rrf_score": 0.01,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "second_disagreement",
+    "expected_owner": null,
+    "rows": [
+      {
+        "id": "catalog-second_disagreement-0",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-second_disagreement-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      },
+      {
+        "id": "catalog-second_disagreement-1",
+        "source_butler": "health",
+        "source_schema": "health",
+        "source_table": "sessions",
+        "source_id": "source-second_disagreement-1",
+        "rrf_score": 0.01,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "highest_tie_disagreement",
+    "expected_owner": null,
+    "rows": [
+      {
+        "id": "catalog-highest_tie_disagreement-0",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-highest_tie_disagreement-0",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      },
+      {
+        "id": "catalog-highest_tie_disagreement-1",
+        "source_butler": "concierge",
+        "source_schema": "concierge",
+        "source_table": "sessions",
+        "source_id": "source-highest_tie_disagreement-1",
+        "rrf_score": 0.01,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      },
+      {
+        "id": "catalog-highest_tie_disagreement-2",
+        "source_butler": "finance",
+        "source_schema": "finance",
+        "source_table": "sessions",
+        "source_id": "source-highest_tie_disagreement-2",
+        "rrf_score": 0.02,
+        "semantic_rank": 1,
+        "keyword_rank": 1
+      }
+    ]
+  },
+  {
+    "label": "empty",
+    "expected_owner": null,
+    "rows": []
+  }
+]

@@ -44,7 +44,17 @@ def register_session_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         caller never renders a false "stopped" confirmation for something
         that simply finished on its own.
         """
-        cancelled = await spawner.cancel_session_and_wait(session_id)
+        from butlers.core.dashboard_fast_answer_runtime import DashboardFastAnswerRuntime
+
+        runtime = getattr(ctx.daemon, "_dashboard_fast_answer_runtime", None)
+        try:
+            fast_session = uuid.UUID(session_id)
+        except ValueError:
+            fast_session = None
+        if isinstance(runtime, DashboardFastAnswerRuntime) and runtime.owns(fast_session):
+            cancelled = await runtime.cancel(fast_session)
+        else:
+            cancelled = await spawner.cancel_session_and_wait(session_id)
         return {"cancelled": cancelled, "session_id": session_id}
 
     if butler_type != ButlerType.STAFFER:
