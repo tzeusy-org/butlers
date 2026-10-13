@@ -80,6 +80,16 @@ def test_spoken_prefix_pre_resolves_metadata_only_triage() -> None:
     assert decision.matched_rule_type == "substring"
 
 
+@pytest.fixture(autouse=True)
+def _unregistered_mock_pipeline_source(request: pytest.FixtureRequest):
+    """Only this synthetic pipeline owner needs unregistered source capture."""
+    if request.function is test_spoken_pre_resolved_triage_never_spawns_or_routes:
+        with patch("butlers.core.fact_authority._source_registry", None):
+            yield
+    else:
+        yield
+
+
 @pytest.mark.asyncio
 async def test_spoken_pre_resolved_triage_never_spawns_or_routes() -> None:
     payload = _spoken_payload()
