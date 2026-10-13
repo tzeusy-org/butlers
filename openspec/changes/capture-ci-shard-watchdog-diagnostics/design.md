@@ -16,6 +16,10 @@ Bundle exact @actions/artifact 2.3.2 and its locked public dependencies. Upload 
 
 Strict downloaded-artifact admission binds authenticated provider metadata, source/subject/run/attempt/nonce/population and observed multiplicities. Success-only consumers remain unchanged. The new test callbacks verify actual software behavior and refusal, not hosted workload or historical cause.
 
+Owned launches establish a confined Linux child subreaper before exec, using only an unprivileged per-process flag. Kernel adoption retains fast orphans and children that change sessions. Original status is separate from a closed settlement acknowledgment, kernel reaping and supervisor exit. Cancellation immediately begins bounded cleanup; empty ancestry polls cannot prove completion. The supervisor settles owned children when its action parent disappears. Its body is included in the reproducible pinned bundle.
+
+Downloaded capture pins are independently derived from the externally selected reviewed Git commit's tree and bundle/lock/observer/action blobs. Neither a downloaded binding nor mutable worktree bytes supply expected pins. Authenticated artifact names and literal integer slot numbers must match the sealed manifest and snapshot sequence. Healthy, mutated and restored reader controls retain the entire synthetic opaque population without claiming actual frozen execution.
+
 ## Risks / Trade-offs
 
 A cooperative stack sampler cannot recover a native/GIL-stuck stack; numeric registered-process samples may remain available. Cancellation can interrupt an upload or erase the local tail. Earlier finalized checkpoints are recoverable only after authenticated provider readback. Source controls and mocked SDK finalization do not establish actual persistence.

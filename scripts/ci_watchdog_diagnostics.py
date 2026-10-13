@@ -189,6 +189,46 @@ def source_reference(root):
     }
 
 
+def reviewed_source_reference(root, head):
+    """Resolve externally selected review pins from Git objects, never carrier fields.
+
+    The reader's repository must contain the reviewed commit. Worktree bytes,
+    downloaded inventories and snapshot seals cannot attest that commit's tree
+    or bundle/lock/observer/action contents.
+    """
+    hexvalue(head, 40)
+    if git(root, "rev-parse", "--verify", head + "^{commit}") != head:
+        raise ValueError("reviewed capture commit unavailable")
+    action = ".github/actions/ci-shard-watchdog-capture"
+
+    def blob(name):
+        record = git(root, "ls-tree", head, "--", name).split()
+        if (
+            len(record) != 4
+            or record[0] not in ("100644", "100755")
+            or record[1] != "blob"
+            or record[3] != name
+        ):
+            raise ValueError("reviewed capture member unavailable")
+        return subprocess.check_output(
+            ["git", "show", f"{head}:{name}"], cwd=root, stderr=subprocess.DEVNULL
+        )
+
+    members = git(root, "ls-tree", "-r", "--name-only", head, "--", action + "/dist").splitlines()
+    if not members or any(Path(name).parent.as_posix() != action + "/dist" for name in members):
+        raise ValueError("reviewed capture bundle unavailable")
+    return {
+        "capture_head": head,
+        "capture_tree": git(root, "rev-parse", head + "^{tree}"),
+        "capture_bundle": digest(
+            {Path(name).name: hashlib.sha256(blob(name)).hexdigest() for name in members}
+        ),
+        "capture_observer": hashlib.sha256(blob("scripts/ci_watchdog_diagnostics.py")).hexdigest(),
+        "capture_action": hashlib.sha256(blob(action + "/src/index.js")).hexdigest(),
+        "capture_lock": hashlib.sha256(blob(action + "/package-lock.json")).hexdigest(),
+    }
+
+
 def binding(data, assignment, *, capture_root):
     files = assignment["shards"]["unit"][0]["files"]
     expected = {node: name for name in files for node in data["lanes"]["unit"][name]}
@@ -1201,6 +1241,11 @@ def main():
             read_checkpoint(args.directory, read_json(args.binding))
         else:
             bound = read_json(args.inventory_dir / "binding.json")
+            reviewed = reviewed_source_reference(
+                Path(__file__).resolve().parents[1], args.capture_head
+            )
+            if any(bound[field] != value for field, value in reviewed.items()):
+                raise ValueError("downloaded capture source mismatch")
             for field, value in (
                 ("profile", args.expected_profile),
                 ("capture_head", args.capture_head),
@@ -1274,6 +1319,8 @@ def main():
                 ):
                     raise ValueError("authenticated artifact id malformed")
                 number(entry["sequence"])
+                if entry["sequence"] >= len(SCHEDULE):
+                    raise ValueError("authenticated checkpoint slot malformed")
                 name = (
                     f"ci-watchdog-unit-1-{bound['run']}-{bound['attempt']}-"
                     f"{bound['nonce'][:12]}-{entry['sequence']}"
@@ -1282,6 +1329,8 @@ def main():
                     raise ValueError("provider artifact ambiguity")
                 directory = args.snapshot_dir / f"slot-{entry['sequence']}"
                 report = read_checkpoint(directory, bound)
+                if report["sequence"] != entry["sequence"]:
+                    raise ValueError("authenticated checkpoint sequence mismatch")
                 if (
                     hashlib.sha256(read_bytes(directory / "snapshot.json")).hexdigest()
                     != entry["snapshot_sha256"]

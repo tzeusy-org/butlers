@@ -4,7 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const {spawn, fork} = require('node:child_process');
+const {spawn} = require('node:child_process');
 const {performance} = require('node:perf_hooks');
 
 const SCHEDULE = Object.freeze([0, 120, 300, 600, 900, 1200, 1440, 1560]);
@@ -111,23 +111,51 @@ function descendantSamples(rootPid) {
   return {samples: result, truncated: truncated || todo.length > 0};
 }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-function managed(command, args, options) {
-  const child = spawn(command, args, {...options, detached: true, stdio: ['ignore', 'ignore', 'ignore']});
+function managed(command, args, options = {}) {
+  const {ipc = false, ...launch} = options;
+  const child = spawn('python3', [path.join(__dirname, 'supervisor.py'), command, ...args],
+    {...launch, detached: true, stdio: ['ignore', 'pipe', 'ignore', ...(ipc ? ['ipc'] : [])]});
   const owned = new Map();
-  let exited = false, overflow = false;
+  let exited = false, overflow = false, settled = false, settlementSeen = false, valid = true, outcome = null;
+  let buffer = '', controlBytes = 0, ready = false;
   const collect = () => {
     for (const [pid, start] of owned) { const current = numericProcess(pid);
-      if (!current || current.start_ticks !== start || ["Z", "X"].includes(current.state)) owned.delete(pid); }
+      if (!current || current.start_ticks !== start || ['Z', 'X'].includes(current.state)) owned.delete(pid); }
     const observation = descendantSamples(child.pid); overflow ||= observation.truncated;
     for (const sample of observation.samples) { if (owned.size < MAX_PROCESSES || owned.has(sample.pid)) owned.set(sample.pid, sample.start_ticks); else overflow = true; }
   };
+  let resolveOutcome;
+  const done = new Promise(resolve => { resolveOutcome = resolve; });
+  let resolveReady;
+  const launched = new Promise(resolve => { resolveReady = resolve; });
+  child.stdout.on('data', chunk => {
+    controlBytes += chunk.length;
+    if (controlBytes > 4096) { valid = false; return; }
+    buffer += chunk.toString('utf8');
+    while (buffer.includes('\n')) {
+      const at = buffer.indexOf('\n'), line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
+      try {
+        const value = JSON.parse(line), keys = Object.keys(value).sort().join();
+        if (value.event === 'ready' && keys === 'event,pid,start_ticks' && !ready && !outcome &&
+            Number.isSafeInteger(value.pid) && value.pid > 0 && Number.isSafeInteger(value.start_ticks) && value.start_ticks >= 0) {
+          ready = true; if (value.start_ticks) owned.set(value.pid, value.start_ticks);
+          resolveReady(true);
+        } else if (value.event === 'outcome' && keys === 'code,event,signal' && ready && !outcome &&
+            ((Number.isSafeInteger(value.code) && value.code >= 0 && value.code <= 255 && value.signal === null) ||
+             (value.code === null && Object.hasOwn(require('node:os').constants.signals, value.signal)))) {
+          outcome = {code: value.code, signal: value.signal}; resolveOutcome(outcome);
+        } else if (value.event === 'settled' && keys === 'complete,event' && outcome && typeof value.complete === 'boolean' && !settlementSeen) {
+          settlementSeen = true; settled = value.complete;
+        } else valid = false;
+      } catch (_) { valid = false; }
+    }
+  });
   collect();
   const timer = setInterval(collect, 20);
-  const done = new Promise(resolve => {
-    child.once('error', () => { exited = true; resolve({code: null, signal: null}); });
-    child.once('exit', (code, signal) => { exited = true; resolve({code, signal}); });
-  });
-  return {child, owned, done, collect, timer, isExited: () => exited, overflow: () => overflow};
+  child.once('error', () => { valid = false; exited = true; resolveReady(false); resolveOutcome({code: null, signal: null}); });
+  child.once('close', () => { exited = true; resolveReady(false); if (!outcome) resolveOutcome({code: null, signal: null}); });
+  return {child, owned, done, collect, timer, isExited: () => exited, overflow: () => overflow,
+    launched, ownershipComplete: () => valid && settled && buffer === ''};
 }
 function liveOwned(handle) {
   handle.collect();
@@ -138,6 +166,15 @@ function liveOwned(handle) {
 }
 async function cleanup(handle, milliseconds = 2000) {
   const deadline = performance.now() + milliseconds;
+  // A cancellation during interpreter startup must not kill the supervisor
+  // before it has installed its ownership/signal boundary. This wait consumes
+  // the existing cleanup envelope; a missing acknowledgment stays UNKNOWN.
+  let startupTimeout;
+  try {
+    await Promise.race([handle.launched, new Promise(resolve => {
+      startupTimeout = setTimeout(resolve, Math.min(500, milliseconds / 2));
+    })]);
+  } finally { clearTimeout(startupTimeout); }
   handle.collect();
   // Group only belongs to a child launched here; start-tick checks protect remembered PIDs.
   const root = numericProcess(handle.child.pid);
@@ -150,28 +187,19 @@ async function cleanup(handle, milliseconds = 2000) {
   for (const pid of liveOwned(handle)) { try { process.kill(pid, 'SIGKILL'); } catch (_) {} }
   while (performance.now() < deadline && (liveOwned(handle).length || !handle.isExited())) await delay(20);
   clearInterval(handle.timer);
-  return liveOwned(handle).length === 0 && handle.isExited() && !handle.overflow?.();
+  return liveOwned(handle).length === 0 && handle.isExited() && !handle.overflow?.() &&
+    handle.ownershipComplete();
 }
 async function boundedUpload(message, environment, milliseconds = 60000, entry = __filename, abortSignal = null) {
   const deadline = performance.now() + milliseconds;
   const cleanupReserve = Math.min(2000, milliseconds / 2);
-  const child = fork(entry, [], {env: uploaderEnvironment(environment), detached: true,
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc']});
-  const handle = {child, owned: new Map(), collect() {
-    for (const [pid, start] of this.owned) { const current = numericProcess(pid);
-      if (!current || current.start_ticks !== start || ["Z", "X"].includes(current.state)) this.owned.delete(pid); }
-    for (const sample of descendantSamples(child.pid).samples) { if (this.owned.size < MAX_PROCESSES || this.owned.has(sample.pid)) this.owned.set(sample.pid, sample.start_ticks); }
-  }, isExited: () => exited};
-  let exited = false, output = unknown(), messages = 0;
-  handle.timer = setInterval(() => handle.collect(), 20);
-  handle.collect();
-  const done = new Promise(resolve => {
-    child.once('error', () => { exited = true; resolve(); });
-    child.once('exit', () => { exited = true; resolve(); });
-    child.on('message', value => {
-      messages++;
-      output = messages === 1 && finalized(value) ? value : unknown();
-    });
+  const handle = managed(process.execPath, [entry], {env: uploaderEnvironment(environment), ipc: true});
+  const {child} = handle;
+  let output = unknown(), messages = 0;
+  const done = handle.done;
+  child.on('message', value => {
+    messages++;
+    output = messages === 1 && finalized(value) ? value : unknown();
   });
   try { child.send(message, () => {}); } catch (_) {}
   let timeout;
@@ -227,17 +255,21 @@ async function runAction() {
   const sampleTimer = setInterval(() => {
     try { writeAtomic(samplesFile, descendantSamples(subjectChild.child.pid)); } catch (_) {}
   }, 5000);
-  let uploader = null, stopping = false, signal = null;
+  let uploader = null, stopping = false, signal = null, uploaderCleanup = true;
+  let resolveCancellation;
+  const cancelled = new Promise(resolve => { resolveCancellation = resolve; });
   const pending = new Set();
   const timers = [];
   const stop = value => {
     stopping = true; signal = value; helperAbort.abort();
+    resolveCancellation({code: null, signal: value});
     // Forward cancellation to the subject; no extra execution grace.
     try { process.kill(-subjectChild.child.pid, value); } catch (_) {}
     for (const timer of timers) clearTimeout(timer);
   };
-  process.once('SIGINT', () => stop('SIGINT'));
-  process.once('SIGTERM', () => stop('SIGTERM'));
+  const onInterrupt = () => stop('SIGINT'), onTerminate = () => stop('SIGTERM');
+  process.once('SIGINT', onInterrupt);
+  process.once('SIGTERM', onTerminate);
   async function checkpoint(sequence) {
     if (stopping) return;
     if (uploader) { transports[sequence].transport = 'overlap'; return; }
@@ -257,6 +289,7 @@ async function runAction() {
       const name = `ci-watchdog-unit-1-${binding.run}-${binding.attempt}-${binding.nonce.slice(0, 12)}-${sequence}`;
       uploader = boundedUpload({name, directory: slot}, process.env, 60000, __filename, helperAbort.signal);
       const publication = await uploader;
+      uploaderCleanup &&= publication.cleanup_complete;
       const result = publication.result;
       transports[sequence] = {sequence, scheduled_s: SCHEDULE[sequence], transport: result.code,
         artifact_id: result.id, digest: result.digest, size: result.size};
@@ -269,17 +302,23 @@ async function runAction() {
       pending.add(task); task.finally(() => pending.delete(task));
     }, SCHEDULE[sequence] * 1000));
   }
-  const outcome = await subjectChild.done;
+  const outcome = await Promise.race([subjectChild.done, cancelled]);
   stopping = true; helperAbort.abort();
   for (const timer of timers) clearTimeout(timer);
   clearInterval(sampleTimer);
   const completed = await cleanup(subjectChild);
+  process.removeListener('SIGINT', onInterrupt); process.removeListener('SIGTERM', onTerminate);
   // Never wait sixty seconds after subject exit for optional diagnostics.
-  await Promise.race([Promise.allSettled([...pending]), delay(2500)]);
+  let drainTimeout;
+  try {
+    await Promise.race([Promise.allSettled([...pending]), new Promise(resolve => {
+      drainTimeout = setTimeout(resolve, 2500);
+    })]);
+  } finally { clearTimeout(drainTimeout); }
   for (const slot of transports) if (slot.transport === 'pending') slot.transport = signal ? 'cancelled' : 'unavailable';
   writeAtomic(path.join(directory, 'transport-final.json'), {complete: false, slots: transports,
     subject_status: outcome.code, subject_signal: outcome.signal, owned_subject_cleanup: completed,
-    owned_uploader_cleanup: !uploader, diagnostic_only: true});
+    owned_uploader_cleanup: !uploader && uploaderCleanup, diagnostic_only: true});
   if (signal || outcome.code === null) return 2;
   return outcome.code === 0 && !completed ? 2 : outcome.code;
 }

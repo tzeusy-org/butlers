@@ -75,6 +75,16 @@ is one and the independent60-second envelope includes owned cleanup. Overlap,
 error, missing result or cancellation cannot stall or select tests. SDK finalization
 is the only local persistence claim; authentic provider readback remains separate.
 
+Every owned launch first establishes a confined Linux child subreaper using the
+standard Python interpreter. Its unprivileged per-process ownership boundary
+adopts descendants even when an intermediate parent exits immediately or a child
+creates a new session. Original child status and owned settlement are separate
+closed records. Cleanup requires kernel child reaping, a positive settlement
+record and supervisor exit; an empty polling result alone cannot attest it.
+Cancellation enters bounded cleanup immediately. Supervisor ownership also
+settles if the action process disappears. SDK child output remains discarded and
+its existing IPC socket carries only the allowlisted publication result.
+
 ## Strict downloaded-artifact admission
 
 ROOT retrieves fixed same-repository/workflow/run/attempt artifacts with existing
@@ -87,6 +97,14 @@ that authenticated provider retrieval. This local receipt is a custody input,
 not a new provider authenticator. Unauthenticated metadata cannot earn persistence.
 
 Place each two-file checkpoint in `snapshot-dir/slot-<sequence>` and run:
+
+Run the reader from a capture repository whose Git store contains the externally
+reviewed full commit supplied as `--capture-head`. The reader independently reads
+that commit's tree and bundle/lock/observer/action bodies from Git objects and
+compares every source pin. Downloaded seals and mutable worktree files cannot
+provide those expected values. Authenticated artifact name/entry, slot directory,
+sealed manifest and snapshot must agree on the same literal integer sequence0–7;
+boolean sequences refuse admission.
 
 ```bash
 uv run --no-sync python scripts/ci_watchdog_diagnostics.py validate \

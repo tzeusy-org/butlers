@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import signal
@@ -381,3 +382,168 @@ def test_diagnostic_workflow_binds_original_profile_and_transport_domains(tmp_pa
     with pytest.raises(ValueError, match="frozen diagnostic subject mismatch"):
         diagnostic.prepare_profile(tmp_path, tmp_path, tmp_path / "must-not-launch", original)
     assert not (tmp_path / "must-not-launch").exists()
+
+    # Closed protocol controls only: this is the full adopted opaque population,
+    # not a fresh executable 3418-case receipt or provider authentication proof.
+    source_root = Path(__file__).resolve().parents[2]
+    profile = diagnostic.read_json(
+        source_root / ".github/actions/ci-shard-watchdog-capture/profile.json"
+    )
+    reviewed = diagnostic.reviewed_source_reference(
+        source_root, diagnostic.git(source_root, "rev-parse", "HEAD")
+    )
+    assert reviewed["capture_tree"] == diagnostic.git(
+        source_root, "rev-parse", reviewed["capture_head"] + "^{tree}"
+    )
+    files = profile["complete_expected_files"]
+    lanes = {name: [] for name in files}
+    for index, node in enumerate(profile["complete_expected_nodes"]):
+        lanes[files[index % len(files)]].append(node)
+    expected = {node: name for name, nodes in lanes.items() for node in nodes}
+    synthetic = {"nonce": profile["inventory_nonce"], "lanes": {"unit": lanes}}
+    synthetic["digest"] = partition.body_digest(synthetic)
+    planned = {"inventory_digest": synthetic["digest"], "shards": {"unit": [{"files": files}]}}
+    planned["digest"] = partition.body_digest(planned)
+    protocol = {
+        **reviewed,
+        "profile": diagnostic.PROFILE,
+        "repository": "tzeusy-org/butlers",
+        "workflow": "CI Shard Watchdog Diagnostic",
+        "run": "123",
+        "attempt": "1",
+        "provider_head": "b" * 40,
+        "subject_head": diagnostic.SUBJECT,
+        "subject_tree": diagnostic.TREE,
+        "subject_parents": diagnostic.PARENTS,
+        "inventory_digest": synthetic["digest"],
+        "assignment_digest": planned["digest"],
+        "nonce": synthetic["nonce"],
+        "child": "unit-1",
+        "expected": expected,
+        "population_digest": diagnostic.digest(expected),
+        "source_refs": {},
+    }
+    correspondence = [{"old": node, "new": node, "file": name} for node, name in expected.items()]
+
+    def downloaded(name, *, field=None, value=None, sequence=0, authenticated_sequence=0):
+        case = tmp_path / name
+        inventory = case / "inventory"
+        snapshots = case / "snapshots"
+        slot = snapshots / "slot-0"
+        inventory.mkdir(parents=True)
+        slot.mkdir(parents=True)
+        identity = copy.deepcopy(protocol)
+        if field:
+            identity[field] = value
+        body = {
+            "schema": diagnostic.SCHEMA,
+            "complete": False,
+            "binding": identity,
+            "sequence": sequence,
+            "elapsed_ms": 0,
+            "processes": [],
+            "slots": diagnostic.slots(),
+            "gaps": ["missing_process", "transport_unknown"],
+            "numeric_samples": {"samples": [], "truncated": False},
+        }
+        for filename, contents in (
+            ("binding.json", identity),
+            ("inventory.json", synthetic),
+            ("assignment.json", planned),
+            ("correspondence.json", correspondence),
+        ):
+            diagnostic.atomic(inventory / filename, contents)
+        diagnostic.atomic(slot / "snapshot.json", body)
+        raw = (slot / "snapshot.json").read_bytes()
+        snapshot_hash = hashlib.sha256(raw).hexdigest()
+        diagnostic.atomic(
+            slot / "manifest.json",
+            {
+                "schema": "ci-watchdog-manifest.v1",
+                "complete": False,
+                "binding_digest": diagnostic.digest(identity),
+                "sequence": sequence,
+                "files": {"snapshot.json": {"sha256": snapshot_hash, "bytes": len(raw)}},
+            },
+        )
+        diagnostic.atomic(
+            inventory / "provider-authenticated.json",
+            [
+                {
+                    "artifact_id": 42,
+                    "name": f"ci-watchdog-unit-1-123-1-{protocol['nonce'][:12]}-0",
+                    "repository": protocol["repository"],
+                    "workflow": protocol["workflow"],
+                    "run": "123",
+                    "attempt": "1",
+                    "sequence": authenticated_sequence,
+                    "snapshot_sha256": snapshot_hash,
+                }
+            ],
+        )
+        report = case / "report.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(source_root / "scripts/ci_watchdog_diagnostics.py"),
+                "validate",
+                "--snapshot-dir",
+                str(snapshots),
+                "--inventory-dir",
+                str(inventory),
+                "--expected-profile",
+                diagnostic.PROFILE,
+                "--capture-head",
+                reviewed["capture_head"],
+                "--subject-head",
+                diagnostic.SUBJECT,
+                "--subject-tree",
+                diagnostic.TREE,
+                "--repository",
+                protocol["repository"],
+                "--workflow",
+                protocol["workflow"],
+                "--run",
+                "123",
+                "--attempt",
+                "1",
+                "--output",
+                str(report),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode:
+            assert result.returncode == 2
+            assert result.stderr == "watchdog diagnostic refused: UNKNOWN\n"
+            assert not report.exists()
+            return None
+        admitted = diagnostic.read_json(report)
+        assert admitted["complete"] is False and admitted["diagnostic_only"] is True
+        assert admitted["reports"][0]["sequence"] == 0
+        assert len(admitted["reports"][0]["unknown"]) == 3 * 3418
+        return admitted
+
+    healthy_download = downloaded("download-healthy")
+    assert healthy_download
+    assert downloaded("sealed-wrong-slot", sequence=1) is None
+    for index, boolean in enumerate((True, False)):
+        assert downloaded(f"sealed-bool-{index}", sequence=boolean) is None
+        assert downloaded(f"authenticated-bool-{index}", authenticated_sequence=boolean) is None
+    for field in (
+        "capture_tree",
+        "capture_bundle",
+        "capture_lock",
+        "capture_observer",
+        "capture_action",
+    ):
+        assert (
+            downloaded(
+                f"wrong-{field}", field=field, value="a" * (40 if field == "capture_tree" else 64)
+            )
+            is None
+        )
+        for index, boolean in enumerate((True, False)):
+            assert downloaded(f"bool-{field}-{index}", field=field, value=boolean) is None
+    assert downloaded("download-restored") == healthy_download
