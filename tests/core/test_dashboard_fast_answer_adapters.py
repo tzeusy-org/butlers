@@ -182,12 +182,53 @@ async def test_api_classifier_exposes_only_schema_and_phraser_is_tool_free(monke
         models[1].purpose,
     ]
     assert usage.await_count == 2
+    attempts = [data for _, _, data in store.attribution]
+    assert [data["outcome"] for data in attempts] == ["started", "received"] * 2
+    assert all(type(data["duration_ms"]) is int and data["duration_ms"] >= 0 for data in attempts)
+    assert all(
+        set(data)
+        == {
+            "purpose",
+            "requested_tier",
+            "effective_tier",
+            "runtime_type",
+            "resolution_source",
+            "model",
+            "catalog_entry_id",
+            "execution_timeout",
+            "outcome",
+            "duration_ms",
+        }
+        for data in attempts
+    )
+    assert all(fence_value == fence for fence_value, _, _ in store.attribution)
     api.invoke_structured.return_value = ([{"name": "conversation_reply", "input": {}}], None, None)
     with pytest.raises(InvalidAdmission):
         await deps.classify(models, "question", catalog, target)
     api.invoke.return_value = ("fake answer", [{"name": "write", "input": {}}], None)
     with pytest.raises(RuntimeError):
         await deps.phrase(models, "question", [])
+    clock = [10.0]
+    monkeypatch.setattr(adapters, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def settled_provider(**kwargs):
+        clock[0] += 0.25
+        return ([{"name": "dashboard_fast_admission", "input": admission}], None, None)
+
+    api.invoke_structured.side_effect = settled_provider
+    assert await deps.classify(models, "question", catalog, target) == admission
+    assert store.attribution[-1][2]["duration_ms"] == 250
+
+    async def failed_provider(**kwargs):
+        clock[0] += 0.5
+        raise RuntimeError("synthetic provider failure")
+
+    api.invoke_structured.side_effect = failed_provider
+    with pytest.raises(RuntimeError, match="synthetic provider failure"):
+        await deps.classify(models, "question", catalog, target)
+    assert store.attribution[-1][2]["outcome"] == "failed"
+    assert store.attribution[-1][2]["duration_ms"] == 500
+    assert store.attribution[-1][0] == fence
     for source in (
         {},
         {"kind": "view", "ref": "x", "as_of": "unknown"},

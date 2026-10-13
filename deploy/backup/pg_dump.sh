@@ -98,6 +98,15 @@
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
+# The fast-runtime table is also durable application state: losing its owner,
+# generation, lease anchor, Stop or reply receipt would fabricate a restore
+# outcome. Its schema remains in pg_dump, and a separate full-row staging block
+# verifies the exact owner-only FORCE-RLS policy in the same snapshot. The
+# existing owner membership is required; runtime roles gain no read/write grant.
+# The fixed SECURITY INVOKER importer enforces that same owner and exact typed
+# column population; complete readback is checked before atomic replay commits.
+# Missing ownership/policy/importer or partial rows aborts publication/restore.
+#
 # No ordinary application data is excluded. The three cost-claim tables are the
 # narrow exception to pg_dump's data path: their schema, ownership, FORCE RLS,
 # policies, triggers, and definer function remain in the ordinary dump, while
@@ -138,6 +147,9 @@ BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context publi
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
+# Separate owner-only data path. Schema, owner, FORCE RLS, policy and functions
+# remain in pg_dump; every runtime row travels in the same exported snapshot.
+BACKUP_FAST_RUNTIME_DATA_TABLES="public.dashboard_fast_answer_runtimes"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
@@ -248,6 +260,9 @@ done
 for table in ${BACKUP_SCOPED_DATA_TABLES}; do
   set -- "$@" "--exclude-table-data=${table}"
 done
+for table in ${BACKUP_FAST_RUNTIME_DATA_TABLES}; do
+  set -- "$@" "--exclude-table-data=${table}"
+done
 
 # pg_dump and the scoped ledger query must see one database instant. Keep a
 # read-only repeatable-read transaction open, export its snapshot, and bind
@@ -258,6 +273,7 @@ SNAPSHOT_DIR="$(mktemp -d)"
 SNAPSHOT_CONTROL="${SNAPSHOT_DIR}/control"
 SNAPSHOT_ID_FILE="${SNAPSHOT_DIR}/id"
 SNAPSHOT_POLICY_COUNT_FILE="${SNAPSHOT_DIR}/policy-count"
+FAST_RUNTIME_PROOF_FILE="${SNAPSHOT_DIR}/fast-runtime-proof"
 SNAPSHOT_LOG="${SNAPSHOT_DIR}/holder.log"
 mkfifo "${SNAPSHOT_CONTROL}"
 PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
@@ -305,8 +321,38 @@ printf '\\o %s\nSELECT count(*)
        );
 \\o\n' "${SNAPSHOT_POLICY_COUNT_FILE}" >&9
 
+# Resolve only the exact fixed relation, in the already exported snapshot.
+# A genuinely pre-core267 database has no such rows; current presence requires
+# owner membership, unchanged owner policy and both invoker entry points.
+printf 'SET LOCAL search_path=pg_catalog,pg_temp;\n' >&9
+printf '\\o %s\n' "${FAST_RUNTIME_PROOF_FILE}" >&9
+cat <<'SQL' >&9
+SELECT to_regclass('public.dashboard_fast_answer_runtimes') IS NOT NULL AS fast_runtime_present \gset
+\if :fast_runtime_present
+SELECT CASE WHEN c.relrowsecurity AND c.relforcerowsecurity
+ AND c.relowner=(SELECT relowner FROM pg_class WHERE oid='public.dashboard_conversation_turns'::regclass)
+ AND pg_has_role(current_user,c.relowner,'MEMBER')
+ AND (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)=1
+ AND EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polcmd='*'
+   AND p.polpermissive AND p.polroles=ARRAY[0::oid]
+   AND regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]]','','g')=
+     $expression$(CURRENT_USER=pg_get_userbyid((SELECTpg_class.relownerFROMpg_classWHERE(pg_class.oid='public.dashboard_fast_answer_runtimes'::regclass))))$expression$
+   AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid))
+ AND (SELECT count(*) FROM pg_proc f WHERE f.oid IN(
+   to_regprocedure('public.dashboard_fast_answer_backup_rows()'),
+   to_regprocedure('public.dashboard_fast_answer_restore_row(jsonb)'))
+   AND NOT f.prosecdef AND f.proowner=c.relowner
+   AND f.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on'])=2
+ THEN 'ready' ELSE 'refused' END
+ FROM pg_class c WHERE c.oid='public.dashboard_fast_answer_runtimes'::regclass;
+\else
+SELECT 'absent';
+\endif
+SQL
+printf '\\o\n' >&9
+
 SNAPSHOT_WAIT=0
-while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; } \
+while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] || [ ! -s "${FAST_RUNTIME_PROOF_FILE}" ]; } \
   && kill -0 "${SNAPSHOT_HOLDER_PID}" 2>/dev/null; do
   SNAPSHOT_WAIT=$((SNAPSHOT_WAIT + 1))
   if [ "${SNAPSHOT_WAIT}" -ge 100 ]; then
@@ -314,7 +360,7 @@ while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}"
   fi
   sleep 0.05
 done
-if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; then
+if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] || [ ! -s "${FAST_RUNTIME_PROOF_FILE}" ]; then
   FAILURE_REASON="pg_dump_failed"
   echo "[backup] FAILED: could not establish a shared backup snapshot and policy proof; not publishing" >&2
   exit 1
@@ -333,6 +379,14 @@ if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "3" ]; then
   echo "[backup] FAILED: cost-claim backup policy is not the exact full-row contract; not publishing" >&2
   exit 1
 fi
+
+FAST_RUNTIME_PROOF="$(tr -d '\r\n' < "${FAST_RUNTIME_PROOF_FILE}")"
+case "${FAST_RUNTIME_PROOF}" in
+  ready|absent) ;;
+  *) FAILURE_REASON="pg_dump_failed"
+     echo "[backup] FAILED: fast-runtime owner/policy/importer proof unavailable; not publishing" >&2
+     exit 1 ;;
+esac
 
 # pg_dump writes to stdout; we pipe through gzip into a .tmp file so the
 # directory scanner in get_backup_facts() never sees a partial dump.  gzip's
@@ -413,6 +467,73 @@ SET ROLE %I;',
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
   printf "SELECT public.cost_claim_restore_row(\n  relation_name,\n  convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb\n)\nFROM butlers_cost_claim_restore_rows\nORDER BY ordinal, payload_hex;\n"
   printf 'RESET ROLE;\n\\else\n\\echo cost-claim ledger replay skipped: restore owner membership unavailable\n\\endif\nDROP TABLE butlers_cost_claim_restore_rows;\n'
+  if [ "${FAST_RUNTIME_PROOF}" = "ready" ]; then
+    printf '\n-- Butlers complete owner-only fast-runtime data\n'
+    printf 'CREATE TEMP TABLE butlers_fast_runtime_restore_rows (payload_hex text NOT NULL);\n'
+    printf 'COPY butlers_fast_runtime_restore_rows (payload_hex) FROM stdin;\n'
+    PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+      --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+      --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" --no-password \
+      --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 <<SQL || { echo "$?" > "${STATUSFILE}"; exit 0; }
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+SELECT format('SET ROLE %I;',pg_get_userbyid(relowner)) FROM pg_class
+ WHERE oid='public.dashboard_fast_answer_runtimes'::regclass
+ AND pg_has_role(current_user,relowner,'MEMBER') \gexec
+SET LOCAL row_security=on;
+DO \$check\$ BEGIN
+ IF (SELECT count(*) FROM (
+   (SELECT public.dashboard_fast_answer_backup_rows() EXCEPT ALL
+      SELECT to_jsonb(r) FROM public.dashboard_fast_answer_runtimes r)
+   UNION ALL
+   (SELECT to_jsonb(r) FROM public.dashboard_fast_answer_runtimes r EXCEPT ALL
+      SELECT public.dashboard_fast_answer_backup_rows())
+ ) difference)<>0 THEN RAISE EXCEPTION 'fast runtime export population differs'; END IF;
+END \$check\$;
+COPY (SELECT encode(convert_to(r::text,'UTF8'),'hex')
+ FROM public.dashboard_fast_answer_backup_rows() r ORDER BY r->>'message_id') TO STDOUT;
+COMMIT;
+SQL
+    printf '\\.\n'
+    # Resolve the dump's actual owner and retain the existing membership gate.
+    PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+      --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+      --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" --no-password \
+      --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+      -c "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+SELECT format('SELECT coalesce(pg_has_role(current_user,to_regrole(%L),''MEMBER''),false) AS butlers_fast_restore_authorized \\gset
+\\if :butlers_fast_restore_authorized
+\\set ON_ERROR_STOP on
+BEGIN;
+GRANT SELECT ON butlers_fast_runtime_restore_rows TO %I;
+SET ROLE %I;
+SET LOCAL row_security=on;',pg_get_userbyid(relowner),pg_get_userbyid(relowner),pg_get_userbyid(relowner))
+ FROM pg_class WHERE oid='public.dashboard_fast_answer_runtimes'::regclass;
+COMMIT" \
+    || { echo "$?" > "${STATUSFILE}"; exit 0; }
+    cat <<'SQL'
+SELECT public.dashboard_fast_answer_restore_row(
+ convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb)
+ FROM butlers_fast_runtime_restore_rows ORDER BY payload_hex;
+DO $check$ BEGIN
+ IF (SELECT count(*) FROM (
+   (SELECT to_jsonb(r) FROM public.dashboard_fast_answer_runtimes r EXCEPT ALL
+     SELECT convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb FROM butlers_fast_runtime_restore_rows)
+   UNION ALL
+   (SELECT convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb FROM butlers_fast_runtime_restore_rows
+     EXCEPT ALL SELECT to_jsonb(r) FROM public.dashboard_fast_answer_runtimes r)
+ ) difference)<>0 THEN RAISE EXCEPTION 'fast runtime restored population differs'; END IF;
+END $check$;
+RESET ROLE;
+COMMIT;
+\else
+\echo fast-runtime replay refused: exact owner membership unavailable
+\quit 1
+\endif
+DROP TABLE butlers_fast_runtime_restore_rows;
+SQL
+  fi
 } | gzip > "${TMPFILE}"
 
 printf 'COMMIT;\n\\q\n' >&9

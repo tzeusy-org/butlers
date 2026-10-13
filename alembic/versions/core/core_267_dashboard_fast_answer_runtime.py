@@ -70,7 +70,7 @@ def upgrade() -> None:
         AS $$ SELECT clock_timestamp() $$;
 
         CREATE OR REPLACE FUNCTION public.dashboard_turn_intent_lane(p_message uuid, p_lane text)
-        RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+        RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
         DECLARE old_lane text;
         BEGIN
           IF p_lane IS NOT NULL THEN
@@ -93,7 +93,7 @@ def upgrade() -> None:
 
         CREATE OR REPLACE FUNCTION public.dashboard_fast_answer_register(
           p_message uuid, p_request uuid, p_session uuid, p_owner uuid)
-        RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+        RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
         DECLARE t public.dashboard_conversation_turns%ROWTYPE;
           r public.dashboard_fast_answer_runtimes%ROWTYPE;
           stamp timestamptz := public.dashboard_fast_answer_now();
@@ -132,7 +132,7 @@ def upgrade() -> None:
 
         CREATE OR REPLACE FUNCTION public.dashboard_fast_answer_control(
           p_message uuid,p_owner uuid,p_generation bigint,p_action text,p_data jsonb DEFAULT '{}')
-        RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+        RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
         DECLARE t public.dashboard_conversation_turns%ROWTYPE;
           r public.dashboard_fast_answer_runtimes%ROWTYPE;
           stamp timestamptz := public.dashboard_fast_answer_now();
@@ -186,7 +186,8 @@ def upgrade() -> None:
               WHERE message_id=p_message;
           ELSIF p_action='attribution' THEN
             IF NOT (p_data ?& ARRAY['purpose','requested_tier','effective_tier','runtime_type',
-              'resolution_source','model','catalog_entry_id','execution_timeout','outcome']) OR
+              'resolution_source','model','catalog_entry_id','execution_timeout','outcome',
+              'duration_ms']) OR
               p_data->>'purpose' NOT IN ('dashboard_fast_answer_classification',
               'dashboard_fast_answer_phrasing') OR
               p_data->>'requested_tier' IS DISTINCT FROM 'cheap' OR
@@ -199,7 +200,9 @@ def upgrade() -> None:
               NOT (p_data->>'execution_timeout' ~ '^[1-9][0-9]*$') OR
               coalesce(p_data->>'catalog_entry_id','') !~
                 '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' OR
-              (SELECT count(*) FROM jsonb_object_keys(p_data))<>9 THEN
+              jsonb_typeof(p_data->'duration_ms') IS DISTINCT FROM 'number' OR
+              NOT (p_data->>'duration_ms' ~ '^[0-9]+$') OR
+              (SELECT count(*) FROM jsonb_object_keys(p_data))<>10 THEN
               RAISE EXCEPTION 'invalid fast model attribution';
             END IF;
             UPDATE public.dashboard_fast_answer_runtimes SET attribution=attribution||
@@ -275,7 +278,8 @@ def upgrade() -> None:
         END $$;
 
         CREATE OR REPLACE FUNCTION public.dashboard_fast_answer_reconcile(p_owner uuid)
-        RETURNS SETOF jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+        RETURNS SETOF jsonb LANGUAGE plpgsql SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp AS $$
         DECLARE key uuid; t public.dashboard_conversation_turns%ROWTYPE;
           r public.dashboard_fast_answer_runtimes%ROWTYPE;
           stamp timestamptz := public.dashboard_fast_answer_now(); terminal text;
@@ -332,7 +336,7 @@ def upgrade() -> None:
     # project that same outcome into the existing turn/session tables.
     op.execute("""
         CREATE OR REPLACE FUNCTION public.dashboard_fast_answer_guard_legacy_projection()
-        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+        RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog, pg_temp AS $$
         DECLARE r public.dashboard_fast_answer_runtimes%ROWTYPE;
         BEGIN
           IF TG_OP='INSERT' THEN
@@ -389,6 +393,71 @@ def upgrade() -> None:
           BEFORE UPDATE OR DELETE ON public.dashboard_conversation_turns
           FOR EACH ROW EXECUTE FUNCTION public.dashboard_fast_answer_guard_legacy_projection();
     """)
+    # Backup uses existing owner membership, never a runtime/public grant.
+    # INVOKER + row_security=on retains FORCE RLS even for the migration owner.
+    op.execute("""
+        CREATE OR REPLACE FUNCTION public.dashboard_fast_answer_backup_rows()
+        RETURNS SETOF jsonb LANGUAGE plpgsql SECURITY INVOKER
+        SET search_path=pg_catalog, pg_temp SET row_security=on AS $$
+        BEGIN
+          IF current_user::regrole::oid IS DISTINCT FROM
+            (SELECT relowner FROM pg_class
+              WHERE oid='public.dashboard_fast_answer_runtimes'::regclass) THEN
+            RAISE EXCEPTION 'fast runtime backup requires the exact owner' USING ERRCODE='42501';
+          END IF;
+          RETURN QUERY SELECT to_jsonb(r) FROM public.dashboard_fast_answer_runtimes AS r
+            ORDER BY message_id;
+        END $$;
+        CREATE OR REPLACE FUNCTION public.dashboard_fast_answer_restore_row(p_data jsonb)
+        RETURNS void LANGUAGE plpgsql SECURITY INVOKER
+        SET search_path=pg_catalog, pg_temp SET row_security=on AS $$
+        DECLARE expected text[]; supplied text[];
+        BEGIN
+          IF current_user::regrole::oid IS DISTINCT FROM
+            (SELECT relowner FROM pg_class
+              WHERE oid='public.dashboard_fast_answer_runtimes'::regclass) THEN
+            RAISE EXCEPTION 'fast runtime restore requires the exact owner' USING ERRCODE='42501';
+          END IF;
+          IF jsonb_typeof(p_data) IS DISTINCT FROM 'object' THEN
+            RAISE EXCEPTION 'fast runtime restore requires a complete row';
+          END IF;
+          SELECT array_agg(attname::text ORDER BY attname) INTO expected FROM pg_attribute
+            WHERE attrelid='public.dashboard_fast_answer_runtimes'::regclass
+              AND attnum>0 AND NOT attisdropped;
+          SELECT array_agg(key ORDER BY key) INTO supplied FROM jsonb_object_keys(p_data) AS key;
+          IF supplied IS DISTINCT FROM expected THEN
+            RAISE EXCEPTION 'fast runtime restore column population differs';
+          END IF;
+          INSERT INTO public.dashboard_fast_answer_runtimes
+            SELECT (jsonb_populate_record(NULL::public.dashboard_fast_answer_runtimes,p_data)).*;
+        END $$;
+        REVOKE ALL ON FUNCTION public.dashboard_fast_answer_backup_rows(),
+          public.dashboard_fast_answer_restore_row(jsonb) FROM PUBLIC;
+    """)
+    # Match the upstream relation owner on both ordinary and bootstrap replay.
+    # This is the core_265 snapshot-ownership pattern, not a runtime role grant.
+    op.execute("""
+        DO $ownership$
+        DECLARE target_owner text; signature text;
+        BEGIN
+          SELECT pg_catalog.pg_get_userbyid(relowner) INTO STRICT target_owner
+            FROM pg_catalog.pg_class
+            WHERE oid='public.dashboard_conversation_turns'::regclass;
+          EXECUTE format('ALTER TABLE public.dashboard_fast_answer_runtimes OWNER TO %I',
+            target_owner);
+          FOREACH signature IN ARRAY ARRAY[
+            'public.dashboard_fast_answer_now()',
+            'public.dashboard_turn_intent_lane(uuid,text)',
+            'public.dashboard_fast_answer_register(uuid,uuid,uuid,uuid)',
+            'public.dashboard_fast_answer_control(uuid,uuid,bigint,text,jsonb)',
+            'public.dashboard_fast_answer_reconcile(uuid)',
+            'public.dashboard_fast_answer_guard_legacy_projection()',
+            'public.dashboard_fast_answer_backup_rows()',
+            'public.dashboard_fast_answer_restore_row(jsonb)'] LOOP
+            EXECUTE format('ALTER FUNCTION %s OWNER TO %I',signature,target_owner);
+          END LOOP;
+        END $ownership$;
+    """)
     op.execute("""
         REVOKE ALL ON FUNCTION public.dashboard_fast_answer_register(uuid,uuid,uuid,uuid)
           FROM PUBLIC;
@@ -414,6 +483,8 @@ def downgrade() -> None:
           ON public.dashboard_conversation_turn_sessions;
         DROP TRIGGER IF EXISTS dashboard_fast_answer_turn_projection
           ON public.dashboard_conversation_turns;
+        DROP FUNCTION IF EXISTS public.dashboard_fast_answer_backup_rows();
+        DROP FUNCTION IF EXISTS public.dashboard_fast_answer_restore_row(jsonb);
         DROP FUNCTION IF EXISTS public.dashboard_fast_answer_guard_legacy_projection();
         DROP FUNCTION IF EXISTS public.dashboard_fast_answer_reconcile(uuid);
         DROP FUNCTION IF EXISTS public.dashboard_fast_answer_control(uuid,uuid,bigint,text,jsonb);

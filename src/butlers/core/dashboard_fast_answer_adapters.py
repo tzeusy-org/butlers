@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -167,7 +168,7 @@ class RegisteredFastAnswerDependencies:
             )
         return self._adapter
 
-    async def _attribution(self, model: _Model, outcome: str) -> None:
+    async def _attribution(self, model: _Model, outcome: str, duration_ms: int = 0) -> None:
         result = await self.store.control(
             model.fence,
             "attribution",
@@ -181,6 +182,7 @@ class RegisteredFastAnswerDependencies:
                 "catalog_entry_id": str(model.entry_id),
                 "execution_timeout": model.timeout,
                 "outcome": outcome,
+                "duration_ms": duration_ms,
             },
         )
         if result["outcome"] != "accepted":
@@ -220,6 +222,7 @@ class RegisteredFastAnswerDependencies:
             ],
         }
         await self._attribution(model, "started")
+        started = time.monotonic()
         try:
             calls, _text, usage = await self._api().invoke_structured(
                 prompt=prompt,
@@ -236,10 +239,11 @@ class RegisteredFastAnswerDependencies:
                 timeout=model.timeout,
             )
         except Exception:
-            await self._attribution(model, "failed")
+            await self._attribution(model, "failed", int((time.monotonic() - started) * 1000))
             raise
+        duration_ms = int((time.monotonic() - started) * 1000)
+        await self._attribution(model, "received", duration_ms)
         await self._usage(model, usage)
-        await self._attribution(model, "received")
         if (
             not isinstance(calls, list)
             or len(calls) != 1
@@ -251,6 +255,7 @@ class RegisteredFastAnswerDependencies:
     async def phrase(self, models, question, results) -> str:
         model = models[1]
         await self._attribution(model, "started")
+        started = time.monotonic()
         try:
             text, calls, usage = await self._api().invoke(
                 prompt=json.dumps({"question": question, "registered_results": results}),
@@ -264,10 +269,11 @@ class RegisteredFastAnswerDependencies:
                 timeout=model.timeout,
             )
         except Exception:
-            await self._attribution(model, "failed")
+            await self._attribution(model, "failed", int((time.monotonic() - started) * 1000))
             raise
+        duration_ms = int((time.monotonic() - started) * 1000)
+        await self._attribution(model, "received", duration_ms)
         await self._usage(model, usage)
-        await self._attribution(model, "received")
         if calls:
             raise RuntimeError("phrasing attempted unsupported tool")
         return text

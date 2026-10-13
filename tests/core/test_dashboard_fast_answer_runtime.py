@@ -291,6 +291,41 @@ async def test_stop_and_lost_fence_never_start_later_phases(harness):
     assert result.outcome == "pending_reconciliation"
     assert "read" not in dependencies.calls[-1:]
 
+    # Repeated Stop must wait for the first durable cancellation receipt.
+    store.lost = False
+    store.state = "active"
+    store.stopped = False
+    dependencies.entered.clear()
+    receipt_entered, receipt_release = asyncio.Event(), asyncio.Event()
+    original_control = store.control
+
+    async def controlled_receipt(fence, action, data=None):
+        if action == "cancelled":
+            receipt_entered.set()
+            await receipt_release.wait()
+        return await original_control(fence, action, data)
+
+    store.control = controlled_receipt
+    task = asyncio.create_task(_run(runtime))
+    await asyncio.wait_for(dependencies.entered.wait(), 2)
+    session = next(iter(runtime._live))
+    store.stopped = True
+    first = asyncio.create_task(runtime.cancel(session))
+    try:
+        await asyncio.wait_for(receipt_entered.wait(), 2)
+        second = asyncio.create_task(runtime.cancel(session))
+        await asyncio.sleep(0)  # Admit the second caller while settlement is blocked.
+        receipt_release.set()
+        first_result, second_result, result = await asyncio.gather(first, second, task)
+        assert first_result is second_result is True
+        assert result.outcome == "cancelled" and store.state == "cancelled"
+        assert len([event for event in store.events if event[0] == "cancelled"]) >= 1
+        assert not runtime.owns(session)
+    finally:
+        receipt_release.set()
+        store.control = original_control
+        await runtime.close()
+
 
 @pytest.mark.asyncio
 async def test_post_read_failures_do_not_reclassify_or_fabricate_grounding(harness):

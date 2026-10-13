@@ -65,7 +65,7 @@ class _SwitchboardRolePool:
             return await conn.fetch(query, *args)
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="function")
 async def fast_db(postgres_container):
     url = await asyncio.to_thread(
         create_migrated_test_db,

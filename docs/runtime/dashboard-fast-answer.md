@@ -69,3 +69,11 @@ non-skipped execution at the resulting head in hosted CI. DB-free software contr
 and static checks have separate scope. Native package adoption/archive, genuine review, current
 normal checks, protected queue qualification, actual squash delivery, and any live activation are
 separate obligations.
+
+Each actual API provider attempt writes content-blind `duration_ms` under the same
+fast-runtime fence, alongside purpose/model/catalog/timeout/outcome and session-bound
+token usage. Repeated Stop injects cancellation once and waits for the same durable
+settlement. Handled success and failure both finalize message ingestion; a failed or
+unavailable ingress write reports failure without authorizing whole-turn replay.
+The owner-only backup stage preserves durable fast-runtime rows as described in
+[backup and restore](../operations/backup-restore.md).

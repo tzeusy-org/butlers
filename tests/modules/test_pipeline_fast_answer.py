@@ -55,6 +55,8 @@ async def test_dashboard_fast_runtime_is_selected_without_generic_dispatch_or_do
         ),
     )
     fast = SimpleNamespace(run=AsyncMock(return_value=FastAnswerResult(True, "completed", session)))
+    finalizer = AsyncMock()
+    monkeypatch.setattr(MessagePipeline, "_update_message_inbox_lifecycle", finalizer)
     dispatch = AsyncMock()
     pipeline = MessagePipeline(MagicMock(), dispatch, dashboard_fast_answer=fast)
     result = await pipeline.process(
@@ -80,6 +82,55 @@ async def test_dashboard_fast_runtime_is_selected_without_generic_dispatch_or_do
     )
     assert bound["catalog_query"] == "How is the fleet?"
     assert bound["prompt"] != bound["catalog_query"]
+
+    finalizer.assert_awaited_once()
+    persisted = finalizer.await_args.kwargs
+    assert persisted["message_inbox_id"] == str(request)
+    assert persisted["final_state_at"] == persisted["classified_at"]
+    assert persisted["dispatch_outcomes"]["acked"] == ["concierge"]
+    assert result.acked_targets == ["concierge"] and result.failed_targets == []
+    for outcome in ("failed", "pending_reconciliation", "decline_unavailable", "cancelled"):
+        fast.run.return_value = FastAnswerResult(True, outcome, session)
+        finalizer.reset_mock()
+        failed = await pipeline.process(
+            "How is the fleet?",
+            tool_args={
+                "source": "dashboard",
+                "source_channel": "dashboard",
+                "source_identity": "dashboard",
+                "source_tool": "ingest",
+                "request_id": str(request),
+                "dashboard_message_id": str(message),
+            },
+            message_inbox_id=str(request),
+        )
+        assert failed.route_result["fast_answer"] == outcome
+        assert failed.routing_error == "fast_answer:" + outcome
+        assert failed.failed_targets == ["concierge"] and not failed.acked_targets
+        finalizer.assert_awaited_once()
+        assert finalizer.await_args.kwargs["lifecycle_state"] == "errored"
+        assert finalizer.await_args.kwargs["dispatch_outcomes"]["failed"] == ["concierge"]
+        assert finalizer.await_args.kwargs["final_state_at"] is not None
+        assert dispatch.await_count == 0  # Failure never authorizes a whole-turn replay.
+
+    finalizer.side_effect = RuntimeError("synthetic ingress write unavailable")
+    fast.run.return_value = FastAnswerResult(True, "completed", session)
+    unpersisted = await pipeline.process(
+        "How is the fleet?",
+        tool_args={
+            "source": "dashboard",
+            "source_channel": "dashboard",
+            "source_identity": "dashboard",
+            "source_tool": "ingest",
+            "request_id": str(request),
+            "dashboard_message_id": str(message),
+        },
+        message_inbox_id=str(request),
+    )
+    assert unpersisted.routing_error == "fast_answer:ingress_settlement_unavailable"
+    assert unpersisted.failed_targets == ["concierge"] and not unpersisted.acked_targets
+    assert dispatch.await_count == 0
+    finalizer.side_effect = None
 
     fast.run.reset_mock()
     dispatch.return_value = SimpleNamespace(output="", tool_calls=[])

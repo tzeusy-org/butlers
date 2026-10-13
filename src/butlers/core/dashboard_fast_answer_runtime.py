@@ -62,6 +62,12 @@ class _LiveRuntime:
     effects_started: bool = False
     uncertain: bool = False
 
+    def request_cancel(self) -> None:
+        # One cancellation injection; repeated Stop waits for the same durable
+        # settlement instead of cancelling its receipt write a second time.
+        if self.task is not None and not self.task.done() and not self.task.cancelling():
+            self.task.cancel()
+
 
 def source_envelope(result: Any) -> dict[str, str]:
     """Validate target-produced provenance; a model cannot supply citations."""
@@ -135,8 +141,8 @@ class DashboardFastAnswerRuntime:
         tasks = [entry.task for entry in self._live.values() if entry.task is not None]
         for entry in self._live.values():
             entry.uncertain = True  # Shutdown is not an owner Stop acknowledgement.
-        for task in tasks:
-            task.cancel()
+        for entry in self._live.values():
+            entry.request_cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
     def owns(self, session_id: UUID) -> bool:
@@ -146,7 +152,7 @@ class DashboardFastAnswerRuntime:
         entry = self._live.get(session_id)
         if entry is None or entry.task is None:
             return False
-        entry.task.cancel()
+        entry.request_cancel()
         await entry.settled.wait()
         return entry.cancelled
 
@@ -231,12 +237,12 @@ class DashboardFastAnswerRuntime:
             except FenceLost as exc:
                 entry.uncertain = str(exc) != "stopped"
                 if entry.task is not None:
-                    entry.task.cancel()
+                    entry.request_cancel()
                 return
             except Exception:
                 entry.uncertain = True
                 if entry.task is not None:
-                    entry.task.cancel()
+                    entry.request_cancel()
                 return
 
     async def _owned(
