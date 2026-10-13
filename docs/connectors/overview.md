@@ -235,6 +235,11 @@ Payloads, replay/drop decisions, status and other columns are unchanged;
 this is not a claim that every payload or producer log is free of secrets, and it does not produce
 an authentication artifact.
 
+The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
+source inventory, connector stores, inbox readers and synthetic seam evidence. Its
+full-payload, replay, logging and legacy-row findings are separate from this preview
+contract; unresolved durable and vendor boundaries remain unknown.
+
 `scripts/scrub_filtered_event_previews.py` is a one-shot historical preview repair, never a startup
 job or migration. The CLI defaults to dry run and requires an explicit existing database target and
 operator identity through the normal database environment helpers. It never provisions credentials
