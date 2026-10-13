@@ -11,6 +11,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 test('healthy cancellation and resistant descendants attest bounded owned completion', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-cleanup-'));
   const sentinel = spawn(process.execPath, ['-e','setInterval(()=>{},1000)'], {stdio:'ignore'});
+  const sentinelExited=new Promise(resolve=>sentinel.once('exit',resolve));
   try {
     const healthy = managed(process.execPath, ['-e','process.exit(0)'], {env:{PATH:process.env.PATH}});
     assert.equal((await healthy.done).code,0); assert.equal(await cleanup(healthy),true);
@@ -91,6 +92,69 @@ test('healthy cancellation and resistant descendants attest bounded owned comple
         assert.ok(numericProcess(sentinel.pid));
       } finally {if(pid){try{process.kill(-pid,'SIGKILL')}catch(_){}}action.kill('SIGKILL');}
     }
+    // Position real task departure between listing and opening: an owned Node
+    // child changes from live to same-start zombie without being reaped. Its
+    // vanished task files are ENOENT, while permission/unknown/overflow refuse.
+    const departedReceipts=[];
+    for(const helperEntry of ['src/supervisor.py','dist/supervisor.py']) {
+      const script=String.raw`import importlib.util,subprocess,os,signal,time,json,errno
+spec=importlib.util.spec_from_file_location('supervisor',${JSON.stringify(path.resolve(__dirname,'..'))}+'/'+${JSON.stringify(helperEntry)})
+s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
+rows=[]
+for mode in ['healthy','neutralized','restored','permission','overflow']:
+ child=subprocess.Popen([${JSON.stringify(process.execPath)},'-e','console.log("ready");setInterval(()=>{},1000)'],stdout=subprocess.PIPE,text=True)
+ child.stdout.readline();before=s.process(child.pid);original=s.os.listdir;original_open=open;original_limit=s.MAX_PROCESSES
+ try:
+  def positioned(directory):
+   tasks=original(directory)
+   if directory==f'/proc/{child.pid}/task' and mode in ['healthy','neutralized','restored']:
+    child.send_signal(signal.SIGKILL)
+    for _ in range(1000):
+     current=s.process(child.pid)
+     if current and current[1]=='Z':break
+     time.sleep(.001)
+    assert current and current[0]==before[0] and current[1]=='Z'
+   return tasks
+  s.os.listdir=positioned
+  if mode=='neutralized':
+   # Execute the original departing-task error policy as an unsafe companion.
+   source=open(${JSON.stringify(path.resolve(__dirname,'../src/supervisor.py'))}).read()
+   start=source.index('    except (OSError, ValueError) as error:')
+   end=source.index('\n\ndef main():',start)
+   legacy=source[:start]+'    except (OSError, ValueError):\n        return set(), process(pid) is not None\n'+source[end:]
+   namespace={'__name__':'neutralized'};exec(compile(legacy,'neutralized-supervisor','exec'),namespace)
+   scan=namespace['children']
+  else:scan=s.children
+  if mode=='permission':
+   def denied(file,*args,**kwargs):
+    if str(file).endswith('/children'):raise PermissionError(errno.EACCES,'denied')
+    return original_open(file,*args,**kwargs)
+   s.open=denied
+  if mode=='overflow':s.MAX_PROCESSES=1
+  descendants,truncated=scan(child.pid)
+  current=s.process(child.pid)
+  if mode=='permission':del s.open
+  row={'mode':mode,'pid':child.pid,'before':before,'after':current,'truncated':truncated,'descendant_count':len(descendants)}
+  assert truncated==(mode in ['neutralized','permission','overflow'])
+ finally:
+  s.os.listdir=original;s.MAX_PROCESSES=original_limit
+  if hasattr(s,'open'):del s.open
+  os.kill(child.pid,signal.SIGKILL);reaped,status=os.waitpid(child.pid,0);child.returncode=os.waitstatus_to_exitcode(status)
+  row['actual_kernel_reaped']=reaped==child.pid;row['gone_after_reaping']=s.process(child.pid) is None
+  assert row['actual_kernel_reaped'] and row['gone_after_reaping']
+  child.stdout.close()
+ rows.append(row)
+assert s.children(child.pid)[1] is True
+print(json.dumps({'rows':rows,'unknown_reaped_actor_refused':True}))
+`;
+      const probe=spawn('python3',['-c',script],{env:{PATH:process.env.PATH},stdio:['ignore','pipe','ignore']});
+      let output='';probe.stdout.on('data',chunk=>{output+=chunk;assert.ok(output.length<16384)});
+      const result=await new Promise(resolve=>probe.once('close',(code,signal)=>resolve({code,signal})));
+      assert.deepEqual(result,{code:0,signal:null});
+      const receipt=JSON.parse(output);departedReceipts.push({helperEntry,...receipt});
+      assert.ok(numericProcess(sentinel.pid));
+    }
+    console.log(JSON.stringify({departed_task_controls:departedReceipts}));
     // Control-reader loss alone must settle with the actual owner still alive.
     // Neutralize only the health check in an executing helper to prove this
     // assertion observes owned execution, rather than cleanup after the fact.
@@ -190,5 +254,5 @@ test('healthy cancellation and resistant descendants attest bounded owned comple
     const cancelStart=performance.now(); const cancellation=await cancelled;
     assert.ok(performance.now()-cancelStart<2500);
     assert.equal(cancellation.result.code,'failed');assert.equal(cancellation.cleanup_complete,true);
-  } finally {sentinel.kill('SIGKILL');fs.rmSync(directory,{recursive:true,force:true});}
+  } finally {sentinel.kill('SIGKILL');fs.rmSync(directory,{recursive:true,force:true});await sentinelExited;console.log(JSON.stringify({sentinel_actual_exit:true,signal:sentinel.signalCode}));}
 });

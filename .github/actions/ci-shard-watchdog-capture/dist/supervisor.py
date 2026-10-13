@@ -6,6 +6,7 @@ ancestry polls. This changes only this process's unprivileged child-reaping flag
 """
 
 import ctypes
+import errno
 import json
 import os
 import select
@@ -42,6 +43,7 @@ def process(pid):
 
 
 def children(pid):
+    identity = process(pid)
     try:
         # The supervisor is single-threaded. Other owned processes may not be.
         result = set()
@@ -57,8 +59,21 @@ def children(pid):
                             return result, True
                         result.add(int(n))
         return result, truncated
-    except (OSError, ValueError):
-        return set(), process(pid) is not None
+    except (OSError, ValueError) as error:
+        current = process(pid)
+        # A task can disappear after listing while its same-identity owner
+        # becomes a zombie. Only ENOENT plus a known departed identity closes
+        # this scan; final settlement still requires kernel ECHILD below.
+        if (
+            isinstance(error, OSError)
+            and error.errno == errno.ENOENT
+            and identity
+            and (current is None or (current[0] == identity[0] and current[1] in ("Z", "X")))
+        ):
+            return set(), False
+        # Permission, malformed data, unknown/reused identity and live actors
+        # remain unobserved/truncated; never turn them into a positive scan.
+        return set(), True
 
 
 def main():

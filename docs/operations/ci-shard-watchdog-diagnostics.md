@@ -81,6 +81,9 @@ adopts descendants even when an intermediate parent exits immediately or a child
 creates a new session. Original child status and owned settlement are separate
 closed records. Cleanup requires kernel child reaping, a positive settlement
 record and supervisor exit; an empty polling result alone cannot attest it.
+A disappearing task file closes a scan only on `ENOENT` with a known departed
+process identity. Permission failures, malformed data, unknown or reused actors
+and actual truncation remain incomplete; kernel reaping still closes settlement.
 Cancellation enters bounded cleanup immediately. Supervisor ownership also
 settles if the action process disappears or its control reader closes. Descriptor
 health is checked independently on every bounded supervisor loop, even when a
