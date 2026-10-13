@@ -108,6 +108,12 @@ test('healthy cancellation and resistant descendants attest bounded owned comple
       assert.ok(!numericProcess(abandonedSupervisor)||['Z','X'].includes(numericProcess(abandonedSupervisor).state));
       assert.ok(numericProcess(sentinel.pid));
     } finally {for(const pid of [abandonedPid,abandonedSupervisor])if(pid){try{process.kill(pid,'SIGKILL')}catch(_){}}lost.kill('SIGKILL');}
+    // An adopted/unrelated parent cannot stand in for the launching owner.
+    const mustNotStart=path.join(directory,'wrong-owner-started');
+    const ownerMismatch=spawn('python3',[path.resolve(__dirname,'../src/supervisor.py'),String(sentinel.pid),String(numericProcess(sentinel.pid).start_ticks),process.execPath,'-e',`require('node:fs').writeFileSync(${JSON.stringify(mustNotStart)},'started')`],{env:{PATH:process.env.PATH},stdio:'ignore'});
+    const denied=await new Promise(resolve=>ownerMismatch.once('exit',code=>resolve(code)));
+    assert.equal(denied,2);assert.equal(fs.existsSync(mustNotStart),false);
+    assert.ok(numericProcess(sentinel.pid));
     // Neutralizing the supervisor cannot turn empty polling into completion.
     fs.writeFileSync(parent,`const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(childFile)},String(process.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`);
     fs.unlinkSync(childFile);

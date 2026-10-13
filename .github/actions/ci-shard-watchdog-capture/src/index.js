@@ -113,7 +113,9 @@ function descendantSamples(rootPid) {
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function managed(command, args, options = {}) {
   const {ipc = false, ...launch} = options;
-  const child = spawn('python3', [path.join(__dirname, 'supervisor.py'), command, ...args],
+  const owner = numericProcess(process.pid);
+  const child = spawn('python3', [path.join(__dirname, 'supervisor.py'), String(process.pid),
+    String(owner?.start_ticks || 0), command, ...args],
     {...launch, detached: true, stdio: ['ignore', 'pipe', 'ignore', ...(ipc ? ['ipc'] : [])]});
   const owned = new Map();
   let exited = false, overflow = false, settled = false, settlementSeen = false, valid = true, outcome = null;

@@ -61,7 +61,18 @@ def children(pid):
 
 
 def main():
-    if sys.platform != "linux" or len(sys.argv) < 2:
+    if sys.platform != "linux" or len(sys.argv) < 4:
+        return 2
+    parent_pid, parent_start = int(sys.argv[1]), int(sys.argv[2])
+    parent_identity = process(parent_pid)
+    if (
+        parent_pid != os.getppid()
+        or parent_pid <= 1
+        or not parent_identity
+        or parent_identity[0] != parent_start
+        or parent_start <= 0
+        or parent_identity[1] in ("Z", "X")
+    ):
         return 2
     libc = ctypes.CDLL(None, use_errno=True)
     # PR_SET_CHILD_SUBREAPER. No capabilities or host-wide state changes.
@@ -81,7 +92,7 @@ def main():
     if ipc not in (None, "3"):
         return 2
     child = subprocess.Popen(
-        sys.argv[1:],
+        sys.argv[3:],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -90,8 +101,6 @@ def main():
     )
     if ipc == "3":
         os.close(3)
-    parent_pid = os.getppid()
-    parent_identity = process(parent_pid)
     owned = {}
     overflow = False
     outcome = None
