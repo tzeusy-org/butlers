@@ -28,6 +28,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 15 | 2026-10-03 | 15 | bu-q7vx1q | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
 | 16 | 2026-10-06 | 15 | bu-s11n0s | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
 | 17 (SDLC velocity) | 2026-10-06 | 15 | bu-ly3lv5 | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) |
+| 18 (platform simplification) | 2026-10-13 | 15 | bu-dss7he | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) |
 
 ## Tier history
 
@@ -348,6 +349,24 @@ Titles only; packets live in the epic's child beads and in the run's data file (
 13. A retired-surfaces registry with a guard, and the first verified retirement wave
 14. One home per backend mechanism: a connector ingest, pool and health kit, one router DB dependency, and an AST duplicate ratchet
 15. A guidance diet with a staleness guard: bd prime under 10 KB, AGENTS.md under the 32 KiB cap, and dead references failing at PR time
+
+### 18 (platform simplification) (2026-10-13) · epic bu-dss7he
+
+1. Honest failure surfaces: delete the dead healing dispatcher and the QA Retry route that can never succeed, the unfireable calendar_event_end trigger, and the per-tick schema probes
+2. Schema isolation fails closed everywhere: delete the deployment-posture switch and the role-less pool bypass
+3. One trustworthy audit ledger: append-only public.audit_log with a DB-attested writer, absorbing switchboard.operator_audit_log, with append() in core
+4. One route executor for live and recovered rows, then dissolve the pipeline module, then give Messenger its own deliver executor with the caller check preserved
+5. One approval decision path and a caller-verified route retirement wave, guarded so uncalled routes fail at PR time
+6. One database authority model: migrator, runtime and bootstrap logins, a roster-derived deny-by-default grant manifest, every definer in Alembic, init-db.sql down to roles and schemas
+7. One Google credential exchange with one revoked-grant rule, then one Google account fleet for gmail, calendar and drive
+8. One home per API shape: generate frontend types from the FastAPI OpenAPI schema, delete the hand mirror and barrel, retire the TS-fragment contract test
+9. One connector identity: a ConnectorDescriptor table from which Helm values, heartbeat, bearer-scrub labels, OAuth scopes, channel contracts and the dashboard catalog derive
+10. Jobs live beside their owners: Module.jobs() and roster JOBS maps replace the central per-butler handler map, validated at schedule sync, with one Chronicler projection job
+11. Migrate once from one runner: a public chain run once, daemons verify the head, and every chain squashed to a catalog-verified baseline (calendar tables move to their module)
+12. One owner-notify builder and one Switchboard-deliver transport for every producer
+13. One sink per signal: stdout plus a bounded WARN+ log table, an ingestion funnel read from public.ingestion_events, and OTel as the only daemon metrics API
+14. Helm is the only deploy path: delete `butlers deploy`, compose --prod and the compose observability profile, and replace the restore-drill executor with an ephemeral-Postgres CronJob
+15. Git history is the archive: delete COPY_INVENTORY.md, triage the 579 never-landed archived requirements, then delete openspec/changes/archive and sweep expired active changes
 
 ## Post-hoc review: runs 01-10 (2026-10-08)
 

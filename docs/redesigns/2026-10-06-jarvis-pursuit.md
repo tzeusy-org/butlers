@@ -4,7 +4,7 @@
 
 Fifteen moves survive deduplication against fifteen prior dossiers and about 400 non-closed beads: seven trust repairs lead, eight new capabilities follow. Run 15's fleet shipped 13 of its 15 moves in three days; QC confirms eight as designed and finds five partial, and their untracked residues are ranks 1, 3 and 4. All five rotating lenses were new to the pursuit.
 
-[Structured evidence](2026-10-06-jarvis-pursuit-data.json)
+Full per-agent structured output lived in `2026-10-06-jarvis-pursuit-data.json`, pruned from the tree under the two-newest-runs retention rule; read it with `git show fb0dad17316c0b20869e7b4de97ea0ba97fbb1a6:docs/redesigns/2026-10-06-jarvis-pursuit-data.json` (pipe into jq in place of the path in the access patterns below).
 
 ## Decision in view
 
