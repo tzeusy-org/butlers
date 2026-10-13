@@ -89,6 +89,16 @@ for these tables; no new role, credential, cross-schema grant or export
 exclusion is introduced. Restore must preserve the original receipts, immutable
 identities and non-reacceptance triggers as well as runtime denial controls.
 
+The retained-evidence restore test uses the prebootstrapped target described
+under "Ownership precondition": trusted bootstrap and the current core
+migrations establish complete protected interfaces before the unchanged
+published artifact is restored. Bootstrap alone only provisions their fixed
+installers on an empty target. Restoring retained interface fragments first
+can leave an incomplete control plane that the finalizers correctly refuse.
+The test certifies restore ownership, replays bootstrap, and measures retained
+receipts and runtime denials; initialization contributes no target acceptance
+or Switchboard intent rows.
+
 ### What the backup does not contain
 
 The dump runs as the shared `POSTGRES_USER` migration/runtime login. That login

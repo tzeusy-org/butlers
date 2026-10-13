@@ -510,6 +510,7 @@ def test_ingestion_acceptance_survives_published_backup_and_restore(
     """REQ-ingestion-target-delivery-recovery-002: restore never reopens accepted work."""
     import asyncio
     import json
+    import shlex
     import uuid
 
     import asyncpg
@@ -522,7 +523,11 @@ def test_ingestion_acceptance_survives_published_backup_and_restore(
     )
     from butlers.core.utils import generate_uuid7_string
     from butlers.migrations import run_migrations
-    from butlers.testing.migration import _bootstrap_migration_prerequisites
+    from butlers.testing.migration import (
+        _bootstrap_migration_prerequisites,
+        bootstrap_extensions,
+    )
+    from tests.scripts.test_pg_restore_definer_ownership import _docker_client
 
     backup_url, privileged_url = bootstrapped
     asyncio.run(run_migrations(backup_url, chain="core", schema="health"))
@@ -630,12 +635,55 @@ def test_ingestion_acceptance_survives_published_backup_and_restore(
         assert f"COPY {table} " in artifact
     assert str(receipt) in artifact and binding.payload_digest in artifact
     assert "backup-private-" not in artifact
-    restored_control_url = _restore_artifact(
-        artifact, postgres_container, f"restored_acceptance_{migration_db_name()}"
+    # The canonical artifact deliberately excludes protected control-plane
+    # objects. Restore onto the documented prebootstrapped target: the fixed
+    # installers must establish the complete interfaces before any retained
+    # dump fragments arrive. Reuse the source migration login and trusted
+    # testcontainer control login; no recovery role or grant is introduced.
+    restored_db = f"restored_acceptance_{migration_db_name()}"
+    migration_user = urlparse(backup_url).username
+    control_url = postgres_container.get_connection_url()
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            quote_identifier = conn.dialect.identifier_preparer.quote
+            conn.execute(
+                text(
+                    f"CREATE DATABASE {quote_identifier(restored_db)} "
+                    f"OWNER {quote_identifier(migration_user)}"
+                )
+            )
+    finally:
+        engine.dispose()
+    restored_control_url = migration_bootstrap_db_url(postgres_container, restored_db)
+    restored_url = urlparse(backup_url)._replace(path=f"/{restored_db}").geturl()
+    bootstrap_extensions(restored_control_url)
+    _bootstrap_migration_prerequisites(restored_control_url, migration_user)
+    command.upgrade(_build_alembic_config(restored_url, chains=["core"]), "core@head")
+    _bootstrap_migration_prerequisites(restored_control_url, migration_user)
+    # No target-local acceptance or Switchboard intent can satisfy the later
+    # exact readback unless it came from the published artifact.
+    for table in tables:
+        assert _query(restored_url, "SELECT to_regclass(:table)", table=table) == [(None,)]
+    assert _query(restored_url, "SELECT count(*) FROM public.route_acceptance_ledger") == [(0,)]
+
+    # Exercise the actual ownership-auditing restore script on the original
+    # published gzip. Omitting --drop-existing preserves that trusted setup.
+    published_bytes = artifacts[0].read_bytes()
+    control = urlparse(control_url)
+    result = _docker_client(
+        artifacts[0],
+        'export POSTGRES_PASSWORD="$PGPASSWORD_FOR_TEST"; '
+        "bash /pg_restore.sh /backup.sql.gz --host host.docker.internal "
+        f"--port {shlex.quote(str(postgres_container.get_exposed_port(5432)))} "
+        f"--user {shlex.quote(control.username or '')} "
+        f"--target-db {shlex.quote(restored_db)}",
+        password=control.password or "",
     )
-    restored_url = urlparse(backup_url)._replace(path=urlparse(restored_control_url).path).geturl()
+    assert result.returncode == 0, "canonical restore must certify original function ownership"
+    assert artifacts[0].read_bytes() == published_bytes
     # Replay the actual broad bootstrap grants before measuring runtime denial.
-    _bootstrap_migration_prerequisites(restored_control_url, urlparse(backup_url).username)
+    _bootstrap_migration_prerequisites(restored_control_url, migration_user)
     for table in tables:
         assert _query(restored_url, f"SELECT * FROM {table}") == expected[table]
     assert _query(restored_url, "SELECT count(*) FROM health.route_inbox") == [(0,)]
