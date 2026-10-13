@@ -50,7 +50,10 @@ counters, threads256, frames64/thread, registered descendants256, checkpoint16Mi
 and eight immutable slots bound resource use. Cooperative stack sampling records
 only approved tracked static file/blob/line references. It cannot recover every
 native/GIL-stuck stack. Independent numeric descendant sampling can remain
-available while cooperative sampling is unavailable.
+available while cooperative sampling is unavailable. Process and stack elapsed
+values share the existing literal nonnegative bounded-integer contract. Invalid
+observer state becomes an UNKNOWN gap before sealing; a sealed malformed value
+is refused by the strict reader before upload admission.
 
 Slots are scheduled at action elapsed0/120/300/600/900/1200/1440/1560 seconds.
 Action elapsed is not provider job elapsed. Unknown setup offsets or a missing

@@ -271,6 +271,120 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
     valid = diagnostic.read_json(healthy / "snapshot.json")
     worker = next(p for p in valid["processes"] if p["role"] == "worker" and p["nodes"])
     selected_node = next(iter(worker["nodes"]))
+    # Every admission path applies the same numeric rule before private bytes can
+    # reach the isolated upload client. Neutralize only that rule in a private
+    # companion to prove these controls detect the original omission.
+    source_root = Path(__file__).resolve().parents[2]
+    source = (source_root / "scripts/ci_watchdog_diagnostics.py").read_text()
+    guard = '    number(value["stack_elapsed_ms"])\n'
+    assert source.count(guard) == 1
+    unsafe_source = source.replace(guard, "")
+    unsafe = dict(diagnostic.__dict__, __name__="numeric_companion")
+    exec(compile(unsafe_source, "numeric-companion", "exec"), unsafe)
+    unsafe_cli = tmp_path / "numeric-companion.py"
+    unsafe_cli.write_text(unsafe_source)
+    binding_file = tmp_path / "numeric-binding.json"
+    diagnostic.atomic(binding_file, bound)
+    module = str(source_root / ".github/actions/ci-shard-watchdog-capture/src/index.js")
+    uploader = tmp_path / "numeric-uploader.js"
+    driver = tmp_path / "numeric-driver.js"
+    uploader.write_text(
+        "const fs=require('node:fs'),{spawnSync}=require('node:child_process');\n"
+        f"const {{uploadWithClient}}=require({json.dumps(module)});\n"
+        "const control=JSON.parse(fs.readFileSync(require('node:path').join(__dirname,'numeric-control.json')));\n"
+        "process.once('message',async message=>{\n"
+        f" const gate=spawnSync({json.dumps(sys.executable)},"
+        "[control.cli,'check-seal','--directory',message.directory,"
+        f"'--binding',{json.dumps(str(binding_file))}],{{stdio:'ignore'}});\n"
+        " if(gate.status!==0){process.send({code:'failed',id:null,digest:null,size:null},"
+        "()=>process.exit(0));return;}\n"
+        " const client={async uploadArtifact(name,files){\n"
+        "  const body=JSON.parse(fs.readFileSync(files.find(p=>p.endsWith('snapshot.json'))));\n"
+        "  fs.writeFileSync(control.marker,JSON.stringify("
+        "body.processes.map(p=>p.stack_elapsed_ms)));\n"
+        "  return {id:9,digest:'a'.repeat(64),size:1};}};\n"
+        " process.send(await uploadWithClient(client,message),()=>process.exit(0));\n"
+        "});\n"
+    )
+    driver.write_text(
+        f"const {{boundedUpload}}=require({json.dumps(module)});\n"
+        "boundedUpload({name:'ci-watchdog-unit-1-123-1-cccccccccccc-0',directory:process.argv[2]},"
+        "process.env,2000,process.argv[3]).then(value=>console.log(JSON.stringify(value)))"
+        ".catch(()=>{process.exitCode=2});\n"
+    )
+
+    def admitted(slot, cli, marker):
+        environment = diagnostic.subject_environment(os.environ)
+        diagnostic.atomic(
+            tmp_path / "numeric-control.json", {"cli": str(cli), "marker": str(marker)}
+        )
+        result = subprocess.run(
+            ["node", str(driver), str(slot), str(uploader)],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        receipt = json.loads(result.stdout)
+        assert receipt["cleanup_complete"] is True
+        return receipt["result"]["code"]
+
+    cli = source_root / "scripts/ci_watchdog_diagnostics.py"
+    for index, value in enumerate(
+        (
+            0,
+            "PRIVATE_STACK_CLOCK_CANARY",
+            {"provider": "PRIVATE_STACK_OBJECT_CANARY"},
+            True,
+            1.5,
+            -1,
+            2**31,
+            1,
+        )
+    ):
+        case, case_bound = _capture(tmp_path, data, assignment, f"numeric-{index}")
+        state = copy.deepcopy(worker)
+        state["stack_elapsed_ms"] = value
+        diagnostic.atomic(case / "states/123.json", state)
+        slot = diagnostic.checkpoint(case, 0, elapsed_ms=1000)
+        checked = diagnostic.read_json(slot / "snapshot.json")
+        marker = tmp_path / f"numeric-{index}-sdk.json"
+        healthy_clock = index in (0, 7)
+        if healthy_clock:
+            diagnostic.validate_process(state, case_bound)
+            assert checked["processes"][0]["stack_elapsed_ms"] == value
+        else:
+            with pytest.raises(ValueError, match="diagnostic integer malformed"):
+                diagnostic.validate_process(state, case_bound)
+            forged = copy.deepcopy(valid)
+            selected = next(p for p in forged["processes"] if p["worker"] == worker["worker"])
+            selected["stack_elapsed_ms"] = value
+            with pytest.raises(ValueError, match="diagnostic integer malformed"):
+                diagnostic.validate_snapshot(forged, bound)
+            assert checked["processes"] == []
+            assert "observer_failure" in checked["gaps"]
+            assert "PRIVATE_STACK" not in (slot / "snapshot.json").read_text()
+        assert admitted(slot, cli, marker) == "finalized"
+        assert json.loads(marker.read_text()) == ([value] if healthy_clock else [])
+        if healthy_clock:
+            continue
+        # The unguarded companion seals the exact malformed state. The real
+        # strict reader and uploader must refuse those immutable sealed bytes.
+        unsafe["validate_process"](state, case_bound)
+        unsafe_slot = unsafe["checkpoint"](case, 1, elapsed_ms=1000)
+        with pytest.raises(ValueError, match="diagnostic integer malformed"):
+            diagnostic.read_checkpoint(unsafe_slot, case_bound)
+        refused_marker = tmp_path / f"numeric-{index}-refused-sdk.json"
+        assert admitted(unsafe_slot, cli, refused_marker) == "failed"
+        assert not refused_marker.exists()
+        unsafe_marker = tmp_path / f"numeric-{index}-unsafe-sdk.json"
+        assert admitted(unsafe_slot, unsafe_cli, unsafe_marker) == "finalized"
+        assert json.loads(unsafe_marker.read_text()) == [value]
+        # The same refusal assertion is RED against the neutralized reader.
+        with pytest.raises(pytest.fail.Exception):
+            with pytest.raises(ValueError):
+                unsafe["read_checkpoint"](unsafe_slot, case_bound)
     for mutation in ("bool_count", "duplicate_phase", "unknown_frame", "counter_overflow"):
         wrong = copy.deepcopy(valid)
         selected_worker = next(p for p in wrong["processes"] if p["worker"] == worker["worker"])

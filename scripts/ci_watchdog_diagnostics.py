@@ -783,6 +783,7 @@ def validate_process(value, bound):
         raise ValueError("diagnostic worker identity malformed")
     number(value["sequence"])
     number(value["elapsed_ms"])
+    number(value["stack_elapsed_ms"])
     fields(
         value["process"],
         {"pid", "ppid", "start_ticks", "state", "threads", "cpu_ticks", "rss_pages"},
