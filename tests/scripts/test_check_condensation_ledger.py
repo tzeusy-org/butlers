@@ -96,6 +96,82 @@ def test_existing_loss_cannot_hide_behind_name_or_deleted_source(tmp_path, chang
     path.write_text(before)
     path.chmod(original_mode)
     assert ledger.verify(root, "HEAD", [])["status"] == "PASS"
+    assert change != "fixture" or _committed_context_suppressions(tmp_path / "contexts")
+
+
+def _committed_context_suppressions(tmp_path):
+    """Actual committed additions cannot turn a failure into an admitted skip."""
+    root = _repository(tmp_path)
+    path = root / "tests/test_owner.py"
+    original = "import pytest\n\ndef test_owner():\n    assert False\n"
+
+    def commit():
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "user.name=Proof",
+                "-c",
+                "user.email=proof@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-qm",
+                "context control",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    def execute():
+        return subprocess.run(
+            [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    path.write_text(original)
+    (root / "suppress.py").write_text(
+        "import pytest\nimport sys\n"
+        "sys.modules['test_owner'].test_owner.pytestmark = pytest.mark.skip()\n"
+    )
+    commit()
+    base = ledger.git(root, "rev-parse", "HEAD")
+    failed = execute()
+    assert failed.returncode == 1 and "1 failed" in failed.stdout
+    for kind in ("attribute", "new-conftest", "import", "added-test-decorator"):
+        conftest = root / "tests/conftest.py"
+        if kind == "attribute":
+            path.write_text(original + "\ntest_owner.pytestmark = pytest.mark.skip()\n")
+        elif kind == "import":
+            path.write_text(original + "\nimport suppress\n")
+        elif kind == "added-test-decorator":
+            path.write_text(
+                original + "\n@(lambda f: (setattr(test_owner, 'pytestmark', "
+                "pytest.mark.skip()), f)[1])\ndef test_added():\n    pass\n"
+            )
+        else:
+            path.write_text(original)
+            conftest.write_text(
+                "import pytest\n\n@pytest.fixture(autouse=True)\n"
+                'def unavailable():\n    pytest.skip("unavailable")\n'
+            )
+        commit()
+        assert not ledger.git(root, "status", "--porcelain", "--untracked-files=no")
+        skipped = execute()
+        assert skipped.returncode == 0 and "1 skipped" in skipped.stdout
+        with pytest.raises(ledger.EvidenceError, match="unproven"):
+            ledger.verify(root, base, [])
+        path.write_text(original)
+        conftest.unlink(missing_ok=True)
+        commit()
+        assert ledger.verify(root, base, [])["status"] == "PASS"
+    return True
 
 
 @pytest.mark.parametrize("body", ['{"schema":1,"schema":2}', "[]", '{"value":NaN}', "{broken"])
@@ -235,6 +311,50 @@ def test_assertion_addition_preserves_original_order(tmp_path):
 
     assert _fresh_refusal_diagnostic(tmp_path)
     assert _ci_union_event_base(tmp_path)
+    assert _inert_context_controls(tmp_path / "inert")
+
+
+def _inert_context_controls(tmp_path):
+    root = _repository(tmp_path)
+    path = root / "tests/test_owner.py"
+    original = path.read_text()
+    for addition in (
+        "\nNEW_LABEL = ('fresh', 1, None)\n",
+        "\ndef helper(default=None):\n    return default\n",
+        "\ndef test_added():\n    assert True\n",
+        "\nclass TestAdded:\n    def test_added(self):\n        assert True\n",
+    ):
+        path.write_text(original + addition)
+        assert ledger.verify(root, "HEAD", [])["status"] == "PASS"
+    for addition in (
+        "\nimport pathlib\n",
+        "\n@(lambda f: (setattr(test_owner, 'pytestmark', pytest.mark.skip()), f)[1])\n"
+        "def test_added():\n    pass\n",
+        "\ndef test_added(value=pytest.skip('definition')):\n    pass\n",
+        "\nclass TestAdded:\n"
+        "    @(lambda f: (setattr(test_owner, 'pytestmark', pytest.mark.skip()), f)[1])\n"
+        "    def test_added(self):\n        pass\n",
+        "\ntest_owner.pytestmark = pytest.mark.skip()\n",
+        "\nsetattr(test_owner, 'pytestmark', pytest.mark.skip())\n",
+        "\ndef helper(default=pytest.skip('definition')):\n    return default\n",
+        "\n@pytest.fixture(autouse=True)\ndef extra():\n    pytest.skip('fixture')\n",
+        "\nclass Extra:\n    test_owner.pytestmark = pytest.mark.skip()\n",
+        "\ndef pytest_collection_modifyitems(items):\n    items.clear()\n",
+        "\ndef setup_function():\n    pytest.skip('setup')\n",
+        "\n__test__ = False\n",
+        "\nvalue = 0\n",
+    ):
+        path.write_text(original + addition)
+        with pytest.raises(ledger.EvidenceError, match="unproven"):
+            ledger.verify(root, "HEAD", [])
+    path.write_text(original)
+    # A new conftest only affects the tests under its actual ancestor scope.
+    unrelated = root / "tests/other/conftest.py"
+    unrelated.parent.mkdir()
+    unrelated.write_text("import pytest\npytestmark = pytest.mark.skip()\n")
+    subprocess.run(["git", "-C", str(root), "add", str(unrelated)], check=True)
+    assert ledger.verify(root, "HEAD", [])["status"] == "PASS"
+    return True
 
 
 def _ci_union_event_base(tmp_path):
