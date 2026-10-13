@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -289,35 +290,63 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
     module = str(source_root / ".github/actions/ci-shard-watchdog-capture/src/index.js")
     uploader = tmp_path / "numeric-uploader.js"
     driver = tmp_path / "numeric-driver.js"
+    # Invoke actual uploaderMain with only its SDK constructor substituted. Its
+    # own strict reader and nested managed helper run before the mock client.
     uploader.write_text(
-        "const fs=require('node:fs'),{spawnSync}=require('node:child_process');\n"
-        f"const {{uploadWithClient}}=require({json.dumps(module)});\n"
-        "const control=JSON.parse(fs.readFileSync(require('node:path').join(__dirname,'numeric-control.json')));\n"
-        "process.once('message',async message=>{\n"
-        f" const gate=spawnSync({json.dumps(sys.executable)},"
-        "[control.cli,'check-seal','--directory',message.directory,"
-        f"'--binding',{json.dumps(str(binding_file))}],{{stdio:'ignore'}});\n"
-        " if(gate.status!==0){process.send({code:'failed',id:null,digest:null,size:null},"
-        "()=>process.exit(0));return;}\n"
-        " const client={async uploadArtifact(name,files){\n"
-        "  const body=JSON.parse(fs.readFileSync(files.find(p=>p.endsWith('snapshot.json'))));\n"
-        "  fs.writeFileSync(control.marker,JSON.stringify("
-        "body.processes.map(p=>p.stack_elapsed_ms)));\n"
-        "  return {id:9,digest:'a'.repeat(64),size:1};}};\n"
-        " process.send(await uploadWithClient(client,message),()=>process.exit(0));\n"
-        "});\n"
+        "const fs=require('node:fs'),path=require('node:path'),Module=require('node:module');\n"
+        "const control=JSON.parse(fs.readFileSync(path.join(__dirname,'numeric-control.json')));\n"
+        "const load=Module._load;Module._load=function(request,...args){\n"
+        " if(request==='@actions/artifact')return {DefaultArtifactClient:class {\n"
+        "  constructor(){fs.writeFileSync(control.marker+'.constructed','constructed');}\n"
+        "  async uploadArtifact(name,files){\n"
+        "   const body=JSON.parse(fs.readFileSync(files.find(p=>p.endsWith('snapshot.json'))));\n"
+        "   fs.writeFileSync(control.marker,JSON.stringify(body.processes.map(p=>p.stack_elapsed_ms)));\n"
+        "   return {id:9,digest:'a'.repeat(64),size:1};}}};\n"
+        " return load.call(this,request,...args);};\n"
+        f"Module.runMain({json.dumps(module)});\n"
     )
+    # Match runAction's strict admission before the bounded SDK boundary. The
+    # mock SDK contains no unrelated unmanaged interpreter child of its own.
     driver.write_text(
+        "const fs=require('node:fs'),{spawnSync}=require('node:child_process');\n"
+        "const children=require('node:child_process'),originalSpawn=children.spawn,events=[];\n"
+        "children.spawn=(...args)=>{const child=originalSpawn(...args);let buffer='';\n"
+        " child.stdout?.on('data',chunk=>{buffer+=chunk.toString('utf8');\n"
+        " while(buffer.includes('\\n')){const at=buffer.indexOf('\\n'),line=buffer.slice(0,at);buffer=buffer.slice(at+1);\n"
+        " try{const value=JSON.parse(line);if(['ready','outcome','settled'].includes(value.event))events.push(value);}catch{} }});\n"
+        " child.once('close',(code,signal)=>events.push({event:'actual-helper-close',pid:child.pid,code,signal}));return child;};\n"
         f"const {{boundedUpload}}=require({json.dumps(module)});\n"
-        "boundedUpload({name:process.argv[4],directory:process.argv[2]},"
-        "process.env,2000,process.argv[3]).then(value=>console.log(JSON.stringify(value)))"
-        ".catch(()=>{process.exitCode=2});\n"
+        "const control=JSON.parse(fs.readFileSync(require('node:path').join(__dirname,'numeric-control.json')));\n"
+        f"const gate=spawnSync({json.dumps(sys.executable)},"
+        "[control.cli,'check-seal','--directory',process.argv[2],"
+        f"'--binding',{json.dumps(str(binding_file))}],{{stdio:'ignore'}});\n"
+        "if(control.parent_gate&&gate.status!==0){console.log(JSON.stringify({strict_gate_exit:gate.status,upload:null}));}\n"
+        "else boundedUpload({name:process.argv[4],directory:process.argv[2]},"
+        "process.env,2000,process.argv[3]).then(value=>console.log(JSON.stringify("
+        "{strict_gate_exit:gate.status,upload:value,lifecycle:events}))).catch(()=>{process.exitCode=2});\n"
     )
 
-    def admitted(slot, cli, marker):
+    def admitted(slot, cli, marker, *, parent_gate=True):
         environment = diagnostic.subject_environment(os.environ)
+        environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment["PATH"]
+        workspace = tmp_path / "numeric-workspace"
+        reader = workspace / "capture/scripts/ci_watchdog_diagnostics.py"
+        reader.parent.mkdir(parents=True, exist_ok=True)
+        reader.write_text(cli.read_text())
+        interpreter = workspace / "subject/.venv/bin/python"
+        interpreter.parent.mkdir(parents=True, exist_ok=True)
+        if not interpreter.exists():
+            # A private executable wrapper, not a Butler venv or frozen
+            # subject: no install, sync, repair or pytest runs here.
+            interpreter.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
+            interpreter.chmod(interpreter.stat().st_mode | 0o111)
+        inventory = workspace / "watchdog-current-inventory"
+        inventory.mkdir(exist_ok=True)
+        diagnostic.atomic(inventory / "binding.json", numeric_bound)
+        environment.update(GITHUB_WORKSPACE=str(workspace), RUNNER_TEMP=str(workspace))
         diagnostic.atomic(
-            tmp_path / "numeric-control.json", {"cli": str(cli), "marker": str(marker)}
+            tmp_path / "numeric-control.json",
+            {"cli": str(cli), "marker": str(marker), "parent_gate": parent_gate},
         )
         result = subprocess.run(
             [
@@ -334,12 +363,19 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
         )
         assert result.returncode == 0
         receipt = json.loads(result.stdout)
-        assert receipt["cleanup_complete"] is True, {
+        diagnostic.atomic(marker.with_suffix(".lifecycle.json"), receipt)
+        if parent_gate and receipt["strict_gate_exit"] != 0:
+            assert receipt["strict_gate_exit"] == 2
+            assert receipt["upload"] is None
+            assert not marker.exists()
+            assert not marker.with_suffix(marker.suffix + ".constructed").exists()
+            return "failed"
+        assert receipt["upload"]["cleanup_complete"] is True, {
             "slot": str(slot),
             "receipt": receipt,
             "client_reached": marker.exists(),
         }
-        return receipt["result"]["code"]
+        return receipt["upload"]["result"]["code"]
 
     cli = source_root / "scripts/ci_watchdog_diagnostics.py"
     for index, value in enumerate(
@@ -391,6 +427,12 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
         refused_marker = tmp_path / f"numeric-{index}-refused-sdk.json"
         assert admitted(unsafe_slot, cli, refused_marker) == "failed"
         assert not refused_marker.exists()
+        # Bypass only the parent's admission in this private control: the real
+        # uploaderMain must independently refuse before SDK construction.
+        sdk_refused = tmp_path / f"numeric-{index}-sdk-refused.json"
+        assert admitted(unsafe_slot, cli, sdk_refused, parent_gate=False) == "failed"
+        assert not sdk_refused.exists()
+        assert not sdk_refused.with_suffix(sdk_refused.suffix + ".constructed").exists()
         unsafe_marker = tmp_path / f"numeric-{index}-unsafe-sdk.json"
         assert admitted(unsafe_slot, unsafe_cli, unsafe_marker) == "finalized"
         assert json.loads(unsafe_marker.read_text()) == [value]
