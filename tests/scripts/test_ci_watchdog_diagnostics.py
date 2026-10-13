@@ -295,6 +295,20 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
     uploader.write_text(
         "const fs=require('node:fs'),path=require('node:path'),Module=require('node:module');\n"
         "const control=JSON.parse(fs.readFileSync(path.join(__dirname,'numeric-control.json')));\n"
+        "const children=require('node:child_process'),spawn=children.spawn,events=[];\n"
+        "children.spawn=(...args)=>{const child=spawn(...args);let buffer='';\n"
+        " child.stdout?.on('data',chunk=>{buffer+=chunk.toString('utf8');\n"
+        " while(buffer.includes('\\n')){const at=buffer.indexOf('\\n'),line=buffer.slice(0,at);buffer=buffer.slice(at+1);\n"
+        " try{const value=JSON.parse(line);if(['ready','outcome','settled'].includes(value.event))events.push(value);}catch{} }});\n"
+        " child.once('close',(code,signal)=>events.push({event:'actual-helper-close',pid:child.pid,code,signal}));return child;};\n"
+        # The numeric boundary has no assertion about Node's graceful thread
+        # teardown. Position its departure after the real IPC-send callback;
+        # the unchanged supervisor must still prove actual kernel settlement.
+        "process.exit=code=>{\n"
+        " const raw=fs.readFileSync('/proc/self/stat','utf8'),fields=raw.slice(raw.lastIndexOf(')')+2).trim().split(/\\s+/);\n"
+        " fs.writeFileSync(control.marker+'.departure.json',JSON.stringify({code,pid:process.pid,"
+        "start_ticks:Number(fields[19]),tasks:fs.readdirSync('/proc/self/task').length,nested:events}));\n"
+        " process.kill(process.pid,'SIGKILL');};\n"
         "const load=Module._load;Module._load=function(request,...args){\n"
         " if(request==='@actions/artifact')return {DefaultArtifactClient:class {\n"
         "  constructor(){fs.writeFileSync(control.marker+'.constructed','constructed');}\n"
@@ -348,18 +362,43 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
             tmp_path / "numeric-control.json",
             {"cli": str(cli), "marker": str(marker), "parent_gate": parent_gate},
         )
-        result = subprocess.run(
-            [
-                "node",
-                str(driver),
-                str(slot),
-                str(uploader),
-                f"ci-watchdog-unit-1-{numeric_bound['run']}-{numeric_bound['attempt']}-{numeric_bound['nonce'][:12]}-{slot.name.removeprefix('slot-')}",
-            ],
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=10,
+        sentinel = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        sentinel_stat = Path(f"/proc/{sentinel.pid}/stat")
+        try:
+            sentinel_start = int(sentinel_stat.read_text().rsplit(") ", 1)[1].split()[19])
+            result = subprocess.run(
+                [
+                    "node",
+                    str(driver),
+                    str(slot),
+                    str(uploader),
+                    f"ci-watchdog-unit-1-{numeric_bound['run']}-{numeric_bound['attempt']}-{numeric_bound['nonce'][:12]}-{slot.name.removeprefix('slot-')}",
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert sentinel.poll() is None
+            assert int(sentinel_stat.read_text().rsplit(") ", 1)[1].split()[19]) == sentinel_start
+        finally:
+            sentinel.stdin.close()
+            try:
+                sentinel_status = sentinel.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                sentinel.kill()
+                sentinel.wait(timeout=1)
+                raise
+        assert sentinel_status == 0
+        diagnostic.atomic(
+            Path(str(marker) + ".sentinel.json"),
+            {"pid": sentinel.pid, "start_ticks": sentinel_start, "survived": True, "exit": 0},
         )
         assert result.returncode == 0
         receipt = json.loads(result.stdout)
@@ -375,6 +414,22 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
             "receipt": receipt,
             "client_reached": marker.exists(),
         }
+        departure = diagnostic.read_json(Path(str(marker) + ".departure.json"))
+        ready = next(event for event in receipt["lifecycle"] if event["event"] == "ready")
+        assert departure["code"] == 0
+        assert departure["pid"] == ready["pid"]
+        assert departure["start_ticks"] == ready["start_ticks"] > 0
+        assert departure["tasks"] > 0
+        assert {"event": "outcome", "code": None, "signal": "SIGKILL"} in receipt["lifecycle"]
+        assert {"event": "settled", "complete": True} in receipt["lifecycle"]
+        assert receipt["lifecycle"][-1]["event"] == "actual-helper-close"
+        assert receipt["lifecycle"][-1]["code"] == 0
+        nested = departure["nested"]
+        assert next(event for event in nested if event["event"] == "outcome")["code"] == (
+            2 if not parent_gate else 0
+        )
+        assert {"event": "settled", "complete": True} in nested
+        assert nested[-1]["event"] == "actual-helper-close" and nested[-1]["code"] == 0
         return receipt["upload"]["result"]["code"]
 
     cli = source_root / "scripts/ci_watchdog_diagnostics.py"
