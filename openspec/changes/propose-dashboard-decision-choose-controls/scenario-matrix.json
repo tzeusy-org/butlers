@@ -1,0 +1,155 @@
+[
+  {
+    "id": "M01",
+    "scenario": "Fresh eligible choice",
+    "seam": "Real page + mutation/client",
+    "expected": "POST exact displayed option; 200/meta.created=true updates that bead from the returned pending receipt; it remains awaiting the applier. No optimistic closed/applied claim.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx (extend mounted j/k interaction harness with real mutation/client and boundary-level fetch responses)",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M02",
+    "scenario": "Same-option second click/replay",
+    "seam": "Real page + mutation/client",
+    "expected": "A known live row says Already handled and offers no new choice; a race/replay returning200/meta.created=false shows Already handled and the returned existing status/id, not a second receipt.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx (same mounted interaction harness)",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M03",
+    "scenario": "Different-option conflict/parallel tabs or Telegram",
+    "seam": "Real page + mutation/client",
+    "expected": "409 intent_conflict:<state> says Already handled; keep the known receipt or refresh for the actual winning option. Do not claim the losing option was selected or applied. Unknown409 uses honest conflict feedback.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx (same mounted interaction harness); underlying database race reused from tests/core/test_decision_desk.py::test_concurrent_recorders_admit_exactly_one_live_intent",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M04",
+    "scenario": "Concurrent same/different option recorders",
+    "seam": "Existing real-Postgres store",
+    "expected": "Database live index admits one live pending/applying/applied intent; identical replay returns it, different choice conflicts. UI suppression is advisory and cannot replace this invariant.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "tests/core/test_decision_desk.py::test_concurrent_recorders_admit_exactly_one_live_intent and test_database_rejects_a_second_live_intent (reuse; do not create parallel invariant tests)",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M05",
+    "scenario": "Missing/malformed detail or unsupported option length",
+    "seam": "Real page",
+    "expected": "Keep description/deadline/reason/source context. No selectable invented/default option. Only exact strings satisfying the current1..512-character intent body bound can be offered as controls; an unsupported source option is named without silently truncating it.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx::names malformed structured metadata instead of implying no options (extend existing case)",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M06",
+    "scenario": "Digest unavailable, stale-unavailable, or query error",
+    "seam": "Real page",
+    "expected": "Named degraded/query state; no fabricated all-clear and no actionable cached controls. Preserve known export-as-of plaque. Existing idempotent server replay may still return a known live intent before digest validation; do not rewrite server order.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx existing degraded envelope and export-as-of plaque cases (extend)",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M07",
+    "scenario": "Stale-but-available export and changed/removed/closed source",
+    "seam": "Real API + real-Postgres store",
+    "expected": "Keep export age visible; server validates exact option against its current digest. Removed/unoffered option422 option_not_offered; absent open decision422 decision_not_open; malformed422 structured_details_unavailable; new choice with unavailable digest503. A still-offered unchanged string can be accepted. There is no whole-snapshot version precondition in the owner API. Tracker drift after acceptance is the applier check, not an admission guarantee.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "tests/api/test_decisions.py::test_record_intent_maps_refusals_to_status_codes plus tests/core/test_decision_desk.py::test_refusals_are_categorical_and_record_nothing (reuse existing tests; extend only genuinely missing route cases)",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M08",
+    "scenario": "Unknown option or malformed request",
+    "seam": "Real API",
+    "expected": "No new row for unknown/empty/over512 option;422 categorical or validation response. Browser renders named refusal and refresh affordance without classifying it as handled/applied. Preserve exact option strings, no normalization.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "tests/api/test_decisions.py::test_record_intent_maps_refusals_to_status_codes (extend malformed body cases); frontend mounted response matrix owns display behavior",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M09",
+    "scenario": "Unauthorized, expired/revoked session, missingCSRF or wrongOrigin",
+    "seam": "Mounted OwnerAuthMiddleware + real route/store",
+    "expected": "No intent is persisted on denied transport requests; current401/403/503 fail closed. Browser uses existing apiFetch->ownerFetch session/CSRF flow and presents sign-in/forbidden/unavailable feedback; never sends a browser API key or auto-replays a denied mutation.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "tests/integration/test_telegram_decision_callback_flow.py::test_credentials_are_not_interchangeable (extend owner-route denial and forged caller actor/source cases); reuse tests/api/test_owner_auth_store.py and frontend/src/api/owner-session.test.ts existing session/CSRF tests",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M10",
+    "scenario": "Forged caller actor/source and callback credential on owner route",
+    "seam": "Mounted OwnerAuthMiddleware + real route/store",
+    "expected": "Callback credential authorizes only exact prompt routes, not owner intent route. Owner intent records server-fixed source dashboard/actor owner@dashboard regardless of forged extra body/header data; no client authority is inferred. No dsk1 signing/secret/token enters browser.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "tests/integration/test_telegram_decision_callback_flow.py::test_credentials_are_not_interchangeable (extend; same behavior-test gate species)",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M11",
+    "scenario": "Intent store unreadable, independently of readable export",
+    "seam": "Real page",
+    "expected": "Keep rows, navigation, details and named Recorded choices unavailable note; null intent is unknown, not no choice. Recommended amendment disables new controls until successful read recovery. No applied/all-clear implication.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx::names unreadable intent state instead of implying no choice was recorded (extend); API projection already pinned by tests/api/test_decisions.py::test_list_decisions_degrades_only_the_intent_field",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M12",
+    "scenario": "POST success then GET refresh failure/lag",
+    "seam": "Real page + mutation/client",
+    "expected": "Retain server-confirmed pending/existing receipt for its captured bead within the same authenticated session and name refresh failure separately. Do not erase receipt, infer closed, or re-enable a second choice from an older/null query result. Explicit read refresh may recover. Auth teardown still clears protected caches.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx mounted request harness with deferred POST/GET responses",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M13",
+    "scenario": "POST timeout/disconnect/5xx and late response after selection change",
+    "seam": "Real page + mutation/client",
+    "expected": "Outcome may be unknown. Keep row id/option binding; never update a newly selected different bead, silently resubmit or claim failure means no row. Offer read refresh, then explicit retry through the same idempotent endpoint. Confirmed replies update only their captured bead/session.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx mounted request harness with deferred response/timeout; reuse existing apiFetch timeout and ownerFetch no-replay tests",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M14",
+    "scenario": "Keyboard/discoverability/a11y",
+    "seam": "Real page",
+    "expected": "Preserve j/k useListTriage selection, selected-only expansion, footer and ? hints, deep-link behavior and same-origin detail links. Option controls are native labelled buttons outside the row-selection button, reachable by Tab and Enter/Space with visible focus; pointer and keyboard use the same choose path. No hidden number/default/approve shortcut; any future extra verb must be explicitly adopted and registered through the shared hint/palette mechanism. Busy/result/error is announced.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx j/k/click/deep-link cases plus frontend/src/pages/DecisionsPage.a11y.test.tsx structured context case (extend real-page controls/state; behavior-test species only)",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M15",
+    "scenario": "Pending/applying/applied/failed, drift/crash/outage",
+    "seam": "Existing applier behavior tests + real page rendering",
+    "expected": "Preserve current categorical status and last_error rendering. No UI force-apply/retry/cancel. Failed intents can accept a new explicit choice under001. Source revalidation/reconciliation and three-attempt policy stay with existing applier. Unknown unreadable stranded applying remains awaiting, never promoted.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx existing recorded-intent state cases; tests/scripts/test_beads_decision_applier.py existing pending/crash/drift/outage/retry/unreadable cases reused for backend invariants",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M16",
+    "scenario": "Applied decision reopened",
+    "seam": "Existing protocol limitation",
+    "expected": "Existing applied live index still blocks choices until bu-c58oek lands. Show existing status/Already handled and source-as-of truth; no supersede/reopen API or invented release in this bead.",
+    "gate_species": "behavior-executing test",
+    "nearest_existing_verification": "frontend/src/pages/DecisionsPage.test.tsx mounted409/status case; bu-c58oek owns a separately adopted protocol change",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  },
+  {
+    "id": "M17",
+    "scenario": "Actual applier/export dev smoke",
+    "seam": "Authorized bounded real development seam",
+    "expected": "After explicit instance/TEST-bead authority: UI->existing API->one pending intent->existing CronJob/applier->marker-bearing tracker closure->applied intent->fresh export/GET removal. Observe real records/results without inspecting credentials, real product decisions or live Telegram prompts. No fake-tracker test can substitute.",
+    "gate_species": "authorized real dev-smoke behavior execution",
+    "nearest_existing_verification": "Existing bu-ckkpz.3 task4.2 operational smoke, coordinated by its current owner; bu-tku4df retains this acceptance gate",
+    "evidence_status": "source diagnosis and proposed future verification; no test or smoke executed"
+  }
+]

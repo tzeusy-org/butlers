@@ -1,0 +1,320 @@
+{
+  "bootstrap": {
+    "cwd": "/home/orca/.butlers-worktrees/bu-tku4df-shaping",
+    "branch": "agent/bu-tku4df",
+    "head": "b747a55a530364d987fb37457c343193e9362fe7",
+    "common_git_dir": "/home/orca/orca/projects/butlers/.git"
+  },
+  "files": [
+    {
+      "path": "openspec/specs/dashboard-decisions/spec.md",
+      "sha256": "5c3626315c4769e21276ae6f8025954d1e042eabbf0b013777fb761f648a2b8f"
+    },
+    {
+      "path": "openspec/specs/dashboard-api/spec.md",
+      "sha256": "be3ff29298e095d75abf6274786210c4f7126ffe8e5ba47d83f12f0eb1e5975c"
+    },
+    {
+      "path": "openspec/specs/dashboard-design-language/spec.md",
+      "sha256": "084ec0a3fdaf071d0e86c0d3a43eaa954624e83c8c8cc193ab344d5ad1ab46d1"
+    },
+    {
+      "path": "openspec/changes/owner-decision-desk-write-bridge/proposal.md",
+      "sha256": "d8e1fbfda2e43bbca056bbda53b7ceb2145c959a48f0f7f64ffd2ff632b90dfc"
+    },
+    {
+      "path": "openspec/changes/owner-decision-desk-write-bridge/design.md",
+      "sha256": "4d399d12c348f4702ae7586e2c3ed8056819023ec7e864e02193779d28471439"
+    },
+    {
+      "path": "openspec/changes/owner-decision-desk-write-bridge/tasks.md",
+      "sha256": "a7b67ec017739c1f3c9614e44705693d2a0a7ab8d0d0f514d9c13363a3c92fb5"
+    },
+    {
+      "path": "openspec/changes/owner-decision-desk-write-bridge/specs/dashboard-decisions/spec.md",
+      "sha256": "22813df220589f0e19c624ba562de5cbaca928c471a96b085e50bf009bfcb171"
+    },
+    {
+      "path": "openspec/changes/owner-decision-desk-write-bridge/specs/dashboard-api/spec.md",
+      "sha256": "b68e1c686420bd9eb80cd38aa1f52f97dddca7555223e0c28bb45aad3434667c"
+    },
+    {
+      "path": "openspec/changes/owner-decision-desk-write-bridge/specs/owner-decision-desk/spec.md",
+      "sha256": "ac5c0683e56494ee89bd4856a15926a98b7cc50c2c6981109db4504c77f743fb"
+    },
+    {
+      "path": "openspec/changes/owner-decision-desk-write-bridge/specs/beads-projection/spec.md",
+      "sha256": "aa0b5990c8a514a7de0ae0a780aabfaa52baa7d8a83c1a4b4789cf867ec25787"
+    },
+    {
+      "path": "openspec/changes/specify-host-authorized-dashboard-enrollment/specs/dashboard-owner-auth/spec.md",
+      "sha256": "467b3b9bea1ab4d44c5f551c96d4f82592914e654ec83a49b490c2ab7f6c38a2"
+    },
+    {
+      "path": "about/legends-and-lore/rfcs/0025-tracker-host-beads-projection-exporter.md",
+      "sha256": "4dd3f7c60aa2b502fce38963c8c72f22671c4e718c30d8ac0b6a2e5175149089"
+    },
+    {
+      "path": "frontend/src/pages/DecisionsPage.tsx",
+      "sha256": "16e83c10cc7c38c85bf046abebfdd1ec89ce49e61e657f643fe50a53d7771ed6"
+    },
+    {
+      "path": "frontend/src/pages/DecisionsPage.test.tsx",
+      "sha256": "86a24197627f88b879a1b055a701644b426bb5673778951eac0717d71720cb67"
+    },
+    {
+      "path": "frontend/src/pages/DecisionsPage.a11y.test.tsx",
+      "sha256": "c0e50969db56ce64b23a56c4403516344390c36355aaf45b372b28a6275aec88"
+    },
+    {
+      "path": "frontend/src/hooks/use-decisions.ts",
+      "sha256": "d4ab7a6a6d783ca4020ee737dd19c1db0b73b445d0305d815c66552daaa2e130"
+    },
+    {
+      "path": "frontend/src/hooks/use-list-triage.ts",
+      "sha256": "858df0f25d0b8fd92978af1f290b1ed1b733fbace9b4c9297d50d3cceea8b6fb"
+    },
+    {
+      "path": "frontend/src/api/client.ts",
+      "sha256": "658926b3f81630cd91386c2ed029fa1785a6a0bb5ed4572448d71dc41c683435"
+    },
+    {
+      "path": "frontend/src/api/owner-session.ts",
+      "sha256": "0ff56b588aa5e8e232b81d3fcb061c7220bf4685d65a52e59b1fe7316a4d4387"
+    },
+    {
+      "path": "src/butlers/api/owner_auth/http.py",
+      "sha256": "9014158717ea8550875ea3d9b3211432da8ca3c2536dd6bec192c0c9cb9e1dda"
+    },
+    {
+      "path": "src/butlers/api/routers/decisions.py",
+      "sha256": "614138c4ed951abaf68e48574d61c8b61d376379e5875078bde50cb8f39b7f36"
+    },
+    {
+      "path": "src/butlers/api/models/decision.py",
+      "sha256": "ac235b8bc6da9a3385191cd8d3cb9cb310543fa8960dd1b16f0ec39a77fadc5a"
+    },
+    {
+      "path": "src/butlers/core/decision_desk.py",
+      "sha256": "d464a9ab39713d4df8549ec483d8b70a7b24556e9288a4aec0cf8eedfe5e54d7"
+    },
+    {
+      "path": "src/butlers/core/decision_callbacks.py",
+      "sha256": "0c166071746d2ff2132422dd5d0f9ecd80db421127add96d4faa6f9b8da1c5fd"
+    },
+    {
+      "path": "src/butlers/jobs/decision_review.py",
+      "sha256": "c0ef42aa0b5bf9abb34f2163a9d992062822685b3727e2e96108f1abb5ae6e4a"
+    },
+    {
+      "path": "scripts/beads_decision_applier.py",
+      "sha256": "cbf85c5877a088d0ad456afdd29aa243bff23a0cda1373612beb113333390ff6"
+    },
+    {
+      "path": "roster/switchboard/migrations/042_decision_desk_intents.py",
+      "sha256": "2b64fd404e3c176dee717ce6ecfdb0fd68d220868344ed8a3cf9fd3a0116815e"
+    },
+    {
+      "path": "deploy/helm/butlers/files/beads_cycle.sh",
+      "sha256": "7bf0070dfadf78647609443ccd4b710c8d61e10408c26f158f3d5985078a199b"
+    },
+    {
+      "path": "docs/architecture/beads-runtime-data-bridge.md",
+      "sha256": "59aed749e5427d596a4b5089ef9d0c91a75f838d32731dd2bb0643f36e962e34"
+    },
+    {
+      "path": "docs/operations/decision-beads.md",
+      "sha256": "8b3e09e7b3b46a01d429e3af7b3d9217dd64a1067dbf29c42953e50c95979d94"
+    },
+    {
+      "path": "tests/core/test_decision_desk.py",
+      "sha256": "07a9ae939ee6125b1167afa0b3579e37f100dcab6833cf108bfbb755f2df8a75"
+    },
+    {
+      "path": "tests/api/test_decisions.py",
+      "sha256": "6304f97ac73dfd6e62d0235f4700e2e456db81eaeb27ae4f5a66963ab7c28c9b"
+    },
+    {
+      "path": "tests/integration/test_telegram_decision_callback_flow.py",
+      "sha256": "04c0937fd737a6f152015e8da8d2081b2e13de2f2da4fb93cc8c9a787ae83c14"
+    },
+    {
+      "path": "tests/scripts/test_beads_decision_applier.py",
+      "sha256": "16dc1df4b5ccdc905bacebcb68efe23d5c2b486f861075cee6406f97ddd149b3"
+    }
+  ],
+  "source_reads_only": true,
+  "pr4403": {
+    "state": "MERGED",
+    "merge_commit": "6f16bcbb5c8b2e866d2993f809e3281a7bc04a88",
+    "url": "https://github.com/tzeusy-org/butlers/pull/4403"
+  },
+  "overlap_search": {
+    "beads": "Read-only bd list --all --limit 0 plus complete relevant bd show records; related-bead-index.json",
+    "prs": "Read-only gh pr list open limit100, plus merged PR4403 metadata/files; open-pr-index.json. No active PR title/branch directly duplicates dashboard choose controls. This search is source overlap evidence, not authorization."
+  },
+  "candidate_baseline_head": "b747a55a530364d987fb37457c343193e9362fe7",
+  "candidate_issue": "bu-fqru5q",
+  "evidence_status": "Read-only source snapshots; no behavior/operational pass claim",
+  "fresh_main_source_hash_check": {
+    "main_head": "2917096b5e7f3f46b26f7f4b27aadb6980fd1922",
+    "bound_source_files": 34,
+    "all_unchanged": true
+  },
+  "candidate_requirement_reservations": {
+    "namespace": "dashboard-decisions",
+    "reserved": {
+      "REQ-dashboard-decisions-002": "Read-Only Decision Detail and Selection",
+      "REQ-dashboard-decisions-003": "Explicit Offered-Option Capture in Selected Decisions",
+      "REQ-dashboard-decisions-004": "Recorded Decision Intent State Is Visible"
+    },
+    "already_allocated": "REQ-dashboard-decisions-001: Export As-Of Plaque",
+    "scan_scope": "All current tracked/non-secret Markdown in own worktree plus complete Markdown trees at main and every open PR exact head; includes fenced future payload ID lines; archived OpenSpec deltas excluded as historical.",
+    "main_head": "2917096b5e7f3f46b26f7f4b27aadb6980fd1922",
+    "open_pr_heads": [
+      {
+        "number": 4497,
+        "head": "f5c38bef83097d83a4154b6b20254273ad2cfc94"
+      },
+      {
+        "number": 4496,
+        "head": "83cdd3d94fa91c7cb3845770c0946e76a6192cd7"
+      },
+      {
+        "number": 4495,
+        "head": "bee28eeca3361fab0b2f6f92d626aef294554da4"
+      },
+      {
+        "number": 4492,
+        "head": "316493636fbb069d4161454a9956002b68e29c5f"
+      },
+      {
+        "number": 4490,
+        "head": "326012bc4b3f0ad4ddf79191895dd16e13e80f3d"
+      },
+      {
+        "number": 4489,
+        "head": "d118764dec68c10c65d27cf7cbdddc1950c07ce8"
+      },
+      {
+        "number": 4488,
+        "head": "c7c94007fe5f7cf424e64ba5105cd29c24078b34"
+      },
+      {
+        "number": 4487,
+        "head": "3f746d5ba2639b548422d8e540f49f6f8dea65f7"
+      },
+      {
+        "number": 4485,
+        "head": "b51eb5cc769220be953d5e2b45fa07669464a585"
+      },
+      {
+        "number": 4484,
+        "head": "c4d9fc865d3ff5877e2ce608a8a70f06a18546c7"
+      },
+      {
+        "number": 4478,
+        "head": "b00365080529588b536bcc30cf3f6ac5090eec3e"
+      },
+      {
+        "number": 4474,
+        "head": "6fbc54e1e7a2daa09b65dd070d09722fb2dd99d3"
+      },
+      {
+        "number": 4451,
+        "head": "c3fbca289c853aa138b56ec224471a2cf0988824"
+      },
+      {
+        "number": 4449,
+        "head": "4b14f725ca9f680fd9554d6266e441c63210bd8d"
+      },
+      {
+        "number": 4447,
+        "head": "2a368354e74e68ba825be467e5f870a15a5abbc5"
+      },
+      {
+        "number": 4417,
+        "head": "1fc940ef5f675aa5c1f24cafaab591348e999015"
+      },
+      {
+        "number": 4414,
+        "head": "742979f80de3e129e3ddf45a990d4a9ce3d704cf"
+      },
+      {
+        "number": 4413,
+        "head": "dc769f2333d1915518f2690020ea4a06cfc0f1fd"
+      },
+      {
+        "number": 4404,
+        "head": "5085205ad2fb50f5def07556e90d21eebefbcf58"
+      },
+      {
+        "number": 4399,
+        "head": "ea76675913938c79f9832e1128aa2bc8ce163c28"
+      },
+      {
+        "number": 4398,
+        "head": "18970d36740ae5db9bd4832ade01a815c72de126"
+      },
+      {
+        "number": 4397,
+        "head": "d3f6a08d6f7323383def1ee3917920850fb3b15b"
+      },
+      {
+        "number": 4396,
+        "head": "e681a7a8fa089ebd5ca9cbb5b64c9779f0294d30"
+      },
+      {
+        "number": 4394,
+        "head": "df1c252ffc4d75382e31b0a0e6933957ad3e4881"
+      },
+      {
+        "number": 4393,
+        "head": "150ecba81657fc956b219efd673c6f5b55cc1889"
+      },
+      {
+        "number": 4378,
+        "head": "53b9d725e6bf2fce6473620d3c85114678b43d97"
+      },
+      {
+        "number": 4366,
+        "head": "2898e9bd0db005bb64605003cc6f4af69e99c02e"
+      },
+      {
+        "number": 4239,
+        "head": "773a80191c8708cbaaffcd8c60d41b67e46cd8f7"
+      },
+      {
+        "number": 4219,
+        "head": "92f7ebdac5737d91cf661185d9e1ee06492c2aa3"
+      },
+      {
+        "number": 4217,
+        "head": "568bfb59b5e042c9e68785f7094fecbd08047db4"
+      },
+      {
+        "number": 4170,
+        "head": "b98c89ee470616e3cc414de0865f67908dd0ec20"
+      },
+      {
+        "number": 4079,
+        "head": "8ad131f089490c3d7c2b022edca78034fd5f73d5"
+      },
+      {
+        "number": 4064,
+        "head": "7817c57f6d9279b2c490cb34cfc29a95fd5aa74a"
+      },
+      {
+        "number": 4046,
+        "head": "f1c736db634829222f4b5ad9d31f40f258990e2b"
+      },
+      {
+        "number": 3894,
+        "head": "374bef46c186add283edeadafccf2e396048308c"
+      }
+    ],
+    "definition_records_scanned": 14266,
+    "foreign_collision_for_reserved_ids": false,
+    "integration_requirement": "Recheck all current baseline/active/open-PR full artifacts including fenced future payloads before integration; a changed adopted ID requires revised exact-artifact review/adoption."
+  }
+}
