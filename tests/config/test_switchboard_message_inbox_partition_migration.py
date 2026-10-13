@@ -623,7 +623,7 @@ def test_ingestion_intent_closed_state_and_runtime_authority(delivery_databases)
                 )
         finally:
             await own.close()
-        foreign = await _delivery_pool(admin_url, role="butler_finance_rw")
+        foreign = await _delivery_pool(db_url, role="butler_finance_rw")
         try:
             for sql in (
                 "SELECT * FROM health.route_acceptance_ledger",

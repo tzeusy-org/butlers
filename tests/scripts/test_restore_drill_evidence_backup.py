@@ -565,7 +565,9 @@ def test_ingestion_acceptance_survives_published_backup_and_restore(
     async def seed():
         pool = await runtime_pool(backup_url, "butler_health_rw", "health")
         try:
-            accepted = await route_inbox_accept_delivery(pool, binding, envelope)
+            accepted = await route_inbox_accept_delivery(
+                pool, binding=binding, route_envelope=envelope
+            )
             assert accepted.created
             await pool.execute("DELETE FROM route_inbox WHERE id=$1", accepted.receipt_id)
         finally:
@@ -642,8 +644,12 @@ def test_ingestion_acceptance_survives_published_backup_and_restore(
         pool = await runtime_pool(restored_url, "butler_health_rw", "health")
         try:
             async with pool.acquire() as conn:
-                assert await route_inbox_lookup_acceptance(conn, binding) == receipt
-            duplicate = await route_inbox_accept_delivery(pool, binding, envelope)
+                lookup = await route_inbox_lookup_acceptance(conn, binding)
+                assert lookup is not None
+                assert lookup.receipt_id == receipt and not lookup.created
+            duplicate = await route_inbox_accept_delivery(
+                pool, binding=binding, route_envelope=envelope
+            )
             assert not duplicate.created and duplicate.receipt_id == receipt
             assert await pool.fetchval("SELECT count(*) FROM route_inbox") == 0
             with pytest.raises(RouteAcceptanceConflict):
