@@ -4,7 +4,7 @@
 
 The chat thread SHALL render trusted domain-owned proposal cards and current durable receipts according to chat-domain-actions, using the existing approval mutation spine and Dispatch interaction primitives. Cards MUST distinguish approval from execution, use server-authorized controls, and preserve keyboard/focus and irreversible-confirmation requirements. Concierge and the browser MUST NOT own a write registry or execute a command directly.
 
-ID: REQ-dashboard-chat-ui-006
+ID: REQ-dashboard-chat-ui-016
 Source: chat-domain-actions REQ-chat-domain-actions-007 through 009; dashboard-design-language; dashboard-approvals Approval Verbs
 Scope: v1-mandatory
 
