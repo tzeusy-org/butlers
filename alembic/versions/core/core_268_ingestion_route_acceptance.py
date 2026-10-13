@@ -5,7 +5,7 @@ Revises: core_265
 
 Reserved after the 2026-10-14 full remote census (foreign 266/267 are unmerged).
 The receipt is the first route_inbox id, without a pruning-sensitive FK.
-Downgrade deliberately preserves the ledger, guards, grants and FORCE RLS.
+Downgrade deliberately preserves the ledger, guards, grants and runtime RLS.
 """
 
 from alembic import op
@@ -94,7 +94,10 @@ def upgrade() -> None:
         "FOR EACH ROW EXECUTE FUNCTION guard_ingestion_route_inbox_acceptance()"
     )
     op.execute("ALTER TABLE route_acceptance_ledger ENABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE route_acceptance_ledger FORCE ROW LEVEL SECURITY")
+    # The existing migration/table owner also runs canonical pg_dump. Its owner
+    # bypass preserves complete disaster-recovery evidence, as in core_246.
+    # SET ROLE runtime identities remain subject to the policies below.
+    op.execute("ALTER TABLE route_acceptance_ledger NO FORCE ROW LEVEL SECURITY")
     # Bind to the installed schema, not a mutable runtime search_path. Public
     # supports existing core-only fixtures and legacy standalone databases.
     schema_literal = "'" + schema.replace("'", "''") + "'"

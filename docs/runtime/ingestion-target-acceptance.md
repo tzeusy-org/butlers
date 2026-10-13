@@ -57,7 +57,7 @@ identity, message payload and raw exception details.
 
 ## Storage and retention
 
-`core_268` installs the target-local content-blind ledger, FORCE RLS and
+`core_268` installs the target-local content-blind ledger, runtime RLS and
 append-only guards. Each runtime role may SELECT/INSERT only its own bound
 target. Named-schema installations also fix the target to the installed schema;
 legacy standalone public-schema installations permit each runtime's own target
@@ -66,6 +66,15 @@ made after bootstrap re-widens table grants. A separate inbox-insertion trigger
 requires an ingestion-bearing inbox row to use its matching retained receipt;
 older raw insertion code cannot mint a second processing row for that envelope.
 No source-event or route-inbox FK can cascade away the receipt.
+
+All three tables enable RLS without FORCE, following the existing receipt-table
+backup boundary (`core_246`). The trusted migration/table owner retains its
+PostgreSQL owner bypass for the configured NOSUPERUSER backup login. Every
+`SET ROLE` runtime remains fenced by the unchanged policies and immutable
+triggers, including after bootstrap re-grants. No runtime grants, backup role,
+credentials or control-plane exclusions are added. The complete ledger, plans
+and intents must survive the published artifact and restore; payload pruning
+does not remove receipts, digests or non-reacceptance guards.
 
 `sw_045` installs Switchboard-local `ingestion_target_plans` and
 `ingestion_target_intents`. The first classified plan, event/target/segment,
@@ -93,7 +102,7 @@ is reported as unavailable, never zero. No capacity threshold authorizes
 compaction. A later adopted DB-enforced non-reacceptance fence must precede any
 ledger deletion or rewrite.
 
-Both migrations deliberately retain their tables, guards, grants and FORCE
+Both migrations deliberately retain their tables, guards, grants and runtime
 RLS on downgrade. Rollback disables the new producer path and keeps evidence;
 it does not restore legacy status-only replay or erase acceptance. Older
 `route.execute` signatures reject the additional top-level field, and the
@@ -112,3 +121,7 @@ installer replay, failed-inbox transaction rollback, closed state/reasons,
 retention and bootstrap/runtime role boundaries. Local mocks prove only their
 named handler/lease/lookup behavior. Hosted CI supplies real SQL evidence on
 hosts without Docker access.
+
+The existing backup/restore test package also publishes a real artifact under
+the configured owner login, restores the pruned plans/intents and exact receipt,
+replays bootstrap, and verifies runtime/connector denial and non-reacceptance.

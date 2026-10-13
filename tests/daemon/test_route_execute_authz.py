@@ -758,3 +758,48 @@ async def test_ingestion_delivery_refusals_never_touch_database(tmp_path: Path) 
             pool.execute.assert_not_awaited()
     finally:
         await daemon.shutdown()
+
+    # The actual registry binds optional defaults before approval admission.
+    # A null ingestion binding must preserve the existing helper signature;
+    # a non-null binding must refuse before invoking that helper or the pool.
+    from types import SimpleNamespace
+
+    from fastmcp import FastMCP
+
+    from butlers.core.approval_delivery_transport import RecoveryAuthorityError
+    from butlers.core_tools._base import ToolContext
+    from butlers.core_tools._routing import register_routing_tools
+
+    mcp = FastMCP("ingestion-approval-boundary")
+    messenger = SimpleNamespace(config=SimpleNamespace(trusted_route_callers=("switchboard",)))
+    register_routing_tools(
+        ToolContext(messenger, pool, None, "messenger", None, False, True, None),
+        mcp,
+        lambda *_args, **_kwargs: mcp.tool(),
+    )
+    registered = await mcp.get_tool("route.execute")
+    approval_payload = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(source_endpoint_identity="switchboard"),
+        "input": {"prompt": "Deliver.", "context": {"notify_request": _recovery_notify_request()}},
+    }
+    with patch(
+        "butlers.core_tools._routing._preauthenticate_messenger_recovery",
+        autospec=True,
+        side_effect=RecoveryAuthorityError("synthetic authority refusal"),
+    ) as preauthenticate:
+        pool.reset_mock()
+        response = await registered.fn(**approval_payload)
+        assert response["status"] == "error"
+        preauthenticate.assert_called_once()
+        assert "delivery" not in preauthenticate.call_args.kwargs
+        preauthenticate.reset_mock()
+        response = await registered.fn(**approval_payload, delivery=envelope["delivery"])
+        assert response["status"] == "error"
+        preauthenticate.assert_not_called()
+        ordinary_payload = {**approval_payload, "input": {"prompt": "ordinary request"}}
+        response = await registered.fn(**ordinary_payload, delivery=envelope["delivery"])
+        assert response["status"] == "error"
+        preauthenticate.assert_not_called()
+        pool.acquire.assert_not_called()
+        pool.execute.assert_not_awaited()

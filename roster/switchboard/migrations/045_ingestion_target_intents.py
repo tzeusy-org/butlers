@@ -120,7 +120,9 @@ def upgrade() -> None:
             "FOR EACH STATEMENT EXECUTE FUNCTION guard_ingestion_target_identity()"
         )
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+        # Preserve the existing trusted owner's complete canonical backup;
+        # SET ROLE Switchboard/foreign runtimes still obey these policies.
+        op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
         op.execute(f"DROP POLICY IF EXISTS ingestion_target_switchboard ON {table}")
         op.execute(
             f"CREATE POLICY ingestion_target_switchboard ON {table} "

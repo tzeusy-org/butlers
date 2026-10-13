@@ -214,16 +214,13 @@ def delivery_databases(postgres_container):
 
 
 def _delivery_envelope(segment="a", *, request_id=None):
-    import uuid
-
-    from uuid_utils import uuid7
-
     from butlers.core.ingestion_delivery import DeliveryBinding
+    from butlers.core.utils import generate_uuid7_string
 
     envelope = {
         "schema_version": "route.v1",
         "request_context": {
-            "request_id": request_id or str(uuid.UUID(str(uuid7()))),
+            "request_id": request_id or generate_uuid7_string(),
             "received_at": "2026-10-14T00:00:00Z",
             "source_channel": "telegram_bot",
             "source_endpoint_identity": "switchboard",
@@ -618,7 +615,7 @@ def test_ingestion_intent_closed_state_and_runtime_authority(delivery_databases)
             assert (
                 await own.fetchval("SELECT count(*) FROM route_acceptance_ledger") == before_count
             )
-            # Bootstrap grants TRIGGER/UPDATE/DELETE; FORCE RLS and immutable
+            # Bootstrap grants TRIGGER/UPDATE/DELETE; runtime RLS and immutable
             # triggers still prevent runtime mutation of target evidence.
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await own.execute(
@@ -637,8 +634,9 @@ def test_ingestion_intent_closed_state_and_runtime_authority(delivery_databases)
                     await foreign.execute(sql)
         finally:
             await foreign.close()
+        return acceptance.receipt_id
 
-    asyncio.run(exercise())
+    original_receipt = asyncio.run(exercise())
     config = _build_alembic_config(db_url, ["switchboard"], target_schema="switchboard")
     command.downgrade(config, "switchboard@sw_044")
     command.upgrade(config, "switchboard@sw_045")
@@ -647,12 +645,13 @@ def test_ingestion_intent_closed_state_and_runtime_authority(delivery_databases)
         with engine.connect() as conn:
             row = conn.execute(
                 text(
-                    "SELECT state,payload_digest,route_payload FROM switchboard.ingestion_target_intents WHERE ingestion_event_id=:id"
+                    "SELECT state,receipt_id,payload_digest,route_payload FROM switchboard.ingestion_target_intents WHERE ingestion_event_id=:id"
                 ),
                 {"id": event_id},
             ).one()
             assert (
-                row.state == "pending"
+                row.state == "accepted"
+                and row.receipt_id == original_receipt
                 and row.payload_digest == envelope["delivery"]["payload_digest"]
             )
             assert row.route_payload is None

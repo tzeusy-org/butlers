@@ -693,15 +693,18 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
     # The Switchboard calls it server-to-server via MCP to deliver routed
     # requests. It is an infrastructure endpoint, not an LLM-facing tool.
     async def preauthorize_route(arguments: dict[str, Any]) -> dict[str, Any] | None:
-        if butler_name != "messenger" or not _raw_input_has_approval_recovery(
-            arguments.get("input")
-        ):
+        if butler_name != "messenger":
+            return None
+        if arguments.get("delivery") is not None:
+            return _approval_recovery_refusal_response()
+        if not _raw_input_has_approval_recovery(arguments.get("input")):
             return None
         try:
             _preauthenticate_messenger_recovery(
                 **{
                     ("input_payload" if key == "input" else key): value
                     for key, value in arguments.items()
+                    if key != "delivery"
                 },
                 trusted_route_callers=daemon.config.trusted_route_callers,
             )

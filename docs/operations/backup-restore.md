@@ -77,6 +77,18 @@ an older deployment and a first-ever run both look like, and neither is evidence
 that a backup ran. The QA infra-state patrol raises a failed run as its own
 finding (`BackupRunFailed`) on the night it happens.
 
+### Permanent ingestion acceptance evidence
+
+Target-local `route_acceptance_ledger` and Switchboard `ingestion_target_plans`
+and `ingestion_target_intents` are application evidence carried by the normal
+dump, including after payload pruning. Their enabled RLS follows the existing
+receipt-table owner boundary: the trusted migration/table owner used by the
+configured NOSUPERUSER backup login retains PostgreSQL owner bypass, while
+`SET ROLE` runtimes obey their narrow policies. FORCE is deliberately disabled
+for these tables; no new role, credential, cross-schema grant or export
+exclusion is introduced. Restore must preserve the original receipts, immutable
+identities and non-reacceptance triggers as well as runtime denial controls.
+
 ### What the backup does not contain
 
 The dump runs as the shared `POSTGRES_USER` migration/runtime login. That login
