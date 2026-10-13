@@ -2529,6 +2529,7 @@ Scope: v1-mandatory
 - **WHEN** lookup is degraded/ambiguous, source identity changed, or caller injects actor, account, recipient, ETag or approval id
 - **THEN** the API refuses effect with a safe truthful admission error
 - **AND** missing capability is distinct from an empty invitation list
+- **AND** invitation response capability and the displayed owning butler belong to the retained physical entry; a fresher copy without response capability does not borrow a different source owner
 - **AND** it performs no backfill, OAuth scope expansion or provider mutation
 
 #### Scenario: Response controls share one typed handler
@@ -2544,6 +2545,9 @@ Scope: v1-mandatory
 - **THEN** the mounted workspace keeps honest invitation/decision state and offers the matching review/error door
 - **AND** it adds no optimistic accepted badge, success receipt or enabled undo
 - **AND** degraded projection remains visible
+- **AND** GET /api/calendar/workspace/responses/{command_id} reads the source-qualified durable receipt without approving or dispatching a command
+- **AND** inverse=true follows only the original command's retained inverse claim and verifies its reciprocal binding, including after an undo reply is lost or the invitation leaves the inbox
+- **AND** an unavailable inverse read retains the last receipt and never replays the original response or reserves a replacement inverse
 
 #### Scenario: Applied receipt is distinct from current projection
 

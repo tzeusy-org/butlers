@@ -238,3 +238,21 @@ private binding before selecting that pool. Missing, duplicate, degraded or
 changed bindings withhold review; the Messenger notification-review selector
 retains its separate admission. Rejected/expired approvals remain terminal on
 registered replay and cannot reappear as a new pending decision.
+
+### Response receipt recovery
+
+Invitation controls use the physical schema that owns the displayed entry, not
+another schema selected for logical source health. A freshest copy in a butler
+without response capability remains visible without response controls; the UI
+does not substitute an older supported copy. A matching writable response owner
+retains its controls.
+
+`GET /api/calendar/workspace/responses/{command_id}?source_butler=<owner>` reads
+the existing durable response receipt. `inverse=true` follows the original
+command's stored inverse claim and verifies the inverse's reciprocal command
+binding. Both reads repeat complete approval-owner admission and do not dispatch,
+approve, reserve, or call a provider. The mounted receipt keeps this identity when
+an inbox row disappears or the undo HTTP reply is lost. A pending inverse remains
+pending until the existing approval executor completes it; its owner-qualified
+approval dossier is the execution recovery door. An unavailable read retains the
+last known receipt and does not replay the original response.
