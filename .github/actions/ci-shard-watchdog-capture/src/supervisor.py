@@ -44,6 +44,7 @@ def process(pid):
 
 def children(pid):
     identity = process(pid)
+    truncated = False
     try:
         # The supervisor is single-threaded. Other owned processes may not be.
         result = set()
@@ -72,7 +73,8 @@ def children(pid):
             and current[0] == identity[0]
             and current[1] in ("Z", "X")
         ):
-            return set(), False
+            # Departure cannot erase overflow already observed in this scan.
+            return set(), truncated
         # Permission, malformed data, unknown/reused identity and live actors
         # remain unobserved/truncated; never turn them into a positive scan.
         return set(), True

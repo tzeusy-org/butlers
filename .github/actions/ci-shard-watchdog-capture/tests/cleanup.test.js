@@ -97,7 +97,7 @@ test('healthy cancellation and resistant descendants attest bounded owned comple
     // vanished task files are ENOENT, while permission/unknown/overflow refuse.
     const departedReceipts=[];
     for(const helperEntry of ['src/supervisor.py','dist/supervisor.py']) {
-      const script=String.raw`import importlib.util,subprocess,os,signal,time,json,errno,sys
+      const script=String.raw`import importlib.util,subprocess,os,signal,time,json,errno,sys,tempfile,contextlib
 sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('supervisor',${JSON.stringify(path.resolve(__dirname,'..'))}+'/'+${JSON.stringify(helperEntry)})
 s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
@@ -144,6 +144,64 @@ for mode in ['healthy','neutralized','restored','permission','overflow']:
   row['actual_kernel_reaped']=reaped==child.pid;row['gone_after_reaping']=s.process(child.pid) is None
   assert row['actual_kernel_reaped'] and row['gone_after_reaping']
   child.stdout.close()
+ rows.append(row)
+# Preserve the original five modes above; add the combined overflow/departure
+# boundary with actual seven-task children, independent of unspecified ordering.
+for mode in ['composite-overflow','composite-neutralized','composite-restored','file-overflow','file-neutralized','file-restored']:
+ child=subprocess.Popen([${JSON.stringify(process.execPath)},'-e','console.log("ready");setInterval(()=>{},1000)'],stdout=subprocess.PIPE,text=True)
+ child.stdout.readline();before=s.process(child.pid);original=s.os.listdir;original_limit=s.MAX_PROCESSES
+ row={'mode':mode,'pid':child.pid,'before':before}
+ try:
+  file_mode=mode.startswith('file-')
+  s.MAX_PROCESSES=original_limit if file_mode else 1
+  def depart():
+   os.kill(child.pid,signal.SIGKILL)
+   for _ in range(1000):
+    current=s.process(child.pid)
+    if current and current[1]=='Z':break
+    time.sleep(.001)
+   assert current and current[0]==before[0] and current[1]=='Z'
+   row['after']=current
+  def combined(directory):
+   tasks=original(directory)
+   if directory==f'/proc/{child.pid}/task':
+    tasks.sort(key=lambda task:task==str(child.pid))
+    row['task_count']=len(tasks);row['cap']=s.MAX_PROCESSES;row['known_overflow']=len(tasks)>s.MAX_PROCESSES;row['nonleader_first']=tasks[0]!=str(child.pid)
+    assert row['nonleader_first'] and row['known_overflow']==(not file_mode)
+    if not file_mode:depart()
+   return tasks
+  s.os.listdir=combined
+  if file_mode:
+   @contextlib.contextmanager
+   def bounded_children():
+    # Actual bounded read from a private regular-file seam; no invented proc
+    # population. Departure follows this positive byte-overflow observation.
+    with tempfile.TemporaryFile(mode='w+') as stream:
+     stream.write(' '*65536);stream.seek(0);yield stream
+    row['known_file_overflow_bytes']=65536;depart()
+   first_children=[True]
+   def bounded_open(file,*args,**kwargs):
+    if str(file).endswith('/children') and first_children[0]:
+     first_children[0]=False;return bounded_children()
+    return original_open(file,*args,**kwargs)
+   s.open=bounded_open
+  if mode in ['composite-neutralized','file-neutralized']:
+   source=open(${JSON.stringify(path.resolve(__dirname,'..'))}+'/'+${JSON.stringify(helperEntry)}).read()
+   assert 'return set(), truncated' in source
+   source=source.replace('return set(), truncated','return set(), False')
+   namespace={'__name__':'composite_unsafe'};exec(compile(source,'composite-unsafe-supervisor','exec'),namespace);namespace['MAX_PROCESSES']=s.MAX_PROCESSES
+   if file_mode:namespace['open']=bounded_open
+   scan=namespace['children']
+  else:scan=s.children
+  descendants,truncated=scan(child.pid)
+  row['truncated']=truncated;row['descendant_count']=len(descendants);row['overflow_invariant_pass']=truncated
+  assert truncated==(mode not in ['composite-neutralized','file-neutralized'])
+ finally:
+  s.os.listdir=original;s.MAX_PROCESSES=original_limit
+  if hasattr(s,'open'):del s.open
+  os.kill(child.pid,signal.SIGKILL);reaped,status=os.waitpid(child.pid,0);child.returncode=os.waitstatus_to_exitcode(status);child.stdout.close()
+  row['actual_kernel_reaped']=reaped==child.pid;row['gone_after_reaping']=s.process(child.pid) is None
+  assert row['actual_kernel_reaped'] and row['gone_after_reaping']
  rows.append(row)
 assert s.children(child.pid)[1] is True
 print(json.dumps({'rows':rows,'unknown_reaped_actor_refused':True}))
