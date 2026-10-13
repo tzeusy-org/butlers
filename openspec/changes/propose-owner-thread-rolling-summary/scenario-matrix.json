@@ -1,0 +1,334 @@
+[
+  {
+    "scenario": "Eligible old history is summarized rather than silently dropped",
+    "requirement": "Private Owner-Thread Summary Input and Provenance",
+    "requirement_id": "REQ-dashboard-conversations-018",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Wrong or missing owner-thread authority prevents summary access",
+    "requirement": "Private Owner-Thread Summary Input and Provenance",
+    "requirement_id": "REQ-dashboard-conversations-018",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Hidden and non-message sources never enter summary inputs",
+    "requirement": "Private Owner-Thread Summary Input and Provenance",
+    "requirement_id": "REQ-dashboard-conversations-018",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Visible credential material and unproven eligibility fail closed",
+    "requirement": "Private Owner-Thread Summary Input and Provenance",
+    "requirement_id": "REQ-dashboard-conversations-018",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Provenance binds an exact generation and source boundary",
+    "requirement": "Private Owner-Thread Summary Input and Provenance",
+    "requirement_id": "REQ-dashboard-conversations-018",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Equal timestamps and a late earlier insert cannot falsify the prefix",
+    "requirement": "Private Owner-Thread Summary Input and Provenance",
+    "requirement_id": "REQ-dashboard-conversations-018",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Derivative instructions do not gain authority",
+    "requirement": "Private Owner-Thread Summary Input and Provenance",
+    "requirement_id": "REQ-dashboard-conversations-018",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Raw history remains the only summarization source of truth",
+    "requirement": "Private Owner-Thread Summary Input and Provenance",
+    "requirement_id": "REQ-dashboard-conversations-018",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Identical summary publication retry returns the original receipt",
+    "requirement": "Fenced Summary Publication and Replay",
+    "requirement_id": "REQ-dashboard-conversations-019",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Same tuple with changed content is rejected",
+    "requirement": "Fenced Summary Publication and Replay",
+    "requirement_id": "REQ-dashboard-conversations-019",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Stale generation cannot overwrite the winner",
+    "requirement": "Fenced Summary Publication and Replay",
+    "requirement_id": "REQ-dashboard-conversations-019",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Source mutation during generation rejects publication",
+    "requirement": "Fenced Summary Publication and Replay",
+    "requirement_id": "REQ-dashboard-conversations-019",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Newer messages are represented without an uncovered interval",
+    "requirement": "Fenced Summary Publication and Replay",
+    "requirement_id": "REQ-dashboard-conversations-019",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Tampered or unsupported cached summary falls back safely",
+    "requirement": "Fenced Summary Publication and Replay",
+    "requirement_id": "REQ-dashboard-conversations-019",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Invalidation and process restart cannot resurrect content",
+    "requirement": "Fenced Summary Publication and Replay",
+    "requirement_id": "REQ-dashboard-conversations-019",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Final thread placement is an implementation prerequisite",
+    "requirement": "Fenced Summary Publication and Replay",
+    "requirement_id": "REQ-dashboard-conversations-019",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Valid summary and recent tail preserve earlier continuity",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Generation failure uses an honest marked bounded tail",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Individual clipping and tail omission are explicit",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Generation input budget is not a silent subset summary",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "No prior history does not fabricate a summary",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Client and tool surfaces do not expose the private derivative",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Replacement does not retain superseded full text",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Source and final thread deletion dispose of derivatives",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Archive preserves existing history semantics",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Dashboard-only scope survives final cross-channel binding",
+    "requirement": "Bounded Summary Context Fallback and Custody",
+    "requirement_id": "REQ-dashboard-conversations-020",
+    "original_design_clauses": [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+    ],
+    "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  }
+]
