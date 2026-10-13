@@ -2,7 +2,7 @@
 
 ### Requirement: Domain-Owned Chat Action Projection
 
-Conversation message reads SHALL carry nullable server-projected `action_proposals` for trusted stored domain-owner proposals. The projection, after-commit `action_proposed`/`action_receipt` stream events, history replay and authoritative refresh MUST obey chat-domain-actions; they MUST NOT mutate the owning action. The existing message, citation, turn-control, channel-anchor and provider-resume contracts SHALL remain binding.
+Conversation message reads SHALL carry nullable server-projected `action_proposals` for trusted stored domain-owner proposals. The projection, after-commit `action_proposed`/`action_receipt` stream events, history replay and authoritative refresh MUST obey chat-domain-actions; they MUST NOT mutate the owning action. The existing message, citation, turn-control, channel-anchor and provider-resume contracts SHALL remain binding. The owner SHALL establish its immutable protected admission/source/action/review binding before projection; a refused, missing or incomplete projection MUST NOT remove that designation or allow approval/dispatch as an ordinary action.
 
 ID: REQ-dashboard-conversations-015
 Source: chat-domain-actions REQ-chat-domain-actions-002 through 006; dashboard-conversations Conversation Reply Channel and SSE Response Streaming

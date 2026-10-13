@@ -13,7 +13,7 @@ direct-link verifier generation for that id, approval history, and approval
 metrics so the count, lane, history, and dossier reconcile from
 server-authoritative data. It SHALL not optimistically remove the row or
 invalidate those views when the retry request fails.
-- For a chat-linked action, the server-projected durable attempt fence MUST also explicitly permit retry. The approved/null-result condition below SHALL NOT alone enable Retry for an unresolved/unknown started attempt. Both dashboard Retry routes and the owning dispatcher MUST enforce the same restriction; the UI SHALL preserve the ambiguous receipt and expose inspection rather than a blind retry control.
+- For a chat-linked action, the server-projected durable attempt fence MUST also explicitly permit retry. The approved/null-result condition below SHALL NOT alone enable Retry for an unresolved/unknown started attempt. Both dashboard Retry routes and the owning dispatcher MUST enforce the same restriction; the UI SHALL preserve the ambiguous receipt and expose inspection rather than a blind retry control. Chat-linked classification SHALL come from the atomic owner admission guard of REQ-chat-domain-actions-010, never the presence of a card. Missing/incomplete immutable safeguard, complete-current-presentation or explicit decision evidence MUST also refuse Retry and preserve the protected binding; feature disablement or rollback MUST NOT fall back to legacy retry.
 
 ID: REQ-dashboard-approvals-005
 Source: dashboard-approvals Safe retry refreshes confirmed approval state; chat-domain-actions REQ-chat-domain-actions-006
@@ -50,6 +50,12 @@ Scope: v1-mandatory
 - **WHEN** a chat-linked action is approved with a null execution_result but its attempt is unresolved or retry permission is unknown
 - **THEN** neither chat nor the approval page renders an enabled Retry dispatch control
 - **AND** a direct request to either Retry endpoint is refused by the same owning fence without invocation or loss of receipt/audit evidence.
+
+#### Scenario: Retry cannot bypass a lost protected presentation
+
+- **WHEN** either Retry endpoint is called for a protected admission whose complete-current-presentation or decision evidence is absent/unverifiable after crash, Stop, projection refusal or rollback
+- **THEN** the shared owner guard refuses before invocation, regardless of approved/null-result state
+- **AND** the row's durable designation and immutable review/source binding remain protected and inspectable.
 
 ## Source References
 

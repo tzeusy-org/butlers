@@ -8,7 +8,7 @@ persist a declared executable command: the owning daemon, registered original
 tool name, and exact handler kwargs are validated before the row can be
 parked. The owning daemon validates its declared command contracts against the
 registered MCP surface during startup.
-- For a chat-linked action, every execution and recovery entrance MUST additionally consult the same durable owning-executor attempt fence defined by chat-domain-actions. The ordinary approved/null-result predicate is necessary but insufficient: after a started attempt without trusted completion/no-effect evidence, dispatch SHALL refuse blind replay and preserve an ambiguous receipt. An operator retry remains permitted only with trusted owner proof of no effect or an existing same-command same-key harmless-replay contract. This qualification applies to the recovery/exception scenarios below without changing existing approval lifecycle statuses or notification-worker authority.
+- For a chat-linked action, every execution and recovery entrance MUST additionally consult the same durable owning-executor attempt fence defined by chat-domain-actions. The ordinary approved/null-result predicate is necessary but insufficient: after a started attempt without trusted completion/no-effect evidence, dispatch SHALL refuse blind replay and preserve an ambiguous receipt. An operator retry remains permitted only with trusted owner proof of no effect or an existing same-command same-key harmless-replay contract. This qualification applies to the recovery/exception scenarios below without changing existing approval lifecycle statuses or notification-worker authority. Chat-linked means protected at the atomic owner admission under REQ-chat-domain-actions-010, independent of successful presentation. Every decision/dispatch entrance MUST require its immutable designation/source/action/review binding and verifiable complete current presentation/explicit decision; absence or incompleteness SHALL refuse before effects rather than select the ordinary approved/null-result path. Stop, crash, refusal, disablement, repair or rollback MUST NOT erase or downgrade those safeguards.
 
 ID: REQ-module-approvals-003
 Source: module-approvals Shared Executor Path; chat-domain-actions REQ-chat-domain-actions-006; design.md Decision 4
@@ -73,6 +73,12 @@ Scope: v1-mandatory
 - **WHEN** owner evidence proves no handler invocation/effect, or an existing registered adapter proves exact same-key replay harmless
 - **THEN** the original owner may dispatch within the ordinary approved-action/config/risk bounds and append a new fenced attempt
 - **AND** no caller or presentation service can assert that proof.
+
+#### Scenario: Protected admission blocks consumers before projection
+
+- **WHEN** a protected owner pending-admission commit is followed by a missing/incomplete/refused projection or lost later callback, while either approve API family, authenticated callback, owning MCP approval/dispatch, either Retry route or automatic execution tries to consume it
+- **THEN** the shared owner safeguard predicate refuses execution-producing decisions and original-handler invocation until complete-current-presentation and exact valid decision evidence are verifiable
+- **AND** the designation/source/action/review binding remains durable and cannot be interpreted as ordinary/legacy eligibility because a card is absent.
 
 ## Source References
 

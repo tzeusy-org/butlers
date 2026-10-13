@@ -50,7 +50,7 @@ Scope: v1-mandatory
 
 ### Requirement: Immutable Owner Action and Reviewed Revision
 
-Every proposal SHALL bind its immutable proposal UUID and positive revision to the owning butler, existing action UUID, original command, canonical argument digest and verified source turn. Only the owner SHALL resolve this identity from its live action and registered command. A display reference MUST NOT authorize execution; a changed command, arguments, impact or reversibility MUST invalidate the old reviewed revision before a decision. The same action SHALL retain one approval/execution identity across chat and the approval page.
+Every proposal SHALL bind its immutable proposal UUID and positive revision to the owning butler, existing action UUID, original command, canonical argument digest and verified source turn. Only the owner SHALL resolve this identity from its live action and registered command. A display reference MUST NOT authorize execution; a changed command, arguments, impact or reversibility MUST invalidate the old reviewed revision before a decision. The same action SHALL retain one approval/execution identity across chat and the approval page. The proposal UUID/revision and immutable review binding SHALL originate in the protected owner admission of REQ-chat-domain-actions-010, independently of successful presentation.
 
 ID: REQ-chat-domain-actions-002
 Source: module-approvals Shared Executor Path; bu-ubqnma; heart-and-soul/vision.md Rules 3, 4; design.md Decisions 2-3
@@ -119,6 +119,7 @@ Scope: v1-mandatory
 - **WHEN** the owner action is already parked but the conversation projection transaction fails
 - **THEN** the owner action and audit remain intact and no uncommitted card event is emitted
 - **AND** a matching verified retry can repair presentation idempotently without parking or executing a second action.
+- **AND** the atomic owner designation and immutable source/action/review binding remain protected, with execution-producing decisions and dispatch refused while complete-current-presentation evidence is missing.
 
 #### Scenario: Owner state cannot be refreshed
 
@@ -128,7 +129,7 @@ Scope: v1-mandatory
 
 ### Requirement: One Shared Approval Decision and Owning Executor
 
-Chat Confirm/Deny SHALL use the existing authenticated approval decision spine and the same live owner action as `/approvals`. The locked action MUST match the current proposal revision/argument digest and source binding before decision. Existing status CAS, expiry, delivery-presentation fencing, risk rules and immutable audit SHALL remain binding. Approval acceptance MUST NOT imply execution; only the original owning daemon SHALL invoke the approved original handler through the shared executor, without re-entering the gate or falling back to another owner. A newly chat-linked pending action MUST NOT be automatically consumed before the explicit proposal confirmation.
+Chat Confirm/Deny SHALL use the existing authenticated approval decision spine and the same live owner action as `/approvals`. The locked action MUST match the current proposal revision/argument digest and source binding before decision. Existing status CAS, expiry, delivery-presentation fencing, risk rules and immutable audit SHALL remain binding. Approval acceptance MUST NOT imply execution; only the original owning daemon SHALL invoke the approved original handler through the shared executor, without re-entering the gate or falling back to another owner. A newly chat-linked pending action MUST NOT be automatically consumed before the explicit proposal confirmation. Here chat-linked SHALL mean the durable chat-origin designation established atomically at owner admission under REQ-chat-domain-actions-010; it MUST NOT depend on a later card/projection callback. Both existing approve API families, authenticated callbacks and MCP approval MUST apply its complete-current-presentation predicate before an execution-producing decision.
 
 ID: REQ-chat-domain-actions-005
 Source: module-approvals Status Transition Contract and Shared Executor Path; dashboard-approvals Approval Verbs; RFC 0023; design.md Decisions 3-5
@@ -164,7 +165,7 @@ Scope: v1-mandatory
 
 ### Requirement: Durable Honest Outcome and Ambiguity Fence
 
-Chat-linked execution SHALL persist an owning-executor attempt fence before original-handler invocation and retain immutable outcome evidence. Receipts SHALL use exactly `queued`, `executed`, `failed` or `ambiguous`, independently of approval lifecycle status, with the closed reason vocabulary in design.md Decision 3. `executed` MUST require a persisted success result and success audit event; `failed` MUST require proven no effect or a pre-invocation terminal refusal; uncertain/partial post-start effects MUST remain `ambiguous`. Every dispatch/retry entrance MUST consult the same durable fence. Approved/null-result alone MUST NOT authorize replay of a chat-linked attempt.
+Chat-linked execution SHALL persist an owning-executor attempt fence before original-handler invocation and retain immutable outcome evidence. Receipts SHALL use exactly `queued`, `executed`, `failed` or `ambiguous`, independently of approval lifecycle status, with the closed reason vocabulary in design.md Decision 3. `executed` MUST require a persisted success result and success audit event; `failed` MUST require proven no effect or a pre-invocation terminal refusal; uncertain/partial post-start effects MUST remain `ambiguous`. Every dispatch/retry entrance MUST consult the same durable fence. Approved/null-result alone MUST NOT authorize replay of a chat-linked attempt. Every executor/retry entrance MUST consult the protected admission designation even when presentation is absent; missing/incomplete safeguard, review, presentation or decision evidence SHALL refuse invocation rather than fall back to ordinary/legacy dispatch.
 
 ID: REQ-chat-domain-actions-006
 Source: module-approvals Shared Executor Path and Immutable Audit Events; dashboard-approvals Retry Reports Dispatch Failure Class Truthfully; heart-and-soul/vision.md Rule 4; RFC 0023 honest provider uncertainty; design.md Decision 4
@@ -269,7 +270,7 @@ Scope: v1-mandatory
 
 ### Requirement: Additive Compatibility and Evidence-Preserving Rollback
 
-Older conversation messages SHALL remain readable with null action projections and MUST NOT be backfilled into action authority from text or tool-call logs. New admission/control disablement and rollback SHALL preserve existing parked actions, unresolved attempt fences, verified source bindings and receipt/audit evidence. Normal owning approval readers SHALL remain the authority for retained actions; retention MUST NOT delete unresolved evidence as ordinary presentation cleanup.
+Older conversation messages SHALL remain readable with null action projections and MUST NOT be backfilled into action authority from text or tool-call logs. New admission/control disablement and rollback SHALL preserve existing parked actions, unresolved attempt fences, verified source bindings and receipt/audit evidence. Normal owning approval readers SHALL remain the authority for retained actions; retention MUST NOT delete unresolved evidence as ordinary presentation cleanup. The protected chat-origin designation, immutable source/action/review binding and snapshots MUST survive presentation loss, Stop, refusal, disablement, reload and rollback; none SHALL reclassify the action as ordinary/legacy or waive its shared decision/execution safeguards.
 
 ID: REQ-chat-domain-actions-009
 Source: dashboard-conversations Message Data Model compatibility; module-approvals Immutable Audit Events; RFC 0023 additive rollout/rollback; design.md Adoption and migration plan
@@ -286,6 +287,52 @@ Scope: v1-mandatory
 - **WHEN** new chat action admission/controls are disabled or the feature is rolled back
 - **THEN** previously parked actions and unresolved owner attempt/audit/receipt evidence remain intact and inspectable
 - **AND** disabling a card does not decide, delete, retry or abandon its underlying domain action.
+
+### Requirement: Atomic Chat-Origin Safeguard Admission
+
+For an eligible chat action, the existing owning pending-admission transaction MUST atomically commit its pending action, trusted immutable `chat_action_v1` designation, verified source/action binding, admission-allocated proposal UUID/revision, and complete immutable owner review snapshot/digest before any decision or dispatch consumer can observe it. Invalid/incomplete admission material MUST roll back the entire admission. Chat-origin classification SHALL derive from trusted server routing/session context before ordinary/automatic branches and MUST NOT depend on caller labels, conversation persistence, SSE, or a later park/proposal callback. Before an execution-producing decision, the owning seam SHALL verify that designation, committed complete current presentation and authenticated explicit confirmation of the exact revision. Before invocation, it MUST additionally verify the committed valid decision evidence under the same owner approval spine. Missing/unknown presentation or safeguard evidence MUST fail closed, never establish ordinary/legacy eligibility, and MUST NOT be waived by crash, Stop, refusal, disablement, reload, repair or rollback. This safeguard SHALL add no new public approval lifecycle state or Concierge authority.
+
+ID: REQ-chat-domain-actions-010
+Source: RFC 0023 atomic admission and rejected later-callback assumption; REQ-chat-domain-actions-001 through 007; independent PR4495 review R1; design.md Decisions 2-5
+Scope: v1-mandatory
+
+#### Scenario: Admission and safeguard commit together
+
+- **WHEN** the owner admits a verified chat action request through its existing pending-admission seam
+- **THEN** the pending action, durable designation, verified source/action binding and immutable review snapshot commit together with zero handler calls
+- **AND** failure of any admission write or unavailable/incomplete binding/snapshot commits none of them; no unprotected pending row is published.
+
+#### Scenario: Dedupe cannot borrow ordinary approval authority
+
+- **WHEN** owner admission finds an ordinary/legacy pending row with matching command/arguments or a protected row with a different source/review binding
+- **THEN** that row cannot be reused as the protected chat admission
+- **AND** an incompatible dedupe path refuses chat admission rather than relabeling history, bypassing safeguards or selecting another owner.
+
+#### Scenario: Park-before-projection failure races every approval entrance
+
+- **WHEN** protected admission commits but projection has not committed, is incomplete/refused, or the session crashes/stops before the proposal callback, while either existing approve API family, an authenticated callback or MCP approval races to consume the row
+- **THEN** every execution-producing decision refuses before approval/audit transition or dispatch because complete-current-presentation evidence is absent
+- **AND** the pending row and immutable designation/source/action/review evidence remain protected; a raw action UUID, old client/callback, absence of a card or caller-supplied presentation flag cannot establish legacy authority.
+
+#### Scenario: Missing presentation also fences dispatch and automatic consumers
+
+- **WHEN** Retry through either existing API route, owning MCP dispatch, shared execution or an automatic/standing-rule consumer encounters a protected action without verifiable current presentation/decision evidence
+- **THEN** it refuses before invoking the original handler even if status is approved with a null result
+- **AND** neither that status, a standing rule nor a missing later callback can waive the admission guard or attempt fence.
+
+#### Scenario: Complete trusted presentation permits only normal exact-revision decision
+
+- **WHEN** a trusted server path durably presents the admission-owned snapshot in chat or a compatible authorized approval detail surface
+- **THEN** the owner independently verifies its committed presentation evidence against the immutable source/action/review binding before accepting an authenticated explicit decision for that revision
+- **AND** absent/wrong snapshot revision/digest or required typed CONFIRM still refuses through both approve families/callbacks/MCP, with no effect
+- **AND** presentation alone does not approve, execute, rewrite the pending action, or grant authority; ordinary permission/risk/CAS/audit and execution fences remain binding.
+
+#### Scenario: Representation loss never downgrades protected origin
+
+- **WHEN** Stop, crash, refusal, reload, repair, feature disablement, rollback or retention removes a presentation or makes it unavailable
+- **THEN** the owner retains the designation, source/action/review binding, immutable snapshots and unresolved execution evidence
+- **AND** missing presentation keeps undecided protected actions decision-ineligible; previously valid decision evidence is retained rather than erased, and further/recovered invocation requires verifiable decision/presentation evidence and the same attempt fence
+- **AND** no consumer infers ordinary/legacy admission from missing guard/card fields or chat text.
 
 ## Source References
 

@@ -5,7 +5,7 @@ Chat needs a reviewable action proposal and truthful receipt without acquiring t
 ## What Changes
 
 - Specify server-owned, existing-domain action eligibility; `gated`, `page_authority`, and `self_scoped` classify actions but grant no authority. Unclassified, absent, disabled, foreign, secret, and policy-changing commands fail closed.
-- Project already-parked domain approvals into durable conversation cards, with verified turn provenance and immutable owner/command/argument bindings.
+- Commit protected chat-origin designation and immutable source/action/review bindings atomically with owning pending admission, before any projection or consumer can observe the row. Project that existing owner snapshot into durable cards; missing presentation blocks execution-producing decisions across both approval families/callbacks and every dispatch path.
 - Reuse the existing approval decision and owning-daemon execution spine; fence uncertain chat-linked attempts across every existing dispatch/retry entrance.
 - Define executed, queued, failed, and ambiguous receipts, plus supported reversal, compensation, and irreversible confirmation.
 - Reinforce Concierge's existing read-only capability, manifesto, and roster boundary.
