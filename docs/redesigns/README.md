@@ -67,6 +67,7 @@ Harvest and state working files are gitignored. The cap and pruning rule live in
 
 | Run | Dossier |
 |---|---|
+| 18 (2026-10-13) | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) — platform simplification lens |
 | 17 (2026-10-06) | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) — SDLC velocity lens |
 | 16 (2026-10-06) | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
 | 15 (2026-10-03) | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
