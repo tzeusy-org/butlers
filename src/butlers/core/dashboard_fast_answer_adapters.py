@@ -24,7 +24,7 @@ from butlers.core.model_routing import (
     record_token_usage,
     resolve_model_with_effective_tier,
 )
-from butlers.core.runtimes.base import create_adapter
+from butlers.core.runtimes.api import ApiAdapter
 
 
 def mcp_data(result: Any) -> Any:
@@ -86,6 +86,13 @@ def _dashboard_read_enabled(states: Any) -> bool:
     return (
         isinstance(state, dict) and state.get("health") == "active" and state.get("enabled") is True
     )
+
+
+class _FastAnswerApiAdapter(ApiAdapter):
+    """One transport send per fast attempt; ordinary API clients keep their policy."""
+
+    def _get_client(self, api_key: str) -> Any:
+        return super()._get_client(api_key).with_options(max_retries=0)
 
 
 class RegisteredFastAnswerDependencies:
@@ -164,8 +171,8 @@ class RegisteredFastAnswerDependencies:
 
     def _api(self):
         if self._adapter is None:
-            self._adapter = create_adapter(
-                "api", butler_name="switchboard", credential_store=self.daemon._credential_store
+            self._adapter = _FastAnswerApiAdapter(
+                butler_name="switchboard", credential_store=self.daemon._credential_store
             )
         return self._adapter
 

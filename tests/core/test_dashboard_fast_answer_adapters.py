@@ -236,3 +236,147 @@ async def test_api_classifier_exposes_only_schema_and_phraser_is_tool_free(monke
     ):
         with pytest.raises(ValueError):
             source_envelope({"source": source})
+
+
+async def test_fast_factory_disables_sdk_retries_without_changing_shared_adapter(monkeypatch):
+    # REQ-dashboard-fast-answer-006: transport failure is one attributed attempt.
+    # This exercises the real factory, ApiAdapter, installed SDK and HTTP transport.
+    import anthropic
+    import httpx
+
+    from butlers.core.dashboard_fast_answer_catalog import CatalogOutcome
+    from butlers.core.runtimes.api import ApiAdapter
+
+    real_client = anthropic.AsyncAnthropic
+    monkeypatch.setattr(adapters, "record_token_usage", AsyncMock())
+
+    class Credentials:
+        async def load(self, key):
+            assert key == "cli-auth/claude"
+            return "local-test-placeholder"
+
+    async def run_case(phase, response_kind, *, ordinary=False):
+        transmissions, clients = [], []
+
+        def respond(request):
+            transmissions.append(request.method)
+            if response_kind == "connection":
+                raise httpx.ConnectError("synthetic connection failure", request=request)
+            if response_kind in ("429", "500"):
+                return httpx.Response(
+                    int(response_kind),
+                    headers={"retry-after-ms": "1"},
+                    json={
+                        "type": "error",
+                        "error": {"type": "rate_limit_error", "message": "synthetic failure"},
+                    },
+                )
+            name = (
+                "unrecognized_admission"
+                if response_kind == "invalid-then-valid" and len(transmissions) == 1
+                else "dashboard_fast_admission"
+            )
+            content = (
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-stub",
+                        "name": name,
+                        "input": {
+                            "lane": "D",
+                            "scope": "system",
+                            "selected_owner": "concierge",
+                            "question": "synthetic",
+                            "reads": [],
+                        },
+                    }
+                ]
+                if phase == "classification"
+                else [{"type": "text", "text": "synthetic answer"}]
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg-stub",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "stub",
+                    "content": content,
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+
+        def sdk_factory(**kwargs):
+            client = real_client(
+                **kwargs,
+                http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+            )
+            clients.append(client)
+            return client
+
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", sdk_factory)
+        credentials = Credentials()
+        store = _AdapterStore()
+        deps = adapters.RegisteredFastAnswerDependencies(
+            SimpleNamespace(_credential_store=credentials), store
+        )
+        fence = FastAnswerFence(uuid4(), uuid4(), uuid4(), 1)
+        models = tuple(
+            adapters._Model("stub", uuid4(), 4, purpose, fence)
+            for purpose in (
+                "dashboard_fast_answer_classification",
+                "dashboard_fast_answer_phrasing",
+            )
+        )
+
+        async def call():
+            if ordinary:
+                return await ApiAdapter(credential_store=credentials).invoke(
+                    "synthetic", "synthetic", {}, {}, model="stub", timeout=4
+                )
+            if phase == "classification":
+                return await deps.classify(
+                    models, "private operand", CatalogOutcome("no_match"), SimpleNamespace(tools={})
+                )
+            return await deps.phrase(models, "private operand", [])
+
+        try:
+            if response_kind in ("429", "500", "connection"):
+                with pytest.raises(RuntimeError):
+                    await call()
+                expected_outcomes = ["started", "failed"]
+            elif response_kind == "invalid-then-valid":
+                with pytest.raises(InvalidAdmission):
+                    await call()
+                assert await call()
+                expected_outcomes = ["started", "received"] * 2
+            else:
+                assert await call()
+                expected_outcomes = ["started", "received"]
+            expected_sends = 3 if ordinary else 2 if response_kind == "invalid-then-valid" else 1
+            assert len(transmissions) == expected_sends
+            assert transmissions == ["POST"] * expected_sends
+            # Fast configuration never mutates the base client's ordinary SDK default.
+            assert len(clients) == 1 and clients[0].max_retries == 2
+            if not ordinary:
+                assert [data["outcome"] for _, _, data in store.attribution] == expected_outcomes
+                assert all(record_fence == fence for record_fence, _, _ in store.attribution)
+                assert all(
+                    data["purpose"] == models[0 if phase == "classification" else 1].purpose
+                    and type(data["duration_ms"]) is int
+                    and data["duration_ms"] >= 0
+                    and "private operand" not in str(data)
+                    for _, _, data in store.attribution
+                )
+                assert isinstance(deps._api(), ApiAdapter) and deps._api() is deps._api()
+        finally:
+            for client in clients:
+                await client.close()
+
+    for phase in ("classification", "phrasing"):
+        for response_kind in ("healthy", "429", "500", "connection"):
+            await run_case(phase, response_kind)
+    await run_case("classification", "invalid-then-valid")
+    await run_case("phrasing", "429", ordinary=True)

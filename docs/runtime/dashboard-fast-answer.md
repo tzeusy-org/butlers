@@ -90,3 +90,9 @@ outcome, expiry, or takeover refuse the write. Exact cancellation receipt replay
 If this attempt metadata cannot be durably settled, the adapter preserves an unknown outcome;
 that failure cannot confirm Stop. The migrated held-lock and Stop-attribution companions remain
 authored and locally unrun, pending genuine non-skipped execution.
+
+Fast-answer API calls use a dedicated adapter that sets the SDK transport retry count to zero.
+A retryable HTTP or connection failure remains one failed, duration-attributed attempt; phrasing
+never resends after reads. Ordinary Spawner/API adapters retain their existing SDK retry policy.
+The one explicit pre-read schema-invalid classification retry remains a separate attributed call
+against the same selected candidate, with the existing runtime bound unchanged.
