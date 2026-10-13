@@ -415,6 +415,22 @@
       "installed_timeout_minutes": 60,
       "diagnostic_execution_bound_s": 1800,
       "review_policy": "Existing 25 watchdogs unchanged. New isolated job covers 640s UV installer + 640s frozen preparation + 1800s whole diagnostic + 520s checkout/cleanup/artifact reserve; actual healthy duration/calibration remains unknown."
+    },
+    {
+      "workflow": ".github/workflows/ci-shard-watchdog-diagnostic.yml",
+      "job": "diagnostic-inventory",
+      "installed_timeout_minutes": 35,
+      "state": "provisional finite manual diagnostic inventory; healthy calibration UNKNOWN",
+      "sample_source": "bu-ly3lv5.10.3 adopted live watchdog capture contract; original UV640 nominal reserve plus fresh collection and masking; no timing claim",
+      "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/ci-shard-watchdog-diagnostic.yml",
+      "job": "diagnostic-unit1",
+      "installed_timeout_minutes": 28,
+      "state": "provisional diagnostic subject retains original unit1 watchdog; healthy calibration UNKNOWN",
+      "sample_source": "bu-ly3lv5.10.3 frozen original PR4484 profile; unchanged 28-minute job and UV640 nominal reserve; no timing claim",
+      "p95_s": null
     }
   ],
   "tests": [
