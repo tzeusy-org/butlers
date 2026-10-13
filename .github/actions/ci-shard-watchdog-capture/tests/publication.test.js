@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const {uploadWithClient, finalized, subjectEnvironment, uploaderEnvironment} = require('../src/index');
+const {uploadWithClient, finalized, subjectEnvironment, subjectInputs, uploaderEnvironment} = require('../src/index');
 
 test('immutable finalized publication and closed IPC preserve credential separation', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-publish-'));
@@ -27,6 +27,13 @@ test('immutable finalized publication and closed IPC preserve credential separat
       assert.equal((await uploadWithClient(client, message)).code, 'finalized');
     }
     assert.equal(names.size, 8);
+    const subject = subjectInputs({GITHUB_SHA:'b'.repeat(40), ACTIONS_RUNTIME_TOKEN:'TOKEN_CANARY',
+      PYTHONPATH:'/kept', CI_COVERAGE:'1', CI_UNIT_WORKERS:'9'}, {subject_head:'c'.repeat(40)}, '/capture');
+    assert.equal(subject.GITHUB_SHA,'c'.repeat(40));
+    assert.equal(subject.CI_WATCHDOG_PROVIDER_HEAD,'b'.repeat(40));
+    assert.equal(subject.CI_COVERAGE,'0');assert.equal(subject.CI_UNIT_WORKERS,'3');
+    assert.equal(subject.PYTHONPATH,['/capture/scripts','/kept'].join(path.delimiter));
+    assert.equal(subject.ACTIONS_RUNTIME_TOKEN,undefined);
     assert.equal(finalized({code: 'finalized', id: 42, digest: 'a'.repeat(64), size: 1, raw: 'PRIVATE_CANARY'}), false);
     assert.equal(finalized({code: 'finalized', id: true, digest: 'a'.repeat(64), size: 1}), false);
     assert.equal(finalized({code: 'failed', id: 42, digest: 'a'.repeat(64), size: 1}), false);

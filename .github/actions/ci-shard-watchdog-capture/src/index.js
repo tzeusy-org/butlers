@@ -20,6 +20,15 @@ const MAX_PROCESSES = 256;
 function subjectEnvironment(environment) {
   return Object.fromEntries(Object.entries(environment).filter(([key]) => !SDK_KEYS.includes(key)));
 }
+function subjectInputs(environment, binding, capture) {
+  const value = subjectEnvironment(environment);
+  value.CI_WATCHDOG_PROVIDER_HEAD = environment.GITHUB_SHA;
+  value.GITHUB_SHA = binding.subject_head;
+  value.CI_COVERAGE = '0';
+  value.CI_UNIT_WORKERS = '3';
+  value.PYTHONPATH = [path.join(capture, 'scripts'), value.PYTHONPATH].filter(Boolean).join(path.delimiter);
+  return value;
+}
 function uploaderEnvironment(environment) {
   const value = Object.fromEntries(UPLOAD_KEYS.filter(key => Object.hasOwn(environment, key))
     .map(key => [key, environment[key]]));
@@ -202,11 +211,7 @@ async function runAction() {
       binding.workflow !== 'CI Shard Watchdog Diagnostic' || binding.provider_head !== process.env.GITHUB_SHA) throw new Error('identity-refused');
   const executable = path.join(subject, '.venv/bin/python');
   const observer = path.join(capture, 'scripts/ci_watchdog_diagnostics.py');
-  const environment = subjectEnvironment(process.env);
-  environment.GITHUB_SHA = binding.subject_head;
-  environment.CI_COVERAGE = '0';
-  environment.CI_UNIT_WORKERS = '3';
-  environment.PYTHONPATH = [path.join(capture, 'scripts'), environment.PYTHONPATH].filter(Boolean).join(path.delimiter);
+  const environment = subjectInputs(process.env, binding, capture);
   if (!await python(executable, [observer, 'initialize', '--subject', subject, '--capture', capture,
       '--inventory', inventory, '--output', directory], environment, subject)) throw new Error('initialization-refused');
   environment.CI_WATCHDOG_CONFIG = path.join(directory, 'config.json');
@@ -301,7 +306,7 @@ async function uploaderMain() {
     else process.exit(2);
   });
 }
-module.exports = {subjectEnvironment, uploaderEnvironment, finalized, sealedFiles, uploadWithClient,
+module.exports = {subjectEnvironment, subjectInputs, uploaderEnvironment, finalized, sealedFiles, uploadWithClient,
   numericProcess, descendantSamples, managed, cleanup, boundedUpload, runAction, writeAtomic};
 if (require.main === module) {
   if (process.env.WATCHDOG_UPLOADER === '1') uploaderMain();
