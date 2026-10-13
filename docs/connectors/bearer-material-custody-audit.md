@@ -61,12 +61,16 @@ and Discord user. Every listed adapter also has a module/run entrypoint, except 
 live-listener entrypoint is its package `__main__.py`. This inventory describes source
 entrypoints, not a claim that every one is deployed or enabled.
 
-Read discovery covered qualified/unqualified `message_inbox`, text-column names and
-delegating wrappers across `src/`, `roster/`, `scripts/` and migrations. AST traversal
+Read discovery covered qualified/unqualified `message_inbox`, `raw_payload`,
+`normalized_text` and written descendants `decomposition_output`, `response_summary`
+and `dispatch_outcomes`, plus delegating wrappers across `src/`, `roster/`, `scripts/`
+and migrations. AST traversal
 located 167 literal references, including comments/docstrings and DDL; they were traced
-to the actual owners rather than treated as 167 readers. F-strings, table constants,
-callers and sinks were inspected. Searches of SQL/Go/shell source in those roots and the
-WhatsApp bridge found no additional `message_inbox` query implementation. Migration
+to the actual owners rather than treated as 167 readers. The count establishes literal
+inventory only, not content classification: `ingestion_event_get_inbox_lifecycle`
+selects unrestricted text-bearing decomposition as well as lifecycle state. F-strings,
+table constants, callers and sinks were inspected. Searches of SQL/Go/shell source in
+those roots and the WhatsApp bridge found no additional `message_inbox` query implementation. Migration
 functions create/ensure partitions and grants; they do not introduce an additional text
 view or text-reading stored function at this SHA. Dynamic SQL outside the checked-in
 source, installed plugins, deployed catalog drift and external libraries remain UNKNOWN.
@@ -78,7 +82,7 @@ git rev-parse HEAD
 rg --files src/butlers/connectors
 rg -n 'project.scripts|connector =' pyproject.toml
 rg -n 'entrypoint:.*butlers.connectors' docker-compose.yml
-rg -n 'message_inbox|normalized_text|raw_payload' src roster scripts alembic --glob '*.py' --glob '*.sql'
+rg -n 'message_inbox|normalized_text|raw_payload|decomposition_output|response_summary|dispatch_outcomes' src roster scripts alembic --glob '*.py' --glob '*.sql'
 rg -n 'Queue|deque|heap|buffer|cache|INSERT INTO|save_cursor|full_payload|drain_replay_pending' src/butlers/connectors whatsapp-bridge/internal
 ```
 
@@ -168,6 +172,8 @@ Source anchors: [filtered buffer](../../src/butlers/connectors/filtered_event_bu
 | `owner_outbound_events.record_owner_outbound_point` | `connectors.owner_outbound_events`: hashed dedup key, channel, endpoint and occurred_at; no body. | Metadata-only producer used by personal-client outbound detection. | `ON CONFLICT DO NOTHING`; failures nonfatal. Does not imply other outbound stores safe. | SAFE-SCOPE S: content-free exact columns. |
 | `ingest.py::_scrub_bearer_material`, `ingest` | Sanitized envelope `payload`/normalized_text -> accepted `message_inbox`; Switchboard schema/runtime role. | Central scrub stores typed artifacts; detector exception converts to metadata-only (`payload.raw` null). Session helper also scrubs text before enqueue in core_tools. | Existing content and metadata-invariance tests pass. Dedupe/partition transaction behavior is separate from detector proof; no real PG proof claimed here. | SAFE-SCOPE E/S for named current ingest content helper. Other writers/readers below remain independent. |
 | `MessagePipeline._accept_ingress` | Alternate `message_inbox` writer: top-level `raw_payload.content`, metadata and normalized_text. | No bearer scrub in this writer; downstream normalization is too late for its insert. | Partition ensure autocommit then advisory-lock/dedupe transaction; duplicate branch reuses row. | GAP E: raw/text INSERT binds. UNKNOWN real persistence/dedupe roles. G2. |
+| `pipeline.py::_normalize_decomp_excerpts` / `_normalize_decomp_signal`; `MessagePipeline.process` -> `_update_message_inbox_lifecycle` | Authoritative conversation source `excerpts[].text` and model-returned `tool_args` -> `message_inbox.decomposition_output`; lifecycle UPDATE also binds `response_summary` and dispatch outcomes. | Normalizer copies source excerpts and preserves arguments, without bearer scrub; successful process builds full signals and binds them with outcomes. `response_summary` can be `cc_output[:500]`, not only fixed status copy. | Atomic UPDATE is a submitted value, not commit proof. No runtime/provider invocation or real DB write in probe. Real PostgreSQL/current codec/roles/commit/concurrency UNKNOWN. | GAP S/E: decomposition normalizer/UPDATE and submitted summary bind retain synthetic text. G2 `bu-ksao0y`; excerpt/storage fidelity contract must be adopted before correction. |
+| `operator/controls.py::cancel_request`, `abort_session`, `force_complete` summary writes | `message_inbox.response_summary` receives operator-reason-derived strings; other calls use fixed status text. | Written text descendant, not a no-text lifecycle projection. No checked-in reader of response_summary was found at this SHA; no reader is invented here. | Actual caller, stored population and durable/role effect remain UNKNOWN. User-authored operator reasons are not automatically inbound bearer content. | UNKNOWN field/caller custody, G2; pipeline summary bind above is separately GAP E for contaminated synthetic input. |
 | `dead_letter.capture_to_dead_letter`, `replay_dead_letter_request` | Original content -> `dead_letter_queue.original_payload`; replay inserts `switchboard.message_inbox` content/text; operator audit stores lineage. | Capture/replay do not scrub content; legacy strings parsed; operator reason/exception also need their own audit contract. | Replay row lock, eligibility/already-replayed guards, nested savepoint; failed replay status written outside rolled-back savepoint. Real transaction/codec/readback UNKNOWN. | GAP E replay bind; GAP S capture. G2. |
 | `notification.deliver::_write_outbound_message_inbox` | Outbound notify message in inbox content/normalized_text; source provenance points to delivery. | No bearer scrub. Direction is **outbound**, so inbound requirement alone does not authorize discarding delivery text. | Recovery-specific early exit/lineage; histories can read outbound text. | OUTSIDE inbound writer contract; reader compatibility/owner scope UNKNOWN, G2/G4. |
 | `scrub_stored_record`, migration `040_scrub_bearer_material::_scrub_row` | Historical row content helper; migration reads `raw_payload`, normalized_text and writes only changed rows. | Scrubs `raw_payload.payload` + normalized_text; **legacy top-level `content` survives**. Does not rewrite source metadata. | Scrub idempotent. Applied migration state/historical values not read; no audit backfill/purge run. Irreversible material loss needs separate live authority. | GAP E legacy helper shape; SAFE-SCOPE E metadata/content contract tested. UNKNOWN historical population/applied state, G2. |
@@ -187,7 +193,8 @@ objects, not an identified message backlog; actual provider retention remains UN
 
 ## Every inbox reader and writer prerequisite
 
-All direct runtime SQL owners and delegating text readers at this SHA are covered here.
+The source inventory covers discovered runtime SQL owners and delegating text readers
+at this SHA, including full text descendants rather than only original body columns.
 Most text readers trust previously stored content; a safe current central writer cannot
 certify legacy or alternate-writer rows. Evidence below intentionally preserves this gap.
 No source reference establishes permission to change raw API shapes, accepted-source
@@ -198,9 +205,10 @@ digests, privacy/authorization boundaries or outbound delivery.
 | `core/buffer.py::DurableBuffer._run_scanner_sweep` (both backlog queries) | raw_payload + normalized_text -> reconstruct source/event/sender/control -> `_MessageRef.message_text` -> pipeline worker | None in scanner. GAP S for legacy/alternate stored content; queue is bounded, not a sanitization boundary. | `tests/core/test_buffer.py` real stored-row recovery + PG restart/claim tests; G2. |
 | `modules/pipeline.py::_load_realtime_history` (time and count windows) | normalized_text `AS raw_content`, raw metadata -> history/prompt/context, includes outbound direction | None in loader. GAP E: synthetic row returns code. Recovery exclusion/union/dedup preserve content. | `tests/modules/test_module_pipeline.py` history -> actual prompt; outbound contract gate; G2. |
 | `modules/pipeline.py::_load_email_history` | thread normalized_text + raw metadata -> email classification/session history | None. GAP S for contaminated stored row. | Real email-history/legacy reader tests; G2. |
-| `MessagePipeline._load_decomp_conversation_messages` | normalized_text/raw payload metadata -> conversation decomposition input | None. GAP S; metadata-only selection is not a body guarantee here. | Decomposition caller fixture -> classification/session sink; G2. |
-| `MessagePipeline._load_dashboard_context` | normalized_text and related durable conversation context -> dashboard-context inference | None in reader. GAP S; dashboard admission/source authority is independent. | Actual dashboard conversation context node; G2. |
-| `MessagePipeline.process` wellness/policy raw-payload lookup | accepted raw_payload -> wellness direct tool arguments (`new_state`, attributes), bypass prompt/route | No independent text scrub; typed measurements narrower than arbitrary attributes. UNKNOWN exact field contract; GAP S for generic raw content trust. | HA wellness/pipeline bypass fixture, actual role/readback; G2/G4. Lifecycle UPDATE here reads no text. |
+| `MessagePipeline._load_decomp_conversation_messages` | SELECT raw_payload -> copied `payload.raw.conversation_history` message dictionaries, including `text` -> authoritative excerpts/decomposition input | None. GAP S for contaminated stored conversation text; no normalized_text projection in this query. | Actual loader -> normalizer/UPDATE -> reader/API fixture plus PG readback; G2 `bu-ksao0y`. |
+| `MessagePipeline._load_dashboard_context` | SELECT raw_payload -> `payload.raw` conversation_id/message_id/page_context -> routing context | No normalized_text/body returned. SAFE-SCOPE S for named IDs; UNKNOWN for unrestricted page_context text/descendant content. No blanket metadata-only verdict. | Actual dashboard page_context caller/sink and field contract; G2. |
+| `MessagePipeline.process` wellness/policy raw-payload lookup | accepted raw_payload -> wellness direct tool arguments (`new_state`, attributes), bypass prompt/route | No independent text scrub; typed measurements narrower than arbitrary attributes. UNKNOWN exact field contract; GAP S for generic raw content trust. | HA wellness/pipeline bypass fixture, actual role/readback; G2/G4. The separate decomposition lifecycle writer is inventoried above. |
+| `core/ingestion_events.py::ingestion_event_get_inbox_lifecycle` (791; SELECT 817); `api/routers/ingestion_events.py::get_ingestion_event` (670) | SELECT lifecycle_state **and decomposition_output**, object or legacy JSON string -> unrestricted excerpt/tool_args object -> actual detail API with `include=decomposition` | No independent scrub. GAP S/E for contaminated synthetic/legacy stored decomposition disclosure; actual route default omits the field (SAFE-SCOPE E for that default projection). Opt-in `decomposition_disclosed` access audit is not redaction. | G2 `bu-ksao0y`: actual normalizer/writer/reader/route executes with fake effects; full process/runtime/provider, real PG/codec/roles/concurrent/ack outcomes UNKNOWN. |
 | `core/ingestion_events.py::ingestion_event_get_payload`; `api/routers/ingestion_events.py` raw route | raw_payload (object/string; top-level content else pretty full JSON) -> returned `content`, byte count/truncation -> dashboard raw view; route emits access audit | No content scrub; access audit/32-KiB truncation is not redaction. GAP E payload function. HTTP route/authorization evidence UNKNOWN in this audit. | Real route response and authenticated server-derived audit fixture; G2. |
 | `jobs/calendar_prep.py::_fetch_message_context_by_entity` | latest normalized_text + request-context subject -> attendee thread subject/snippet -> precomputed prep context | `_truncate_snippet` only bounds length; no scrub. GAP S for legacy body/subject. Exception is fail-open empty context. | `tests/jobs/test_calendar_prep_message_context.py` stored fixture -> actual prep sink; G2. |
 | `roster/relationship/api/router.py::list_entity_message_threads` | latest normalized_text `AS last_snippet` -> `MessageThreadSummary` -> entity-tab API | None; limit/row ranking do not redact. GAP S. | `roster/relationship/tests/test_entity_tabs.py` real API response; G2. |
@@ -216,13 +224,13 @@ this is not an access-control or deployed-schema verdict. They must remain in th
 
 | Owner | Exact projection / use |
 | --- | --- |
-| `core/ingestion_events.py::ingestion_event_get_inbox_lifecycle`, reconciliation and replay/reset helpers | lifecycle/error/status/IDs and counts; update state, not read message text |
-| `MessagePipeline._accept_ingress` dedupe SELECT; `_update_message_inbox_lifecycle`; `process` lifecycle UPDATE | request ID/state/processing metadata; alternate INSERT is separately a GAP |
+| `core/ingestion_events.py` reconciliation and replay/reset helpers | lifecycle/status/IDs and counts; exception strings are not certified by this no-text verdict. `ingestion_event_get_inbox_lifecycle` unrestricted decomposition reader is separately GAP above. |
+| `MessagePipeline._accept_ingress` dedupe SELECT; `process` accepted->processing lifecycle UPDATE | request ID/state only; alternate INSERT and `_update_message_inbox_lifecycle` text-descendant UPDATE are separately GAP |
 | `ingest.py` dedupe/content-hash lookups and partition ensure | ID/hash/request context or DDL; central content INSERT separately scrubbed |
 | `roster/relationship/jobs/relationship_jobs.py::run_interaction_sync`, `run_email_identity_enrichment` | sender/thread/time/identity aggregates; no normalized_text or body projection |
 | `roster/switchboard/api/router.py::get_ingestion_overview` | counts/lifecycle aggregates |
 | `roster/switchboard/modules/tools.py::correct_route` wrapper | request metadata before delegating to the text-reading correction implementation |
-| `roster/switchboard/tools/operator/controls.py::manual_reroute`, `cancel_request`, `abort_session`, `force_complete` | routing/lifecycle/request metadata and control/audit updates; body not selected |
+| `roster/switchboard/tools/operator/controls.py::manual_reroute`, `cancel_request`, `abort_session`, `force_complete` read projections | routing/lifecycle/request metadata; manual_reroute selects dispatch_outcomes but consumes only target, not whole content. Operator summary writes are separately UNKNOWN above. |
 | `api/routers/approvals.py::list_unroutable_attention`, `retry_unroutable_attention` | attention/source-table/replay metadata; dead-letter content question separately listed |
 
 Other references have an explicit exclusion: ingestion-event/relationship models describe
@@ -237,10 +245,20 @@ UNKNOWN, not an assumed exclusion.
 ## Executing evidence and remaining axes
 
 The self-contained probe below ran in this worktree's **real, nonsymlinked venv** against
-the stated source. All **18 checks passed**. Positive checks deliberately confirm that
+the stated source. All **25 checks passed** (original 18 plus seven descendant checks).
+Positive checks deliberately confirm that
 the fabricated public code survives a real function's bind, return, prompt or log.
 Such a PASS confirms a **GAP**, not safe custody. The mock objects only replace DB,
 transport and inference effects; no real store write, network submission or paid model ran.
+
+The F1 correction separately executes source-excerpt/tool-argument normalization,
+lifecycle UPDATE binds (including response_summary), object/string lifecycle reads and
+the actual opted-in detail route; it also verifies default omission. That is bounded
+writer/reader/route evidence, not execution of the full decomposition process, HTTP
+authentication/audit persistence, runtime/provider or PostgreSQL. The
+[conversation-decomposition excerpt and storage contract](../../openspec/specs/conversation-decomposition/spec.md)
+requires source text excerpts and full result storage. G2 `bu-ksao0y` must reconcile this
+contract before product changes; this documentation correction grants no repair authority.
 
 Existing behavior tests also passed:
 
@@ -253,8 +271,18 @@ go -C whatsapp-bridge test ./internal/api -run '^TestServer_Backfill_(RepeatedAc
 # PASS: five selected tests; package receipt 0.016s
 ```
 
+The F1 documentation correction added no product or test code. Its new scoped receipts:
+
+```bash
+uv run --no-sync pytest tests/api/test_ingestion_events.py::test_decomposition_output_omitted_by_default tests/api/test_ingestion_events.py::test_decomposition_output_included_with_flag tests/modules/test_module_pipeline.py::test_decomposition_loader_preserves_structured_speaker_messages -q --tb=short -n 0
+# 3 passed in 1.58s
+uv run --no-sync pytest tests/api/test_ingestion_events.py -q --tb=short
+# 69 passed in 6.78s
+```
+
 These named scopes verify detector content/metadata behavior, normal connector scrubs,
-existing buffer semantics and native replay bounds. They do not cover every connector's
+existing buffer semantics, native replay bounds and the API's decomposition include/default
+behavior. They do not cover every connector's
 error branch, all reader sinks, deployment, durable persistence or every custody fix.
 Tests: `+0 ~0 -0`; this audit adds no test inventory.
 
@@ -271,6 +299,7 @@ privilege escalation or live database were used to fill this gap.
 | Bearer positives, ordinary-number negatives, aggressive 777000, nested/encoded content, placeholders, identity preservation, idempotence | Existing detector/connector tests execute these within their named scopes. Full fleet producer/error/reader matrix still needs each correction's actual callsite tests. |
 | Preview failure | Probe substitutes preview failure at actual record seam: null preview but full payload survives. Full detector exception before every durable write remains UNKNOWN; require adopted metadata-only/failure policy and real writer tests. |
 | Legacy strings/objects and reinsert | Actual filtered replay and dead-letter replay functions execute synthetic legacy cases; top-level legacy content survivor shown. Actual PG codec/transaction effect UNKNOWN. |
+| Decomposition text descendants | Actual normalizer -> lifecycle UPDATE bind -> object/string lifecycle reader -> opted-in detail route retains fabricated source text/tool_args; default route omits decomposition. Summary bind also retains submitted text. Full process/provider and durable/role axes UNKNOWN; G2. |
 | Failure/concurrency/restart | Source locks, row eligibility, flush-drop behavior and native handoff tests traced. Real concurrent PG lock/claim/cursor/reset outcomes UNKNOWN; mock call order is not durability proof. |
 | Commit succeeded, acknowledgement failed | UNKNOWN: independently committed fixture, injected post-commit transport failure, restart/replay and duplicate readback required at each owned producer. |
 | Historical records / rollback | No real historical read or cleanup. Audit docs are reversible; a later code revert cannot restore withheld historical values. Any live backfill/purge is separately owner-authorized and not part of this packet. |
@@ -286,7 +315,7 @@ authorization to repair. The coordinator retains ownership of lifecycle and depe
 | Packet | Owned outcome / adoption gate | Exit evidence and source owner |
 | --- | --- | --- |
 | G1, `bu-v3pw5l`: filtered full-payload/error/replay custody | Adopt the full-payload/replay/error-detail contract separately from preview-only label policy; preserve event/source/sender/control, decisions, eligibility/status and compatible replay. No live history cleanup. Coordinate the foreign-owned `bu-ly3lv5.14` shared kit before edits; its open state is not proof this gap is owned. | Actual caller -> F write/readback -> locked replay/submit; nested/encoded/legacy/failure/negative/idempotence/concurrent/restart/ack tests. Shared connector/evaluator maintainers. |
-| G2, `bu-ksao0y`: legacy inbox writers and all text readers | Close alternate inbound writer shapes and legacy/reader projections under owning API/session/ingest contracts. Resolve outbound exclusions and accepted-source digest compatibility before changes; no authority/auth change or implicit historical mutation. | Every writer/reader matrix row has executing sink proof; actual PG codec/roles/readback, scanner recovery, API responses, histories/prep/correction/approval prompts and metadata/digest non-disclosure. Switchboard/runtime/API/relationship owners. |
+| G2, `bu-ksao0y`: legacy inbox writers and all text readers | Close alternate inbound writer shapes and legacy/reader projections under owning API/session/ingest contracts, explicitly including decomposition excerpt/tool_args -> lifecycle UPDATE -> object/string lifecycle reader -> opted-in detail API, plus written response_summary. Reconcile source-excerpt/storage fidelity, outbound exclusions and accepted-source digest compatibility before changes; no authority/auth change or implicit historical mutation. | Every writer/reader matrix row has executing sink proof; actual PG codec/roles/readback, full decomposition process/runtime, summary population, scanner recovery, API responses, histories/prep/correction/approval prompts and metadata/digest non-disclosure. Bounded synthetic F1 tests do not earn these UNKNOWN axes. Switchboard/runtime/API/relationship owners. |
 | G3, `bu-rob5w5`: pre-ingest discretion and producer logs | Apply the adopted detector before governed text enters context/prompt/log egress; preserve weight/channel/group/filter semantics and source identity. No actual inference in verification; provider retention remains separate. | Actual connector -> evaluator/dispatcher fake transport plus log capture, history/bypass/error/negative/idempotence cases; synthetic runtime/provider logging harness. Connector/runtime owners. |
 | G4, `bu-hxyqq9`: evidence/cache and auxiliary-store contracts | Reconcile ActivityWatch title/raw, Drive names/settings, OwnTracks raw evidence, HA person attributes, Spotify/Steam metadata and native/binary/audio custody against exact specs and fidelity/retention. No credentials, live stores or purges. | Closed field population and disposable DB/vendor harness; each gap has adopted correction or durable issue; each absent normative contract has owner choices. Connector/evidence owners. |
 
@@ -346,12 +375,15 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from starlette.requests import Request
+
+from butlers.api.routers import ingestion_events as ingestion_routes
 from butlers.connectors.activitywatch import persist_activity_event
 from butlers.connectors.discretion import DiscretionEvaluator
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.core import ingestion_events
 from butlers.ingestion_bearer_scrub import scrub_envelope, scrub_stored_record
-from butlers.modules.pipeline import MessagePipeline, _load_realtime_history
+from butlers.modules.pipeline import MessagePipeline, _load_realtime_history, _normalize_decomp_signals
 
 # This deliberately public fixture is not a credential.
 TEXT = "Login code: 55123. Do not share."
@@ -494,6 +526,50 @@ async def main():
                                            operator_identity="synthetic-fixture", reason="synthetic-fixture")
     dead_insert = next(c.args for c in dead_conn.execute.await_args_list if "INSERT INTO switchboard.message_inbox" in c.args[0])
     checked("dead_letter_replay_insert_bind_retains_text", TOKEN in dead_insert[3] and TOKEN in dead_insert[4])
+
+    # Decomposition stores message-content descendants, not just lifecycle metadata.
+    signal = _normalize_decomp_signals(
+        [{"target_butler": "general", "signal_type": "report", "tool_args": {"message": TEXT},
+          "excerpts": [{"message_id": "fixture"}]}],
+        authoritative_by_message_id={"fixture": {"message_id": "fixture", "text": TEXT,
+            "sender_identity": "fixture", "sender": "Fixture", "timestamp": NOW.isoformat()}},
+    )[0]
+    checked("normalized_signal_retains_source_excerpt_and_tool_args",
+            TOKEN in signal["excerpts"][0]["text"] and TOKEN in signal["tool_args"]["message"])
+    descendant_pool, descendant_conn = fake_pool()
+    event_id = uuid4()
+    descendant_pipeline = MessagePipeline(descendant_pool, AsyncMock())
+    await descendant_pipeline._update_message_inbox_lifecycle(
+        message_inbox_id=event_id, decomposition_output={"signals": [signal]},
+        dispatch_outcomes={"target": "general"}, response_summary=TEXT, lifecycle_state="routed",
+        classified_at=NOW, classification_duration_ms=1, final_state_at=NOW,
+    )
+    bound = descendant_conn.execute.await_args.args
+    checked("lifecycle_writer_update_bind_retains_text", TOKEN in json.dumps(bound[1]))
+    checked("lifecycle_writer_response_summary_bind_retains_text", TOKEN in bound[3])
+    for shape in ("object", "legacy_string"):
+        descendant_pool.fetchrow.return_value = {"lifecycle_state": "routed",
+            "decomposition_output": bound[1] if shape == "object" else json.dumps(bound[1])}
+        returned = await ingestion_events.ingestion_event_get_inbox_lifecycle(descendant_pool, event_id)
+        checked("lifecycle_reader_" + shape + "_returns_text", TOKEN in json.dumps(returned))
+
+    db = MagicMock()
+    db.pool.return_value = descendant_pool
+    db.credential_shared_pool.return_value = MagicMock()
+    request = Request({"type": "http", "method": "GET", "path": "/synthetic", "headers": []})
+
+    async def synthetic_event(*_args):
+        return {"id": str(event_id), "received_at": NOW}
+
+    with patch.object(ingestion_routes, "ingestion_event_get", new=synthetic_event), \
+         patch.object(ingestion_routes, "emit_dashboard_audit", new=AsyncMock()), \
+         patch.object(ingestion_routes, "ingestion_events_replay_policy", new=AsyncMock(return_value={})):
+        response = await ingestion_routes.get_ingestion_event(
+            str(event_id), request, include=["decomposition"], db=db)
+        checked("actual_detail_route_include_decomposition_returns_text", TOKEN in response.model_dump_json())
+        response = await ingestion_routes.get_ingestion_event(str(event_id), request, include=[], db=db)
+        checked("actual_detail_route_default_omits_decomposition", response.data.decomposition_output is None)
+
     print(json.dumps({"scope": "synthetic real-function execution; fake DB/transport only", "checks": results}, indent=2, sort_keys=True))
 
 
