@@ -9,7 +9,7 @@ merge, artifact completion or .15 reference activates future generation or adopt
 
 Sending a follow-up message in an existing conversation SHALL preserve the thread context.
 
-Once this exact candidate is independently reviewed, owner-adopted and integrated, follow-up context SHALL use the private rolling summary and bounded recent raw-tail contract below. This is proposed future behavior; authoring or source landing alone SHALL NOT enable generation, storage or consumption. Existing wrong-butler, archived conversation, raw message identity, durable Stop/retry and streaming behavior SHALL remain unchanged.
+Once this exact candidate is independently reviewed, owner-adopted and integrated, follow-up context SHALL use the private rolling summary and bounded recent raw-tail contract below. This is proposed future behavior; authoring or source landing alone SHALL NOT enable generation, storage or consumption. Existing wrong-butler, archived conversation, raw message identity, durable Stop/retry and streaming behavior SHALL remain unchanged. For this future private-summary path, the prior "Send follow-up message" normalized_text conversation-context condition is expressly qualified: that durable field carries the admitted bounded raw-tail/omission context, while the useful older derivative reaches only the complete private runtime composition defined below. The preserved prior scenario does not authorize a derivative copy in normalized_text.
 
 ID: REQ-dashboard-conversations-016
 Source: dashboard-conversations § Continue Conversation; heart-and-soul/security.md § Session Sandboxing; design.md Decisions 1-8
@@ -39,7 +39,7 @@ Scope: proposed-owner-gated
 
 Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through the standard Switchboard ingestion pipeline, submitted to the Switchboard's `ingest` MCP tool. RFC 0003 §"ingest.v1 Envelope Format" defines `dashboard` / `internal` as direct owner-dashboard ingress: the dashboard API, rather than a connector startup probe, SHALL assign `dashboard:web:{conversation_id}` as the endpoint identity.
 
-Once this exact candidate is adopted and its placement gates are satisfied, a rolling summary SHALL be encoded only as explicitly untrusted historical context within the existing normalized_text preamble. It SHALL NOT become payload.raw.message, page_context, current owner intent, evidence, sender identity or routing control. All existing envelope fields, routing pins, originally-captured page_context and stable message_id replay semantics SHALL remain unchanged.
+Once this exact candidate is adopted and every custody/placement integration gate below is satisfied, the durable ingest.v1 normalized_text SHALL contain only permitted bounded raw history, omission framing and the current raw message. It SHALL NOT contain private derivative text, provenance or a dereferenceable summary token. A private server-owned attempt binding outside exported envelope fields SHALL select the exact summary for late resolution into an eligible runtime invocation as encoded untrusted historical data. That overlay SHALL NOT become payload.raw.message, page_context, current owner intent, evidence, sender identity or routing control. Existing wire fields, routing pins, originally-captured page_context and stable message_id replay semantics remain unchanged. No public summary API/schema or caller-asserted reference is introduced.
 
 ID: REQ-dashboard-conversations-017
 Source: dashboard-conversations § Dashboard Ingestion Envelope Construction; heart-and-soul/security.md § Session Sandboxing; design.md Decisions 1-8
@@ -242,11 +242,11 @@ Scope: proposed-owner-gated
 
 ### Requirement: Bounded Summary Context Fallback and Custody
 
-The future dashboard context builder SHALL use a valid rolling summary plus a bounded recent authorized raw tail, with an explicit provenance/untrusted label and an explicit truncation/omission marker whenever any eligible historical content is absent or clipped. Successful summarization must preserve earlier-prefix continuity as a real bounded derivative; the implementation SHALL NOT claim this contract is met by a marker-only fallback. Failed, unavailable, stale, oversized, secret-ineligible or timed-out generation SHALL fail open only to the authorized bounded raw tail, never to hidden/foreign data or a fabricated summary. Missing authorization permits no history lookup; the current independently authorized message is preserved with an honest no-history marker.
+The future dashboard context builder and eligible runtime resolver SHALL provide a valid rolling summary plus bounded recent authorized raw tail to the runtime, with private provenance/untrusted framing and explicit truncation/omission whenever eligible historical content is absent or clipped. The durable/exported projection SHALL exclude derivative text and provenance; only the private late-bound runtime overlay includes them. Successful summarization must preserve earlier-prefix continuity as a real bounded derivative; the implementation SHALL NOT claim this contract is met by a marker-only fallback. Failed, unavailable, stale, oversized, secret-ineligible or timed-out generation SHALL fail open only to the authorized bounded raw tail, never to hidden/foreign data or a fabricated summary. Missing authorization permits no history lookup; the current independently authorized message is preserved with an honest no-history marker.
 
 The proposed V1 context budget SHALL be at most 4000 Unicode code points excluding the current message: summary text at most 1600, encoded raw-tail section (including roles/labels) at most 2000, and trusted framing/markers at most 400. Recent context keeps the current configurable last-N window, default 5 exchange pairs interpreted as at most 10 eligible messages. Per-message historical content is capped at 500 code points using the suffix, with clipping disclosed; older whole tail entries are dropped only with a deterministic omitted-count/boundary marker. The builder must reserve framing before selection and may not slice an already serialized preamble. These limits and clipping direction are proposed adoption choices, not silently activated configuration. The raw current message and stored page_context continue through their existing independent contracts unchanged.
 
-The private payload SHALL be attached to the final .15 owner-thread identity as protected internal state, not its proposed public/client summary field. It SHALL not be readable/writable by arbitrary butler public-table grants, serialized through SELECT-star projection, returned in conversation/thread models or lists/search/SSE, logged in telemetry/errors/audit, or exposed through MCP recall/tools unless separately specified and exactly adopted. Keep only one current full summary payload per thread; replacement discards superseded full text and generation input/output buffers. Minimal content-blind replay/provenance receipts follow the raw thread lifetime, with durable invalidation fencing rather than retained deleted text. Source deletion/hiding removes affected derivative payloads and pending generation buffers before they can be consumed again; final thread deletion removes every attached payload, receipt and job reference. Archive is not deletion and creates no new raw-history retention policy. No additional retention TTL, client feature or cross-channel consumption is authorized by this candidate.
+The private payload SHALL be attached to the final .15 owner-thread identity as protected internal state, not its proposed public/client summary field. The one-current-durable-payload claim includes every transport, session, adapter and storage holder listed by Private Summary Transit and Custody; private-row cleanup alone is insufficient. Revocable transient overlays may exist only under that custody barrier and cannot become durable copies or replay state. It SHALL not be readable/writable by arbitrary butler public-table grants, serialized through SELECT-star projection, returned in conversation/thread models or lists/search/SSE, logged in telemetry/errors/audit, or exposed through MCP recall/tools unless separately specified and exactly adopted. Keep only one current full summary payload per thread; replacement discards superseded full text and generation input/output buffers. Minimal content-blind replay/provenance receipts follow the raw thread lifetime, with durable invalidation fencing rather than retained deleted text. Source deletion/hiding removes affected derivative payloads and pending generation buffers before they can be consumed again; final thread deletion removes every attached payload, receipt and job reference. Archive is not deletion and creates no new raw-history retention policy. No additional retention TTL, client feature or cross-channel consumption is authorized by this candidate.
 
 ID: REQ-dashboard-conversations-020
 Source: dashboard-conversations § Continue Conversation and Dashboard Ingestion Envelope Construction; heart-and-soul/vision.md Rule 1; security.md § Threat Boundaries; design.md Decisions 1-8
@@ -255,7 +255,8 @@ Scope: proposed-owner-gated
 #### Scenario: Valid summary and recent tail preserve earlier continuity
 
 - **WHEN** a valid exact prefix summary and complete admitted recent tail are available
-- **THEN** the normalized history section contains both the labelled untrusted earlier summary and ordered later raw messages within the reserved budget
+- **THEN** the eligible runtime receives the labelled untrusted earlier summary and ordered later raw messages within the reserved budget through the private late-bound overlay
+- **AND** durable normalized_text, stored session prompt and generic client projections contain no derivative text or private provenance
 - **AND** the raw current message is appended separately without being summarized or truncated
 
 
@@ -321,6 +322,88 @@ Scope: proposed-owner-gated
 - **THEN** this dashboard candidate does not generate/consume a Telegram summary or automatically include cross-channel-origin messages
 - **AND** a new cross-channel input/consumer policy requires separate exact adoption rather than inheriting .15 handoff authority
 
+
+
+### Requirement: Private Summary Transit and Custody
+
+The future summary path SHALL have exactly one governed current durable payload per final owner-thread. Every other persistent holder SHALL contain only independently permitted raw/base content or private content-blind binding/receipt metadata, never derivative text or protected excerpts. Private row-only cleanup is insufficient. The closed inventory in custody-map.md covers generator buffers; dashboard envelopes; both message_inbox text/raw-envelope fields; public ingestion metadata; classification/routing/tool/decomposition records; durable route inbox/outbox/retry/dead-letter state; session prompt/system receipt/output/tools/errors; process logs/telemetry/audit; memory episodes/search/recall; runtime temporary files/transcripts/provider-resume/cache state; and backing replicas/WAL/backups/restores. A new or unclassified holder SHALL make overlay use unavailable until its owning contract/disposal/read paths are reconciled, not create an implicit retention class.
+
+The private attempt binding SHALL bind canonical owner/thread, dashboard message/turn identity, canonical accepted request/ingestion-event identity, one server-issued runtime attempt, exact generation/source/version digests, custody epoch and revocable lease. It stays in the final private custody domain, never payload.raw, normalized_text, page_context, request_context, trace_context, attachments or a client field. Caller/model origin or generation fields are not authority. Trusted acceptance and attempt admission precede resolution; an acceptance timeout/unknown outcome cannot mint a second context/turn. Cross-daemon resolution uses owning authenticated infrastructure/MCP and normal registered configuration, not foreign-domain SQL or a general LLM summary-read tool. Final .15 owner/binding/origin representation and exact internal resolver/transport are owned prerequisites, not existing capabilities claimed here.
+
+An eligible consumer SHALL first persist its safe base prompt and exact derivative-free system receipt, then resolve the supported binding under the same-owner/thread source/custody epoch and a revocable use lease. It injects a bounded encoded untrusted user-context overlay for that invocation only, without replacing raw current intent or stored base prompt. Before adapter invocation, a private content-blind composition/use receipt SHALL bind the complete intended user input: base_prompt_digest, private_overlay_digest, effective_user_prompt_digest, exact UTF-8/codepoint counts, deterministic composition_version and ordered untrusted framing, linked to the exact persisted effective-system receipt and the canonical owner/thread/message/request/attempt/generation/source/custody-epoch/lease/runtime-mode identity. The actual adapter SHALL receive that complete admitted base-plus-overlay-plus-current-message composition in the recorded order; a stored base prompt, digest or omission marker alone is not the intended complete invocation. This receipt contains no prompt/derivative text or dereferenceable public capability, stays in private custody, and cannot reconstruct retired text. Existing exact effective-system prompt bytes/digest/provenance remain the actual supplied system component, not a substitute for this user-input receipt. Authorized classification and routed domain invocations obey the same rule: neither forwards full summary text in route.execute input/context, model-authored route tool arguments, classify/decomposition results or durable queue state. Each independently revalidates its exact binding. Raw routing identity and normal tool/config/risk/approval/audit remain authoritative. Missing/stale/unsupported binding/mode uses authorized marked raw-tail fallback, with no dereference, automatic generation, legacy copy-bearing execution or claimed rolling-summary success.
+
+Replacement, source edit/delete/hide, owner/binding change, late prefix insertion and final-thread deletion SHALL atomically revoke/advance the custody epoch before new publication, resolution or copy-bearing externally visible results pass. In-flight generator/runtime/transport users are cancelled and fenced; full transient buffers/captures are cleared and late completion/ack cannot revive or emit them. Custody completion requires every registered holder fenced and disposed; new resolution is forbidden while cleanup/cancellation outcome is unknown. Existing finite invocation deadlines bound waiting; crash/lost ack leaves durable revocation and unavailable summary use, never best-effort old text. Raw deletion remains its owning operation and this feature must not undo/extend raw retention. Final thread disposal removes private payload, bindings, receipts and jobs; unrelated ingress/session rows retain only independently permitted raw/base evidence under unchanged retention.
+
+Backing replicas/WAL/backup snapshots or older restores SHALL not reactivate superseded/deleted payload. If a holder cannot remove full text at the barrier, it may retain only unreadable ciphertext after irreversible retirement of the per-generation decryption capability; restore cannot restore a retired capability or bypass durable invalidation. Exact owning storage/key/disposal/restore design and executing verification are required before summary use; current PostgreSQL deletion or backup encryption is not assumed sufficient. This proposed physical-custody obligation grants no additional readable copy lifetime or client exposure.
+
+Replay resolves only the originally recorded exact generation/attempt if still valid. A retired reference returns unavailable without regeneration, same-attempt rebinding to a newer payload or restoration of old text. A separately authorized retry attempt may capture fresh validated context while preserving original message_id/page_context and normal Stop/ingress ambiguity rules. A summary reference/lease supplies neither execution authority nor paid-generation trigger. Public payload/session/search/export/SSE/tool doors never dereference it. Model output/tools/process captures are potential copy holders: protected payload copies must be omitted before persistence/egress; ordinary answers/actions need independent raw-source admission and normal gates. Unknown copy/admission proof withholds that copy-bearing result and follows the normal authorized fallback, rather than accepting model assurances or treating derivative text as raw truth. Independently persisted raw content retains its source identity even if its wording coincides; a model label cannot launder a private copy into that class.
+
+Generation/use SHALL be admitted only for an exactly configured finite runtime/provider mode whose memory/file/transcript/cache/resume/process-capture behavior meets this inventory. Summary-bearing attempts cannot reuse provider-native or persistent CLI state containing prior private context; compatible stateless/non-retaining delivery must be verified. Failure/failover chooses only another verified eligible mode or raw-tail fallback. Clearing a local buffer cannot erase provider-retained text; unknown retention/disposal makes that mode ineligible. Current provider/deployment compliance is UNKNOWN and remains a separately owned verification gate. Real useful private-prefix-plus-tail invocation is mandatory for implementation success; eligibility failures are fallback, never marker-only fulfillment.
+
+ID: REQ-dashboard-conversations-021
+Source: R1 verified ingress/session copy seams; original clauses 1–8; security.md partial model trust; RFC 0003/0007 source identity and API custody
+Scope: proposed-owner-gated
+
+#### Scenario: Accepted ingress stores no private summary copy
+
+- **WHEN** a turn with valid private history enters the adopted ingress path
+- **THEN** message_inbox.normalized_text and raw_payload.payload.normalized_text contain only permitted durable projection, without private text/provenance
+- **AND** raw current message/page_context, request_id, dedupe and routing pins remain unchanged
+
+#### Scenario: Private late resolution provides real earlier context
+
+- **WHEN** an eligible authorized attempt has a valid source-bound private lease
+- **THEN** its actual invocation receives the complete admitted base, useful older summary, recent tail and current message in the recorded untrusted framing/order
+- **AND** the private composition/use receipt matches full effective user-input bytes/digest/counts, exact system-receipt linkage and source/generation/attempt/epoch/lease identity
+- **AND** the derivative is absent from durable ingress/route/session/process/client copies; a digest or marker-only invocation is not success
+
+#### Scenario: Forged or unavailable private binding cannot grant access
+
+- **WHEN** a caller/model/restarted worker supplies foreign/stale/unknown binding or pretends a marker is authority
+- **THEN** no private/foreign payload is read and only authorized marked raw-tail fallback is used
+- **AND** no duplicate turn, automatic generation or legacy copy path repairs failure
+
+#### Scenario: Routing and queue recovery preserve references without text
+
+- **WHEN** classification, route acceptance, retry/dead-letter or crash recovery serializes a summary-enabled turn
+- **THEN** only permitted raw/base content and protected content-blind binding lifecycle may be retained
+- **AND** model route/context/tool output cannot launder derivative into durable state; each invocation revalidates its lease
+
+#### Scenario: Replacement retires old bindings across every holder
+
+- **WHEN** a newer generation wins private publication CAS
+- **THEN** old epoch/bindings are revoked before new consumption and all old full/transient copies are disposed
+- **AND** inbox/session/queue evidence has no old derivative; old replay cannot resolve it
+
+#### Scenario: Concurrent source deletion fences an active invocation
+
+- **WHEN** covered raw content is deleted/hidden while generator/runtime/result writer uses an old epoch
+- **THEN** durable revocation rejects new publication/resolution/result admission, cancels active users and disposes captures
+- **AND** cleanup/lost-ack ambiguity stays unavailable, never completed custody or restoration of text
+
+#### Scenario: Final thread deletion crosses queue and storage holders
+
+- **WHEN** the final thread is deleted with an accepted or retrying turn
+- **THEN** private payload/bindings/receipts/jobs are disposed and queued/in-flight references fenced before custody completion
+- **AND** unrelated permitted raw/session evidence keeps existing retention without a derivative copy
+
+#### Scenario: Restoring old storage cannot resurrect retired summaries
+
+- **WHEN** replica/WAL/backup or older snapshot contains superseded/deleted protected bytes
+- **THEN** revocation plus disposal or irreversible capability retirement keeps them unreadable/non-resolvable
+- **AND** restore cannot restore a retired key; missing proof keeps summary use unavailable
+
+#### Scenario: Unverified runtime retention selects honest fallback
+
+- **WHEN** adapter/provider retention outside adopted disposal or capture/cleanup behavior is unknown
+- **THEN** it receives no private overlay; the authorized turn uses marked raw tail or another independently verified eligible mode
+- **AND** flags/auth labels/local buffer cleanup do not substitute for disposal proof
+
+#### Scenario: Captured or echoed derivative is not ordinary source truth
+
+- **WHEN** output/tools/stderr/error/memory/projection carries private payload or admission is unproven
+- **THEN** the copy is not persisted, emitted as a client payload or promoted into memory/evidence/approval
+- **AND** ordinary raw-source-backed responses and existing action/approval/audit gates remain independent; no prompt-only promise admits it
 
 ## Source References
 

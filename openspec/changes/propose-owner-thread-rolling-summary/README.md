@@ -1,3 +1,3 @@
 # propose-owner-thread-rolling-summary
 
-DRAFT CANDIDATE, NOT ADOPTED. Native rolling thread-summary clauses are in `specs/dashboard-conversations/spec.md`; design, integration, source baseline and scenario matrix make the full proposal reviewable. Exact owner adoption and final owner-thread placement remain gated. No product implementation, schema, prompt, runtime or provider effect occurs. All future tasks remain unchecked.
+DRAFT CANDIDATE, NOT ADOPTED. Native specs define rolling continuity and corrected every-holder custody; custody-map.md names actual retained/exposed copy seams. Design, baseline and scenario matrix retain all original clauses/outcomes. Fresh independent R1 verification precedes exact owner adoption and final .15/transport/session/storage integration. No implementation/runtime/provider effect; all future tasks unchecked.

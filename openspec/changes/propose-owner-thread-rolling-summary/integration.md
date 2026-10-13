@@ -1,22 +1,24 @@
-## Current Stage
+## Source Status and Ordered Gates
 
-Source-only candidate, NOT ADOPTED. No source runtime, migration, prompt, API/UI, provider, client or owner-thread implementation changes. Only this own change is allocated. Do not sync/archive/queue/merge or consume candidate definitions as authority.
+Source-only R1 candidate, NOT ADOPTED. No implementation/source activation/schema/prompt/API/UI/provider/runtime/owner effect. This candidate specifies future owning boundaries without taking foreign hunks or allocations.
 
-## Ordered Release Gates
+1. Fresh independent semantic/security review binds the corrected complete exact head/tree and all eight original clauses. Author source checks cannot close R1 or grant semantic acceptance.
+2. Root obtains/records legitimate exact owner adoption, including late-bound transport, every-holder retention/disposal/restore, input admission/untrusted framing, CAS/lease/replay and numeric budgets (original AC2). A moved head needs new binding. No owner question is sent by this lane.
+3. Root files implementation only from the adopted artifact (original AC3), with final .15 placement and explicit owning source allocations. Proposed followups are report data only, not Beads writes.
+4. Final .15 owner-thread/binding/origin/order contract is independently adopted/landed and reconciled with protected private storage/no-client source admission. Current nullable owner/public summary is not authority. Exact internal private resolver/accepted-turn/attempt representation precedes propagation, which precedes enforcement.
+5. Owning dashboard builder + Switchboard ingress/module-pipeline/route queue integrations must establish derivative-free normalized_text/raw_payload and private accepted-attempt binding without changing original source/dedupe/pins/current message/page_context/Stop/ambiguity. No new public ingest.v1 field is selected. Cross-daemon private resolution uses normal owning authenticated infrastructure/MCP/config, never foreign SQL/general LLM tool.
+6. Spawner/session/memory/process/runtime-adapter owners reconcile safe base prompt and exact system receipt, leased user overlay, capture/output admission, episode exclusion, invalidation/failover/cancellation/resume/temp-file/provider eligibility. PR4398 and all active spawner/source owners keep their allocation; no currently verified provider mode is assumed.
+7. Ingestion-payload and session API/read-model/UI/search/export/SSE/process/log owners land private non-dereference/projection guards before overlay use. Existing ordinary raw payload/session access and audit remain; auth/audit/private labels alone do not authorize private exposure.
+8. Storage/backup/restore owners establish source/thread epoch and complete disposal or unreadable ciphertext with irreversible generation-capability retirement across retained physical copies. Exact key-lifecycle/restore design and roles are separately allocated; current PostgreSQL/WAL/backup compliance is UNKNOWN. Unknown holder or purge/cancel ack blocks overlay use/completion.
+9. Rebuild every same-requirement delta from the current adopted baseline after intervening foreign changes land; preserve all scenarios/preambles. Check active exact-head overlap before source landing, reserve no foreign migration/REQ/hunk and do not silently adopt another candidate. Strict/overwrite/source checks prove syntax/hygiene only.
+10. Future implementation must execute positive summary-plus-tail and every custody/race/read seam below. Separately authorized runtime/model/config/deployment verification follows source integration; no archive/sync/merge/queue/activation under this bead.
 
-1. Fresh independent semantic/security review binds the complete exact candidate head, including secrets/input eligibility, low-trust framing, raw-prefix generation, numeric budgets, CAS/invalidation and full retention.
-2. Root records legitimate owner adoption of that exact artifact (original AC2). A moved head requires renewed binding; source landing alone is not adoption.
-3. Root files implementation from that adopted artifact (original AC3), preserving all original clauses and placement dependencies. Proposed followups are report data only; author runs no bd create/update/dep/close.
-4. Final bu-0ynlk.15 owner-thread schema/owner/binding/order contract is independently reviewed, adopted and landed. Current .15 is incomplete/unadopted, nullable owner is not access proof, and its proposed client summary field does not grant this derivative exposure. Root-owned integration reconciles private-store/no-client/visibility/source-revision semantics before consumers run.
-5. Reserve final migration/ACL/field/source hunks separately; represent trusted source/provenance/invalidation first, propagate only authorized snapshot next, enforce publication/consumer boundaries last. Public bootstrap grants must not expose payload across threads. No interim column or foreign mutation is selected.
-6. Future implementation executes the named real seams, source guards, privacy and migrated-role tests; source/runtime/model-budget/config activation and actual-image validation require separately authorized scope. No live data or provider calls under this bead.
+## Existing Owners and Unknowns
 
-## Retained Allocations and Compatibility
+Composer PR4396, actions PR4495, .15/cross-channel/handoff/provider resume, active spawner PR4398, notify PR4064 and proactive PR4394 allocations remain. None authorizes summary client exposure, new tool grants, default budgets or paid invocation. Exact active overlap inventory is external source evidence; colliding adopted requirements require owning integration and rebuild, not import of unadopted clauses.
 
-Preserve PR4396 composer and REQ-dashboard-chat-ui allocations, PR4495 domain-owned actions, .15/handoff/cross-channel/provider-resume owners, existing message UUID/Stop/retry/page_context/SSE/citation contracts and raw-history retention. No schema/API/MCP allocation or REQ renumbering is borrowed. Same-owner final-thread attachment does not automatically authorize Telegram generation/input/consumption.
+Unknown: final private schema/access/key fields; trusted secret/visibility/origin projection; binding/MCP resolver wiring; deployed copy inventory/provider-retention mode; real delete/cancel/restore seams; actual-image behavior. These are explicit implementation/release prerequisites, not quietly narrowed outcomes or waived proof. No currently implemented final-thread deletion endpoint is assumed.
 
-## Proposed Followups, Not Filed
+## Proposed Followups Only
 
-- After exact review/adoption and .15 placement: implement trusted same-owner/thread source projection and private summary CAS/custody with migrated-role/invalidation behavior tests; no foreign thread grant.
-- After representation/source-admission seam lands: implement configured bounded ephemeral generation and summary+tail envelope consumption, including real newest-tail query, explicit fallback and unchanged ingress/Stop/page_context/routing behavior.
-- Independently allocate final .15 private-store/response integration and source/cross-channel ordering reconciliation; do not claim its current draft is released.
+After exact review/adoption and .15 integration: allocate private source/binding/epoch/lease/storage-disposal representation; integrate ingress/routing/session/read/capture/adapter boundaries under existing owners; implement configured bounded raw-prefix generation and actual summary-plus-newest-tail runtime context; execute the mapped custody and original route behavior gates. Root files only from adopted change; this author files none.

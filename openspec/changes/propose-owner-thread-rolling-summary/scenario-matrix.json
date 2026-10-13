@@ -330,5 +330,460 @@
       8
     ],
     "status": "Candidate future behavior; NOT ADOPTED; no executing product test receipt"
+  },
+  {
+    "scenario": "Accepted ingress stores no private summary copy",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Private late resolution provides real earlier context",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Forged or unavailable private binding cannot grant access",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Routing and queue recovery preserve references without text",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Replacement retires old bindings across every holder",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Concurrent source deletion fences an active invocation",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Final thread deletion crosses queue and storage holders",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Restoring old storage cannot resurrect retired summaries",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Unverified runtime retention selects honest fallback",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Captured or echoed derivative is not ordinary source truth",
+    "requirement": "Private Summary Transit and Custody",
+    "requirement_id": "REQ-dashboard-conversations-021",
+    "capability": "dashboard-conversations",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Summary-enabled envelope preserves source without derivative",
+    "requirement": "ingest.v1 Envelope Contract",
+    "requirement_id": "REQ-connector-base-spec-006",
+    "capability": "connector-base-spec",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Duplicate ingress cannot capture a different private context",
+    "requirement": "ingest.v1 Envelope Contract",
+    "requirement_id": "REQ-connector-base-spec-006",
+    "capability": "connector-base-spec",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Private classification context does not become routed payload",
+    "requirement": "Pipeline as Post-Triage LLM Router",
+    "requirement_id": "REQ-module-pipeline-003",
+    "capability": "module-pipeline",
+    "original_design_clauses": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Recovered routing does not hydrate retired context",
+    "requirement": "Pipeline as Post-Triage LLM Router",
+    "requirement_id": "REQ-module-pipeline-003",
+    "capability": "module-pipeline",
+    "original_design_clauses": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Private runtime overlay is excluded from session creation",
+    "requirement": "Spawner Session Lifecycle",
+    "requirement_id": "REQ-core-spawner-005",
+    "capability": "core-spawner",
+    "original_design_clauses": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Late completion after revocation does not persist a copy",
+    "requirement": "Spawner Session Lifecycle",
+    "requirement_id": "REQ-core-spawner-005",
+    "capability": "core-spawner",
+    "original_design_clauses": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Private overlay cannot become an automatic memory episode",
+    "requirement": "Memory Context Injection",
+    "requirement_id": "REQ-core-spawner-011",
+    "capability": "core-spawner",
+    "original_design_clauses": [
+      2,
+      4,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Exact system receipt remains derivative-free",
+    "requirement": "Effective system prompt receipt",
+    "requirement_id": "REQ-core-sessions-001",
+    "capability": "core-sessions",
+    "original_design_clauses": [
+      3,
+      4,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Raw payload door never dereferences private context",
+    "requirement": "Timeline Ledger",
+    "requirement_id": "REQ-dashboard-ingestion-dispatch-console-008",
+    "capability": "dashboard-ingestion-dispatch-console",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Unavailable copy custody is not successful payload content",
+    "requirement": "Timeline Ledger",
+    "requirement_id": "REQ-dashboard-ingestion-dispatch-console-008",
+    "capability": "dashboard-ingestion-dispatch-console",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Session list and detail show only permitted stored content",
+    "requirement": "Session Detail Drawer",
+    "requirement_id": "REQ-dashboard-visibility-006",
+    "capability": "dashboard-visibility",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Session read racing deletion cannot fetch an old overlay",
+    "requirement": "Session Detail Drawer",
+    "requirement_id": "REQ-dashboard-visibility-006",
+    "capability": "dashboard-visibility",
+    "original_design_clauses": [
+      1,
+      3,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Process diagnostics omit private command and echo copies",
+    "requirement": "Process log write",
+    "requirement_id": "REQ-session-process-logs-003",
+    "capability": "session-process-logs",
+    "original_design_clauses": [
+      3,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Private copy cannot survive a log upsert or cleanup race",
+    "requirement": "Process log write",
+    "requirement_id": "REQ-session-process-logs-003",
+    "capability": "session-process-logs",
+    "original_design_clauses": [
+      3,
+      6,
+      7
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Stored session prompt cannot expose late-bound history",
+    "requirement": "Private Runtime Overlay Custody",
+    "requirement_id": "REQ-core-sessions-002",
+    "capability": "core-sessions",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Output and tools are not an automatic safe-copy exception",
+    "requirement": "Private Runtime Overlay Custody",
+    "requirement_id": "REQ-core-sessions-002",
+    "capability": "core-sessions",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Crash or deletion cannot restore a session overlay",
+    "requirement": "Private Runtime Overlay Custody",
+    "requirement_id": "REQ-core-sessions-002",
+    "capability": "core-sessions",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
+  },
+  {
+    "scenario": "Provider-native continuity is not private custody proof",
+    "requirement": "Private Runtime Overlay Custody",
+    "requirement_id": "REQ-core-sessions-002",
+    "capability": "core-sessions",
+    "original_design_clauses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "review_finding": "R1",
+    "status": "PROPOSED SOURCE ONLY; executing evidence unearned"
   }
 ]

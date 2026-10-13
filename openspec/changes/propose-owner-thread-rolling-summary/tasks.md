@@ -12,3 +12,9 @@
 - [ ] Execute the mapped behavior/privacy/replay/concurrency cases and required source/CI checks on the implementation head.
 - [ ] Obtain separate authorized runtime/model-budget/configuration and actual-image verification before activation.
 - [ ] Rebuild/sync/archive only after every original outcome and owned adoption/integration gate is genuinely satisfied.
+
+## Future R1 Owning Custody Integration
+
+- [ ] Allocate/integrate derivative-free ingress/route/session base projections and exact private accepted-attempt resolver under existing owners.
+- [ ] Establish every-holder revocation/disposal including adapter/provider/capture and physical replica/WAL/backup/restore capability retirement before overlay use.
+- [ ] Execute the positive runtime-overlay and generic payload/session read plus concurrent replacement/source/thread-delete/recovery/copy-admission gates on the adopted implementation head.
