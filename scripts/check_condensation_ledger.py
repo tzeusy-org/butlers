@@ -762,173 +762,6 @@ def preserving_import_bindings(before: str, current: str) -> bool:
     )
 
 
-def preserving_context_additions(before: list, current: list, source: str) -> bool:
-    """Admit only inert new bindings without an executable survivor account.
-
-    Kept statements must remain literal and ordered. New helpers have no
-    definition-time execution, while new literals cannot rebind an
-    existing lexical name. Calls, attribute writes, decorated definitions and
-    pytest control bindings require the ordinary complete account instead.
-    New imports retain their separate binding checks and require execution evidence.
-    """
-    if before == current:
-        return True
-    tree = ast.parse(source)
-    protected = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-    protected |= {n.arg for n in ast.walk(tree) if isinstance(n, ast.arg)}
-    protected |= {
-        n.name
-        for n in ast.walk(tree)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-    }
-    protected |= {
-        n.asname or n.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.alias)
-    }
-
-    def literal(value):
-        if value is None:
-            return True
-        if not isinstance(value, dict):
-            return False
-        if value.get("_node") == "Constant":
-            return True
-        if value.get("_node") in {"Tuple", "List", "Set"}:
-            return all(literal(item) for item in value["elts"])
-        if value.get("_node") == "Dict":
-            return all(key is not None and literal(key) for key in value["keys"]) and all(
-                literal(item) for item in value["values"]
-            )
-        return False
-
-    def bind(names):
-        hooks = {
-            "pytestmark",
-            "setup_module",
-            "teardown_module",
-            "setup_function",
-            "teardown_function",
-            "setup_class",
-            "teardown_class",
-            "setup_method",
-            "teardown_method",
-            "setUp",
-            "tearDown",
-            "setUpClass",
-            "tearDownClass",
-            "setUpModule",
-            "tearDownModule",
-            "load_tests",
-        }
-        if any(
-            name in protected or name.startswith(("pytest_", "__")) or name in hooks
-            for name in names
-        ):
-            return False
-        if len(names) != len(set(names)):
-            return False
-        protected.update(names)
-        return True
-
-    def inert(statement):
-        if not isinstance(statement, dict):
-            return False
-        kind = statement.get("_node")
-        if kind == "Pass":
-            return True
-        if kind == "Expr":
-            return statement["value"].get("_node") == "Constant"
-        if kind == "Assign":
-            return (
-                all(target.get("_node") == "Name" for target in statement["targets"])
-                and literal(statement["value"])
-                and bind([target["id"] for target in statement["targets"]])
-            )
-        if kind == "ClassDef":
-            return (
-                not statement["bases"]
-                and not statement["keywords"]
-                and not statement["decorator_list"]
-                and not statement.get("type_params")
-                and bind([statement["name"]])
-                and all(inert(item) for item in statement["body"])
-            )
-        if kind in {"FunctionDef", "AsyncFunctionDef"}:
-            args = statement["args"]
-            parameters = [*args["posonlyargs"], *args["args"], *args["kwonlyargs"]]
-            parameters += [arg for arg in (args["vararg"], args["kwarg"]) if arg is not None]
-            return (
-                not statement["decorator_list"]
-                and not statement.get("type_params")
-                and literal(statement["returns"])
-                and all(literal(arg["annotation"]) for arg in parameters)
-                and all(literal(value) for value in [*args["defaults"], *args["kw_defaults"]])
-                and bind([statement["name"]])
-            )
-        return False
-
-    position = 0
-    for statement in current:
-        if position < len(before) and statement == before[position]:
-            position += 1
-        elif not inert(statement):
-            return False
-    return position == len(before)
-
-
-def preserving_definition_contexts(before: str, current: str) -> bool:
-    """Keep class execution and added-test headers visible to existing owners."""
-    if before == current:
-        return True
-
-    def definitions(source):
-        found, tests = {}, {}
-
-        def visit(body, parents):
-            for node in body:
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if node.name.startswith("test_"):
-                        header = ast_record(node)
-                        header["body"] = []
-                        tests[(*parents, node.name)] = header
-                    continue
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                name = (*parents, node.name)
-                if name in found:
-                    raise EvidenceError("duplicate-class-binding")
-                record = ast_record(node)
-                record["body"] = [
-                    ast_record(item)
-                    for item in node.body
-                    if not isinstance(item, ast.ClassDef)
-                    and not (
-                        isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and item.name.startswith("test_")
-                    )
-                ]
-                found[name] = record
-                visit(node.body, name)
-
-        visit(ast.parse(source).body, ())
-        return found, tests
-
-    (old, old_tests), (new, new_tests) = definitions(before), definitions(current)
-    for name in new_tests.keys() - old_tests.keys():
-        if not preserving_context_additions([], [new_tests[name]], before):
-            return False
-    if not old.keys() <= new.keys():
-        return False
-    for name, record in new.items():
-        if name not in old:
-            if not preserving_context_additions([], [record], before):
-                return False
-        elif {k: v for k, v in old[name].items() if k != "body"} != {
-            k: v for k, v in record.items() if k != "body"
-        } or not preserving_context_additions(old[name]["body"], record["body"], before):
-            return False
-    return True
-
-
 def preserving_owner_arguments(before: dict, current: dict) -> bool:
     """Added fixture requests qualify execution; old signatures remain intact."""
     if before == current:
@@ -992,6 +825,81 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
                 raise EvidenceError("same-owner-ancestral-fixture-change")
 
 
+def changed_module_context(path: str, before: str, current: str) -> bool:
+    """Compare retained-module declarations and execution context, never infer purity.
+
+    Old test bodies keep their existing assertion/structure checks. Removed test
+    declarations alone retain ordinary condensation admission. Every other
+    declaration, class member, import and retained/new owner order is context.
+    Entirely new modules and arbitrary cross-module interference are outside
+    this source scan; absence of a loss is not a Python isolation certificate.
+    """
+    if before == current:
+        return False
+    old, new = test_shapes(path, before), test_shapes(path, current)
+    if not old.keys() & new.keys():
+        return False
+
+    def context(source, original):
+        class Context(ast.NodeTransformer):
+            def __init__(self):
+                self.parents = []
+
+            def visit_ClassDef(self, node):
+                self.parents.append(node.name)
+                self.generic_visit(node)
+                self.parents.pop()
+                return node
+
+            def visit_FunctionDef(self, node):
+                if not node.name.startswith("test_"):
+                    return node
+                owner = "::".join([path, *self.parents, node.name])
+                if original and owner not in new:
+                    return None
+                node.body = [ast.Pass()]
+                return node
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+        return ast.dump(Context().visit(ast.parse(source)), include_attributes=False)
+
+    return context(before, True) != context(current, False)
+
+
+def proof_selectors(root: Path, base: str, selections: dict[str, list[str]]) -> dict:
+    """Independently derive full-module selectors for affected retained owners.
+
+    Source-defined populations are mandatory on each side. Pytest subsequently
+    collects each actual module and proves the complete real population/order;
+    dynamic or inherited items absent from these owners cannot silently pass.
+    """
+    paths = sorted({n.split("::", 1)[0] for rows in selections.values() for n in rows})
+    old_paths = set(tracked_paths(root, base))
+    modules = set()
+    for path in paths:
+        if path not in old_paths or not (root / path).is_file():
+            continue
+        old_source = git(root, "show", f"{base}:{path}")
+        new_source = (root / path).read_text()
+        if not changed_module_context(path, old_source, new_source):
+            continue
+        modules.add(path)
+        for side, source in (("removed", old_source), ("survivors", new_source)):
+            expected = set(test_shapes(path, source))
+            actual = {n for n in selections[side] if n.split("::", 1)[0] == path}
+            if actual != expected:
+                raise EvidenceError("module-context-needs-complete-owner-population")
+    return {
+        side: list(
+            dict.fromkeys(
+                n.split("::", 1)[0] if n.split("::", 1)[0] in modules else n for n in owners
+            )
+        )
+        for side, owners in selections.items()
+    }
+
+
 def destructive_changes(root: Path, base: str) -> dict[str, str]:
     base = git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base):
@@ -1005,13 +913,11 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
     before = {}
     current = {}
     imports_preserved = {}
-    definitions_preserved = {}
-    old_sources = {}
+    context_changed = {}
     for path in paths:
         if not test_path(path):
             continue
         old_source = git(root, "show", f"{base}:{path}")
-        old_sources[path] = old_source
         old_shapes = test_shapes(path, old_source)
         for shape in old_shapes.values():
             shape["mode"] = modes[path]
@@ -1022,7 +928,7 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
                 raise EvidenceError("indirect-test-source")
             new_source = f.read_text()
             imports_preserved[path] = preserving_import_bindings(old_source, new_source)
-            definitions_preserved[path] = preserving_definition_contexts(old_source, new_source)
+            context_changed[path] = changed_module_context(path, old_source, new_source)
             shapes = test_shapes(path, new_source)
             mode = input_record(root, path)["mode"]
             for shape in shapes.values():
@@ -1057,9 +963,7 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
             losses[key] = "import-context-loss"
         elif old["markers"] != new["markers"]:
             losses[key] = "marker-context-change"
-        elif not definitions_preserved[key.split("::", 1)[0]] or not preserving_context_additions(
-            old["context_tree"], new["context_tree"], old_sources[key.split("::", 1)[0]]
-        ):
+        elif context_changed[key.split("::", 1)[0]]:
             losses[key] = "fixture-helper-or-marker-context-loss"
     for path in sorted(set(paths) | set(tracked_paths(root))):
         if PurePosixPath(path).name != "conftest.py":
@@ -1254,6 +1158,10 @@ def executable_proof(
         integer(row["index"])
     if proof["mutation"]["batches"] != expected_batches:
         raise EvidenceError("incomplete-or-changed-mutation-batches")
+    if root is None:
+        expected_selectors = binding["selection"]
+    else:
+        expected_selectors = proof_selectors(root, binding["base"], binding["selection"])
     baselines = {}
     expected_flags = [
         "-n",
@@ -1282,6 +1190,10 @@ def executable_proof(
         ):
             raise EvidenceError("changed-tool-scope-or-command")
         side = run["side"]
+        if run["test_selectors"] != expected_selectors.get(side):
+            raise EvidenceError("changed-module-context-selectors")
+        if run["execution_order"] != [case["key"] for case in run["cases"]]:
+            raise EvidenceError("collection-execution-order-mismatch")
         if side not in {"removed", "survivors"} or run["selection"] != binding["selection"][side]:
             raise EvidenceError("changed-selection")
         if any(not HEX.fullmatch(r["key"]) for r in run["cases"]):
@@ -1373,6 +1285,8 @@ def executable_proof(
             if run["scope_inputs"] != expected or restored["scope_inputs"] != scope_records[side]:
                 raise EvidenceError("mutant-source-or-restoration-binding")
             population = {(r["key"], r["node"]) for r in baseline["cases"]}
+            if run["execution_order"] != baseline["execution_order"]:
+                raise EvidenceError("mutation-case-order-change")
             if {(r["key"], r["node"]) for r in run["cases"]} != population or restored[
                 "cases"
             ] != baseline["cases"]:
@@ -1650,6 +1564,8 @@ def verify_ledger(
                 "exit",
                 "selection",
                 "command_flags",
+                "test_selectors",
+                "execution_order",
                 "measurement_root",
                 "scope",
                 "scope_inputs",

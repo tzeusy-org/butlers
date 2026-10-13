@@ -131,6 +131,23 @@ permission to remove that test. Account for every affected owner. A manual fresh
 proof uses the ordinary `prove` command with an exact before commit, followed by
 `--ledger` on the same required consumer.
 
+For a module retaining an old owner, changed module/class declarations, imports,
+added test owners, or changed declaration order require the complete before and
+current static owner populations. There is no inert-addition whitelist. The
+producer and consumer independently derive these affected modules from source.
+Their execution selectors name whole modules, so pytest determines collection
+and execution order even if a request lists owners in another order. Every run
+records these selectors and the actual opaque case execution sequence; baseline,
+mutation and restoration must retain complete collection, setup/call/teardown,
+and the same per-side order. Ordinary body-only condensation keeps node selectors.
+
+This path intentionally refuses static/actual owner mismatches, including
+inherited or dynamically collected owners and source test methods in uncollected
+helper classes. It does not increase execution bounds. Entirely new test modules
+and arbitrary cross-module global interference are outside this retained-module
+context scan; a no-loss verdict is not a Python isolation guarantee. New ancestor
+`conftest.py` files do affect retained owners and require their ordinary account.
+
 For the actual default CI invocation, track a strict JSON execution request under
 `tests/condensation-plans/`. Use the same plan fields with `"base":"event-base"`.
 The request's `scope`, owners, mapping and governing citations are source-owned;

@@ -45,6 +45,7 @@ from check_condensation_ledger import (
     mutation_target,
     named_coverage_residue,
     production_dependencies,
+    proof_selectors,
     public_path,
     same_owner_context_accounts,
     source_records,
@@ -239,6 +240,8 @@ def worker(request: Path) -> int:
     sys.path[:0] = [str(root / "src"), str(root)]
     output = Path(config["output"])
     selected = config["selection"]
+    selectors = config.get("test_selectors", selected)
+    execution_order = []
     nonce = config["nonce"]
     cases = {}
     complete_collection = False
@@ -290,6 +293,7 @@ def worker(request: Path) -> int:
 
         @pytest.hookimpl(hookwrapper=True)
         def pytest_runtest_setup(self, item):
+            execution_order.append(cases[item.nodeid]["key"])
             cov.switch_context(cases[item.nodeid]["key"] + "|setup")
             yield
 
@@ -338,7 +342,7 @@ def worker(request: Path) -> int:
                     raise EvidenceError("subject-observer-probe-mismatch")
         sys.addaudithook(guard_control_input)
         args = [
-            *selected,
+            *selectors,
             "-n",
             "0",
             "-p",
@@ -376,6 +380,8 @@ def worker(request: Path) -> int:
     public_cases = list(cases.values())
     complete = (
         complete_collection
+        and {r["node"] for r in public_cases} == set(selected)
+        and execution_order == [r["key"] for r in public_cases]
         and not control_read
         and deselected == 0
         and tracer == "CTracer"
@@ -401,7 +407,9 @@ def worker(request: Path) -> int:
             "tracer": tracer,
             "exit": code,
             "selection": selected,
-            "command_flags": args[len(selected) :],
+            "command_flags": args[len(selectors) :],
+            "test_selectors": selectors,
+            "execution_order": execution_order,
             "measurement_root": str(root),
             "scope": config["scope"],
             "scope_inputs": [input_record(root, p) for p in config["scope"]],
@@ -519,6 +527,7 @@ def suite(
     timeout: float,
     control_inputs: set[str] | None = None,
     cancellation: threading.Event | None = None,
+    test_selectors: list[str] | None = None,
 ) -> dict:
     request = output.with_suffix(".request.json")
     publish(
@@ -526,6 +535,7 @@ def suite(
         {
             "root": str(copy_root),
             "selection": selection,
+            "test_selectors": selection if test_selectors is None else test_selectors,
             "scope": scope,
             "nonce": nonce,
             "output": str(output),
@@ -1198,6 +1208,7 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
         base = git(root, "rev-parse", config["base"])
         if overlap:
             same_owner_context_accounts(root, base, overlap)
+        selectors = proof_selectors(root, base, selections)
         runs, baseline = [], {}
         killed = {"removed": [], "survivors": []}
         with tempfile.TemporaryDirectory(prefix="condense-owned-", dir=output) as directory:
@@ -1262,6 +1273,7 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                     remaining,
                     control_inputs,
                     cancellation,
+                    test_selectors=selectors[kind],
                 )
                 run["side"] = kind
                 publish(path, run)
@@ -1357,6 +1369,8 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                         measured = execute_sides(lambda kind: mutant["id"] + "-" + kind)
                         for kind in selections:
                             run = measured[kind]
+                            if run["execution_order"] != baseline[kind]["execution_order"]:
+                                raise EvidenceError("mutation-case-order-change")
                             if {(r["key"], r["node"]) for r in run["cases"]} != {
                                 (r["key"], r["node"]) for r in baseline[kind]["cases"]
                             }:
