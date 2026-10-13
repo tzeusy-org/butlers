@@ -6,6 +6,8 @@
 - [x] 1.4 Complete exact native strict validation, parsed counts, guards and source hygiene receipts.
 - [x] 1.5 Commit, push and open a DRAFT PR with independent resulting-source review requested through ROOT.
 
+- [x] 1.6 Correct F1/F2 pre-start and clause dispositions, retain all original carriers, rerun required source checks and push only the same draft PR.
+
 ## 2. Exact security contract gate (not authoring authority)
 
 - [ ] 2.1 Independent security/spec review of exact resulting SHA/tree and full coverage.

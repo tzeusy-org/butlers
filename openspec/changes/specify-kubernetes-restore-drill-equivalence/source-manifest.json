@@ -77,6 +77,18 @@
     {
       "path": "about/legends-and-lore/rfcs/0008-deployment-network-security.md",
       "sha256": "f28c4b54e7447402bd83809f34ef02d9ad44eee180dd9e533cb7b920294cc321"
+    },
+    {
+      "path": "src/butlers/api/routers/system.py",
+      "sha256": "af3e9aefae4179d0ce25357116557f5bb22b96f7a9b859b4ba07b26bf4bd490d"
+    },
+    {
+      "path": "src/butlers/api/routers/attention_ledger.py",
+      "sha256": "08ebc087e25a281e2fe6017f7dcd9934b8b57d61e36c3a3586772a6a97a0b0cd"
+    },
+    {
+      "path": "about/README.md",
+      "sha256": "7757ec0f877a5d25e75f39eb32b34d87eb69f454b77cb6eb6a8d834864c19baa"
     }
   ],
   "requirement_allocation": {
@@ -94,9 +106,9 @@
       "REQ-kubernetes-restore-drill-010"
     ],
     "rfc_or_migration_reservations": [],
-    "observed_worktrees": 192,
-    "all_open_prs": 36,
-    "prospective_changed_spec_rfc_blobs": 154,
+    "observed_worktrees": 195,
+    "all_open_prs": 38,
+    "prospective_changed_spec_rfc_blobs": 168,
     "collision_found": false
   },
   "callers": [
@@ -132,5 +144,18 @@
       "path": "managed init-db.sql/core_196 installer and finalizer",
       "disposition": "unchanged; future complete generation/exclusive admission must account for this caller"
     }
-  ]
+  ],
+  "correction_review": {
+    "reviewed_head": "067ac90342186c576760e4badc5d27d5c5762cdd",
+    "reviewed_tree": "51ab1214fba2784fcb93e8478976a6648fde6356",
+    "findings": [
+      "F1",
+      "F2"
+    ],
+    "status": "AUTHOR CORRECTIONS; independent resulting-head review still pending",
+    "original_governing_source_count": 19,
+    "additional_source_context": "private API reader, foreign attention reader and doctrine precedence; source evidence only",
+    "reservation_snapshot": "195 actual worktrees / 38 open PRs, including current corrected PR4499; full paginated paths and actual working files recorded externally",
+    "semantic_coverage_limit": "Exact carrier/address checks do not certify equivalence; explicit foreign conflicts and owner gaps remain pending"
+  }
 }

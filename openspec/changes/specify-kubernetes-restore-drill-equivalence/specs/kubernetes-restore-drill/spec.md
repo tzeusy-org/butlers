@@ -1,6 +1,6 @@
 # Kubernetes Restore Drill (proposed)
 
-PROPOSED, NOT ADOPTED. Requirements below are candidate behavior only; D1-D10 and
+PROPOSED, NOT ADOPTED. Requirements below are candidate behavior only; D1-D11 and
 status.md retain the exact adoption and operational gates. No baseline spec is modified.
 
 ## ADDED Requirements
@@ -10,7 +10,7 @@ status.md retain the exact adoption and operational gates. No baseline spec is m
 This proposed capability SHALL remain unadopted until exact independent review and owner acceptance, and SHALL preserve chart exclusion and the current Compose-only executor until implementation and operational prerequisites are proven.
 
 ID: REQ-kubernetes-restore-drill-001
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Source publication does not activate a port
@@ -33,7 +33,7 @@ Scope: v1-mandatory
 A future Kubernetes executor SHALL authenticate exact namespace, controller, Job, Pod, container-restart, node and boot generations using reviewed proof authority, and SHALL reject caller assertions or reused generation evidence before credential use.
 
 ID: REQ-kubernetes-restore-drill-002
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Pod restart requires new proof
@@ -58,10 +58,10 @@ Scope: v1-mandatory
 
 ### Requirement: Applied network boundary precedes recovery authority
 
-A future executor SHALL receive recovery authority only after demonstrated exact peer, endpoint, own-node and host-route enforcement for its generation, or an exact owner-adopted named weakening SHALL govern that missing guarantee.
+A future executor SHALL hold both actual created executor and relay workload containers stopped through a trusted runtime/CNI start barrier until both generation-bound peer, endpoint, own-node and host-route fences are applied, SHALL separately validate recovery authority before credential use, or an exact owner-adopted named weakening SHALL govern each missing guarantee.
 
 ID: REQ-kubernetes-restore-drill-003
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Unapplied policy is insufficient
@@ -84,12 +84,37 @@ Scope: v1-mandatory
 - **WHEN** generation or enforcement changes during an active relay session
 - **THEN** new admission stops and owned flow absence is proven before recovery or replacement
 
+#### Scenario: Both created workloads are held before the joint fence
+
+- **WHEN** P1 creates the exact executor and relay containers on the selected node
+- **THEN** the trusted runtime/CNI gate holds both in actual Created/not-started states and admits neither workload entrypoint until it verifies both installed generation-bound fences
+
+#### Scenario: Missing or failed pre-start prerequisite refuses both services
+
+- **WHEN** the handler, peer, placement, stopped-state witness or applied fence is missing, uncertain or exceeds the proposed 30-second wait
+- **THEN** neither service starts or receives materialized recovery authority, owned creation is cleaned up within its bounds and successor admission stays closed until absence is proven
+
+#### Scenario: Start replay or restart cannot bypass the barrier
+
+- **WHEN** a consumed admission is replayed or the helper, kubelet, node or container generation restarts
+- **THEN** starts remain denied until fresh creation and both-fence proof, without marker reuse or a fail-open timeout
+
+#### Scenario: Partial start is fenced and recovered
+
+- **WHEN** one authorized start succeeds and the other fails
+- **THEN** admission closes, the applied fences remain required, exposure is revoked and owned process, relay-flow and SQL absence plus scratch recovery precede any replacement
+
+#### Scenario: Delayed password is not a startup equivalent
+
+- **WHEN** an alternative permits a password-free executor or uncredentialed relay to run before its actual fence
+- **THEN** it is the explicit unadopted W-start loss requiring exact owner acceptance, and cannot be reported as P1 equivalence
+
 ### Requirement: Credential and protected result isolation survives the port
 
 A future port SHALL retain the purpose-bound executor-only recovery credential, ordinary NOCREATEDB roles, trusted bootstrap provenance, exclusive private result authority and constrained atomic audit projection.
 
 ID: REQ-kubernetes-restore-drill-004
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Ordinary caller cannot gain recovery authority
@@ -122,7 +147,7 @@ Scope: v1-mandatory
 A future executor SHALL use a distinct uncredentialed relay with exact canonical endpoint and port, preserve hostname TLS identity and CA validation, and SHALL refuse unsupported address-family or translation paths.
 
 ID: REQ-kubernetes-restore-drill-005
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Same pod relay is insufficient
@@ -155,7 +180,7 @@ Scope: v1-mandatory
 A future executor SHALL perform bounded scratch-only precleanup, creation, restore, verification and postcleanup, SHALL preserve stated backup coverage, and SHALL classify cleanup failure as failure.
 
 ID: REQ-kubernetes-restore-drill-006
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Live target is never used
@@ -183,12 +208,17 @@ Scope: v1-mandatory
 - **WHEN** a coverage omission or artifact content/identity changes
 - **THEN** the existing coverage owner and verification contract remain required rather than certifying a narrower restore
 
+#### Scenario: Available backup follows the complete scratch sequence
+
+- **WHEN** an exclusively admitted drill has a usable backup and authorized recovery prerequisites
+- **THEN** it performs bounded scratch precleanup, create, real restore, non-system-data verification and postcleanup, using the maintenance connection only for scratch create/drop and reporting cleanup failure as non-pass
+
 ### Requirement: Exclusive lifecycle ownership covers every caller
 
 A future Kubernetes path SHALL admit at most one fixed-scratch lifecycle across scheduled, manual, retry, release and surviving Compose callers, and SHALL not infer old-writer absence from Job settings or lease expiry.
 
 ID: REQ-kubernetes-restore-drill-007
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Manual and scheduled triggers cannot overlap
@@ -216,7 +246,7 @@ Scope: v1-mandatory
 A future port SHALL keep protected failed, passed, missing, recovered and persistence-unknown truth and existing due, API and attention ownership, and SHALL retain content-blind diagnostics.
 
 ID: REQ-kubernetes-restore-drill-008
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Persistence failure is not a pass
@@ -234,12 +264,17 @@ Scope: v1-mandatory
 - **WHEN** proof or failure telemetry contains credentials, backup content or free-form sensitive fields
 - **THEN** those fields are excluded from durable/API evidence and current writer sanitization remains authoritative
 
+#### Scenario: Result-aware cadence remains a protected target
+
+- **WHEN** a future port consumes no result, a pass or a failure from the protected authority
+- **THEN** its due target remains immediate, seven days or 24 hours respectively under the existing recovery owner, and a source gap or legacy weekly-failure clause cannot certify completion or authorize public-audit timing
+
 ### Requirement: Rollback retains protected recovery and history
 
 A future rollback SHALL quiesce only its owned path, preserve current Compose recovery, backup artifacts and protected result history, and SHALL not restore live data or widen ordinary authority.
 
 ID: REQ-kubernetes-restore-drill-009
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Active rollback is quiesced
@@ -262,7 +297,7 @@ Scope: v1-mandatory
 The proposal SHALL bind complete source and scenario coverage to independent resulting-source review, exact owner adoption and distinct future PostgreSQL and authorized Kubernetes evidence before activation.
 
 ID: REQ-kubernetes-restore-drill-010
-Source: bu-viat6h.4; this change design.md D1-D10; REQ-deployment-hardening-007; REQ-database-security-006
+Source: bu-viat6h.4; this change design.md D1-D11; REQ-deployment-hardening-007; REQ-database-security-006
 Scope: v1-mandatory
 
 #### Scenario: Review names the resulting source
@@ -284,3 +319,18 @@ Scope: v1-mandatory
 
 - **WHEN** a future port or source handoff is proposed
 - **THEN** production UNKNOWN, r6wzr Option C, .5/.6 gaps and restore, secrets, privilege, tracker and held retirement owners remain unchanged
+
+#### Scenario: Foreign attention clauses retain their own authority
+
+- **WHEN** coverage includes attention source availability, healthy-source summary or list/filter clauses
+- **THEN** each retains its exact REQ-core-notify-008 scenario and actual reader-owner disposition rather than an unrelated relay or proposal-authority scenario
+
+#### Scenario: Inherited conflicts remain explicit without foreign amendment
+
+- **WHEN** a retained clause conflicts over public result authority, weekly failed retry or unconditional cleanup success
+- **THEN** the literal and hash remain intact with its exact governing conflict and existing owner-resolution gate, without treating both claims as simultaneous mandatory equivalents or adopting a weakening
+
+#### Scenario: Carrier and reference checks have limited verdicts
+
+- **WHEN** literal/hash population and exact source/candidate reference checks pass
+- **THEN** those receipts establish carrier integrity and address completeness only, while independent resulting-source semantic review and all actual behavior proof remain separate pending gates

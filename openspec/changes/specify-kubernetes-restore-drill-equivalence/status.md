@@ -17,3 +17,8 @@ voice survivors, but provides no replacement authority here. r6wzr Option C forb
 production runbook preparation or verification. Production topology remains UNKNOWN.
 Already accepted isolated executor choice and older named backup adoption are retained;
 new exact-head/changed-contract review is required without re-asking those old choices.
+
+The independent review of 067ac90342186c576760e4badc5d27d5c5762cdd required
+F1/F2 source corrections. The authored pre-start barrier and clause dispositions
+are proposed corrections only; independent resulting-head semantic review remains
+pending. Carrier/reference checks cannot replace that review or adopt the candidate.

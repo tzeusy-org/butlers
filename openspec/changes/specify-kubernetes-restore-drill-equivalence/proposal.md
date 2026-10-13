@@ -3,7 +3,7 @@
 The Helm chart excludes the restore-drill executor because its current trust boundary is
 Docker-specific. `bu-viat6h.4` explicitly requests a DESIGN-FIRST proposal, not a port.
 Pod UID and ordinary NetworkPolicy do not reproduce the root-prepared generation,
-boot, host-route and pre-secret firewall capability. This proposal makes those gaps
+boot, host-route and before-both-start/pre-secret firewall capability. This proposal makes those gaps
 reviewable while retaining the already-adopted isolated credential and result authority.
 
 **Status: PROPOSED, NOT ADOPTED.** Native SHALL/MUST statements below describe a
@@ -19,8 +19,9 @@ The current executor remains chart-excluded and Compose-only via `--with-restore
 - Describe three concrete dispositions: retain Compose; an unimplemented stronger
   node-fenced protocol with explicit new-authority gates; or a normal Kubernetes
   design with individually enumerated unadopted weakenings.
-- Bind every source requirement/scenario/clause and current caller to the proposed
-  home or its unchanged existing owner using `obligations-ledger.json` and `source-manifest.json`.
+- Bind every source requirement/scenario/clause and current caller to exact candidate
+  scenarios or its unchanged foreign requirement/scenario/actual owner, explicitly
+  recording inherited contradictions, using `obligations-ledger.json` and `source-manifest.json`.
 - Separate exact source review and adoption from implementation and actual
   PostgreSQL, enforcement, secret provisioning and deployment evidence.
 
