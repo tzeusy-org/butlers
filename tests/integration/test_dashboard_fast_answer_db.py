@@ -721,3 +721,209 @@ async def test_hermetic_twenty_question_database_benchmark_and_catalog_corpus(
     record_property("fast_answer_hermetic_benchmark", json.dumps(report, sort_keys=True))
     assert deps.providers == 40 and counts["reads"] == deps.replies == 20 and cli.call_count == 0
     assert p95 < 3
+
+
+async def _held_fast_operation(pool, role_pool, message, query, args, before, after):
+    """Advance the injected DB clock only after an actual second connection blocks."""
+    await _clock(pool, before)
+    async with pool.acquire() as blocker, role_pool.acquire() as caller:
+        blocker_pid = await blocker.fetchval("SELECT pg_backend_pid()")
+        caller_pid = await caller.fetchval("SELECT pg_backend_pid()")
+        task = None
+        try:
+            async with blocker.transaction():
+                await blocker.fetchrow(
+                    "SELECT * FROM public.dashboard_conversation_turns WHERE message_id=$1 "
+                    "FOR UPDATE",
+                    message,
+                )
+                task = asyncio.create_task(caller.fetchval(query, *args))
+                deadline = time.monotonic() + 5
+                while not await pool.fetchval(
+                    "SELECT $1::integer=ANY(pg_blocking_pids($2::integer))", blocker_pid, caller_pid
+                ):
+                    assert not task.done(), "owning operation did not wait for its turn lock"
+                    assert time.monotonic() < deadline, "owning lock wait was not observed"
+                    await asyncio.sleep(0.01)
+                await _clock(pool, after)
+            return await asyncio.wait_for(task, 5)
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_core267_clock_after_held_lock_fences_expiry_and_reached_deadline(fast_db):
+    # REQ-dashboard-fast-answer-002: actual blocking locks, not a frozen-clock race.
+    pool, role_pool, _url = fast_db
+    store, t0 = FastAnswerStore(role_pool), datetime(2026, 10, 13, tzinfo=UTC)
+    await _clock(pool, t0)
+    conversation, message, request = await _seed_turn(pool)
+    owner, session = uuid4(), uuid4()
+    registered = await _held_fast_operation(
+        pool,
+        role_pool,
+        message,
+        "SELECT public.dashboard_fast_answer_register($1,$2,$3,$4)",
+        (message, request, session, owner),
+        t0,
+        t0 + timedelta(seconds=120),
+    )
+    assert registered["outcome"] == "registered"
+    row = await _state(pool, message)
+    assert row["heartbeat_at"] == t0 + timedelta(seconds=120)
+    assert row["lease_expires_at"] == t0 + timedelta(seconds=180)
+
+    for action in ("heartbeat", "advance", "reply_claim", "reply"):
+        for expired in (False, True):
+            await _clock(pool, t0)
+            conversation, message, request = await _seed_turn(pool)
+            owner, session = uuid4(), uuid4()
+            await store.register(message, request, session, owner)
+            fence = FastAnswerFence(message, session, owner, 1)
+            payload = reply_payload(
+                message,
+                conversation,
+                "synthetic reply",
+                [{"kind": "view", "ref": "concierge.v_fleet_sessions", "as_of": t0.isoformat()}],
+            )
+            data = {"phase": "classification"} if action == "advance" else payload
+            if action == "reply":
+                assert (await store.control(fence, "reply_claim", payload))["outcome"] == "accepted"
+            before_row = await _state(pool, message)
+            after = t0 + timedelta(seconds=61 if expired else 59)
+            result = await _held_fast_operation(
+                pool,
+                role_pool,
+                message,
+                "SELECT public.dashboard_fast_answer_control($1,$2,$3,$4,$5::jsonb)",
+                (message, owner, 1, action, data),
+                t0 + timedelta(seconds=59),
+                after,
+            )
+            assert result["outcome"] == (
+                "fenced" if expired else "completed" if action == "reply" else "accepted"
+            )
+            current = await _state(pool, message)
+            if expired:
+                assert current == before_row
+                assert not await pool.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM public.dashboard_messages WHERE id=$1)",
+                    UUID(payload["reply_id"]),
+                )
+            elif action == "heartbeat":
+                assert current["lease_expires_at"] == after + timedelta(seconds=60)
+
+    await _clock(pool, t0)
+    _conversation, message, request = await _seed_turn(pool)
+    await store.register(message, request, uuid4(), uuid4())
+    expiry = (await _state(pool, message))["lease_expires_at"]
+    await _clock(pool, expiry)
+    await store.reconcile(uuid4())
+    deadline = (await _state(pool, message))["reconcile_deadline_at"]
+    await _held_fast_operation(
+        pool,
+        role_pool,
+        message,
+        "SELECT count(*) FROM public.dashboard_fast_answer_reconcile($1)",
+        (uuid4(),),
+        deadline - timedelta(microseconds=1),
+        deadline + timedelta(microseconds=1),
+    )
+    final = await _state(pool, message)
+    assert final["state"] == "ambiguous"
+    assert final["reconcile_anchor_expires_at"] == expiry
+    assert final["reconcile_deadline_at"] == deadline
+
+
+async def test_core267_cancelled_provider_attempt_metadata_keeps_stop_and_generation_fences(
+    fast_db, monkeypatch
+):
+    # REQ-dashboard-fast-answer-002 / REQ-dashboard-fast-answer-006. Real role/readback.
+    from butlers.core import dashboard_fast_answer_adapters as adapters
+    from butlers.core.dashboard_fast_answer_runtime import FenceLost
+
+    pool, role_pool, _url = fast_db
+    store, t0 = FastAnswerStore(role_pool), datetime(2026, 10, 13, tzinfo=UTC)
+    for phase in ("classification", "phrasing"):
+        await _clock(pool, t0)
+        conversation, message, request = await _seed_turn(pool)
+        owner, session = uuid4(), uuid4()
+        await store.register(message, request, session, owner)
+        fence = FastAnswerFence(message, session, owner, 1)
+        models = tuple(
+            adapters._Model("stub", uuid4(), 31, purpose, fence)
+            for purpose in (
+                "dashboard_fast_answer_classification",
+                "dashboard_fast_answer_phrasing",
+            )
+        )
+        entered, clock = asyncio.Event(), [10.0]
+
+        async def provider(**kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(adapters, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+        dependencies = adapters.RegisteredFastAnswerDependencies(SimpleNamespace(), store)
+        dependencies._adapter = SimpleNamespace(invoke=provider, invoke_structured=provider)
+        work = (
+            dependencies.classify(
+                models,
+                "synthetic",
+                SimpleNamespace(state="no_match", selected_owner=None, candidates=[]),
+                SimpleNamespace(tools={}),
+            )
+            if phase == "classification"
+            else dependencies.phrase(models, "synthetic", [])
+        )
+        task = asyncio.create_task(work)
+        await asyncio.wait_for(entered.wait(), 5)
+        await request_cancel(role_pool, message_id=message)
+        clock[0] += 0.5
+        task.cancel()
+        outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+        assert isinstance(outcome, asyncio.CancelledError)
+        row = await _state(pool, message)
+        assert [record["outcome"] for record in row["attribution"]] == ["started", "cancelled"]
+        terminal = row["attribution"][-1]
+        assert terminal["duration_ms"] == 500 and terminal["attempt_index"] == 0
+        assert terminal["purpose"] == models[0 if phase == "classification" else 1].purpose
+        assert all("synthetic" not in str(record) for record in row["attribution"])
+        assert (await store.control(fence, "advance", {"phase": "reads"}))["outcome"] == "stopped"
+        assert (await store.control(fence, "attribution", row["attribution"][0]))[
+            "outcome"
+        ] == "stopped"
+        assert (await store.control(fence, "cancelled"))["outcome"] == "cancelled"
+        before = await _state(pool, message)
+        assert (await store.control(fence, "attempt_cancelled", terminal))["outcome"] == "accepted"
+        assert (await _state(pool, message)) == before
+        for wrong in (
+            {**terminal, "attempt_index": 100},
+            {**terminal, "model": "wrong"},
+            {**terminal, "duration_ms": 501},
+            {**terminal, "message": "caller operand"},
+        ):
+            if "message" in wrong:
+                with pytest.raises(asyncpg.RaiseError):
+                    await store.control(fence, "attempt_cancelled", wrong)
+            else:
+                assert (await store.control(fence, "attempt_cancelled", wrong))[
+                    "outcome"
+                ] == "conflict"
+            assert (await _state(pool, message)) == before
+        for wrong_fence in (
+            FastAnswerFence(message, session, uuid4(), 1),
+            FastAnswerFence(message, session, owner, 2),
+        ):
+            assert (await store.control(wrong_fence, "attempt_cancelled", terminal))[
+                "outcome"
+            ] == "fenced"
+        await _clock(pool, t0 + timedelta(seconds=60))
+        assert (await store.control(fence, "attempt_cancelled", terminal))["outcome"] == "fenced"
+        assert (await _state(pool, message)) == before
+        # The actual adapter cannot turn an expired settlement refusal into confirmed cancellation.
+        with pytest.raises(FenceLost):
+            await dependencies._cancelled_attempt(
+                models[0 if phase == "classification" else 1], {"attempt_index": 0}, 10.0
+            )

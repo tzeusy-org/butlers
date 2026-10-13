@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ from butlers.core.dashboard_fast_answer_policy import (
     FAST_ANSWER_CONCIERGE_TOOLS_V1,
     FastAnswerAdmission,
 )
-from butlers.core.dashboard_fast_answer_runtime import InvalidAdmission
+from butlers.core.dashboard_fast_answer_runtime import FenceLost, InvalidAdmission
 from butlers.core.dashboard_fast_answer_store import FastAnswerFence
 from butlers.core.dispatch_intent import Consequence, DispatchIntent
 from butlers.core.model_capabilities import ModelFeature
@@ -168,25 +169,52 @@ class RegisteredFastAnswerDependencies:
             )
         return self._adapter
 
-    async def _attribution(self, model: _Model, outcome: str, duration_ms: int = 0) -> None:
+    def _attempt_data(self, model: _Model, outcome: str, duration_ms: int) -> dict:
+        return {
+            "purpose": model.purpose,
+            "requested_tier": "cheap",
+            "effective_tier": "cheap",
+            "runtime_type": "api",
+            "resolution_source": "catalog",
+            "model": model.model,
+            "catalog_entry_id": str(model.entry_id),
+            "execution_timeout": model.timeout,
+            "outcome": outcome,
+            "duration_ms": duration_ms,
+        }
+
+    async def _record_attempt(self, model: _Model, outcome: str, duration_ms: int = 0) -> dict:
         result = await self.store.control(
-            model.fence,
-            "attribution",
-            {
-                "purpose": model.purpose,
-                "requested_tier": "cheap",
-                "effective_tier": "cheap",
-                "runtime_type": "api",
-                "resolution_source": "catalog",
-                "model": model.model,
-                "catalog_entry_id": str(model.entry_id),
-                "execution_timeout": model.timeout,
-                "outcome": outcome,
-                "duration_ms": duration_ms,
-            },
+            model.fence, "attribution", self._attempt_data(model, outcome, duration_ms)
         )
         if result["outcome"] != "accepted":
             raise RuntimeError("fast provider attribution fence lost")
+        return result
+
+    async def _attribution(self, model: _Model, outcome: str, duration_ms: int = 0) -> None:
+        await self._record_attempt(model, outcome, duration_ms)
+
+    async def _cancelled_attempt(self, model: _Model, started_record: dict, started: float) -> None:
+        # Only the database-issued start position can settle this exact attempt.
+        # A failed metadata write leaves settlement unknown, never confirms Stop.
+        attempt_index = started_record.get("attempt_index")
+        if type(attempt_index) is not int or attempt_index < 0:
+            raise FenceLost("provider cancellation attribution unavailable")
+        try:
+            result = await self.store.control(
+                model.fence,
+                "attempt_cancelled",
+                {
+                    **self._attempt_data(
+                        model, "cancelled", int((time.monotonic() - started) * 1000)
+                    ),
+                    "attempt_index": attempt_index,
+                },
+            )
+            if result["outcome"] != "accepted":
+                raise FenceLost("provider cancellation attribution unavailable")
+        except (Exception, asyncio.CancelledError):
+            raise FenceLost("provider cancellation attribution unavailable") from None
 
     async def _usage(self, model: _Model, usage: dict | None) -> None:
         if usage and usage.get("input_tokens") is not None:
@@ -221,7 +249,7 @@ class RegisteredFastAnswerDependencies:
                 if name in FAST_ANSWER_CONCIERGE_TOOLS_V1
             ],
         }
-        await self._attribution(model, "started")
+        started_record = await self._record_attempt(model, "started")
         started = time.monotonic()
         try:
             calls, _text, usage = await self._api().invoke_structured(
@@ -238,6 +266,9 @@ class RegisteredFastAnswerDependencies:
                 model=model.model,
                 timeout=model.timeout,
             )
+        except asyncio.CancelledError:
+            await self._cancelled_attempt(model, started_record, started)
+            raise
         except Exception:
             await self._attribution(model, "failed", int((time.monotonic() - started) * 1000))
             raise
@@ -254,7 +285,7 @@ class RegisteredFastAnswerDependencies:
 
     async def phrase(self, models, question, results) -> str:
         model = models[1]
-        await self._attribution(model, "started")
+        started_record = await self._record_attempt(model, "started")
         started = time.monotonic()
         try:
             text, calls, usage = await self._api().invoke(
@@ -268,6 +299,9 @@ class RegisteredFastAnswerDependencies:
                 model=model.model,
                 timeout=model.timeout,
             )
+        except asyncio.CancelledError:
+            await self._cancelled_attempt(model, started_record, started)
+            raise
         except Exception:
             await self._attribution(model, "failed", int((time.monotonic() - started) * 1000))
             raise

@@ -96,7 +96,7 @@ def upgrade() -> None:
         RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
         DECLARE t public.dashboard_conversation_turns%ROWTYPE;
           r public.dashboard_fast_answer_runtimes%ROWTYPE;
-          stamp timestamptz := public.dashboard_fast_answer_now();
+          stamp timestamptz;
         BEGIN
           PERFORM public.dashboard_turn_require_role('butler_switchboard_rw');
           IF p_session IS NULL OR p_owner IS NULL OR p_request IS NULL THEN
@@ -104,6 +104,7 @@ def upgrade() -> None:
           END IF;
           SELECT * INTO t FROM public.dashboard_conversation_turns
             WHERE message_id=p_message FOR UPDATE;
+          stamp := public.dashboard_fast_answer_now();
           IF NOT FOUND OR t.request_id IS DISTINCT FROM p_request THEN
             RETURN jsonb_build_object('outcome','missing');
           END IF;
@@ -135,12 +136,14 @@ def upgrade() -> None:
         RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
         DECLARE t public.dashboard_conversation_turns%ROWTYPE;
           r public.dashboard_fast_answer_runtimes%ROWTYPE;
-          stamp timestamptz := public.dashboard_fast_answer_now();
+          stamp timestamptz;
           reply_id uuid; existing public.dashboard_messages%ROWTYPE;
+          attempt_index integer; started_attempt jsonb; subsequent jsonb;
         BEGIN
           PERFORM public.dashboard_turn_require_role('butler_switchboard_rw');
           IF p_action IS NULL OR p_action NOT IN ('heartbeat','advance','attribution',
-            'fallback','failed','cancelled','uncertain','reply_claim','reply') OR
+            'attempt_cancelled','fallback','failed','cancelled','uncertain',
+            'reply_claim','reply') OR
             jsonb_typeof(p_data) IS DISTINCT FROM 'object' THEN
             RAISE EXCEPTION 'invalid fast runtime operation' USING ERRCODE='22023';
           END IF;
@@ -148,9 +151,52 @@ def upgrade() -> None:
             WHERE message_id=p_message FOR UPDATE;
           SELECT * INTO r FROM public.dashboard_fast_answer_runtimes
             WHERE message_id=p_message FOR UPDATE;
+          stamp := public.dashboard_fast_answer_now();
           IF NOT FOUND OR r.owner_instance_id IS DISTINCT FROM p_owner OR
             r.lease_generation IS DISTINCT FROM p_generation THEN
             RETURN jsonb_build_object('outcome','fenced');
+          END IF;
+          -- This records only a provider attempt that was admitted before Stop.
+          -- It never releases a claim, renews a lease, or authorizes another effect.
+          IF p_action='attempt_cancelled' THEN
+            IF r.state NOT IN ('active','cancelled') OR
+              r.reconcile_anchor_expires_at IS NOT NULL OR r.lease_expires_at<=stamp OR
+              (t.terminal_at IS NOT NULL AND
+                (r.state<>'cancelled' OR t.terminal_state IS DISTINCT FROM 'cancelled')) THEN
+              RETURN jsonb_build_object('outcome','fenced');
+            END IF;
+            IF p_data->>'outcome' IS DISTINCT FROM 'cancelled' OR
+              jsonb_typeof(p_data->'attempt_index') IS DISTINCT FROM 'number' OR
+              NOT (p_data->>'attempt_index' ~ '^[0-9]+$') OR
+              jsonb_typeof(p_data->'duration_ms') IS DISTINCT FROM 'number' OR
+              NOT (p_data->>'duration_ms' ~ '^[0-9]+$') OR
+              (SELECT count(*) FROM jsonb_object_keys(p_data))<>11 THEN
+              RAISE EXCEPTION 'invalid cancelled model attribution';
+            END IF;
+            attempt_index := (p_data->>'attempt_index')::integer;
+            started_attempt := r.attribution->attempt_index;
+            IF started_attempt IS NULL OR
+              started_attempt->>'outcome' IS DISTINCT FROM 'started' OR
+              started_attempt-'outcome'-'duration_ms' IS DISTINCT FROM
+                p_data-'outcome'-'duration_ms'-'attempt_index' THEN
+              RETURN jsonb_build_object('outcome','conflict');
+            END IF;
+            SELECT value INTO subsequent FROM jsonb_array_elements(r.attribution)
+              WITH ORDINALITY AS events(value,position)
+              WHERE position>attempt_index+1 AND
+                value-'outcome'-'duration_ms'-'attempt_index' =
+                  started_attempt-'outcome'-'duration_ms'
+              ORDER BY position LIMIT 1;
+            IF FOUND THEN
+              IF subsequent = p_data THEN
+                RETURN to_jsonb(r) || jsonb_build_object('outcome','accepted');
+              END IF;
+              RETURN jsonb_build_object('outcome','conflict');
+            END IF;
+            UPDATE public.dashboard_fast_answer_runtimes SET
+              attribution=attribution||jsonb_build_array(p_data),updated_at=stamp
+              WHERE message_id=p_message RETURNING * INTO r;
+            RETURN to_jsonb(r) || jsonb_build_object('outcome','accepted');
           END IF;
           IF p_action='reply' AND r.reply_message_id IS NOT NULL THEN
             SELECT * INTO existing FROM public.dashboard_messages WHERE id=r.reply_message_id;
@@ -274,7 +320,10 @@ def upgrade() -> None:
           END IF;
           SELECT * INTO r FROM public.dashboard_fast_answer_runtimes WHERE message_id=p_message;
           RETURN to_jsonb(r) || jsonb_build_object('outcome',
-            CASE WHEN r.state='active' THEN 'accepted' ELSE r.state END);
+            CASE WHEN r.state='active' THEN 'accepted' ELSE r.state END) ||
+            CASE WHEN p_action='attribution' AND p_data->>'outcome'='started' THEN
+              jsonb_build_object('attempt_index',jsonb_array_length(r.attribution)-1)
+              ELSE '{}'::jsonb END;
         END $$;
 
         CREATE OR REPLACE FUNCTION public.dashboard_fast_answer_reconcile(p_owner uuid)
@@ -282,10 +331,11 @@ def upgrade() -> None:
         SET search_path = pg_catalog, pg_temp AS $$
         DECLARE key uuid; t public.dashboard_conversation_turns%ROWTYPE;
           r public.dashboard_fast_answer_runtimes%ROWTYPE;
-          stamp timestamptz := public.dashboard_fast_answer_now(); terminal text;
+          stamp timestamptz; terminal text;
         BEGIN
           PERFORM public.dashboard_turn_require_role('butler_switchboard_rw');
           IF p_owner IS NULL THEN RAISE EXCEPTION 'missing reconciler owner'; END IF;
+          stamp := public.dashboard_fast_answer_now();
           FOR key IN SELECT message_id FROM public.dashboard_fast_answer_runtimes
             WHERE state IN ('active','pending_reconciliation','pending_cancellation')
               AND (lease_expires_at<=stamp OR reconcile_anchor_expires_at IS NOT NULL)
@@ -294,6 +344,7 @@ def upgrade() -> None:
               WHERE message_id=key FOR UPDATE;
             SELECT * INTO r FROM public.dashboard_fast_answer_runtimes
               WHERE message_id=key FOR UPDATE;
+            stamp := public.dashboard_fast_answer_now();
             IF r.state NOT IN ('active','pending_reconciliation','pending_cancellation') OR
               (r.lease_expires_at>stamp AND r.reconcile_anchor_expires_at IS NULL)
               THEN CONTINUE; END IF;

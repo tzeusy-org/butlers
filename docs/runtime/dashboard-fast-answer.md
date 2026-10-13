@@ -77,3 +77,16 @@ settlement. Handled success and failure both finalize message ingestion; a faile
 unavailable ingress write reports failure without authorizing whole-turn replay.
 The owner-only backup stage preserves durable fast-runtime rows as described in
 [backup and restore](../operations/backup-restore.md).
+
+Lease timestamps are sampled after the owning turn/runtime locks are acquired; each reconciled
+row refreshes the database clock separately. Waiting for a lock cannot renew an expired lease,
+continue a phase after expiry, or postpone a reached reconciliation deadline using an earlier clock.
+
+A cancelled provider call records elapsed duration against the database-issued array position of
+its exact `started` attribution. This metadata-only settlement may cross Stop for the same current
+owner/generation and live lease, including an already-cancelled turn. It cannot renew a lease,
+release a claim, start work, or persist a reply. Changed identities, an already-settled different
+outcome, expiry, or takeover refuse the write. Exact cancellation receipt replay is idempotent.
+If this attempt metadata cannot be durably settled, the adapter preserves an unknown outcome;
+that failure cannot confirm Stop. The migrated held-lock and Stop-attribution companions remain
+authored and locally unrun, pending genuine non-skipped execution.
