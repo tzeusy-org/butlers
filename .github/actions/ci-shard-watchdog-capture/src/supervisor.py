@@ -8,6 +8,7 @@ ancestry polls. This changes only this process's unprivileged child-reaping flag
 import ctypes
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -91,6 +92,10 @@ def main():
     ipc = os.environ.get("NODE_CHANNEL_FD")
     if ipc not in (None, "3"):
         return 2
+    # Reader loss must be observed even when a resistant child emits nothing.
+    # Poll only descriptor health; never read or export provider/control data.
+    control = select.poll()
+    control.register(1, select.POLLERR | select.POLLHUP | select.POLLNVAL)
     child = subprocess.Popen(
         sys.argv[3:],
         stdin=subprocess.DEVNULL,
@@ -169,6 +174,8 @@ def main():
             or parent_now[0] != parent_identity[0]
             or parent_now[1] in ("Z", "X")
         ):
+            cancel(signal.SIGTERM, None)
+        if control.poll(0):
             cancel(signal.SIGTERM, None)
         if cancelling and stopping_at is None:
             stopping_at = time.monotonic()

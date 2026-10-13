@@ -91,6 +91,58 @@ test('healthy cancellation and resistant descendants attest bounded owned comple
         assert.ok(numericProcess(sentinel.pid));
       } finally {if(pid){try{process.kill(-pid,'SIGKILL')}catch(_){}}action.kill('SIGKILL');}
     }
+    // Control-reader loss alone must settle with the actual owner still alive.
+    // Neutralize only the health check in an executing helper to prove this
+    // assertion observes owned execution, rather than cleanup after the fact.
+    const originalPython=path.join(path.resolve(__dirname,'../../../..','.venv'),'bin/python3');
+    const mutant=path.join(directory,'pipe-check-disabled.py'),mutantBin=path.join(directory,'mutant-bin');
+    const helperBody=fs.readFileSync(path.resolve(__dirname,'../src/supervisor.py'),'utf8');
+    assert.ok(helperBody.includes('if control.poll(0):'));
+    fs.writeFileSync(mutant,helperBody.replace('if control.poll(0):','if False:'));
+    fs.mkdirSync(mutantBin);
+    fs.writeFileSync(path.join(mutantBin,'python3'),`#!${originalPython}\nimport os,sys\nos.execv(${JSON.stringify(originalPython)},[${JSON.stringify(originalPython)},${JSON.stringify(mutant)},*sys.argv[2:]])\n`,{mode:0o755});
+    const pipeReceipts=[];
+    for(const entry of ['src/index.js','dist/index.js']) {
+      // ncc's distributed entry executes its entry guard on require. Select
+      // the idle uploader message listener while exercising its real exports;
+      // no message or provider invocation occurs.
+      const previousUploader=process.env.WATCHDOG_UPLOADER;
+      process.env.WATCHDOG_UPLOADER='1';
+      let api;
+      try {api=require(path.resolve(__dirname,'..',entry));}
+      finally {if(previousUploader===undefined)delete process.env.WATCHDOG_UPLOADER;else process.env.WATCHDOG_UPLOADER=previousUploader;}
+      for(const mode of ['healthy','pipe-lost','neutralized','restored']) {
+        const marker=path.join(directory,`pipe-${entry.slice(0,3)}-${mode}.pid`);
+        const handle=api.managed(process.execPath,['-e',`const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000);`],{env:{PATH:(mode==='neutralized'?mutantBin+path.delimiter:'')+process.env.PATH}});
+        let target;
+        try {
+          assert.equal(await handle.launched,true);
+          for(let tries=0;tries<100&&!fs.existsSync(marker);tries++)await delay(10);
+          assert.ok(fs.existsSync(marker));target=api.numericProcess(Number(fs.readFileSync(marker,'utf8')));
+          assert.ok(target&&!['Z','X'].includes(target.state));
+          const owner=api.numericProcess(process.pid),began=performance.now();
+          if(mode==='pipe-lost'||mode==='neutralized')handle.child.stdout.destroy();else handle.child.kill('SIGTERM');
+          // Observe before calling cleanup: recovery must not mask this boundary.
+          await delay(1700);
+          const live=pid=>{const current=api.numericProcess(pid);return !!(current&&!['Z','X'].includes(current.state))};
+          const receipt={entry,mode,owner_pid:process.pid,owner_start:owner.start_ticks,owner_live:live(process.pid),target_pid:target.pid,target_start:target.start_ticks,supervisor_pid:handle.child.pid,elapsed_ms:performance.now()-began,supervisor_live:live(handle.child.pid),target_live:live(target.pid),sentinel_live:live(sentinel.pid)};
+          pipeReceipts.push(receipt);
+          assert.equal(receipt.owner_live,true);assert.equal(receipt.sentinel_live,true);
+          assert.equal(receipt.supervisor_live,mode==='neutralized');assert.equal(receipt.target_live,mode==='neutralized');
+          const complete=await api.cleanup(handle,600);
+          assert.equal(complete,mode==='healthy'||mode==='restored','lost acknowledgment must remain incomplete');
+          assert.equal(live(target.pid),false);assert.equal(live(handle.child.pid),false);
+          assert.equal(live(sentinel.pid),true);
+          receipt.recovery_cleanup_complete=complete;receipt.recovery_target_live=live(target.pid);receipt.recovery_supervisor_live=live(handle.child.pid);receipt.actual_exit_observed=handle.isExited();
+          assert.equal(receipt.actual_exit_observed,true);
+        } finally {
+          await api.cleanup(handle,600);
+          if(target){const current=api.numericProcess(target.pid);if(current&&current.start_ticks===target.start_ticks&&!['Z','X'].includes(current.state)){try{process.kill(target.pid,'SIGKILL')}catch(_){}}}
+          handle.child.kill('SIGKILL');
+        }
+      }
+    }
+    console.log(JSON.stringify({pipe_loss_controls:pipeReceipts}));
     // Abrupt action-parent loss closes its pipe; owned cleanup still completes.
     const lostParent=path.join(directory,'lost-parent.js'),lostPid=path.join(directory,'lost-child.pid'),supervisorPid=path.join(directory,'lost-supervisor.pid');
     fs.writeFileSync(fastChild,`const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(lostPid)},String(process.pid));setInterval(()=>{},1000);`);

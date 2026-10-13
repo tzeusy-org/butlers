@@ -82,7 +82,10 @@ creates a new session. Original child status and owned settlement are separate
 closed records. Cleanup requires kernel child reaping, a positive settlement
 record and supervisor exit; an empty polling result alone cannot attest it.
 Cancellation enters bounded cleanup immediately. Supervisor ownership also
-settles if the action process disappears. SDK child output remains discarded and
+settles if the action process disappears or its control reader closes. Descriptor
+health is checked independently on every bounded supervisor loop, even when a
+resistant target emits no lifecycle record. Lost acknowledgments remain incomplete
+although actual owned processes settle. SDK child output remains discarded and
 its existing IPC socket carries only the allowlisted publication result.
 
 ## Strict downloaded-artifact admission
