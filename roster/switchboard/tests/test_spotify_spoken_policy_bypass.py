@@ -80,6 +80,16 @@ def test_spoken_prefix_pre_resolves_metadata_only_triage() -> None:
     assert decision.matched_rule_type == "substring"
 
 
+@pytest.fixture(autouse=True)
+def _unregistered_mock_pipeline_source(request: pytest.FixtureRequest):
+    """Only this synthetic pipeline owner needs unregistered source capture."""
+    if request.function is test_spoken_pre_resolved_triage_never_spawns_or_routes:
+        with patch("butlers.core.fact_authority._source_registry", None):
+            yield
+    else:
+        yield
+
+
 @pytest.mark.asyncio
 async def test_spoken_pre_resolved_triage_never_spawns_or_routes() -> None:
     payload = _spoken_payload()
@@ -96,14 +106,9 @@ async def test_spoken_pre_resolved_triage_never_spawns_or_routes() -> None:
         switchboard_pool=MagicMock(), dispatch_fn=dispatch, source_butler="switchboard"
     )
 
-    # This mocked policy scenario owns an unregistered source; restore any
-    # live issuer installed by earlier pipeline wiring when the call exits.
-    with (
-        patch("butlers.core.fact_authority._source_registry", None),
-        patch(
-            "butlers.modules.pipeline.record_routing_verdict", new_callable=AsyncMock
-        ) as record_verdict,
-    ):
+    with patch(
+        "butlers.modules.pipeline.record_routing_verdict", new_callable=AsyncMock
+    ) as record_verdict:
         result = await pipeline.process(
             payload["payload"]["normalized_text"],
             tool_args={"source_channel": "spotify_user_client", "request_context": context},
