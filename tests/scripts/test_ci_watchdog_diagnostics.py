@@ -284,7 +284,8 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
     unsafe_cli = tmp_path / "numeric-companion.py"
     unsafe_cli.write_text(unsafe_source)
     binding_file = tmp_path / "numeric-binding.json"
-    diagnostic.atomic(binding_file, bound)
+    numeric_bound = {**copy.deepcopy(bound), "run": "123", "attempt": "1"}
+    diagnostic.atomic(binding_file, numeric_bound)
     module = str(source_root / ".github/actions/ci-shard-watchdog-capture/src/index.js")
     uploader = tmp_path / "numeric-uploader.js"
     driver = tmp_path / "numeric-driver.js"
@@ -308,7 +309,7 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
     )
     driver.write_text(
         f"const {{boundedUpload}}=require({json.dumps(module)});\n"
-        "boundedUpload({name:'ci-watchdog-unit-1-123-1-cccccccccccc-0',directory:process.argv[2]},"
+        "boundedUpload({name:process.argv[4],directory:process.argv[2]},"
         "process.env,2000,process.argv[3]).then(value=>console.log(JSON.stringify(value)))"
         ".catch(()=>{process.exitCode=2});\n"
     )
@@ -319,7 +320,13 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
             tmp_path / "numeric-control.json", {"cli": str(cli), "marker": str(marker)}
         )
         result = subprocess.run(
-            ["node", str(driver), str(slot), str(uploader)],
+            [
+                "node",
+                str(driver),
+                str(slot),
+                str(uploader),
+                f"ci-watchdog-unit-1-{numeric_bound['run']}-{numeric_bound['attempt']}-{numeric_bound['nonce'][:12]}-{slot.name.removeprefix('slot-')}",
+            ],
             env=environment,
             capture_output=True,
             text=True,
@@ -327,7 +334,11 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
         )
         assert result.returncode == 0
         receipt = json.loads(result.stdout)
-        assert receipt["cleanup_complete"] is True
+        assert receipt["cleanup_complete"] is True, {
+            "slot": str(slot),
+            "receipt": receipt,
+            "client_reached": marker.exists(),
+        }
         return receipt["result"]["code"]
 
     cli = source_root / "scripts/ci_watchdog_diagnostics.py"
@@ -343,7 +354,9 @@ def test_watchdog_diagnostics_preserve_unknown_on_observer_failure_and_cancellat
             1,
         )
     ):
-        case, case_bound = _capture(tmp_path, data, assignment, f"numeric-{index}")
+        case = tmp_path / f"numeric-{index}"
+        case_bound = copy.deepcopy(numeric_bound)
+        diagnostic.configure(case, case_bound, root=tmp_path)
         state = copy.deepcopy(worker)
         state["stack_elapsed_ms"] = value
         diagnostic.atomic(case / "states/123.json", state)
