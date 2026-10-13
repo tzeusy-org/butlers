@@ -97,7 +97,8 @@ test('healthy cancellation and resistant descendants attest bounded owned comple
     // vanished task files are ENOENT, while permission/unknown/overflow refuse.
     const departedReceipts=[];
     for(const helperEntry of ['src/supervisor.py','dist/supervisor.py']) {
-      const script=String.raw`import importlib.util,subprocess,os,signal,time,json,errno
+      const script=String.raw`import importlib.util,subprocess,os,signal,time,json,errno,sys
+sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('supervisor',${JSON.stringify(path.resolve(__dirname,'..'))}+'/'+${JSON.stringify(helperEntry)})
 s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
 rows=[]

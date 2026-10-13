@@ -68,7 +68,9 @@ def children(pid):
             isinstance(error, OSError)
             and error.errno == errno.ENOENT
             and identity
-            and (current is None or (current[0] == identity[0] and current[1] in ("Z", "X")))
+            and current
+            and current[0] == identity[0]
+            and current[1] in ("Z", "X")
         ):
             return set(), False
         # Permission, malformed data, unknown/reused identity and live actors
