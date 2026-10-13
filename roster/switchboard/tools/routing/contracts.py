@@ -19,6 +19,8 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from butlers.core.ingestion_delivery import DeliveryBinding
+
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 SourceChannel = Literal[
@@ -547,6 +549,7 @@ class RouteEnvelopeV1(BaseModel):
     request_context: RouteRequestContextV1
     input: RouteInputV1
     subrequest: RouteSubrequestV1 | None = None
+    delivery: DeliveryBinding | None = None
     target: RouteTargetV1 | None = None
     source_metadata: RouteSourceMetadataV1 | None = None
     trace_context: dict[str, Any] = Field(default_factory=dict)

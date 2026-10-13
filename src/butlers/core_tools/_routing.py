@@ -35,13 +35,17 @@ from butlers.core.approval_delivery_transport import (
 )
 from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
+from butlers.core.ingestion_delivery import validate_delivery
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.permissions import PermissionDenied
 from butlers.core.route_inbox import (
+    RouteAcceptanceConflict,
     RouteInboxLeaseLost,
+    route_inbox_accept_delivery,
     route_inbox_claim_processing,
     route_inbox_insert,
     route_inbox_insert_on_connection,
+    route_inbox_lookup_acceptance,
     route_inbox_mark_errored,
     route_inbox_mark_processed,
     route_inbox_processing_lease_heartbeat,
@@ -715,9 +719,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         target: dict[str, Any] | None = None,
         source_metadata: dict[str, Any] | None = None,
         trace_context: dict[str, str] | None = None,
+        delivery: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute routed requests and terminate messenger notify deliveries."""
         trusted_messenger_recovery: TrustedRecoveryContext | None = None
+        if delivery is not None and butler_name == "messenger":
+            return _approval_recovery_refusal_response()
         if butler_name == "messenger" and _raw_input_has_approval_recovery(input):
             try:
                 trusted_messenger_recovery = _preauthenticate_messenger_recovery(
@@ -748,6 +755,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 target=target,
                 source_metadata=source_metadata,
                 trace_context=trace_context,
+                delivery=delivery,
                 parent_ctx=parent_ctx,
                 accept_span_ctx=accept_span_ctx,
                 daemon=daemon,
@@ -766,6 +774,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         target: dict[str, Any] | None = None,
         source_metadata: dict[str, Any] | None = None,
         trace_context: dict[str, str] | None = None,
+        delivery: dict[str, Any] | None = None,
         parent_ctx: OtelContext | None = None,
         accept_span_ctx: trace.SpanContext | None = None,
         *,
@@ -803,6 +812,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 },
                 "timing": {"duration_ms": _elapsed_ms()},
             }
+            if delivery is not None:
+                context_payload = None
             if context_payload is not None:
                 response["request_context"] = context_payload
             if notify_response is not None:
@@ -894,13 +905,20 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         if trace_context is not None:
             route_payload["trace_context"] = trace_context
 
+        if delivery is not None:
+            route_payload["delivery"] = delivery
+
         try:
             parsed_route = parse_route_envelope(route_payload)
         except ValidationError as exc:
             return _route_error_response(
-                context_payload=request_context if isinstance(request_context, dict) else None,
+                context_payload=None if delivery is not None else request_context,
                 error_class="validation_error",
-                message=_format_validation_error("Invalid route.v1 envelope", exc),
+                message=(
+                    "Ingestion delivery binding rejected."
+                    if delivery is not None
+                    else _format_validation_error("Invalid route.v1 envelope", exc)
+                ),
             )
 
         route_context = parsed_route.request_context.model_dump(mode="json")
@@ -915,6 +933,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 _route_internal_context["conceptual_message"] = dict(_conceptual_message)
             if isinstance(parsed_route.input.context.get("_trusted_approval_recovery"), dict):
                 _route_internal_context["approval_recovery"] = True
+        if parsed_route.delivery is not None:
+            _route_internal_context["ingestion_delivery"] = True
         _content_blind_route = bool(_route_internal_context)
         _route_internal_context["request_context"] = {
             "source_channel": parsed_route.request_context.source_channel
@@ -932,6 +952,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         caller_identity = parsed_route.request_context.source_endpoint_identity
         trusted_callers = daemon.config.trusted_route_callers
         if caller_identity not in trusted_callers:
+            if delivery is not None:
+                return _route_error_response(
+                    context_payload=None,
+                    error_class="validation_error",
+                    message="Ingestion delivery binding rejected.",
+                )
             message = (
                 f"Caller '{caller_identity}' is not in trusted_route_callers "
                 f"for butler '{daemon.config.name}'."
@@ -947,6 +973,44 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 error_class="validation_error",
                 message=message,
             )
+
+        delivery_binding = None
+        if parsed_route.delivery is not None:
+            try:
+                delivery_binding = validate_delivery(
+                    route_payload,
+                    receiving_butler=butler_name,
+                    trusted_callers=trusted_callers,
+                )
+            except ValueError:
+                return _route_error_response(
+                    context_payload=None,
+                    error_class="validation_error",
+                    message="Ingestion delivery binding conflict.",
+                )
+            if delivery_binding.operation == "lookup":
+                try:
+                    async with pool.acquire() as conn:
+                        acceptance = await route_inbox_lookup_acceptance(conn, delivery_binding)
+                except RouteAcceptanceConflict:
+                    return _route_error_response(
+                        context_payload=None,
+                        error_class="validation_error",
+                        message="Ingestion delivery binding conflict.",
+                    )
+                except Exception:
+                    return _route_error_response(
+                        context_payload=None,
+                        error_class="target_unavailable",
+                        message="Ingestion delivery receipt unavailable.",
+                        retryable=False,
+                    )
+                return {
+                    "schema_version": "route_response.v1",
+                    "status": "accepted" if acceptance else "not_found",
+                    "receipt_id": str(acceptance.receipt_id) if acceptance else None,
+                    "dedup": True,
+                }
 
         # Public envelope fields never supply attribution. Resolve the private
         # source capability before durable acceptance, then persist only the
@@ -1100,6 +1164,33 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             f"unexpected outcome {control_outcome!r}"
                         ),
                     )
+            elif delivery_binding is not None:
+                try:
+                    acceptance = await route_inbox_accept_delivery(
+                        pool, binding=delivery_binding, route_envelope=route_payload
+                    )
+                except RouteAcceptanceConflict:
+                    return _route_error_response(
+                        context_payload=None,
+                        error_class="validation_error",
+                        message="Ingestion delivery binding conflict.",
+                    )
+                except Exception:
+                    return _route_error_response(
+                        context_payload=None,
+                        error_class="target_unavailable",
+                        message="Ingestion delivery acceptance unavailable.",
+                        retryable=False,
+                    )
+                inbox_id = acceptance.receipt_id
+                if not acceptance.created:
+                    return {
+                        "schema_version": "route_response.v1",
+                        "status": "accepted",
+                        "inbox_id": str(inbox_id),
+                        "receipt_id": str(inbox_id),
+                        "dedup": True,
+                    }
             else:
                 # --- Dedup guard: legacy routes use request_id; fan-out routes
                 # add their target-visible subrequest identity. ---
@@ -1216,6 +1307,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 _content_blind_process = (
                     "conceptual_message" in _internal_context
                     or _internal_context.get("approval_recovery") is True
+                    or _internal_context.get("ingestion_delivery") is True
                 )
                 _observability_inbox_id = (
                     opaque_route_ref(_inbox_id) if _content_blind_process else _inbox_id
@@ -1452,9 +1544,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             # Return accepted immediately — switchboard no longer waits
             return {
                 "schema_version": "route_response.v1",
-                "request_context": route_context,
+                **({"request_context": route_context} if delivery_binding is None else {}),
                 "status": "accepted",
                 "inbox_id": str(inbox_id),
+                **({"receipt_id": str(inbox_id)} if delivery_binding is not None else {}),
                 "timing": {"duration_ms": _elapsed_ms()},
             }
 
