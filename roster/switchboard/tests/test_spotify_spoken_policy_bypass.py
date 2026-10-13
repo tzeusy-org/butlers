@@ -96,9 +96,14 @@ async def test_spoken_pre_resolved_triage_never_spawns_or_routes() -> None:
         switchboard_pool=MagicMock(), dispatch_fn=dispatch, source_butler="switchboard"
     )
 
-    with patch(
-        "butlers.modules.pipeline.record_routing_verdict", new_callable=AsyncMock
-    ) as record_verdict:
+    # This mocked policy scenario owns an unregistered source; restore any
+    # live issuer installed by earlier pipeline wiring when the call exits.
+    with (
+        patch("butlers.core.fact_authority._source_registry", None),
+        patch(
+            "butlers.modules.pipeline.record_routing_verdict", new_callable=AsyncMock
+        ) as record_verdict,
+    ):
         result = await pipeline.process(
             payload["payload"]["normalized_text"],
             tool_args={"source_channel": "spotify_user_client", "request_context": context},
