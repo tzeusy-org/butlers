@@ -1,7 +1,7 @@
-"""Integration tests for the Steam module wired into the Lifestyle and General butlers.
+"""Integration tests for Lifestyle as the sole butler with the Steam module.
 
 Covers bu-s2fo.7 acceptance criteria:
-1. roster/lifestyle/butler.toml and roster/general/butler.toml declare [modules.steam]
+1. Lifestyle declares [modules.steam]; General does not (owner decision bu-ys9hdx.7)
 2. SteamModule loads and registers all 9 tools (module loads without error)
 3. Module in degraded mode (no Steam account) returns actionable errors on private tools
 4. Public tools (game_news, current_players) work without auth via mocked Steam API
@@ -108,13 +108,13 @@ def _make_mock_steam_client(
 
 # ===========================================================================
 # Test Category 1: butler.toml Config Validation
-# Verify both butler.toml files declare [modules.steam].
+# Verify Lifestyle owns Steam and General retains its ordinary module profile.
 # ===========================================================================
 
 
 @pytest.mark.unit
 class TestButlerTomlSteamConfig:
-    """AC1: butler.toml files for lifestyle and general declare [modules.steam]."""
+    """Lifestyle owns Steam; General neither configures nor loads it."""
 
     def test_lifestyle_butler_toml_has_steam_module(self) -> None:
         """roster/lifestyle/butler.toml declares [modules.steam]."""
@@ -125,14 +125,13 @@ class TestButlerTomlSteamConfig:
             "steam module is missing from [modules] section in roster/lifestyle/butler.toml"
         )
 
-    def test_general_butler_toml_has_steam_module(self) -> None:
-        """roster/general/butler.toml declares [modules.steam]."""
+    def test_general_butler_toml_excludes_steam_module(self) -> None:
+        """General keeps its ordinary modules without the specialist Steam module."""
         from butlers.config import load_config
 
         cfg = load_config(_GENERAL_ROSTER_DIR)
-        assert "steam" in cfg.modules, (
-            "steam module is missing from [modules] section in roster/general/butler.toml"
-        )
+        assert "steam" not in cfg.modules
+        assert {"general", "calendar", "contacts", "memory", "self_healing"} == set(cfg.modules)
 
     def test_lifestyle_steam_config_is_empty_dict(self) -> None:
         """Steam module config in lifestyle butler.toml is an empty dict (no required fields)."""
@@ -143,14 +142,22 @@ class TestButlerTomlSteamConfig:
         assert steam_cfg is not None
         assert isinstance(steam_cfg, dict)
 
-    def test_general_steam_config_is_empty_dict(self) -> None:
-        """Steam module config in general butler.toml is an empty dict (no required fields)."""
+    def test_lifestyle_is_the_only_roster_that_loads_steam(self) -> None:
+        """Real module discovery loads Steam for Lifestyle and no other roster profile."""
         from butlers.config import load_config
+        from butlers.modules.registry import default_registry
 
-        cfg = load_config(_GENERAL_ROSTER_DIR)
-        steam_cfg = cfg.modules.get("steam", None)
-        assert steam_cfg is not None
-        assert isinstance(steam_cfg, dict)
+        registry = default_registry()
+        steam_butlers = set()
+        for config_path in sorted((_REPO_ROOT / "roster").glob("*/butler.toml")):
+            cfg = load_config(config_path.parent)
+            if "steam" in cfg.modules:
+                steam_butlers.add(cfg.name)
+        assert steam_butlers == {"lifestyle"}
+        general_modules = registry.load_from_config(load_config(_GENERAL_ROSTER_DIR).modules)
+        lifestyle_modules = registry.load_from_config(load_config(_LIFESTYLE_ROSTER_DIR).modules)
+        assert "steam" not in {module.name for module in general_modules}
+        assert "steam" in {module.name for module in lifestyle_modules}
 
 
 # ===========================================================================
