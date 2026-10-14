@@ -564,6 +564,10 @@ it before changing the subsystem.
   (`reset_butler_context(token)`), root handlers, filters and level. A leaked `ButlerDBLogHandler`
   plus a leaked butler context made an unrelated caplog assertion see an extra WARNING ("no running
   event loop; dropping ... log line") depending on which file ran first on the worker (bu-w4c1iw).
+- A signal handler that raises can land inside `ThreadPoolExecutor.submit()` after the worker
+  thread started but before the pool registered it; the `with` exit then never joins that worker.
+  While pool workers are live, have the handler only set a cancellation event and raise after the
+  join (`scripts/condense_evidence.py` `execute_sides`, bu-w4c1iw).
 
 ### Git and recovery
 
