@@ -11,7 +11,7 @@
 - [ ] 2.0 Move Switchboard into its own process and container with separate service and session listeners.
 - [ ] 2.1 Catalog authorization metadata for every LLM-presentable tool, with a CI check.
 - [ ] 2.2 Goal ledger migrations: goals, invocations, effects, budgets.
-- [ ] 2.3 Goal admission with origin ceilings and obligation declarations.
+- [ ] 2.3 Goal admission with origin ceilings, starting exposure and obligation declarations, including connector marking of forwarded, quoted and embedded spans.
 - [ ] 2.4 Goal runner, session sandbox profiles and runtime adapter proofs.
 - [ ] 2.5 Broker endpoint: per-invocation listing, call checks, exposure, approvals, effect ledger, signed assertions.
 - [ ] 2.6 Domain-side assertion verification in the core tool wrapper (enabled by the cutover release).

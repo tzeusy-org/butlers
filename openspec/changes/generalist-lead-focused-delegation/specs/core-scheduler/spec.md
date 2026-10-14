@@ -3,7 +3,7 @@
 ### Requirement: Dispatch Modes
 Scheduled tasks SHALL support two dispatch modes: `prompt` (an obligation: when due, the daemon submits an obligation admission to the control plane) and `job` (sends a structured job name and optional arguments to a native, deterministic job function). Mode-specific constraints are enforced: prompt mode requires non-empty `prompt` and forbids `job_name`/`job_args`; job mode requires non-empty `job_name` and forbids `prompt`.
 
-A prompt-mode admission SHALL carry the task's prompt as goal input, the occurrence identity (task name and due time), and the task's capability set: for a TOML task, the set declared for it in git, defaulting to owner-domain `read` and `record` plus owner `notify`; for a runtime-created task, the set recorded at its creation. The same SHALL apply when a deadline threshold, an event chain or a manual `schedule_trigger` dispatches a prompt-mode task. Prompt-mode dispatch SHALL NOT call the Spawner, and a job function SHALL NOT start a reasoning session.
+A prompt-mode admission SHALL carry the task's prompt as goal input, the occurrence identity (task name and due time), and the task's capability set: for a TOML task, the set declared for it in git, defaulting to owner-domain `read` and `record` plus owner `notify`; for a runtime-created task, the set recorded at its creation. The same SHALL apply when a deadline threshold, an event chain or a manual `schedule_trigger` dispatches a prompt-mode task, except that a `schedule_trigger` call made by a goal invocation SHALL be a caused admission bounded as the Schedule CRUD API requirement states. Prompt-mode dispatch SHALL NOT call the Spawner, and a job function SHALL NOT start a reasoning session.
 
 Source: RFC 0038 D2, D5 and D18
 Scope: v1-mandatory
@@ -32,7 +32,9 @@ The CRUD API SHALL accept `task_type` as a parameter. When `task_type='deadline'
 
 Creating a prompt-mode task at runtime creates an obligation and SHALL be an `administer` capability. The created row SHALL record the creating goal and invocation from the verified broker assertion, a capability set no larger than the creator's grant at creation, and whether the creating invocation was exposed; an obligation created under exposure SHALL start every occurrence exposed. Updating a prompt-mode task's prompt or capability set SHALL apply the same bounds and SHALL record the updater's lineage and exposure.
 
-Source: RFC 0038 D4, D5 and D7
+Every other model-reachable scheduling tool that can cause, change or suppress an obligation occurrence (`schedule_trigger`, and `schedule_update`, `schedule_delete` and `schedule_toggle` on a prompt-mode task) SHALL also be an `administer` capability, so a child never holds it, a third-party goal's ceiling excludes it, and an exposed call needs per-event owner approval. A `schedule_trigger` call from a goal invocation SHALL be admitted as a caused admission carrying `caused_by_goal` and `caused_by_effect` from the verified assertion: the occurrence's goal SHALL inherit the triggering goal's exposure, its ceiling SHALL be the task's capability set intersected with the triggering goal's origin ceiling, and it SHALL count toward the causal chain limit (`REQ-capability-authorization-013`). A trigger from the owner's dashboard is a service-plane call and admits an ordinary obligation occurrence.
+
+Source: RFC 0038 D4, D5, D7 and D8
 Scope: v1-mandatory
 
 #### Scenario: Create runtime schedule
@@ -57,6 +59,20 @@ Scope: v1-mandatory
 #### Scenario: Duplicate name rejected
 - **WHEN** `schedule_create()` is called with an existing task name
 - **THEN** a `ValueError` is raised
+
+#### Scenario: A goal triggers a prompt-mode task
+- **WHEN** an unexposed owner goal's approved `schedule_trigger` call fires a prompt-mode task whose declared set includes a capability the triggering goal's origin ceiling lacks
+- **THEN** the occurrence is admitted as a caused goal whose ceiling excludes that capability
+- **AND** the goal records the trigger call as its cause and counts toward the causal chain limit
+
+#### Scenario: A child cannot trigger an obligation
+- **WHEN** a lead asks to delegate a child holding `schedule_trigger`
+- **THEN** the broker refuses the delegation, because `schedule_trigger` is `administer`
+
+#### Scenario: An exposed goal triggers a task
+- **WHEN** an exposed invocation calls `schedule_trigger`
+- **THEN** the call is parked for per-event owner approval
+- **AND** once approved, the occurrence's goal starts exposed
 
 #### Scenario: Update schedule fields
 - **WHEN** `schedule_update()` is called with allowed fields

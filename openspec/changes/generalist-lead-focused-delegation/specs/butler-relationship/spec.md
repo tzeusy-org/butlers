@@ -31,16 +31,16 @@ Scope: v1-mandatory
 
 ### Requirement: Relationship Butler Schedules
 
-The relationship butler SHALL run date checks, maintenance sweeps, and memory jobs. `upcoming-dates-check` and `relationship-maintenance` SHALL be obligations: on each occurrence the relationship daemon SHALL submit an obligation admission whose grant is no larger than the capability set declared for that obligation in git, and the obligation's governing brief SHALL replace the prompt previously sent to a relationship session. Memory and insight jobs SHALL remain deterministic jobs.
+The relationship butler SHALL run date checks, maintenance sweeps, and memory jobs. `upcoming-dates-check` and `relationship-maintenance` SHALL be obligations: on each occurrence the relationship daemon SHALL submit an obligation admission whose grant is no larger than the capability set declared for that obligation in git, and the obligation's governing brief SHALL replace the prompt previously sent to a relationship session. Memory episode cleanup and the insight scan SHALL remain deterministic jobs. The `memory-consolidation` job SHALL only submit consolidation obligation admissions (`REQ-module-memory-005`), because consolidation reasons with a model.
 
 The registered upcoming_dates management tool and the scheduled upcoming-dates-check birthday/anniversary push SHALL consider only canonical people whose current posture is active at the date query; an unreadable posture SHALL raise rather than fabricate active or empty results. This contract SHALL preserve historical dates and the separate calendar overlay's existing remembrance behavior.
 
-Source: RFC 0038 D2 and D5
+Source: RFC 0038 D2, D5 and D18
 Scope: v1-mandatory
 
 #### Scenario: Scheduled task inventory
 - **WHEN** the relationship butler daemon is running
-- **THEN** it executes: `upcoming-dates-check` (0 8 * * *, obligation: check birthdays/anniversaries in the next 7 days), `relationship-maintenance` (0 9 * * 1, obligation: rank overdue contacts by Dunbar tier-weighted urgency and suggest top 3 reconnections), `memory-consolidation` (0 */6 * * *, job), `memory-episode-cleanup` (0 4 * * *, job), and `insight-scan` (0 7 * * *, job: evaluate relationship domain data and generate insight candidates)
+- **THEN** it executes: `upcoming-dates-check` (0 8 * * *, obligation: check birthdays/anniversaries in the next 7 days), `relationship-maintenance` (0 9 * * 1, obligation: rank overdue contacts by Dunbar tier-weighted urgency and suggest top 3 reconnections), `memory-consolidation` (0 */6 * * *, job that submits consolidation obligation admissions), `memory-episode-cleanup` (0 4 * * *, job), and `insight-scan` (0 7 * * *, job: evaluate relationship domain data and generate insight candidates)
 
 #### Scenario: Both upcoming date anchor paths enforce active posture
 - **WHEN** listed contact-anchored or contactless local-entity-anchored people have dates inside the lookahead window

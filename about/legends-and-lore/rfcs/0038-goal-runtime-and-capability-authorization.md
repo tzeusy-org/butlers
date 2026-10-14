@@ -299,7 +299,7 @@ Effect classes and their default under exposure (owner decision 3):
 |---|---|---|
 | `read` | search memory, list transactions, read calendar | allowed |
 | `record` | log a measurement, store an attributed fact, propose an insight | allowed and tainted (D6), unless `owner_authority`, which is refused |
-| `communicate` | send email, reply on Telegram, notify a third party, answer a calendar invitation | per-event approval for every call, except `notify` to the owner with link previews disabled and URLs rendered inert, and standing rules whose recipient is the owner or whose body is template-pinned |
+| `communicate` | send email, reply on Telegram, notify a third party, answer a calendar invitation | per-event approval for every call, except `notify` to the owner with link previews disabled and URLs rendered inert, and standing rules whose recipient is the owner or that are template-pinned (D13) |
 | `transact` | spend, pay, book | disabled for every goal (owner decision 8) |
 | `actuate` | Home Assistant services | RFC 0028 risk map; consequential and protected always per-event approval |
 | `administer` | change schedules, rules, permissions, module state, create obligations | per-event approval; never delegable to a child |

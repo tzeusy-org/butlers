@@ -98,7 +98,7 @@ Scope: v1-mandatory
 
 ### Requirement: Owner vs non-owner message differentiation
 
-The Switchboard MUST differentiate message handling by verified origin. A message SHALL be admitted as an `owner`-origin goal only when RFC 0017 authorizes its channel and sender; resolving an entity with the `'owner'` role is not enough by itself, and email is never owner origin by itself. Every other message SHALL be admitted as a `third_party`-origin goal. Owner goals are treated as first-person instructions. Third-party goals are processed on behalf of the owner, start exposed, and hold at most `read`, non-steering `record`, owner `notify` and park-only `communicate`.
+The Switchboard MUST differentiate message handling by verified origin. A message SHALL be admitted as an `owner`-origin goal only when RFC 0017 authorizes its channel and sender; resolving an entity with the `'owner'` role is not enough by itself, and email is never owner origin by itself. Every other message SHALL be admitted as a `third_party`-origin goal. Owner goals are treated as first-person instructions, except that an owner goal whose envelope carries a connector-marked forwarded, quoted or embedded span starts exposed with each span fenced as data (`REQ-connector-base-spec-004`). Third-party goals are processed on behalf of the owner, start exposed, and hold at most `read`, non-steering `record`, owner `notify` and park-only `communicate`.
 
 Source: RFC 0038 D5, D6
 Scope: v1-mandatory

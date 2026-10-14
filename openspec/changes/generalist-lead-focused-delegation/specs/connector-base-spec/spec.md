@@ -202,3 +202,28 @@ Scope: v1-mandatory
 #### Scenario: Email thread history selects nothing
 - **WHEN** an email arrives in a thread whose earlier messages were handled by goals that used one domain's capabilities
 - **THEN** no thread-affinity lookup runs and the envelope reaches goal admission like any other accepted envelope
+
+### Requirement: Connectors mark untrusted spans in owner-channel messages
+`IngestPayloadV1` SHALL carry an `untrusted_spans` field: a tuple of span records, each naming a `kind` (`forwarded`, `quoted` or `embedded`) and the character range of `normalized_text` it covers. A connector SHALL mark every part of a message that its provider identifies as forwarded from someone else, quoted from an earlier message, or embedded third-party content (an attached or inlined message, a shared post). When the connector knows a message contains such content but cannot locate its boundaries, it SHALL mark the whole of `normalized_text` as one span of that kind. Attachments that carry a message from someone else SHALL be marked the same way. Admission SHALL treat an owner-origin envelope with any marked span as exposed (`REQ-capability-authorization-003`) and SHALL fence each span as data in the goal input.
+
+ID: REQ-connector-base-spec-004
+Source: RFC 0038 D5 and D6
+Scope: v1-mandatory
+
+#### Scenario: The owner forwards a Telegram message
+- **WHEN** the owner forwards a message from another Telegram user to the bot
+- **THEN** the Telegram connector marks the forwarded text as a `forwarded` span
+- **AND** the owner goal admitted from it starts exposed, with the forwarded text fenced as data
+
+#### Scenario: The owner replies with the earlier email quoted
+- **WHEN** an owner-channel email quotes an earlier message from a third party below the owner's own text
+- **THEN** the connector marks the quoted portion as a `quoted` span and leaves the owner's own text unmarked
+- **AND** the goal starts exposed
+
+#### Scenario: A forwarded message whose boundaries cannot be found
+- **WHEN** a provider flags a message as forwarded but the connector cannot locate where the forwarded content starts
+- **THEN** the connector marks the whole of `normalized_text` as one `forwarded` span
+
+#### Scenario: Text pasted without quoting markers
+- **WHEN** the owner pastes third-party text into an owner-channel message without any provider forwarding or quoting marker
+- **THEN** no span is marked and the text is owner input, the known limit RFC 0038 D5 records

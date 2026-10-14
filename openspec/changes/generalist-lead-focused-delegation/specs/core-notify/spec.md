@@ -60,7 +60,8 @@ or under an owner-created standing rule. No goal origin, grant, exposure state,
 lead or child, no deterministic or service-plane caller, and no tool argument,
 SHALL bypass this gate. While the call's
 verified assertion is exposed, a standing rule SHALL authorize a non-owner
-notification only when the rule pins the message body by template; otherwise
+notification only when the rule is template-pinned
+(`REQ-capability-authorization-006`); otherwise
 the notification SHALL be parked for per-event owner approval.
 
 Source: RFC 0038 D4, D6, D13 and owner decision 9; RFC 0021
@@ -104,7 +105,7 @@ Scope: v1-mandatory
 
 #### Scenario: An exposed call needs a template-pinned rule
 - **WHEN** an exposed invocation calls `notify` for a non-owner target
-- **AND** the only matching standing rule does not pin the message body by template
+- **AND** the only matching standing rule is not template-pinned (`REQ-capability-authorization-006`), for example because it leaves the message body or subject unconstrained
 - **THEN** the notification MUST be parked for per-event owner approval
 - **AND** the rule's `use_count` is unchanged
 
@@ -193,7 +194,7 @@ Scope: v1-mandatory
 ## ADDED Requirements
 
 ### Requirement: Exposed Owner Notifications Render Links Inert
-When a `notify` call's verified assertion is exposed and its target resolves uniquely to the owner, the notification SHALL be delivered without approval only with link previews disabled and every URL in the message rendered inert, neither clickable nor fetched by the channel. When the resolved channel cannot guarantee both, the notification SHALL instead be parked for per-event owner approval. Notifications from unexposed calls SHALL keep their existing rendering.
+When a `notify` call's verified assertion is exposed and its target resolves uniquely to the owner, the notification SHALL be delivered without approval only with link previews disabled and every URL in the message rendered inert, neither clickable nor fetched by the channel. When the resolved channel cannot guarantee both, the notification SHALL instead be parked for per-event owner approval. Switchboard `deliver()` SHALL carry this instruction to Messenger as the `notify.v1` envelope's `render_links_inert` flag, set from the verified assertion and never from tool arguments (`REQ-butler-messenger-003`). Notifications from unexposed calls SHALL keep their existing rendering.
 
 ID: REQ-core-notify-033
 Source: RFC 0038 D4, D6 and owner decision 3

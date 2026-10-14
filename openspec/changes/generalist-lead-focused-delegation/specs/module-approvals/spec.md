@@ -2,7 +2,7 @@
 
 ### Requirement: Gate Wrapper Interception
 
-The module MUST wrap configured MCP tools at FastMCP registration time so that gated tool calls are serialized into pending actions before the original handler executes. Unknown configured gated tools MUST be skipped during wrapping with warning logs. A pending action created for a goal invocation's call, whether parked by this wrapper or by the control-plane broker through this module, SHALL record the goal lineage of the call's verified broker assertion and never lineage supplied in tool arguments. For a call whose assertion is exposed, a standing rule SHALL auto-approve only a `communicate` call whose rule pins the recipient to the owner or pins the message body by template; every other approval-gated call from an exposed invocation SHALL be parked for per-event owner approval.
+The module MUST wrap configured MCP tools at FastMCP registration time so that gated tool calls are serialized into pending actions before the original handler executes. Unknown configured gated tools MUST be skipped during wrapping with warning logs. A pending action created for a goal invocation's call, whether parked by this wrapper or by the control-plane broker through this module, SHALL record the goal lineage of the call's verified broker assertion and never lineage supplied in tool arguments. For a call whose assertion is exposed, a standing rule SHALL auto-approve only a `communicate` call whose rule pins the recipient to the owner or is template-pinned (`REQ-capability-authorization-006`: every content-bearing argument fixed to an exact value or to an owner-authored template with only typed slots); every other approval-gated call from an exposed invocation SHALL be parked for per-event owner approval.
 
 Source: RFC 0038 D4, D6, D7 and D13; RFC 0021
 Scope: v1-mandatory
@@ -32,7 +32,7 @@ Scope: v1-mandatory
 #### Scenario: An exposed call is not auto-approved by an unpinned rule
 
 - **WHEN** an exposed invocation calls a gated `communicate` tool for a non-owner recipient
-- **AND** the only matching standing rule pins neither the recipient to the owner nor the message body by template
+- **AND** the only matching standing rule neither pins the recipient to the owner nor is template-pinned (`REQ-capability-authorization-006`)
 - **THEN** the action is parked as `pending` for per-event owner approval
 - **AND** the rule's `use_count` is unchanged
 

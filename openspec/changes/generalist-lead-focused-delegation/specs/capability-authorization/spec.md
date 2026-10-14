@@ -69,7 +69,14 @@ authorization verifies its channel and sender. Device and telemetry feeds that
 carry no message from a person SHALL wake reasoning only through a declared
 subscription and SHALL be admitted with origin `obligation` under that
 subscription's capability set; feed fields a person other than the owner can
-author SHALL be untrusted output. A third-party goal's ceiling
+author SHALL be untrusted output. Admission SHALL decide a goal's starting
+exposure from server-held facts alone: a third-party goal SHALL start exposed;
+an owner goal whose ingest envelope carries any connector-marked forwarded,
+quoted or embedded span (`REQ-connector-base-spec-004`) SHALL start exposed,
+with each span fenced as data in the goal input; a staffer goal whose inputs
+include third-party content or error payloads, and every QA goal, SHALL start
+exposed; and every occurrence of a runtime-created obligation created under
+exposure SHALL start exposed. A third-party goal's ceiling
 SHALL exclude `transact`, `actuate` and `administer` capabilities and SHALL
 hold `communicate` capabilities, other than owner `notify`, only as park-only
 grants that can produce a parked effect but never execute one.
@@ -81,6 +88,11 @@ Scope: v1-mandatory
 #### Scenario: An email claims to come from the owner
 - **WHEN** an inbound email from an address that owner-channel authorization does not verify says it is from the owner and asks for a reply to an outside address
 - **THEN** the goal is admitted with origin `third_party`, and the reply can at most be parked for per-event owner approval
+
+#### Scenario: The owner forwards a phishing email
+- **WHEN** the owner forwards a third-party email to the assistant through a verified owner channel and asks what to do about it
+- **THEN** the goal is admitted with origin `owner` but starts exposed, with the forwarded content fenced as data
+- **AND** a send it requests to anyone other than the owner is parked for per-event approval, and it cannot write a steering record
 
 #### Scenario: A scheduled obligation runs
 - **WHEN** a domain obligation declared in git becomes due
@@ -134,15 +146,24 @@ child. Exposure SHALL NOT clear, and an exposed invocation SHALL mark its goal
 exposed. Domains SHALL taint records written under an exposed assertion. While
 exposed, every `communicate` effect SHALL require per-event owner approval,
 except `notify` to the owner with link previews disabled and URLs rendered
-inert, and a standing rule whose recipient is the owner or whose body is
+inert, and a standing rule whose recipient is the owner or that is
 template-pinned; `administer` and consequential or protected `actuate` effects
 SHALL require per-event owner approval; and `record` writes with owner
 authority SHALL be refused. Approvals of effects requested while exposed SHALL
 NOT count toward standing-rule promotion. Exposure SHALL NOT relax the
 non-owner communication rule (`REQ-capability-authorization-016`).
 
+A standing rule SHALL count as template-pinned only when its argument
+constraints fix every content-bearing argument (body, subject, title,
+description, caption, attachment and any other argument whose value reaches
+the recipient as text or content) to an exact value or to an owner-authored
+template whose slots accept only typed values such as dates, amounts and
+identifiers, never free text. A rule that leaves any content-bearing argument
+unconstrained, or whose template has a free-text slot, SHALL NOT exempt an
+exposed call.
+
 ID: REQ-capability-authorization-006
-Source: RFC 0038, D4 and D6; RFC 0021
+Source: RFC 0038, D4, D6 and D13; RFC 0021
 Scope: v1-mandatory
 
 #### Scenario: An injected instruction asks the lead to forward mail
@@ -156,6 +177,14 @@ Scope: v1-mandatory
 #### Scenario: Exposed sessions cannot write steering memory
 - **WHEN** an exposed invocation tries to store a rule or owner-profile fact
 - **THEN** the broker refuses the write
+
+#### Scenario: A rule that pins the body but not the subject does not exempt an exposed send
+- **WHEN** an exposed invocation sends an email to a third party under a standing rule that fixes the body by template but leaves the subject unconstrained
+- **THEN** the send is parked for per-event owner approval
+
+#### Scenario: A template with a free-text slot does not exempt an exposed send
+- **WHEN** an exposed invocation sends a message under a standing rule whose owner-authored template has a slot that accepts free text
+- **THEN** the send is parked for per-event owner approval
 
 ### Requirement: Domains execute model-reachable tools only with a valid broker assertion
 The broker SHALL forward each call with a signed assertion naming the owning

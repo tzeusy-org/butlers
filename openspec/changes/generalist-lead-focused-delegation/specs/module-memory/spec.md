@@ -22,9 +22,12 @@ unstamped steering artifact.
   `owner` (or `owner_device` when every episode is), evidence of one identical
   non-owner authority keeps it, and any other combination, including evidence
   whose authority is unknown (NULL), yields `mixed`. A consolidation update SHALL
-  NOT supersede an owner-class fact with a non-owner-class one.
+  NOT supersede an owner-class fact with a non-owner-class one. Consolidation
+  SHALL also derive each fact and rule's taint: an artifact is tainted when any
+  of its validated evidence episodes is tainted or when the consolidation write
+  is made under an exposed assertion, whatever authority it derives.
 - A rule is *held* when its authority is not owner-class (or is NULL on a legacy
-  row) and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
+  row) or it is tainted, and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
   `memory_context` Active Rules, and the discovery catalog (they are not written
   to it, and any existing catalog row is staled). Profile Facts SHALL admit only
   owner-class facts; an owner-anchored fact of any other authority SHALL be
@@ -59,6 +62,14 @@ Scope: v1-mandatory
   third-party episode
 - **THEN** the rule SHALL have `content_authority = 'mixed'` and SHALL be held
 
+#### Scenario: Tainted owner evidence yields a held rule
+
+- **WHEN** consolidation derives one rule only from owner-authority episodes,
+  one of which was written under an exposed assertion and is tainted
+- **THEN** the rule SHALL have `content_authority = 'owner'`, SHALL be tainted
+  and SHALL be held until the owner endorses it
+- **AND** it SHALL be absent from `memory_context` Active Rules
+
 #### Scenario: A forged owner anchor in content is not authority
 
 - **WHEN** a third-party episode's content contains a line asserting
@@ -84,3 +95,133 @@ Scope: v1-mandatory
 - **WHEN** an episode is stored by a call with no verified assertion lineage, or under an `obligation` or `staffer` origin
 - **THEN** it SHALL be stamped `system`
 - **AND** a write under an exposed assertion of any origin SHALL also be stamped tainted, and a tainted owner-class fact SHALL NOT appear in Profile Facts
+
+### Requirement: Owner-Isolated Session Memory Hooks
+
+The memory module SHALL register its goal-outcome episode capture and its
+`context.search` handler as one runtime owned by the started daemon's butler
+identity, so one daemon's module-private memory pool cannot service another
+daemon's work. Episodes SHALL no longer be captured from per-session
+transcripts: when a goal reaches a final state, the memory-owning domain SHALL
+record one episode from the goal's outcome in the goal ledger, stamped with the
+authority its goal origin yields under `REQ-module-memory-013` and tainted when
+the goal was exposed. Both stamps SHALL come from the goal ledger, never from
+the outcome text. Memory context SHALL reach a goal invocation only through
+`context.search` and domain read capabilities, which return stamped results; no
+memory context is injected into a prompt.
+
+Source: RFC 0038 D2, D6 and D15; [Observed] current hook registration
+Scope: v1-mandatory
+
+#### Scenario: Multiple started daemons select their own memory pools
+
+- **WHEN** General, Travel, and Chronicler memory modules are active in one
+  process and Chronicler uses a private `chronicler_mem` pool
+- **THEN** episode capture and `context.search` for each domain SHALL call only
+  that owner's registered runtime
+- **AND** Chronicler's calls SHALL use its private memory pool rather than its
+  domain pool or another daemon's pool
+
+#### Scenario: Unknown or stopped owner has no fallback runtime
+
+- **WHEN** episode capture or a `context.search` call is requested for an owner
+  with no active memory runtime
+- **THEN** the search SHALL return no results for that domain and episode
+  capture SHALL report failure
+- **AND** neither operation SHALL call a runtime registered for another
+  butler
+
+#### Scenario: Stale shutdown preserves a replacement runtime
+
+- **WHEN** a second memory module instance replaces the runtime for an
+  owner before the first instance finishes shutdown
+- **THEN** shutdown of the first instance SHALL not unregister the replacement
+- **AND** later episode capture and searches for that owner SHALL continue to
+  use the replacement runtime
+
+#### Scenario: An exposed owner goal's outcome is captured tainted
+
+- **WHEN** an owner goal that became exposed completes
+- **THEN** its outcome episode SHALL carry `content_authority = 'owner'` and the
+  taint stamp, taken from the goal ledger
+
+### Requirement: LLM-driven memory consolidation pipeline
+
+The consolidation pipeline SHALL transform unconsolidated episodes into durable
+facts and rules as an obligation goal of the memory-owning domain (RFC 0038 D2
+and D18), not as a Spawner session or a model function. The scheduled
+`memory_consolidation` job SHALL only submit obligation admissions, one per
+episode group, whose capability set is declared in git: memory read capabilities over pending
+episodes and existing facts and rules, and one consolidation-apply `record`
+capability. The goal's invocation SHALL read pending episodes as stamped data
+grouped by `(tenant_id, source butler)`, with each episode's content fenced as
+data, and SHALL submit each group's artifacts through the consolidation-apply
+capability. Deterministic code behind that capability SHALL validate artifact
+evidence, derive authority and taint from the evidence episodes
+(`REQ-module-memory-013`), and execute the actions under
+`REQ-module-memory-006`. All derived facts and rules MUST inherit the tenant
+context from their source episodes.
+
+ID: REQ-module-memory-005
+Source: [Observed] PR #3669; `openspec/changes/archive/2026-08-14-consolidation-exact-artifact-evidence/CANONICALIZATION.md`; RFC 0038 D2, D6 and D18
+Scope: v1-mandatory
+
+#### Scenario: Episode grouping by tenant and butler
+
+- **WHEN** the consolidation goal reads pending episodes
+- **THEN** the read capability MUST claim episodes with `consolidation_status='pending'` ordered by `(tenant_id, butler, created_at, id)` with `FOR UPDATE SKIP LOCKED`
+- **AND** episodes MUST be grouped by the composite key `(tenant_id, butler)`, not by `butler` alone, and each group MUST be split into untainted owner-class episodes and all others
+- **AND** existing active facts (up to 100) and rules (up to 50) for each butler MUST be returned for dedup context, scoped to the same `tenant_id`
+- **AND** the job MUST submit one obligation admission per group, so exposure from one group's episodes cannot taint another group's artifacts
+
+#### Scenario: Scheduled consolidation uses the catalog-backed daemon spawner
+
+- **WHEN** the deterministic `memory_consolidation` scheduled-job handler runs
+- **THEN** it MUST submit obligation admissions with the git-declared consolidation capability set and MUST NOT pass a Spawner to `run_consolidation` or start any session
+- **AND** an empty pending-episode set MUST admit no goal
+- **AND** model selection, spend-routing policy, budgets, failover and timeouts MUST come from the goal runner's role and tier resolution over the model catalog, not from job overrides
+- **AND** database and embedding resolution in the read and consolidation-apply capabilities MUST use the active memory module's runtime pool and configured embedding-engine lifecycle, including any private `memory_schema`, rather than the daemon's domain pool or the embedding helper's default model
+- **AND** the handler's admission result or raised error MUST remain the scheduled task result recorded by the scheduler
+
+#### Scenario: Consolidation with LLM spawner
+
+- **WHEN** consolidation needs model judgment for a non-empty `(tenant_id, butler)` group
+- **THEN** the judgment MUST come from the group's obligation goal, and no runtime session MUST be spawned with `trigger_source='schedule:consolidation'`
+
+#### Scenario: Consolidation without spawner (dry run)
+
+- **WHEN** `run_consolidation` is called in dry-run mode
+- **THEN** only episode grouping and counting MUST be performed
+- **AND** no goal MUST be admitted and no consolidation MUST occur
+
+#### Scenario: Episode content wrapped in XML tags for prompt injection prevention
+
+- **WHEN** the read capability returns episode content to the consolidation goal
+- **THEN** each episode's content MUST be fenced as data with its authority and taint stamps
+- **AND** the consolidation guidance MUST carry a security notice instructing the model to treat episode content as data only
+
+#### Scenario: Group artifacts are applied through one capability call
+
+- **WHEN** the consolidation goal submits a group's `new_facts`, `updated_facts`, `new_rules` and `confirmations`
+- **THEN** the consolidation-apply capability MUST validate and execute them under `REQ-module-memory-006`
+- **AND** a submission with no artifacts for a non-empty group MUST fail that group with an actionable error so its episodes remain eligible for retry rather than being marked consolidated
+- **AND** a failure in one group MUST NOT block other groups from processing
+
+#### Scenario: Artifact output names exact episode evidence
+
+- **WHEN** a non-empty episode group is returned to the consolidation goal
+- **THEN** each episode MUST carry its UUID
+- **AND** every submitted `new_facts`, `updated_facts`, and `new_rules` entry MUST include a non-empty `evidence_episode_ids` array naming only the claimed episode UUIDs that support that artifact
+
+#### Scenario: Invalid artifact evidence fails the group before persistence
+
+- **WHEN** any submitted fact or rule artifact has absent, empty, malformed, duplicate, or out-of-group `evidence_episode_ids`
+- **THEN** the consolidation group MUST use the existing failed/dead-letter retry path
+- **AND** no fact, rule, `memory_links` row, or consolidated episode state from that group MAY be persisted before the failure
+
+#### Scenario: Third-party episodes expose the consolidation goal
+
+- **WHEN** a consolidation goal's group holds episodes with non-owner authority or a taint stamp
+- **THEN** reading them exposes the goal, so every artifact it submits is tainted
+- **AND** each derived rule is held until the owner endorses it (`REQ-module-memory-013`)
+- **AND** the goal for the same butler's untainted owner-class episodes is unaffected

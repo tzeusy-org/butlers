@@ -87,7 +87,9 @@ specifies the mechanism. The rules it must satisfy:
   per-event owner approval, and steering-memory writes are refused. Exposure
   never clears, and stored data keeps the taint. The only exemptions are
   `notify` to the owner with link previews off and URLs inert, and standing
-  rules whose recipient is the owner or whose body is template-pinned.
+  rules whose recipient is the owner or that are template-pinned: every
+  content-bearing argument fixed to an exact value or to an owner-authored
+  template whose slots take only typed values, never free text.
 - **Two independent checks.** The broker checks every call against the grant,
   exposure, approval policy, and budget. The owning domain then verifies the
   broker's single-use assertion for that domain, that exact tool, and that
