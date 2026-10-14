@@ -4799,6 +4799,8 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/ui/TimeSeriesChart.tsx`
 
 - formatInTimeZone(ms, timezone, spanDays
+- Trend observations: {}
+- Stale trend tail
 
 ## `frontend/src/components/ui/Title.tsx`
 
@@ -4893,4 +4895,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3898*
+*Total strings: 3900*

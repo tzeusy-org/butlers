@@ -20,6 +20,8 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  type ActiveDotProps,
+  type DotItemDotProps,
 } from "recharts";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { DAY_MS, tailLabel, type TimeSeries } from "@/lib/time-series";
@@ -58,6 +60,49 @@ function tickValues([start, end]: [number, number]): number[] {
   return Array.from({ length: TICK_COUNT }, (_, i) => Math.round(start + step * i));
 }
 
+/** Describe only this plotted reading, never the rest of Recharts' payload. */
+function observationDot(
+  props: DotItemDotProps | ActiveDotProps,
+  line: TimeSeriesLine,
+  timezone: string,
+  unit: string | undefined,
+  variant: "line" | "area",
+  decorative = false,
+) {
+  const payload: unknown = props.payload;
+  if (payload === null || typeof payload !== "object") return null;
+  const row = payload as Record<string, unknown>;
+  const value = row[line.key];
+  const at = row.x;
+  if (
+    typeof value !== "number" || !Number.isFinite(value) ||
+    typeof at !== "number" || !Number.isFinite(at) ||
+    typeof props.cx !== "number" || !Number.isFinite(props.cx) ||
+    typeof props.cy !== "number" || !Number.isFinite(props.cy)
+  ) return null;
+
+  const name = `${line.name}, ${value}${unit ? ` ${unit}` : ""}, ${formatInTimeZone(at, timezone, "yyyy-MM-dd HH:mm:ss XXX")}`;
+  return (
+    <circle
+      className={`recharts-dot recharts-${variant}-dot`}
+      cx={props.cx}
+      cy={props.cy}
+      r={props.r}
+      fill={props.fill}
+      fillOpacity={props.fillOpacity}
+      stroke={props.stroke}
+      strokeOpacity={props.strokeOpacity}
+      strokeWidth={props.strokeWidth}
+      strokeDasharray={props.strokeDasharray}
+      role={decorative ? undefined : "img"}
+      aria-hidden={decorative || undefined}
+      aria-label={decorative ? undefined : name}
+    >
+      {!decorative && <title>{name}</title>}
+    </circle>
+  );
+}
+
 export function TimeSeriesChart({
   series,
   lines,
@@ -76,6 +121,7 @@ export function TimeSeriesChart({
   // colons from useId are not safe inside url(#...).
   const uid = useId().replace(/:/g, "");
   const gradientId = (key: string) => `ts-fade-${uid}-${key}`;
+  const tailId = `ts-tail-${uid}`;
   const { rows, domain, observationCount, lastReadingAt, tailDays } = series;
   const label = tailLabel(tailDays);
   const showDots = observationCount <= DOT_LIMIT;
@@ -109,6 +155,7 @@ export function TimeSeriesChart({
           x2={domain[1]}
           className="fill-muted-foreground/10"
           ifOverflow="hidden"
+          aria-hidden="true"
         />
       )}
     </>
@@ -119,7 +166,12 @@ export function TimeSeriesChart({
     : { top: 5, right: 20, bottom: 5, left: 0 };
 
   return (
-    <div data-testid={testId}>
+    <div
+      data-testid={testId}
+      role="group"
+      aria-label={`Trend observations: ${lines.map((line) => line.name).join(", ")}`}
+      aria-describedby={label ? tailId : undefined}
+    >
       <ResponsiveContainer width="100%" height={height}>
         {variant === "area" ? (
           <AreaChart data={rows} margin={margin}>
@@ -141,7 +193,8 @@ export function TimeSeriesChart({
                 stroke={l.stroke}
                 strokeWidth={compact ? 1.5 : 2}
                 fill={l.fill ?? `url(#${gradientId(l.key)})`}
-                dot={showDots}
+                dot={showDots ? (props) => observationDot(props, l, timezone, yUnit, variant) : false}
+                activeDot={(props) => observationDot(props, l, timezone, yUnit, variant, showDots)}
                 connectNulls={false}
                 isAnimationActive={animate}
               />
@@ -160,7 +213,8 @@ export function TimeSeriesChart({
                 strokeOpacity={l.strokeOpacity}
                 strokeDasharray={l.strokeDasharray}
                 strokeWidth={compact ? 1.5 : 2}
-                dot={showDots}
+                dot={showDots ? (props) => observationDot(props, l, timezone, yUnit, variant) : false}
+                activeDot={(props) => observationDot(props, l, timezone, yUnit, variant, showDots)}
                 connectNulls={false}
                 isAnimationActive={animate}
               />
@@ -169,7 +223,13 @@ export function TimeSeriesChart({
         )}
       </ResponsiveContainer>
       {label && (
-        <p className="font-mono text-xs text-muted-foreground" data-testid="time-series-tail">
+        <p
+          id={tailId}
+          role="note"
+          aria-label="Stale trend tail"
+          className="font-mono text-xs text-muted-foreground"
+          data-testid="time-series-tail"
+        >
           {label}
         </p>
       )}
