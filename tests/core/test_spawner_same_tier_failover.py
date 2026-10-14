@@ -1620,6 +1620,19 @@ class TestUsageLimitAllowanceExhaustion:
         assert clear.await_args.kwargs["attempt_context"] is not None
         assert any(call.kwargs["outcome"] == "success" for call in writes.await_args_list)
 
+        with patch(
+            "butlers.core.spawner.classify_failover_eligibility",
+            return_value=FailoverDecision(eligible=False, reason="synthetic terminal failure"),
+        ):
+            failed, adapter, writes, mark, clear = await self._run(
+                tmp_path / "failed", RuntimeError("synthetic terminal failure")
+            )
+        assert failed.success is False and adapter.invoke_calls == 1
+        assert adapter.allowance_events == ["capture", "invoke"]
+        assert any(call.kwargs["outcome"] == "suppressed" for call in writes.await_args_list)
+        mark.assert_not_awaited()
+        clear.assert_not_awaited()
+
 
 class TestAC4SuppressedFailover:
     """AC4: Tool calls or ineligible classifier → no retry, preserve terminal behavior."""

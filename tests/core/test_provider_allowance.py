@@ -553,6 +553,7 @@ class TestAllowanceStateWriter:
         assert (
             dict(await pool.fetchrow("SELECT * FROM public.provider_allowance_states")) == repeated
         )
+        second_success = await capture_allowance_attempt(pool, entry)
         await clear_allowance_exhaustion(pool, entry, attempt_context=context)
         row = await pool.fetchrow("SELECT * FROM public.provider_allowance_states")
         assert row["state"] == "available" and row["reset_at"] is None
@@ -561,6 +562,10 @@ class TestAllowanceStateWriter:
         assert row["last_rejection_attempt_id"] is None
         cleared = dict(row)
         await clear_allowance_exhaustion(pool, entry, attempt_context=context)
+        assert (
+            dict(await pool.fetchrow("SELECT * FROM public.provider_allowance_states")) == cleared
+        )
+        await clear_allowance_exhaustion(pool, entry, attempt_context=second_success)
         assert (
             dict(await pool.fetchrow("SELECT * FROM public.provider_allowance_states")) == cleared
         )
@@ -610,6 +615,16 @@ class TestAllowanceStateWriter:
             )
             == untouched
         )
+
+        await mark_allowance_exhausted(pool, sibling, reset_at=_later(), attempt_id=64)
+        context = await capture_allowance_attempt(pool, sibling)
+        await clear_allowance_exhaustion(pool, sibling, attempt_context=context)
+        assert dict(
+            await pool.fetchrow(
+                "SELECT state, last_rejection_attempt_id FROM public.provider_allowance_states "
+                "WHERE account_key='codex'"
+            )
+        ) == {"state": "available", "last_rejection_attempt_id": 64}
 
         # Account relabel and catalog deletion make the captured fence ineligible.
         await mark_allowance_exhausted(pool, entry, reset_at=_later(), attempt_id=None)
