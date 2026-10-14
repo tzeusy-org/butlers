@@ -1431,6 +1431,10 @@ class ContactsSyncEngine:
                 provider_total = batch.checkpoint["provider_total"]
             page_token = batch.next_page_token
             if page_token is None:
+                if self._batch_finalizer is not None and not batch.next_sync_cursor:
+                    raise ContactsSyncError(
+                        "Provider full sync did not return terminal next_sync_cursor"
+                    )
                 break
             if self._batch_finalizer is not None and page_token in seen_tokens:
                 raise ContactsSyncError("full fetch repeated a pagination token")

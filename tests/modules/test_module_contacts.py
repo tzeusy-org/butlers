@@ -308,6 +308,77 @@ async def test_telegram_full_cycle_completion_disposition(case):
         assert "apply" not in events
         assert store.state.sync_cursor == "previous"
         assert store.state.contact_versions == {}
+        if case == "missing_cursor":
+            # An earlier page cursor cannot certify guarded terminal completion.
+            observations = {}
+            for terminal_cursor in [None, "", "terminal-valid"]:
+                cycle_store = _CycleStore(ContactsSyncState(sync_cursor="previous"))
+                cycle_finalizer = _FullFinalizer(cycle_store, [])
+                applied = []
+
+                class EarlierCursorProvider:
+                    name = "telegram"
+
+                    async def full_sync(self, *, account_id, page_token=None):
+                        return ContactBatch(
+                            contacts=[contact] if page_token is None else [],
+                            next_page_token="terminal" if page_token is None else None,
+                            next_sync_cursor="earlier" if page_token is None else terminal_cursor,
+                            checkpoint={"complete_full_fetch": True},
+                        )
+
+                async def observed_apply(value):
+                    applied.append(value)
+
+                guarded = ContactsSyncEngine(
+                    provider=EarlierCursorProvider(),
+                    state_store=cycle_store,
+                    apply_contact=observed_apply,
+                    batch_finalizer=cycle_finalizer,
+                )
+                try:
+                    outcome = await guarded.sync(account_id="account-a", mode="full")
+                except ContactsSyncError:
+                    outcome = None
+                observations[terminal_cursor] = (
+                    outcome is None,
+                    len(applied),
+                    len(cycle_finalizer.calls),
+                    cycle_store.state.sync_cursor,
+                    bool(cycle_store.state.contact_versions),
+                    cycle_store.state.last_success_at is None,
+                )
+                if terminal_cursor == "terminal-valid":
+                    assert outcome is not None and outcome.applied_contacts == 1
+                    assert applied == [contact] and len(cycle_finalizer.calls) == 1
+                    assert cycle_finalizer.calls[0]["next_state"].sync_cursor == terminal_cursor
+                    assert cycle_store.state.sync_cursor == terminal_cursor
+                    assert set(cycle_store.state.contact_versions) == {contact.external_id}
+                    assert cycle_store.state.last_success_at is not None
+
+                # Non-guarded Google keeps its existing optional terminal cursor behavior.
+                class GoogleEarlierCursorProvider(EarlierCursorProvider):
+                    name = "google"
+
+                    async def full_sync(self, **kwargs):
+                        batch = await super().full_sync(**kwargs)
+                        return batch.model_copy(update={"checkpoint": None})
+
+                google_store = _CycleStore(ContactsSyncState())
+                google = ContactsSyncEngine(
+                    provider=GoogleEarlierCursorProvider(),
+                    state_store=google_store,
+                    apply_contact=observed_apply,
+                )
+                assert (
+                    await google.sync(account_id="google-account", mode="full")
+                ).applied_contacts == 1
+                assert google_store.state.sync_cursor == (terminal_cursor or "earlier")
+                assert len(google_store.saves) == 1
+            assert {key: observations[key] for key in [None, ""]} == {
+                None: (True, 0, 0, "previous", False, True),
+                "": (True, 0, 0, "previous", False, True),
+            }
     else:
         result = await engine.sync(account_id="account-a", mode=mode)
         assert len(finalizer.calls) == 1
