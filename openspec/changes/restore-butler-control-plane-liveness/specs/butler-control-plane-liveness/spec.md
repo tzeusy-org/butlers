@@ -173,8 +173,12 @@ Scope: v1-mandatory
 ### Requirement: [TARGET-STATE] Durable independent owner attention for fleet and QA failure
 The independently supervised control-plane producer SHALL create one content-blind runtime-attention outbox episode for each active fleet-control or QA-patrol-overdue condition episode that reaches its first owner-attention threshold. With the database and controller available, that threshold and durable append SHALL occur within ten minutes of the first failing fleet observation or observed overdue QA patrol. A qualifying QA patrol SHALL be a completed `clean`, `findings_dispatched`, or genuinely filtered `suppressed` cycle of a full patrol by the QA module (timer-driven or reactive; both record `origin='scheduled'`) with durable proof that every source enabled under the current configuration completed successfully. The `origin`, enabled-source snapshot/config digest, and completion marker in `REQ-staffer-qa-008` SHALL distinguish genuine filtered findings from a synthetic placeholder. `running`, `error`, `skipped_overlap`, synthetic `suppressed`, incomplete-source, and ambiguous legacy rows SHALL NOT renew patrol freshness. The append SHALL use a fixed server-derived condition identity and narrowly authorized producer operation; no QA patrol, routable QA daemon, model session, or browser request is needed to create it. Switchboard SHALL deliver it through the existing fenced at-most-once runtime-attention worker. Later condition escalation SHALL remain bounded by the infrastructure-condition lifecycle and SHALL NOT duplicate the outbox episode or automatically resend an uncertain transport effect.
 
+The supported rollback of the `core_251` condition-attention producer SHALL roll back the database revision and application code together. An ordinary migration-login downgrade only restamps and warns, leaving the installed producer and its enabled flag in place; newer code that continues to call it can still append and page. A database-only partial rollback is not a stop-paging guarantee. Existing bootstrap-only deactivation and retained episode, marker and delivery evidence SHALL remain unchanged.
+
+The standard backup excludes both `public.runtime_attention_condition_episodes` and `public.runtime_attention_outbox`. A valid restore that loses both MAY result in one additional page for a still-active eligible fleet or overdue-QA condition in that restored state, once its protected interfaces and normal producer/controller are available. Existing mandatory append/admission and fenced delivery rules SHALL continue to govern: after the new marker exists, concurrent scans, retries and controller restarts reuse that episode. Ordinary outbox retention, escalation and re-enabling with retained markers SHALL NOT re-page, and a surviving uncertain episode SHALL NOT gain an automatic resend path. The restore allowance does not guarantee successful external delivery; another loss of both records in a later restore is a separate restored state.
+
 ID: REQ-butler-control-plane-liveness-007
-Source: heart-and-soul/vision.md:51-53,120-137; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7
+Source: heart-and-soul/vision.md:51-53,120-137; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7; owner decisions bu-6gdfxt (A), bu-43lod8 (A); deploy/backup/pg_dump.sh exclusion set
 Scope: v1-mandatory
 
 #### Scenario: Correlated fleet expiry produces one owner alert episode
@@ -216,6 +220,19 @@ Scope: v1-mandatory
 - **WHEN** an attention outbox row ages out while its linked fleet or QA condition remains active
 - **THEN** durable condition evidence retains the emitted episode identity and last verified delivery category
 - **AND** reconciliation does not treat the retained condition as an unpaged new episode
+
+#### Scenario: Database-only partial rollback can leave condition paging enabled
+- **WHEN** core_251 is downgraded as the ordinary migration login while newer application code continues to call the condition-attention producer
+- **THEN** the downgrade only restamps and warns, and the installed enabled producer can still append condition episodes
+- **AND** the supported rollback is database and application code together; no database-only stop-paging guarantee is claimed
+- **AND** existing emitted episodes, condition markers and delivery truth are retained
+
+#### Scenario: Restore may page a still-active condition once more
+- **WHEN** a valid restore loses both the condition-side emission marker and its runtime-attention outbox row, and a still-active eligible condition is evaluated by the available normal producer after its attention grace
+- **THEN** the existing fixed idempotent append rules SHALL continue to govern; loss of both deduplication records can create one new content-blind episode in that restored state
+- **AND** that episode may page the owner once more, without guaranteeing successful external delivery
+- **AND** after the new marker exists, concurrent scans, retries and controller restarts return that same new episode rather than multiplying pages
+- **AND** ordinary outbox retention with a surviving marker, escalation and a surviving uncertain episode do not acquire an automatic resend path
 
 ### Requirement: [TARGET-STATE] Shared bounded probe authority across processes
 The Dashboard periodic observer and Switchboard stale-route recovery SHALL use the same exact-roster response verifier and database-reserved per-daemon probe sequence. Dashboard SHALL own the periodic pass; Switchboard SHALL initiate exactly one on-demand probe before refusing an otherwise eligible stale route using its own narrowly authorized control-plane observation operation. Both writers SHALL update the same receiver-derived registry record conditionally on the latest durable boot epoch and probe sequence, within a bounded deadline. Neither writer SHALL accept caller-supplied endpoints or gain dashboard owner-auth authority.
