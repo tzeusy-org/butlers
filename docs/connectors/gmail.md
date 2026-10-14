@@ -78,6 +78,52 @@ Tier assignment happens in the connector before classification: the label filter
 connector-scope and global-scope Switchboard ingestion rules evaluated in priority order. Default is
 Tier 1 for safety.
 
+## Bearer-Material Scrubbing
+
+The Gmail connector withholds detected one-time authentication codes (OTPs),
+password-reset links, and magic links before submitting Tier 1 or Tier 2
+`ingest.v1` envelopes. It scrubs subject-derived text, normalized body text, and
+base64url-decoded Gmail `body.data` inside `payload.raw`, re-encoding changed
+body blobs. The shared detector also handles Telegram login codes from service
+sender `777000`, described in the [Telegram user-client guide](telegram-user-client.md#bearer-material-scrubbing).
+
+| Detected material | Replacement in message content |
+|---|---|
+| One-time authentication code, including a Telegram login code | `[auth-code withheld: <provider-domain>]` |
+| Password-reset link | `[reset-link withheld: <provider-domain>]` |
+| Magic link | `[magic-link withheld: <provider-domain>]` |
+
+For codes, the domain label comes from the sender's email domain, or the source
+provider when there is no email domain (`telegram` for Telegram service codes).
+For links, it is the URL hostname. These are descriptive labels, not proof of
+sender identity. The original code or URL is replaced, while the rest of the
+message remains. Already-scrubbed placeholders are unchanged on repeat passes.
+Ordinary numbers, dates, and amounts outside authentication wording or bearer
+links survive. The known exception is aggressive Telegram `777000` handling:
+code-shaped 4–8 digit numbers in message text can be withheld even when benign;
+date/time-shaped runs are excluded from that aggressive numeric rule.
+
+Scrubbing rewrites message content, never envelope metadata: existing `source`,
+`event`, `sender`, and `control` identities, event IDs, timestamps, and idempotency
+keys are preserved. A hit adds `control.bearer_scrubbed=true`. Switchboard scrubs
+again before inbox persistence and records `raw_payload.bearer_artifacts` with
+`kind`, `provider_domain`, and `observed_at` (plus `expires_hint` when detected),
+without storing the withheld value. The scrub does not change the existing
+policy decision.
+
+If the Switchboard scrubber raises, it fails closed: the persisted row has
+lifecycle state `metadata_ref` and `raw_payload.payload.raw=null`. Both
+`raw_payload.payload.normalized_text` and `message_inbox.normalized_text` contain
+`[content withheld: bearer scrub failed]` instead of the original text. It sets `control.bearer_scrubbed=true` and
+`control.bearer_scrub_failed=true`; envelope metadata remains intact.
+
+This describes the connector envelope and Switchboard inbox scrub, as required
+by [Bearer material never persists](../../openspec/specs/connector-gmail/spec.md#requirement-bearer-material-never-persists)
+and the [security constraints](../../about/heart-and-soul/security.md#constraints).
+The [custody audit](bearer-material-custody-audit.md) separately records gaps in
+filtered payloads/replay, earlier prompts/logs, alternate writers, and readers;
+this scrub is not evidence that those paths or a deployed fleet are protected.
+
 ## Label Filtering
 
 `GMAIL_LABEL_INCLUDE` and `GMAIL_LABEL_EXCLUDE` are normative production controls:
