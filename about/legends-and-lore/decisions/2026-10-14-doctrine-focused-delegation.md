@@ -2,7 +2,7 @@
 
 **Status:** Adopted by the owner on 2026-10-14. Delivered by one hard cutover
 specified in [RFC 0038](../rfcs/0038-goal-runtime-and-capability-authorization.md)
-(proposed, awaiting owner signoff).
+(accepted 2026-10-14 with four owner amendments).
 **Date:** 2026-10-14
 **Baseline:** `3bde61199`
 **Tracking:** `bu-rn8frx` (doctrine), `bu-7p9ll5` (successor contract)
@@ -48,6 +48,8 @@ Numbered doctrine rules keep their identifiers; existing citations do not move.
 | `security.md`, Session Sandboxing | "A session cannot spawn other sessions." (Configured, never enforced; see RFC 0038 Context.) | Sessions are sandboxed and reach only the broker; only the goal runner starts sessions, and a lead can obtain only depth-1 children. |
 | `security.md`, deployment control keys | One named key. | `GOAL_BROKER_SIGNING_KEY` is the second named key (owner decision 6). |
 | `v1.md`, success criterion 2 | Over 90% classification accuracy. | Goal runtime meets or beats recorded outcomes on replay; zero unauthorized effects in the adversarial suite (owner decision 2). |
+| `v1.md`, success criterion 6 | "The dashboard shows butler status, sessions, contacts, and ingestion flow in real time." | The dashboard shows goals with lineage, effects and approvals, and each domain region (owner decision 11). |
+| `security.md`, Goal and Delegation Authority; Approval Gates | Non-owner communication approval enforced by the notify gate; `transact` grantable park-only to third-party goals. | Communication with anyone other than the owner needs owner approval for every goal; no goal holds `transact` (owner decisions 8 and 9). |
 
 Rule 5 distinguishes versioned role guidance from per-invocation task
 artifacts; Rule 7 removes mandatory domain classification. Rules 1, 2 and 4
@@ -160,4 +162,12 @@ authored after owner signoff of RFC 0038 and applied by the same release.
 - On 2026-10-14 the owner answered RFC 0038's open decisions, choosing:
   "Switchboard, own process"; "Yes, v1 ships on goals"; "Narrow exemptions";
   and approving both `GOAL_BROKER_SIGNING_KEY` and "Third-party park-only".
-  Full design signoff of RFC 0038 and the baseline deltas remain.
+- On 2026-10-14 the owner signed off the full design with four amendments:
+  "`transact` should not be enabled, I don't trust the systems that far yet";
+  "The existing rule of 'all communication with all entities that are NOT
+  myself (owner) require approval' must still stand"; "We should do a
+  rewrite/reorganization of our RFCs after this rearchitecture"; and design
+  work for the dashboard, because "specialized butlers are going to be more
+  akin to specialized regions of the same brain". "The proposal is otherwise
+  signed off." RFC 0038 records them as owner decisions 8 to 11 and D19; the
+  baseline OpenSpec deltas were authored in the same pull request.

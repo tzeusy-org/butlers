@@ -1,9 +1,12 @@
 # RFC 0038: Goal Runtime and Capability Authorization
 
-**Status:** Proposed (2026-10-14). Successor contract for the adopted
+**Status:** Accepted (2026-10-14). Successor contract for the adopted
 [generalist-lead doctrine](../decisions/2026-10-14-doctrine-focused-delegation.md).
-Owner decisions 1, 2, 3, 6 and 7 answered on 2026-10-14; full design signoff
-pending.
+The owner signed off the full design on 2026-10-14 with four amendments,
+recorded as owner decisions 8 to 11: `transact` is disabled, communication with
+anyone other than the owner always needs owner approval, the RFC corpus is
+rewritten after the switch, and the dashboard is redesigned around one mind
+with specialized regions.
 **Date:** 2026-10-14
 **Tracking:** `bu-7p9ll5`
 **Supersedes at cutover:** the contracts listed in
@@ -31,7 +34,10 @@ model behavior:
    enlarge it.
 3. **Exposure-sensitive effects.** Once an invocation has read third-party
    content, directly or through stored records, consequential effects need
-   per-event owner approval.
+   per-event owner approval. Two owner rules hold for every goal whether or not
+   it is exposed: communication with anyone other than the owner needs owner
+   approval, and no goal can spend, book or pay, because `transact` is
+   disabled.
 4. **Verified calls at the domain.** The broker signs every forwarded call; a
    domain service executes a model-reachable tool only with a valid assertion
    bound to that domain, that exact tool, that argument digest and a single use.
@@ -249,6 +255,7 @@ safety_args           argument names an approval must pin (RFC 0021)
 approval_policy       existing approvals gating config for the tool
 idempotency           none | key_required
 owner_authority       true when the write steers future sessions (rules, profile)
+recipient_params      for `communicate`: argument names that identify recipients
 ```
 
 Effect classes and their default under exposure (owner decision 3):
@@ -257,10 +264,30 @@ Effect classes and their default under exposure (owner decision 3):
 |---|---|---|
 | `read` | search memory, list transactions, read calendar | allowed |
 | `record` | log a measurement, store an attributed fact, propose an insight | allowed and tainted (D6), unless `owner_authority`, which is refused |
-| `communicate` | send email, reply on Telegram, notify a third party | per-event approval, except `notify` to the owner with link previews disabled and URLs rendered inert, and standing rules whose recipient is the owner or whose body is template-pinned |
-| `transact` | spend, pay, book, accept an invitation | per-event approval |
+| `communicate` | send email, reply on Telegram, notify a third party, answer a calendar invitation | to anyone other than the owner: per-event approval, or a standing rule only when its body is template-pinned; to the owner: `notify` allowed with link previews disabled and URLs rendered inert |
+| `transact` | spend, pay, book | disabled for every goal (owner decision 8) |
 | `actuate` | Home Assistant services | RFC 0028 risk map; consequential and protected always per-event approval |
 | `administer` | change schedules, rules, permissions, module state, create obligations | per-event approval; never delegable to a child |
+
+Two owner rules apply to every origin, grant and exposure state, lead or child:
+
+- **Communication with anyone other than the owner needs owner approval**
+  (owner decision 9). The broker resolves every argument named in a
+  `communicate` capability's `recipient_params` with the owner-resolution rule
+  of `core-notify`: a recipient counts as the owner only when its identifier
+  resolves uniquely to the live owner entity. Any other recipient, including
+  an unknown, ambiguous or unresolvable one, makes the call non-owner
+  communication, which the broker dispatches only under per-event owner
+  approval or a matching standing rule the owner created (RFC 0021). This is
+  the rule `core-notify` enforces today; the owning domain's own approval gate
+  keeps enforcing it as well. A `communicate` capability that cannot declare
+  its recipients is treated as non-owner communication on every call.
+- **`transact` is disabled** (owner decision 8). The catalog still classifies
+  spending, paying and booking tools as `transact`, but the broker grants them
+  to no goal, not even park-only, and lists them to no invocation. Enabling
+  `transact` requires a new owner decision recorded as an amendment to this
+  RFC. A survey of `main` found no model-reachable tool that spends, pays or
+  books, so nothing currently reachable is lost.
 
 Two kinds of tool are never LLM-presentable and therefore never grantable:
 
@@ -293,9 +320,9 @@ output.
 
 | Origin | Established by | Ceiling |
 |---|---|---|
-| `owner` | RFC 0017 owner-channel authorization, or the dashboard's existing owner authentication | all grantable capabilities, subject to each tool's approval policy |
+| `owner` | RFC 0017 owner-channel authorization, or the dashboard's existing owner authentication | all grantable capabilities, subject to each tool's approval policy and the two owner rules in D4 |
 | `obligation` | a schedule, subscription or commitment declared in git, or created at runtime by an `administer` effect | the declared capability set; default owner domain `read` and `record` plus owner `notify`. A runtime-created obligation's set is at most its creator's grant at creation. |
-| `third_party` | inbound content whose sender is not the verified owner | `read`, non-steering `record`, owner `notify`, and **park-only** `communicate` and `transact` (owner decision 7); never `actuate` or `administer` |
+| `third_party` | inbound content whose sender is not the verified owner | `read`, non-steering `record`, owner `notify`, and **park-only** `communicate` (owner decision 7); never `transact`, `actuate` or `administer` |
 | `staffer` | a staffer's infrastructure contract (QA triage, Concierge answer) | the capability set declared in that contract |
 
 Rules:
@@ -358,7 +385,9 @@ private data and external effect authority together needs a human in the loop.
 Approvals are no longer only a property of individual tools; they are a
 property of what the session has read.
 
-Unexposed owner goals keep today's approval behavior, including standing rules.
+Unexposed owner goals keep today's approval behavior, including standing
+rules; communication with anyone other than the owner still needs owner
+approval (D4).
 Approvals of effects requested by exposed invocations do not count toward the
 RFC 0021 promotion ladder.
 
@@ -430,6 +459,12 @@ not survive: the `trigger` tool, `route.execute`, the generic `route` tool and
 the `delegate_*` tools are deleted at cutover; prompt-mode `schedule_create`
 becomes obligation creation, an `administer` capability; `cancel_session`
 becomes owner-only Stop. `public.permissions` no longer governs sessions.
+Messenger's `notify.v1` delivery termination, which today shares the
+`route.execute` tool name, survives as a deterministic service-plane endpoint:
+not LLM-presentable, not on the session listener, and called only by
+Switchboard `deliver()`. Its approval gate stays as defense in depth for the
+non-owner communication rule (D4). The implementation separates it from the
+deleted session-dispatch role.
 
 **Signing key.** `GOAL_BROKER_SIGNING_KEY` is the second named use of the
 security.md process-bound deployment control key exception (owner decision 6):
@@ -485,11 +520,12 @@ budget_share      calls, cost and wall time drawn from the goal budget
 
 The broker computes the child grant as the intersection of the request and the
 lead's grant, minus `administer`, and refuses an empty or non-subset request.
+Since `transact` is never in a lead's grant, no child can hold it either.
 The insert that admits the child is conditional on the goal running and the
 lead epoch matching, like any call. The child inherits the goal's origin and
-exposure. Children are not read-only by default; they may hold `record`,
-`communicate` or `transact` capabilities the lead holds, under the same
-approval and park-only rules. A lead cannot approve its child's effect:
+exposure. Children are not read-only by default; they may hold `record` or
+`communicate` capabilities the lead holds, under the same approval and
+park-only rules. A lead cannot approve its child's effect:
 approvals resolve only through owner channels.
 
 A child that needs more work calls `goal.return` with a `requests_for_lead`
@@ -663,6 +699,32 @@ an RFC amendment. Pending OpenSpec changes that add a model path, such as
 `define-dashboard-fast-answer-runtime`, must be re-scoped as goals or as a
 named kind here before approval.
 
+### D19. Owner surface: one mind, specialized regions
+
+The dashboard stops presenting butlers as separate agents and presents
+Butlers as one assistant whose domains are specialized regions of a single
+mind (owner decision 11). The direction:
+
+- **Goals are the unit of activity.** The owner sees goals, not sessions: what
+  started each goal, its origin and exposure, the lead and its children, the
+  regions it drew on, its effects with receipts, its parked approvals, its
+  budget and its outcome, with Stop on any running goal.
+- **Regions replace butler units.** A domain page shows its region's data,
+  standing obligations and schedules, capabilities and their effect classes,
+  domain guidance, and the recent goals that used it. It no longer shows a
+  domain's own sessions, routing log or runtime process as if it were a
+  separate agent.
+- **The overview shows the whole mind at once:** active goals, which regions
+  each touches, obligations coming due, and decisions waiting for the owner.
+- **Approvals carry lineage:** each parked effect shows the goal, the
+  invocation that requested it, whether it was exposed and to what, and the
+  exact call that will run.
+
+The detailed experience contract is a separate OpenSpec change for the
+`dashboard-*` capabilities, produced through design review and signed off by
+the owner before implementation. Its pages are built during the dark build and
+switched on by the cutover release.
+
 ## Disposition of existing RFCs
 
 Applied in the cutover release together with the OpenSpec deltas. "Remains"
@@ -729,6 +791,8 @@ capability directly or delegates to a child.
   subscription gets a declared capability set in git.
 - **Service-plane inventory.** Every direct call to a model-reachable tool from
   the dashboard or another service is routed through the control plane.
+- **Owner surface.** The dashboard change for D19 is designed, signed off by
+  the owner, and built without replacing the current views.
 - **Native discovery.** RFC 0027's native deferred discovery and conformance
   gate are implemented for the broker endpoint and every eligible lead runtime.
   A lead cannot work over the full catalog with eager loading.
@@ -742,7 +806,9 @@ All evidence is produced in a dev namespace against the release candidate:
    passing-after test.
 2. Adversarial suite, zero unauthorized effects: injected instructions in
    email, chat and calendar content attempting send, spend, actuation, rule
-   writes and exfiltration (including through owner `notify` links); laundering
+   writes and exfiltration (including through owner `notify` links); messages
+   to non-owner, unknown or ambiguous recipients without owner approval; any
+   `transact` grant or call; laundering
    through memory, conversation history and insight candidates; children
    attempting grandchildren through every creation path, including caused
    admissions and runtime obligations; forged, replayed, expired and
@@ -765,12 +831,26 @@ One release:
 - deletes classification, route dispatch, per-butler session spawning and the
   cross-butler delegation tools;
 - enables assertion verification in every domain;
+- switches the dashboard to the goal and region views of D19 and removes the
+  session, routing-log and per-butler session views;
 - applies the OpenSpec deltas, archives the change, and updates RFC statuses,
   topology pages, operational docs, `CLAUDE.md` and manifestos.
 
 The old buffers drain before the switch: connectors keep their cursors while
 Switchboard stops accepting new routes and finishes in-flight ones. The switch
 release runs no destructive migration.
+
+### After the switch: rewrite the RFC corpus
+
+Once the switch has shipped, the RFC corpus in `about/legends-and-lore/` is
+rewritten and reorganized around the goal architecture (owner decision 10).
+The supersession headers and the disposition table above are interim markers,
+not the end state. The rewrite folds each superseded-in-part RFC's surviving
+contract into a successor organized by subsystem (control plane, capability
+services, owner surface, connectors, data), moves the replaced text to the
+decision history, splits RFC 0038's lasting contracts from its cutover plan,
+and rebuilds the RFC index around the new organization. It changes no
+behavior: any contract change it uncovers goes through its own spec delta.
 
 ### Rollback
 
@@ -786,11 +866,15 @@ built.
 |---|---|---|---|
 | 1 | Host of the control plane | Switchboard, moved into its own process and container (D1). | Switchboard, own process. |
 | 2 | Release scope | The cutover is a v1 milestone; v1's classifier criterion becomes replay and adversarial-suite criteria. | Yes, v1 ships on goals. |
-| 3 | Exposure strictness | As D4 and D6, including the narrowed exemptions: owner `notify` with inert links, and standing rules only to the owner or with template-pinned bodies. Stricter gating costs more approval taps; looser gating lets an injected session message a pinned third party. | Narrow exemptions. |
+| 3 | Exposure strictness | As D4 and D6, including the narrowed exemptions: owner `notify` with inert links, and standing rules only with template-pinned bodies. Stricter gating costs more approval taps; looser gating lets an injected session message a pinned third party. | Narrow exemptions. |
 | 4 | Default model tiers | As D16; replay evaluation sets the final assignments. | Not asked; deferred to replay evaluation. |
 | 5 | Default budgets | Per origin, set from replay evaluation before the switch. | Not asked; deferred to replay evaluation. |
 | 6 | `GOAL_BROKER_SIGNING_KEY` | Approve as the second named process-bound deployment control key (D7). | Approved. |
-| 7 | Third-party park-only effects | Allow: inbound mail can prepare a reply or booking for one-tap approval; it can never execute one. | Approved. |
+| 7 | Third-party park-only effects | Allow: inbound mail can prepare a reply for one-tap approval; it can never execute one. | Approved; narrowed to `communicate` by decision 8. |
+| 8 | `transact` capabilities | Owner amendment at signoff. | Disabled for every goal, including park-only: "`transact` should not be enabled, I don't trust the systems that far yet." |
+| 9 | Communication with non-owners | Owner amendment at signoff. | Keep the existing rule: "all communication with all entities that are NOT myself (owner) require approval." Per-event approval or an owner-created standing rule, for every goal (D4). |
+| 10 | RFC corpus after cutover | Owner amendment at signoff. | Rewrite and reorganize the RFCs after the rearchitecture (Hard cutover, After the switch). |
+| 11 | Dashboard | Owner amendment at signoff. | Redesign the owner surface: "specialized butlers are going to be more akin to specialized regions of the same brain" (D19). |
 
 ## Alternatives considered
 
@@ -840,3 +924,5 @@ built.
 | `capability-authorization` 012 audit | D17 |
 | `capability-authorization` 013 caused admissions and runtime obligations | D5 |
 | `capability-authorization` 014 owner decisions unreachable | D4 |
+| `capability-authorization` 015 `transact` disabled | D4, D5, D9 |
+| `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D13 |

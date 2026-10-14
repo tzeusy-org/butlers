@@ -31,6 +31,15 @@ trace the change.
    ladder that never creates a new goal (D16).
 10. Engineering executors and tool-less model functions are the only model use
     outside goals (D18).
+11. Two owner rules bind every goal regardless of origin or exposure:
+    communication with anyone other than the owner needs per-event approval or
+    an owner-created standing rule, and `transact` is disabled (D4, owner
+    decisions 8 and 9).
+12. The dashboard presents one mind with specialized regions: goals are the
+    unit of activity and domain pages become regions (D19). Its experience
+    contract is a separate `dashboard-*` change signed off before it is built.
+13. After the switch, the RFC corpus is rewritten and reorganized around the
+    goal architecture (owner decision 10).
 
 ## Cutover
 

@@ -21,7 +21,7 @@ goal invocations.
 
 ID: REQ-capability-authorization-001
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1 and D3
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A session tries to reach a domain directly
 - **WHEN** an invocation process attempts a connection to a domain butler's MCP port, a control-plane service listener or PostgreSQL
@@ -34,7 +34,8 @@ Scope: proposed-v1
 ### Requirement: Every model-reachable capability declares authorization metadata
 Every LLM-presentable tool SHALL declare its owner domain, effect class, output
 trust, output sensitivity, resource parameters, safety arguments, approval
-policy, idempotency mode and owner-authority flag. A tool without complete
+policy, idempotency mode and owner-authority flag, and every `communicate` tool
+SHALL also declare the arguments that identify its recipients. A tool without complete
 metadata SHALL NOT be grantable, and CI SHALL fail when a registered
 LLM-presentable tool lacks it. A capability whose output can include data that
 a model-reachable `record` capability, a connector or a third party can write
@@ -42,7 +43,7 @@ SHALL NOT declare trusted output.
 
 ID: REQ-capability-authorization-002
 Source: RFC 0038, D4
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A read over writable notes is declared trusted
 - **WHEN** a module declares trusted output for a read capability over a table that one of its `record` capabilities writes
@@ -58,17 +59,17 @@ server-held origin context: owner, obligation, third party or staffer. Message
 text, model output and sender-supplied envelope fields SHALL NOT change the
 origin or the ceiling. A message SHALL be owner-origin only when owner-channel
 authorization verifies its channel and sender. A third-party goal's ceiling
-SHALL exclude `actuate` and `administer` capabilities and SHALL hold
-`communicate` and `transact` capabilities, other than owner `notify`, only as
-park-only grants that can produce a parked effect but never execute one.
+SHALL exclude `transact`, `actuate` and `administer` capabilities and SHALL
+hold `communicate` capabilities, other than owner `notify`, only as park-only
+grants that can produce a parked effect but never execute one.
 
 ID: REQ-capability-authorization-003
 Source: RFC 0038, D5; RFC 0017
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: An email claims to come from the owner
-- **WHEN** an inbound email from an address that owner-channel authorization does not verify says it is from the owner and asks for a payment
-- **THEN** the goal is admitted with origin `third_party`, and the payment can at most be parked for per-event owner approval
+- **WHEN** an inbound email from an address that owner-channel authorization does not verify says it is from the owner and asks for a reply to an outside address
+- **THEN** the goal is admitted with origin `third_party`, and the reply can at most be parked for per-event owner approval
 
 #### Scenario: A scheduled obligation runs
 - **WHEN** a domain obligation declared in git becomes due
@@ -83,7 +84,7 @@ epoch to be current. Knowing a capability's name SHALL NOT make it callable.
 
 ID: REQ-capability-authorization-004
 Source: RFC 0038, D7
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A model calls a capability outside its grant
 - **WHEN** an invocation calls a correctly named capability that is not in its grant
@@ -102,10 +103,10 @@ the child's effects.
 
 ID: REQ-capability-authorization-005
 Source: RFC 0038, D9 and D13
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A lead requests more for a child than it holds
-- **WHEN** a lead without `transact` asks to delegate a child with a `transact` capability
+- **WHEN** a lead without a send capability asks to delegate a child holding that send capability
 - **THEN** the broker refuses the delegation and no child is launched
 
 ### Requirement: Exposure and taint gate consequential effects
@@ -115,17 +116,17 @@ trust is untrusted, when it receives stamped output containing an item without
 owner authority or carrying taint, or when it receives a result from an exposed
 child. Exposure SHALL NOT clear, and an exposed invocation SHALL mark its goal
 exposed. Domains SHALL taint records written under an exposed assertion. While
-exposed, `communicate` effects SHALL require per-event owner approval except
-owner-directed `notify` with link previews disabled and URLs inert, and
-standing rules whose recipient is the owner or whose body is template-pinned;
-`transact`, `administer` and consequential or protected `actuate` effects SHALL
-require per-event owner approval; and `record` writes with owner authority
-SHALL be refused. Approvals of effects requested while exposed SHALL NOT count
+exposed, `communicate` effects to anyone other than the owner SHALL require
+per-event owner approval, except under a standing rule whose body is
+template-pinned; owner-directed `notify` SHALL be allowed only with link
+previews disabled and URLs inert; `administer` and consequential or protected
+`actuate` effects SHALL require per-event owner approval; and `record` writes
+with owner authority SHALL be refused. Approvals of effects requested while exposed SHALL NOT count
 toward standing-rule promotion.
 
 ID: REQ-capability-authorization-006
 Source: RFC 0038, D4 and D6; RFC 0021
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: An injected instruction asks the lead to forward mail
 - **WHEN** an owner goal reads an email whose body instructs the assistant to forward the inbox to an outside address, and the lead then calls the send capability
@@ -153,7 +154,7 @@ only by the control-plane process.
 
 ID: REQ-capability-authorization-007
 Source: RFC 0038, D1 and D7
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A forged or altered call reaches a domain
 - **WHEN** a domain receives a model-reachable tool call with no assertion, an expired assertion, or arguments whose digest differs from the assertion
@@ -171,7 +172,7 @@ the goal's lead epoch advances; a child's token SHALL NOT.
 
 ID: REQ-capability-authorization-008
 Source: RFC 0038, D7 and D14
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A replaced lead's token is used
 - **WHEN** a call arrives with the token of a lead whose epoch was superseded by recovery or escalation
@@ -191,7 +192,7 @@ reference unless the owner approves it afresh.
 
 ID: REQ-capability-authorization-009
 Source: RFC 0038, D12; RFC 0028
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A recovered lead repeats an uncertain send
 - **WHEN** a replacement lead calls a send capability with the same arguments as an effect left unknown by the previous lead
@@ -207,7 +208,7 @@ whose lead has finished SHALL wait for its parked effects to resolve.
 
 ID: REQ-capability-authorization-010
 Source: RFC 0038, D11 and D13; RFC 0021
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: The model re-issues an approved call with different text
 - **WHEN** the owner approves a parked message and the lead later calls the send capability with edited text
@@ -225,7 +226,7 @@ receipts or unknown without being reported as undone.
 
 ID: REQ-capability-authorization-011
 Source: RFC 0038, D14
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: Stop arrives while two children are working
 - **WHEN** the owner stops a goal with a running lead and two running children
@@ -239,7 +240,7 @@ and epoch identifiers and SHALL NOT carry tool arguments or results.
 
 ID: REQ-capability-authorization-012
 Source: RFC 0038, D17; RFC 0005
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: The owner asks why an action happened
 - **WHEN** the owner inspects a committed effect
@@ -256,11 +257,11 @@ under exposure SHALL start every occurrence exposed.
 
 ID: REQ-capability-authorization-013
 Source: RFC 0038, D5
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A child's booking triggers a finance reaction
-- **WHEN** an exposed child commits a booking whose domain event wakes a declared finance subscription that needs reasoning
-- **THEN** the finance goal is admitted with the booking goal as its cause, starts exposed, and holds only the subscription's declared capabilities
+- **WHEN** an exposed child records an expense receipt whose domain event wakes a declared finance subscription that needs reasoning
+- **THEN** the finance goal is admitted with the receipt's goal as its cause, starts exposed, and holds only the subscription's declared capabilities
 
 #### Scenario: A third-party goal's effect wakes a privileged subscription
 - **WHEN** a third-party goal records a fact that wakes a subscription whose declared set includes `actuate`
@@ -281,11 +282,59 @@ or grantable to any invocation.
 
 ID: REQ-capability-authorization-014
 Source: RFC 0038, D4; RFC 0021; RFC 0037
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A lead looks for the approval tool
 - **WHEN** a lead searches its catalog for a tool that approves parked actions
 - **THEN** no such tool is listed or callable, and the parked effect stays pending until the owner decides through an owner channel
+
+### Requirement: Transact capabilities are disabled
+The broker SHALL NOT grant or list a `transact` capability to any goal or
+invocation, including as a park-only grant, whatever the goal's origin, cause
+or exposure. Enabling `transact` SHALL require an owner decision recorded as an
+amendment to RFC 0038.
+
+ID: REQ-capability-authorization-015
+Source: RFC 0038, D4 and owner decision 8
+Scope: v1-mandatory
+
+#### Scenario: The owner asks the assistant to pay a bill
+- **WHEN** an owner goal needs a payment that only a `transact` capability could make
+- **THEN** no `transact` capability is listed or callable, and the lead reports what the owner would need to do
+
+#### Scenario: A lead asks for a child that can book
+- **WHEN** a lead requests a child grant that includes a `transact` capability
+- **THEN** the broker refuses the delegation and no child is launched
+
+### Requirement: Communication with anyone other than the owner requires owner approval
+For every `communicate` call, the broker SHALL resolve each declared recipient
+with the `core-notify` owner-resolution rule and SHALL treat the call as
+non-owner communication unless every recipient resolves uniquely to the live
+owner entity. The broker SHALL dispatch non-owner communication only under
+per-event owner approval or a matching standing rule the owner created, and no
+origin, grant, exposure state, lead or child SHALL bypass this. The owning
+domain's own approval gate SHALL continue to apply. A `communicate` call whose
+recipients cannot be determined SHALL be treated as non-owner communication.
+
+ID: REQ-capability-authorization-016
+Source: RFC 0038, D4 and owner decision 9; `core-notify` Role-Based Approval Gating for Notify; RFC 0021
+Scope: v1-mandatory
+
+#### Scenario: An unexposed owner goal emails a friend
+- **WHEN** an owner goal that has read no third-party content calls a send capability addressed to a known contact who is not the owner, and no standing rule matches
+- **THEN** the message is parked for per-event owner approval and nothing is sent until the owner approves
+
+#### Scenario: A standing rule covers a recurring message
+- **WHEN** an unexposed goal sends a message that matches a standing rule the owner created for that recipient
+- **THEN** the message is sent under that rule and the effect records the rule as its approval
+
+#### Scenario: The recipient is ambiguous
+- **WHEN** a send capability's recipient identifier resolves to more than one entity, to no entity, or cannot be looked up
+- **THEN** the broker treats the call as non-owner communication and parks it for owner approval
+
+#### Scenario: A message to the owner
+- **WHEN** an unexposed goal sends a message whose recipient resolves uniquely to the owner
+- **THEN** the message is sent without an approval step
 
 ## Source References
 

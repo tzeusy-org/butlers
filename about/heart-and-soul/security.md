@@ -65,18 +65,26 @@ specifies the mechanism. The rules it must satisfy:
 - **Authority comes from origin, never from text.** Admission derives a goal's
   ceiling from server-held context: owner, obligation, third party, or
   staffer. A third-party goal can read, record attributed facts, notify the
-  owner, and at most prepare an action for owner approval; it can never itself
-  send, spend, actuate, or administer.
+  owner, and at most prepare a message for owner approval; it can never itself
+  send, actuate, or administer.
+- **Only the owner is messaged without approval.** Communication with anyone
+  other than the owner needs owner approval, per event or through a standing
+  rule the owner created, whatever the goal's origin or exposure. A recipient
+  counts as the owner only when it resolves uniquely to the owner entity;
+  unknown or ambiguous recipients are not the owner.
+- **No goal spends.** `transact` capabilities (spend, pay, book) are disabled
+  for every goal, including as prepared actions, until the owner enables them
+  through an amendment to RFC 0038.
 - **Grants only narrow.** A lead's grant is at most its goal's ceiling. A
   child's grant is a subset of its lead's, without `administer`. Discovery,
   skills, and task prompts never grant anything.
 - **Exposure gates consequential effects.** Once an invocation has read
   third-party content, directly or through records an exposed goal stored,
-  sending, spending, administering, and consequential or protected actuation
-  need per-event owner approval, and steering-memory writes are refused.
-  Exposure never clears, and stored data keeps the taint. The only exemptions
-  are `notify` to the owner with link previews off and URLs inert, and standing
-  rules whose recipient is the owner or whose body is template-pinned.
+  sending to anyone but the owner, administering, and consequential or
+  protected actuation need per-event owner approval, and steering-memory
+  writes are refused. Exposure never clears, and stored data keeps the taint.
+  The only exemptions are `notify` to the owner with link previews off and URLs
+  inert, and standing rules with template-pinned bodies.
 - **Two independent checks.** The broker checks every call against the grant,
   exposure, approval policy, and budget. The owning domain then verifies the
   broker's single-use assertion for that domain, that exact tool, and that
@@ -172,6 +180,9 @@ explicit owner confirmation before proceeding.
   enforced by the broker and the owning MCP server, not in the prompt.
 - An approval executes the exact stored call the owner saw, never a call the
   model re-issues.
+- Communication with anyone other than the owner always requires owner
+  approval: per event, or through a standing rule the owner created. No goal
+  origin, grant or exposure state bypasses it.
 - Exposure to third-party content makes consequential effects approval-gated
   even when the tool alone would not be (see Goal and Delegation Authority).
 - Approval timeouts must result in denial, not silent approval.

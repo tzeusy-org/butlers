@@ -1,8 +1,8 @@
 # Generalist lead, focused delegation and capability authorization
 
-**Status:** Owner-adopted direction (2026-10-14); successor contract proposed in
-RFC 0038 with owner decisions 1, 2, 3, 6 and 7 answered; full design signoff
-pending.
+**Status:** Owner-adopted direction and owner-signed successor contract
+(RFC 0038, accepted 2026-10-14 with amendments recorded as owner decisions 8
+to 11).
 **Tracking:** `bu-rn8frx` (doctrine); `bu-7p9ll5` (successor contract).
 
 ## Why
@@ -33,6 +33,14 @@ is the design.
   consequential effects. Domains verify a single-use, audience-bound,
   broker-signed assertion before any model-reachable handler runs.
 - Budgets, effect ledger, approvals, Stop and fenced recovery are goal-level.
+- Two owner rules bind every goal: communication with anyone other than the
+  owner needs owner approval (per event or by an owner-created standing rule),
+  and `transact` capabilities are disabled.
+- The dashboard presents one mind with specialized regions: goals replace
+  sessions as the unit of activity, and domain pages become regions. The
+  detailed experience contract is a separate change signed off before it is
+  built.
+- After the switch, the RFC corpus is rewritten around the goal architecture.
 - Hard cutover: dark build on main, cutover gate in dev, one switching release,
   rollback by redeploying the previous release.
 

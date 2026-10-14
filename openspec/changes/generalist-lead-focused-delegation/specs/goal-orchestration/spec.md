@@ -15,7 +15,7 @@ be forced into one shared conversation or serialized solely by this rule.
 
 ID: REQ-goal-orchestration-001
 Source: about/heart-and-soul/vision.md, What Butlers Is; adopted 2026-10-14 doctrine amendment
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: Cross-domain constraints remain one goal
 - **WHEN** an admitted goal combines travel, budget and health constraints
@@ -33,7 +33,7 @@ override governing policy or grant authority.
 
 ID: REQ-goal-orchestration-002
 Source: about/heart-and-soul/vision.md, Non-Negotiable Rules 5 and 6
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: Cross-domain focus inherits applicable policies
 - **WHEN** a child investigates a bounded question spanning multiple domains
@@ -54,7 +54,7 @@ under the same goal.
 
 ID: REQ-goal-orchestration-003
 Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 6; about/heart-and-soul/security.md, Goal and Delegation Authority
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: Child attempts a grandchild
 - **WHEN** a depth-1 child calls a delegation, routing, schedule-creation or admission tool, by name or through any capability, to start another reasoning session
@@ -74,7 +74,7 @@ private-source restrictions, or domain invariants.
 
 ID: REQ-goal-orchestration-004
 Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 3; RFC 0027, Governing Invariants 1, 3 and 6
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A discovered capability is unauthorized
 - **WHEN** a model knows a valid capability name but its invocation grant does not permit the requested operation or resource
@@ -92,7 +92,7 @@ and SHALL NOT widen authority or reset consumed limits.
 
 ID: REQ-goal-orchestration-005
 Source: about/heart-and-soul/architecture.md, One lead, focused children, depth one
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: Sequential children exhaust the goal budget
 - **WHEN** a lead requests another depth-1 child after exhausting its goal budget
@@ -111,7 +111,7 @@ receipts and SHALL NOT automatically replay effects whose outcomes are unknown.
 
 ID: REQ-goal-orchestration-006
 Source: about/heart-and-soul/architecture.md, The Core Loop; RFC 0027, Governing Invariant 7
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: Stop races a child effect
 - **WHEN** the owner stops a goal while a child's action is pending or may already have committed
@@ -129,7 +129,7 @@ retaining existing delivery, deduplication and owner-attention policies.
 
 ID: REQ-goal-orchestration-007
 Source: about/heart-and-soul/vision.md, What Success Looks Like; RFCs 0009, 0011 and 0026
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: An obligation becomes due with no conversation running
 - **WHEN** a standing authorized obligation becomes due after previous reasoning sessions have finished
@@ -146,7 +146,7 @@ tool-less model functions that RFC 0038 names, which receive no capabilities.
 
 ID: REQ-goal-orchestration-008
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2, D18 and Hard cutover
-Scope: proposed-v1
+Scope: v1-mandatory
 
 #### Scenario: A domain schedule needs reasoning
 - **WHEN** a domain's scheduled job requires model judgment
