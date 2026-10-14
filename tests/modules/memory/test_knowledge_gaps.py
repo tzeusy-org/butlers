@@ -1340,6 +1340,40 @@ async def test_inverse_closure_uses_only_the_runtime_roles_own_private_memory_sc
             and p["withheld_reason"] == "sensitivity"
             for p in projections
         )
+        # A fresh pair avoids the existing tenant-free live property uniqueness
+        # key; other-tenant remains metadata, not a new coexistence guarantee.
+        fresh_left, fresh_right = await _entity(own), await _entity(own)
+        original_answered_gap = await _gap(own, right, reverse)
+        for pool, entity, predicate in (
+            (own, fresh_left, forward),
+            (own, fresh_right, reverse),
+            (peer, fresh_right, reverse),
+        ):
+            await knowledge_gaps.record_gap(
+                pool,
+                entity_id=entity,
+                predicate=predicate,
+                question_summary="What narrative connection does Hana have with Mei?",
+                conversation_id=conv,
+                request_id=uuid.uuid4(),
+                channel="dashboard",
+            )
+        fresh_direct_gap = await _gap(own, fresh_left, forward)
+        fresh_inverse_gap = await _gap(own, fresh_right, reverse)
+        fresh_sentinel = await _gap(peer, fresh_right, reverse)
+        assert all(
+            gap["status"] == "open" and gap["answered_by_ref"] is None
+            for gap in (fresh_direct_gap, fresh_inverse_gap, fresh_sentinel)
+        )
+        assert (
+            await own.fetchval(
+                "SELECT count(*) FROM facts WHERE entity_id = ANY($1::uuid[])",
+                [fresh_left, fresh_right],
+            )
+            == 0
+        )
+        second_request = str(uuid.uuid4())
+        second_metadata = {"synthetic": "missing-table-source-kept"}
         # Missing-local-table control uses only this disposable own-schema fixture.
         # The normal migration login owns these fixture tables; runtime roles only
         # perform their authorized DML. No privilege/grant or peer access is added.
@@ -1349,12 +1383,96 @@ async def test_inverse_closure_uses_only_the_runtime_roles_own_private_memory_sc
                 "ALTER TABLE general.knowledge_gaps RENAME TO knowledge_gaps_offline"
             )
             try:
-                second = await _internal_edge(own, left, right, forward, tenant_id="other-tenant")
+                second = await _internal_edge(
+                    own,
+                    fresh_left,
+                    fresh_right,
+                    forward,
+                    tenant_id="other-tenant",
+                    request_id=second_request,
+                    metadata=second_metadata,
+                    source_butler=BUTLER,
+                    retention_class="archive",
+                )
                 assert (
                     await own.fetchval("SELECT validity FROM facts WHERE id=$1", second["id"])
                     == "active"
                 )
                 assert await _inverse(own, left, right, reverse) is not None
+                fresh_inverse = await _inverse(own, fresh_left, fresh_right, reverse)
+                assert fresh_inverse is not None
+                assert len({stored["id"], inverse["id"], second["id"], fresh_inverse["id"]}) == 4
+                # New acquired reads identify the actual committed rows, not the
+                # previous subcontrol's inverse or an already answered gap.
+                async with own.acquire() as conn:
+                    second_source = await conn.fetchrow(
+                        "SELECT * FROM facts WHERE id=$1", second["id"]
+                    )
+                    second_inverse = await conn.fetchrow(
+                        "SELECT * FROM facts WHERE id=$1", fresh_inverse["id"]
+                    )
+                    second_projections = await conn.fetch(
+                        "SELECT * FROM public.entity_graph_edges WHERE source_id = ANY($1::uuid[])",
+                        [second["id"], fresh_inverse["id"]],
+                    )
+                assert second_source["id"] == second["id"]
+                assert second_inverse["id"] == fresh_inverse["id"]
+                assert (
+                    second_source["entity_id"],
+                    second_source["object_entity_id"],
+                    second_source["predicate"],
+                    second_source["subject"],
+                    second_source["content"],
+                    second_source["validity"],
+                ) == (fresh_left, fresh_right, forward, "Mei", "Hana", "active")
+                assert (
+                    second_inverse["entity_id"],
+                    second_inverse["object_entity_id"],
+                    second_inverse["predicate"],
+                    second_inverse["subject"],
+                    second_inverse["content"],
+                    second_inverse["validity"],
+                ) == (fresh_right, fresh_left, reverse, "Hana", "Mei", "active")
+                assert (
+                    second_source["tenant_id"],
+                    second_source["request_id"],
+                    second_source["metadata"],
+                    second_source["source_butler"],
+                    second_source["retention_class"],
+                ) == ("other-tenant", second_request, second_metadata, BUTLER, "archive")
+                assert second_source["source_episode_id"] is not None
+                for column in (
+                    "tenant_id",
+                    "request_id",
+                    "metadata",
+                    "source_butler",
+                    "source_episode_id",
+                    "retention_class",
+                    "sensitivity",
+                    "content_authority",
+                    "authority_entity_id",
+                ):
+                    assert second_inverse[column] == second_source[column]
+                assert {p["source_id"] for p in second_projections} == {
+                    second["id"],
+                    fresh_inverse["id"],
+                }
+                assert len(second_projections) == 2
+                for projection in second_projections:
+                    expected = (
+                        (fresh_left, forward, fresh_right)
+                        if projection["source_id"] == second["id"]
+                        else (fresh_right, reverse, fresh_left)
+                    )
+                    assert (
+                        projection["source_schema"],
+                        projection["source_table"],
+                        projection["subject_entity_id"],
+                        projection["predicate"],
+                        projection["object_entity_id"],
+                        projection["sensitivity"],
+                        projection["withheld_reason"],
+                    ) == ("general", "facts", *expected, "normal", None)
             finally:
                 await fixture_conn.execute(
                     "ALTER TABLE general.knowledge_gaps_offline RENAME TO knowledge_gaps"
@@ -1363,6 +1481,10 @@ async def test_inverse_closure_uses_only_the_runtime_roles_own_private_memory_sc
             await fixture_conn.close()
         assert (await _gap(peer, right, reverse)) == sentinel
         assert (await _gap(own, right, reverse))["id"] == own_gap["id"]
+        assert (await _gap(own, right, reverse)) == original_answered_gap
+        assert (await _gap(own, fresh_left, forward)) == fresh_direct_gap
+        assert (await _gap(own, fresh_right, reverse)) == fresh_inverse_gap
+        assert (await _gap(peer, fresh_right, reverse)) == fresh_sentinel
     finally:
         await own.close()
         await peer.close()
