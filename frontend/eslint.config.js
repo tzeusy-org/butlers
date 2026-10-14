@@ -218,8 +218,8 @@ const HANDROLLED_OVERLAY_SELECTORS = [
 
 // bu-yykif: ban `animate-pulse` (Tailwind's shimmer/pulse loading utility).
 // The Motion Vocabulary in openspec/specs/dashboard-design-language/spec.md §
-// Motion Vocabulary explicitly forbids "skeleton-pulse" — only four named
-// animations exist program-wide, and this is not one of them. All ~55
+// Motion Vocabulary explicitly forbids "skeleton-pulse"; allowed state changes
+// and the exhaustive named exceptions do not include it. All ~55
 // pre-existing sites (loading skeletons, "live" status dots) were migrated to
 // static (non-animating) placeholders in the same change that adds this rule
 // (bu-qvnce.7 slice 5) — see components/ui/skeleton.tsx and the shared
@@ -227,6 +227,28 @@ const HANDROLLED_OVERLAY_SELECTORS = [
 // treatment. A background-refetch dim (as opposed to an initial-load
 // placeholder) should use FetchingDim (components/ui/fetching-dim.tsx)
 // instead of any pulse/shimmer animation.
+
+// The adopted Motion Vocabulary governs complete class tokens. Static template
+// chunks are checked only at known token boundaries: interpolation is not a
+// value-flow evaluator. Both raw and cooked text cover escaped static spellings.
+const MOTION_TOKEN = String.raw`(?:transition(?:-all)?|animate-bounce|transition-(?:fast|base|slow)|transition-\[(?:[^\]\s]*[, _])?(?:width|height|max-height|margin|padding|top|left|right|bottom|inset)(?:[, _][^\]\s]*)?\]|duration-\[(?!(?:150|200|250)ms\])(?:[+-]?(?:\d+(?:\.\d+)?|\.\d+))ms\])`
+const motionPattern = (start, end) => `${start}${MOTION_TOKEN}${end}`
+const MOTION_VOCABULARY_SELECTORS = [
+  {
+    selector: `Literal[value=/${motionPattern(String.raw`(?:^|[\s:!])`, String.raw`(?=$|[\s!])`)}/]`,
+    message: 'Motion Vocabulary: use allowed state-change properties and duration tiers; keep named exceptions scoped to their line.',
+  },
+  ...[
+    [':first-child[tail=true]', String.raw`(?:^|[\s:!])`, String.raw`(?=$|[\s!])`],
+    [':first-child[tail=false]', String.raw`(?:^|[\s:!])`, String.raw`(?=[\s!])`],
+    [':not(:first-child)[tail=true]', String.raw`[\s:!]`, String.raw`(?=$|[\s!])`],
+    [':not(:first-child)[tail=false]', String.raw`[\s:!]`, String.raw`(?=[\s!])`],
+  ].map(([boundary, start, end]) => ({
+    selector: `TemplateElement${boundary}:matches([value.raw=/${motionPattern(start, end)}/], [value.cooked=/${motionPattern(start, end)}/])`,
+    message: 'Motion Vocabulary: use allowed state-change properties and duration tiers; keep named exceptions scoped to their line.',
+  })),
+]
+
 const ANIMATE_PULSE_SELECTORS = [
   {
     selector: 'Literal[value=/\\banimate-pulse\\b/]',
@@ -2722,6 +2744,7 @@ export default defineConfig([
         ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
@@ -2748,6 +2771,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...TREND_CHART_GRAMMAR_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
@@ -2777,6 +2801,7 @@ export default defineConfig([
         ...HEX_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
@@ -2806,6 +2831,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
@@ -2830,6 +2856,7 @@ export default defineConfig([
         ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
         ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
@@ -2852,6 +2879,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
@@ -2882,6 +2910,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_CATEGORICAL_STATUS_SELECTORS,
@@ -2910,6 +2939,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...MOTION_VOCABULARY_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...BLUE_PURPLE_STATUS_SELECTORS,
@@ -2919,6 +2949,13 @@ export default defineConfig([
         ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
+    },
+  },
+  {
+    // ButlerMark owns private identity tokens; that exemption does not exempt motion.
+    files: ['src/components/ui/ButlerMark.tsx'],
+    rules: {
+      'no-restricted-syntax': ['error', ...ANIMATE_PULSE_SELECTORS, ...MOTION_VOCABULARY_SELECTORS],
     },
   },
   // ---------------------------------------------------------------------------
