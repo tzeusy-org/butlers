@@ -629,6 +629,7 @@ async def test_inverse_capture_serializes_in_both_database_lock_orders(
                     _BorrowedPool(pool, holder),
                     entity_id=right,
                     predicate=reverse,
+                    question_summary="What narrative connection does Hana have with Mei?",
                     conversation_id=conv,
                     request_id=uuid.uuid4(),
                     channel="dashboard",
@@ -645,6 +646,7 @@ async def test_inverse_capture_serializes_in_both_database_lock_orders(
                         _BorrowedPool(pool, waiter),
                         entity_id=right,
                         predicate=reverse,
+                        question_summary="What narrative connection does Hana have with Mei?",
                         conversation_id=conv,
                         request_id=uuid.uuid4(),
                         channel="dashboard",
@@ -1023,7 +1025,9 @@ async def test_temporal_inverse_replay_never_fabricates_an_answer_or_reactivates
     pool, owner, _ = await pool_factory()
     session_hook(pool)
     left, right = await _entity(pool), await _entity(pool)
-    forward, reverse = await _edge_predicates(pool, temporal=True)
+    # This predicate permits properties as well as timestamped events. A
+    # temporal-only registry entry would correctly reject the property control.
+    forward, reverse = await _edge_predicates(pool)
     at = datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
     first = await _internal_edge(
         pool, left, right, forward, sender=owner, valid_at=at, idempotency_key=f"{forward}:first"
@@ -1286,6 +1290,7 @@ async def test_inverse_closure_uses_only_the_runtime_roles_own_private_memory_sc
                 pool,
                 entity_id=right,
                 predicate=reverse,
+                question_summary="What narrative connection does Hana have with Mei?",
                 conversation_id=conv,
                 request_id=uuid.uuid4(),
                 channel="dashboard",
