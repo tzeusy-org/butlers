@@ -4,11 +4,13 @@ Butlers absorbs the recurring mental labor of one person's life through durable
 domain responsibilities, proactive work, and goal-directed assistance. One user.
 One instance. Full sovereignty over data, credentials, and model choices.
 
-The [proposed 2026-10-14 shape amendment](legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
+The [adopted 2026-10-14 shape amendment](legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
 separates domain ownership from reasoning agents: one generalist lead per goal,
 searchable capabilities, and optional focused children at maximum depth one.
-It is a reviewable target, not a claim that this execution model has shipped.
+It is the adopted design direction; this execution model has not shipped.
 The current implementation remains a fleet of domain and staffer daemons.
+The [target responsibility map](lay-and-land/target-reasoning.md) shows how
+lead reasoning and durable services fit together.
 
 ## The Five-Pillar Knowledge Architecture
 
@@ -53,10 +55,10 @@ them in this order — higher numbers defer to lower numbers, never the reverse:
 | 6 | **Roster config** | Live butler identity: `butler.toml`, `MANIFESTO.md`, `CLAUDE.md`, skills, API routes | `roster/{butler}/` |
 | 7 | **Code** | Runtime behaviour — executed source, migrations, tests | `src/`, `alembic/`, `tests/` |
 
-A proposed doctrine amendment is not an adopted higher-priority rule. During
-an architectural transition, the decision record identifies target intent and
-which current contracts remain binding. Neither a target diagram nor an ADDED
-proposal silently supersedes existing baseline requirements.
+The adopted generalist-lead direction governs successor design. Its decision
+record explicitly preserves current runtime contracts until their replacements
+are specified, implemented, and verified. Neither a target diagram nor an ADDED
+capability reservation silently supersedes existing baseline requirements.
 
 Precedence in practice:
 

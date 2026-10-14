@@ -25,6 +25,15 @@ schema per butler).
 **Triggers:** "add a new butler", "scaffold a butler", "create the finance/journal/travel
 butler", "register a butler with switchboard", "what files does a butler need".
 
+## Reasoning Roles Are Not Roster Entries
+
+This workflow creates durable daemon and capability owners. Under the adopted
+`about/heart-and-soul/vision.md`, a focused child is an ephemeral invocation,
+not a new butler, schema, or manifesto. A need for a dedicated task prompt alone
+does not justify scaffolding a butler. Lead hosting and any governing-identity
+amendment require the successor contract recorded in
+`about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md`.
+
 ## Prerequisites
 
 Before creating a butler, confirm:

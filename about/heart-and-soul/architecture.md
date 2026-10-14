@@ -1,15 +1,15 @@
 # Architecture Philosophy
 
-> **Proposed target doctrine (2026-10-14).** This branch drafts the owner-requested
-> generalist-lead direction; exact amendment adoption is pending. Existing runtime
-> contracts remain binding until explicitly superseded. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
+> **Adopted target doctrine (2026-10-14).** The owner adopted the generalist-lead
+> direction and depth-one focused delegation. Existing runtime contracts remain
+> binding until explicitly superseded through a verified cutover. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
 
 This document explains WHY the system is shaped the way it is. For implementation
 details, database schemas, and API contracts, see the [architecture docs](../../docs/architecture/index.md).
 
 ## Current Implementation and Transition
 
-The generalist-lead model in this document is proposed target doctrine. Existing daemon,
+The generalist-lead model in this document is adopted target doctrine. Existing daemon,
 registration, and routing contracts below describe the current execution
 baseline and remain binding during transition. Adoption of a direction alone
 must not widen any running session's tools, database access, or spawn authority.
@@ -384,7 +384,7 @@ insight delivery settings).
 
 ## The Core Loop
 
-The proposed goal loop is:
+The adopted target goal loop is:
 
 ```text
 admit event/obligation -> establish goal and authority -> reason and discover

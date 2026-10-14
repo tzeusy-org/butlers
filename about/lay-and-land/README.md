@@ -1,6 +1,6 @@
 # Lay of the Land -- Topology Maps
 
-The [generalist-lead amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md) proposes a depth-one
+The [generalist-lead amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md) adopts a depth-one
 reasoning hierarchy while preserving domain responsibilities. It records the
 target/current boundary and affected artifacts; current executable contracts
 and topology remain authoritative until explicitly superseded.
@@ -8,16 +8,20 @@ and topology remain authoritative until explicitly superseded.
 This directory answers **WHERE**: where components live, how they connect, what
 boundaries exist, and how the system is deployed.
 
-**These pages are snapshots, not contracts.** Required behavior lives in
+**Current topology pages are snapshots, not contracts.** Required behavior lives in
 `openspec/specs/`; inventories (butlers, modules, connectors, routes, ports)
 live in code and config, and these pages point at them rather than copying
 them. When a page and its source disagree, the source wins: fix the page in
 the same PR as the change that made it stale.
 
+The separately labeled [target reasoning map](target-reasoning.md) shows the
+adopted successor responsibilities without claiming they are deployed.
+
 ## Documents
 
 | Document | Question it answers |
 |---|---|
+| [target-reasoning.md](target-reasoning.md) | Where do lead reasoning, focused children, and durable domain responsibilities belong in the adopted target? |
 | [components.md](components.md) | What are the moving parts and what does each one own? |
 | [data-flow.md](data-flow.md) | How does data travel through the system end to end? |
 | [deployment.md](deployment.md) | How is the system deployed and what ports/services exist? |

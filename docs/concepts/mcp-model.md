@@ -1,5 +1,10 @@
 # MCP Model
 
+> **Current runtime contract.** The [adopted generalist-lead direction](../../about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
+> has not replaced the execution model described here. Cross-domain capability
+> grants and depth-one child admission require the explicit successor contract
+> and verified cutover.
+
 > **Purpose:** Explain how each butler exposes tools via MCP and how ephemeral LLM sessions interact with them.
 > **Audience:** Developers building modules, extending core tools, or understanding the runtime tool surface.
 > **Prerequisites:** [Butler Lifecycle](butler-lifecycle.md), [Trigger Flow](trigger-flow.md).

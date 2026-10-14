@@ -1,8 +1,8 @@
 # Vision
 
-> **Proposed target doctrine (2026-10-14).** This branch drafts the owner-requested
-> generalist-lead direction; exact amendment adoption is pending. Existing runtime
-> contracts remain binding until explicitly superseded. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
+> **Adopted target doctrine (2026-10-14).** The owner adopted the generalist-lead
+> direction and depth-one focused delegation. Existing runtime contracts remain
+> binding until explicitly superseded through a verified cutover. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
 
 ## What Butlers Is
 

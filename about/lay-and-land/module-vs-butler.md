@@ -1,5 +1,9 @@
 # Module vs Butler — A Common Confusion
 
+> **Current implementation.** The adopted [target reasoning map](target-reasoning.md)
+> separates durable domain ownership from ephemeral lead/child roles. This page
+> retains the running topology until the successor contract is implemented.
+
 **Butlers and modules are not the same thing.** This distinction matters when
 reading roster inventory, planning implementation work, or writing redesign
 briefs. Treating a module as if it were a butler produces incorrect dependency

@@ -1,5 +1,10 @@
 # Spawner
 
+> **Current runtime contract.** The [adopted generalist-lead direction](../../about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
+> has not replaced the execution model described here. Cross-domain capability
+> grants and depth-one child admission require the explicit successor contract
+> and verified cutover.
+
 > **Purpose:** Document the LLM CLI spawner that invokes ephemeral runtime instances for butler sessions.
 > **Audience:** Developers working on session dispatch, runtime adapters, or concurrency tuning.
 > **Prerequisites:** [Trigger Flow](../concepts/trigger-flow.md), [MCP Model](../concepts/mcp-model.md).

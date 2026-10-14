@@ -3,6 +3,12 @@
 **Status:** Accepted
 **Date:** 2026-03-25
 
+## Relationship to the Adopted Goal Architecture
+
+The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
+adopts a generalist lead with optional depth-one children as the successor
+direction. Current session isolation and spawn restrictions remain the security contract. Only a successor runtime-enforced lead grant may permit depth-one child admission; prompt instructions, routing and scheduled jobs cannot provide an indirect delegation bypass.
+
 ## Summary
 
 Butlers runs in Docker Compose with four named bridge networks (`db`, `backend`, `frontend`, `egress`). None of them is declared `internal: true`: Docker's isolation rules for multiple internal networks interfere with normal inter-container communication, so the application stack deliberately omits it (see the note above `networks:` in `docker-compose.yml`). Least-privilege connectivity is therefore a convention plus one firewall, not a topological guarantee: services join the `egress` network only when they call external APIs, and an iptables-based firewall scoped to the egress bridge blocks access to private subnets (LAN, Tailscale) except for explicitly allowed tailnet hosts. All host port bindings use `127.0.0.1` to prevent LAN exposure.

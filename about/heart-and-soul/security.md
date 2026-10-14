@@ -1,8 +1,8 @@
 # Security Model
 
-> **Proposed target doctrine (2026-10-14).** This branch drafts the owner-requested
-> generalist-lead direction; exact amendment adoption is pending. Existing runtime
-> contracts remain binding until explicitly superseded. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
+> **Adopted target doctrine (2026-10-14).** The owner adopted the generalist-lead
+> direction and depth-one focused delegation. Existing runtime contracts remain
+> binding until explicitly superseded through a verified cutover. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
 
 ## Trust Premise
 
@@ -42,7 +42,7 @@ from taking actions beyond their intended scope.
   and file metadata (Google Drive) may appear in LLM prompts when butlers
   process ingested events from these sources.
 - **Ephemeral LLM sessions.** Current sessions are scoped to their own
-  butler's MCP tools. The proposed lead and child model replaces fixed
+  butler's MCP tools. The adopted target lead and child model replaces fixed
   domain membership with explicit goal-bound grants only after the successor
   contract is implemented. Sessions remain partially trusted in either model;
   approval gates and execution checks constrain sensitive operations.

@@ -2,7 +2,7 @@
 
 Reserve a future capability for one accountable generalist lead to fulfill a
 whole goal across domain-owned capabilities with optional focused children.
-These proposed requirements do not supersede existing runtime contracts or
+These reserved target requirements do not supersede existing runtime contracts or
 authorize implementation before the successor contract is approved.
 
 ## ADDED Requirements
@@ -14,7 +14,7 @@ able to complete a goal without creating children; independent goals SHALL NOT
 be forced into one shared conversation or serialized solely by this rule.
 
 ID: REQ-goal-orchestration-001
-Source: about/heart-and-soul/vision.md, What Butlers Is; proposed 2026-10-14 doctrine amendment
+Source: about/heart-and-soul/vision.md, What Butlers Is; adopted 2026-10-14 doctrine amendment
 Scope: v1-reserved
 
 #### Scenario: Cross-domain constraints remain one goal

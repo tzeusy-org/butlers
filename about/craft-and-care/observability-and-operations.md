@@ -43,3 +43,19 @@ Add or update logs, metrics, traces, or status surfaces when a change touches:
 - RFC 0005 defines the observability architecture.
 - `AGENTS.md` captures repo-specific runtime and migration contracts discovered
   during implementation.
+
+
+## Evidence for the Goal Architecture Transition
+
+A successor implementing the [adopted goal architecture](../heart-and-soul/architecture.md)
+must make one goal reconstructable across its lead, children, retries and
+replacements. Record trusted lineage, governing policy versions, grant scope,
+admission decisions, aggregate work budgets, cancellation fences, and durable
+result/effect references without leaking private payloads into telemetry.
+
+Verification must distinguish an accepted request from a launched invocation,
+a child result from a completed goal, and cancellation from reversal of an
+already committed effect. Recovery evidence must establish single active lead
+ownership, preserved budgets and no unproven effect replay. Existing per-session
+logs alone do not establish these goal-level guarantees. Exact fields and state
+machines belong in the successor RFC and specs before implementation.

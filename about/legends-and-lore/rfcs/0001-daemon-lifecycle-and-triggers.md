@@ -3,6 +3,12 @@
 **Status:** Accepted
 **Date:** 2026-03-24
 
+## Relationship to the Adopted Goal Architecture
+
+The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
+adopts a generalist lead with optional depth-one children as the successor
+direction. Per-butler triggers and session lifecycle remain the current contract. Goal admission, child lineage, shared work budgets, cancellation and fenced lead recovery require an explicit successor lifecycle contract.
+
 ## Summary
 
 The ButlerDaemon is the central orchestrator for a single butler instance. It manages a 17-phase startup sequence, accepts triggers from two sources (external MCP calls and the internal scheduler), and dispatches them through a Spawner that enforces two-tier concurrency control. Every session carries a UUIDv7 request_id for end-to-end tracing. Spawner timeouts are session-scoped; longer recovery workflows may chain multiple sessions under a separate orchestrator-owned deadline. Graceful shutdown drains in-flight sessions before tearing down modules in reverse topological order.

@@ -3,7 +3,7 @@
 ## Context
 
 The [amendment](../../../about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
-and proposed architecture doctrine own the reasoning model. RFC 0027 owns the
+and adopted architecture doctrine own the reasoning model. RFC 0027 owns the
 current searchable per-butler presentation surface. These are different scopes.
 
 ## Decisions

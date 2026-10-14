@@ -1,14 +1,14 @@
-# Proposed doctrine amendment: generalist lead and focused delegation
+# Adopted doctrine amendment: generalist lead and focused delegation
 
-**Status:** Proposed; exact amendment adoption pending owner review.
+**Status:** Adopted by the owner on 2026-10-14; runtime transition not activated.
 **Date:** 2026-10-14
 **Baseline:** `3bde61199`
 **Tracking:** `bu-rn8frx`
-**Scope:** Project shape and proposed capability contract only.
+**Scope:** Project shape and reserved target capability contract only.
 
-## Decision presented
+## Decision
 
-Butlers should preserve durable domain responsibilities while allowing one
+Butlers will preserve durable domain responsibilities while allowing one
 generalist lead to handle a whole goal across domains. The lead can use
 searchable, authorized MCP capabilities directly and can delegate focused work
 to children with dedicated prompts. Maximum hierarchy depth is one: lead 0,
@@ -16,9 +16,10 @@ children 1. Children cannot delegate. Parallelism and sequential child rounds
 remain subject to finite goal budgets and runtime enforcement.
 
 The owner requested this direction on 2026-10-14 after reviewing research on
-tool discovery and agent architectures. That request authorizes preparing this
-shape delta. It is not recorded as adoption of the exact text, authorization to
-change runtime permissions, or approval to implement the proposed contract.
+tool discovery and agent architectures. After reviewing the draft and its
+interactive architecture brief, the owner adopted the direction and authorized
+all relevant project-shape changes. The receipt below identifies the reviewed
+revision. Runtime implementation and activation require the successor contract.
 
 The lead is a role per goal, not automatically the existing General butler or
 Switchboard staffer. Both have narrower current manifestos. Selecting the
@@ -28,7 +29,7 @@ hosting component and amending its identity belong to the successor design.
 
 Numbered doctrine rules keep their identifiers; existing citations do not move.
 
-| Location | Current text | Proposed replacement principle |
+| Location | Previous text | Adopted replacement principle |
 |---|---|---|
 | `vision.md`, What Butlers Is Not | "There is no single \"do everything\" agent. Domain specialization is fundamental." | Generalist reasoning is allowed; durable ownership and enforced permissions remain mandatory. |
 | `vision.md`, Rule 3 | "Inter-butler communication is MCP-only through the Switchboard." | Cross-domain capability access is MCP-only through the control plane; permitted access does not require another reasoning session. |
@@ -37,7 +38,7 @@ Numbered doctrine rules keep their identifiers; existing citations do not move.
 | `security.md`, Session Sandboxing | "A session cannot spawn other sessions." | Preserve that current guarantee; a future admitted lead can request depth-1 children through a new runtime-enforced contract. Children cannot spawn sessions. |
 
 The accompanying edits to `vision.md`, `architecture.md`, and `security.md`
-contain the complete proposed wording. Rule 5 additionally distinguishes
+contain the complete adopted wording. Rule 5 additionally distinguishes
 versioned role guidance from per-invocation task artifacts; Rule 7 removes
 mandatory domain classification from the target transport contract. Rules 1,
 2, and 4 and the named SQL exceptions retain their meaning.
@@ -47,7 +48,7 @@ mandatory domain classification from the target transport contract. Rules 1,
 - **[Observed]** The repository already accepts native deferred discovery in
   [RFC 0027](../rfcs/0027-runtime-tool-surface-discovery.md). It deliberately
   confines discovery to per-butler presentation and does not provide new
-  execution authority. This proposal extends reasoning organization, not the
+  execution authority. This amendment extends reasoning organization, not the
   assertion that search itself authorizes cross-domain access.
 - **[Observed]** Current provider interfaces support deferred tool loading;
   [OpenAI's tool-search documentation](https://developers.openai.com/api/docs/guides/tools-tool-search)
@@ -67,7 +68,7 @@ mandatory domain classification from the target transport contract. Rules 1,
   an exception to the constitution.
 - **[Unknown]** Butlers-specific comparative quality, latency, cost, useful
   proactive work, and owner correction rates have not been measured for the
-  proposed hierarchy. Falling inference prices do not settle the topology:
+  target hierarchy. Falling inference prices do not settle the topology:
   they benefit monitoring, generalists, and additional workers alike.
 
 ## Architectural boundaries
@@ -94,11 +95,11 @@ mandatory domain classification from the target transport contract. Rules 1,
 
 ## Transition and precedence
 
-All changes in this branch are proposed. The current mainline doctrine and
-executable contracts continue to govern deployed behavior. The proposed
+The target direction is adopted. Current executable contracts continue to
+govern deployed behavior under the transition boundary in that doctrine. The
 [goal-orchestration requirements](../../../openspec/changes/generalist-lead-focused-delegation/specs/goal-orchestration/spec.md)
 are an ADDED, reserved capability, not permission to replace existing
-requirements. Adoption of the shape alone will not authorize activation.
+requirements. Adoption of the shape alone does not authorize activation.
 
 Before implementation, a successor RFC and explicit MODIFIED deltas must
 reconcile the exact baseline contracts listed below, resolve the lead's host
@@ -110,38 +111,41 @@ no baseline spec is rewritten, and no deployed topology is relabeled as target.
 This preserves current restrictions during transition without requiring the
 new system to retain today's routing machinery after an explicit cutover.
 The [v1 scope](../../heart-and-soul/v1.md) remains the current release boundary;
-the proposed target does not silently add an implementation milestone to it.
+the adopted target does not silently add an implementation milestone to it.
 
 ## Downstream sweep and disposition
 
 | Artifacts | Impact and disposition |
 |---|---|
-| `about/README.md`, `heart-and-soul/{README,vision,architecture,security,v1}.md` | Updated in this draft: target vocabulary, depth bound, current/target precedence, and release boundary. |
-| `heart-and-soul/development.md`, `craft-and-care/*` | Retain manifesto-led scope, spec-before-code, independent review and verification; the new role brief does not bypass them. |
-| `legends-and-lore/README.md`, `lay-and-land/README.md` | Link this transition record. Existing RFCs and topology are explicitly current-contract material. |
-| RFCs `0001`, `0002`, `0003` | Successor lifecycle, exclusive MCP binding, registration, classification and route-dispatch contracts require explicit amendments before implementation. Existing contracts remain binding. |
-| RFCs `0005`, `0006`, `0008` | Preserve observability, schema ownership and security. Successor design must add parent/goal attribution, constrained caller authority and execution isolation without losing these guarantees. |
+| `about/README.md`, `heart-and-soul/{README,vision,architecture,security,v1}.md` | Adopted in this change: target vocabulary, depth bound, current/target precedence, and release boundary. |
+| `heart-and-soul/development.md`, `craft-and-care/*` | Preserve manifesto-led scope, spec-before-code, independent review and verification. Performance and operations standards now specify comparative whole-goal outcomes and goal-level enforcement evidence. |
+| `legends-and-lore/README.md`, `lay-and-land/README.md` | Link adoption and the target responsibility map. Existing RFCs and current topology remain current-contract material. |
+| RFCs `0001`, `0002`, `0003` | Successor lifecycle, exclusive MCP binding, registration, classification and route-dispatch contracts require explicit amendments before implementation. Existing contracts remain binding; each RFC now links the adoption boundary and names its successor obligation. |
+| RFCs `0005`, `0006`, `0008` | Preserve observability, schema ownership and security. Successor design must add parent/goal attribution, constrained caller authority and execution isolation without losing these guarantees; RFC 0008 explicitly retains current restrictions. |
 | RFCs `0009`, `0011`, `0026` | Preserve context, proactive delivery and commitment ownership across reasoning-session changes; no new unsolicited-delivery permission. |
 | RFCs `0010`, `0014`, `0020`, `0030`, `0031` | Preserve narrowly scoped read/projection and retrospective responsibilities; cross-domain planning is no general SQL or memory-write exception. |
 | RFCs `0012`, `0021`, `0024`, `0028`, `0033`, `0037` | Preserve financial truth, approval/decision authority, correspondence custody, physical-actuation rules, spend accounting and private-source boundaries. |
-| RFCs `0004`, `0007`, `0015`, `0017`, `0019`, `0027`, `0036` | Identity, dashboard, QA, routing safety, parked proactivity, tool presentation and runtime-fit contracts remain authoritative; no implicit capability, routing or policy activation. |
+| RFCs `0004`, `0007`, `0015`, `0017`, `0019`, `0027`, `0036` | Identity, dashboard, QA, routing safety, parked proactivity, tool presentation and runtime-fit contracts remain authoritative; no implicit capability, routing or policy activation. RFC 0027 explicitly distinguishes its presentation scope from successor grants. |
 | `openspec/specs/{butler-base-spec,core-spawner,core-daemon,core-sessions,core-modules,butler-switchboard,cross-butler-delegation,staffer-archetype}/spec.md` | Record successor amendment need. Existing ledger-backed cross-butler delegation is not a depth-bounded child runtime. Own-butler MCP binding remains mandatory today. |
 | `openspec/specs/{core-scheduler,core-notify,core-state,core-telemetry,core-credentials,core-fleet-events}/spec.md` | Preserve durable triggers/state, outbound ownership, attribution and credential rules; add goal-level semantics through explicit future deltas. |
 | `openspec/specs/butler-*/spec.md`, `roster/*/MANIFESTO.md` | Preserve domain responsibility and restrictions. The lead is not an automatic expansion of General or Switchboard. Role-specific amendments depend on host selection. |
 | `openspec/changes/add-runtime-tool-surface-discovery/` | Keep its per-butler catalog and presentation-only contract; no cross-domain authority inferred. |
 | `openspec/changes/define-dashboard-fast-answer-runtime/` | Separate unapproved proposal, with narrow Concierge reads and domain routing. Not precedent or a prerequisite assumed complete. |
 | `openspec/changes/consolidate-platform-family/` | Proposed capability-home consolidation; resolve actual homes at future implementation time rather than assuming moves have landed. |
-| `lay-and-land/{components,data-flow,integration,module-vs-butler,deployment,dependencies,frontend}.md` | Retain current snapshots. The directory entry point links this target; rewrite actual topology only with the implementation that changes it. |
-| `docs/concepts/{mcp-model,switchboard-routing}.md`, `docs/runtime/spawner.md`, root `CLAUDE.md` | Retain current operational guidance; project overview receives a target pointer, not new runtime permission. |
-| Local `doctrine` navigator | Add amendment status and current-rule scope; existing seven-rule summary remains labeled current until adoption. |
-| Local `adding-butlers-to-roster`, `butler-tool-review`, `butler-relentless-jarvis-pursuit` skills | Existing daemon scaffolding, admission and manifesto alignment remain current workflows. Focused invocations do not create roster entries through these workflows; their future execution workflow depends on the successor contract. |
+| `lay-and-land/{components,data-flow,integration,module-vs-butler,deployment,dependencies,frontend}.md` | Retain current snapshots. The directory entry point and core maps link `target-reasoning.md`; it shows adopted logical responsibility without inventing deployed components. Rewrite actual topology only with implementation. |
+| `docs/concepts/{mcp-model,switchboard-routing}.md`, `docs/runtime/spawner.md`, root `CLAUDE.md` | Retain current operational guidance; each entry point links the adopted direction and explicitly preserves current execution restrictions. |
+| Local `doctrine` navigator | Record adoption and link the canonical seven rules instead of copying a stale summary; preserve current runtime restrictions until successor cutover. |
+| Local `adding-butlers-to-roster`, `butler-tool-review`, `butler-relentless-jarvis-pursuit` skills | Entry points now distinguish durable daemon scaffolding, actual registered/searchable/loaded surfaces, and target reasoning ideation. Focused invocations do not create roster entries; actual permissions and manifesto alignment remain binding. |
 
 The sweep covered doctrine, RFCs, baseline specs, active changes, topology,
 manifestos, operational entry points and local skills using specialist-routing,
 MCP-only, exclusive-tool, schema-ownership and session-spawning references.
 It found no accepted runtime-child contract that already enforces this model.
-The outstanding successor design is tracked by `bu-rn8frx`; it is not released
-implementation work.
+The shape/adoption change is tracked by `bu-rn8frx`. The remaining successor
+RFC, explicit baseline deltas and release/cutover design are tracked by
+`bu-7p9ll5`, dependent on the shape change. This is design work, not released
+runtime implementation. No artifact in the sweep is silently treated as
+superseded; preserved contracts and deferred amendments have explicit homes.
 
 ## Review and adoption record
 
@@ -158,10 +162,21 @@ current runtime restrictions remain until explicit successor cutover, rather
 than suggesting doctrine adoption alone ends them. The separate read-only
 impact investigation supplied the downstream inventory above.
 
-Adoption must name the reviewed revision. Until then, this record remains
-proposed; there is no owner adoption receipt or runtime activation evidence.
+The owner reviewed draft PR #4509 at
+`fbe008d2af3bb40762a1c58dd753d5fbbd9d20b0` and the accompanying architecture
+Site. On 2026-10-14 the owner instructed: "Looks good. Let's proceed with
+implementing all relevant project-shape changes". This adopts the reviewed
+direction and authorizes its cross-pillar shape sweep. It does not claim that
+the runtime is implemented, select a lead host, or admit it into v1.
 
-## Verification receipt
+The adoption sweep records this status in doctrine, navigators, and the reserved
+OpenSpec change; identifies current-contract scope at the affected RFC entry
+points; adds a target responsibility map beside the current topology; and makes
+outcome-based evaluation and goal-level operational evidence explicit in the
+engineering standards. Numbered doctrine rules and existing runtime requirements
+retain their identities.
+
+## Draft verification receipt (reviewed revision)
 
 - `git diff --check`: passed.
 - Relative Markdown link check: all 84 links in changed/new documents resolve.
@@ -184,3 +199,25 @@ proposed; there is no owner adoption receipt or runtime activation evidence.
   No runtime code or tests changed. No Python test-body or live-stack result is
   claimed; repository static gates and document validation are the relevant
   local checks for this draft. Hosted checks, when available, remain separate.
+
+
+## Adoption verification receipt (2026-10-14)
+
+- Independent fresh-context coherence, adversarial and cross-pillar review:
+  **ACCEPT**. One stale proposed-status paragraph was corrected and rechecked;
+  no remaining blocking findings. The review included the target topology,
+  RFC scope notes, engineering criteria, operational docs and local skills.
+- `make check-guards`: passed, including all 269 strict OpenSpec items.
+- Targeted strict OpenSpec validation and `git diff --check`: passed.
+- Relative Markdown prose links: 187 checked, zero missing; example links in
+  inline code are templates rather than file references.
+- Mechanical audits of the three changed development skills: all passed with
+  zero errors and warnings. Shape scan retained five valid pillar navigators
+  and `SHAPE_LEVEL=SHAPED`; the existing maturity/traceability gap remains.
+- Global external spec-trace check: still 305 errors and 2,499 warnings, the
+  same totals as the reviewed draft. The baseline debt and new-capability
+  Purpose-heading incompatibility described above remain unresolved; this is
+  not a clean global traceability claim.
+- The test planner escalated on documentation/unknown paths. No executable
+  code or tests changed, so no Python test bodies or live runtime evaluation
+  were run. Hosted CI must verify the pushed revision separately.

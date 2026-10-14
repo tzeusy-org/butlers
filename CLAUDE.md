@@ -42,7 +42,7 @@ before using `--delete-branch`.
 
 ## Project Overview
 
-The current implementation below remains binding. The proposed
+The current implementation below remains binding. The adopted
 [generalist-lead shape amendment](about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
 separates durable domains from a lead plus focused depth-1 children; it does
 not authorize broader tools, cross-domain execution, or child creation today.

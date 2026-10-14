@@ -18,6 +18,12 @@ The amendment is reversible and authorizes contract and Beads updates only. It
 does not authorize implementation, dependency upgrades, merge, provider
 evaluation, policy activation, deployment, or live canary execution.
 
+## Relationship to the Adopted Goal Architecture
+
+The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
+adopts a generalist lead with optional depth-one children as the successor
+direction. This RFC remains a presentation contract for the per-butler tool corpus. It does not authorize cross-domain execution or child creation. The successor must specify and enforce those grants separately from discovery.
+
 ## Summary
 
 This RFC makes runtime-native Tool Search and deferred schema loading the

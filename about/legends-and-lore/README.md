@@ -1,6 +1,6 @@
 # Legends and Lore -- Design Contracts
 
-The [generalist-lead amendment](decisions/2026-10-14-doctrine-focused-delegation.md) proposes a depth-one
+The [generalist-lead amendment](decisions/2026-10-14-doctrine-focused-delegation.md) adopts a depth-one
 reasoning hierarchy while preserving domain responsibilities. It records the
 target/current boundary and affected artifacts; current executable contracts
 and topology remain authoritative until explicitly superseded.

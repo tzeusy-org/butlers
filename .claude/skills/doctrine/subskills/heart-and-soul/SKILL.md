@@ -37,22 +37,16 @@ Consult `about/heart-and-soul/README.md` for the canonical reading order and usa
 
 ## Architectural Transition
 
-The 2026-10-14 generalist-lead amendment is a proposed target, not an execution
-permission. Read `about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md`
-for adoption status, the depth-one model, and current-contract preservation.
-Do not infer a permission change from draft doctrine or tool discovery.
+The owner adopted the generalist-lead and depth-one focused-delegation direction
+on 2026-10-14. Read `about/heart-and-soul/vision.md` for the seven governing rules;
+read `about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md`
+for the adoption receipt, downstream dispositions, and transition boundary.
 
-## Current Runtime Rules (until explicit successor cutover)
-
-These are the load-bearing constraints. Violating any of them means the change does not ship.
-
-1. **User-federated**: one user, one instance, full sovereignty. No multi-tenancy.
-2. **Modules only add tools**: they never touch core infrastructure.
-3. **Inter-butler communication is MCP-only through the Switchboard**: no shared memory, no direct calls, no schema cross-access.
-4. **Daemon is deterministic infrastructure; intelligence is in ephemeral LLM sessions**: no reasoning in the daemon.
-5. **Git-based config is the source of truth for butler identity**: personality, schedule, modules, manifesto live in `roster/`.
-6. **Each butler has a manifesto that governs its scope and personality**: features must align with the manifesto.
-7. **Transport is connector responsibility; butlers never know about transport details**: connectors normalize, butlers receive structured requests.
+The target governs successor design. Current own-butler MCP binding, routing,
+session-spawn restrictions, and roster identities remain binding until their
+explicit successor contracts and verified cutover. Tool discovery and a task
+prompt do not confer authority. Do not create a roster entry for each focused
+child or treat General/Switchboard as the lead host without the successor design.
 
 ## Do Not Use This Skill For
 

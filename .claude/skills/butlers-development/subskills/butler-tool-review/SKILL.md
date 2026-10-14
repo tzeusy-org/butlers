@@ -14,6 +14,15 @@ metadata:
 
 Comprehensive audit of the MCP tool surface across all butlers. Produces a structured report covering tool inventory, docstring quality, error message quality, and group configuration.
 
+## Target Architecture Boundary
+
+Read `about/heart-and-soul/architecture.md` for the adopted generalist-lead
+shape. This audit still evaluates actual per-butler registration and execution
+permissions. Report registered, searchable, and initially loaded tools
+separately; a tool count is not an outcome or a permanent catalog limit.
+Search does not authorize cross-domain use. Durable capability ownership and
+manifesto alignment remain binding when reasoning roles change.
+
 ## Support files
 
 - [references/tool-budget.md](references/tool-budget.md) — core registration gates and group-review guidance. Load in Phase 1 (inventory) and Phase 6 (group config review); derive counts from live/configured behavior.

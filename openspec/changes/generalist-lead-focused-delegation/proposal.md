@@ -1,7 +1,8 @@
 # Generalist lead with focused depth-one delegation
 
-**Status:** Proposed shape contract; not approved for implementation or activation.
-**Tracking:** `bu-rn8frx`
+**Status:** Owner-adopted project shape and capability reservation (2026-10-14);
+not an implementation-ready contract or runtime activation.
+**Tracking:** `bu-rn8frx` (shape adoption); `bu-7p9ll5` (successor design).
 
 ## Why
 
@@ -32,7 +33,7 @@ records evidence, tradeoffs, current guarantees and downstream impacts.
 
 ### Modified Capabilities
 
-None in this shape proposal. It cannot be implemented or archived as a substitute
+None in this shape reservation. It cannot be implemented or archived as a substitute
 for modifying conflicting baseline requirements. Follow-on design must amend
 `butler-base-spec`, `core-spawner`, `core-daemon`, `core-sessions`, `core-modules`,
 `butler-switchboard`, `cross-butler-delegation` and any chosen host role contract.
@@ -40,7 +41,7 @@ The decision record inventories further affected artifacts and active changes.
 
 ## Impact
 
-This change contains documentation and proposed scenarios only. It does not
+This change contains documentation and reserved target scenarios only. It does not
 select the hosting daemon, alter a roster manifesto, widen live tool access,
 introduce generic invocation tools, require a provider change, or ship code mode.
 The current v1 scope is preserved; `v1-reserved` records a design reservation,

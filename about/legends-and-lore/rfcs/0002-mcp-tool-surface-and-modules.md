@@ -3,6 +3,12 @@
 **Status:** Accepted
 **Date:** 2026-03-24
 
+## Relationship to the Adopted Goal Architecture
+
+The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
+adopts a generalist lead with optional depth-one children as the successor
+direction. Own-butler MCP binding and tool registration remain the current contract. Cross-domain discovery or invocation requires explicit caller grants and a successor binding contract; a larger searchable catalog alone grants no authority.
+
 ## Summary
 
 Every butler is a long-running FastMCP HTTP server whose tool surface is assembled from two layers: daemon-owned core tools selected by group/type/name gates plus direct infrastructure registrations, and module tools opted into per butler. The canonical MCP transport is streamable HTTP at `/mcp`; legacy clients retain SSE compatibility at `/sse` plus `/messages`. Modules implement the `Module` abstract base class and are resolved in topological dependency order. Core and module registrations use different wrappers with explicit ownership of spans, module-state gating, logging, and session-attributed tool-call capture. Ephemeral LLM sessions connect exclusively to their own butler's canonical MCP endpoint via generated runtime configuration.

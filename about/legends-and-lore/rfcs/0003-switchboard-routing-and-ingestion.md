@@ -3,6 +3,12 @@
 **Status:** Accepted
 **Date:** 2026-03-24
 
+## Relationship to the Adopted Goal Architecture
+
+The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
+adopts a generalist lead with optional depth-one children as the successor
+direction. Classification and route dispatch remain the current contract. The target lead retains the whole goal and may call domain capabilities without another reasoning session, but existing routing envelopes and dispatch authority are not changed here.
+
 ## Summary
 
 The Switchboard butler is the single ingress point for all external events and direct
