@@ -90,7 +90,7 @@ the cutover release:
   `csv-extraction-skill`, `butler-general`, `butler-health`, `butler-home`,
   `module-home-assistant`, `butler-lifestyle`, `butler-messenger`,
   `butler-relationship`, `relationship-facts`, `butler-secrets`,
-  `butler-travel`, `module-calendar`, `module-memory`,
+  `butler-travel`, `module-calendar`, `module-telegram`, `module-memory`,
   `memory-discovery-catalog`, `memory-retention-policy`, `event-chains`,
   `seasonal-awareness`, `deadline-tracking`, `commitment-lifecycle`,
   `autonomy-tracker`, `autonomy-suggestions`,

@@ -23,9 +23,9 @@ Scope: v1-mandatory
 - **AND** no credential value appears in the invocation's tool results, sandbox environment, or session host
 
 ### Requirement: Approval-Gated Delivery
-Sensitive channel sends SHALL remain approval-gated before execution. A send or reply whose recipients do not all resolve uniquely to the live owner SHALL execute only under per-event owner approval or a matching standing rule the owner created, and no goal origin, grant, exposure state, lead, or child SHALL bypass this. A send requested by an exposed invocation to anyone other than the owner SHALL require per-event owner approval unless the matching standing rule pins the message body to a template.
+Sensitive channel sends SHALL remain approval-gated before execution. A send or reply whose recipients do not all resolve uniquely to the live owner SHALL execute only under per-event owner approval or a matching standing rule the owner created, and no goal origin, grant, exposure state, lead, or child SHALL bypass this. A send requested by an exposed invocation to anyone other than the owner SHALL require per-event owner approval unless the matching standing rule pins the message body to a template. Messenger's service-plane delivery endpoint (today `route.execute` on Messenger) SHALL apply the same non-owner rule to every delivery that Switchboard `deliver()` hands it, including deliveries from deterministic service-plane senders.
 
-Source: RFC 0038 D4 and D6; RFC 0021
+Source: RFC 0038 D4, D6 and D7; RFC 0021
 Scope: v1-mandatory
 
 #### Scenario: Gated channel tools
@@ -40,3 +40,7 @@ Scope: v1-mandatory
 #### Scenario: An exposed goal matches a free-text standing rule
 - **WHEN** an exposed invocation requests a send to a non-owner recipient that matches a standing rule whose body is not template-pinned
 - **THEN** the send is parked for per-event owner approval instead of executing under the rule
+
+#### Scenario: A deterministic sender gets no bypass
+- **WHEN** a scheduled job, with no goal, asks Switchboard `deliver()` for a message to a recipient who does not resolve uniquely to the owner and no owner-created standing rule matches
+- **THEN** Messenger's delivery gate parks the delivery for per-event owner approval and sends nothing until the owner approves

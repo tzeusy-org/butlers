@@ -417,6 +417,97 @@ Scope: v1-mandatory
 - **THEN** none of the owner-decision tools is listed or callable
 - **AND** a parked action stays pending until the owner decides through the dashboard or a signed Telegram callback
 
+### Requirement: Defense-in-Depth at the Delivery Layer
+
+The approval gate operates at two layers. Both MUST enforce gating independently.
+
+**Layer 1 - MCP tool wrapping** (gate.py): Intercepts gated tool calls at the MCP
+boundary before the tool handler runs. This is the primary gate for direct tool
+invocations.
+
+**Layer 2 (inline delivery gate)** (`core_tools/_notifications.py` and
+`core_tools/_routing.py`): Outbound delivery paths call module methods directly
+(e.g., `_send_email()`, `_send_message()`), bypassing MCP tool wrappers entirely.
+An inline approval gate MUST re-enforce role-based gating at this layer for every
+outbound channel. `notify()` (`_notifications.py`) enforces the gate on all channels:
+the email channel via `check_email_recipient` and every non-email channel via the
+channel-general `check_recipient` guard. Messenger `route.execute` synchronous
+delivery (`_routing.py`) likewise gates email via `check_email_recipient` and
+Telegram, WhatsApp, and future non-email channels via `check_recipient`.
+
+Both layers MUST apply one channel-uniform owner predicate: the normalized
+candidate identifier set must resolve through active literal facts to exactly
+one live, non-merged, non-deleted entity with the `owner` role. Primary and
+secondary identifiers are equivalent for outbound authorization. External,
+unknown, ambiguous, inactive, merged, deleted, malformed, and lookup-error
+identifiers MUST NOT receive the owner bypass.
+
+That synchronous delivery is Messenger's service-plane delivery endpoint (today
+`route.execute` on Messenger), which survives the deletion of `route.execute`'s
+session-dispatch role and is called only by Switchboard `deliver()`. For goal
+invocations the broker's non-owner communication rule
+(`REQ-capability-authorization-016`) applies before either layer, and neither
+layer SHALL rely on it. Layer 2 SHALL gate every envelope it processes whoever
+sent it, including deterministic service-plane senders. A reaction SHALL skip
+the inline gate only when the chat it reaches resolves uniquely to the owner; a
+reaction into any other chat is non-owner communication and SHALL be gated like
+a send.
+
+Source: RFC 0038 D4 and D7; `REQ-capability-authorization-016`
+Scope: v1-mandatory
+
+#### Scenario: route.execute enforces approval gate for email delivery
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="email"`
+- **THEN** it MUST resolve the normalized email candidate set through active literal `relationship.entity_facts`
+- **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
+- **AND** otherwise it MUST check standing approval rules
+- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if the target is an owner, delivery proceeds without rule check
+
+#### Scenario: route.execute enforces approval gate for telegram delivery
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="telegram"` and `intent` of `"send"` or `"reply"`
+- **THEN** it MUST resolve the normalized Telegram candidate set through active literal `relationship.entity_facts`
+- **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
+- **AND** otherwise it MUST check standing approval rules
+- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if the target is an owner, delivery proceeds without rule check
+
+#### Scenario: route.execute enforces approval gate for WhatsApp delivery
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="whatsapp"` and `intent` of `"send"` or `"reply"`
+- **THEN** it MUST resolve the normalized WhatsApp candidate set through active literal `relationship.entity_facts`
+- **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
+- **AND** otherwise it MUST check standing approval rules
+- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if the target is an owner, delivery proceeds without rule check
+
+#### Scenario: route.execute skips gate for emoji reactions
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="telegram"` and `intent="react"` whose chat resolves uniquely to the owner
+- **THEN** the inline approval gate is NOT applied (reactions in the owner's own chat are low-risk, non-content operations)
+
+#### Scenario: A reaction into a non-owner chat is gated
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `intent="react"` whose chat does not resolve uniquely to the owner
+- **THEN** it MUST follow the standing-rule or pending-approval path exactly as a send
+- **AND** no reaction is posted until the owner approves or an owner-created standing rule matches
+
+#### Scenario: A deterministic sender receives no bypass at the delivery layer
+
+- **WHEN** a deterministic service-plane sender asks Switchboard `deliver()` to deliver a `notify.v1` envelope whose target does not resolve uniquely to the owner
+- **THEN** the inline gate MUST apply the standing-rule or pending-approval path
+- **AND** the sender's identity grants no bypass
+
+#### Scenario: All channels have parity
+
+- **WHEN** a new outbound channel is added to the Messenger butler
+- **THEN** the `route.execute` handler MUST include an inline approval gate using the same unique-active-live-owner predicate as email, Telegram, and WhatsApp
+- **AND** it MUST treat primary and secondary owner identifiers equivalently
+- **AND** it MUST fail closed for every unsafe association category defined above
+- **AND** the absence of an inline gate for any outbound channel is a spec violation
+
 ### Requirement: Post-Approval Tracker Hook
 
 After a pending action is manually approved by a human actor (status transitions from `pending` to `approved`), the approvals module MUST invoke the autonomy tracker to record the approval and check for promotion threshold crossings, unless the action's goal lineage records that the requesting invocation was exposed. The approval of an exposed action SHALL NOT be recorded toward promotion.

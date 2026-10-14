@@ -108,6 +108,51 @@ Scope: v1-mandatory
 - **THEN** the notification MUST be parked for per-event owner approval
 - **AND** the rule's `use_count` is unchanged
 
+### Requirement: Messenger route.execute Approval Gate (Defense-in-Depth)
+The Messenger's `route.execute` handler calls channel module methods directly (`_send_email()`, `_send_message()`, `_reply_to_message()`), bypassing MCP tool wrappers. Because the MCP-level approval gate is not in this code path, `route.execute` MUST independently re-enforce role-based approval gating before invoking any outbound channel adapter.
+
+This requirement exists because the delivery architecture has two layers: `notify()` MCP tool → Switchboard `deliver()` → Messenger `route.execute` → direct module call. If only the first layer gates, any bypass of the MCP tool layer (e.g., direct `route.execute` invocation) would allow ungated delivery.
+
+This handler is Messenger's service-plane delivery endpoint (today `route.execute` on Messenger). It survives the deletion of `route.execute`'s session-dispatch role as a deterministic endpoint that SHALL NOT be LLM-presentable, SHALL NOT be served on the session listener, and SHALL be called only by Switchboard `deliver()`. Its gate SHALL apply the same non-owner rule to every envelope it processes, whoever sent it, including deterministic service-plane senders: a delivery whose target does not resolve uniquely to the owner SHALL proceed only with per-event owner approval or under an owner-created standing rule.
+
+Source: RFC 0038 D4 and D7; `REQ-capability-authorization-016`
+Scope: v1-mandatory
+
+#### Scenario: Messenger route.execute blocks non-owner email without rule
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope with `channel="email"`
+- **AND** the email target resolves to a non-owner contact (or is unknown)
+- **AND** no standing approval rule matches `email_send_message` or `email_reply_to_thread` for that target
+- **THEN** delivery MUST be blocked and a descriptive error returned
+
+#### Scenario: Messenger route.execute blocks non-owner telegram without rule
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope with `channel="telegram"` and `intent` in `("send", "reply")`
+- **AND** the telegram target resolves to a non-owner contact (or is unknown)
+- **AND** no standing approval rule matches `telegram_send_message` or `telegram_reply_to_message` for that target
+- **THEN** delivery MUST be blocked and a descriptive error returned
+
+#### Scenario: Messenger route.execute permits owner delivery without rule
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope
+- **AND** the exact target resolves through an active literal identifier to one distinct live contact with the `owner` role
+- **THEN** delivery proceeds immediately without checking standing rules
+- **AND** the identifier's `primary` value does not affect the authorization decision
+
+#### Scenario: Messenger route.execute refuses unsafe owner association
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope
+- **AND** the channel identifier is external, unknown, ambiguous across entities, inactive, attached to a merged or deleted entity, malformed, or fails lookup
+- **THEN** the target MUST NOT receive the owner bypass
+- **AND** delivery MUST follow the standing-rule or pending-approval path
+
+#### Scenario: A deterministic sender receives no bypass
+- **WHEN** a deterministic service-plane sender, such as a scheduled job, asks Switchboard `deliver()` to send a `notify.v1` envelope to a target that does not resolve uniquely to the owner
+- **AND** no owner-created standing rule matches
+- **THEN** delivery MUST be blocked and follow the pending-approval path
+- **AND** nothing is sent until the owner approves
+
+#### Scenario: The delivery endpoint is not model-reachable
+- **WHEN** a goal invocation lists its capabilities or calls Messenger's service-plane delivery endpoint by name
+- **THEN** the endpoint is neither listed nor callable
+- **AND** the invocation can reach a channel only through a granted `communicate` capability such as `notify`
+
 ### Requirement: Runtime Session Correlation for notify() Ledger Rows
 
 Every `public.attention_ledger` row written at the `notify()` boundary with `source="notify"` SHALL carry the invocation lineage of the goal invocation that made the call (the `goal_id`, `invocation_id` and `depth` of the call's verified broker assertion) under the matching keys of the row's `metadata`, when the call carries goal lineage.
