@@ -98,6 +98,16 @@ does not ship.
    two named carve-outs do not create a general class of on-demand
    exceptions.
 
+   Deterministic channel identity resolution reads only `public.entities`
+   and the source-owned, derived public identity-channel projection defined
+   by RFC 0004 Amendment 4. Relationship remains the sole canonical owner
+   of channel facts and maintains that projection in the same transaction
+   as its fact writes. This grants no access to Relationship's private
+   schema, no second canonical fact store, and no general-purpose SQL or
+   policy-write authority. Projection grants, failure behavior and cutover
+   follow that amendment; the two named private-schema exceptions above
+   remain unchanged.
+
 4. **The daemon is deterministic infrastructure; intelligence is in ephemeral LLM
    sessions.** The daemon manages state, runs migrations, enforces schedules, and
    registers tools. It must be testable, debuggable, and predictable. The LLM
