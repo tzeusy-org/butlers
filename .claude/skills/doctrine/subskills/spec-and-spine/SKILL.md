@@ -69,7 +69,7 @@ rg -n "<keyword>|^### Requirement:|^#### Scenario:" openspec/changes
 1. Identify the capability domain from the task language and touched codepaths.
 2. Read the canonical spec in `openspec/specs/` before touching code.
 3. Check `openspec/changes/` for an active delta spec affecting the same domain.
-4. If a delta exists, read its `proposal.md`, `design.md`, and `tasks.md` alongside the changed spec.
+4. If a delta exists, read its `proposal.md` and `tasks.md` alongside the changed spec, plus `design.md` when present or required. Follow `about/heart-and-soul/development.md`: a single-butler change needs a design only if it alters a cross-butler contract, a schema shared across butlers, or a security boundary. A missing required design is a gap to resolve before implementation; an eligible omitted design does not waive spec approval, review or verification.
 5. Extract the exact requirements and scenarios that bind the work.
 6. Map those scenarios to tests, review expectations, and code changes.
 
@@ -112,7 +112,7 @@ Use the OpenSpec workflow commands (installed and kept current by the `openspec`
 `.claude/commands/opsx/`) for the next step:
 
 - `/opsx:explore`: clarify a new capability before writing the change
-- `/opsx:new`: create a new change with proposal, design, tasks, and delta specs
+- `/opsx:new`: create a new change with proposal, delta specs and tasks; use the project-local `single-butler` schema when eligible to omit design, or `spec-driven` when design is required or chosen
 - `/opsx:continue`: continue an in-progress change
 - `/opsx:ff`: fast-forward all artifacts needed to start implementing
 - `/opsx:apply`: implement an approved change

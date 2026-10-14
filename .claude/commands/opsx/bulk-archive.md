@@ -30,6 +30,13 @@ This skill allows you to batch-archive changes, handling spec conflicts intellig
 
 3. **Batch validation - gather status for all selected changes**
 
+   For each change, recheck the design requirement in
+   `about/heart-and-soul/development.md`. Only an eligible single-butler change
+   can omit design. Cross-butler contract, shared-across-butlers schema or
+   security boundary changes require it; unresolved missing required designs
+   must be completed before archive. Keep existing designs and all normal
+   implementation/sync/verification evidence, regardless of chosen schema.
+
    For each selected change, collect:
 
    a. **Artifact status** - Run `openspec status --change "<name>" --json`

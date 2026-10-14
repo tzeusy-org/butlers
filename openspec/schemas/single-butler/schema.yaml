@@ -1,0 +1,62 @@
+name: single-butler
+version: 1
+description: Eligible single-butler workflow - proposal → specs → tasks; design optional
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Motivation, capability changes and single-butler eligibility
+    template: proposal.md
+    instruction: |
+      Read about/heart-and-soul/development.md before using this workflow.
+      It is only for a single-butler change that alters no cross-butler
+      contract, schema shared across butlers, or security boundary. Record
+      evidence for all three exclusions in Workflow Eligibility. If any
+      applies, use spec-driven and include design.md before implementation.
+
+      Explain Why, What Changes, Capabilities and Impact. Each new or modified
+      capability needs a corresponding delta spec using its exact capability
+      path. For a pure refactor/tooling/docs change with no behavior change,
+      retain the existing explicit skip_specs rule; do not invent a requirement.
+      Keep implementation choices with their owning tasks, or in an optional
+      design when useful. Read existing designs; do not delete them.
+    requires: []
+  - id: specs
+    generates: "specs/**/*.md"
+    description: Full behavior contracts and WHEN/THEN scenarios
+    template: spec.md
+    instruction: |
+      Write one delta per capability declared in the proposal, preserving its
+      exact capability path. Follow the repository spec-and-spine format and
+      traceability guidance and standard ADDED/MODIFIED/REMOVED/RENAMED blocks.
+      Use SHALL/MUST requirements and #### Scenario
+      headings with WHEN/THEN outcomes. Every requirement needs a scenario.
+      MODIFIED replaces the whole requirement: carry every existing scenario
+      name and clause that remains. REMOVED requires Reason and Migration;
+      do not erase unrelated behavior. Include Purpose for a new capability.
+      Follow the existing Source References rule in openspec/config.yaml.
+      Missing design does not relax spec sign-off, source references or review.
+    requires: [proposal]
+  - id: tasks
+    generates: tasks.md
+    description: Countable implementation and verification checklist
+    template: tasks.md
+    instruction: |
+      Recheck the proposal's single-butler eligibility against the real scope.
+      If a cross-butler contract, shared-across-butlers schema or security
+      boundary changes, switch to spec-driven and complete design.md first.
+      Read proposal, delta specs and any existing or voluntarily added design.
+      Resolve questions that affect behavior or the task breakdown before
+      implementation. Use numbered groups and - [ ] X.Y tasks. Include the
+      actual verification scope and approval gates; optional design never
+      weakens evidence, review, test, security or implementation authority.
+    requires: [specs]
+apply:
+  requires: [proposal, specs, tasks]
+  tracks: tasks.md
+  instruction: |
+    Recheck single-butler eligibility and read proposal, specs, tasks and any
+    existing design.md even if it is absent from contextFiles. A change to a
+    cross-butler contract, shared-across-butlers schema or security boundary
+    requires the spec-driven workflow and a design before implementation.
+    Artifact readiness is not owner/spec approval or executing completion.
+    Work only within approved scope and keep normal review/verification gates.

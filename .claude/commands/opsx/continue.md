@@ -36,6 +36,13 @@ Continue working on a change by creating the next artifact.
 
 3. **Act based on status**:
 
+   Recheck `about/heart-and-soul/development.md` against the change's actual
+   scope. The `single-butler` schema permits proposal → specs → tasks without
+   design only when no cross-butler contract, shared-across-butlers schema or
+   security boundary changes. Otherwise use `spec-driven` and create the
+   required design. Read any existing design regardless of schema; preserve
+   all spec, approval, review and verification gates.
+
    ---
 
    **If all artifacts are complete (`isComplete: true`)**:
@@ -93,19 +100,24 @@ The artifact types and their purpose depend on the schema. Use the `instruction`
 
 Common artifact patterns:
 
-**spec-driven schema** (proposal → specs → design → tasks):
+**spec-driven schema** (proposal → specs → design → tasks; design required or chosen):
 - **proposal.md**: Ask user about the change if not clear. Fill in Why, What Changes, Capabilities, Impact.
   - The Capabilities section is critical - each capability listed will need a spec file.
 - **specs/<capability>/spec.md**: Create one spec per capability listed in the proposal's Capabilities section (use the capability name, not the change name).
 - **design.md**: Document technical decisions, architecture, and implementation approach.
 - **tasks.md**: Break down implementation into checkboxed tasks.
 
+**single-butler schema** (proposal → specs → tasks; eligible design omission):
+- Record evidence for all three boundary exclusions in the proposal.
+- Preserve the same full delta requirement/scenario and task/verification standards.
+- A voluntary or preexisting `design.md` still supplies context and must be read.
+
 For other schemas, follow the `instruction` field from the CLI output.
 
 **Guardrails**
 - Create ONE artifact per invocation
 - Always read dependency artifacts before creating a new one
-- Never skip artifacts or create out of order
+- Never skip required artifacts or create out of order; eligible design omission uses the `single-butler` schema, not a placeholder design or a bypass of another required artifact
 - If context is unclear, ask the user before creating
 - Verify the artifact file exists after writing before marking progress
 - Use the schema's artifact sequence, don't assume specific artifact names
