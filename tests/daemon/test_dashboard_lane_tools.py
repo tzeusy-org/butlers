@@ -1557,3 +1557,102 @@ async def test_question_lane_tools_refuse_non_dashboard_sessions(
     mock_route.assert_not_awaited()
     fake_capture.assert_not_awaited()
     assert sensitive_question not in captured.err
+
+
+async def test_system_answer_pending_session_defers_repeated_publication(monkeypatch):
+    from butlers.core_tools._dashboard_system_answer import persist_system_answer
+
+    pool = MagicMock()
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    monkeypatch.setattr(
+        "butlers.core.dashboard_turns.dispatch_status",
+        AsyncMock(return_value=_turn_result("active")),
+    )
+    monkeypatch.setattr(
+        "butlers.core.dashboard_turns.mark_terminal",
+        AsyncMock(return_value=_turn_result("pending")),
+    )
+    reply = AsyncMock(return_value={"id": "reply"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", reply)
+    for _ in range(2):
+        outcome = await persist_system_answer(
+            pool,
+            dashboard_context={"conversation_id": "c1c1c1c1-0000-7000-8000-000000000001"},
+            message_id=UUID("d1d1d1d1-0000-7000-8000-000000000001"),
+            request_id=UUID("019c8812-fb0f-77f3-88b9-5763c1336b27"),
+            answer="A sourced answer awaiting durable session settlement.",
+            evidence={
+                "data": {
+                    "source": {
+                        "ref": "concierge.v_fleet_spend",
+                        "as_of": "2026-10-14T00:00:00+00:00",
+                    }
+                }
+            },
+        )
+        assert outcome == "pending"
+        # Deferring must undo this attempt's completed intent, not settle a live session.
+        assert conn.transaction.return_value.__aexit__.await_args.args[0] is not None
+    reply.assert_not_awaited()
+
+
+@pytest.mark.parametrize("declarations_available", [True, False])
+async def test_system_read_uses_daemon_plugin_validator(
+    tmp_path, monkeypatch, declarations_available
+):
+    from types import SimpleNamespace
+
+    from butlers.core_tools import _dashboard_system_answer as system
+    from butlers.modules.dashboard_read import tools as provider
+    from butlers.tools.switchboard.dead_letter import capture
+
+    patches = _patch_infra()
+    evidence = {
+        "source": {
+            "kind": "view",
+            "ref": "concierge.v_fleet_spend",
+            "as_of": "2026-10-14T00:00:00+00:00",
+        }
+    }
+    route = AsyncMock(return_value={"result": evidence})
+    monkeypatch.setattr(
+        system, "check_permission", AsyncMock(return_value=SimpleNamespace(allowed=True))
+    )
+    daemon, tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path), patches, mock_route=route
+    )
+    declaration = MagicMock(wraps=provider.register_tools)
+    if not declarations_available:
+        declaration.side_effect = RuntimeError("provider declarations unavailable")
+    monkeypatch.setattr(provider, "register_tools", declaration)
+    validator = MagicMock(wraps=daemon._validate_dashboard_read_arguments)
+    monkeypatch.setattr(daemon, "_validate_dashboard_read_arguments", validator)
+    reply = AsyncMock(return_value={"id": "decline"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", reply)
+    monkeypatch.setattr(
+        capture,
+        "capture_to_dead_letter",
+        AsyncMock(return_value="unavailable"),
+    )
+    _set_dashboard_routing_context()
+    try:
+        result = await tools["answer_question"](
+            scope="system",
+            question="Fleet cost?",
+            system_tool="dashboard_read_spend_daily",
+            system_args={"days": 2},
+        )
+    finally:
+        _clear_routing_context()
+    validator.assert_called_once_with("dashboard_read_spend_daily", {"days": 2})
+    declaration.assert_called_once()
+    if declarations_available:
+        assert result["answered"] is True and result["data"] == evidence
+        route.assert_awaited_once()
+        reply.assert_not_awaited()
+    else:
+        assert result["answered"] is False
+        assert "declarations unavailable" in reply.await_args.kwargs["message"]
+        route.assert_not_awaited()

@@ -1059,6 +1059,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 tool_name=system_tool,
                 tool_args=system_args,
                 decline=_dashboard_cannot_answer,
+                validate_read_arguments=ctx.daemon._validate_dashboard_read_arguments,
             )
 
         if not isinstance(target, str) or not target.strip():

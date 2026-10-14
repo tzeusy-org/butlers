@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, get_type_hints
+from typing import Any
 from uuid import UUID
-
-from pydantic import TypeAdapter
 
 from butlers.core.permissions import CROSS_BUTLER_PERMISSION, check_permission
 
@@ -44,6 +42,14 @@ _SOURCE_REFS = frozenset(
 _READ_TIMEOUT_S = 15.0
 
 
+class _PendingPublication(Exception):
+    """Roll back this publication attempt while durable sessions remain live."""
+
+    def __init__(self, *, cancelled: bool):
+        self.cancelled = cancelled
+        super().__init__()
+
+
 def _valid_source(source: Any) -> bool:
     if (
         not isinstance(source, dict)
@@ -70,6 +76,7 @@ async def read_system_answer(
     tool_name: str | None,
     tool_args: dict[str, Any] | None,
     decline: Any,
+    validate_read_arguments: Callable[[str, dict[str, Any]], None],
 ) -> dict[str, Any]:
     """Fetch one allowlisted read and return evidence to the classification LLM."""
     from butlers.core.dashboard_turns import dispatch_status
@@ -89,29 +96,13 @@ async def read_system_answer(
 
     if tool_name not in _READ_TOOLS or (tool_args is not None and not isinstance(tool_args, dict)):
         return await unavailable("No supported Concierge read tool and arguments were selected.")
-    # Validate against the real provider signatures, not a second argument schema.
-    # Tool registration only captures closures; no query or daemon is started.
-    from butlers.modules.dashboard_read.tools import register_tools
-
-    handlers: dict[str, Any] = {}
-
-    class ReadRegistry:
-        def tool(self):
-            def capture(fn):
-                handlers[fn.__name__] = fn
-                return fn
-
-            return capture
-
     try:
-        register_tools(ReadRegistry(), None)
-        handler = handlers[tool_name]
-        bound = inspect.signature(handler).bind(**(tool_args or {}))
-        hints = get_type_hints(handler)
-        for name, value in bound.arguments.items():
-            TypeAdapter(hints[name]).validate_python(value, strict=True)
+        validate_read_arguments(tool_name, tool_args or {})
     except (TypeError, ValueError, KeyError):
         return await unavailable("The selected Concierge read arguments are invalid or incomplete.")
+    except Exception:
+        logger.warning("Concierge dashboard read declarations unavailable")
+        return await unavailable("Concierge read declarations unavailable; no answer was inferred.")
 
     try:
         permission = await check_permission(pool, source_butler, CROSS_BUTLER_PERMISSION)
@@ -228,9 +219,14 @@ async def persist_system_answer(
                     return "refused"
                 # This function locks the control row until the reply commits.
                 control = await mark_terminal(conn, message_id=message_id, state="completed")
+                if control.outcome == "pending":
+                    # Session completion may have failed after the classifier
+                    # returned. Undo our pending completed intent: it must not
+                    # settle that live session later without a committed reply.
+                    raise _PendingPublication(cancelled=control.cancellation_requested)
                 if control.cancellation_requested:
                     return "cancelled"
-                if control.outcome not in {"finished", "pending"}:
+                if control.outcome != "finished":
                     raise RuntimeError("Dashboard terminal transition unavailable")
             source = evidence["data"]["source"]
             normalization = normalize_citations([f"{source['ref']} (as of {source['as_of']})"])
@@ -245,6 +241,8 @@ async def persist_system_answer(
             if reply is None:
                 raise RuntimeError("Dashboard conversation unavailable")
         return "completed"
+    except _PendingPublication as pending:
+        return "cancelled" if pending.cancelled else "pending"
     except Exception:
         logger.warning("Concierge dashboard answer persistence unavailable")
         return "error"
