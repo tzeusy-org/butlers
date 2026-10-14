@@ -10,7 +10,9 @@ Verifies that:
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.api.session_presentation import derive_session_summary
+from butlers.core.logging import _butler_context
 from butlers.core_tools._routing import _build_route_runtime_context, _wrap_routed_message
 from butlers.daemon import ButlerDaemon
 from butlers.routing_guidance import (
@@ -26,6 +29,27 @@ from butlers.routing_guidance import (
 from butlers.routing_guidance import _wrap_routed_message as _wrap_recovery_routed_message
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _restore_daemon_logging() -> Iterator[None]:
+    """Keep logging installed by mocked daemon startup within its owning test."""
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_filters = list(root.filters)
+    saved_level = root.level
+    context_token = _butler_context.set(_butler_context.get())
+    try:
+        yield
+    finally:
+        for handler in list(root.handlers):
+            if handler not in saved_handlers:
+                root.removeHandler(handler)
+                handler.close()
+        root.handlers[:] = saved_handlers
+        root.filters[:] = saved_filters
+        root.setLevel(saved_level)
+        _butler_context.reset(context_token)
 
 
 @pytest.fixture(autouse=True)
