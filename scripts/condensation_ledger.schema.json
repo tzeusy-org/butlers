@@ -562,6 +562,8 @@
               "exit",
               "selection",
               "command_flags",
+              "test_selectors",
+              "execution_order",
               "measurement_root",
               "artifact",
               "coverage_artifact"

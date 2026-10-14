@@ -825,6 +825,81 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
                 raise EvidenceError("same-owner-ancestral-fixture-change")
 
 
+def changed_module_context(path: str, before: str, current: str) -> bool:
+    """Compare retained-module declarations and execution context, never infer purity.
+
+    Old test bodies keep their existing assertion/structure checks. Removed test
+    declarations alone retain ordinary condensation admission. Every other
+    declaration, class member, import and retained/new owner order is context.
+    Entirely new modules and arbitrary cross-module interference are outside
+    this source scan; absence of a loss is not a Python isolation certificate.
+    """
+    if before == current:
+        return False
+    old, new = test_shapes(path, before), test_shapes(path, current)
+    if not old.keys() & new.keys():
+        return False
+
+    def context(source, original):
+        class Context(ast.NodeTransformer):
+            def __init__(self):
+                self.parents = []
+
+            def visit_ClassDef(self, node):
+                self.parents.append(node.name)
+                self.generic_visit(node)
+                self.parents.pop()
+                return node
+
+            def visit_FunctionDef(self, node):
+                if not node.name.startswith("test_"):
+                    return node
+                owner = "::".join([path, *self.parents, node.name])
+                if original and owner not in new:
+                    return None
+                node.body = [ast.Pass()]
+                return node
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+        return ast.dump(Context().visit(ast.parse(source)), include_attributes=False)
+
+    return context(before, True) != context(current, False)
+
+
+def proof_selectors(root: Path, base: str, selections: dict[str, list[str]]) -> dict:
+    """Independently derive full-module selectors for affected retained owners.
+
+    Source-defined populations are mandatory on each side. Pytest subsequently
+    collects each actual module and proves the complete real population/order;
+    dynamic or inherited items absent from these owners cannot silently pass.
+    """
+    paths = sorted({n.split("::", 1)[0] for rows in selections.values() for n in rows})
+    old_paths = set(tracked_paths(root, base))
+    modules = set()
+    for path in paths:
+        if path not in old_paths or not (root / path).is_file():
+            continue
+        old_source = git(root, "show", f"{base}:{path}")
+        new_source = (root / path).read_text()
+        if not changed_module_context(path, old_source, new_source):
+            continue
+        modules.add(path)
+        for side, source in (("removed", old_source), ("survivors", new_source)):
+            expected = set(test_shapes(path, source))
+            actual = {n for n in selections[side] if n.split("::", 1)[0] == path}
+            if actual != expected:
+                raise EvidenceError("module-context-needs-complete-owner-population")
+    return {
+        side: list(
+            dict.fromkeys(
+                n.split("::", 1)[0] if n.split("::", 1)[0] in modules else n for n in owners
+            )
+        )
+        for side, owners in selections.items()
+    }
+
+
 def destructive_changes(root: Path, base: str) -> dict[str, str]:
     base = git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base):
@@ -838,6 +913,7 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
     before = {}
     current = {}
     imports_preserved = {}
+    context_changed = {}
     for path in paths:
         if not test_path(path):
             continue
@@ -852,6 +928,7 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
                 raise EvidenceError("indirect-test-source")
             new_source = f.read_text()
             imports_preserved[path] = preserving_import_bindings(old_source, new_source)
+            context_changed[path] = changed_module_context(path, old_source, new_source)
             shapes = test_shapes(path, new_source)
             mode = input_record(root, path)["mode"]
             for shape in shapes.values():
@@ -886,13 +963,15 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
             losses[key] = "import-context-loss"
         elif old["markers"] != new["markers"]:
             losses[key] = "marker-context-change"
-        elif not contains_ordered(old["context"], new["context"]):
+        elif context_changed[key.split("::", 1)[0]]:
             losses[key] = "fixture-helper-or-marker-context-loss"
-    for path in paths:
+    for path in sorted(set(paths) | set(tracked_paths(root))):
         if PurePosixPath(path).name != "conftest.py":
             continue
-        old_context = ast.dump(
-            ast.parse(git(root, "show", f"{base}:{path}")), include_attributes=False
+        old_context = (
+            ast.dump(ast.parse(git(root, "show", f"{base}:{path}")), include_attributes=False)
+            if path in paths
+            else None
         )
         target = root / path
         if target.is_symlink():
@@ -1079,6 +1158,10 @@ def executable_proof(
         integer(row["index"])
     if proof["mutation"]["batches"] != expected_batches:
         raise EvidenceError("incomplete-or-changed-mutation-batches")
+    if root is None:
+        expected_selectors = binding["selection"]
+    else:
+        expected_selectors = proof_selectors(root, binding["base"], binding["selection"])
     baselines = {}
     expected_flags = [
         "-n",
@@ -1107,6 +1190,10 @@ def executable_proof(
         ):
             raise EvidenceError("changed-tool-scope-or-command")
         side = run["side"]
+        if run["test_selectors"] != expected_selectors.get(side):
+            raise EvidenceError("changed-module-context-selectors")
+        if run["execution_order"] != [case["key"] for case in run["cases"]]:
+            raise EvidenceError("collection-execution-order-mismatch")
         if side not in {"removed", "survivors"} or run["selection"] != binding["selection"][side]:
             raise EvidenceError("changed-selection")
         if any(not HEX.fullmatch(r["key"]) for r in run["cases"]):
@@ -1198,6 +1285,8 @@ def executable_proof(
             if run["scope_inputs"] != expected or restored["scope_inputs"] != scope_records[side]:
                 raise EvidenceError("mutant-source-or-restoration-binding")
             population = {(r["key"], r["node"]) for r in baseline["cases"]}
+            if run["execution_order"] != baseline["execution_order"]:
+                raise EvidenceError("mutation-case-order-change")
             if {(r["key"], r["node"]) for r in run["cases"]} != population or restored[
                 "cases"
             ] != baseline["cases"]:
@@ -1475,6 +1564,8 @@ def verify_ledger(
                 "exit",
                 "selection",
                 "command_flags",
+                "test_selectors",
+                "execution_order",
                 "measurement_root",
                 "scope",
                 "scope_inputs",
