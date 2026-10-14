@@ -40,6 +40,12 @@ def register_cost_claim_tools(ctx: ToolContext, mcp: Any, _core_tool: Any) -> No
         evidence_kind: str | None = None,
         evidence_ref: str | None = None,
     ) -> dict[str, Any]:
+        """Assert a money claim this butler expects Finance to reconcile.
+
+        Projects a receivable, payable, shared expense, committed cost, or expected
+        refund from this butler's own records onto the shared cost-claim ledger.
+        An identical retry returns the existing live claim instead of a duplicate.
+        """
         if ctx.pool is None:
             raise RuntimeError("Database pool is not available")
         return await cost_claims.assert_claim(
@@ -75,6 +81,11 @@ def register_cost_claim_tools(ctx: ToolContext, mcp: Any, _core_tool: Any) -> No
         evidence_kind: str | None = None,
         evidence_ref: str | None = None,
     ) -> dict[str, Any]:
+        """Supersede one of this butler's live cost claims with corrected values.
+
+        The successor claim restarts Finance reconciliation; the prior claim is
+        kept as superseded history.
+        """
         if ctx.pool is None:
             raise RuntimeError("Database pool is not available")
         return await cost_claims.amend_claim(
@@ -98,12 +109,20 @@ def register_cost_claim_tools(ctx: ToolContext, mcp: Any, _core_tool: Any) -> No
 
     @_core_tool("cost_claims")
     async def cost_claim_retract(claim_id: str, reason: str) -> dict[str, Any]:
+        """Retract one of this butler's live cost claims, with a required reason.
+
+        Finance's last verdict on the claim is kept, not deleted.
+        """
         if ctx.pool is None:
             raise RuntimeError("Database pool is not available")
         return await cost_claims.retract_claim(ctx.pool, uuid.UUID(claim_id), reason)
 
     @_core_tool("cost_claims")
     async def cost_claim_list_mine() -> list[dict[str, Any]]:
+        """List the cost claims this butler asserted, newest first.
+
+        Each row carries Finance's current resolution state, if any.
+        """
         if ctx.pool is None:
             raise RuntimeError("Database pool is not available")
         return await cost_claims.list_claims(ctx.pool, asserted_by=ctx.butler_name)
@@ -118,6 +137,12 @@ def register_cost_claim_tools(ctx: ToolContext, mcp: Any, _core_tool: Any) -> No
         unmatched_reason: str | None = None,
         unverifiable_reason: str | None = None,
     ) -> dict[str, Any]:
+        """Record Finance's reconciliation verdict on a cost claim (Finance only).
+
+        ``state`` is one of unreconciled, matched, ambiguous, partially_settled,
+        settled, unverifiable, disputed, or written_off; ``unverifiable`` requires
+        ``unverifiable_reason``. Any non-Finance caller is rejected.
+        """
         if ctx.pool is None:
             raise RuntimeError("Database pool is not available")
         return await cost_claims.resolve_claim(

@@ -547,14 +547,20 @@ async def test_manual_reissue_waits_for_recovery_then_returns_one_successor(
         ) as deliver_mock:
             cycle = await _worker(
                 delivery_repo,
-                build_messenger_transport(pool, resolve_recipient=_recipient),
+                build_messenger_transport(
+                    pool,
+                    resolve_recipient=_recipient,
+                    dashboard_base_url="https://dashboard.example/butlers-dev/",
+                ),
             ).run_once()
 
         assert cycle.delivered == 1
         notify_request = deliver_mock.await_args.kwargs["notify_request"]
+        # The door is anchored at the dashboard origin so a chat client can open it.
         assert notify_request["delivery"]["message"] == (
             "Runtime attention: model_breaker_open. Open "
-            f"/settings/models?highlight={original['source_snapshot']['catalog_entry_id']} "
+            "https://dashboard.example/butlers-dev/settings/models"
+            f"?highlight={original['source_snapshot']['catalog_entry_id']} "
             "to review."
         )
         assert (await _row(pool, episode_id))["lifecycle_state"] == "uncertain"
