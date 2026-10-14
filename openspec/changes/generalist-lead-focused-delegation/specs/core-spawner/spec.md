@@ -15,7 +15,8 @@ Scope: v1-mandatory
 - **THEN** the ClaudeCodeAdapter locates the `claude` binary on PATH via `shutil.which("claude")` and invokes it as an async subprocess with the flags `-p`, `--output-format stream-json`, `--bare`, `--no-session-persistence` and `--strict-mcp-config`, adding `--permission-mode bypassPermissions` only for an engineering executor and never for a goal invocation
 - **AND** it passes the system prompt via `--system-prompt <prompt>`, the MCP config file via `--mcp-config <path>` (the file written by `build_config_file()`), the model via `--model <model>` when specified, additional CLI arguments from `runtime_args` after the fixed flags, and the user prompt as the final positional argument
 - **AND** it parses `stream-json` JSON-line events from stdout for result text, tool calls, and token usage
-- **AND** it captures stderr to a per-invocation log for a goal invocation and, for an engineering executor, to the per-butler log file at `{log_root}/butlers/{butler_name}_cc_stderr.log`, and populates `last_process_info` with subprocess metadata (pid, exit_code, command, stderr)
+- **AND** it captures stderr to a per-invocation log for a goal invocation and, for an engineering executor, to the per-butler log file at `{log_root}/butlers/{butler_name}_cc_stderr.log`
+- **AND** populates `last_process_info` with subprocess metadata (pid, exit_code, command, stderr)
 
 #### Scenario: Goal invocation disables runtime built-in tools
 - **WHEN** an adapter launches a goal invocation
