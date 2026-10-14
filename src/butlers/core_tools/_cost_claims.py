@@ -44,7 +44,8 @@ def register_cost_claim_tools(ctx: ToolContext, mcp: Any, _core_tool: Any) -> No
 
         Projects a receivable, payable, shared expense, committed cost, or expected
         refund from this butler's own records onto the shared cost-claim ledger.
-        An identical retry returns the existing live claim instead of a duplicate.
+        Re-asserting a ``claim_key`` returns the live claim when the values match,
+        and supersedes it with the new values when they differ.
         """
         if ctx.pool is None:
             raise RuntimeError("Database pool is not available")
@@ -140,8 +141,9 @@ def register_cost_claim_tools(ctx: ToolContext, mcp: Any, _core_tool: Any) -> No
         """Record Finance's reconciliation verdict on a cost claim (Finance only).
 
         ``state`` is one of unreconciled, matched, ambiguous, partially_settled,
-        settled, unverifiable, disputed, or written_off; ``unverifiable`` requires
-        ``unverifiable_reason``. Any non-Finance caller is rejected.
+        settled, unverifiable, disputed, or written_off. ``unverifiable_reason`` is
+        required with ``unverifiable`` and rejected with any other state. Any
+        non-Finance caller is rejected.
         """
         if ctx.pool is None:
             raise RuntimeError("Database pool is not available")
