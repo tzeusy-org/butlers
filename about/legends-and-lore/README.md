@@ -64,6 +64,7 @@ column is a one-word summary of it.
 ## Related
 
 - [ideas-ledger.md](ideas-ledger.md) — parked ideas from the JARVIS pursuit dossiers, each with why it was parked and its unpark condition.
+- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover.
 
 ## Conventions
 

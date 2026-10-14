@@ -1,7 +1,8 @@
 # Generalist lead, focused delegation and capability authorization
 
 **Status:** Owner-adopted direction (2026-10-14); successor contract proposed in
-RFC 0038, awaiting owner design and release signoff.
+RFC 0038 with owner decisions 1, 2, 3, 6 and 7 answered; full design signoff
+pending.
 **Tracking:** `bu-rn8frx` (doctrine); `bu-7p9ll5` (successor contract).
 
 ## Why
@@ -20,15 +21,17 @@ is the design.
 ## What Changes
 
 - Every reasoning session becomes a lead or depth-1 child invocation of an
-  admitted goal. Switchboard hosts admission, the goal ledger, the goal runner
-  and the capability broker. Message classification and route dispatch are
-  removed.
+  admitted goal. Switchboard, moved into its own process, hosts admission, the
+  goal ledger, the goal runner and the capability broker. Message
+  classification and route dispatch are removed. Engineering executors and
+  tool-less model functions are the only named model use outside goals.
 - Domain butlers stop spawning sessions. Scheduled prompts become obligation
   admissions with capability sets declared in git.
-- Sessions run sandboxed, reach only the broker, and hold grants derived from
-  the goal's origin. Exposure to third-party content gates consequential
-  effects. Domains verify a broker-signed assertion before any model-reachable
-  handler runs.
+- Sessions run sandboxed on a separate session host, reach only the broker,
+  and hold grants derived from the goal's origin and cause. Exposure to
+  third-party content, including through tainted stored records, gates
+  consequential effects. Domains verify a single-use, audience-bound,
+  broker-signed assertion before any model-reachable handler runs.
 - Budgets, effect ledger, approvals, Stop and fenced recovery are goal-level.
 - Hard cutover: dark build on main, cutover gate in dev, one switching release,
   rollback by redeploying the previous release.
@@ -41,17 +44,19 @@ is the design.
   children, finite budgets, honest outcomes, durable domain care, and goals as
   the only path to a reasoning session.
 - `capability-authorization`: sandboxed sessions, catalog metadata, origin
-  ceilings, grant checks, delegation attenuation, exposure gating, domain-side
-  assertion verification, effect ledger, exact-approval execution, Stop fencing
-  and goal audit.
+  ceilings, grant checks, delegation attenuation, exposure and taint, domain-side
+  assertion verification, revocable tokens, effect ledger, exact-approval
+  execution, Stop fencing, goal audit, bounded caused admissions and
+  unreachable owner decisions.
 
 ### Modified Capabilities
 
 Deltas to `butler-base-spec`, `core-spawner`, `core-daemon`, `core-sessions`,
 `core-modules`, `butler-switchboard`, `cross-butler-delegation`,
-`staffer-archetype`, `core-scheduler` and `core-credentials` are authored with
-the implementation plan (tasks 1.3) and applied by the cutover release. RFC
-0038 lists the superseded contracts.
+`staffer-archetype`, `core-scheduler`, `core-credentials`, `core-notify` and the
+approvals capability are authored after RFC 0038 signoff (tasks 1.4) and applied
+by the cutover release. RFC 0038 gives every RFC from 0001 to 0037 a
+disposition.
 
 ## Impact
 

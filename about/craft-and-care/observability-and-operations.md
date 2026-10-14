@@ -44,7 +44,6 @@ Add or update logs, metrics, traces, or status surfaces when a change touches:
 - `AGENTS.md` captures repo-specific runtime and migration contracts discovered
   during implementation.
 
-
 ## Goal-Level Evidence
 
 The [goal runtime](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)

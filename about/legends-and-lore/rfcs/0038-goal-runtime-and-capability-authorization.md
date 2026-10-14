@@ -1,12 +1,13 @@
 # RFC 0038: Goal Runtime and Capability Authorization
 
 **Status:** Proposed (2026-10-14). Successor contract for the adopted
-[generalist-lead doctrine](../decisions/2026-10-14-doctrine-focused-delegation.md);
-owner design and release signoff pending.
+[generalist-lead doctrine](../decisions/2026-10-14-doctrine-focused-delegation.md).
+Owner decisions 1, 2, 3, 6 and 7 answered on 2026-10-14; full design signoff
+pending.
 **Date:** 2026-10-14
 **Tracking:** `bu-7p9ll5`
-**Supersedes at cutover:** the session, routing and binding sections listed in
-[Superseded contracts](#superseded-contracts).
+**Supersedes at cutover:** the contracts listed in
+[Disposition of existing RFCs](#disposition-of-existing-rfcs).
 
 ## Summary
 
@@ -22,17 +23,18 @@ convention, not an enforced boundary (see [Context](#context-todays-boundary)).
 This RFC replaces it with four mechanical checks, none of which depends on
 model behavior:
 
-1. **Sandboxed sessions.** A runtime process can reach the broker and its model
-   provider and nothing else: no database, no domain port, no credential, no
-   shell, file or web tool.
+1. **Sandboxed sessions.** A runtime process can reach the broker's session
+   listener and its model provider and nothing else: no database, no domain
+   port, no credential, no shell, file or web tool.
 2. **Grants derived from origin.** Admission computes an authority ceiling from
    who or what started the goal. A model can narrow its authority; it can never
    enlarge it.
 3. **Exposure-sensitive effects.** Once an invocation has read third-party
-   content, consequential effects need per-event owner approval.
+   content, directly or through stored records, consequential effects need
+   per-event owner approval.
 4. **Verified calls at the domain.** The broker signs every forwarded call; a
    domain service executes a model-reachable tool only with a valid assertion
-   bound to that exact tool and argument digest.
+   bound to that domain, that exact tool, that argument digest and a single use.
 
 The change is a **hard cutover**. The new runtime is built and verified without
 serving traffic, then one release switches all ingress and every scheduled
@@ -41,8 +43,8 @@ which both systems serve the owner.
 
 ## Context: today's boundary
 
-A code survey of `main` at `b747a55a5` found that the isolation `security.md`
-described is mostly configuration and prompt instruction:
+A code survey of `main` at `b747a55a5` (2026-10-13) found that the isolation
+`security.md` described is mostly configuration and prompt instruction:
 
 - Every butler daemon runs in one process and container (`butlers up`). MCP
   servers bind inside it without caller authentication; RFC 0027 rejected
@@ -61,7 +63,8 @@ described is mostly configuration and prompt instruction:
   the approval gate.
 - `public.permissions` defaults to allow and fails open; pre-spawn budget gates
   fail open; tool-call and token guardrails run after the session ends.
-- Approval `pending_actions` rows carry no session lineage.
+- The approval gate writes `pending_actions.session_id` as NULL, so parked
+  actions carry no session lineage.
 
 Real enforcement does exist and is kept: per-butler `SET ROLE` database roles,
 the approval gate and its exact-digest replay binding, owner-only approval
@@ -84,8 +87,8 @@ Goals:
   `generalist-lead-focused-delegation` OpenSpec change.
 - Make the security boundary independent of model choice, so cheaper or faster
   models can be assigned by quality and cost alone.
-- Keep domain custody, proactive obligations, approvals, private-source
-  boundaries, physical-actuation receipts and credential tiers intact.
+- Keep domain custody, proactive obligations, approvals, private custody,
+  physical-actuation receipts and credential tiers intact.
 
 Non-goals:
 
@@ -95,53 +98,81 @@ Non-goals:
 - Multi-user authority. One owner; every grant is a narrowing of the owner's.
 - Replacing the approvals, insight, notify, scheduler, identity or memory
   subsystems. They remain the owners of their decisions.
+- Engineering executors and model functions (D18), which are not reasoning
+  sessions over owner capabilities and keep their own contracts.
 
 ## Vocabulary
 
 | Term | Meaning |
 |---|---|
 | Goal | A durable unit of intent with one origin, one authority ceiling, one budget and one outcome. |
-| Origin | The verified source of a goal: owner request, domain obligation, third-party event or staffer contract. |
+| Origin | The verified source of a goal: owner, obligation, third party or staffer. |
+| Cause | The goal and effect whose consequence admitted a later goal, if any. |
 | Invocation | One runtime session acting for a goal, either the lead (depth 0) or a child (depth 1). |
 | Capability | A model-reachable MCP tool registered by a domain, with authorization metadata in the catalog. |
 | Grant | The capabilities, resources and approval policy one invocation may use. Stored server-side; never in model context. |
-| Exposure | The fact that untrusted third-party content has entered an invocation's context. |
+| Exposure | The fact that untrusted third-party content has entered an invocation's context. Monotonic. |
+| Taint | Exposure recorded on stored data written by an exposed invocation. |
 | Effect | A capability call whose class is anything other than `read`. Recorded in the effect ledger. |
-| Assertion | A short-lived broker signature over one forwarded call, verified by the owning domain. |
+| Assertion | A short-lived, single-use broker signature over one forwarded call, verified by the owning domain. |
 
 ## Topology
 
 ```mermaid
 flowchart TB
-    Conn["Connectors"] --> Ingest["Switchboard ingest (unchanged envelopes, dedupe)"]
-    Sched["Domain schedules, subscriptions, obligations"] --> Admit
+    subgraph Control["butlers-control (Switchboard)"]
+        Ingest["Ingest: envelopes, dedupe, buffer"]
+        Admit["Goal admission: origin, cause, ceiling, budget"]
+        Ledger[("Goal ledger: goals, invocations, effects")]
+        Runner["Goal runner"]
+        Broker["Capability broker · session listener"]
+    end
+    subgraph SessionHost["Session host"]
+        Lead["Lead · depth 0"]
+        Child["Child · depth 1"]
+    end
+    subgraph Up["butlers-up (domain daemons)"]
+        Domains["Domain capability services, schedules, obligations"]
+        Approvals["Approvals (owner decisions)"]
+    end
+    Conn["Connectors"] --> Ingest
     Owner["Owner channels and dashboard"] --> Ingest
-    Ingest --> Admit["Goal admission: origin, ceiling, budget"]
-    Admit --> Ledger[("Goal ledger: goals, invocations, effects")]
-    Admit --> Runner["Goal runner"]
-    Runner -->|"launch in session sandbox"| Lead["Lead · depth 0"]
-    Lead -->|"goal.delegate"| Runner
-    Runner --> Child["Child · depth 1"]
-    Lead -->|"MCP + invocation token"| Broker["Capability broker"]
+    Ingest --> Admit
+    Domains -->|"obligation and caused admissions"| Admit
+    Admit --> Ledger
+    Admit --> Runner
+    Runner -->|"launch"| Lead
+    Lead -->|"goal.delegate"| Broker
+    Broker -->|"child launch request"| Runner
+    Runner -->|"launch"| Child
+    Lead -->|"MCP + invocation token"| Broker
     Child -->|"MCP + invocation token"| Broker
-    Broker -->|"MCP + signed assertion"| Domains["Domain capability services"]
+    Broker -->|"MCP + signed assertion"| Domains
     Broker --> Ledger
-    Domains -->|"results, receipts"| Broker
-    Broker -->|"approval parks"| Approvals["Approvals (owner decision)"]
+    Broker -->|"park"| Approvals
 ```
 
-The control plane (admission, ledger, runner and broker) is deterministic
-infrastructure inside the Switchboard daemon. Reasoning happens only inside the
-sandboxed lead and child processes.
+The control plane is deterministic infrastructure in its own process.
+Reasoning happens only inside the sandboxed lead and child processes on the
+session host.
 
 ## Decisions
 
-### D1. Switchboard becomes the control plane
+### D1. Switchboard becomes the control plane, in its own process
 
 Switchboard already owns ingress, holds MCP clients to every butler, and is the
 Rule 3 broker. After cutover its contract is: ingress, goal admission, goal
 ledger, goal runner, capability broker, approval and insight brokerage. It
 loses message classification and route dispatch, which have no successor.
+
+Switchboard moves out of the shared `butlers-up` process into its own process
+and container, `butlers-control`. Three reasons: the broker's signing key
+(D7) must be readable only by the process that signs, which a shared address
+space with every domain handler cannot satisfy; the control plane is the
+critical path for every goal; and the session host must be able to reach the
+broker without reaching any domain. `butlers-control` exposes two listeners:
+the existing service listener, and a **session listener** that serves only the
+broker's goal endpoint and is the only port reachable from the session host.
 
 The lead is a role, not a butler. Its governing document is a versioned lead
 policy at `roster/switchboard/goal-policy/LEAD.md`, loaded into every lead
@@ -149,17 +180,20 @@ alongside the owner profile. Switchboard's manifesto is amended in the cutover
 release to describe the control-plane contract. General keeps its narrow
 capture-and-collections manifesto and gains no authority.
 
-A separate daemon was considered and rejected: it would duplicate Switchboard's
-fleet MCP clients, registry and buffer while adding a second process on the
-critical path, with no isolation gain because sessions are sandboxed anyway.
+A new, separate control-plane daemon was rejected: it would duplicate
+Switchboard's ingress, buffer, fleet MCP clients and registry. Moving
+Switchboard itself out of `butlers-up` gets the same isolation without a
+second ingress.
 
 ### D2. Domain butlers become capability services
 
 A domain daemon keeps its MCP server, modules, schema, schedules, event
 subscriptions, obligations, manifesto and domain guidance. It no longer spawns
 reasoning sessions. Where today a scheduled job carries a prompt, the daemon
-submits an **obligation admission** to Switchboard instead (D5). Deterministic
-jobs (sweeps, syncs, projections) are unchanged.
+submits an **obligation admission** to the control plane instead (D5). Where a
+domain-event subscription today wakes a session, the subscriber submits a
+**caused admission** carrying the event's goal lineage (D5). Deterministic
+jobs and reactions (sweeps, syncs, projections) are unchanged.
 
 The domain's `CLAUDE.md` and skills become **domain guidance**: versioned,
 searchable through `guidance.search` and `guidance.load`, and attached by
@@ -168,28 +202,35 @@ domain registers.
 
 ### D3. Session sandbox
 
-Invocations run on a dedicated **session host**: a separate container (Compose)
-or pod (Kubernetes) from `butlers-up`. Its network policy permits egress only to
-the Switchboard broker endpoint and the configured model providers. The goal
-runner in Switchboard dispatches launches to the session host over an
-authenticated control channel; the session host never receives domain,
-database or connector credentials. Provider credentials and runtime OAuth
-volumes move from `butlers-up` to the session host.
+Invocations run on a dedicated **session host**: a container (Compose) or pod
+(Kubernetes) separate from `butlers-up` and `butlers-control`. Its egress is
+limited to the control plane's session listener and the configured model
+providers. Kubernetes enforces this with a NetworkPolicy; Compose has no
+egress policy of its own, so the session host's only route out is an egress
+proxy that allowlists provider hostnames by SNI. The goal runner dispatches
+launches to the session host over an authenticated control channel. The session
+host never receives domain, database or connector credentials; provider
+credentials and runtime OAuth volumes move from `butlers-up` to the session
+host.
 
 Each invocation runs in its own kernel-enforced filesystem and process domain
-(Bubblewrap, as `src/butlers/cli_auth/sandbox.py` already uses) holding only
-`PATH`, its staged model credential and its MCP config. One invocation cannot
-read another's token or files, and the whole descendant domain is terminated
-before results are accepted.
+(Bubblewrap, as `src/butlers/cli_auth/sandbox.py` already uses; the session
+host must permit unprivileged user namespaces) holding only `PATH`, its staged
+model credential and its MCP config. One invocation cannot read another's
+token or files, and the whole descendant domain is terminated before results
+are accepted.
 
 Runtime built-in tools are disabled: no shell, filesystem, web fetch or local
-MCP servers. Adapters drop today's permission-bypass flags in favor of the
-runtime's deny-all tool settings plus a strict MCP config naming only the
-broker. The adapter must prove this per runtime and model tuple, as RFC 0027
+MCP servers, and no provider-hosted tools (server-side web search or fetch,
+remote MCP connectors, code execution), which run outside any network policy.
+Adapters drop today's permission-bypass flags in favor of the runtime's
+deny-all tool settings plus a strict MCP config naming only the broker. The
+adapter must prove all of this per runtime and model tuple, as RFC 0027
 adapters prove host filtering; an adapter that cannot is ineligible.
 
 The sandbox is the primary boundary. Domain-side verification (D7) is defense
-in depth for the case where the sandbox fails.
+in depth: it stops any call that did not pass through the broker, such as one
+from a process that escaped the sandbox.
 
 ### D4. Capability catalog and effect classes
 
@@ -200,8 +241,9 @@ the catalog fails closed.
 ```text
 owner_domain          butler that owns the handler and its data
 effect_class          read | record | communicate | transact | actuate | administer
-output_trust          trusted | untrusted   (returns third-party-authored content)
-output_sensitivity    ordinary | sensitive | private_custody
+output_trust          trusted | untrusted | stamped
+                      (stamped: trust is read from each returned item's stamp, D6)
+output_sensitivity    ordinary | sensitive
 resource_params       argument names that select a resource (entity, account, device)
 safety_args           argument names an approval must pin (RFC 0021)
 approval_policy       existing approvals gating config for the tool
@@ -209,107 +251,193 @@ idempotency           none | key_required
 owner_authority       true when the write steers future sessions (rules, profile)
 ```
 
-Effect classes:
+Effect classes and their default under exposure (owner decision 3):
 
-| Class | Examples | Default under exposure |
+| Class | Examples | Under exposure |
 |---|---|---|
 | `read` | search memory, list transactions, read calendar | allowed |
-| `record` | log a measurement, store an attributed fact, propose an insight | allowed unless `owner_authority` |
-| `communicate` | send email, reply on Telegram, notify a third party | per-event approval, except `notify` to the owner and standing rules with every safety arg pinned |
+| `record` | log a measurement, store an attributed fact, propose an insight | allowed and tainted (D6), unless `owner_authority`, which is refused |
+| `communicate` | send email, reply on Telegram, notify a third party | per-event approval, except `notify` to the owner with link previews disabled and URLs rendered inert, and standing rules whose recipient is the owner or whose body is template-pinned |
 | `transact` | spend, pay, book, accept an invitation | per-event approval |
-| `actuate` | Home Assistant services | RFC 0028 risk map; consequential and protected always approved per event |
+| `actuate` | Home Assistant services | RFC 0028 risk map; consequential and protected always per-event approval |
 | `administer` | change schedules, rules, permissions, module state, create obligations | per-event approval; never delegable to a child |
+
+Two kinds of tool are never LLM-presentable and therefore never grantable:
+
+- **Owner-decision tools**: approve, reject and edit actions, create or promote
+  standing rules, dispatch approved actions. Owner decisions arrive only
+  through the dashboard and signed Telegram callbacks (RFC 0021).
+- **Private-custody tools**: anything that returns RFC 0037 private-custody
+  content. RFC 0037 forbids model-facing custody tools; the goal runtime keeps
+  that.
 
 The catalog is assembled from each domain's final, approval-wrapped registry at
 startup and published to the broker with schema and description digests. The
 broker rejects a call whose catalog digest differs from the domain's current
-registration until the catalog is republished.
+registration until the catalog is republished. The broker endpoint's
+`tools/list` is a grant-scoped projection; each domain's canonical MCP listing
+stays complete, as RFC 0027 Invariant 8 requires.
 
-### D5. Goal admission and authority ceilings
+### D5. Goal admission, origins and causes
 
 Admission is deterministic. It never classifies content with a model. It reads
-the origin from server-held context, never from message text.
+origin and cause from server-held context, never from message text or model
+output.
 
 | Origin | Established by | Ceiling |
 |---|---|---|
-| `owner` | RFC 0017 owner-channel authorization or an authenticated dashboard session | all catalog capabilities, subject to each tool's approval policy |
-| `obligation` | a domain schedule, subscription or commitment declared in git | the capability set declared with the obligation; default: owner domain `read` and `record` plus owner `notify` |
-| `third_party` | inbound content whose sender is not the verified owner | `read`, non-steering `record`, and proposals (approval requests, insight candidates); never `communicate`, `transact`, `actuate` or `administer` |
-| `staffer` | a staffer's infrastructure contract (QA investigation, Concierge answer) | the capability set declared in that contract |
+| `owner` | RFC 0017 owner-channel authorization, or the dashboard's existing owner authentication | all grantable capabilities, subject to each tool's approval policy |
+| `obligation` | a schedule, subscription or commitment declared in git, or created at runtime by an `administer` effect | the declared capability set; default owner domain `read` and `record` plus owner `notify`. A runtime-created obligation's set is at most its creator's grant at creation. |
+| `third_party` | inbound content whose sender is not the verified owner | `read`, non-steering `record`, owner `notify`, and **park-only** `communicate` and `transact` (owner decision 7); never `actuate` or `administer` |
+| `staffer` | a staffer's infrastructure contract (QA triage, Concierge answer) | the capability set declared in that contract |
 
-A third-party goal starts exposed. Owner text that quotes or forwards
-third-party content is admitted as `owner` but starts exposed, because the
-connector marks forwarded and quoted spans in the envelope.
+Rules:
 
-Admission writes the goal row, its ceiling digest and its budget, then hands it
-to the runner. Duplicate submissions of the same ingest envelope or obligation
-occurrence return the existing goal.
+- **Email is never owner origin by itself.** A message is owner-origin only when
+  RFC 0017 authorizes its channel and sender; otherwise it is third-party.
+- **Exposure at admission.** Third-party goals start exposed. Owner messages
+  with connector-marked forwarded or quoted spans start exposed. Staffer goals
+  whose inputs include third-party content or error payloads start exposed; QA
+  goals always do. A runtime-created obligation that was created under exposure
+  starts every occurrence exposed.
+- **Park-only grants.** A park-only capability can only produce a parked effect
+  awaiting per-event owner approval; the broker never executes it directly.
+- **Caused admissions.** When a domain admits a goal because of an effect or a
+  domain event that an effect produced, the admission carries `caused_by_goal`
+  and `caused_by_effect` from the effect's assertion lineage. The caused goal
+  inherits the causing goal's exposure, its ceiling is the declared
+  subscription's set and nothing more, and its causal chain length is at most
+  the configured limit (default 2). Admission refuses and records a goal that
+  would exceed it. A child cannot reach admission directly; this rule bounds
+  the indirect path through declared domain reactions.
 
-### D6. Exposure rule
+Admission writes the goal row, origin, cause, exposure, ceiling digest and
+budget, then hands it to the runner. Duplicate submissions of the same ingest
+envelope or obligation occurrence return the existing goal.
 
-An invocation becomes **exposed** when its goal starts exposed, when it receives
-a result from a capability whose `output_trust` is `untrusted`, or when it
-receives a result from an exposed child. Exposure never clears within an
-invocation. A child created by an exposed lead starts exposed.
+Known limit: text an owner pastes without quoting markers is owner input. The
+exposure rule still applies to everything the goal then reads.
+
+### D6. Exposure and taint
+
+Exposure is tracked per invocation and per goal; both only ever increase.
+
+An invocation becomes exposed when:
+
+- its goal is exposed when it starts (children, replacement leads and escalated
+  leads all start with the goal's exposure);
+- it receives output from a capability whose `output_trust` is `untrusted`;
+- it receives `stamped` output containing any item whose stamp is not owner
+  authority or that carries taint;
+- it receives a result from an exposed child.
+
+When any invocation of a goal becomes exposed, the goal is marked exposed.
+
+**Taint** makes exposure survive storage. The assertion carries the invoking
+session's exposure (D7); a domain storing data under an exposed assertion
+stamps the record as tainted, alongside today's memory content-authority stamp.
+Memory, fact, capture, conversation-history, goal-outcome, insight-candidate
+and decision-memory reads are `stamped`, and `context.search` returns each item
+with its stamp. Owner-authored, untainted records stay trusted, so ordinary
+memory reads do not expose a goal; text that an exposed goal stored from an
+email exposes whichever later goal reads it back.
 
 While exposed, the broker applies the "under exposure" column of D4 regardless
-of origin, and refuses `record` writes marked `owner_authority`. This
-implements the rule that a session holding untrusted input, private data and
-external effect authority together needs a human in the loop. It also makes
-the existing approval policy uniform: approvals are no longer only a property of
-individual tools, they are a property of what the session has read.
+of origin. This implements the rule that a session holding untrusted input,
+private data and external effect authority together needs a human in the loop.
+Approvals are no longer only a property of individual tools; they are a
+property of what the session has read.
 
 Unexposed owner goals keep today's approval behavior, including standing rules.
+Approvals of effects requested by exposed invocations do not count toward the
+RFC 0021 promotion ladder.
 
-### D7. Wire contract and call verification
+### D7. Wire contract, call verification and keys
 
-Sessions reach the broker over MCP streamable HTTP at the Switchboard endpoint
-`/goal-mcp`. The runner writes the invocation's MCP config with a bearer
-**invocation token**: 256 random bits, stored only as a hash, bound to one
-invocation and its lead epoch, and revoked when the invocation ends or the goal
-stops.
+**Session tokens.** Sessions reach the broker over MCP streamable HTTP on the
+session listener's goal endpoint. The runner writes the invocation's MCP config
+with a bearer **invocation token**: 256 random bits, stored only as a hash,
+bound to one invocation, and revoked when the invocation ends or the goal stops.
+A lead's token is also bound to the goal's lead epoch, so recovery or
+escalation revokes the previous lead. A child's token is not epoch-bound and
+survives a lead replacement (D14).
 
-`tools/list` for that token returns the grant's capabilities under namespaced
-names (`<domain>__<tool>`) plus the goal tools in D8. Native deferred loading
-follows RFC 0027: the goal tools and a small eager set load initially; domain
-capabilities are discoverable through the runtime's tool search. Discovery
-scope equals the grant ceiling; invocation is checked per call.
+**Listing.** `tools/list` for a token returns the grant's capabilities under
+namespaced names (`<domain>__<tool>`) plus the goal tools in D8. Native deferred
+loading follows RFC 0027: the goal tools and a small eager set load initially;
+domain capabilities are discoverable through the runtime's tool search.
+Discovery scope equals the grant; invocation is checked per call.
 
-For every `tools/call` the broker:
+**Per-call checks.** For every `tools/call`, the broker runs in one database
+transaction, conditional on the goal row being `running` and, for a lead, on the
+lead epoch matching:
 
-1. resolves the token to an active invocation of a running goal, rejecting
-   stale epochs, stopped goals and expired tokens;
-2. checks the capability is in the grant, the resource arguments are within the
+1. resolve the token to an active invocation;
+2. check the capability is in the grant, resource arguments are within the
    grant's resource scope, and the budget allows another call;
-3. applies the exposure rule and the tool's approval policy;
-4. for effects, writes an `effects` row before dispatch;
-5. forwards the call to the owning domain with an `X-Butlers-Assertion` header:
-   an Ed25519 signature over `goal_id`, `invocation_id`, `depth`, `origin`,
-   `exposed`, `capability`, `args_digest`, `effect_id`, `approval_ref` and a
-   60-second expiry;
-6. records the result reference and settles the effect.
+3. apply exposure, park-only and the tool's approval policy;
+4. for effects, insert the `effects` row and decrement the budget.
 
-The domain's core tool wrapper verifies the assertion before any
-model-reachable handler runs: signature, expiry, capability name equal to the
-called tool, and argument digest equal to the received arguments. It then
-exposes the verified lineage to the handler as ambient context, replacing
-today's spawner-derived session context. RFC 0028's executor binding and
-RFC 0021's approval replay read lineage from this context only.
+Stop takes the goal row `FOR UPDATE` (D14), so a call either commits before the
+Stop or is refused after it. The broker then forwards the call to the owning
+domain with an `X-Butlers-Assertion` header and records the result.
 
-Service-plane tools (ingest, ticks, callbacks, dashboard management) are not
-LLM-presentable, are unreachable from the sandbox, and keep their current
-callers. A model-reachable tool called without a valid assertion is refused.
+**Assertion.** An Ed25519 signature, with key id `kid`, over:
 
-The session-starting and proxy tools found in the survey do not survive: the
-`trigger` tool, `route.execute`, the generic `route` tool and the
-`delegate_*` tools are deleted at cutover; prompt-mode `schedule_create`
+```text
+aud            owner_domain of the capability
+goal_id, invocation_id, depth, origin, exposed
+capability     unnamespaced tool name
+args_digest    SHA-256 of the RFC 8785 canonical JSON of the raw wire arguments
+call_id        unique per forwarded call
+effect_id      for effects; null for reads
+approval_ref   for approved effects; null otherwise
+exp            issue time + 60 s
+```
+
+The domain's core tool wrapper verifies, before argument coercion and before
+any model-reachable handler runs: signature under a known `kid`, `aud` equal to
+its own name, `exp`, capability equal to the called tool, `args_digest` equal to
+the canonical digest of the raw arguments received, and `call_id` not seen
+within the expiry window. It then exposes the verified lineage, including
+`exposed`, to the handler as ambient context, replacing today's
+spawner-derived session context. RFC 0028's executor binding, RFC 0021's
+approval replay and memory authority stamping read lineage from this context
+only.
+
+**Service-plane callers.** Service-plane tools (ingest, ticks, callbacks,
+dashboard management) are not LLM-presentable, are not on the session listener,
+and keep their current callers. The dashboard also calls some model-reachable
+tools directly today. After cutover those calls go through the control plane's
+service listener, authenticated by the existing signed dashboard control client
+(`RUNTIME_PROBE_CONTROL_SIGNING_KEY`), and are forwarded with an assertion whose
+origin is `owner`, principal `dashboard`, and `goal_id` null. Any other
+model-reachable call without a valid assertion is refused. Inventorying the
+existing direct call sites is a dark-build task.
+
+**Removed tools.** The session-starting and proxy tools found in the survey do
+not survive: the `trigger` tool, `route.execute`, the generic `route` tool and
+the `delegate_*` tools are deleted at cutover; prompt-mode `schedule_create`
 becomes obligation creation, an `administer` capability; `cancel_session`
-becomes owner-only Stop. `public.permissions` no longer governs sessions; the
-broker fails closed when the ledger, catalog or signing key is unavailable.
+becomes owner-only Stop. `public.permissions` no longer governs sessions.
 
-The signing key is a process-bound deployment control key: the second named use
-of the security.md exception. Only the Switchboard broker process reads it;
-domains receive the public key.
+**Signing key.** `GOAL_BROKER_SIGNING_KEY` is the second named use of the
+security.md process-bound deployment control key exception (owner decision 6):
+
+- provisioned as a file-backed deployment secret mounted only into
+  `butlers-control`, never through an environment value, `CredentialStore`,
+  `butler_secrets`, `entity_info` or git;
+- domains receive only verification keys, as non-secret config listing the
+  current and next `kid`;
+- rotation publishes the next public key, restarts domains, switches the signer,
+  and removes the old key after twice the assertion lifetime;
+- a missing or mismatched private key makes the broker refuse every call; a
+  domain without verification keys refuses every model-reachable call; neither
+  falls back to an unsigned request or shared secret;
+- on a control-plane restart, in-flight calls settle per D12 and revoked tokens
+  stay revoked.
+
+The broker also fails closed when the ledger or catalog is unavailable.
 
 ### D8. Goal tools
 
@@ -318,18 +446,20 @@ The broker serves a fixed set of goal tools that are not domain capabilities:
 | Tool | Lead | Child | Purpose |
 |---|---|---|---|
 | `goal.delegate` | yes | no | Start a child with a brief, requested capabilities, model tier and budget share. |
-| `goal.await` | yes | no | Wait for or poll child results. |
+| `goal.await` | yes | no | Wait for or poll child results and their effect statuses. |
 | `goal.stop_child` | yes | no | Stop one child. |
 | `goal.return` | no | yes | Return the child's structured result and end it. |
 | `goal.complete` | yes | no | Record the goal outcome. |
 | `goal.escalate` | yes | no | Hand the goal to a lead on the next model tier (D16). |
 | `guidance.search`, `guidance.load` | yes | yes | Find and load domain guidance and the lead policy. |
-| `context.search` | yes | yes | Deterministic fan-out over permitted domains' memory and fact search, merged with provenance. |
+| `context.search` | yes | yes | Deterministic fan-out over permitted domains' memory and fact search, merged with provenance and stamps. |
 
-A child's `tools/list` never contains `goal.delegate` or any admission,
-schedule-creation, routing or obligation tool, because those are `administer`
-or service-plane. The runner derives depth from the parent invocation row; a
-child's request cannot assert a parent, root or depth.
+Only the runner starts sessions: leads on admission, recovery and escalation;
+children on a lead's `goal.delegate`. A child's `tools/list` never contains
+`goal.delegate` or any admission, schedule-creation, routing or obligation
+tool, because those are `administer` or not presentable. The runner derives
+depth from the parent invocation row; a child's request cannot assert a
+parent, root or depth.
 
 ### D9. Delegation
 
@@ -345,47 +475,58 @@ budget_share      calls, cost and wall time drawn from the goal budget
 
 The broker computes the child grant as the intersection of the request and the
 lead's grant, minus `administer`, and refuses an empty or non-subset request.
-The child inherits the goal's origin and the lead's exposure. Children are not
-read-only by default; they may hold `record`, `communicate` or `transact`
-capabilities the lead holds, under the same approval rules. A lead cannot
-approve its child's effect: approvals resolve only through owner channels.
+The insert that admits the child is conditional on the goal running and the
+lead epoch matching, like any call. The child inherits the goal's origin and
+exposure. Children are not read-only by default; they may hold `record`,
+`communicate` or `transact` capabilities the lead holds, under the same
+approval and park-only rules. A lead cannot approve its child's effect:
+approvals resolve only through owner channels.
 
 A child that needs more work calls `goal.return` with a `requests_for_lead`
-entry. Only the lead can start a sibling.
+entry. Only the lead can delegate a sibling. There is no resume: a lead that
+wants follow-up delegates a new child with the earlier result as context.
 
 ### D10. Budgets
 
 Each goal has a budget row: maximum invocations including lead replacements
 and escalations, maximum concurrent children, maximum tool calls, maximum model
-spend and a deadline. Unlike today's pre-spawn gates, budget checks fail
-closed and happen before each call, not after the session. Defaults per origin live in `runtime_config` as operational tuning;
-they bound work, not authority. Admission reserves the budget; `goal.delegate`
-and every call decrement it with a conditional update in the same transaction
-that records the call, so concurrent children cannot overspend. Exhaustion
-refuses new work and ends the goal `budget_exhausted` with whatever results and
-effects exist. Spend comes from the existing session spend accounting, keyed by
-invocation.
+tokens and spend, and a deadline. Each invocation has maximum turns and tokens.
+Defaults per origin live in `runtime_config` as operational tuning; they bound
+work, not authority (owner decision 5).
+
+Admission reserves the budget. `goal.delegate` and every call decrement it in
+the D7 transaction, so concurrent children cannot overspend. The runner meters
+model usage from the runtime's usage stream and terminates an invocation that
+exceeds its turns, tokens or spend between tool calls. Unlike today's
+pre-spawn gates, every budget check fails closed. Exhaustion refuses new work
+and ends the goal `budget_exhausted` with whatever results and effects exist.
 
 ### D11. State machines
 
 Goal:
 
 ```text
-admitted -> running -> completed | partial | failed | stopped | budget_exhausted
-running  -> awaiting_approval -> running        (an effect is parked)
-running  -> recovering -> running               (lead replaced, epoch + 1)
+admitted -> running -> settling -> completed | partial | failed
+running  -> stopped | budget_exhausted
+running  -> awaiting_approval -> running          (lead waits on a parked effect)
+running  -> recovering -> running                 (lead replaced, epoch + 1)
+settling -> stopped                               (owner Stop cancels parked effects)
 ```
+
+`settling` means the lead has finished but parked effects are still awaiting
+owner decisions; the goal reaches its final state when they resolve.
 
 Invocation:
 
 ```text
-launching -> running -> returned | failed | timed_out | stopped
+launching -> running -> returned | failed | timed_out | stopped | escalated
 ```
 
 Effect:
 
 ```text
 requested -> parked -> approved -> dispatched -> committed | failed | unknown
+requested -> dispatched                           (no approval needed)
 requested -> refused
 parked    -> rejected | expired | cancelled
 ```
@@ -413,29 +554,37 @@ outcome relies on.
 
 ### D13. Approvals
 
-When a call needs approval, the broker parks it through the approvals module
-with the exact capability, arguments and lineage (goal, invocation, depth,
-exposure; today `pending_actions` records none), and returns `parked` with the
-approval reference. The session may continue or end. On approval the broker
-executes the stored call, not a call the model re-issues, so the approved digest
-is the executed digest. A goal that has ended still executes an approved effect
-and appends it to the outcome; a stopped goal cancels its parked approvals.
+When a call needs approval or its grant is park-only, the broker parks it
+through the approvals module with the exact capability, arguments and lineage
+(goal, invocation, depth, exposure) and returns `parked` with the approval
+reference. The session may continue or end.
+
+The owner may approve, reject or edit (RFC 0021). On approval the broker
+executes the stored call, or the owner's edited version of it, never a call
+the model re-issues; the executed digest is the digest the owner approved.
+Before dispatch the broker re-checks that the goal is not stopped. A stopped
+goal cancels its parked effects; a goal whose lead has finished waits in
+`settling` and still executes approvals that arrive.
+
 Standing rules and the promotion ladder of RFC 0021 apply unchanged to
-unexposed invocations.
+unexposed invocations. At the switch, `pending_actions` created before cutover
+remain executable by the approvals executor and are recorded with origin
+`legacy`.
 
 ### D14. Stop and recovery
 
-Owner Stop marks the goal `stopped` in one transaction that also revokes every
-invocation token. The broker refuses new calls and delegations from that
-moment. The runner terminates every invocation process domain. Parked approvals
-are cancelled. Dispatched effects settle to their domain receipt or `unknown`;
-Stop never reports a committed effect as undone.
+Owner Stop takes the goal row `FOR UPDATE`, marks it `stopped` and revokes every
+invocation token in one transaction. Every later call or delegation of that
+goal is refused. The runner terminates every invocation process domain. Parked
+effects are cancelled. Dispatched effects settle to their domain receipt or
+`unknown`; Stop never reports a committed effect as undone.
 
 Each running invocation holds a lease renewed by the runner. If the lead's
-lease lapses, recovery increments the goal's lead epoch, which invalidates any
-surviving token from the old lead, and launches a replacement with the goal
-record, effect ledger and returned child results. Recovery draws from the same
-budget. Children of a replaced lead keep running and report to the new epoch.
+lease lapses, recovery increments the goal's lead epoch, which revokes the old
+lead's token, and launches a replacement with the goal record, the goal's
+exposure, the effect ledger and returned child results. Recovery draws from
+the same budget. Children of a replaced lead keep running and report to the
+new lead through `goal.await`.
 
 ### D15. Context and memory
 
@@ -443,12 +592,10 @@ A lead starts with the goal input (third-party spans fenced as data), the owner
 profile, the lead policy, an index of domains and their guidance, and on
 recovery the ledger summary. It retrieves everything else through
 `context.search`, domain read capabilities and `guidance.load`. Results carry
-owner domain and sensitivity. `private_custody` outputs (RFC 0037) are returned only to the
-invocation that requested them and are never copied into a child brief by the
-broker; a lead that passes them on must do so through capability references
-that the child's grant can resolve. Memory writes go through the owning
-domain's capabilities and keep today's steering-memory rule: owner authority is
-stamped from the goal origin, never from text.
+owner domain, sensitivity and stamps. Private-custody content is not reachable
+(D4). Memory writes go through the owning domain's capabilities and keep
+today's steering-memory rule: owner authority is stamped from the goal origin,
+never from text, and exposed writes are tainted.
 
 ### D16. Model selection and escalation
 
@@ -456,7 +603,7 @@ Model choice is per invocation, resolved from `public.model_catalog` by role
 (`lead`, `child`, `monitor`) and, for children, the tier the brief requests.
 Because D3 to D7 do not depend on model behavior, a fast or small model is a
 quality and cost decision, never a security one. Replay evaluation, not this
-RFC, sets the assignments. Starting defaults:
+RFC, sets the assignments (owner decision 4). Starting defaults:
 
 | Role | Default class | Why |
 |---|---|---|
@@ -479,41 +626,95 @@ conformance gate for the catalog size it will see.
 ### D17. Telemetry and audit
 
 Every span carries `goal_id`, `invocation_id`, `depth` and `epoch`. The ledger,
-not session logs, is the record of a goal: admission decision, ceiling digest,
-grants, delegation tree, budget consumption, effects with receipts, approvals
-and the final outcome. Telemetry stores identifiers and digests, never
-arguments or results.
+not session logs, is the record of a goal: admission decision, origin, cause,
+exposure, ceiling digest, grants, delegation tree, budget consumption, effects
+with receipts, approvals and the final outcome. Telemetry stores identifiers and
+digests, never arguments or results.
 
-## Superseded contracts
+### D18. Model use outside goals
 
-Applied in the cutover release together with the OpenSpec deltas.
+Two kinds of model use are not goal invocations. Each keeps its own contract
+and never reaches the broker or a domain capability:
 
-| Contract | Disposition |
-|---|---|
-| RFC 0001, session dispatch and spawner triggers | Replaced by D1, D2, D10, D11 and D14. Daemon lifecycle and scheduler phases remain. |
-| RFC 0002, ephemeral MCP config and own-butler binding | Replaced by D3, D7 and D8. Module ABC and registration remain. |
-| RFC 0003, triage, LLM classification, `route.execute`, thread affinity | Removed. Ingest envelopes, dedupe and the durable buffer remain and feed D5. |
-| RFC 0008, "a session cannot spawn other sessions" | Replaced by D3, D8 and D9. Network, port and firewall contracts remain. |
-| RFC 0027, per-butler corpus | Extended: one per-invocation corpus over the grant, with D4 metadata. Native discovery, adapter fail-closed and no-replay rules remain. |
-| Cross-butler delegation ledger | Removed. A lead calls the capability directly or delegates to a child. |
+- **Engineering executors.** QA investigation agents and self-healing agents
+  (RFC 0015) work on the repository with a shell and a worktree. They keep
+  their existing sandboxed contracts, receive no MCP config and see only the
+  anonymized payloads RFC 0015 allows. The QA staffer's own triage reasoning is
+  a staffer goal.
+- **Model functions.** Tool-less, single-turn, structured-output calls made by
+  deterministic code: connector discretion screening and RFC 0036 vision
+  probes. They have no tools; any consequence comes from the deterministic code
+  that reads their typed output.
 
-RFCs 0005, 0006, 0009, 0010, 0011, 0014, 0017, 0020, 0021, 0026, 0028, 0030,
-0033 and 0037 remain authoritative. Their session-attribution fields map to
+Any other model use is a goal invocation. Adding a kind to this list requires
+an RFC amendment.
+
+## Disposition of existing RFCs
+
+Applied in the cutover release together with the OpenSpec deltas. "Remains"
+means the RFC stays authoritative; its session-attribution fields map to
 invocation lineage.
+
+| RFC | Disposition |
+|---|---|
+| 0001 Daemon lifecycle and triggers | Superseded in part: session dispatch and spawner triggers (D1, D2, D10, D11, D14). Daemon lifecycle and scheduler phases remain. |
+| 0002 MCP tool surface and modules | Superseded in part: ephemeral MCP config and own-butler binding (D3, D7, D8). Module ABC and registration remain. |
+| 0003 Switchboard routing and ingestion | Superseded in part: triage, LLM classification, thread affinity and `route.execute` removed. Ingest envelopes, dedupe and the durable buffer remain and feed D5. |
+| 0004 Identity and contact resolution | Remains; supplies owner identification for D5. |
+| 0005 Observability and telemetry | Remains; D17 adds goal attributes. |
+| 0006 Database schema and isolation | Remains; goal ledger tables are Switchboard-owned. |
+| 0007 Dashboard and API surface | Remains; direct model-reachable tool calls move to the control plane service listener (D7). |
+| 0008 Deployment network security | Superseded in part: runtime children and their network (D3), container layout (D1). Networks, ports and firewall remain. |
+| 0009 Situational context bus | Remains; reads are `stamped`. |
+| 0010 Cross-butler briefing exception | Remains, with its QA amendment. |
+| 0011 Proactive insight delivery | Remains; candidates carry taint (D6). |
+| 0012 Finance transaction data model | Remains. |
+| 0013 Dunbar interaction scoring | Remains. |
+| 0014 Chronicler | Remains; its day-close reasoning becomes an obligation goal. |
+| 0015 QA staffer pipeline | Remains; investigation agents are engineering executors (D18), QA triage is a staffer goal that starts exposed. |
+| 0016 S3 blob storage | Remains. |
+| 0017 Owner-routing safety | Remains; basis of owner origin (D5). |
+| 0018 Connector scope | Remains. |
+| 0019 Proactive egress and automation | Remains rejected/parked. Caused admissions run only declared subscriptions; they are not the parked rule engine. |
+| 0020 Calendar overlay read exception | Remains. |
+| 0021 Decision loop and approvals | Remains, amended: approvals carry goal lineage, exposed approvals do not count toward promotion, owner-decision tools are never grantable (D4, D6, D13). |
+| 0022 Cross-process event transport | Remains; events from effects carry goal lineage for caused admissions. |
+| 0023 Approval delivery intent recovery | Remains. |
+| 0024 Messenger correspondence ledger (proposed) | Independent. |
+| 0025 Beads projection exporter (draft) | Independent. |
+| 0026 Commitment lifecycle (draft) | Commitments that need reasoning become obligations (D5). |
+| 0027 Runtime tool surface discovery | Extended: one grant-scoped corpus per invocation with D4 metadata. Discovery, adapter fail-closed, no-replay and canonical-listing rules remain. |
+| 0028 Home physical actuation | Remains; lineage comes from the verified assertion. |
+| 0029 Expected signals | Remains. |
+| 0030 System-plane read exception | Remains; Concierge answers become staffer goals over its fixed views. |
+| 0031 Public entity graph projection | Remains. |
+| 0032 Fleet case file | Remains. |
+| 0033 Fleet cost claims | Remains. |
+| 0034 Messenger voice egress (draft) | Independent; delivery stays Messenger-owned. |
+| 0035 Approval reminders (proposed) | Independent. |
+| 0036 Models exact-path vision proof | Remains; probes are model functions (D18). |
+| 0037 General capture and private custody | Superseded in part: capture's classification and routing step becomes goal admission. Capture ledger, receipts and private custody remain; custody stays unreachable by models (D4). |
+
+The cross-butler delegation ledger and its tools are removed: a lead calls the
+capability directly or delegates to a child.
 
 ## Hard cutover
 
 ### Before the switch
 
 - **Freeze.** No new features on classification, route dispatch, per-butler
-  session spawning or cross-butler delegation. Fixes only.
-- **Dark build on main.** The catalog metadata, ledger migrations, broker,
-  runner, sandbox profiles, verifier and goal tools merge to main without being
-  wired to ingress or schedules. Tables are additive.
+  session spawning or cross-butler delegation. Fixes, including security fixes,
+  only.
+- **Dark build on main.** The control-plane process split, catalog metadata,
+  ledger migrations, broker, runner, session host, sandbox profiles, verifier
+  and goal tools merge to main without being wired to ingress or schedules.
+  Migrations are additive.
 - **Catalog completion.** Every LLM-presentable tool declares D4 metadata. CI
   fails on an undeclared tool.
-- **Obligation declarations.** Every scheduled prompt gets a declared
-  capability set in git.
+- **Obligation declarations.** Every scheduled prompt and session-waking
+  subscription gets a declared capability set in git.
+- **Service-plane inventory.** Every direct call to a model-reachable tool from
+  the dashboard or another service is routed through the control plane.
 - **Native discovery.** RFC 0027's native deferred discovery and conformance
   gate are implemented for the broker endpoint and every eligible lead runtime.
   A lead cannot work over the full catalog with eager loading.
@@ -525,24 +726,28 @@ All evidence is produced in a dev namespace against the release candidate:
 1. Every `goal-orchestration` and `capability-authorization` scenario passes.
    Every gap listed in [Context](#context-todays-boundary) has a failing-before,
    passing-after test.
-2. Adversarial suite: injected instructions in email, chat and calendar content
-   attempting send, spend, actuation, rule writes and exfiltration; children
-   attempting grandchildren through every creation path; forged, replayed and
-   expired assertions; stale-epoch tokens; direct calls to domain ports from the
-   sandbox. Zero unauthorized effects.
+2. Adversarial suite, zero unauthorized effects: injected instructions in
+   email, chat and calendar content attempting send, spend, actuation, rule
+   writes and exfiltration (including through owner `notify` links); laundering
+   through memory, conversation history and insight candidates; children
+   attempting grandchildren through every creation path, including caused
+   admissions and runtime obligations; forged, replayed, expired and
+   wrong-audience assertions; stale-epoch tokens; direct calls to domain ports
+   and service listeners from the sandbox; provider-hosted tool use.
 3. Replay evaluation over a fixed set of recorded owner requests and
    scheduled obligations, graded by the owner rubric for whole-goal success,
    constraint preservation and corrections needed, with latency and total cost.
    The release candidate must not regress against the recorded outcomes of the
    current system.
-4. Stop, lease-loss and runner-crash drills show fenced recovery with no
-   replayed effect and no budget reset.
+4. Stop, lease-loss, runner-crash, escalation and key-rotation drills show
+   fenced recovery with no replayed effect and no budget reset.
 
 ### The switch
 
 One release:
 
-- routes all ingress and every obligation through admission;
+- routes all ingress, obligations and session-waking subscriptions through
+  admission;
 - deletes classification, route dispatch, per-butler session spawning and the
   cross-butler delegation tools;
 - enables assertion verification in every domain;
@@ -550,33 +755,43 @@ One release:
   topology pages, operational docs, `CLAUDE.md` and manifestos.
 
 The old buffers drain before the switch: connectors keep their cursors while
-Switchboard stops accepting new routes and finishes in-flight ones.
+Switchboard stops accepting new routes and finishes in-flight ones. The switch
+release runs no destructive migration.
 
 ### Rollback
 
 Rollback redeploys the previous release. The goal tables stay and are ignored.
-Goals in flight are marked `stopped` and their effects reported. No dual-running
-mode exists to fall back to, and none is built.
+Goals in flight are marked `stopped` and their effects reported; parked effects
+created by the broker are cancelled and reported, because the previous release
+cannot execute them. No dual-running mode exists to fall back to, and none is
+built.
 
 ## Owner decisions
 
-| # | Decision | Recommendation |
-|---|---|---|
-| 1 | Host of the control plane | Switchboard (D1). |
-| 2 | Release scope | The cutover is a v1 milestone; v1's classifier criterion becomes a whole-goal criterion. |
-| 3 | Exposure strictness | As D4 and D6: per-event approval for consequential effects after untrusted input; owner `notify` and fully pinned standing rules exempt. |
-| 4 | Default model tiers | As D16: mid or frontier leads, small monitors and read-only children, escalation ladder; replay evaluation sets the final assignments. |
-| 5 | Default budgets | Per origin, set from replay evaluation before the switch. |
+| # | Decision | Recommendation | Owner answer (2026-10-14) |
+|---|---|---|---|
+| 1 | Host of the control plane | Switchboard, moved into its own process and container (D1). | Switchboard, own process. |
+| 2 | Release scope | The cutover is a v1 milestone; v1's classifier criterion becomes replay and adversarial-suite criteria. | Yes, v1 ships on goals. |
+| 3 | Exposure strictness | As D4 and D6, including the narrowed exemptions: owner `notify` with inert links, and standing rules only to the owner or with template-pinned bodies. Stricter gating costs more approval taps; looser gating lets an injected session message a pinned third party. | Narrow exemptions. |
+| 4 | Default model tiers | As D16; replay evaluation sets the final assignments. | Set by replay evaluation. |
+| 5 | Default budgets | Per origin, set from replay evaluation before the switch. | Set by replay evaluation. |
+| 6 | `GOAL_BROKER_SIGNING_KEY` | Approve as the second named process-bound deployment control key (D7). | Approved. |
+| 7 | Third-party park-only effects | Allow: inbound mail can prepare a reply or booking for one-tap approval; it can never execute one. | Approved. |
 
 ## Alternatives considered
 
 - **Keep specialist sessions and add a read-only generalist.** Preserves two
   reasoning paths permanently. Rejected by the hard-cutover decision.
+- **New control-plane daemon.** Duplicates Switchboard's ingress and registry
+  (D1).
 - **Verify only at the domain, no central broker.** Domains could check
   assertions, but goal budgets, lineage, exposure and delegation need one place
   that sees the whole goal.
 - **Broker only, no domain verification.** One sandbox failure would expose
   every domain. Rejected; the second check is cheap.
+- **Exposure as a fixed per-tool flag.** Simple, but stored third-party text
+  would launder exposure, and marking all memory reads untrusted would expose
+  nearly every goal. Taint stamps resolve both.
 - **Model-based injection detection as the boundary.** Useful as an advisory
   signal; never as authorization, since it fails open on novel attacks.
 - **OAuth 2.1 authorization server per MCP's authorization spec.** The token
@@ -589,12 +804,25 @@ mode exists to fall back to, and none is built.
 
 | Requirement | Decisions |
 |---|---|
-| `goal-orchestration` whole-goal accountability | D1, D11, D12 |
-| `goal-orchestration` bounded briefs | D8, D9, D15 |
-| `goal-orchestration` depth enforcement | D3, D8, D9 |
-| `goal-orchestration` capability ownership | D4, D5, D7 |
-| `goal-orchestration` finite work | D10 |
-| `goal-orchestration` honest outcomes | D11, D12, D14 |
-| `goal-orchestration` domain care | D2, D5 |
-| `goal-orchestration` single admission path | Hard cutover |
-| `capability-authorization` (all) | D3 to D14 |
+| `goal-orchestration` 001 whole-goal accountability | D1, D11, D12 |
+| `goal-orchestration` 002 bounded briefs | D8, D9, D15 |
+| `goal-orchestration` 003 depth enforcement | D3, D5 (caused admissions), D8, D9 |
+| `goal-orchestration` 004 capability ownership | D4, D5, D7 |
+| `goal-orchestration` 005 finite work | D10 |
+| `goal-orchestration` 006 honest outcomes | D11, D12, D14 |
+| `goal-orchestration` 007 domain care | D2, D5 |
+| `goal-orchestration` 008 single admission path | D2, D18, Hard cutover |
+| `capability-authorization` 001 sandbox | D3 |
+| `capability-authorization` 002 catalog metadata | D4 |
+| `capability-authorization` 003 origin ceilings | D5 |
+| `capability-authorization` 004 grants bound calls | D7 |
+| `capability-authorization` 005 delegation narrows | D9, D13 |
+| `capability-authorization` 006 exposure and taint | D6 |
+| `capability-authorization` 007 domain assertion check | D7 |
+| `capability-authorization` 008 tokens | D7, D14 |
+| `capability-authorization` 009 effect ledger | D12 |
+| `capability-authorization` 010 exact approvals | D13 |
+| `capability-authorization` 011 Stop | D14 |
+| `capability-authorization` 012 audit | D17 |
+| `capability-authorization` 013 caused admissions and runtime obligations | D5 |
+| `capability-authorization` 014 owner decisions unreachable | D4 |

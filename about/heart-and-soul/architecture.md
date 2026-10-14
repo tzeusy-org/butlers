@@ -95,12 +95,13 @@ permitted deterministic tools and return evidence, proposals, or action
 receipts. They cannot create reasoning sessions, delegate through Switchboard,
 ask another child to act, or disguise delegation as a new independent goal.
 A child reports the need for further work to the lead, which may dispatch a
-sibling under the same goal and remaining budget. Root retries and resumptions
-retain lineage, authority, cancellation, and budget accounting.
+sibling under the same goal and remaining budget. Lead recovery and escalation
+retain lineage, authority, exposure, cancellation, and budget accounting.
 
 This bounds hierarchy depth, not the number of rounds. The runtime also bounds
 total work so a sequence of siblings cannot become unbounded recursion.
-The lead may resume or follow up with a child within those bounds.
+The lead may follow up on a child's result by delegating a new child within
+those bounds.
 Multiple independently admitted goals may run concurrently; one lead per goal
 is an accountability rule, not a global execution lock.
 
@@ -137,12 +138,11 @@ make one topology universally superior.
 ## The Staffer Archetype: Infrastructure Specialization
 
 Not every long-running agent serves a user life domain. Some serve the ecosystem
-itself --- routing messages, delivering notifications, or enforcing cross-cutting
-policies. These are **staffers**.
+itself --- ingress and the goal control plane, delivering notifications, or
+enforcing cross-cutting policies. These are **staffers**.
 
 A staffer shares the same runtime engine as a domain butler: the same
-`ButlerDaemon` class, module system, scheduler, LLM spawner, and session
-logging. The distinction is not in the engine but in the role and the permissions
+`ButlerDaemon` class, module system, scheduler, and session logging. The distinction is not in the engine but in the role and the permissions
 model. A staffer's `butler.toml` declares `type = "staffer"`, which gates a small
 set of type-aware behaviors:
 
@@ -299,7 +299,7 @@ separation has been violated.
 
 Connectors are the cheapest place to prevent cost explosions. Every event that
 passes a connector enters the Switchboard pipeline --- ingestion, deduplication,
-potential LLM classification, storage, and downstream signal extraction. Each
+goal admission and reasoning, storage, and downstream signal extraction. Each
 stage has cost: database writes, embedding generation, LLM tokens, and fact
 creation fan-out. Once an event enters the pipeline, it is expensive to stop.
 
@@ -330,8 +330,8 @@ only component that can cheaply distinguish a 3-person family group from a
   appropriate weighting without repeating the transport-specific API calls.
 
 **What connectors MUST NOT gate:** Content-based filtering, semantic
-classification, or routing decisions. Those remain the Switchboard's
-responsibility. The connector gates on structural metadata (participant count,
+classification, or decisions about what a message means. Those belong to the
+goal that admission creates. The connector gates on structural metadata (participant count,
 chat type) that is available from the transport API without reading message
 content.
 

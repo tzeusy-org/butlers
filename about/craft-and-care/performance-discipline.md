@@ -29,7 +29,6 @@ Before claiming a performance improvement, be able to answer:
 
 If those answers are weak, the optimization is not ready.
 
-
 ## Reasoning Architecture Evaluation
 
 The [goal architecture](../heart-and-soul/architecture.md) makes agent

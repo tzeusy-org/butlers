@@ -16,9 +16,10 @@ dedicated prompts. Maximum hierarchy depth is one: lead 0, children 1.
 Children cannot delegate. Parallelism and sequential child rounds are bounded
 by finite goal budgets the runtime enforces.
 
-The lead is a role per goal, not a butler. RFC 0038 places goal admission, the
-goal runner and the capability broker in the Switchboard control plane and
-gives the lead a versioned policy document; General gains no authority.
+The lead is a role per goal, not a butler. Goal admission, the goal runner and
+the capability broker live in the Switchboard control plane, which moves into
+its own process; the lead has a versioned policy document; General gains no
+authority (RFC 0038 D1, owner decision 1).
 
 ### Refinement: hard cutover and authorization in scope
 
@@ -45,8 +46,8 @@ Numbered doctrine rules keep their identifiers; existing citations do not move.
 | `architecture.md`, Domain Specialization | "Context pollution", "Prompt bloat", "Scope creep", "Personality incoherence" described as inevitable for one general agent. | Retrieval, prompt loading and reasoning allocation are evolving mechanisms; custody and permissions are enforced independently. |
 | `architecture.md`, The Core Loop | `trigger -> classify -> route -> spawn -> act -> log` | `admit -> establish authority -> reason -> act/delegate -> reconcile -> record`. |
 | `security.md`, Session Sandboxing | "A session cannot spawn other sessions." (Configured, never enforced; see RFC 0038 Context.) | Sessions are sandboxed and reach only the broker; only a lead can start a session, and only a depth-1 child. |
-| `security.md`, deployment control keys | One named key. | `GOAL_BROKER_SIGNING_KEY` is the second named key. |
-| `v1.md`, success criterion 2 | Over 90% classification accuracy. | Goal runtime meets or beats recorded outcomes on replay; zero unauthorized effects in the adversarial suite. |
+| `security.md`, deployment control keys | One named key. | `GOAL_BROKER_SIGNING_KEY` is the second named key (owner decision 6). |
+| `v1.md`, success criterion 2 | Over 90% classification accuracy. | Goal runtime meets or beats recorded outcomes on replay; zero unauthorized effects in the adversarial suite (owner decision 2). |
 
 Rule 5 distinguishes versioned role guidance from per-invocation task
 artifacts; Rule 7 removes mandatory domain classification. Rules 1, 2 and 4
@@ -75,8 +76,12 @@ and the named SQL exceptions keep their meaning.
   caller authentication, and several tools let a session start sessions or
   proxy calls to any butler. The goal runtime adds the boundary rather than
   giving one up (RFC 0038, Context).
-- **[Observed]** Vendor safety reports for current small models show
-  indirect-injection success rates several times those of frontier models.
+- **[Reported by vendors]** Current small models resist indirect prompt
+  injection less well than frontier models: the
+  [Claude Haiku 5.5 system card](https://www.anthropic.com/document/claude-haiku-5-5-system-card)
+  reports a 7.1% attacker success rate within 15 attempts against 1.0% for
+  Opus 5.5, and [OpenAI's October 2026 GPT-6 update](https://cdn.openai.com/pdf/gpt-6-october.pdf)
+  reports lower injection robustness for GPT-6 Luna than for Sol.
   RFC 0038 therefore keeps every authorization check deterministic, so model
   choice never weakens the boundary.
 - **[Inferred]** Future model improvement favors replaceable reasoning
@@ -125,14 +130,14 @@ authored after owner signoff of RFC 0038 and applied by the same release.
 
 | Artifacts | Disposition |
 |---|---|
-| `about/README.md`, `heart-and-soul/{README,vision,architecture,security,v1}.md` | Describe the goal system only. `about/README.md` and `CLAUDE.md` carry the single cutover pointer. |
+| `about/README.md`, `heart-and-soul/{README,vision,architecture,security,v1}.md` | Describe the goal system only. `about/README.md`, `CLAUDE.md` and the local `doctrine` skill each carry one cutover pointer. |
 | `craft-and-care/{performance-discipline,observability-and-operations}.md` | Whole-goal outcome evaluation and goal-ledger evidence. |
 | RFCs 0001, 0002, 0003, 0008, 0027 | One-line supersession header now; status and body updated by the cutover release. |
 | RFCs 0005, 0006, 0009, 0010, 0011, 0014, 0017, 0020, 0021, 0026, 0028, 0030, 0033, 0037 | Remain authoritative; session attribution maps to invocation lineage. |
-| `openspec/specs/*` baseline capabilities | MODIFIED/REMOVED deltas after RFC signoff (tasks 1.3). |
+| `openspec/specs/*` baseline capabilities | MODIFIED/REMOVED deltas after RFC signoff (tasks 1.4). |
 | `roster/switchboard/MANIFESTO.md`, domain `CLAUDE.md` files | Rewritten by the cutover release: control-plane contract; domain guidance. |
 | `lay-and-land/*`, `docs/*` | Unchanged until the cutover release. |
-| Local `doctrine`, `adding-butlers-to-roster`, `butler-tool-review`, `butler-relentless-jarvis-pursuit` skills | Point at the goal doctrine and RFC 0038; no transition text. |
+| Local `doctrine`, `adding-butlers-to-roster`, `butler-tool-review`, `butler-relentless-jarvis-pursuit` skills | Point at the goal doctrine and RFC 0038; only the `doctrine` skill mentions the pending cutover. |
 
 ## Review and adoption record
 
@@ -145,4 +150,14 @@ authored after owner signoff of RFC 0038 and applied by the same release.
 - On 2026-10-14 the owner confirmed the sign-off, kept the vision and
   architecture changes, and directed the hard cutover and in-scope broker
   design quoted above. RFC 0038 and the `capability-authorization` capability
-  are the result; they await the owner's design and release signoff.
+  are the result.
+- An independent fresh-context review of that revision returned ACCEPT WITH
+  FIXES: six blocking text fixes (pending owner decisions written as settled,
+  signing key sharing the domains' process, indirect root admission through
+  domain reactions and runtime obligations, exposure laundering through stored
+  data, undispositioned model paths and RFCs, child-token contradiction) plus
+  security and wording items. All were addressed in RFC 0038 and the specs.
+- On 2026-10-14 the owner answered RFC 0038's open decisions, choosing:
+  "Switchboard, own process"; "Yes, v1 ships on goals"; "Narrow exemptions";
+  and approving both `GOAL_BROKER_SIGNING_KEY` and "Third-party park-only".
+  Full design signoff of RFC 0038 and the baseline deltas remain.

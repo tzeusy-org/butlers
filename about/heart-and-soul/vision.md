@@ -111,9 +111,9 @@ does not ship.
 
 4. **The daemon is deterministic infrastructure; intelligence is in ephemeral LLM
    sessions.** The daemon manages state, runs migrations, enforces schedules, and
-   registers tools. It must be testable, debuggable, and predictable. The LLM
-   sessions spawned by the daemon are where reasoning and judgment happen. Mixing
-   LLM logic into the daemon is a defect.
+   registers tools. It must be testable, debuggable, and predictable. The goal
+   invocations the control plane launches are where reasoning and judgment
+   happen. Mixing LLM logic into the daemon is a defect.
 
 5. **Git-based config is the source of truth for butler identity; operational
    tuning lives in the database.** A butler's personality, schedule, module
@@ -127,8 +127,8 @@ does not ship.
    the dashboard Models tab (see `src/butlers/core/model_routing.py`). The
    distinction: identity answers
    "what is this butler?"; operational tuning answers "how should it behave
-   right now?" In the target architecture, reusable lead policies, domain
-   guidance, and focus templates are also versioned identity configuration.
+   right now?" Reusable lead policies, domain guidance, and focus templates are
+   also versioned identity configuration.
    Per-task prompts and selected context are invocation artifacts, not new
    roster identities. Runtime tuning cannot widen policy-granted authority.
    If someone changes a butler's name, manifesto, or module list,

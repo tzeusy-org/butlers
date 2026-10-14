@@ -50,7 +50,7 @@ from taking actions beyond their intended scope.
   does not authenticate them cryptographically. What a stranger writes may be
   remembered as an attributed report about that sender, but it never becomes
   steering memory: a rule or owner-profile fact that steers later sessions
-  requires owner authority, stamped by the server from the routing context (never
+  requires owner authority, stamped by the server from the goal's origin (never
   from message text, and never judged by an LLM) or explicit owner endorsement.
 - **Connector transport.** Messages in transit between external services and
   connectors are subject to the transport's own security model (Telegram's
@@ -60,54 +60,66 @@ from taking actions beyond their intended scope.
 ## Goal and Delegation Authority
 
 [RFC 0038](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
-is the contract. Its load-bearing rules:
+specifies the mechanism. The rules it must satisfy:
 
 - **Authority comes from origin, never from text.** Admission derives a goal's
   ceiling from server-held context: owner, obligation, third party, or
-  staffer. A third-party goal can read, record attributed facts, and propose;
-  it can never send, spend, actuate, or administer.
+  staffer. A third-party goal can read, record attributed facts, notify the
+  owner, and at most prepare an action for owner approval; it can never itself
+  send, spend, actuate, or administer.
 - **Grants only narrow.** A lead's grant is at most its goal's ceiling. A
   child's grant is a subset of its lead's, without `administer`. Discovery,
   skills, and task prompts never grant anything.
 - **Exposure gates consequential effects.** Once an invocation has read
-  third-party content, sending, spending, administering, and consequential
-  actuation need per-event owner approval, and steering-memory writes are
-  refused. Owner-directed `notify` and standing rules that pin every safety
-  argument are exempt.
+  third-party content, directly or through records an exposed goal stored,
+  sending, spending, administering, and consequential or protected actuation
+  need per-event owner approval, and steering-memory writes are refused.
+  Exposure never clears, and stored data keeps the taint. The only exemptions
+  are `notify` to the owner with link previews off and URLs inert, and standing
+  rules whose recipient is the owner or whose body is template-pinned.
 - **Two independent checks.** The broker checks every call against the grant,
   exposure, approval policy, and budget. The owning domain then verifies the
-  broker's signed assertion for that exact tool and argument digest before the
-  handler runs. Either check alone stops an unauthorized call.
+  broker's single-use assertion for that domain, that exact tool, and that
+  argument digest before the handler runs, so a call that bypasses the broker
+  is refused even if the sandbox fails.
 - **Depth one, enforced by the runtime.** Only a lead holds `goal.delegate`.
   The runner derives depth from lineage; a child cannot reach admission,
-  routing, schedule creation, or a new root.
+  routing, schedule creation, or a new root. Goals admitted as a consequence of
+  an effect carry its lineage and exposure, and their causal chains are
+  bounded.
+- **Owner decisions stay with the owner.** No goal can list or call a tool that
+  approves, edits, or dispatches a parked action or mints a standing rule.
 - **Stop and recovery are fenced.** Stop revokes every token of the goal in one
-  transaction. A replacement lead advances the goal's epoch, which invalidates
-  its predecessor, and inherits the same budget and effect ledger. Unknown
+  transaction. A replacement or escalated lead advances the goal's epoch, which
+  invalidates its predecessor, and inherits the same exposure, budget, and
+  effect ledger; running children continue under the new lead. Unknown
   effects are never replayed without fresh owner approval.
 
 Cross-domain retrieval is mediated by the owning services. It preserves
 source, sensitivity, and memory-write authority. The lead receives only
 authorized context, and children receive the subset their brief needs. Domain
-custody is not an excuse to give a lead ambient access to all data. Existing
-private-source, approval, and physical-actuation contracts continue to bind.
+custody is not an excuse to give a lead ambient access to all data. Private
+custody content stays unreachable by any model (RFC 0037). Existing approval
+and physical-actuation contracts continue to bind.
 
 ## Session Sandboxing
 
-The goal runner launches every lead and child in its own execution domain.
+The goal runner launches every lead and child on a session host separate from
+the domain and control-plane processes, each in its own execution domain.
 
 **Guarantees:**
 
 - A session reaches only the broker's session endpoint and its model provider.
   It cannot reach PostgreSQL, a domain butler's port, or the credential store.
-- Runtime built-in shell, filesystem, web, and local-server tools are disabled.
-  A runtime adapter that cannot prove this is ineligible.
+- Runtime built-in shell, filesystem, web, and local-server tools, and
+  provider-hosted tools, are disabled. A runtime adapter that cannot prove this
+  is ineligible.
 - A session authenticates with a single-invocation token that dies with the
-  invocation, the goal, or the lead's epoch.
+  invocation or the goal, and for a lead also with the lead's epoch.
 - One invocation cannot read another's token, files, or process state.
 - A session cannot modify its own MCP configuration or grant.
-- Only a lead can start a session, and only a depth-1 child through
-  `goal.delegate`.
+- Only the goal runner starts sessions: leads on admission, recovery, and
+  escalation, and depth-1 children on a lead's `goal.delegate`.
 
 **Limitations:**
 
@@ -230,18 +242,22 @@ hold:
   directory permissions, `no_new_privs`, a global lock, or process-group
   handling alone does not satisfy this boundary.
 
-`RUNTIME_PROBE_CONTROL_SIGNING_KEY` and `GOAL_BROKER_SIGNING_KEY` are the only
-approved uses of this exception. The owner adopted the first, with its refined
-deployment-key contract, on 2026-08-10. The second is added by the 2026-10-14
-generalist-lead amendment: only the Switchboard broker process reads it, and
-domain butlers receive its public key to verify call assertions (RFC 0038). It authenticates the private Dashboard API/scheduler control client
+`RUNTIME_PROBE_CONTROL_SIGNING_KEY` is the first approved use of this exception.
+The owner adopted this amendment and its refined deployment-key contract on
+2026-08-10. It authenticates the private Dashboard API/scheduler control client
 to Switchboard. The Dashboard API process is the only private-key reader;
 Switchboard and the all-butlers runtime receive verification material only.
-For both keys, missing or mismatched key material makes the control plane
-unavailable and never falls back to a credential tier, unsigned request, or
-shared bearer secret. Adding another process-bound deployment control key requires an
+Missing or mismatched key material makes the control plane unavailable and
+never falls back to a credential tier, unsigned request, or shared bearer
+secret. Adding another process-bound deployment control key requires an
 explicit doctrine and capability-spec amendment; this exception is not a
 general file-secret escape hatch.
+
+The owner approved `GOAL_BROKER_SIGNING_KEY` as the second use on 2026-10-14
+(RFC 0038, decision 6). Only the Switchboard control-plane process reads it, to
+sign call assertions; domain butlers receive verification keys only. Its
+provisioning, rotation, and fail-closed behavior are specified in RFC 0038 D7.
+These two are the only approved uses.
 
 ### Resolution Rules
 

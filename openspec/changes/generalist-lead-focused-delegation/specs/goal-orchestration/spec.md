@@ -15,7 +15,7 @@ be forced into one shared conversation or serialized solely by this rule.
 
 ID: REQ-goal-orchestration-001
 Source: about/heart-and-soul/vision.md, What Butlers Is; adopted 2026-10-14 doctrine amendment
-Scope: v1-mandatory
+Scope: proposed-v1
 
 #### Scenario: Cross-domain constraints remain one goal
 - **WHEN** an admitted goal combines travel, budget and health constraints
@@ -33,7 +33,7 @@ override governing policy or grant authority.
 
 ID: REQ-goal-orchestration-002
 Source: about/heart-and-soul/vision.md, Non-Negotiable Rules 5 and 6
-Scope: v1-mandatory
+Scope: proposed-v1
 
 #### Scenario: Cross-domain focus inherits applicable policies
 - **WHEN** a child investigates a bounded question spanning multiple domains
@@ -47,20 +47,22 @@ Scope: v1-mandatory
 The trusted runtime SHALL derive goal lineage and enforce maximum depth one,
 with a lead at depth 0 and children at depth 1. A child SHALL NOT create or
 delegate to another reasoning agent through spawn, routing, scheduling, or
-new-root admission paths. Follow-up work requested by a child SHALL return to
-its lead for a separately admitted sibling or direct action under the same goal.
+new-root admission paths. Admissions caused by a child's effects SHALL be
+bounded as specified in `capability-authorization`. Follow-up work requested by
+a child SHALL return to its lead, which may act directly or delegate a sibling
+under the same goal.
 
 ID: REQ-goal-orchestration-003
 Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 6; about/heart-and-soul/security.md, Goal and Delegation Authority
-Scope: v1-mandatory
+Scope: proposed-v1
 
-#### Scenario: Child attempts a grandchild through routing
-- **WHEN** a depth-1 child asks a routing capability to start another reasoning session
-- **THEN** admission rejects that request before a new session starts even if the request asserts a fresh root or different parent
+#### Scenario: Child attempts a grandchild
+- **WHEN** a depth-1 child calls a delegation, routing, schedule-creation or admission tool, by name or through any capability, to start another reasoning session
+- **THEN** the broker refuses the call because no such tool is in a child's grant, and no session starts even if the request asserts a fresh root or different parent
 
 #### Scenario: Further investigation returns to the lead
 - **WHEN** a child reports that additional focused work is needed
-- **THEN** the lead may handle it or admit another depth-1 child within the original goal's authority and remaining budget, and the original child cannot dispatch it itself
+- **THEN** the lead may handle it or delegate another depth-1 child within the original goal's authority and remaining budget, and the original child cannot dispatch it itself
 
 ### Requirement: Capability ownership and call authority survive delegation
 Lead and child operations SHALL use domain-owned MCP capabilities through the
@@ -72,7 +74,7 @@ private-source restrictions, or domain invariants.
 
 ID: REQ-goal-orchestration-004
 Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 3; RFC 0027, Governing Invariants 1, 3 and 6
-Scope: v1-mandatory
+Scope: proposed-v1
 
 #### Scenario: A discovered capability is unauthorized
 - **WHEN** a model knows a valid capability name but its invocation grant does not permit the requested operation or resource
@@ -85,12 +87,12 @@ Scope: v1-mandatory
 ### Requirement: Depth does not substitute for finite work limits
 The runtime SHALL enforce finite goal work and elapsed-time limits plus child
 concurrency limits before admitting further work. Sequential siblings, retries,
-lead replacements and resumed children SHALL retain the same budget accounting
+lead replacements and escalations SHALL retain the same budget accounting
 and SHALL NOT widen authority or reset consumed limits.
 
 ID: REQ-goal-orchestration-005
 Source: about/heart-and-soul/architecture.md, One lead, focused children, depth one
-Scope: v1-mandatory
+Scope: proposed-v1
 
 #### Scenario: Sequential children exhaust the goal budget
 - **WHEN** a lead requests another depth-1 child after exhausting its goal budget
@@ -109,7 +111,7 @@ receipts and SHALL NOT automatically replay effects whose outcomes are unknown.
 
 ID: REQ-goal-orchestration-006
 Source: about/heart-and-soul/architecture.md, The Core Loop; RFC 0027, Governing Invariant 7
-Scope: v1-mandatory
+Scope: proposed-v1
 
 #### Scenario: Stop races a child effect
 - **WHEN** the owner stops a goal while a child's action is pending or may already have committed
@@ -127,7 +129,7 @@ retaining existing delivery, deduplication and owner-attention policies.
 
 ID: REQ-goal-orchestration-007
 Source: about/heart-and-soul/vision.md, What Success Looks Like; RFCs 0009, 0011 and 0026
-Scope: v1-mandatory
+Scope: proposed-v1
 
 #### Scenario: An obligation becomes due with no conversation running
 - **WHEN** a standing authorized obligation becomes due after previous reasoning sessions have finished
@@ -139,10 +141,12 @@ launched by the goal runner. Owner requests, third-party events, domain
 obligations and staffer work SHALL all enter through goal admission. No domain
 butler, staffer, module or scheduled job SHALL spawn a reasoning session by any
 other path, and no model-classification routing step SHALL precede admission.
+The only model use outside goals SHALL be the engineering executors and
+tool-less model functions that RFC 0038 names, which receive no capabilities.
 
 ID: REQ-goal-orchestration-008
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2 and Hard cutover
-Scope: v1-mandatory
+Scope: proposed-v1
 
 #### Scenario: A domain schedule needs reasoning
 - **WHEN** a domain's scheduled job requires model judgment
@@ -151,3 +155,12 @@ Scope: v1-mandatory
 #### Scenario: An owner message arrives
 - **WHEN** a connector submits an owner message
 - **THEN** admission creates a goal directly from the envelope without a model classification or route-dispatch step
+
+## Source References
+
+- Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)
+- Non-Negotiable Rule 4 (deterministic daemon; intelligence in ephemeral sessions)
+- Non-Negotiable Rule 6 (governing documents; runtime-enforced depth and scope)
+- `about/heart-and-soul/vision.md`, What Butlers Is; `about/heart-and-soul/architecture.md`, One lead, focused children, depth one
+- RFC 0038 (goal runtime and capability authorization)
+- RFCs 0009, 0011 and 0026 (situational context, proactive delivery, commitments)

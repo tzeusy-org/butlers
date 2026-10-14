@@ -7,24 +7,30 @@ trace the change.
 ## Decisions (summary)
 
 1. Switchboard is the control plane: ingress, goal admission, goal ledger,
-   goal runner and capability broker (RFC 0038 D1).
+   goal runner and capability broker, in its own process and container so only
+   it holds the signing key (RFC 0038 D1).
 2. Domain butlers are capability services and obligation owners; they never
    spawn sessions (D2).
-3. Sessions are sandboxed and reach only the broker and their model provider
-   (D3).
+3. Sessions run on a separate session host, sandboxed per invocation, and
+   reach only the broker's session listener and their model provider (D3).
 4. Every model-reachable tool declares effect class, output trust and
    sensitivity, resource and safety arguments, approval policy, idempotency and
    owner authority; undeclared tools are not grantable (D4).
 5. Authority ceilings derive from origin: owner, obligation, third party or
-   staffer (D5). Exposure to untrusted output gates consequential effects (D6).
-6. The broker checks every call and signs an assertion that the owning domain
-   verifies before the handler runs (D7).
+   staffer; caused admissions inherit lineage and exposure under a chain limit
+   (D5). Exposure to untrusted output, including tainted stored records, gates
+   consequential effects (D6).
+6. The broker checks every call transactionally and signs a single-use,
+   audience-bound assertion that the owning domain verifies before the handler
+   runs (D7).
 7. Children are depth 1, created only by `goal.delegate`, with grants that are
    subsets of the lead's minus `administer` (D8, D9).
 8. Budgets, state machines, effect ledger, exact-approval execution, Stop and
    epoch-fenced recovery are goal-level (D10 to D14).
 9. Model choice is per invocation by role and tier with a finite escalation
    ladder that never creates a new goal (D16).
+10. Engineering executors and tool-less model functions are the only model use
+    outside goals (D18).
 
 ## Cutover
 

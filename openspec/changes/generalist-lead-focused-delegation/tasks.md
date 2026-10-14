@@ -2,11 +2,13 @@
 
 - [x] 1.1 Record owner adoption of the generalist-lead doctrine (2026-10-14).
 - [x] 1.2 Draft RFC 0038 with the authorization broker, hard cutover plan and owner decisions.
-- [ ] 1.3 Owner signoff on RFC 0038 and its owner decisions; author MODIFIED/REMOVED deltas for the baseline capabilities listed in proposal.md.
-- [ ] 1.4 Derive the implementation epic and beads from the signed contract.
+- [x] 1.3 Owner answers RFC 0038 decisions 1, 2, 3, 6 and 7 (2026-10-14).
+- [ ] 1.4 Owner signoff on the full RFC 0038 design; author MODIFIED/REMOVED deltas for the baseline capabilities listed in proposal.md.
+- [ ] 1.5 Derive the implementation epic and beads from the signed contract.
 
 ## 2. Dark build (merged to main, not wired to ingress or schedules)
 
+- [ ] 2.0 Move Switchboard into its own process and container with separate service and session listeners.
 - [ ] 2.1 Catalog authorization metadata for every LLM-presentable tool, with a CI check.
 - [ ] 2.2 Goal ledger migrations: goals, invocations, effects, budgets.
 - [ ] 2.3 Goal admission with origin ceilings and obligation declarations.
@@ -15,6 +17,8 @@
 - [ ] 2.6 Domain-side assertion verification in the core tool wrapper (enabled by the cutover release).
 - [ ] 2.7 Goal tools, delegation, budgets, Stop, recovery and escalation.
 - [ ] 2.8 RFC 0027 native deferred discovery on the broker endpoint.
+- [ ] 2.9 Taint stamping on domain writes under exposed assertions, and caused-admission lineage on domain events.
+- [ ] 2.10 Route every direct service call to a model-reachable tool through the control plane service listener.
 
 ## 3. Cutover gate (dev namespace, release candidate)
 
