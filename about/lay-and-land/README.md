@@ -1,5 +1,10 @@
 # Lay of the Land -- Topology Maps
 
+The [generalist-lead amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md) proposes a depth-one
+reasoning hierarchy while preserving domain responsibilities. It records the
+target/current boundary and affected artifacts; current executable contracts
+and topology remain authoritative until explicitly superseded.
+
 This directory answers **WHERE**: where components live, how they connect, what
 boundaries exist, and how the system is deployed.
 

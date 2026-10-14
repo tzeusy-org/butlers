@@ -1,5 +1,10 @@
 # Legends and Lore -- Design Contracts
 
+The [generalist-lead amendment](decisions/2026-10-14-doctrine-focused-delegation.md) proposes a depth-one
+reasoning hierarchy while preserving domain responsibilities. It records the
+target/current boundary and affected artifacts; current executable contracts
+and topology remain authoritative until explicitly superseded.
+
 This directory contains the normative design contracts for the Butlers system. Each RFC defines a technical contract at the wire, protocol, or API level. Together they describe HOW the system works.
 
 ## Reading Order

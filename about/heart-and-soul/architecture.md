@@ -1,7 +1,20 @@
 # Architecture Philosophy
 
+> **Proposed target doctrine (2026-10-14).** This branch drafts the owner-requested
+> generalist-lead direction; exact amendment adoption is pending. Existing runtime
+> contracts remain binding until explicitly superseded. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
+
 This document explains WHY the system is shaped the way it is. For implementation
 details, database schemas, and API contracts, see the [architecture docs](../../docs/architecture/index.md).
+
+## Current Implementation and Transition
+
+The generalist-lead model in this document is proposed target doctrine. Existing daemon,
+registration, and routing contracts below describe the current execution
+baseline and remain binding during transition. Adoption of a direction alone
+must not widen any running session's tools, database access, or spawn authority.
+The [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
+records the affected contracts and pending specification work.
 
 ## The Butler-as-Daemon Model
 
@@ -48,10 +61,11 @@ The Model Context Protocol governs three relationships in Butlers:
   Switchboard. This is a feature: it means the butler's tools are the complete
   interface, with no hidden backdoors.
 
-**The constraint:** MCP is the ONLY inter-butler communication channel. Butlers
-must not share database connections, import each other's modules, or communicate
-through side channels. If two butlers need to coordinate, it flows through the
-Switchboard.
+**The boundary:** MCP remains the cross-domain capability interface, brokered
+through Switchboard. Domain services do not share database connections or import
+each other's modules. The target lead may call authorized domain capabilities
+through this boundary without triggering a specialist LLM. Existing routes do
+not acquire that new authority until the successor contract is implemented.
 
 **The exception mechanism:** When the MCP-compliant path (Switchboard fan-out)
 would require multiple LLM sessions for work that involves zero LLM reasoning
@@ -64,29 +78,73 @@ on-demand carve-outs in vision.md (the QA scheduler's policy projection and the
 Concierge's system-plane views, RFC 0030) satisfy this through Switchboard-routed
 tool calls or a fixed no-argument projection over fixed views, not ad hoc reads.
 
-## Why Domain Specialization Over Monolith
+## Domain Responsibilities and Generalist Reasoning
 
-A single agent that handles health, finance, relationships, and everything else
-will inevitably suffer from:
+Domain ownership is durable; reasoning allocation is replaceable. Keep domain
+manifestos, data custody, capability contracts, and proactive obligations while
+allowing a lead to reason across them. Do not require another reasoning session
+for a deterministic lookup or action that the lead is authorized to request.
 
-- **Context pollution:** Health context leaks into finance sessions, consuming
-  tokens and confusing the model.
-- **Prompt bloat:** The system prompt grows without bound as capabilities are
-  added. Every session pays the cost of every domain.
-- **Scope creep:** Without clear boundaries, every feature belongs everywhere.
-  Quality degrades as the agent becomes a generalist.
-- **Personality incoherence:** A health companion and a financial advisor have
-  different tones, different risk tolerances, and different definitions of
-  "helpful."
+MCP tool search and deferred loading reduce initial prompt cost. They do not
+retrieve all relevant personal facts, teach domain procedures, or authorize
+calls. A lead therefore retrieves capabilities, domain guidance, and relevant
+memory separately, preserving provenance and explicit unknowns. The planner
+must be able to discover related domains instead of treating its first search
+results as the complete solution space.
 
-Domain butlers solve this by giving each domain its own process, its own prompt,
-its own tools, and its own manifesto. The health butler loads health tools and
-runs with a health-oriented personality. The finance butler loads finance tools.
-Neither pays for the other's context.
+A focused child is useful when it provides depth, parallel exploration,
+context isolation, distinct model competence, or independent verification.
+A dedicated prompt defines its question, success conditions, supplied evidence,
+allowed scope, and return contract. It need not correspond to exactly one
+roster entry: a focus can be a bounded cross-domain subproblem. Retrieval and
+permissions must support the work actually assigned.
 
-**The constraint:** Domain boundaries are enforced at the process level, not by
-convention. A butler cannot access another butler's database schema or tools. The
-Switchboard is the only bridge.
+### One lead, focused children, depth one
+
+The lead is depth 0. It may create zero or more depth-1 children, within a
+finite per-goal budget and configured concurrency limit. Children may call
+permitted deterministic tools and return evidence, proposals, or action
+receipts. They cannot create reasoning sessions, delegate through Switchboard,
+ask another child to act, or disguise delegation as a new independent goal.
+A child reports the need for further work to the lead, which may dispatch a
+sibling under the same goal and remaining budget. Root retries and resumptions
+retain lineage, authority, cancellation, and budget accounting.
+
+This bounds hierarchy depth, not the number of rounds. The runtime also bounds
+total work so a sequence of siblings cannot become unbounded recursion.
+The lead may resume or follow up with a child within those bounds.
+Multiple independently admitted goals may run concurrently; one lead per goal
+is an accountability rule, not a global execution lock.
+
+Children return structured findings with source references, uncertainty,
+unresolved constraints, and receipts for attempted effects. The lead reconciles
+conflicts and owns the final outcome. Domain services enforce action rules,
+idempotency, approval, and concurrency semantics even when several goals act
+on the same resource. A child's success claim is not an execution receipt.
+
+Read and write permissions are explicit per invocation. Focused children are
+not inherently read-only, but a lead cannot delegate authority it lacks or
+self-approve a child's action. The exact authorization mechanism and wire
+contract require a successor RFC before implementation.
+
+### Durable care without a permanent reasoning agent
+
+Schedules, subscriptions, and open obligations remain owned by domains and
+survive session completion. An event can initiate a lead with relevant domain
+context; simple work can finish without children. The absence of a running
+model never means the absence of responsibility. Proactive results retain the
+existing owner attention, deduplication, and delivery policies.
+
+### A revisable architecture, not a capability forecast
+
+Depth one is the initial architectural bound requested by the owner, not a
+claim that deeper collaboration can never help. Reconsider it only through an
+explicit amendment backed by outcome evidence. Keep model selection per
+invocation and preserve the ability to use distinct specialist models without
+requiring them. Evaluate useful completed obligations, cross-domain coherence,
+owner corrections, latency, total cost including retries, and safe failure.
+Cheaper inference benefits both generalists and collaboration; it does not
+make one topology universally superior.
 
 ## The Staffer Archetype: Infrastructure Specialization
 
@@ -175,12 +233,13 @@ especially on smaller or cheaper models. Under verified native deferred
 discovery, the registered and searchable sets may be larger while full typed
 definitions load only on demand.
 
-The target is 30-50 tools initially loaded per session, not 30-50 registered
-handlers per butler. This is not arbitrary. It is the range where LLM tool
-selection remains reliable across model tiers without burning a significant
-fraction of the context window on tool definitions alone. Registration-time
-group and manifesto pruning remain mandatory because they enforce domain
-ownership even when a definition is not initially loaded.
+The current 30-50 initially loaded tool guideline is an operational heuristic,
+not a permanent limit on the system's capability catalog or a model-independent
+reliability guarantee. Measure retrieval recall, task success, context cost,
+latency, and cache behavior for supported model/runtime combinations.
+Registration-time groups and manifesto alignment still govern service ownership.
+A successor lead's searchable scope needs its own execution authorization
+contract; RFC 0027 alone cannot broaden it.
 
 **How to stay within budget:**
 
@@ -216,10 +275,9 @@ butler. Cross-cutting modules are where pruning matters: memory, calendar,
 approvals, and similar modules that appear on multiple butlers. Each butler
 enables only the groups relevant to its role, and the rest stay silent.
 
-**The constraint:** Adding a tool to a butler's surface is not free. Every
-registration must be justified by the butler's role. The question is not "could
-this butler use this tool?" but "does this butler need this tool in most
-sessions?"
+**The constraint:** Every registered tool needs a domain or infrastructure
+owner and a justified purpose. Frequency of use informs eager versus deferred
+loading, not whether a legitimate rare capability deserves to exist.
 
 ## Why Connectors Are Separate from Butlers
 
@@ -326,7 +384,23 @@ insight delivery settings).
 
 ## The Core Loop
 
-Every butler operation follows the same cycle:
+The proposed goal loop is:
+
+```text
+admit event/obligation -> establish goal and authority -> reason and discover
+                    -> act and optionally delegate to depth-1 children
+                    -> reconcile evidence/effects -> record outcome
+```
+
+Admission, permissions, lineage, budgets, cancellation, and durable outcomes are
+runtime responsibilities. Planning and choosing a focus are model decisions.
+Persist the goal and evidence outside model context so recovery does not depend
+on one transcript or an irreplaceable lead process. A recovered lead assumes
+one fenced ownership slot; it does not create a second authority for the goal.
+Stopping a goal fences new child creation and new effects across its children;
+already committed actions remain recorded rather than described as undone.
+
+The current implementation follows this cycle until explicitly superseded:
 
 ```
 trigger --> classify --> route --> spawn --> act --> log
@@ -347,10 +421,8 @@ trigger --> classify --> route --> spawn --> act --> log
 6. **Log:** The butler records the session: trigger source, tools called, tokens
    consumed, duration, and outcome.
 
-This cycle is the heartbeat of the system. Every feature, every module, every
-connector ultimately feeds into or consumes from this loop. Changes that break
-the loop's simplicity or add conditional branches to it require exceptional
-justification.
+This is the existing routing baseline, not a requirement to retain a separate
+classification and specialist reasoning pass for every future goal.
 
 Two cross-cutting pipelines augment the core loop without modifying it:
 

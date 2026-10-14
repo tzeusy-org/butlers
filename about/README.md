@@ -1,10 +1,14 @@
 # About Butlers
 
-Butlers is a personal AI agent system where specialized, long-running daemons
-handle the recurring mental labor of daily life. Each butler owns a life
-domain — health, relationships, finance, education, travel, home, lifestyle —
-and acts autonomously on schedules and in response to incoming messages. One
-user. One instance. Full sovereignty over data, credentials, and LLM keys.
+Butlers absorbs the recurring mental labor of one person's life through durable
+domain responsibilities, proactive work, and goal-directed assistance. One user.
+One instance. Full sovereignty over data, credentials, and model choices.
+
+The [proposed 2026-10-14 shape amendment](legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
+separates domain ownership from reasoning agents: one generalist lead per goal,
+searchable capabilities, and optional focused children at maximum depth one.
+It is a reviewable target, not a claim that this execution model has shipped.
+The current implementation remains a fleet of domain and staffer daemons.
 
 ## The Five-Pillar Knowledge Architecture
 
@@ -48,6 +52,11 @@ them in this order — higher numbers defer to lower numbers, never the reverse:
 | 5 | **Lay and Land** | Topology snapshot — where components live, how they connect, stability levels | `about/lay-and-land/` |
 | 6 | **Roster config** | Live butler identity: `butler.toml`, `MANIFESTO.md`, `CLAUDE.md`, skills, API routes | `roster/{butler}/` |
 | 7 | **Code** | Runtime behaviour — executed source, migrations, tests | `src/`, `alembic/`, `tests/` |
+
+A proposed doctrine amendment is not an adopted higher-priority rule. During
+an architectural transition, the decision record identifies target intent and
+which current contracts remain binding. Neither a target diagram nor an ADDED
+proposal silently supersedes existing baseline requirements.
 
 Precedence in practice:
 
@@ -100,7 +109,7 @@ a contract test that projects from the highest-level artefact downward.
 - *"What exactly must X do?"* → Spec and Spine (find the spec)
 - *"Where does X live in the codebase?"* → Lay and Land (check components)
 
-## Key Architectural Facts
+## Current Implementation Facts
 
 - **One daemon per `roster/` entry** — staffers carry `type = "staffer"` in
   `butler.toml`, the rest are domain butlers; each is a FastMCP server on its

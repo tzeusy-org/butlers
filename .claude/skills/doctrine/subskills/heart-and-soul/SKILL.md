@@ -35,7 +35,14 @@ The `about/heart-and-soul/` directory is the WHY pillar of the Butlers knowledge
 
 Consult `about/heart-and-soul/README.md` for the canonical reading order and usage guide.
 
-## Non-Negotiable Rules (from vision.md)
+## Architectural Transition
+
+The 2026-10-14 generalist-lead amendment is a proposed target, not an execution
+permission. Read `about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md`
+for adoption status, the depth-one model, and current-contract preservation.
+Do not infer a permission change from draft doctrine or tool discovery.
+
+## Current Runtime Rules (until explicit successor cutover)
 
 These are the load-bearing constraints. Violating any of them means the change does not ship.
 

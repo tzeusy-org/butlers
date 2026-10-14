@@ -1,5 +1,9 @@
 # Security Model
 
+> **Proposed target doctrine (2026-10-14).** This branch drafts the owner-requested
+> generalist-lead direction; exact amendment adoption is pending. Existing runtime
+> contracts remain binding until explicitly superseded. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
+
 ## Trust Premise
 
 Butlers is user-federated. One user. One instance. The user owns the machine,
@@ -37,10 +41,11 @@ from taking actions beyond their intended scope.
   (OwnTracks), listening history (Spotify), smart home state (Home Assistant),
   and file metadata (Google Drive) may appear in LLM prompts when butlers
   process ingested events from these sources.
-- **Ephemeral LLM sessions.** Each session is sandboxed to its own butler's MCP
-  tools. A health butler session cannot call finance butler tools. However, the
-  LLM itself may attempt unexpected tool call patterns, which is why approval
-  gates exist for sensitive operations.
+- **Ephemeral LLM sessions.** Current sessions are scoped to their own
+  butler's MCP tools. The proposed lead and child model replaces fixed
+  domain membership with explicit goal-bound grants only after the successor
+  contract is implemented. Sessions remain partially trusted in either model;
+  approval gates and execution checks constrain sensitive operations.
 
 ### What is untrusted
 
@@ -57,7 +62,40 @@ from taking actions beyond their intended scope.
   encryption, Gmail's TLS, etc.). Butlers does not add an additional encryption
   layer.
 
-## Session Sandboxing
+## Target Goal and Delegation Authority
+
+The target lead and every child are partially trusted model sessions. A
+server-derived grant binds each invocation to its goal, caller, operations,
+resource scope, and approval policy. The runtime checks it at discovery and at
+invocation; hidden tools, dedicated prompts, MCP namespaces, and a one-user
+installation do not substitute for authorization. A lead may request a narrower
+child grant but cannot create or enlarge its own authority.
+
+Credentials stay with trusted services. A model's general reasoning capability
+does not imply direct database, shell, network, or credential access. A runtime
+that cannot enforce the assigned boundary is ineligible for that assignment.
+Any future programmatic tool execution must enforce the same grants beneath
+its nested calls and prevent alternate effect paths.
+
+Only the depth-0 lead can request children. The trusted runtime derives lineage,
+rejects depth greater than one, and prevents a child from using routing, jobs,
+or a new-root request to create another reasoning agent on its behalf. An
+independently authorized standing schedule remains valid; a child cannot create
+one to evade its scope. Stop, budgets, and authority survive retries and
+recovery; child results cannot promote untrusted claims into owner instructions.
+
+Cross-domain retrieval is mediated by the owning services and purpose-bound
+access. It preserves source, sensitivity, and memory-write authority. The lead
+receives only authorized context, and children receive the subset needed for
+their brief. Domain custody is not an excuse to give a lead ambient access to
+all data. Existing private-source, approval, and physical-actuation contracts
+continue to bind.
+
+These are target requirements, not assertions about deployed enforcement.
+RFC 0027 is explicitly presentation-only. Target activation requires a reviewed
+execution-authorization and delegation contract plus enforcement evidence.
+
+## Session Sandboxing (Current Contract)
 
 When a butler spawns an ephemeral LLM session, the session receives a
 locked-down MCP configuration containing only that butler's registered tools.
