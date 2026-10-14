@@ -3814,6 +3814,14 @@ class MessagePipeline:
                         )
 
                         system_answer = extract_system_answer(tool_calls)
+                        if system_answer is not None and system_answer.get("status") == "cancelled":
+                            return RoutingResult(
+                                target_butler="cancelled",
+                                route_result={"cancelled": True},
+                                routed_targets=[],
+                                acked_targets=[],
+                                failed_targets=[],
+                            )
                         if system_answer is not None:
                             outcome = await persist_system_answer(
                                 self._pool,
@@ -3823,7 +3831,7 @@ class MessagePipeline:
                                 answer=cc_output,
                                 evidence=system_answer,
                             )
-                            succeeded = outcome == "completed"
+                            succeeded = outcome in {"completed", "cancelled"}
                             if message_inbox_id:
                                 completed_at = datetime.now(UTC)
                                 await self._update_message_inbox_lifecycle(
@@ -3845,7 +3853,9 @@ class MessagePipeline:
                                     final_state_at=completed_at,
                                 )
                             return RoutingResult(
-                                target_butler="concierge",
+                                target_butler="cancelled"
+                                if outcome == "cancelled"
+                                else "concierge",
                                 route_result={"lane": "system_answer", "status": outcome},
                                 routing_error=None if succeeded else "system_answer:" + outcome,
                                 routed_targets=[],

@@ -126,6 +126,15 @@ async def read_system_answer(
                 return {"status": "cancelled", "answered": False, "cancelled": True}
             if control.outcome != "active":
                 return {"status": "refused", "answered": False, "reason": "dashboard_turn_terminal"}
+        from butlers.tools.switchboard.routing.route import _call_butler_tool
+
+        async def call_read(endpoint: str, name: str, args: dict[str, Any]) -> Any:
+            # route() adds its trace carrier to arbitrary tool kwargs. Read tools
+            # have strict provider signatures; keep that carrier in the router's
+            # span instead of forwarding it as an unsupported MCP argument.
+            read_args = {key: value for key, value in args.items() if key != "trace_context"}
+            return await _call_butler_tool(endpoint, name, read_args)
+
         async with asyncio.timeout(_READ_TIMEOUT_S):
             result = await route(
                 pool,
@@ -133,6 +142,7 @@ async def read_system_answer(
                 tool_name=tool_name,
                 args=tool_args or {},
                 source_butler=source_butler,
+                call_fn=call_read,
             )
         data = (
             result.get("result") if isinstance(result, dict) and not result.get("error") else None
@@ -159,7 +169,18 @@ def extract_system_answer(calls: list[dict[str, Any]]) -> dict[str, Any] | None:
                 result = json.loads(result)
             except ValueError:
                 continue
-        if not isinstance(result, dict) or result.get("status") != "ok":
+        if not isinstance(result, dict):
+            continue
+        if result.get("status") == "cancelled":
+            args = call.get("input") or call.get("args") or call.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {}
+            if isinstance(args, dict) and args.get("scope") == "system":
+                return {"status": "cancelled"}
+        if result.get("status") != "ok":
             continue
         data = result.get("data")
         if (

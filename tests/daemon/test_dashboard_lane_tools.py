@@ -940,13 +940,35 @@ async def test_system_question_reads_registered_concierge_and_publishes_cited_an
     query = AsyncMock(return_value=[queries.DailySpend("2026-10-13", 123, 7)])
     monkeypatch.setattr(queries, "query_spend_daily", query)
 
-    async def read(*_args, **kwargs):
+    from importlib import import_module
+
+    router = import_module("butlers.tools.switchboard.routing.route")
+    actual_route = router.route
+    monkeypatch.setattr(router, "receiver_route_cutover_enabled", lambda: False)
+    monkeypatch.setattr(
+        router,
+        "resolve_routing_target",
+        AsyncMock(
+            return_value=(
+                {"endpoint_url": "http://localhost:41112/mcp"},
+                None,
+            )
+        ),
+    )
+    monkeypatch.setattr(router, "inject_trace_context", lambda: {"traceparent": "synthetic-trace"})
+
+    async def transport(endpoint, name, args):
+        assert name == "dashboard_read_spend_daily"
+        assert args == {"days": 2}  # router tracing must not poison strict tool arguments
+        async with Client(concierge) as client:
+            return await client.call_tool(name, args)
+
+    monkeypatch.setattr(router, "_call_tool_with_router_client", transport)
+
+    async def read(*args, **kwargs):
         assert kwargs["target_butler"] == "concierge"
         assert kwargs["tool_name"] == "dashboard_read_spend_daily"
-        assert kwargs["args"] == {"days": 2}
-        async with Client(concierge) as client:
-            result = await client.call_tool(kwargs["tool_name"], kwargs["args"])
-        return {"result": result.data}
+        return await actual_route(*args, **kwargs)
 
     route = AsyncMock(side_effect=read)
     _, tools = await _start_switchboard_and_capture_tools(
