@@ -900,7 +900,7 @@ function BreakdownBar({
       {labelEl}
       <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
         <div
-          className="h-full bg-primary rounded-full transition-all"
+          className="h-full bg-primary rounded-full"
           style={{ width: `${pct.toFixed(1)}%` }}
         />
       </div>

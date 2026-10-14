@@ -63,7 +63,7 @@ describe("MessageThread — pending conversation activity", () => {
     expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
   });
 
-  it("keeps three animated decorative dots beside one polite status", () => {
+  it("keeps three static decorative dots beside one polite status", () => {
     const streaming: StreamingState = {
       conversationId: "conversation-1",
       messageId: "message-1",
@@ -85,8 +85,11 @@ describe("MessageThread — pending conversation activity", () => {
     expect(screen.getByTestId("chat-activity-status").textContent).toBe(
       "Routed to finance; waiting for a reply.",
     );
-    const dots = container.querySelectorAll("span.animate-bounce");
+    const dots = container.querySelectorAll('[data-testid="typing-indicator"] span[aria-hidden="true"]');
     expect(dots).toHaveLength(3);
+    expect(screen.getByTestId("chat-activity-status").getAttribute("role")).toBe("status");
+    expect(screen.getByTestId("chat-activity-status").getAttribute("aria-live")).toBe("polite");
+    expect(container.querySelector('[data-testid="typing-indicator"]')!.innerHTML).not.toMatch(/animate-|animation-delay/);
     for (const dot of dots) {
       expect(dot.getAttribute("aria-hidden")).toBe("true");
     }
