@@ -27,12 +27,11 @@ butler", "register a butler with switchboard", "what files does a butler need".
 
 ## Reasoning Roles Are Not Roster Entries
 
-This workflow creates durable daemon and capability owners. Under the adopted
-`about/heart-and-soul/vision.md`, a focused child is an ephemeral invocation,
-not a new butler, schema, or manifesto. A need for a dedicated task prompt alone
-does not justify scaffolding a butler. Lead hosting and any governing-identity
-amendment require the successor contract recorded in
-`about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md`.
+This workflow creates durable domain owners: data, capabilities, schedules and
+obligations. A goal's lead and focused children are ephemeral invocations, not
+new butlers, schemas or manifestos (`about/heart-and-soul/vision.md`). A need
+for a dedicated task prompt alone never justifies scaffolding a butler. New
+model-reachable tools must declare RFC 0038 authorization metadata.
 
 ## Prerequisites
 

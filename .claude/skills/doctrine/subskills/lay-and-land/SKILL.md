@@ -12,9 +12,6 @@ description: >
 
 The `about/lay-and-land/` directory is the WHERE pillar of the Butlers knowledge architecture. It contains maps of the system: what components exist, how they connect, where data flows, and what the deployment looks like.
 
-For the adopted successor direction, read `about/lay-and-land/target-reasoning.md`.
-It is a logical responsibility map, not evidence of deployed components.
-
 ## Five-Pillar Model
 
 | Pillar | Directory | Answers |

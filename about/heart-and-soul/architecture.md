@@ -1,20 +1,7 @@
 # Architecture Philosophy
 
-> **Adopted target doctrine (2026-10-14).** The owner adopted the generalist-lead
-> direction and depth-one focused delegation. Existing runtime contracts remain
-> binding until explicitly superseded through a verified cutover. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
-
 This document explains WHY the system is shaped the way it is. For implementation
 details, database schemas, and API contracts, see the [architecture docs](../../docs/architecture/index.md).
-
-## Current Implementation and Transition
-
-The generalist-lead model in this document is adopted target doctrine. Existing daemon,
-registration, and routing contracts below describe the current execution
-baseline and remain binding during transition. Adoption of a direction alone
-must not widen any running session's tools, database access, or spawn authority.
-The [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
-records the affected contracts and pending specification work.
 
 ## The Butler-as-Daemon Model
 
@@ -36,17 +23,19 @@ container spun up per request. This is deliberate.
 
 **The constraint:** The daemon itself must be deterministic. It does not reason,
 classify, or decide. It manages lifecycle, enforces schedules, and registers
-tools. Intelligence lives exclusively in the ephemeral LLM sessions the daemon
-spawns. This separation keeps the daemon testable and predictable.
+tools. Intelligence lives exclusively in ephemeral LLM sessions, which the
+Switchboard control plane launches as goal invocations. This separation keeps
+the daemon testable and predictable.
 
 ## Why MCP as the Universal Interface
 
 The Model Context Protocol governs three relationships in Butlers:
 
-1. **LLM-to-butler:** Ephemeral LLM sessions call the butler's MCP tools to
-   read state, send messages, and interact with external services.
-2. **Butler-to-butler:** The Switchboard dispatches work to domain butlers via
-   MCP calls. Domain butlers never call each other directly.
+1. **Session-to-capability:** Goal invocations call domain capabilities through
+   the Switchboard broker, which forwards each permitted call to the owning
+   butler's MCP server.
+2. **Butler-to-butler:** Deterministic service calls between butlers go through
+   the Switchboard. Domain butlers never call each other directly.
 3. **Client-to-butler:** The dashboard, connectors, and any future clients
    interact with butlers through their MCP endpoints.
 
@@ -56,16 +45,15 @@ The Model Context Protocol governs three relationships in Butlers:
   Developers learn it once.
 - LLM runtimes already speak MCP natively. No translation layer needed between
   the LLM and the butler's capabilities.
-- Inter-butler communication uses the same mechanism that LLM sessions use. A
-  butler cannot tell whether a tool call came from an LLM session or from the
-  Switchboard. This is a feature: it means the butler's tools are the complete
-  interface, with no hidden backdoors.
+- Inter-butler communication uses the same mechanism that LLM sessions use.
+  The butler's tools are the complete interface, with no hidden backdoors. A
+  model-reachable tool runs only with a broker assertion naming the goal and
+  invocation behind the call, so the owning domain always knows who asked.
 
 **The boundary:** MCP remains the cross-domain capability interface, brokered
 through Switchboard. Domain services do not share database connections or import
-each other's modules. The target lead may call authorized domain capabilities
-through this boundary without triggering a specialist LLM. Existing routes do
-not acquire that new authority until the successor contract is implemented.
+each other's modules. A lead calls authorized domain capabilities through this
+boundary without triggering another reasoning session.
 
 **The exception mechanism:** When the MCP-compliant path (Switchboard fan-out)
 would require multiple LLM sessions for work that involves zero LLM reasoning
@@ -124,8 +112,8 @@ on the same resource. A child's success claim is not an execution receipt.
 
 Read and write permissions are explicit per invocation. Focused children are
 not inherently read-only, but a lead cannot delegate authority it lacks or
-self-approve a child's action. The exact authorization mechanism and wire
-contract require a successor RFC before implementation.
+self-approve a child's action. [RFC 0038](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+specifies the authorization mechanism and wire contract.
 
 ### Durable care without a permanent reasoning agent
 
@@ -158,17 +146,18 @@ logging. The distinction is not in the engine but in the role and the permission
 model. A staffer's `butler.toml` declares `type = "staffer"`, which gates a small
 set of type-aware behaviors:
 
-- **Routing exclusion:** Staffers are never candidates for user-message
-  classification by the Switchboard. When an incoming message is classified, only
-  domain butlers are in the candidate set. Butler-to-staffer routing (e.g.,
-  `notify()` routing through Switchboard to Messenger) is unaffected.
+- **Goal origin:** Reasoning a staffer needs runs as a staffer-origin goal
+  whose authority ceiling its infrastructure contract declares. Staffers are
+  not life domains, so owner goals do not treat them as domain owners.
+  Butler-to-staffer calls (e.g., `notify()` through Switchboard to Messenger)
+  are unaffected.
 - **Briefing exclusion:** Staffers do not contribute to daily briefings. They
   serve the system, not the user's domains, so they have nothing to contribute to
   the user's situational summary.
 - **Cross-butler access:** Staffers may declare explicit cross-butler access
-  permissions in `butler.toml` under `[butler.permissions]`. This formalizes the
-  connectivity that the Switchboard and Messenger already exercise. Domain butlers
-  default to no cross-butler access.
+  permissions in `butler.toml` under `[butler.permissions]` for deterministic
+  service calls. Domain butlers default to no cross-butler access. Session
+  authority never comes from these permissions; it comes from goal grants.
 
 Staffers use a `MANIFESTO.md` with infrastructure-contract framing rather than
 user-relationship framing. The contract specifies the service's responsibilities,
@@ -177,8 +166,8 @@ governance applies: a new capability proposed for a staffer must be evaluated
 against the contract and may require a formal amendment.
 
 The staffers are the entries in `roster/` whose `butler.toml` declares
-`type = "staffer"` (for example Switchboard for routing and ingestion, and
-Messenger for outbound delivery). Future infrastructure agents --- log
+`type = "staffer"` (for example Switchboard for ingress and the goal control
+plane, and Messenger for outbound delivery). Future infrastructure agents --- log
 aggregation, billing --- follow the same pattern without requiring engine
 changes.
 
@@ -238,8 +227,8 @@ not a permanent limit on the system's capability catalog or a model-independent
 reliability guarantee. Measure retrieval recall, task success, context cost,
 latency, and cache behavior for supported model/runtime combinations.
 Registration-time groups and manifesto alignment still govern service ownership.
-A successor lead's searchable scope needs its own execution authorization
-contract; RFC 0027 alone cannot broaden it.
+An invocation's searchable scope is its grant (RFC 0038); RFC 0027 governs
+presentation within it and never broadens it.
 
 **How to stay within budget:**
 
@@ -384,13 +373,25 @@ insight delivery settings).
 
 ## The Core Loop
 
-The adopted target goal loop is:
-
 ```text
 admit event/obligation -> establish goal and authority -> reason and discover
                     -> act and optionally delegate to depth-1 children
                     -> reconcile evidence/effects -> record outcome
 ```
+
+1. **Admit:** An owner message, third-party event, due obligation, or staffer
+   task reaches Switchboard. Admission records a goal and derives its origin,
+   authority ceiling, and budget from server-held context. No model classifies
+   the event first.
+2. **Reason:** The goal runner launches a sandboxed lead with the goal input,
+   the owner profile, the lead policy, and an index of domains. Before acting,
+   the lead may check shared situational context (RFC 0009).
+3. **Act and delegate:** The lead calls permitted capabilities through the
+   broker and may start depth-1 children with bounded briefs and narrower
+   grants.
+4. **Reconcile:** The lead resolves child findings against the effect ledger.
+5. **Record:** The goal ends with an outcome that distinguishes completed,
+   partial, failed, stopped, and budget-limited work, plus every effect receipt.
 
 Admission, permissions, lineage, budgets, cancellation, and durable outcomes are
 runtime responsibilities. Planning and choosing a focus are model decisions.
@@ -399,30 +400,6 @@ on one transcript or an irreplaceable lead process. A recovered lead assumes
 one fenced ownership slot; it does not create a second authority for the goal.
 Stopping a goal fences new child creation and new effects across its children;
 already committed actions remain recorded rather than described as undone.
-
-The current implementation follows this cycle until explicitly superseded:
-
-```
-trigger --> classify --> route --> spawn --> act --> log
-```
-
-1. **Trigger:** An event arrives --- external MCP call, cron tick, or connector
-   submission.
-2. **Classify:** The Switchboard determines which domain(s) the event belongs to
-   (for external messages) or the scheduler determines which prompt to run (for
-   cron triggers).
-3. **Route:** The classified event is dispatched to the appropriate butler(s)
-   via MCP.
-4. **Spawn:** The receiving butler generates a locked-down MCP config and spawns
-   an ephemeral LLM CLI session.
-5. **Act:** The LLM session reasons, calls tools, reads and writes state, and
-   produces output. Before acting, the session may check shared situational
-   context (RFC 0009) to adapt its behavior to the user's current state.
-6. **Log:** The butler records the session: trigger source, tools called, tokens
-   consumed, duration, and outcome.
-
-This is the existing routing baseline, not a requirement to retain a separate
-classification and specialist reasoning pass for every future goal.
 
 Two cross-cutting pipelines augment the core loop without modifying it:
 

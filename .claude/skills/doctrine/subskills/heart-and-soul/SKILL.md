@@ -35,18 +35,14 @@ The `about/heart-and-soul/` directory is the WHY pillar of the Butlers knowledge
 
 Consult `about/heart-and-soul/README.md` for the canonical reading order and usage guide.
 
-## Architectural Transition
+## Non-Negotiable Rules
 
-The owner adopted the generalist-lead and depth-one focused-delegation direction
-on 2026-10-14. Read `about/heart-and-soul/vision.md` for the seven governing rules;
-read `about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md`
-for the adoption receipt, downstream dispositions, and transition boundary.
-
-The target governs successor design. Current own-butler MCP binding, routing,
-session-spawn restrictions, and roster identities remain binding until their
-explicit successor contracts and verified cutover. Tool discovery and a task
-prompt do not confer authority. Do not create a roster entry for each focused
-child or treat General/Switchboard as the lead host without the successor design.
+Read the seven rules in `about/heart-and-soul/vision.md`; do not rely on a copy.
+Since 2026-10-14 the doctrine describes goal-based reasoning: one lead per goal,
+optional depth-1 children, grants derived from goal origin and enforced by the
+Switchboard broker (RFC 0038). Discovery and task prompts never confer
+authority. The code reaches this design in one hard cutover; until then the
+classify-and-route path is frozen to fixes.
 
 ## Do Not Use This Skill For
 

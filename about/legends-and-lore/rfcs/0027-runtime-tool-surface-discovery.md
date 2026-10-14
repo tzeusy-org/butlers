@@ -4,6 +4,7 @@
 **Date:** 2026-08-30
 **Baseline:** `ba1c55c31056af5eaa362a254193bbf43741e86a`
 **Related:** RFC 0001, RFC 0002, RFC 0005, RFC 0008
+**Extended at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (one per-invocation corpus over the goal grant with authorization metadata; discovery, adapter and replay rules remain).
 
 **Owner approval:** 2026-08-30, artifact
 `3448804aaff7b163b4b81deb646db2c9f4ae1397`. Approval adopts this design and
@@ -17,12 +18,6 @@ tuple is verified. The allowlist bounds that corpus; it is not the optimization.
 The amendment is reversible and authorizes contract and Beads updates only. It
 does not authorize implementation, dependency upgrades, merge, provider
 evaluation, policy activation, deployment, or live canary execution.
-
-## Relationship to the Adopted Goal Architecture
-
-The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
-adopts a generalist lead with optional depth-one children as the successor
-direction. This RFC remains a presentation contract for the per-butler tool corpus. It does not authorize cross-domain execution or child creation. The successor must specify and enforce those grants separately from discovery.
 
 ## Summary
 

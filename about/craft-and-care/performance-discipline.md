@@ -32,9 +32,9 @@ If those answers are weak, the optimization is not ready.
 
 ## Reasoning Architecture Evaluation
 
-The [adopted goal architecture](../heart-and-soul/architecture.md) makes agent
-allocation a replaceable execution choice. Compare direct lead execution,
-focused delegation, and current specialist routing on equivalent tool/context
+The [goal architecture](../heart-and-soul/architecture.md) makes agent
+allocation and model choice replaceable execution choices. Compare direct lead
+execution, focused delegation, and model tiers on equivalent tool/context
 access and disclosed compute budgets. Report whole-goal success, constraint
 preservation, useful proactive actions, missed obligations, owner corrections,
 latency, and total cost including discovery, retries, recovery and idle capacity.

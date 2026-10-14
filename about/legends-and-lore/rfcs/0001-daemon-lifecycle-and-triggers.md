@@ -2,12 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
-
-## Relationship to the Adopted Goal Architecture
-
-The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
-adopts a generalist lead with optional depth-one children as the successor
-direction. Per-butler triggers and session lifecycle remain the current contract. Goal admission, child lineage, shared work budgets, cancellation and fenced lead recovery require an explicit successor lifecycle contract.
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session dispatch and spawner triggers; daemon lifecycle and scheduler phases remain).
 
 ## Summary
 

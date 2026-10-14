@@ -2,12 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
-
-## Relationship to the Adopted Goal Architecture
-
-The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
-adopts a generalist lead with optional depth-one children as the successor
-direction. Own-butler MCP binding and tool registration remain the current contract. Cross-domain discovery or invocation requires explicit caller grants and a successor binding contract; a larger searchable catalog alone grants no authority.
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (ephemeral MCP config and own-butler session binding; module ABC and registration remain).
 
 ## Summary
 

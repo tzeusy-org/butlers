@@ -2,12 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-25
-
-## Relationship to the Adopted Goal Architecture
-
-The [2026-10-14 doctrine amendment](../decisions/2026-10-14-doctrine-focused-delegation.md)
-adopts a generalist lead with optional depth-one children as the successor
-direction. Current session isolation and spawn restrictions remain the security contract. Only a successor runtime-enforced lead grant may permit depth-one child admission; prompt instructions, routing and scheduled jobs cannot provide an indirect delegation bypass.
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session spawn and sandbox rules; network, port and firewall contracts remain).
 
 ## Summary
 

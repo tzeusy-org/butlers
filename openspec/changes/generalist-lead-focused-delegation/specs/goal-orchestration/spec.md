@@ -1,9 +1,9 @@
 ## Purpose
 
-Reserve a future capability for one accountable generalist lead to fulfill a
-whole goal across domain-owned capabilities with optional focused children.
-These reserved target requirements do not supersede existing runtime contracts or
-authorize implementation before the successor contract is approved.
+One accountable generalist lead fulfills each goal across domain-owned
+capabilities, directly or with optional focused children at depth one. Every
+reasoning session in the system is an invocation of an admitted goal. The
+design is RFC 0038; authorization is specified in `capability-authorization`.
 
 ## ADDED Requirements
 
@@ -15,7 +15,7 @@ be forced into one shared conversation or serialized solely by this rule.
 
 ID: REQ-goal-orchestration-001
 Source: about/heart-and-soul/vision.md, What Butlers Is; adopted 2026-10-14 doctrine amendment
-Scope: v1-reserved
+Scope: v1-mandatory
 
 #### Scenario: Cross-domain constraints remain one goal
 - **WHEN** an admitted goal combines travel, budget and health constraints
@@ -33,7 +33,7 @@ override governing policy or grant authority.
 
 ID: REQ-goal-orchestration-002
 Source: about/heart-and-soul/vision.md, Non-Negotiable Rules 5 and 6
-Scope: v1-reserved
+Scope: v1-mandatory
 
 #### Scenario: Cross-domain focus inherits applicable policies
 - **WHEN** a child investigates a bounded question spanning multiple domains
@@ -51,8 +51,8 @@ new-root admission paths. Follow-up work requested by a child SHALL return to
 its lead for a separately admitted sibling or direct action under the same goal.
 
 ID: REQ-goal-orchestration-003
-Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 6; about/heart-and-soul/security.md, Target Goal and Delegation Authority
-Scope: v1-reserved
+Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 6; about/heart-and-soul/security.md, Goal and Delegation Authority
+Scope: v1-mandatory
 
 #### Scenario: Child attempts a grandchild through routing
 - **WHEN** a depth-1 child asks a routing capability to start another reasoning session
@@ -72,7 +72,7 @@ private-source restrictions, or domain invariants.
 
 ID: REQ-goal-orchestration-004
 Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 3; RFC 0027, Governing Invariants 1, 3 and 6
-Scope: v1-reserved
+Scope: v1-mandatory
 
 #### Scenario: A discovered capability is unauthorized
 - **WHEN** a model knows a valid capability name but its invocation grant does not permit the requested operation or resource
@@ -90,7 +90,7 @@ and SHALL NOT widen authority or reset consumed limits.
 
 ID: REQ-goal-orchestration-005
 Source: about/heart-and-soul/architecture.md, One lead, focused children, depth one
-Scope: v1-reserved
+Scope: v1-mandatory
 
 #### Scenario: Sequential children exhaust the goal budget
 - **WHEN** a lead requests another depth-1 child after exhausting its goal budget
@@ -109,7 +109,7 @@ receipts and SHALL NOT automatically replay effects whose outcomes are unknown.
 
 ID: REQ-goal-orchestration-006
 Source: about/heart-and-soul/architecture.md, The Core Loop; RFC 0027, Governing Invariant 7
-Scope: v1-reserved
+Scope: v1-mandatory
 
 #### Scenario: Stop races a child effect
 - **WHEN** the owner stops a goal while a child's action is pending or may already have committed
@@ -127,22 +127,27 @@ retaining existing delivery, deduplication and owner-attention policies.
 
 ID: REQ-goal-orchestration-007
 Source: about/heart-and-soul/vision.md, What Success Looks Like; RFCs 0009, 0011 and 0026
-Scope: v1-reserved
+Scope: v1-mandatory
 
 #### Scenario: An obligation becomes due with no conversation running
 - **WHEN** a standing authorized obligation becomes due after previous reasoning sessions have finished
 - **THEN** its durable owner can initiate the appropriate goal with relevant context and the obligation is not lost because no agent was running
 
-### Requirement: Target adoption does not silently activate new authority
-The system SHALL retain existing runtime and domain restrictions until an
-explicitly approved successor RFC and baseline specification amendments have
-been implemented and verified. This reserved capability SHALL NOT be treated
-as proof of shipped behavior or permission to broaden existing sessions.
+### Requirement: Goals are the only path to a reasoning session
+Every reasoning session SHALL be a lead or child invocation of an admitted goal,
+launched by the goal runner. Owner requests, third-party events, domain
+obligations and staffer work SHALL all enter through goal admission. No domain
+butler, staffer, module or scheduled job SHALL spawn a reasoning session by any
+other path, and no model-classification routing step SHALL precede admission.
 
 ID: REQ-goal-orchestration-008
-Source: about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md, Transition and precedence
-Scope: v1-reserved
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2 and Hard cutover
+Scope: v1-mandatory
 
-#### Scenario: Only the shape amendment exists
-- **WHEN** the target shape or its proposed scenarios are recorded but successor enforcement has not been approved and implemented
-- **THEN** existing per-butler MCP binding, routing and no-child-spawning restrictions remain in force
+#### Scenario: A domain schedule needs reasoning
+- **WHEN** a domain's scheduled job requires model judgment
+- **THEN** the domain submits an obligation admission and the reasoning runs as a goal lead, not as a session spawned by the domain daemon
+
+#### Scenario: An owner message arrives
+- **WHEN** a connector submits an owner message
+- **THEN** admission creates a goal directly from the envelope without a model classification or route-dispatch step

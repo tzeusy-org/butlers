@@ -1,10 +1,5 @@
 # Switchboard Routing
 
-> **Current runtime contract.** The [adopted generalist-lead direction](../../about/legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
-> has not replaced the execution model described here. Cross-domain capability
-> grants and depth-one child admission require the explicit successor contract
-> and verified cutover.
-
 > **Purpose:** Explain how external messages enter the system, get classified, and are routed to the right butler.
 > **Audience:** Developers working on routing, connectors, or multi-butler orchestration.
 > **Prerequisites:** [What Is Butlers?](../overview/what-is-butlers.md), [Modules and Connectors](modules-and-connectors.md)

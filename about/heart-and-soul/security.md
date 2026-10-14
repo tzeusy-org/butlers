@@ -1,9 +1,5 @@
 # Security Model
 
-> **Adopted target doctrine (2026-10-14).** The owner adopted the generalist-lead
-> direction and depth-one focused delegation. Existing runtime contracts remain
-> binding until explicitly superseded through a verified cutover. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
-
 ## Trust Premise
 
 Butlers is user-federated. One user. One instance. The user owns the machine,
@@ -41,11 +37,10 @@ from taking actions beyond their intended scope.
   (OwnTracks), listening history (Spotify), smart home state (Home Assistant),
   and file metadata (Google Drive) may appear in LLM prompts when butlers
   process ingested events from these sources.
-- **Ephemeral LLM sessions.** Current sessions are scoped to their own
-  butler's MCP tools. The adopted target lead and child model replaces fixed
-  domain membership with explicit goal-bound grants only after the successor
-  contract is implemented. Sessions remain partially trusted in either model;
-  approval gates and execution checks constrain sensitive operations.
+- **Ephemeral LLM sessions.** Leads and children are partially trusted
+  whatever model runs them. Each runs in a sandbox, holds a grant derived from
+  its goal's origin, and reaches capabilities only through the broker.
+  Approval gates and domain execution checks constrain sensitive operations.
 
 ### What is untrusted
 
@@ -62,58 +57,64 @@ from taking actions beyond their intended scope.
   encryption, Gmail's TLS, etc.). Butlers does not add an additional encryption
   layer.
 
-## Target Goal and Delegation Authority
+## Goal and Delegation Authority
 
-The target lead and every child are partially trusted model sessions. A
-server-derived grant binds each invocation to its goal, caller, operations,
-resource scope, and approval policy. The runtime checks it at discovery and at
-invocation; hidden tools, dedicated prompts, MCP namespaces, and a one-user
-installation do not substitute for authorization. A lead may request a narrower
-child grant but cannot create or enlarge its own authority.
+[RFC 0038](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+is the contract. Its load-bearing rules:
 
-Credentials stay with trusted services. A model's general reasoning capability
-does not imply direct database, shell, network, or credential access. A runtime
-that cannot enforce the assigned boundary is ineligible for that assignment.
-Any future programmatic tool execution must enforce the same grants beneath
-its nested calls and prevent alternate effect paths.
+- **Authority comes from origin, never from text.** Admission derives a goal's
+  ceiling from server-held context: owner, obligation, third party, or
+  staffer. A third-party goal can read, record attributed facts, and propose;
+  it can never send, spend, actuate, or administer.
+- **Grants only narrow.** A lead's grant is at most its goal's ceiling. A
+  child's grant is a subset of its lead's, without `administer`. Discovery,
+  skills, and task prompts never grant anything.
+- **Exposure gates consequential effects.** Once an invocation has read
+  third-party content, sending, spending, administering, and consequential
+  actuation need per-event owner approval, and steering-memory writes are
+  refused. Owner-directed `notify` and standing rules that pin every safety
+  argument are exempt.
+- **Two independent checks.** The broker checks every call against the grant,
+  exposure, approval policy, and budget. The owning domain then verifies the
+  broker's signed assertion for that exact tool and argument digest before the
+  handler runs. Either check alone stops an unauthorized call.
+- **Depth one, enforced by the runtime.** Only a lead holds `goal.delegate`.
+  The runner derives depth from lineage; a child cannot reach admission,
+  routing, schedule creation, or a new root.
+- **Stop and recovery are fenced.** Stop revokes every token of the goal in one
+  transaction. A replacement lead advances the goal's epoch, which invalidates
+  its predecessor, and inherits the same budget and effect ledger. Unknown
+  effects are never replayed without fresh owner approval.
 
-Only the depth-0 lead can request children. The trusted runtime derives lineage,
-rejects depth greater than one, and prevents a child from using routing, jobs,
-or a new-root request to create another reasoning agent on its behalf. An
-independently authorized standing schedule remains valid; a child cannot create
-one to evade its scope. Stop, budgets, and authority survive retries and
-recovery; child results cannot promote untrusted claims into owner instructions.
+Cross-domain retrieval is mediated by the owning services. It preserves
+source, sensitivity, and memory-write authority. The lead receives only
+authorized context, and children receive the subset their brief needs. Domain
+custody is not an excuse to give a lead ambient access to all data. Existing
+private-source, approval, and physical-actuation contracts continue to bind.
 
-Cross-domain retrieval is mediated by the owning services and purpose-bound
-access. It preserves source, sensitivity, and memory-write authority. The lead
-receives only authorized context, and children receive the subset needed for
-their brief. Domain custody is not an excuse to give a lead ambient access to
-all data. Existing private-source, approval, and physical-actuation contracts
-continue to bind.
+## Session Sandboxing
 
-These are target requirements, not assertions about deployed enforcement.
-RFC 0027 is explicitly presentation-only. Target activation requires a reviewed
-execution-authorization and delegation contract plus enforcement evidence.
-
-## Session Sandboxing (Current Contract)
-
-When a butler spawns an ephemeral LLM session, the session receives a
-locked-down MCP configuration containing only that butler's registered tools.
+The goal runner launches every lead and child in its own execution domain.
 
 **Guarantees:**
 
-- A session for the health butler cannot call finance butler tools.
-- A session cannot access the Switchboard's routing tools.
-- A session cannot modify its own MCP configuration at runtime.
-- A session cannot spawn other sessions.
+- A session reaches only the broker's session endpoint and its model provider.
+  It cannot reach PostgreSQL, a domain butler's port, or the credential store.
+- Runtime built-in shell, filesystem, web, and local-server tools are disabled.
+  A runtime adapter that cannot prove this is ineligible.
+- A session authenticates with a single-invocation token that dies with the
+  invocation, the goal, or the lead's epoch.
+- One invocation cannot read another's token, files, or process state.
+- A session cannot modify its own MCP configuration or grant.
+- Only a lead can start a session, and only a depth-1 child through
+  `goal.delegate`.
 
 **Limitations:**
 
-- The LLM may hallucinate tool names or attempt calls that do not exist. The MCP
-  server rejects these, but the attempt consumes tokens and session time.
-- The LLM has access to all tools registered by the butler's modules. There is
-  no per-session tool restriction within a single butler. If a module's tool is
-  loaded, every session of that butler can call it.
+- The model may hallucinate tool names or attempt calls outside its grant. The
+  broker rejects these, but the attempt consumes tokens and session time.
+- The sandbox still reaches the model provider, which receives prompt content
+  under the partial trust described above.
 
 ## Schema Isolation
 
@@ -156,7 +157,11 @@ explicit owner confirmation before proceeding.
 **Design constraints:**
 
 - Approval gates must never be bypassable by the LLM session. The gate is
-  enforced at the MCP server level, not in the prompt.
+  enforced by the broker and the owning MCP server, not in the prompt.
+- An approval executes the exact stored call the owner saw, never a call the
+  model re-issues.
+- Exposure to third-party content makes consequential effects approval-gated
+  even when the tool alone would not be (see Goal and Delegation Authority).
 - Approval timeouts must result in denial, not silent approval.
 - The approval mechanism must work across all notification channels (dashboard,
   Telegram, etc.).
@@ -225,14 +230,16 @@ hold:
   directory permissions, `no_new_privs`, a global lock, or process-group
   handling alone does not satisfy this boundary.
 
-`RUNTIME_PROBE_CONTROL_SIGNING_KEY` is the sole approved use of this exception.
-The owner adopted this amendment and its refined deployment-key contract on
-2026-08-10. It authenticates the private Dashboard API/scheduler control client
+`RUNTIME_PROBE_CONTROL_SIGNING_KEY` and `GOAL_BROKER_SIGNING_KEY` are the only
+approved uses of this exception. The owner adopted the first, with its refined
+deployment-key contract, on 2026-08-10. The second is added by the 2026-10-14
+generalist-lead amendment: only the Switchboard broker process reads it, and
+domain butlers receive its public key to verify call assertions (RFC 0038). It authenticates the private Dashboard API/scheduler control client
 to Switchboard. The Dashboard API process is the only private-key reader;
 Switchboard and the all-butlers runtime receive verification material only.
-Missing or mismatched key material makes the control plane unavailable and
-never falls back to a credential tier, unsigned request, or shared bearer
-secret. Adding another process-bound deployment control key requires an
+For both keys, missing or mismatched key material makes the control plane
+unavailable and never falls back to a credential tier, unsigned request, or
+shared bearer secret. Adding another process-bound deployment control key requires an
 explicit doctrine and capability-spec amendment; this exception is not a
 general file-secret escape hatch.
 
@@ -331,8 +338,8 @@ Butlers runs in Docker Compose with a layered network isolation model.
 The principle: **services get the minimum network access they need and
 nothing more.** The network, firewall, and port-binding contract lives in
 [RFC 0008](../legends-and-lore/rfcs/0008-deployment-network-security.md).
-Containers receive only the environment they declare, and LLM runtime
-subprocesses receive only `PATH` plus explicitly resolved credentials.
+Containers receive only the environment they declare, and goal invocations run
+in the session sandbox with only `PATH` and their model credential.
 
 ### Principles
 
@@ -357,8 +364,9 @@ subprocesses receive only `PATH` plus explicitly resolved credentials.
 - Adding application-level encryption that duplicates filesystem/database
   encryption.
 - Building multi-tenant access controls for a single-user system.
-- Trusting LLM sessions to self-enforce security boundaries (use MCP tool
-  restrictions and approval gates instead).
+- Trusting LLM sessions to self-enforce security boundaries (use grants, the
+  broker, domain assertion checks, and approval gates instead).
+- Letting a task prompt, tool description, or message body widen a grant.
 - Storing credentials in `butler.toml`, `CLAUDE.md`, or any git-tracked file.
 - Assuming sender identity based solely on channel identifiers without
   confirmation for high-stakes actions.

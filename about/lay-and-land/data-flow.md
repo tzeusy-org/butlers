@@ -1,9 +1,5 @@
 # Data Flow
 
-> **Current implementation.** The adopted [target reasoning map](target-reasoning.md)
-> separates durable domain ownership from ephemeral lead/child roles. This page
-> retains the running topology until the successor contract is implemented.
-
 Primary data paths through the Butlers system, with trust boundaries and
 validation points marked.
 

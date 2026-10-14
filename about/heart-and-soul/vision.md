@@ -1,9 +1,5 @@
 # Vision
 
-> **Adopted target doctrine (2026-10-14).** The owner adopted the generalist-lead
-> direction and depth-one focused delegation. Existing runtime contracts remain
-> binding until explicitly superseded through a verified cutover. See the [amendment](../legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md).
-
 ## What Butlers Is
 
 Butlers absorbs the recurring mental labor of one person's life. It maintains
@@ -87,10 +83,10 @@ does not ship.
    action; delegated authority can only narrow. Durable facts retain their
    owner and provenance when retrieved into a goal's working context.
 
-   Until the successor execution contract is approved and implemented, the
-   existing per-butler MCP restrictions remain in force. Narrowly scoped
+   [RFC 0038](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+   defines the grants, broker and call verification. Narrowly scoped
    read-only SQL exceptions still require an RFC with explicit guardrails and
-   reuse criteria (see RFC 0010); this amendment grants none.
+   reuse criteria (see RFC 0010); RFC 0038 grants none.
 
    One separately reviewed exception permits only the QA daemon's
    deterministic local scheduler, under its matching runtime database role,

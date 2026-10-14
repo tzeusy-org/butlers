@@ -14,14 +14,14 @@ metadata:
 
 Comprehensive audit of the MCP tool surface across all butlers. Produces a structured report covering tool inventory, docstring quality, error message quality, and group configuration.
 
-## Target Architecture Boundary
+## Authorization Metadata
 
-Read `about/heart-and-soul/architecture.md` for the adopted generalist-lead
-shape. This audit still evaluates actual per-butler registration and execution
-permissions. Report registered, searchable, and initially loaded tools
-separately; a tool count is not an outcome or a permanent catalog limit.
-Search does not authorize cross-domain use. Durable capability ownership and
-manifesto alignment remain binding when reasoning roles change.
+Every LLM-presentable tool needs RFC 0038 metadata: owner domain, effect class,
+output trust and sensitivity, resource and safety arguments, approval policy,
+idempotency and owner authority. Flag missing or implausible values (a send
+tool marked `record`, an email reader marked `trusted`). Report registered,
+searchable and initially loaded tools separately; a tool count is not an
+outcome. Search never authorizes a call.
 
 ## Support files
 

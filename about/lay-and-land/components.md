@@ -1,9 +1,5 @@
 # Component Inventory
 
-> **Current implementation.** The adopted [target reasoning map](target-reasoning.md)
-> separates durable domain ownership from ephemeral lead/child roles. This page
-> retains the running topology until the successor contract is implemented.
-
 Every runtime piece in Butlers, what it owns, and its current stability. This is a snapshot:
 a PR that adds or removes a butler, module, connector, port, or compose service updates this file
 and [`deployment.md`](deployment.md) in the same change. Where an inventory would drift, this file

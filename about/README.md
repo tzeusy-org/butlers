@@ -4,13 +4,12 @@ Butlers absorbs the recurring mental labor of one person's life through durable
 domain responsibilities, proactive work, and goal-directed assistance. One user.
 One instance. Full sovereignty over data, credentials, and model choices.
 
-The [adopted 2026-10-14 shape amendment](legends-and-lore/decisions/2026-10-14-doctrine-focused-delegation.md)
-separates domain ownership from reasoning agents: one generalist lead per goal,
-searchable capabilities, and optional focused children at maximum depth one.
-It is the adopted design direction; this execution model has not shipped.
-The current implementation remains a fleet of domain and staffer daemons.
-The [target responsibility map](lay-and-land/target-reasoning.md) shows how
-lead reasoning and durable services fit together.
+Domain butlers own data, schedules, obligations, and capabilities. Reasoning
+happens in goals: one generalist lead per goal, searchable capabilities, and
+optional focused children at maximum depth one, all brokered by the Switchboard
+control plane ([RFC 0038](legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)).
+The code reaches this design in one hard cutover; until it lands, the
+classify-and-route runtime is frozen to fixes only.
 
 ## The Five-Pillar Knowledge Architecture
 
@@ -54,11 +53,6 @@ them in this order — higher numbers defer to lower numbers, never the reverse:
 | 5 | **Lay and Land** | Topology snapshot — where components live, how they connect, stability levels | `about/lay-and-land/` |
 | 6 | **Roster config** | Live butler identity: `butler.toml`, `MANIFESTO.md`, `CLAUDE.md`, skills, API routes | `roster/{butler}/` |
 | 7 | **Code** | Runtime behaviour — executed source, migrations, tests | `src/`, `alembic/`, `tests/` |
-
-The adopted generalist-lead direction governs successor design. Its decision
-record explicitly preserves current runtime contracts until their replacements
-are specified, implemented, and verified. Neither a target diagram nor an ADDED
-capability reservation silently supersedes existing baseline requirements.
 
 Precedence in practice:
 
@@ -111,17 +105,20 @@ a contract test that projects from the highest-level artefact downward.
 - *"What exactly must X do?"* → Spec and Spine (find the spec)
 - *"Where does X live in the codebase?"* → Lay and Land (check components)
 
-## Current Implementation Facts
+## Key Architectural Facts
 
 - **One daemon per `roster/` entry** — staffers carry `type = "staffer"` in
   `butler.toml`, the rest are domain butlers; each is a FastMCP server on its
   own port.
-- **MCP everywhere** — LLM-to-butler, butler-to-butler (via Switchboard),
-  and connector-to-Switchboard all use MCP.
+- **MCP everywhere** — session-to-capability (via the Switchboard broker),
+  butler-to-butler (via Switchboard), and connector-to-Switchboard all use MCP.
+- **Goals, not routes** — every reasoning session is a lead or depth-1 child
+  of an admitted goal, with authority derived from the goal's origin.
 - **Single PostgreSQL, per-butler schemas** — Logical isolation without
   physical overhead. Cross-butler data lives in the `public` schema.
 - **Deterministic daemon, intelligent sessions** — The daemon manages
-  lifecycle; reasoning happens exclusively in ephemeral LLM sessions.
+  lifecycle; reasoning happens exclusively in ephemeral, sandboxed goal
+  invocations.
 - **Modules only add tools** — They never touch core infrastructure.
 
 For a narrative introduction, see the
