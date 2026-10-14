@@ -48,7 +48,7 @@ from butlers.chronicler.adapters._owner_entity import (
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.confidence import EvidenceKind, derive_confidence
-from butlers.chronicler.models import Episode, Layer, PointEvent, Precision, Privacy
+from butlers.chronicler.models import Confidence, Episode, Layer, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import (
     get_carryover,
     save_carryover,
@@ -672,21 +672,13 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
         )
         privacy = Privacy.SENSITIVE if has_heart_rate else Privacy.NORMAL
 
-        # Confidence: the ``workout_session`` fact is a strong canonical signal
-        # (an explicit, user-or-device-declared workout) → ``medium`` on its own.
-        # When the same fact also carries heart-rate telemetry, that is a second
-        # independent evidence kind, lifting the episode to ``high``.
-        # A device-detected (``detection == "auto"``) session is a weaker claim than
-        # an owner-logged one, so it is not canonical on its own.
-        evidence_kinds = [
-            EvidenceKind(
-                name="workout_session",
-                strong=str(metadata.get("detection") or "manual") != "auto",
-            )
-        ]
+        # The workout contract keeps automatic detection one tier below an
+        # owner-logged session. Either heart-rate field lifts that baseline once;
+        # the generic independent-kind rule would incorrectly make both high.
+        is_auto = str(metadata.get("detection") or "manual") == "auto"
+        confidence = Confidence.LOW if is_auto else Confidence.MEDIUM
         if has_heart_rate:
-            evidence_kinds.append(EvidenceKind(name="heart_rate"))
-        confidence = derive_confidence(evidence_kinds)
+            confidence = Confidence.MEDIUM if is_auto else Confidence.HIGH
 
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
