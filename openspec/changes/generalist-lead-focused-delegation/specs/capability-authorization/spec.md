@@ -222,8 +222,14 @@ Scope: v1-mandatory
 - **THEN** the domain refuses the call
 
 #### Scenario: The dashboard messages a contact
-- **WHEN** the owner uses the dashboard to send a message to a contact who is not the owner
-- **THEN** the control plane forwards the call with an owner-origin dashboard assertion and no goal, and the message is parked for owner approval unless an owner-created standing rule matches
+- **WHEN** the owner submits a dashboard message to a contact who is not the owner after seeing the exact recipients and content
+- **THEN** the submit click is recorded as per-event approval by the authenticated owner, and the control plane forwards that exact approved call with an owner-origin dashboard assertion, its approval reference and no goal
+- **AND** this self-approval does not count toward standing-rule promotion suggestions
+
+#### Scenario: The dashboard presents a goal-prepared draft
+- **WHEN** a draft prepared by an exposed or third-party-started goal reaches the owner through the dashboard
+- **THEN** it is presented only as that goal's parked effect, retaining its goal, invocation, depth and exposure lineage, and waits for the owner's per-event approval
+- **AND** it is never treated as a dashboard action of the owner's own with owner origin and no goal
 
 ### Requirement: Invocation tokens are single-invocation and revocable
 Each invocation SHALL authenticate to the broker with a random token bound to
@@ -410,6 +416,11 @@ Scope: v1-mandatory
 #### Scenario: A message to the owner
 - **WHEN** an unexposed goal sends a message whose recipient resolves uniquely to the owner
 - **THEN** the message is exempt from the non-owner rule; the tool's approval policy still applies
+
+#### Scenario: The owner submits a dashboard communication
+- **WHEN** the owner prepares a dashboard action that delivers content to or invites someone other than the owner and submits it after seeing the exact recipients and content
+- **THEN** the submit click is the confirmation and records per-event approval by the authenticated owner for that exact action before dispatch
+- **AND** this self-approval does not count toward standing-rule promotion suggestions
 
 ## Source References
 
