@@ -22,19 +22,28 @@ Start a new change using the experimental artifact-driven approach.
 
 2. **Determine the workflow schema**
 
-   Use the default schema (omit `--schema`) unless the user explicitly requests a different workflow.
+   Read `about/heart-and-soul/development.md` and classify the actual scope.
+   A single-butler change that alters no cross-butler contract, schema shared
+   across butlers, or security boundary can use `--schema single-butler`:
+   proposal, delta specs and tasks suffice without a design. Use the default
+   `spec-driven` workflow when design is required or voluntarily chosen.
+   Directory placement alone is not eligibility evidence; if the exclusions
+   are not established, keep the default and resolve scope before proceeding.
 
-   **Use a different schema only if the user mentions:**
+   **For other explicitly requested workflows:**
    - A specific schema name → use `--schema <name>`
    - "show workflows" or "what workflows" → run `openspec schemas --json` and let them choose
 
-   **Otherwise**: Omit `--schema` to use the default.
+   An explicitly requested workflow still must satisfy the repository's
+   design requirement. Preserve existing design documents and all spec,
+   owner-approval, implementation review and verification gates.
 
 3. **Create the change directory**
    ```bash
    openspec new change "<name>"
    ```
-   Add `--schema <name>` only if the user requested a specific workflow.
+   For an eligible single-butler change omitting design, add `--schema single-butler`.
+   Otherwise omit it for the default or use an explicitly requested compatible schema.
    This creates a scaffolded change at `openspec/changes/<name>/` with the selected schema.
 
 4. **Show the artifact status**

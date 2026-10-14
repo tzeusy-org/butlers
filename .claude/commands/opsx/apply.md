@@ -47,10 +47,21 @@ Implement tasks from an OpenSpec change.
 
 4. **Read context files**
 
+   Recheck the design requirement in `about/heart-and-soul/development.md`
+   against actual scope. A change to a cross-butler contract, schema shared
+   across butlers, or security boundary requires `design.md`, even if CLI
+   readiness or a custom schema omits it. Stop and resolve a missing required
+   design before implementation. An eligible single-butler change may omit
+   it using `single-butler`; spec approval and review/verification still apply.
+
    Read the files listed in `contextFiles` from the apply instructions output.
    The files depend on the schema being used:
    - **spec-driven**: proposal, specs, design, tasks
+   - **single-butler**: proposal, specs, tasks, plus any existing or voluntarily added design
    - Other schemas: follow the contextFiles from CLI output
+
+   Read an existing `design.md` even if it is not listed in `contextFiles`;
+   changing schema never authorizes ignoring or deleting it.
 
 5. **Show current progress**
 
