@@ -224,9 +224,10 @@ Scope: v1-mandatory
 
 #### Scenario: Lane D — a system-scope question falls back to the honest-decline dead-letter path
 
-- **WHEN** the classification session calls `answer_question(scope="system", question)` and no supported Concierge read is available (including missing/invalid tool arguments, permission denial, timeout or missing source attribution)
+- **WHEN** the classification session calls `answer_question(scope="system", question)` and no Concierge system-scope answering tool is available
 - **THEN** `answer_question` SHALL NOT route to any domain butler
 - **AND** it SHALL dead-letter the request with `failure_category="unanswerable"` and persist an in-thread `conversation_reply` naming what was checked, via the same shared path `cannot_answer` uses
+- **AND** a missing/invalid read selector or arguments, permission denial, timeout, or missing source attribution SHALL use this same honest-decline path
 
 #### Scenario: Lane D — cannot_answer dead-letters directly and never files a bug report or domain route
 
