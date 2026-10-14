@@ -23,13 +23,15 @@
 
 ## 3. Cutover gate (dev namespace, release candidate)
 
-- [ ] 3.1 All goal-orchestration and capability-authorization scenarios pass.
+- [ ] 3.1 All goal-orchestration and capability-authorization scenarios, and every scenario of the signed D19 dashboard change, pass.
 - [ ] 3.2 Adversarial suite: zero unauthorized effects.
 - [ ] 3.3 Replay evaluation meets or beats recorded outcomes; model tiers and default budgets set from it.
 - [ ] 3.4 Stop, lease-loss, runner-crash and escalation drills pass.
 
 ## 4. Switch
 
-- [ ] 4.1 One release routes all ingress and obligations through admission, deletes classification, route dispatch, per-butler spawning and cross-butler delegation, and enables domain verification.
-- [ ] 4.2 Apply baseline deltas, archive this change, update RFC statuses, topology, operational docs, `CLAUDE.md` and the Switchboard manifesto.
-- [ ] 4.3 Rewrite and reorganize the RFC corpus around the goal architecture (owner decision 10).
+- [ ] 4.1 One release routes all ingress and obligations through admission, deletes classification, route dispatch, per-butler spawning and cross-butler delegation, enables domain verification, and switches the dashboard to the D19 owner surface, removing the butler-unit views it replaces.
+- [ ] 4.2 Apply baseline deltas, archive this change, update RFC statuses, topology, operational docs, `CLAUDE.md` and the Switchboard manifesto. Every active change that modifies or adds requirements in a capability this change modifies or removes (listed in design.md, "Cross-change collisions") archives first, is re-scoped against the goal runtime, or has its overlapping deltas folded into this change before it archives. Capabilities this change empties (`cross-butler-delegation`, `conversation-decomposition`, `routing-scorecard`) are removed by hand, because archive refuses an empty spec.
+
+The RFC corpus rewrite (owner decision 10) runs after this change is archived, so it is not a task
+here; it is tracked as its own work item that depends on 4.2.

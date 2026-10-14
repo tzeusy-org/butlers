@@ -1,0 +1,100 @@
+## MODIFIED Requirements
+
+### Requirement: Relationship Butler Identity and Runtime
+
+The relationship butler SHALL maintain personal CRM context with 40+ domain tools, registered with the control plane as relationship capabilities. It SHALL NOT spawn reasoning sessions or hold a runtime adapter or session pool; the model for any goal invocation that uses its capabilities is resolved per invocation by role and tier.
+
+Source: RFC 0038 D2 and D16
+Scope: v1-mandatory
+
+#### Scenario: Identity and port
+- **WHEN** the relationship butler is running
+- **THEN** it operates on port 41102 with description "Personal CRM. Manages contacts, relationships, important dates, interactions, gifts, and reminders."
+- **AND** it runs no runtime adapter and holds no concurrent-session limit, because it spawns no reasoning session
+- **AND** its database schema is `relationship` within the consolidated `butlers` database
+
+#### Scenario: Module profile
+- **WHEN** the relationship butler starts
+- **THEN** it loads modules: `calendar` (Google provider, suggest conflicts policy), `contacts` (Google provider, sync enabled, 15-minute interval, 6-day full sync), and `memory`
+
+### Requirement: Relationship Butler Tool Surface — Dunbar Tier
+The relationship butler SHALL expose Dunbar tier management and group interaction tools as relationship capabilities registered with the control plane.
+
+Source: RFC 0038 D2 and D7
+Scope: v1-mandatory
+
+#### Scenario: Dunbar tier tool in tool inventory
+- **WHEN** the relationship butler registers its capabilities with the control plane
+- **THEN** it MUST register `dunbar_tier_set(contact_id, tier)` for setting or clearing manual Dunbar tier overrides
+- **AND** `contact_get` and `contact_search` responses MUST include `dunbar_tier` and `dunbar_score` fields
+- **AND** it MUST register `interaction_log_group(group_id, direction, occurred_at, summary)` for logging interactions with all members of a contact group in a single call
+
+### Requirement: Relationship Butler Schedules
+
+The relationship butler SHALL run date checks, maintenance sweeps, and memory jobs. `upcoming-dates-check` and `relationship-maintenance` SHALL be obligations: on each occurrence the relationship daemon SHALL submit an obligation admission whose grant is no larger than the capability set declared for that obligation in git, and the obligation's governing brief SHALL replace the prompt previously sent to a relationship session. Memory and insight jobs SHALL remain deterministic jobs.
+
+The registered upcoming_dates management tool and the scheduled upcoming-dates-check birthday/anniversary push SHALL consider only canonical people whose current posture is active at the date query; an unreadable posture SHALL raise rather than fabricate active or empty results. This contract SHALL preserve historical dates and the separate calendar overlay's existing remembrance behavior.
+
+Source: RFC 0038 D2 and D5
+Scope: v1-mandatory
+
+#### Scenario: Scheduled task inventory
+- **WHEN** the relationship butler daemon is running
+- **THEN** it executes: `upcoming-dates-check` (0 8 * * *, obligation: check birthdays/anniversaries in the next 7 days), `relationship-maintenance` (0 9 * * 1, obligation: rank overdue contacts by Dunbar tier-weighted urgency and suggest top 3 reconnections), `memory-consolidation` (0 */6 * * *, job), `memory-episode-cleanup` (0 4 * * *, job), and `insight-scan` (0 7 * * *, job: evaluate relationship domain data and generate insight candidates)
+
+#### Scenario: Both upcoming date anchor paths enforce active posture
+- **WHEN** listed contact-anchored or contactless local-entity-anchored people have dates inside the lookahead window
+- **THEN** upcoming_dates SHALL return active people under the existing listed/date guards
+- **AND** it SHALL omit memorial, quiet and no_contact people in both UNION arms while retaining an unrelated active positive row
+
+#### Scenario: Memorial date reappears after reactivation
+- **WHEN** a memorial person's birthday is in 3 days and the same person is later restored to active through the existing posture writer
+- **THEN** upcoming_dates SHALL initially omit the date and then return the unchanged date after reactivation
+- **AND** no historic date, memory or posture audit history SHALL be deleted
+
+#### Scenario: Posture read failure cannot produce a reminder
+- **WHEN** the real upcoming date query cannot read posture or its database query fails
+- **THEN** the tool SHALL propagate the error rather than return an active fallback or a fabricated empty list
+- **AND** the `upcoming-dates-check` obligation's governing brief SHALL instruct no reminder or all-clear on that failed read
+
+#### Scenario: Daily reminder uses only the successful active date projection
+- **WHEN** the 08:00 upcoming-dates-check runs
+- **THEN** its obligation goal SHALL call the registered upcoming_dates(days_ahead=7), stay silent for a successful empty result, and draft an ordinary owner reminder only from a successful active-date result
+- **AND** this tool/push SHALL NOT expose memorial remembrance without a separately adopted opt-in
+
+#### Scenario: Date-check occurrence is admitted as an obligation goal
+- **WHEN** the 08:00 `upcoming-dates-check` occurrence fires
+- **THEN** the relationship daemon submits an obligation admission instead of spawning a session, and the admitted goal holds only the obligation's declared capability set
+
+### Requirement: Relationship Butler Registered Tool Surface
+
+The relationship butler SHALL expose its currently approved manifesto-owned
+personal CRM tool set. Its eight configured relationship-module groups
+(`contacts`, `contacts_extended`, `interactions`, `relationships`, `social`,
+`notes`, `tracking`, and `management`) own 58 tools. The mandatory
+`relationship_assert_fact` approval-dispatch handler registers unconditionally,
+for 59 relationship-module handlers in total. The mixed `entity` group SHALL
+remain disabled until the adopted six-read/two-write split is implemented; it
+MUST NOT be activated while it still exposes both reads and writes. These tools SHALL be registered with the control plane as relationship capabilities rather than presented to a relationship-owned session.
+
+Source: RFC 0038 D2 and D7
+Scope: v1-mandatory
+
+#### Scenario: Exact current registered inventory
+
+- **WHEN** the relationship butler registers its capabilities with the control plane
+- **THEN** all 58 tools owned by the eight configured groups SHALL be registered
+- **AND** the inventory SHALL include `contact_create`, `contact_update`,
+  `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`,
+  `relationship_add`, `relationship_list`, `relationship_remove`, `date_add`,
+  `date_list`, `upcoming_dates`, `note_create`, `note_list`, `note_search`,
+  `interaction_log`, `interaction_list`, `fact_set`, `fact_list`, and `feed_get`
+- **AND** `relationship_assert_fact` SHALL be the additional mandatory
+  unconditional handler, making 59 relationship-module handlers total
+- **AND** `entity_resolve`, `entity_get`, `entity_neighbors`,
+  `relationship_fact_evidence`, `relationship_predicate_coverage`,
+  `relationship_lookup`, `entity_update`, and `relationship_record_coverage`
+  SHALL all be absent
+- **AND** no bare `entity_create` MCP tool or alias SHALL be registered
+- **AND** the separately configured memory module MAY expose
+  `memory_entity_create` under that canonical prefixed name

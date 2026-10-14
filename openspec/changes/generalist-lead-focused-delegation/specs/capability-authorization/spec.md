@@ -34,8 +34,11 @@ Scope: v1-mandatory
 ### Requirement: Every model-reachable capability declares authorization metadata
 Every LLM-presentable tool SHALL declare its owner domain, effect class, output
 trust, output sensitivity, resource parameters, safety arguments, approval
-policy, idempotency mode and owner-authority flag, and every `communicate` tool
-SHALL also declare the arguments that identify its recipients. A tool without complete
+policy, idempotency mode and owner-authority flag. Every tool whose call can
+deliver content to, or invite, another party, whatever its effect class, SHALL
+also declare the arguments that name those parties (recipients, attendees,
+invitees, shares), or declare them undeterminable when its arguments cannot
+name them. A tool without complete
 metadata SHALL NOT be grantable, and CI SHALL fail when a registered
 LLM-presentable tool lacks it. A capability whose output can include data that
 a model-reachable `record` capability, a connector or a third party can write
@@ -52,6 +55,10 @@ Scope: v1-mandatory
 #### Scenario: A new module tool omits its effect class
 - **WHEN** a module registers an LLM-presentable tool without an effect class
 - **THEN** the catalog check fails in CI and the broker never includes the tool in a grant
+
+#### Scenario: A calendar write omits its attendee arguments
+- **WHEN** a module registers a calendar tool that can add attendees but declares no party arguments
+- **THEN** the catalog check fails in CI
 
 ### Requirement: Authority ceilings derive from verified origin
 Goal admission SHALL derive the goal's authority ceiling deterministically from
@@ -116,13 +123,14 @@ trust is untrusted, when it receives stamped output containing an item without
 owner authority or carrying taint, or when it receives a result from an exposed
 child. Exposure SHALL NOT clear, and an exposed invocation SHALL mark its goal
 exposed. Domains SHALL taint records written under an exposed assertion. While
-exposed, `communicate` effects to anyone other than the owner SHALL require
-per-event owner approval, except under a standing rule whose body is
-template-pinned; owner-directed `notify` SHALL be allowed only with link
-previews disabled and URLs inert; `administer` and consequential or protected
-`actuate` effects SHALL require per-event owner approval; and `record` writes
-with owner authority SHALL be refused. Approvals of effects requested while exposed SHALL NOT count
-toward standing-rule promotion.
+exposed, every `communicate` effect SHALL require per-event owner approval,
+except `notify` to the owner with link previews disabled and URLs rendered
+inert, and a standing rule whose recipient is the owner or whose body is
+template-pinned; `administer` and consequential or protected `actuate` effects
+SHALL require per-event owner approval; and `record` writes with owner
+authority SHALL be refused. Approvals of effects requested while exposed SHALL
+NOT count toward standing-rule promotion. Exposure SHALL NOT relax the
+non-owner communication rule (`REQ-capability-authorization-016`).
 
 ID: REQ-capability-authorization-006
 Source: RFC 0038, D4 and D6; RFC 0021
@@ -259,7 +267,7 @@ ID: REQ-capability-authorization-013
 Source: RFC 0038, D5
 Scope: v1-mandatory
 
-#### Scenario: A child's booking triggers a finance reaction
+#### Scenario: A child's recorded receipt triggers a finance reaction
 - **WHEN** an exposed child records an expense receipt whose domain event wakes a declared finance subscription that needs reasoning
 - **THEN** the finance goal is admitted with the receipt's goal as its cause, starts exposed, and holds only the subscription's declared capabilities
 
@@ -295,29 +303,35 @@ or exposure. Enabling `transact` SHALL require an owner decision recorded as an
 amendment to RFC 0038.
 
 ID: REQ-capability-authorization-015
-Source: RFC 0038, D4 and owner decision 8
+Source: RFC 0038, D4, D5, D9 and owner decision 8
 Scope: v1-mandatory
 
 #### Scenario: The owner asks the assistant to pay a bill
 - **WHEN** an owner goal needs a payment that only a `transact` capability could make
-- **THEN** no `transact` capability is listed or callable, and the lead reports what the owner would need to do
+- **THEN** no `transact` capability is listed to any invocation, a call naming one is refused and recorded, and nothing is dispatched
+- **AND** the lead reports what the owner would need to do
 
 #### Scenario: A lead asks for a child that can book
 - **WHEN** a lead requests a child grant that includes a `transact` capability
 - **THEN** the broker refuses the delegation and no child is launched
 
 ### Requirement: Communication with anyone other than the owner requires owner approval
-For every `communicate` call, the broker SHALL resolve each declared recipient
-with the `core-notify` owner-resolution rule and SHALL treat the call as
-non-owner communication unless every recipient resolves uniquely to the live
-owner entity. The broker SHALL dispatch non-owner communication only under
-per-event owner approval or a matching standing rule the owner created, and no
-origin, grant, exposure state, lead or child SHALL bypass this. The owning
-domain's own approval gate SHALL continue to apply. A `communicate` call whose
-recipients cannot be determined SHALL be treated as non-owner communication.
+For every call to a capability that declares party arguments, whatever its
+effect class, the broker SHALL resolve each named party with the `core-notify`
+owner-resolution rule: a party is the owner only when its identifier resolves
+uniquely to the live, unmerged, undeleted owner entity. A call that names no
+party SHALL be owner communication only when the capability declares the owner
+as its default recipient, as `notify` does. A call with any other party,
+including an unknown, ambiguous or unresolvable one, or to a capability whose
+parties are declared undeterminable, SHALL be non-owner communication. The
+broker SHALL dispatch non-owner communication only under per-event owner
+approval or a matching standing rule the owner created, and no origin, grant,
+exposure state, lead or child SHALL bypass this. The owning domain's own
+approval gate SHALL continue to apply, and Messenger's delivery gate SHALL
+apply the same rule to deterministic service-plane senders.
 
 ID: REQ-capability-authorization-016
-Source: RFC 0038, D4 and owner decision 9; `core-notify` Role-Based Approval Gating for Notify; RFC 0021
+Source: RFC 0038, D4, D6, D7, D13 and owner decision 9; `core-notify` Role-Based Approval Gating for Notify; RFC 0021
 Scope: v1-mandatory
 
 #### Scenario: An unexposed owner goal emails a friend
@@ -332,9 +346,17 @@ Scope: v1-mandatory
 - **WHEN** a send capability's recipient identifier resolves to more than one entity, to no entity, or cannot be looked up
 - **THEN** the broker treats the call as non-owner communication and parks it for owner approval
 
+#### Scenario: A calendar event invites someone other than the owner
+- **WHEN** an unexposed owner goal creates or updates a calendar event whose attendees include anyone other than the owner, and no standing rule matches
+- **THEN** the write is parked for per-event owner approval showing the attendees, and no invitation or update notification is sent until the owner approves
+
+#### Scenario: A reply whose recipients the arguments cannot name
+- **WHEN** a goal calls a reply capability declared undeterminable, with no party in its arguments
+- **THEN** the broker treats the call as non-owner communication and parks it for owner approval
+
 #### Scenario: A message to the owner
 - **WHEN** an unexposed goal sends a message whose recipient resolves uniquely to the owner
-- **THEN** the message is sent without an approval step
+- **THEN** the message is exempt from the non-owner rule; the tool's approval policy still applies
 
 ## Source References
 

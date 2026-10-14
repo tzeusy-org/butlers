@@ -6,7 +6,17 @@ The owner signed off the full design on 2026-10-14 with four amendments,
 recorded as owner decisions 8 to 11: `transact` is disabled, communication with
 anyone other than the owner always needs owner approval, the RFC corpus is
 rewritten after the switch, and the dashboard is redesigned around one mind
-with specialized regions.
+with specialized regions. The author applied those amendments with detail the
+owner has not reviewed: `recipient_params` and the recipient rules in D4, the
+reclassification of calendar-invitation answers from `transact` to
+`communicate`, the Messenger delivery carve-out in D7, the D19 direction
+bullets, the proposed RFC organization, and gaps closed while writing the
+baseline deltas (service-plane relays, memory consolidation and episodes,
+session notes, credential flows and staging, reply delivery accounting,
+runtime-failure relaunch, deterministic ingestion, device-feed origin,
+model-catalog probes as model functions, the template-pinned definition and
+the approvals `cancelled` status). These stand pending owner confirmation;
+D19's detail is confirmed with the dashboard change.
 **Date:** 2026-10-14
 **Tracking:** `bu-7p9ll5`
 **Supersedes at cutover:** the contracts listed in
@@ -170,6 +180,10 @@ Switchboard already owns ingress, holds MCP clients to every butler, and is the
 Rule 3 broker. After cutover its contract is: ingress, goal admission, goal
 ledger, goal runner, capability broker, approval and insight brokerage. It
 loses message classification and route dispatch, which have no successor.
+Ingress that needs reasoning becomes a goal through admission. Deterministic
+ingestion that needs none (connector gating rules such as skip, metadata-only
+and low-priority; channel-bound envelopes such as wellness readings; bulk
+backfill and sync) stays on the service plane and creates no goal.
 
 Switchboard moves out of the shared `butlers-up` process into its own process
 and container, `butlers-control`. Three reasons: the broker's signing key
@@ -182,7 +196,9 @@ broker's goal endpoint and is the only port reachable from the session host.
 
 The lead is a role, not a butler. Its governing document is a versioned lead
 policy at `roster/switchboard/goal-policy/LEAD.md`, loaded into every lead
-alongside the owner profile. Switchboard's manifesto is amended in the cutover
+alongside the owner profile. The lead policy also owns the reply style for
+interactive owner goals, which today each butler's `CLAUDE.md` defines. The
+session listener's port follows the repository's port assignment convention. Switchboard's manifesto is amended in the cutover
 release to describe the control-plane contract. General keeps its narrow
 capture-and-collections manifesto and gains no authority.
 
@@ -204,7 +220,17 @@ jobs and reactions (sweeps, syncs, projections) are unchanged.
 The domain's `CLAUDE.md` and skills become **domain guidance**: versioned,
 searchable through `guidance.search` and `guidance.load`, and attached by
 reference to child briefs. The manifesto stays binding on every capability the
-domain registers.
+domain registers. Session-written notes (today's `AGENTS.md` "Notes to self")
+become a `record` capability over the domain's guidance notes. Notes steer
+later sessions, so the capability is flagged `owner_authority` and exposed
+invocations cannot write it. Skill companion scripts are not executable from a
+sandbox; each one becomes a domain capability or is retired.
+
+Memory consolidation, which today runs as a spawned session with MCP tools,
+becomes an obligation goal of the memory-owning domain with a declared
+capability set. Episode capture moves from per-session transcripts to the
+goal ledger: the domain records an episode from each completed goal's outcome,
+carrying the goal's stamps and taint.
 
 ### D3. Session sandbox
 
@@ -215,9 +241,16 @@ providers. Kubernetes enforces this with a NetworkPolicy; Compose has no
 egress policy of its own, so the session host's only route out is an egress
 proxy that allowlists provider hostnames by SNI. The goal runner dispatches
 launches to the session host over an authenticated control channel. The session
-host never receives domain, database or connector credentials; provider
-credentials and runtime OAuth volumes move from `butlers-up` to the session
-host.
+host never receives domain, database or connector credentials; the provider
+credentials goal invocations use and the runtime OAuth volumes move from
+`butlers-up` to the session host. The goal runner, which can read the
+credential store, resolves each launch's model credential and stages it over
+the control channel; the session host never reads the credential store or the
+database. Model functions (D18) keep the narrow provider credentials their
+deterministic callers use today. The existing runtime-credential flows, Codex auth synchronization and
+the dashboard's CLI login, are retargeted to the session host's credential
+volume through the control plane's service listener; the session host itself
+exposes no inbound port to the dashboard.
 
 Each invocation runs in its own kernel-enforced filesystem and process domain
 (Bubblewrap, as `src/butlers/cli_auth/sandbox.py` already uses; the session
@@ -255,7 +288,9 @@ safety_args           argument names an approval must pin (RFC 0021)
 approval_policy       existing approvals gating config for the tool
 idempotency           none | key_required
 owner_authority       true when the write steers future sessions (rules, profile)
-recipient_params      for `communicate`: argument names that identify recipients
+recipient_params      argument names that identify parties a call delivers content
+                      to or invites (recipients, attendees, invitees, shares), any
+                      class; or "undeterminable" when arguments cannot name them
 ```
 
 Effect classes and their default under exposure (owner decision 3):
@@ -264,7 +299,7 @@ Effect classes and their default under exposure (owner decision 3):
 |---|---|---|
 | `read` | search memory, list transactions, read calendar | allowed |
 | `record` | log a measurement, store an attributed fact, propose an insight | allowed and tainted (D6), unless `owner_authority`, which is refused |
-| `communicate` | send email, reply on Telegram, notify a third party, answer a calendar invitation | to anyone other than the owner: per-event approval, or a standing rule only when its body is template-pinned; to the owner: `notify` allowed with link previews disabled and URLs rendered inert |
+| `communicate` | send email, reply on Telegram, notify a third party, answer a calendar invitation | per-event approval for every call, except `notify` to the owner with link previews disabled and URLs rendered inert, and standing rules whose recipient is the owner or whose body is template-pinned |
 | `transact` | spend, pay, book | disabled for every goal (owner decision 8) |
 | `actuate` | Home Assistant services | RFC 0028 risk map; consequential and protected always per-event approval |
 | `administer` | change schedules, rules, permissions, module state, create obligations | per-event approval; never delegable to a child |
@@ -272,22 +307,36 @@ Effect classes and their default under exposure (owner decision 3):
 Two owner rules apply to every origin, grant and exposure state, lead or child:
 
 - **Communication with anyone other than the owner needs owner approval**
-  (owner decision 9). The broker resolves every argument named in a
-  `communicate` capability's `recipient_params` with the owner-resolution rule
-  of `core-notify`: a recipient counts as the owner only when its identifier
-  resolves uniquely to the live owner entity. Any other recipient, including
-  an unknown, ambiguous or unresolvable one, makes the call non-owner
-  communication, which the broker dispatches only under per-event owner
-  approval or a matching standing rule the owner created (RFC 0021). This is
-  the rule `core-notify` enforces today; the owning domain's own approval gate
-  keeps enforcing it as well. A `communicate` capability that cannot declare
-  its recipients is treated as non-owner communication on every call.
+  (owner decision 9). Every capability whose call can deliver content to, or
+  invite, another party declares those arguments in `recipient_params`,
+  whatever its effect class: message recipients, calendar attendees and
+  invitees, update notifications, invitation answers and shares. The broker
+  resolves each named party with the owner-resolution rule of `core-notify`: a
+  party is the owner only when its identifier resolves uniquely to the live,
+  unmerged, undeleted owner entity. A call that names no party is owner
+  communication only when the capability declares the owner as its default
+  recipient, as `notify` does. A call with any other party, including an
+  unknown, ambiguous or unresolvable one, or with a party the arguments cannot
+  name (a capability declared `undeterminable`, such as a reply to an existing
+  thread), is non-owner communication. The broker dispatches non-owner
+  communication only under per-event owner approval or a matching standing
+  rule the owner created (RFC 0021, D13). Today `core-notify` and the gated
+  channel tools enforce this rule; calendar writes that invite or update
+  non-owner attendees are not gated today and become gated. The rule also
+  binds senders outside goals: Messenger's delivery gate (D7) is the
+  enforcement point for deterministic service-plane senders that call
+  Switchboard `deliver()`, and defense in depth for goal sends.
 - **`transact` is disabled** (owner decision 8). The catalog still classifies
   spending, paying and booking tools as `transact`, but the broker grants them
   to no goal, not even park-only, and lists them to no invocation. Enabling
   `transact` requires a new owner decision recorded as an amendment to this
-  RFC. A survey of `main` found no model-reachable tool that spends, pays or
-  books, so nothing currently reachable is lost.
+  RFC or its successor. A survey of `main` at `b747a55a5` found no
+  model-reachable tool that spends, pays or books. Answering a calendar
+  invitation (`calendar_respond`), which the reviewed design listed as
+  `transact`, is `communicate` and stays approval-gated under the rule above.
+  A generic gateway takes the most consequential class among the targets it
+  can reach: Home Assistant's service gateway is `actuate`, under the RFC 0028
+  risk map in which unknown services are protected.
 
 Two kinds of tool are never LLM-presentable and therefore never grantable:
 
@@ -329,6 +378,12 @@ Rules:
 
 - **Email is never owner origin by itself.** A message is owner-origin only when
   RFC 0017 authorizes its channel and sender; otherwise it is third-party.
+- **Device and telemetry feeds are not messages.** Home Assistant state,
+  wellness readings and other feeds that carry no message from a person wake
+  reasoning only through a declared subscription, admitted with origin
+  `obligation` under that subscription's capability set. Feed fields a person
+  other than the owner can author (device names, notes, message bodies) are
+  untrusted output under D6.
 - **Exposure at admission.** Third-party goals start exposed. Owner messages
   with connector-marked forwarded or quoted spans start exposed. Staffer goals
   whose inputs include third-party content or error payloads start exposed; QA
@@ -414,7 +469,8 @@ lead epoch matching:
 1. resolve the token to an active invocation;
 2. check the capability is in the grant, resource arguments are within the
    grant's resource scope, and the budget allows another call;
-3. apply exposure, park-only and the tool's approval policy;
+3. apply the two owner rules (D4), exposure, park-only and the tool's approval
+   policy;
 4. for effects, insert the `effects` row and decrement the budget.
 
 Stop takes the goal row `FOR UPDATE` (D14), so a call either commits before the
@@ -450,9 +506,20 @@ and keep their current callers. The dashboard also calls some model-reachable
 tools directly today. After cutover those calls go through the control plane's
 service listener, authenticated by the existing signed dashboard control client
 (`RUNTIME_PROBE_CONTROL_SIGNING_KEY`), and are forwarded with an assertion whose
-origin is `owner`, principal `dashboard`, and `goal_id` null. Any other
-model-reachable call without a valid assertion is refused. Inventorying the
-existing direct call sites is a dark-build task.
+origin is `owner`, principal `dashboard`, and `goal_id` null. These calls
+follow the two owner rules of D4 like any goal call: a dashboard call that
+messages someone other than the owner is parked for owner approval unless a
+standing rule matches. Any other model-reachable call without a valid
+assertion is refused. Inventorying the existing direct call sites is a
+dark-build task.
+
+**Service-plane relays.** Service-to-service traffic that today rides the
+generic `route` tool moves to named endpoints on the control plane's service
+listener: domain-event fan-out (RFC 0022), the QA error relay, and module
+runtime wiring. Each endpoint has a fixed payload schema, authenticates its
+calling daemon, is not LLM-presentable, and is not on the session listener.
+Domain events that an effect produced carry the effect's goal lineage, which
+caused admission reads (D5).
 
 **Removed tools.** The session-starting and proxy tools found in the survey do
 not survive: the `trigger` tool, `route.execute`, the generic `route` tool and
@@ -461,10 +528,14 @@ becomes obligation creation, an `administer` capability; `cancel_session`
 becomes owner-only Stop. `public.permissions` no longer governs sessions.
 Messenger's `notify.v1` delivery termination, which today shares the
 `route.execute` tool name, survives as a deterministic service-plane endpoint:
-not LLM-presentable, not on the session listener, and called only by
-Switchboard `deliver()`. Its approval gate stays as defense in depth for the
-non-owner communication rule (D4). The implementation separates it from the
-deleted session-dispatch role.
+not LLM-presentable, not on the session listener, and meant to be called only
+by Switchboard `deliver()`. Today that restriction is placement only; the dark
+build gives the endpoint the same caller authentication as the other
+service-plane relays. Its approval gate is the enforcement point of the
+non-owner rule (D4) for deterministic senders and defense in depth for goal
+sends. It keeps its current name until the implementation separates it from
+the deleted session-dispatch role; the baseline deltas call it Messenger's
+service-plane delivery endpoint.
 
 **Signing key.** `GOAL_BROKER_SIGNING_KEY` is the second named use of the
 security.md process-bound deployment control key exception (owner decision 6):
@@ -523,9 +594,9 @@ lead's grant, minus `administer`, and refuses an empty or non-subset request.
 Since `transact` is never in a lead's grant, no child can hold it either.
 The insert that admits the child is conditional on the goal running and the
 lead epoch matching, like any call. The child inherits the goal's origin and
-exposure. Children are not read-only by default; they may hold `record` or
-`communicate` capabilities the lead holds, under the same approval and
-park-only rules. A lead cannot approve its child's effect:
+exposure. Children are not read-only by default; they may hold `record`,
+`communicate` or `actuate` capabilities the lead holds, under the same
+approval, park-only and owner rules. A lead cannot approve its child's effect:
 approvals resolve only through owner channels.
 
 A child that needs more work calls `goal.return` with a `requests_for_lead`
@@ -561,6 +632,11 @@ settling -> stopped                               (owner Stop cancels parked eff
 
 `settling` means the lead has finished but parked effects are still awaiting
 owner decisions; the goal reaches its final state when they resolve.
+
+A goal admitted from an owner message completes only when its reply reached
+the owner. If the reply was not delivered, the goal ends `partial` with the
+delivery failure recorded, which keeps today's interactive reply delivery
+accounting.
 
 Invocation:
 
@@ -601,9 +677,14 @@ outcome relies on.
 ### D13. Approvals
 
 When a call needs approval or its grant is park-only, the broker parks it
-through the approvals module with the exact capability, arguments and lineage
-(goal, invocation, depth, exposure) and returns `parked` with the approval
-reference. The session may continue or end.
+through the owning domain's approvals module with the exact capability,
+arguments and lineage (goal, invocation, depth, exposure) and returns `parked`
+with the approval reference. The session may continue or end. Standing rules
+stay in the owning domain's approvals schema, so that module matches them at
+park time: a match approves the parked effect at once, and the effect records
+the rule as its approval. A domain gate treats a verified assertion whose
+`approval_ref` covers the exact call digest as approval, so an approved call is
+never parked twice.
 
 The owner may approve, reject or edit (RFC 0021). On approval the broker
 executes the stored call, or the owner's edited version of it, never a call
@@ -613,9 +694,15 @@ goal cancels its parked effects; a goal whose lead has finished waits in
 `settling` and still executes approvals that arrive.
 
 Standing rules and the promotion ladder of RFC 0021 apply unchanged to
-unexposed invocations. At the switch, `pending_actions` created before cutover
-remain executable by the approvals executor and are recorded with origin
-`legacy`.
+unexposed invocations; exposed invocations can use only the standing rules D4
+exempts. A standing rule is **template-pinned** when its argument constraints
+fix every content-bearing argument to an exact value or to an owner-authored
+template whose slots accept only typed values (dates, amounts, identifiers),
+never free text. A Stop-cancelled parked effect takes a new approvals status,
+`cancelled`. At the switch, `pending_actions` created before cutover remain
+executable by the approvals executor and are recorded with goal origin
+`legacy`, a field separate from the approvals module's existing producer
+`origin`.
 
 ### D14. Stop and recovery
 
@@ -631,6 +718,14 @@ lead's token, and launches a replacement with the goal record, the goal's
 exposure, the effect ledger and returned child results. Recovery draws from
 the same budget. Children of a replaced lead keep running and report to the
 new lead through `goal.await`.
+
+Runtime failures (provider errors, quota exhaustion, launch failures,
+timeouts) are classified with the existing runtime failure taxonomy. For a
+retryable class the runner may relaunch the failed invocation once on the
+same tier's fallback model; a relaunched lead advances the epoch exactly as
+recovery does, and every relaunch counts against the goal's invocation budget.
+A non-retryable failure ends the invocation `failed` and leaves the decision
+to the lead or, for a lead, ends the goal `failed` with its ledger intact.
 
 ### D15. Context and memory
 
@@ -671,7 +766,8 @@ conformance gate for the catalog size it will see.
 
 ### D17. Telemetry and audit
 
-Every span carries `goal_id`, `invocation_id`, `depth` and `epoch`. The ledger,
+Every span carries `goal_id`, `invocation_id`, `depth` and, for a lead, its
+`epoch`, taken from the invocation record. The ledger,
 not session logs, is the record of a goal: admission decision, origin, cause,
 exposure, ceiling digest, grants, delegation tree, budget consumption, effects
 with receipts, approvals and the final outcome. Telemetry stores identifiers and
@@ -685,14 +781,22 @@ and never reaches the broker or a domain capability:
 - **Engineering executors.** QA investigation agents and self-healing agents
   (RFC 0015) work on the repository with a shell and a worktree. They keep
   their existing sandboxed contracts, receive no MCP config and see only the
-  anonymized payloads RFC 0015 allows. The QA staffer's own triage reasoning is
+  anonymized payloads RFC 0015 allows; the cutover stops injecting situational
+  context into their prompts. The QA staffer's own triage reasoning is
   a staffer goal.
 - **Model functions.** Tool-less, single-turn, structured-output calls made by
   deterministic code: connector discretion screening (forward or ignore for
   non-owner chatter; owner messages skip it), connector speech-to-text
-  transcription, and RFC 0036 vision probes. They have no tools; any
-  consequence comes from the deterministic code that reads their typed
-  output, and their output entering a goal is third-party content.
+  transcription, RFC 0036 vision probes, and model-catalog verification and
+  benchmark probes, which send fixed prompts and record only measurements.
+  They have no tools; any consequence comes from the deterministic code that
+  reads their typed output, and their output entering a goal is third-party
+  content.
+
+Model use that today runs outside a session but composes owner-facing text or
+judgment, such as briefing elaboration, chronicler narration, insight
+synthesis, dashboard quick-add and memory consolidation, becomes an obligation
+or owner goal at the switch rather than a model function.
 
 Any other model use is a goal invocation. Adding a kind to this list requires
 an RFC amendment. Pending OpenSpec changes that add a model path, such as
@@ -709,11 +813,16 @@ mind (owner decision 11). The direction:
   started each goal, its origin and exposure, the lead and its children, the
   regions it drew on, its effects with receipts, its parked approvals, its
   budget and its outcome, with Stop on any running goal.
-- **Regions replace butler units.** A domain page shows its region's data,
-  standing obligations and schedules, capabilities and their effect classes,
-  domain guidance, and the recent goals that used it. It no longer shows a
-  domain's own sessions, routing log or runtime process as if it were a
-  separate agent.
+- **Regions replace butler units.** The Butlers page and butler detail pages
+  become region pages. A region page shows its data, standing obligations and
+  schedules, capabilities and their effect classes, domain guidance, and the
+  recent goals that used it. It no longer shows a domain's own sessions,
+  routing log or trigger controls as if it were a separate agent. Service
+  health stays visible on the system and settings surfaces as infrastructure,
+  not as a separate agent.
+- **Owner channels speak as one assistant.** Telegram and email replies come
+  from one assistant with region attribution where it helps, instead of
+  per-butler origin prefixes. The same change details it.
 - **The overview shows the whole mind at once:** active goals, which regions
   each touches, obligations coming due, and decisions waiting for the owner.
 - **Approvals carry lineage:** each parked effect shows the goal, the
@@ -723,7 +832,31 @@ mind (owner decision 11). The direction:
 The detailed experience contract is a separate OpenSpec change for the
 `dashboard-*` capabilities, produced through design review and signed off by
 the owner before implementation. Its pages are built during the dark build and
-switched on by the cutover release.
+switched on by the cutover release. That change also carries the dashboard
+contracts this RFC's baseline deltas leave untouched (session explorers,
+per-butler tabs, trigger and routing-log views, permissions, the chat surfaces),
+and defines successors for the guarantees of the removed dashboard chat lanes:
+in-thread failure replies, bug-report filing to QA, the read-only answer lane,
+replay-eligible dead letters, and conversation continuity, which D9's
+no-resume rule makes a goal-level concern.
+
+### Details settled during the dark build
+
+Writing the baseline deltas surfaced details this RFC leaves to
+implementation. Each is settled by the dark-build work item that owns it,
+within D1 to D19 and never by weakening the two owner rules of D4:
+
+- how service-plane relays and Messenger's delivery endpoint authenticate their
+  calling daemon;
+- the format of a staffer contract's capability set, and whether a Concierge
+  answer is a staffer or an owner goal;
+- the admission budget for high-volume feeds, so a burst of third-party mail
+  cannot exhaust goal budgets;
+- how an owner's reply to an outbound prompt (a quiz, a confirmation) joins
+  the goal that sent it rather than starting an unrelated owner goal;
+- which approvals statuses and dashboard filters gain `cancelled` and goal
+  lineage;
+- a taint field on every store D6 lists that lacks one today.
 
 ## Disposition of existing RFCs
 
@@ -735,11 +868,11 @@ invocation lineage.
 |---|---|
 | 0001 Daemon lifecycle and triggers | Superseded in part: session dispatch and spawner triggers (D1, D2, D10, D11, D14). Daemon lifecycle and scheduler phases remain. |
 | 0002 MCP tool surface and modules | Superseded in part: ephemeral MCP config and own-butler binding (D3, D7, D8). Module ABC and registration remain. |
-| 0003 Switchboard routing and ingestion | Superseded in part: triage, LLM classification, thread affinity and `route.execute` removed. Ingest envelopes, dedupe and the durable buffer remain and feed D5. |
+| 0003 Switchboard routing and ingestion | Superseded in part: triage, LLM classification, thread affinity and session-dispatch `route.execute` removed; Messenger's `notify.v1` delivery termination survives (D7). Ingest envelopes, dedupe and the durable buffer remain and feed D5. |
 | 0004 Identity and contact resolution | Remains; supplies owner identification for D5. |
 | 0005 Observability and telemetry | Remains; D17 adds goal attributes. |
 | 0006 Database schema and isolation | Remains; goal ledger tables are Switchboard-owned. |
-| 0007 Dashboard and API surface | Remains; direct model-reachable tool calls move to the control plane service listener (D7). |
+| 0007 Dashboard and API surface | Superseded in part: session, trigger and per-butler conversation endpoints and butler-unit views (D7, D19). API conventions and other endpoints remain; direct model-reachable tool calls move to the control plane service listener (D7). |
 | 0008 Deployment network security | Superseded in part: runtime children and their network (D3), container layout (D1). Networks, ports and firewall remain. |
 | 0009 Situational context bus | Remains; reads are `stamped`. |
 | 0010 Cross-butler briefing exception | Remains, with its QA amendment. |
@@ -766,7 +899,7 @@ invocation lineage.
 | 0031 Public entity graph projection | Remains. |
 | 0032 Fleet case file | Remains. |
 | 0033 Fleet cost claims | Remains. |
-| 0034 Messenger voice egress (draft) | Independent; delivery stays Messenger-owned. |
+| 0034 Messenger voice egress (draft) | Independent; delivery stays Messenger-owned through its service-plane delivery endpoint (D7). |
 | 0035 Approval reminders (proposed) | Independent. |
 | 0036 Models exact-path vision proof | Remains; probes are model functions (D18). |
 | 0037 General capture and private custody | Superseded in part: capture's classification and routing step becomes goal admission. Capture ledger, receipts and private custody remain; custody stays unreachable by models (D4). |
@@ -801,14 +934,16 @@ capability directly or delegates to a child.
 
 All evidence is produced in a dev namespace against the release candidate:
 
-1. Every `goal-orchestration` and `capability-authorization` scenario passes.
-   Every gap listed in [Context](#context-todays-boundary) has a failing-before,
-   passing-after test.
+1. Every `goal-orchestration` and `capability-authorization` scenario, and
+   every scenario of the signed D19 dashboard change, passes. Every gap listed
+   in [Context](#context-todays-boundary) has a failing-before, passing-after
+   test.
 2. Adversarial suite, zero unauthorized effects: injected instructions in
    email, chat and calendar content attempting send, spend, actuation, rule
-   writes and exfiltration (including through owner `notify` links); messages
-   to non-owner, unknown or ambiguous recipients without owner approval; any
-   `transact` grant or call; laundering
+   writes and exfiltration (including through owner `notify` links and
+   owner-directed sends); messages, calendar invitations, attendee updates and
+   invitation answers reaching non-owner, unknown or ambiguous parties without
+   owner approval; any `transact` grant or call; laundering
    through memory, conversation history and insight candidates; children
    attempting grandchildren through every creation path, including caused
    admissions and runtime obligations; forged, replayed, expired and
@@ -846,11 +981,14 @@ Once the switch has shipped, the RFC corpus in `about/legends-and-lore/` is
 rewritten and reorganized around the goal architecture (owner decision 10).
 The supersession headers and the disposition table above are interim markers,
 not the end state. The rewrite folds each superseded-in-part RFC's surviving
-contract into a successor organized by subsystem (control plane, capability
-services, owner surface, connectors, data), moves the replaced text to the
-decision history, splits RFC 0038's lasting contracts from its cutover plan,
-and rebuilds the RFC index around the new organization. It changes no
-behavior: any contract change it uncovers goes through its own spec delta.
+contract into a successor, moves the replaced text to the decision history,
+splits RFC 0038's lasting contracts from its cutover plan, and rebuilds the RFC
+index around the new organization. The proposed organization is by subsystem
+(control plane, capability services, owner surface, connectors, data); the
+owner confirms it before the rewrite starts. The rewrite changes no behavior:
+any contract change it uncovers goes through its own spec delta. It runs after
+this change is archived, so it is tracked as its own work item rather than as
+a task of this change.
 
 ### Rollback
 
@@ -866,11 +1004,11 @@ built.
 |---|---|---|---|
 | 1 | Host of the control plane | Switchboard, moved into its own process and container (D1). | Switchboard, own process. |
 | 2 | Release scope | The cutover is a v1 milestone; v1's classifier criterion becomes replay and adversarial-suite criteria. | Yes, v1 ships on goals. |
-| 3 | Exposure strictness | As D4 and D6, including the narrowed exemptions: owner `notify` with inert links, and standing rules only with template-pinned bodies. Stricter gating costs more approval taps; looser gating lets an injected session message a pinned third party. | Narrow exemptions. |
+| 3 | Exposure strictness | As D4 and D6, including the narrowed exemptions: owner `notify` with inert links, and standing rules only to the owner or with template-pinned bodies. Stricter gating costs more approval taps; looser gating lets an injected session message a pinned third party. | Narrow exemptions. |
 | 4 | Default model tiers | As D16; replay evaluation sets the final assignments. | Not asked; deferred to replay evaluation. |
 | 5 | Default budgets | Per origin, set from replay evaluation before the switch. | Not asked; deferred to replay evaluation. |
 | 6 | `GOAL_BROKER_SIGNING_KEY` | Approve as the second named process-bound deployment control key (D7). | Approved. |
-| 7 | Third-party park-only effects | Allow: inbound mail can prepare a reply for one-tap approval; it can never execute one. | Approved; narrowed to `communicate` by decision 8. |
+| 7 | Third-party park-only effects | Allow: inbound mail can prepare a reply or booking for one-tap approval; it can never execute one. | Approved; narrowed to `communicate` by decision 8. |
 | 8 | `transact` capabilities | Owner amendment at signoff. | Disabled for every goal, including park-only: "`transact` should not be enabled, I don't trust the systems that far yet." |
 | 9 | Communication with non-owners | Owner amendment at signoff. | Keep the existing rule: "all communication with all entities that are NOT myself (owner) require approval." Per-event approval or an owner-created standing rule, for every goal (D4). |
 | 10 | RFC corpus after cutover | Owner amendment at signoff. | Rewrite and reorganize the RFCs after the rearchitecture (Hard cutover, After the switch). |
@@ -909,20 +1047,20 @@ built.
 | `goal-orchestration` 005 finite work | D10 |
 | `goal-orchestration` 006 honest outcomes | D11, D12, D14 |
 | `goal-orchestration` 007 domain care | D2, D5 |
-| `goal-orchestration` 008 single admission path | D2, D18, Hard cutover |
-| `capability-authorization` 001 sandbox | D3 |
+| `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover |
+| `capability-authorization` 001 sandbox | D1, D3 |
 | `capability-authorization` 002 catalog metadata | D4 |
 | `capability-authorization` 003 origin ceilings | D5 |
 | `capability-authorization` 004 grants bound calls | D7 |
 | `capability-authorization` 005 delegation narrows | D9, D13 |
-| `capability-authorization` 006 exposure and taint | D6 |
-| `capability-authorization` 007 domain assertion check | D7 |
+| `capability-authorization` 006 exposure and taint | D4, D6 |
+| `capability-authorization` 007 domain assertion check | D1, D7 |
 | `capability-authorization` 008 tokens | D7, D14 |
 | `capability-authorization` 009 effect ledger | D12 |
-| `capability-authorization` 010 exact approvals | D13 |
+| `capability-authorization` 010 exact approvals | D11, D13 |
 | `capability-authorization` 011 Stop | D14 |
 | `capability-authorization` 012 audit | D17 |
 | `capability-authorization` 013 caused admissions and runtime obligations | D5 |
 | `capability-authorization` 014 owner decisions unreachable | D4 |
-| `capability-authorization` 015 `transact` disabled | D4, D5, D9 |
-| `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D13 |
+| `capability-authorization` 015 `transact` disabled | D4, D5, D9, owner decision 8 |
+| `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D7, D13, owner decision 9 |

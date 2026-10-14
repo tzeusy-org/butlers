@@ -49,7 +49,7 @@ Numbered doctrine rules keep their identifiers; existing citations do not move.
 | `security.md`, deployment control keys | One named key. | `GOAL_BROKER_SIGNING_KEY` is the second named key (owner decision 6). |
 | `v1.md`, success criterion 2 | Over 90% classification accuracy. | Goal runtime meets or beats recorded outcomes on replay; zero unauthorized effects in the adversarial suite (owner decision 2). |
 | `v1.md`, success criterion 6 | "The dashboard shows butler status, sessions, contacts, and ingestion flow in real time." | The dashboard shows goals with lineage, effects and approvals, and each domain region (owner decision 11). |
-| `security.md`, Goal and Delegation Authority; Approval Gates | Non-owner communication approval enforced by the notify gate; `transact` grantable park-only to third-party goals. | Communication with anyone other than the owner needs owner approval for every goal; no goal holds `transact` (owner decisions 8 and 9). |
+| `security.md`, Goal and Delegation Authority; Approval Gates | "A third-party goal can read, record attributed facts, notify the owner, and at most prepare an action for owner approval; it can never itself send, spend, actuate, or administer." Non-owner communication approval was enforced by the notify gate only. | Communication with anyone other than the owner needs owner approval for every goal; no goal holds `transact` (owner decisions 8 and 9). |
 
 Rule 5 distinguishes versioned role guidance from per-invocation task
 artifacts; Rule 7 removes mandatory domain classification. Rules 1, 2 and 4
@@ -122,11 +122,12 @@ the cutover gate in a dev namespace, the single switching release and
 rollback by redeploying the previous release. Nothing runs both paths for the
 owner at once.
 
-Until the switch, RFCs 0001, 0002, 0003, 0008, 0027 and 0037 carry a one-line
-supersession header naming exactly what RFC 0038 replaces; their bodies stay
-as written. `about/lay-and-land/`, `docs/` and `CLAUDE.md` describe the running
-code and are rewritten by the cutover release. Baseline OpenSpec deltas are
-authored after owner signoff of RFC 0038 and applied by the same release.
+Until the switch, RFCs 0001, 0002, 0003, 0007, 0008, 0027 and 0037 carry a
+one-line supersession header naming exactly what RFC 0038 replaces; their
+bodies stay as written. `about/lay-and-land/`, `docs/` and `CLAUDE.md` describe
+the running code and are rewritten by the cutover release. Baseline OpenSpec
+deltas were authored in this change after owner signoff of RFC 0038 and are
+applied by the same release.
 
 ## Downstream disposition
 
@@ -134,9 +135,10 @@ authored after owner signoff of RFC 0038 and applied by the same release.
 |---|---|
 | `about/README.md`, `heart-and-soul/{README,vision,architecture,security,v1}.md` | Describe the goal system only. `about/README.md`, `CLAUDE.md` and the local `doctrine` skill each carry one cutover pointer. |
 | `craft-and-care/{performance-discipline,observability-and-operations}.md` | Whole-goal outcome evaluation and goal-ledger evidence. |
-| RFCs 0001, 0002, 0003, 0008, 0027, 0037 | One-line supersession header now; status and body updated by the cutover release. |
-| All other RFCs | Disposition per RFC 0038's table: most remain authoritative with session attribution mapped to invocation lineage; 0021 is amended. |
-| `openspec/specs/*` baseline capabilities | MODIFIED/REMOVED deltas after RFC signoff (tasks 1.4). |
+| RFCs 0001, 0002, 0003, 0007, 0008, 0027, 0037 | One-line supersession header now; status and body updated by the cutover release. |
+| All other RFCs | Disposition per RFC 0038's table: most remain authoritative with session attribution mapped to invocation lineage; 0021 is amended. After the switch the whole corpus is rewritten and reorganized (owner decision 10). |
+| `openspec/specs/*` baseline capabilities | MODIFIED/REMOVED/ADDED deltas authored in this change (tasks 1.4); applied by the cutover release. |
+| `heart-and-soul/design-language.md` | Carries a D19 pointer now; rewritten by the signed D19 dashboard change before the switch. |
 | `roster/switchboard/MANIFESTO.md`, domain `CLAUDE.md` files | Rewritten by the cutover release: control-plane contract; domain guidance. |
 | `lay-and-land/*`, `docs/*` | Unchanged until the cutover release. |
 | Local `doctrine`, `adding-butlers-to-roster`, `butler-tool-review`, `butler-relentless-jarvis-pursuit` skills | Point at the goal doctrine and RFC 0038; only the `doctrine` skill mentions the pending cutover. |
@@ -171,3 +173,9 @@ authored after owner signoff of RFC 0038 and applied by the same release.
   akin to specialized regions of the same brain". "The proposal is otherwise
   signed off." RFC 0038 records them as owner decisions 8 to 11 and D19; the
   baseline OpenSpec deltas were authored in the same pull request.
+- Detail the author added while applying the amendments stands pending owner
+  confirmation, as RFC 0038's status line lists: `recipient_params` and the D4
+  recipient rules, the reclassification of calendar-invitation answers to
+  `communicate`, the Messenger delivery carve-out in D7, the D19 direction
+  bullets, the proposed RFC organization, and the gaps closed while writing
+  the baseline deltas.

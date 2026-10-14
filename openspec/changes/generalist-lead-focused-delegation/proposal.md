@@ -51,26 +51,62 @@ is the design.
 - `goal-orchestration`: one accountable lead per goal, depth-1 focused
   children, finite budgets, honest outcomes, durable domain care, and goals as
   the only path to a reasoning session.
-- `capability-authorization`: sandboxed sessions, catalog metadata, origin
-  ceilings, grant checks, delegation attenuation, exposure and taint, domain-side
-  assertion verification, revocable tokens, effect ledger, exact-approval
-  execution, Stop fencing, goal audit, bounded caused admissions and
-  unreachable owner decisions.
+- `capability-authorization`: sandboxed sessions, catalog metadata (including
+  party arguments), origin ceilings, grant checks, delegation attenuation,
+  exposure and taint, domain-side assertion verification, revocable tokens,
+  effect ledger, exact-approval execution, Stop fencing, goal audit, bounded
+  caused admissions, unreachable owner decisions, `transact` disabled, and
+  owner approval for communication with anyone other than the owner.
 
 ### Modified Capabilities
 
-Deltas to `butler-base-spec`, `core-spawner`, `core-daemon`, `core-sessions`,
-`core-modules`, `butler-switchboard`, `cross-butler-delegation`,
-`staffer-archetype`, `core-scheduler`, `core-credentials`, `core-notify` and the
-approvals capability are authored after RFC 0038 signoff (tasks 1.4) and applied
-by the cutover release. RFC 0038 gives every RFC from 0001 to 0037 a
-disposition.
+MODIFIED, REMOVED and, where a successor contract is needed, ADDED deltas were
+authored in this change after RFC 0038 signoff (tasks 1.4) and are applied by
+the cutover release:
+
+- Core runtime: `butler-base-spec`, `core-spawner`, `core-daemon`,
+  `core-sessions`, `core-modules`, `core-scheduler`, `core-credentials`,
+  `core-notify`, `core-skills`, `core-telemetry`, `core-fleet-events`,
+  `module-approvals`, `staffer-archetype`, `testing`.
+- Control plane and ingress: `butler-switchboard`, `switchboard-identity`,
+  `switchboard-rule-promotion`, `dispatch-intent`, `ingestion-policy`,
+  `ingestion-event-registry`, `ingress-injection`, `error-recovery-corrections`,
+  `scorecard-reporting`, `domain-event-bus`, `fleet-case-file`,
+  `connector-base-spec` and the `connector-activitywatch`, `connector-gmail`,
+  `connector-home-assistant`, `connector-live-listener`, `connector-steam` and
+  `connector-telegram-user-client` connectors.
+- Removed entirely: `cross-butler-delegation`, `conversation-decomposition`,
+  `routing-scorecard`; `complexity-classification` and `module-pipeline` lose
+  their routing requirements.
+- Models and runtimes: `model-catalog`, `model-failover`,
+  `model-benchmark-harness`, `catalog-token-limits`, `runtime-opencode`,
+  `runtime-config-api`.
+- Staffers and engineering executors: `staffer-qa`, `qa-investigation-dispatch`,
+  `healing-session-tracking`.
+- Domains: `butler-chronicler`, `chronicler-api`, `butler-concierge`,
+  `butler-education` and the `module-education-curriculum`,
+  `module-education-mastery`, `module-education-spaced-repetition` and
+  `module-education-teaching-flows` modules, `butler-finance`,
+  `csv-extraction-skill`, `butler-general`, `butler-health`, `butler-home`,
+  `module-home-assistant`, `butler-lifestyle`, `butler-messenger`,
+  `butler-relationship`, `relationship-facts`, `butler-secrets`,
+  `butler-travel`, `module-calendar`, `module-memory`,
+  `memory-discovery-catalog`, `memory-retention-policy`, `event-chains`,
+  `seasonal-awareness`, `deadline-tracking`, `commitment-lifecycle`,
+  `autonomy-tracker`, `autonomy-suggestions`,
+  `cross-butler-briefing-contribution`, `docs-information-architecture`.
+
+The `dashboard-*` capabilities are changed by the separate D19 dashboard
+change. RFC 0038 gives every RFC from 0001 to 0037 a disposition.
 
 ## Impact
 
-Doctrine (`about/heart-and-soul/`), RFCs 0001, 0002, 0003, 0008 and 0027
-(supersession headers), v1 scope and success criteria, Switchboard's manifesto
-at cutover, every domain butler's session spawning, every LLM-presentable
-tool's metadata, deployment (session sandbox pod class or network), and the
-second process-bound deployment control key. No runtime code changes in this
-change's documentation stage.
+Doctrine (`about/heart-and-soul/`, with a D19 pointer in
+`design-language.md`), RFCs 0001, 0002, 0003, 0007, 0008, 0027 and 0037
+(supersession headers), v1 scope and success criteria, the dashboard (rebuilt
+around goals and regions by the D19 change), Switchboard's manifesto at
+cutover, every domain butler's session spawning, every LLM-presentable tool's
+metadata, deployment (session host, `butlers-control` and the second
+process-bound deployment control key), and calendar writes that invite
+non-owner attendees, which become approval-gated. No runtime code changes in
+this change's documentation stage.

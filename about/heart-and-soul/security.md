@@ -69,9 +69,12 @@ specifies the mechanism. The rules it must satisfy:
   send, actuate, or administer.
 - **Only the owner is messaged without approval.** Communication with anyone
   other than the owner needs owner approval, per event or through a standing
-  rule the owner created, whatever the goal's origin or exposure. A recipient
-  counts as the owner only when it resolves uniquely to the owner entity;
-  unknown or ambiguous recipients are not the owner.
+  rule the owner created, whatever the goal's origin or exposure. This covers
+  every party a call delivers to or invites: message recipients, calendar
+  attendees and invitees, invitation answers and shares. A party counts as the
+  owner only when it resolves uniquely to the live owner entity, as
+  `core-notify` defines; any other party, including an unknown, ambiguous or
+  undeterminable one, is not the owner.
 - **No goal spends.** `transact` capabilities (spend, pay, book) are disabled
   for every goal, including as prepared actions, until the owner enables them
   through an amendment to RFC 0038.
@@ -80,11 +83,11 @@ specifies the mechanism. The rules it must satisfy:
   skills, and task prompts never grant anything.
 - **Exposure gates consequential effects.** Once an invocation has read
   third-party content, directly or through records an exposed goal stored,
-  sending to anyone but the owner, administering, and consequential or
-  protected actuation need per-event owner approval, and steering-memory
-  writes are refused. Exposure never clears, and stored data keeps the taint.
-  The only exemptions are `notify` to the owner with link previews off and URLs
-  inert, and standing rules with template-pinned bodies.
+  sending, administering, and consequential or protected actuation need
+  per-event owner approval, and steering-memory writes are refused. Exposure
+  never clears, and stored data keeps the taint. The only exemptions are
+  `notify` to the owner with link previews off and URLs inert, and standing
+  rules whose recipient is the owner or whose body is template-pinned.
 - **Two independent checks.** The broker checks every call against the grant,
   exposure, approval policy, and budget. The owning domain then verifies the
   broker's single-use assertion for that domain, that exact tool, and that
@@ -182,7 +185,8 @@ explicit owner confirmation before proceeding.
   model re-issues.
 - Communication with anyone other than the owner always requires owner
   approval: per event, or through a standing rule the owner created. No goal
-  origin, grant or exposure state bypasses it.
+  origin, grant or exposure state bypasses it, and no deterministic service
+  path bypasses it.
 - Exposure to third-party content makes consequential effects approval-gated
   even when the tool alone would not be (see Goal and Delegation Authority).
 - Approval timeouts must result in denial, not silent approval.
