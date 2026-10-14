@@ -462,7 +462,7 @@ Scope: v1-mandatory
 - **THEN** it MUST resolve the normalized email candidate set through active literal `relationship.entity_facts`
 - **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
 - **AND** otherwise it MUST check standing approval rules
-- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if no standing rule matches, nothing is sent: the delivery MUST follow the pending-approval path, and the caller receives a descriptive result naming the pending approval
 - **AND** if the target is an owner, delivery proceeds without rule check
 
 #### Scenario: route.execute enforces approval gate for telegram delivery
@@ -471,7 +471,7 @@ Scope: v1-mandatory
 - **THEN** it MUST resolve the normalized Telegram candidate set through active literal `relationship.entity_facts`
 - **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
 - **AND** otherwise it MUST check standing approval rules
-- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if no standing rule matches, nothing is sent: the delivery MUST follow the pending-approval path, and the caller receives a descriptive result naming the pending approval
 - **AND** if the target is an owner, delivery proceeds without rule check
 
 #### Scenario: route.execute enforces approval gate for WhatsApp delivery
@@ -480,7 +480,7 @@ Scope: v1-mandatory
 - **THEN** it MUST resolve the normalized WhatsApp candidate set through active literal `relationship.entity_facts`
 - **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
 - **AND** otherwise it MUST check standing approval rules
-- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if no standing rule matches, nothing is sent: the delivery MUST follow the pending-approval path, and the caller receives a descriptive result naming the pending approval
 - **AND** if the target is an owner, delivery proceeds without rule check
 
 #### Scenario: route.execute skips gate for emoji reactions

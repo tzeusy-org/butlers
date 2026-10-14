@@ -122,13 +122,13 @@ Scope: v1-mandatory
 - **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope with `channel="email"`
 - **AND** the email target resolves to a non-owner contact (or is unknown)
 - **AND** no standing approval rule matches `email_send_message` or `email_reply_to_thread` for that target
-- **THEN** delivery MUST be blocked and a descriptive error returned
+- **THEN** nothing is sent: the delivery MUST follow the pending-approval path, and the caller receives a descriptive result naming the pending approval
 
 #### Scenario: Messenger route.execute blocks non-owner telegram without rule
 - **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope with `channel="telegram"` and `intent` in `("send", "reply")`
 - **AND** the telegram target resolves to a non-owner contact (or is unknown)
 - **AND** no standing approval rule matches `telegram_send_message` or `telegram_reply_to_message` for that target
-- **THEN** delivery MUST be blocked and a descriptive error returned
+- **THEN** nothing is sent: the delivery MUST follow the pending-approval path, and the caller receives a descriptive result naming the pending approval
 
 #### Scenario: Messenger route.execute permits owner delivery without rule
 - **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope
