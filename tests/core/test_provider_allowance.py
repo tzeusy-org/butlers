@@ -667,6 +667,54 @@ class TestAllowanceStateWriter:
         self, pool, migrated_db_url: str, tmp_path: Path
     ) -> None:
         entry = await _entry(pool, "inflight", runtime_type=DEFAULT_RUNTIME_TYPE)
+        intent = derive_dispatch_intent("tick", Complexity.WORKHORSE)
+        # Establish that this exact entry fits the invocation's butler/tier/intent:
+        # later None selections must mean allowance exclusion, not an empty catalog
+        # or an unrelated hard-fit failure. These readers use the fixture pool,
+        # independently of the runtime's capture/clear/provenance connection.
+        async with pool.acquire() as reader:
+            candidate = await next_same_tier_candidate(reader, "allowance-test", "workhorse", [])
+            assert candidate is not None and candidate[3] == entry
+            resolved = await resolve_model(
+                reader, "allowance-test", Complexity.WORKHORSE, allow_tier_fallthrough=False
+            )
+            assert resolved is not None and resolved[3] == entry
+            dispatch = await resolve_dispatch(
+                reader, "allowance-test", intent, allow_tier_fallthrough=False
+            )
+            assert dispatch.selection is not None and dispatch.selection[3] == entry
+            assert [(c.catalog_entry_id, c.outcome) for c in dispatch.candidates] == [
+                (entry, CandidateOutcome.SELECTED)
+            ]
+            assert dispatch.candidates[0].exclusions == ()
+            assert await allowance_deferral(reader, "allowance-test", Complexity.WORKHORSE) is None
+
+        async def assert_retained_allowance_readers() -> None:
+            # Each invocation acquires after the producer write/commit and reads the
+            # real SQL; no session/selection patch supplies these reader answers.
+            clear_routing_decision_cache()
+            async with pool.acquire() as reader:
+                candidate = await next_same_tier_candidate(
+                    reader, "allowance-test", "workhorse", []
+                )
+                assert candidate is None
+                resolved = await resolve_model(
+                    reader, "allowance-test", Complexity.WORKHORSE, allow_tier_fallthrough=False
+                )
+                assert resolved is None
+                dispatch = await resolve_dispatch(
+                    reader, "allowance-test", intent, allow_tier_fallthrough=False
+                )
+                assert dispatch.selection is None
+                assert [(c.catalog_entry_id, c.outcome) for c in dispatch.candidates] == [
+                    (entry, CandidateOutcome.EXCLUDED_ALLOWANCE)
+                ]
+                assert dispatch.candidates[0].exclusions == ()
+                assert (
+                    await allowance_deferral(reader, "allowance-test", Complexity.WORKHORSE)
+                    == latest["reset_at"]
+                )
+
         await mark_allowance_exhausted(pool, entry, reset_at=_later(), attempt_id=None)
         adapter = _PausedSuccessAdapter()
         session_id = uuid.uuid4()
@@ -713,9 +761,10 @@ class TestAllowanceStateWriter:
                     latest = dict(
                         await pool.fetchrow("SELECT * FROM public.provider_allowance_states")
                     )
+                    await assert_retained_allowance_readers()
                 finally:
                     adapter.release.set()
-                result = await asyncio.wait_for(task, timeout=10)
+                    result = await asyncio.wait_for(task, timeout=10)
             assert result.success is True and result.output == "synthetic success"
             assert adapter.invoke_calls == 1
             assert (
@@ -731,6 +780,7 @@ class TestAllowanceStateWriter:
             assert attempts[0]["outcome"] == "success" and attempts[0]["attempt_index"] == 0
             assert attempts[0]["session_id"] == session_id
             assert attempts[0]["ts"] >= latest["updated_at"]
+            await assert_retained_allowance_readers()
 
     async def test_clear_and_rejection_serialize_without_losing_latest_exhaustion(
         self, pool
