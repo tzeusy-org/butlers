@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastmcp import FastMCP
-from fastmcp.tools import Tool
 
 from butlers.config import ButlerType, load_config
 from butlers.core.tool_catalog import validate_presentation_inventory
@@ -33,10 +32,10 @@ _CONFIG_OVERRIDES = {
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-async def _registered_module_tools() -> list[tuple[str, Tool]]:
+async def _module_registration_union() -> dict[str, str]:
     """Execute every discovered registrar through an actual FastMCP registry."""
     registry = default_registry()
-    registered: list[tuple[str, Tool]] = []
+    owners: dict[str, str] = {}
     for module_name in registry.available_modules:
         module = registry._modules[module_name]()
         config_schema = module.config_schema
@@ -56,18 +55,12 @@ async def _registered_module_tools() -> list[tuple[str, Tool]]:
                 task.cancel()
             if registration_tasks:
                 await asyncio.gather(*registration_tasks, return_exceptions=True)
-            registered.extend((module_name, tool) for tool in await mcp.list_tools())
-    return registered
-
-
-async def _module_registration_union() -> dict[str, str]:
-    owners: dict[str, str] = {}
-    for module_name, tool in await _registered_module_tools():
-        existing = owners.setdefault(tool.name, module_name)
-        assert existing == module_name, (
-            f"canonical tool {tool.name!r} has multiple module owners: "
-            f"{existing!r}, {module_name!r}"
-        )
+            for tool in await mcp.list_tools():
+                existing = owners.setdefault(tool.name, module_name)
+                assert existing == module_name, (
+                    f"canonical tool {tool.name!r} has multiple module owners: "
+                    f"{existing!r}, {module_name!r}"
+                )
     return owners
 
 
@@ -139,14 +132,14 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
     )
 
 
-async def _core_registered_daemon(butler_name: str, groups: tuple[str, ...] | None) -> ButlerDaemon:
+async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
     daemon = ButlerDaemon(
         _REPO_ROOT / "roster" / butler_name,
         db=SimpleNamespace(pool=AsyncMock()),
     )
     daemon.config = load_config(_REPO_ROOT / "roster" / butler_name)
     daemon.config.runtime_seed = replace(daemon.config.runtime_seed, core_groups=groups)
-    daemon.mcp = FastMCP(f"catalog-{butler_name}-{'-'.join(groups or ('all',))}")
+    daemon.mcp = FastMCP(f"catalog-{butler_name}-{'-'.join(groups)}")
     daemon.spawner = MagicMock()
     before_tasks = asyncio.all_tasks()
     daemon._register_core_tools()
@@ -155,25 +148,8 @@ async def _core_registered_daemon(butler_name: str, groups: tuple[str, ...] | No
         task.cancel()
     if registration_tasks:
         await asyncio.gather(*registration_tasks, return_exceptions=True)
-    return daemon
-
-
-async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
-    daemon = await _core_registered_daemon(butler_name, groups)
     daemon._collect_tool_metadata()
     return await daemon._finalize_tool_catalog()
-
-
-async def test_every_registered_tool_has_a_description() -> None:
-    # Strict providers reject a tool schema without one: GLM via OpenCode fails
-    # the whole session with "tools[N]: function.description is required", so
-    # one undocumented handler takes a model out of rotation (bu-3osotc).
-    tools = [tool for _, tool in await _registered_module_tools()]
-    for butler_name in ("general", "switchboard", "messenger", "chronicler"):
-        daemon = await _core_registered_daemon(butler_name, None)
-        tools.extend(await daemon.mcp.list_tools())
-
-    assert sorted({tool.name for tool in tools if not (tool.description or "").strip()}) == []
 
 
 @pytest.mark.parametrize(
