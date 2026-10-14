@@ -334,15 +334,64 @@ const TREND_CHART_GRAMMAR_SELECTORS = [
       'Smoothed curve types invent values between readings (bu-q7vx1q.6). Use ' +
       'components/ui/TimeSeriesChart, which draws linear or step joins only.',
   },
-  {
-    selector:
-      'ImportDeclaration[source.value="recharts"] > ImportSpecifier[imported.name=/^(?:LineChart|AreaChart)$/]',
-    message:
-      'Trend charts use components/ui/TimeSeriesChart (time-proportional axis, visible ' +
-      'observations, gap breaks, labelled stale tail), not a raw recharts LineChart/AreaChart ' +
-      '(bu-q7vx1q.6).',
-  },
 ]
+
+// A distinct rule survives later no-restricted-syntax/imports overrides. Inspect
+// original names and statically known module sources; do not evaluate source or
+// infer a runtime-computed specifier's destination.
+const TREND_CHART_GUARD_PLUGIN = {
+  rules: {
+    'no-raw-import': {
+      meta: {
+        type: 'problem',
+        schema: [],
+        messages: {
+          rawImport:
+            'Trend charts use components/ui/TimeSeriesChart (time-proportional axis, visible ' +
+            'observations, gap breaks, labelled stale tail), not a raw recharts LineChart/AreaChart ' +
+            '(bu-q7vx1q.6).',
+        },
+      },
+      create(context) {
+        function isRecharts(source) {
+          return source?.type === 'Literal'
+            ? source.value === 'recharts'
+            : source?.type === 'TemplateLiteral' && source.expressions.length === 0 &&
+                source.quasis[0].value.cooked === 'recharts'
+        }
+        function isRawChart(name) {
+          const originalName = name?.name ?? name?.value
+          return originalName === 'LineChart' || originalName === 'AreaChart'
+        }
+        function reject(node) {
+          context.report({ node, messageId: 'rawImport' })
+        }
+        return {
+          ImportDeclaration(node) {
+            if (isRecharts(node.source) && node.specifiers.some((specifier) =>
+              specifier.type === 'ImportNamespaceSpecifier' ||
+              (specifier.type === 'ImportSpecifier' && isRawChart(specifier.imported)))) {
+              reject(node)
+            }
+          },
+          ExportNamedDeclaration(node) {
+            if (isRecharts(node.source) && node.specifiers.some((specifier) =>
+              specifier.type === 'ExportNamespaceSpecifier' ||
+              (specifier.type === 'ExportSpecifier' && isRawChart(specifier.local)))) {
+              reject(node)
+            }
+          },
+          ExportAllDeclaration(node) {
+            if (isRecharts(node.source)) reject(node)
+          },
+          ImportExpression(node) {
+            if (isRecharts(node.source)) reject(node)
+          },
+        }
+      },
+    },
+  },
+}
 
 const KEYDOWN_LISTENER_SELECTORS = [
   {
@@ -2608,6 +2657,12 @@ const RING_RING_SELECTORS = [
 
 export default defineConfig([
   globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    ignores: ['src/components/ui/**'],
+    plugins: { 'trend-chart': TREND_CHART_GUARD_PLUGIN },
+    rules: { 'trend-chart/no-raw-import': 'error' },
+  },
   {
     // The identity component is the one canonical owner of this private
     // surface. The lint test itself is a deliberately malicious source
