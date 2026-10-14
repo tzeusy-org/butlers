@@ -79,9 +79,15 @@ gate SHALL also resolve them: a call that would add, invite, update or notify
 any party that does not resolve uniquely to the owner SHALL be dispatched only
 under per-event owner approval or a matching standing rule the owner created,
 whatever the goal's origin, grant or exposure and whatever the configured
-notification policy. A call that names only the owner, or that changes an
-event without attendees other than the owner and sends no updates, SHALL keep
-today's approval behavior.
+notification policy. On a butler that loads the calendar module with no
+approvals enqueuer wired, such a call SHALL execute only when its verified
+assertion carries an `approval_ref` covering the exact call; otherwise it SHALL
+be refused with a typed error that names the missing gate, so a missing approvals module
+can never bypass this rule; creating an event without an enqueuer (the
+"Allow overlap with approval gate" behavior) applies only to calls that reach
+no party other than the owner. A call that names only the owner, or that
+changes an event without attendees other than the owner and sends no updates,
+SHALL keep today's approval behavior.
 
 ID: REQ-module-calendar-030
 Source: RFC 0038 D4 and owner decision 9; `REQ-capability-authorization-002`, `REQ-capability-authorization-016`
@@ -91,6 +97,11 @@ Scope: v1-mandatory
 
 - **WHEN** an unexposed owner goal calls `calendar_create_event` with an attendee who is a known contact other than the owner, and no standing rule matches
 - **THEN** the call is parked for per-event owner approval showing the attendees, and no event is created and no invitation is sent until the owner approves
+
+#### Scenario: A butler without an approvals module cannot invite a non-owner
+
+- **WHEN** a goal calls `calendar_create_event` with a non-owner attendee on a butler whose calendar module has no approvals enqueuer wired, and the broker did not forward an `approval_ref` covering the call
+- **THEN** the module refuses the call with a typed error naming the missing gate, and no event is created and no invitation is sent
 
 #### Scenario: Notifying existing attendees of a change is parked
 

@@ -19,7 +19,8 @@ Scope: v1-mandatory
 
 - **WHEN** a gated tool is invoked without an exposed assertion and a standing rule matches the tool name and arguments
 - **THEN** the action is persisted with status `approved` and `approval_rule_id` set to the matching rule
-- **AND** the original tool function is executed immediately via the shared executor
+- **AND** for a call that names no goal, the original tool function is executed immediately via the shared executor
+- **AND** for a goal invocation's call, the rule match is made by the broker, which forwards the call with an `approval_ref` naming the rule after its per-call check that the goal is running; the wrapper executes the handler only for that forwarded call and never on a rule it matched itself
 - **AND** `action_queued` and `action_auto_approved` audit events are recorded
 - **AND** the rule's `use_count` is incremented
 
@@ -108,7 +109,7 @@ Scope: v1-mandatory
 The approval lifecycle MUST allow `pending -> approved|rejected|expired|cancelled`,
 `approved -> executed|abandoned`, and no transition from
 `rejected|expired|executed|abandoned|cancelled`. Invalid transitions raise
-`InvalidTransitionError`. `pending -> cancelled` SHALL occur only when the owner stops the action's goal and only for an action that names a goal; no model, worker or other path SHALL cancel an action. Every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
+`InvalidTransitionError`. `pending -> cancelled` SHALL occur only for an action that names a goal, and only when the owner stops that goal or when a rollback of the cutover release stops every goal in flight (RFC 0038 "Rollback"); the action SHALL record which of the two cancelled it. No model, worker or other path SHALL cancel an action. Every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
 
 ID: REQ-module-approvals-002
 Source: RFC-0021,RFC-0023; RFC 0038 D11, D13 and D14
@@ -211,6 +212,12 @@ Scope: v1-mandatory
 - **THEN** each of those actions transitions from `pending` to `cancelled`
 - **AND** an `action_cancelled` audit event is recorded for each
 - **AND** the same transaction cancels each action's sendable delivery presentations
+
+#### Scenario: Rollback cancels broker-parked actions
+- **WHEN** the cutover release is rolled back while goal-naming actions are pending
+- **THEN** each of those actions transitions from `pending` to `cancelled` with the rollback recorded as the reason
+- **AND** an `action_cancelled` audit event is recorded for each and the owner sees them reported
+- **AND** pending actions that name no goal are untouched
 
 #### Scenario: A cancelled action cannot be approved
 - **WHEN** `approve_action` targets a `cancelled` action

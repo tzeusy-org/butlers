@@ -148,6 +148,8 @@ Scope: v1-mandatory
 
 Switchboard SHALL keep ingest envelope validation, deduplication and the durable buffer, and SHALL submit each accepted envelope that is neither withheld by a deterministic ingestion rule nor bound to a domain's deterministic channel ingest directly to goal admission, without a model classification or route-dispatch step. A duplicate submission of an envelope SHALL return the goal already admitted for it.
 
+Each connector SHALL declare whether its channel carries messages from people or is a device or telemetry feed (for example `home_assistant`, `owntracks`, `gaming` and ActivityWatch). A feed envelope SHALL NOT be admitted as an owner or third-party goal: it is recorded into domain state, and it SHALL wake reasoning only when it matches a subscription declared in git, which is admitted with origin `obligation` and that subscription's capability set (`REQ-capability-authorization-003`). Feed fields a person other than the owner can author SHALL be stamped untrusted.
+
 ID: REQ-butler-switchboard-007
 Source: RFC 0038 D1 and D5; RFC 0003 disposition
 Scope: v1-mandatory
@@ -157,6 +159,10 @@ Scope: v1-mandatory
 - **THEN** admission SHALL return the existing goal
 - **AND** no second goal SHALL be admitted and no second lead SHALL start
 
+#### Scenario: A feed envelope matches no subscription
+- **WHEN** a Home Assistant state change that matches no declared subscription is accepted
+- **THEN** it is recorded into domain state and no goal is admitted
+
 #### Scenario: Buffered envelopes survive a control-plane restart
 - **WHEN** `butlers-control` restarts while accepted envelopes are in the durable buffer and not yet admitted
 - **THEN** each buffered envelope SHALL be admitted exactly once after the restart
@@ -165,6 +171,8 @@ Scope: v1-mandatory
 ### Requirement: Service-Plane Relay
 
 Switchboard SHALL provide a service-plane relay on its service listener through which a registered daemon's deterministic code calls another agent's non-LLM-presentable service-plane tool, replacing the deleted generic `route` tool for that traffic. The relay SHALL NOT be LLM-presentable or reachable from the session listener, SHALL refuse any target tool that is LLM-presentable, SHALL admit no goal and start no reasoning session, and SHALL NOT treat a caller-supplied source identity as authority.
+
+The relay SHALL be a set of named endpoints, not a generic target-and-payload forwarder: each endpoint SHALL fix its payload schema, its one target service-plane tool and an allowlist of calling daemons (for example domain-event fan-out, the QA error relay, module runtime wiring, and Travel's read of Health's medication snapshot). Switchboard SHALL authenticate the calling daemon's service identity on every request and SHALL refuse, without contacting any target, an unauthenticated caller, a caller not on that endpoint's allowlist, a payload that fails the endpoint's schema, or a request for an endpoint that does not exist.
 
 ID: REQ-butler-switchboard-008
 Source: RFC 0038 D1 and D7
@@ -179,3 +187,8 @@ Scope: v1-mandatory
 - **WHEN** a relay request names a target tool that is LLM-presentable
 - **THEN** Switchboard SHALL refuse it without contacting the target
 - **AND** the caller SHALL receive a typed refusal, because a model-reachable call requires a broker assertion (`REQ-capability-authorization-007`)
+
+#### Scenario: An unlisted or unauthenticated caller is refused
+- **WHEN** a request reaches the medication-snapshot endpoint from a daemon other than Travel, or from a caller whose service identity does not authenticate
+- **THEN** Switchboard SHALL refuse it without contacting Health
+- **AND** a `source_butler` field in the payload SHALL NOT change the decision

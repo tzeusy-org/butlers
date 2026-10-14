@@ -12,6 +12,7 @@ Scope: v1-mandatory
 - **THEN** the full `ingest.v1` envelope with complete `payload.raw` is submitted to the Switchboard and handed to goal admission with no LLM classification or routing step
 - **AND** a `route_to` action selects no target butler
 - **AND** the admitted goal is never owner-origin by virtue of the email alone; origin follows owner-channel authorization of the channel and sender
+- **AND** `low_priority_queue` mail is admitted at low admission priority as today's queue ordering does, and as non-owner mail it starts exposed
 
 #### Scenario: Tier 2 — metadata-only pipeline
 - **WHEN** a message's triage action is `metadata_only`
@@ -74,7 +75,7 @@ Scope: v1-mandatory
 
 ### Requirement: [TARGET-STATE] Selective Email Backfill Strategy
 
-The connector SHALL provide dashboard-triggered, cost-aware historical email processing with recommended category windows. Backfill SHALL be started only from the owner-authenticated dashboard; no model-reachable capability SHALL submit ingest envelopes or admit goals from searched mail.
+The connector SHALL provide dashboard-triggered, cost-aware historical email processing with recommended category windows. Backfill SHALL be started only from the owner-authenticated dashboard; no model-reachable capability SHALL submit ingest envelopes or admit goals from searched mail. Backfilled envelopes SHALL be recorded and SHALL admit no goal by default (`module-pipeline` "Ingestion Architecture"). Only when the owner's backfill job explicitly opts a category into processing SHALL its messages be admitted, each as a `third_party`-origin goal that starts exposed, at backfill priority and within the job's cost cap.
 
 Source: RFC 0038 D5, D7, D8
 Scope: v1-mandatory
@@ -96,6 +97,11 @@ Scope: v1-mandatory
 - **WHEN** a backfill job is initiated
 - **THEN** explicit opt-in confirmation is required in dashboard UX
 - **AND** lifecycle actions (create, pause, resume, cancel, complete, error, cost cap) are audit logged
+
+#### Scenario: Backfilled mail is recorded, not reasoned over, by default
+- **WHEN** a backfill job whose categories are not opted into processing submits historical messages
+- **THEN** each envelope is recorded and searchable, and no goal is admitted for it
+- **AND** when a category is opted in, each of its messages is admitted as an exposed `third_party` goal that counts against the job's cost cap
 
 ### Requirement: Bearer material never persists
 

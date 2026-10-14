@@ -60,17 +60,23 @@ Scope: v1-mandatory
 
 ### Requirement: Identity-enriched prompt injection
 
-After resolving the sender's identity, the Switchboard MUST place a structured identity preamble in the goal input before admission hands the goal to its lead. The preamble is generated from server-side resolution, never from message text, and MUST stay outside any fenced third-party span. The preamble format depends on the sender's identity resolution result. The text preamble carries `entity_id` only and MUST NOT emit `contact_id`; `entity_id` is the canonical preamble identifier. An entity-only unknown sender MUST NOT gain a contact identifier merely to populate the preamble or admission context.
+After resolving the sender's identity, the Switchboard MUST place a structured identity preamble in the goal input before admission hands the goal to its lead. The preamble is generated from server-side resolution, never from message text, and MUST stay outside any fenced third-party span. The preamble format depends on the sender's identity resolution result and on the goal's verified origin: the owner banner SHALL appear only on an `owner`-origin goal. The text preamble carries `entity_id` only and MUST NOT emit `contact_id`; `entity_id` is the canonical preamble identifier. An entity-only unknown sender MUST NOT gain a contact identifier merely to populate the preamble or admission context.
 
 Source: RFC 0038 D5, D15
 Scope: v1-mandatory
 
 #### Scenario: Owner message prompt injection
 
-- **WHEN** the sender is resolved as the owner entity with `entity_id = 'def-456'`
+- **WHEN** the sender is resolved as the owner entity with `entity_id = 'def-456'` and owner-channel authorization verified the channel and sender, so the goal has `owner` origin
 - **THEN** the goal input MUST be prefixed with `[Source: Owner (entity_id: def-456), via {channel}]`
 - **AND** the original message text MUST follow the preamble
 - **AND** the goal's invocations MUST use `entity_id` as the anchor when storing facts about the owner
+
+#### Scenario: An unverified message from the owner's address gets no owner banner
+
+- **WHEN** the sender resolves to the owner entity but owner-channel authorization does not verify the channel and sender, as for any email
+- **THEN** the goal is admitted with `third_party` origin and its preamble MUST NOT be the owner banner
+- **AND** the preamble MUST name the claimed sender as unverified, for example `[Source: unverified claim of Owner (entity_id: def-456), via email]`
 
 #### Scenario: Known non-owner message prompt injection
 
@@ -114,6 +120,12 @@ Scope: v1-mandatory
 - **WHEN** Chloe (non-owner) sends "I had lunch at 2pm today"
 - **THEN** the Switchboard MUST admit this as a `third_party`-origin goal with Chloe's identity context, starting exposed
 - **AND** the goal's invocations MUST store the fact against Chloe's entity, NOT the owner's
+
+#### Scenario: A message seen through the owner's own Telegram account
+
+- **WHEN** the Telegram user-client connector ingests a message that someone else sent in a chat on the owner's personal account
+- **THEN** the Switchboard MUST admit it as a `third_party`-origin goal, starting exposed
+- **AND** a message on that channel is owner-origin only if RFC 0017 authorizes the `telegram_user_client` channel and the owner as its sender
 
 #### Scenario: Non-owner message that instructs the system
 

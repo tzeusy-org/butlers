@@ -2,7 +2,7 @@
 
 ### Requirement: ingest.v1 Field Mapping
 
-The connector SHALL map each detected Steam delta to an `ingest.v1` envelope with Steam-specific source identity, event identity, payload summary, and tier controls. No Steam envelope SHALL select a target butler; an envelope that no ingestion rule withholds reaches goal admission.
+The connector SHALL map each detected Steam delta to an `ingest.v1` envelope with Steam-specific source identity, event identity, payload summary, and tier controls. No Steam envelope SHALL select a target butler. The `gaming` channel is a telemetry feed: an envelope is recorded into domain state and wakes reasoning only through a declared subscription admitted with origin `obligation` (`REQ-butler-switchboard-007`).
 
 Source: RFC 0038 D1, D5; RFC 0003 disposition
 Scope: v1-mandatory

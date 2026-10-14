@@ -2,7 +2,7 @@
 
 ### Requirement: Session Context Assembly
 
-The education domain SHALL assemble a structured flow context block and return it through an education read capability that a goal invocation calls within its grant; no spawner assembles or injects it. The context block MUST include four components in order: (1) current flow state from the KV store, (2) current mind map frontier from a DB query, (3) recent quiz responses from a DB query, (4) memory context from the memory module. Components drawn from stores that `record` capabilities write SHALL carry their stamps. The invocation MUST NOT rely on prior session transcripts for continuity.
+The education domain SHALL assemble a structured flow context block and return it through an education read capability that a goal invocation calls within its grant; no spawner assembles or injects it. The context block MUST include four components in order: (1) current flow state from the KV store, (2) current mind map frontier from a DB query, (3) recent quiz responses from a DB query, (4) memory context from the memory module. Components drawn from stores that `record` capabilities write SHALL carry their stamps. The invocation MUST NOT rely on prior session transcripts for continuity. Throughout this capability, an "ephemeral session" or "session" that advances a flow is a goal invocation: an owner goal admitted from the owner's message, or an education obligation goal, never a session the Spawner starts; `session_count` and `last_session_at` keep their names and count those invocations' flow advances.
 
 Source: RFC 0038 D2, D6, D15
 Scope: v1-mandatory
@@ -126,3 +126,43 @@ Scope: v1-mandatory
 - **WHEN** the user asks a question about a concept not found in any node of the active mind map
 - **THEN** the session acknowledges the question is out of current scope
 - **AND** suggests starting a new teaching flow or offers a brief off-curriculum answer without creating a new node
+
+### Requirement: Flow Initialization — PENDING and DIAGNOSING
+
+`teaching_flow_start(pool, topic, goal?)` creates a new mind map record, writes initial flow state at `pending`, immediately transitions to `diagnosing`, and returns the flow state dict. The goal invocation that advances a flow in `diagnosing` phase MUST generate 3–7 adaptive probe questions using a binary-search strategy targeting the topic's concept inventory. Each probe is sent by one goal, and the owner's answer is admitted as an owner goal that evaluates it and sends the next probe; no Spawner session is started.
+
+Source: RFC 0038 D2 and D5
+Scope: v1-mandatory
+
+#### Scenario: Flow created at PENDING then immediately advances to DIAGNOSING
+
+- **WHEN** `teaching_flow_start(pool, topic="Python", goal=None)` is called
+- **THEN** a new mind map row is inserted with `title = "Python"` and `status = 'active'`
+- **AND** the KV store entry `flow:{mind_map_id}` is written with `status = 'pending'`
+- **AND** `teaching_flow_advance()` is called immediately, transitioning the state to `diagnosing`
+- **AND** the returned dict reflects `status = 'diagnosing'`
+
+#### Scenario: User receives first diagnostic probe question
+
+- **WHEN** a goal invocation advances a flow in `diagnosing` status
+- **THEN** it sends one probe question via `notify(channel="telegram", intent="send", message=...)` targeting a median-difficulty concept for the topic
+- **AND** it does not send multiple questions at once
+
+#### Scenario: Adaptive probing narrows difficulty
+
+- **WHEN** the user answers a diagnostic probe correctly
+- **THEN** the next probe targets a harder concept
+- **WHEN** the user answers a diagnostic probe incorrectly
+- **THEN** the next probe targets an easier concept
+
+#### Scenario: Diagnostic phase ends after convergence
+
+- **WHEN** the adaptive probe sequence has asked between 3 and 7 questions and has converged
+- **THEN** the session calls `teaching_flow_advance()` to transition to `planning`
+- **AND** the `diagnostic_results` in the flow state contains a quality score and inferred mastery for each probed concept node
+
+#### Scenario: Diagnostic seeds mastery conservatively
+
+- **WHEN** a probe question is answered correctly with high confidence
+- **THEN** `mind_map_node_update()` sets `mastery_score` to a value between 0.3 and 0.7 (never 1.0)
+- **AND** `mastery_status` is set to `'diagnosed'`

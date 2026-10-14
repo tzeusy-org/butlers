@@ -21,15 +21,16 @@ Scope: v1-mandatory
 
 #### Scenario: Proactive event processing
 
-- **WHEN** Switchboard accepts an ingestion event with `source.channel = "home_assistant"` that needs reasoning
-- **THEN** it SHALL be admitted as a goal, with no classification or route-dispatch step, and processed as a proactive home state change notification
+- **WHEN** Switchboard accepts an ingestion event with `source.channel = "home_assistant"` that matches a Home subscription declared in git
+- **THEN** it SHALL be admitted as an `obligation`-origin goal with that subscription's capability set, with no classification or route-dispatch step, and processed as a proactive home state change notification
+- **AND** an event that matches no declared subscription SHALL be recorded into Home state without admitting a goal
 - **AND** the goal SHALL use Home capabilities and memory within its ceiling to determine the appropriate response (store as fact, alert the owner, trigger a scene, or acknowledge silently)
 - **AND** triggering a scene or service SHALL remain subject to the goal's ceiling, its exposure, and the RFC 0028 risk map
 - **AND** the Home domain guidance SHALL include instructions for handling HA-originated events: prioritize safety-critical events (locks, security), store environmental changes as volatile facts, and notify the owner only for events that require attention or action
 
 ### Requirement: Home Butler HA Event Response Patterns
 
-Goals admitted from real-time HA events SHALL take context-appropriate actions using Home capabilities, within the goal's ceiling and exposure and under the RFC 0028 risk map. An action outside the goal's grant SHALL NOT be taken; the goal SHALL notify the owner instead.
+Goals admitted from real-time HA events through declared subscriptions (`REQ-butler-switchboard-007`) SHALL take context-appropriate actions using Home capabilities, within the goal's ceiling and exposure and under the RFC 0028 risk map. An action outside the goal's grant SHALL NOT be taken; the goal SHALL notify the owner instead.
 
 Source: RFC 0038 D1, D5, D6
 Scope: v1-mandatory
@@ -90,7 +91,7 @@ Scope: v1-mandatory
 - **WHEN** the home butler starts
 - **THEN** it SHALL register with the Switchboard's service listener in `butlers-control`, at the address its deployment configuration names, with `advertise = true`
 - **AND** liveness TTL of 300 seconds
-- **AND** route contract `route.v1`
+- **AND** registration contract version `route.v1`, which governs registration only now that route dispatch is deleted
 
 #### Scenario: Cross-butler home control
 

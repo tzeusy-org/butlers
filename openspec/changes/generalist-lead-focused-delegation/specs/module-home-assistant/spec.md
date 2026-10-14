@@ -11,7 +11,17 @@ through owner per-event approval and the approvals executor's lineage read from
 the verified call assertion. No standing rule SHALL approve a consequential or
 protected call.
 
-Source: RFC 0038 D4, D7, D13
+A call whose service can deliver content to a person (the `notify`, `tts`,
+`persistent_notification` and other messaging or announcement service domains)
+SHALL additionally be `communicate`: `ha_call_service` SHALL declare its target
+and service data as `recipient_params`, and such a call is owner communication
+only when every target resolves uniquely to an owner device or the owner's
+notification service; any other target, including a shared speaker, a guest
+device or a target it cannot resolve, is non-owner communication and SHALL
+follow the non-owner rule (`REQ-capability-authorization-016`) as well as the
+risk map.
+
+Source: RFC 0038 D4, D7, D13 and owner decision 9
 Scope: v1-mandatory
 
 #### Scenario: Consequential call is parked without physical execution
@@ -33,6 +43,12 @@ Scope: v1-mandatory
 - **WHEN** an owner standing rule matches a consequential or protected `ha_call_service` call
 - **THEN** the call SHALL still be parked for per-event owner approval
 - **AND** no Home Assistant request SHALL be sent before that approval
+
+#### Scenario: A notification to a guest's device is non-owner communication
+
+- **WHEN** a goal invocation calls `ha_call_service` for `notify.mobile_app_<guest_phone>` or a `tts` announcement on a shared speaker
+- **THEN** the call SHALL be parked for per-event owner approval unless an owner-created standing rule matches it
+- **AND** no Home Assistant request SHALL be sent before that
 
 ### Requirement: Honest Actuation Receipts
 

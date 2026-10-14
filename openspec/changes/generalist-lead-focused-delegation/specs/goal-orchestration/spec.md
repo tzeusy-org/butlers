@@ -14,7 +14,7 @@ able to complete a goal without creating children; independent goals SHALL NOT
 be forced into one shared conversation or serialized solely by this rule.
 
 ID: REQ-goal-orchestration-001
-Source: about/heart-and-soul/vision.md, What Butlers Is; adopted 2026-10-14 doctrine amendment
+Source: about/heart-and-soul/vision.md, What Butlers Is; adopted 2026-10-14 doctrine amendment; RFC 0038 D1, D2 and D17
 Scope: v1-mandatory
 
 #### Scenario: Cross-domain constraints remain one goal
@@ -32,7 +32,7 @@ guidance, execution scope, and expected result. Generated instructions SHALL NOT
 override governing policy or grant authority.
 
 ID: REQ-goal-orchestration-002
-Source: about/heart-and-soul/vision.md, Non-Negotiable Rules 5 and 6
+Source: about/heart-and-soul/vision.md, Non-Negotiable Rules 5 and 6; RFC 0038 D9
 Scope: v1-mandatory
 
 #### Scenario: Cross-domain focus inherits applicable policies
@@ -53,7 +53,7 @@ a child SHALL return to its lead, which may act directly or delegate a sibling
 under the same goal.
 
 ID: REQ-goal-orchestration-003
-Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 6; about/heart-and-soul/security.md, Goal and Delegation Authority
+Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 6; about/heart-and-soul/security.md, Goal and Delegation Authority; RFC 0038 D8
 Scope: v1-mandatory
 
 #### Scenario: Child attempts a grandchild
@@ -73,7 +73,7 @@ SHALL NOT bypass these checks, credential custody, memory-write authority,
 private-source restrictions, or domain invariants.
 
 ID: REQ-goal-orchestration-004
-Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 3; RFC 0027, Governing Invariants 1, 3 and 6
+Source: about/heart-and-soul/vision.md, Non-Negotiable Rule 3; RFC 0027, Governing Invariants 1, 3 and 6; RFC 0038 D4, D7 and D9
 Scope: v1-mandatory
 
 #### Scenario: A discovered capability is unauthorized
@@ -91,7 +91,7 @@ lead replacements and escalations SHALL retain the same budget accounting
 and SHALL NOT widen authority or reset consumed limits.
 
 ID: REQ-goal-orchestration-005
-Source: about/heart-and-soul/architecture.md, One lead, focused children, depth one
+Source: about/heart-and-soul/architecture.md, One lead, focused children, depth one; RFC 0038 D10 and D16
 Scope: v1-mandatory
 
 #### Scenario: Sequential children exhaust the goal budget
@@ -110,7 +110,7 @@ and new effects across the goal. Recovery SHALL preserve committed-effect
 receipts and SHALL NOT automatically replay effects whose outcomes are unknown.
 
 ID: REQ-goal-orchestration-006
-Source: about/heart-and-soul/architecture.md, The Core Loop; RFC 0027, Governing Invariant 7
+Source: about/heart-and-soul/architecture.md, The Core Loop; RFC 0027, Governing Invariant 7; RFC 0038 D11, D12 and D13
 Scope: v1-mandatory
 
 #### Scenario: Stop races a child effect
@@ -128,7 +128,7 @@ proactive events SHALL be able to initiate goals without a user message while
 retaining existing delivery, deduplication and owner-attention policies.
 
 ID: REQ-goal-orchestration-007
-Source: about/heart-and-soul/vision.md, What Success Looks Like; RFCs 0009, 0011 and 0026
+Source: about/heart-and-soul/vision.md, What Success Looks Like; RFCs 0009, 0011 and 0026; RFC 0038 D2 and D5
 Scope: v1-mandatory
 
 #### Scenario: An obligation becomes due with no conversation running

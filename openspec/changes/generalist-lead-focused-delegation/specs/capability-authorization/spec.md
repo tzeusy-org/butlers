@@ -75,14 +75,18 @@ an owner goal whose ingest envelope carries any connector-marked forwarded,
 quoted or embedded span (`REQ-connector-base-spec-004`) SHALL start exposed,
 with each span fenced as data in the goal input; a staffer goal whose inputs
 include third-party content or error payloads, and every QA goal, SHALL start
-exposed; and every occurrence of a runtime-created obligation created under
-exposure SHALL start exposed. A third-party goal's ceiling
+exposed; every occurrence of a runtime-created obligation created under
+exposure SHALL start exposed; and an admission input with no goal lineage,
+such as a domain event published by deterministic code, SHALL start its goal
+exposed unless its publishing domain stamps it as derived only from untainted
+owner-authority records, a missing or unreadable stamp counting as exposed. A
+third-party goal's ceiling
 SHALL exclude `transact`, `actuate` and `administer` capabilities and SHALL
 hold `communicate` capabilities, other than owner `notify`, only as park-only
 grants that can produce a parked effect but never execute one.
 
 ID: REQ-capability-authorization-003
-Source: RFC 0038, D5; RFC 0017
+Source: RFC 0038, D5 and D6; RFC 0017
 Scope: v1-mandatory
 
 #### Scenario: An email claims to come from the owner

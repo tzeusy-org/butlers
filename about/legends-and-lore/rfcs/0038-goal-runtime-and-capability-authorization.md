@@ -14,8 +14,11 @@ bullets, the proposed RFC organization, and gaps closed while writing the
 baseline deltas (service-plane relays, memory consolidation and episodes,
 session notes, credential flows and staging, reply delivery accounting,
 runtime-failure relaunch, deterministic ingestion, device-feed origin,
-model-catalog probes as model functions, the template-pinned definition and
-the approvals `cancelled` status). These stand pending owner confirmation;
+model-catalog probes as model functions, the template-pinned definition, the
+approvals `cancelled` status, and, from the second review, fail-closed exposure
+for admission input without lineage, `administer` scheduling tools, named
+relay endpoints, inert-link delivery flags and per-group consolidation goals).
+These stand pending owner confirmation;
 D19's detail is confirmed with the dashboard change.
 **Date:** 2026-10-14
 **Tracking:** `bu-7p9ll5`
@@ -198,8 +201,8 @@ The lead is a role, not a butler. Its governing document is a versioned lead
 policy at `roster/switchboard/goal-policy/LEAD.md`, loaded into every lead
 alongside the owner profile. The lead policy also owns the reply style for
 interactive owner goals, which today each butler's `CLAUDE.md` defines. The
-session listener's port follows the repository's port assignment convention. Switchboard's manifesto is amended in the cutover
-release to describe the control-plane contract. General keeps its narrow
+session listener's port follows the repository's port assignment convention.
+Switchboard's manifesto is amended in the cutover release to describe the control-plane contract. General keeps its narrow
 capture-and-collections manifesto and gains no authority.
 
 A new, separate control-plane daemon was rejected: it would duplicate
@@ -247,8 +250,8 @@ credentials goal invocations use and the runtime OAuth volumes move from
 credential store, resolves each launch's model credential and stages it over
 the control channel; the session host never reads the credential store or the
 database. Model functions (D18) keep the narrow provider credentials their
-deterministic callers use today. The existing runtime-credential flows, Codex auth synchronization and
-the dashboard's CLI login, are retargeted to the session host's credential
+deterministic callers use today. The existing runtime-credential flows,
+Codex auth synchronization and the dashboard's CLI login, are retargeted to the session host's credential
 volume through the control plane's service listener; the session host itself
 exposes no inbound port to the dashboard.
 
@@ -334,6 +337,10 @@ Two owner rules apply to every origin, grant and exposure state, lead or child:
   model-reachable tool that spends, pays or books. Answering a calendar
   invitation (`calendar_respond`), which the reviewed design listed as
   `transact`, is `communicate` and stays approval-gated under the rule above.
+  This keeps today's behavior rather than enabling anything new:
+  `calendar_respond` exists on `main` as an approval-gated tool on Messenger
+  and Relationship, and it spends, pays and books nothing; classing it
+  `transact` would have removed it.
   A generic gateway takes the most consequential class among the targets it
   can reach: Home Assistant's service gateway is `actuate`, under the RFC 0028
   risk map in which unknown services are protected.
@@ -423,6 +430,11 @@ An invocation becomes exposed when:
 - it receives a result from an exposed child.
 
 When any invocation of a goal becomes exposed, the goal is marked exposed.
+
+Admission input follows the same stamps and fails closed. A domain event or
+other admission input that carries no goal lineage starts its goal exposed
+unless the publishing domain stamps it as derived only from untainted
+owner-authority records; a missing or unreadable stamp counts as exposed.
 
 **Taint** makes exposure survive storage. The assertion carries the invoking
 session's exposure (D7); a domain storing data under an exposed assertion
@@ -524,7 +536,9 @@ caused admission reads (D5).
 **Removed tools.** The session-starting and proxy tools found in the survey do
 not survive: the `trigger` tool, `route.execute`, the generic `route` tool and
 the `delegate_*` tools are deleted at cutover; prompt-mode `schedule_create`
-becomes obligation creation, an `administer` capability; `cancel_session`
+becomes obligation creation, an `administer` capability, as do `schedule_trigger`
+and prompt-mode update, delete and toggle, and a trigger a goal makes is a
+caused admission (D5); `cancel_session`
 becomes owner-only Stop. `public.permissions` no longer governs sessions.
 Messenger's `notify.v1` delivery termination, which today shares the
 `route.execute` tool name, survives as a deterministic service-plane endpoint:
@@ -722,8 +736,10 @@ new lead through `goal.await`.
 Runtime failures (provider errors, quota exhaustion, launch failures,
 timeouts) are classified with the existing runtime failure taxonomy. For a
 retryable class the runner may relaunch the failed invocation once on the
-same tier's fallback model; a relaunched lead advances the epoch exactly as
-recovery does, and every relaunch counts against the goal's invocation budget.
+same tier's fallback model, and only when the broker recorded no capability
+call made with the failed invocation's token, because a relaunch never replays
+work (D12); a relaunched lead advances the epoch exactly as recovery does, and
+every relaunch counts against the goal's invocation budget.
 A non-retryable failure ends the invocation `failed` and leaves the decision
 to the lead or, for a lead, ends the goal `failed` with its ledger intact.
 
@@ -846,10 +862,11 @@ Writing the baseline deltas surfaced details this RFC leaves to
 implementation. Each is settled by the dark-build work item that owns it,
 within D1 to D19 and never by weakening the two owner rules of D4:
 
-- how service-plane relays and Messenger's delivery endpoint authenticate their
-  calling daemon;
-- the format of a staffer contract's capability set, and whether a Concierge
-  answer is a staffer or an owner goal;
+- the mechanism by which service-plane relays and Messenger's delivery
+  endpoint authenticate their calling daemon (that they authenticate it, per
+  endpoint allowlist, is settled in D7);
+- the format of a staffer contract's capability set (a Concierge answer is a
+  staffer goal, D5);
 - the admission budget for high-volume feeds, so a burst of third-party mail
   cannot exhaust goal budgets;
 - how an owner's reply to an outbound prompt (a quiz, a confirmation) joins

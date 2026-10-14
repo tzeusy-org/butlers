@@ -85,7 +85,7 @@ Scope: v1-mandatory
 #### Scenario: Tool observability
 - **WHEN** any tool is called on a butler's MCP server
 - **THEN** the call is wrapped with an OpenTelemetry span (`tool_span()`) capturing tool name, argument digest, outcome, and duration, and never raw arguments or results
-- **AND** a goal invocation's call carries the `goal_id`, `invocation_id`, `depth` and `epoch` from its verified assertion, and the goal ledger rather than a domain session's `tool_calls` log is the record of the call
+- **AND** a goal invocation's call carries the `goal_id`, `invocation_id` and `depth` from its verified assertion and the lead `epoch` from the invocation record (RFC 0038 D17), and the goal ledger rather than a domain session's `tool_calls` log is the record of the call
 
 ### Requirement: Module System
 Modules SHALL be pluggable units that add domain-specific MCP tools and database tables to a butler. They SHALL follow an abstract base class contract and be resolved via topological dependency sort.
@@ -341,7 +341,7 @@ Scope: v1-mandatory
 - **WHEN** `[butler.switchboard]` section is present with `advertise = true`
 - **THEN** the agent registers itself with the Switchboard at startup, enabling the control plane's registry and capability catalog
 - **AND** the registration includes the agent's `type` field so the switchboard can distinguish butlers from staffers
-- **AND** configuration includes: `url` (Switchboard MCP endpoint), `liveness_ttl_s` (registration expiry), `route_contract_min`/`route_contract_max` (supported contract versions)
+- **AND** configuration includes: `url` (the control plane's service listener), `liveness_ttl_s` (registration expiry), `route_contract_min`/`route_contract_max` (the supported registration contract versions; no route dispatch remains for them to govern)
 
 #### Scenario: Permissions section (staffers)
 - **WHEN** `[butler.permissions]` section is present

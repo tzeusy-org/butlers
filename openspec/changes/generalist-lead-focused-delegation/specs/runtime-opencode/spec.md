@@ -1,14 +1,19 @@
 ## MODIFIED Requirements
 
 ### Requirement: Temporary Config File Generation
-The adapter SHALL write a temporary `opencode.jsonc` file per invocation containing MCP server config, instructions reference, and permission settings. The config path SHALL be passed via the `OPENCODE_CONFIG` environment variable. For a goal invocation the `permission` settings SHALL deny every OpenCode built-in tool (shell, file read and edit, web fetch and any other local tool) and SHALL NOT enable auto-mode or any other permission bypass, because the runtime's deny-all tool settings plus a broker-only MCP config replace permission-bypass flags.
+The adapter SHALL write a temporary `opencode.jsonc` file per invocation containing MCP server config, instructions reference, and permission settings. The config path SHALL be passed via the `OPENCODE_CONFIG` environment variable. For a goal invocation the `permission` settings SHALL deny every OpenCode built-in tool (shell, file read and edit, web fetch and any other local tool) and SHALL NOT enable auto-mode or any other permission bypass, because the runtime's deny-all tool settings plus a broker-only MCP config replace permission-bypass flags. For an RFC 0038 D18 model function (such as discretion screening or transcription) the config SHALL contain no `mcp` servers and SHALL deny every built-in tool, so the call is tool-less; an adapter that cannot produce that configuration SHALL refuse to run a model function.
 
-Source: RFC 0038 D3
+Source: RFC 0038 D3 and D18
 Scope: v1-mandatory
 
 #### Scenario: Config file structure
 - **WHEN** the adapter prepares an invocation
 - **THEN** it writes a JSONC config file with keys: `mcp` (server configs), `instructions` (system prompt file path), and `permission`
+
+#### Scenario: A model function runs tool-less on OpenCode
+- **WHEN** the adapter prepares a discretion-screening model function call
+- **THEN** the config has an empty `mcp` section and a `permission` section that denies every built-in tool
+- **AND** the call can return only its structured output
 
 #### Scenario: Goal invocation denies built-in tools
 - **WHEN** the adapter prepares a lead or child invocation

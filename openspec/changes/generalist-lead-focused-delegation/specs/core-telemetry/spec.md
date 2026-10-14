@@ -2,7 +2,7 @@
 
 ### Requirement: Active Session Context Propagation
 
-A tool handler serving a broker-forwarded call SHALL tag its span with the `goal_id`, `invocation_id` and `depth` of the verified assertion lineage and the goal's lead `epoch`, and SHALL parent the span to the broker's forwarding span when the forwarded call carries W3C trace context. Goal invocations run on the session host, so no spawner-held `ContextVar` supplies a goal invocation's span context to a domain tool handler. Spans SHALL store identifiers and digests, never argument or result values.
+A tool handler serving a broker-forwarded call SHALL tag its span with the `goal_id`, `invocation_id` and `depth` of the verified assertion lineage and the goal's lead `epoch` read from the invocation record (the assertion carries no epoch), and SHALL parent the span to the broker's forwarding span when the forwarded call carries W3C trace context. Goal invocations run on the session host, so no spawner-held `ContextVar` supplies a goal invocation's span context to a domain tool handler. Spans SHALL store identifiers and digests, never argument or result values.
 
 Source: RFC 0038 D3, D7 and D17
 Scope: v1-mandatory

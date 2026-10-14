@@ -45,7 +45,9 @@ either declared in the subscriber's git configuration, or, when created at
 runtime through `subscribe_to_event`, recorded as no larger than the creating
 invocation's grant. Creating or reactivating such a subscription at runtime
 SHALL be an `administer` effect, never granted to a child, and a subscription
-created under exposure SHALL admit every goal it wakes exposed.
+created under exposure SHALL admit every goal it wakes exposed. Deactivating a
+subscription that wakes reasoning through `unsubscribe_from_event` suppresses
+an obligation and SHALL also be an `administer` effect.
 
 Source: RFC 0038 D2, D4, D5
 Scope: v1-mandatory
@@ -192,7 +194,10 @@ carrying the event's `goal_id` and effect id as `caused_by_goal` and
 holds at most the subscription's capability set intersected with the causing
 goal's origin ceiling, and is refused beyond the configured causal chain
 length. For an event with no goal lineage it SHALL submit an obligation
-admission under the subscription's capability set. The goal input SHALL
+admission under the subscription's capability set, and that goal SHALL start
+exposed unless the publishing domain stamped the event as derived only from
+untainted owner-authority records; a missing or unreadable stamp SHALL count as
+exposed. The goal input SHALL
 present the event's payload as clearly fenced, untrusted reference data --
 never as instructions -- and ask the lead to take whatever domain action
 applies or complete silently.
@@ -235,6 +240,13 @@ Scope: v1-mandatory
   ceiling
 - **AND** admission refuses and records the goal if it would exceed the causal
   chain limit
+
+#### Scenario: An event without lineage or stamp starts exposed
+
+- **WHEN** a reconciled wake task becomes due for an event that carries no
+  goal lineage and no stamp from its publishing domain
+- **THEN** the subscriber submits an obligation admission whose goal starts
+  exposed
 
 ### Requirement: Descriptive-Only Advisory Validity
 

@@ -14,7 +14,7 @@ Scope: v1-mandatory
 
 #### Scenario: Switchboard registration
 - **WHEN** the travel butler starts
-- **THEN** it registers with the switchboard's service listener in `butlers-control`, at the address its deployment configuration names, with `advertise = true`, `liveness_ttl_s = 300`, and route contract version range `route.v1` to `route.v1`
+- **THEN** it registers with the switchboard's service listener in `butlers-control`, at the address its deployment configuration names, with `advertise = true`, `liveness_ttl_s = 300`, and registration contract version range `route.v1` to `route.v1`, which governs registration only now that route dispatch is deleted
 
 #### Scenario: Module profile
 - **WHEN** the travel butler starts
