@@ -32,7 +32,7 @@ The CRUD API SHALL accept `task_type` as a parameter. When `task_type='deadline'
 
 Creating a prompt-mode task at runtime creates an obligation and SHALL be an `administer` capability. The created row SHALL record the creating goal and invocation from the verified broker assertion, a capability set no larger than the creator's grant at creation, and whether the creating invocation was exposed; an obligation created under exposure SHALL start every occurrence exposed. Updating a prompt-mode task's prompt or capability set SHALL apply the same bounds and SHALL record the updater's lineage and exposure.
 
-Every other model-reachable scheduling tool that can cause, change or suppress an obligation occurrence (`schedule_trigger`, and `schedule_update`, `schedule_delete` and `schedule_toggle` on a prompt-mode task) SHALL also be an `administer` capability, so a child never holds it, a third-party goal's ceiling excludes it, and an exposed call needs per-event owner approval. A `schedule_trigger` call from a goal invocation SHALL be admitted as a caused admission carrying `caused_by_goal` and `caused_by_effect` from the verified assertion: the occurrence's goal SHALL inherit the triggering goal's exposure, its ceiling SHALL be the task's capability set intersected with the triggering goal's origin ceiling, and it SHALL count toward the causal chain limit (`REQ-capability-authorization-013`). A trigger from the owner's dashboard is a service-plane call and admits an ordinary obligation occurrence.
+Every other model-reachable scheduling tool that can cause, change or suppress an obligation occurrence SHALL also be an `administer` capability: `schedule_trigger`, and `schedule_update`, `schedule_delete` and `schedule_toggle` whenever the task's dispatch mode before or after the call is `prompt`. A `schedule_update` that changes a job-mode task to prompt mode is obligation creation and SHALL apply the creation bounds above. Because one tool cannot be classed per call in the catalog, `schedule_create` and these four tools SHALL be catalogued as `administer` outright (RFC 0038 D4: a tool takes the most consequential class among the effects it can reach), so a child never holds them, a third-party goal's ceiling excludes them, and an exposed call needs per-event owner approval; the `remind` tool keeps its own contract. A `schedule_trigger` call from a goal invocation SHALL be admitted as a caused admission carrying `caused_by_goal` and `caused_by_effect` from the verified assertion: the occurrence's goal SHALL inherit the triggering goal's exposure, its ceiling SHALL be the task's capability set intersected with the triggering goal's origin ceiling, and it SHALL count toward the causal chain limit (`REQ-capability-authorization-013`). A trigger from the owner's dashboard is a service-plane call and admits an ordinary obligation occurrence.
 
 Source: RFC 0038 D4, D5, D7 and D8
 Scope: v1-mandatory
@@ -64,6 +64,11 @@ Scope: v1-mandatory
 - **WHEN** an unexposed owner goal's approved `schedule_trigger` call fires a prompt-mode task whose declared set includes a capability the triggering goal's origin ceiling lacks
 - **THEN** the occurrence is admitted as a caused goal whose ceiling excludes that capability
 - **AND** the goal records the trigger call as its cause and counts toward the causal chain limit
+
+#### Scenario: Converting a job task to prompt mode is obligation creation
+- **WHEN** a goal invocation calls `schedule_update` to change a job-mode task it created into a prompt-mode task
+- **THEN** the call is an `administer` effect, parked for per-event owner approval while exposed and refused to a child
+- **AND** once applied, the task records the updater's lineage and exposure and a capability set no larger than the updater's grant
 
 #### Scenario: A child cannot trigger an obligation
 - **WHEN** a lead asks to delegate a child holding `schedule_trigger`

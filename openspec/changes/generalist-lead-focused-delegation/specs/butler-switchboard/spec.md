@@ -148,7 +148,7 @@ Scope: v1-mandatory
 
 Switchboard SHALL keep ingest envelope validation, deduplication and the durable buffer, and SHALL submit each accepted envelope that is neither withheld by a deterministic ingestion rule nor bound to a domain's deterministic channel ingest directly to goal admission, without a model classification or route-dispatch step. A duplicate submission of an envelope SHALL return the goal already admitted for it.
 
-Each connector SHALL declare whether its channel carries messages from people or is a device or telemetry feed (for example `home_assistant`, `owntracks`, `gaming` and ActivityWatch). A feed envelope SHALL NOT be admitted as an owner or third-party goal: it is recorded into domain state, and it SHALL wake reasoning only when it matches a subscription declared in git, which is admitted with origin `obligation` and that subscription's capability set (`REQ-capability-authorization-003`). Feed fields a person other than the owner can author SHALL be stamped untrusted.
+Each connector SHALL declare whether its channel carries messages from people or is a device or telemetry feed (for example `home_assistant`, `owntracks`, `gaming` and ActivityWatch). A feed envelope SHALL NOT be admitted as an owner or third-party goal: Switchboard delivers it to the owning domain's deterministic channel ingest on the service plane, which records it in that domain's own schema, and it SHALL wake reasoning only when it matches a subscription declared in git, which is admitted with origin `obligation` and that subscription's capability set (`REQ-capability-authorization-003`). Feed fields a person other than the owner can author SHALL be stamped untrusted.
 
 ID: REQ-butler-switchboard-007
 Source: RFC 0038 D1 and D5; RFC 0003 disposition
@@ -161,7 +161,7 @@ Scope: v1-mandatory
 
 #### Scenario: A feed envelope matches no subscription
 - **WHEN** a Home Assistant state change that matches no declared subscription is accepted
-- **THEN** it is recorded into domain state and no goal is admitted
+- **THEN** Home's deterministic channel ingest records it in Home's schema and no goal is admitted
 
 #### Scenario: Buffered envelopes survive a control-plane restart
 - **WHEN** `butlers-control` restarts while accepted envelopes are in the durable buffer and not yet admitted

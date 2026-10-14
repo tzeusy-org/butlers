@@ -20,7 +20,7 @@ Scope: v1-mandatory
 - **WHEN** a gated tool is invoked without an exposed assertion and a standing rule matches the tool name and arguments
 - **THEN** the action is persisted with status `approved` and `approval_rule_id` set to the matching rule
 - **AND** for a call that names no goal, the original tool function is executed immediately via the shared executor
-- **AND** for a goal invocation's call, the rule match is made by the broker, which forwards the call with an `approval_ref` naming the rule after its per-call check that the goal is running; the wrapper executes the handler only for that forwarded call and never on a rule it matched itself
+- **AND** for a goal invocation's call, the broker parks the call through this module, this module matches the rule at park time and approves the action, and the broker then forwards the stored call with an `approval_ref` naming that action after its per-call check that the goal is running (RFC 0038 D13); the wrapper executes the handler only for that forwarded call, never directly on its own rule match
 - **AND** `action_queued` and `action_auto_approved` audit events are recorded
 - **AND** the rule's `use_count` is incremented
 

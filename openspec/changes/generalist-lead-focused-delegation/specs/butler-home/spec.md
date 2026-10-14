@@ -124,5 +124,5 @@ Scope: v1-mandatory
 
 - **WHEN** any Home Assistant service call can change physical state
 - **THEN** the Home butler SHALL apply the declared safe/reversible/consequential/protected risk map
-- **AND** consequential or protected calls SHALL require an approvals-module grant
+- **AND** consequential or protected calls SHALL require per-event owner approval through the approvals module
 - **AND** a durable receipt and observed post-condition SHALL be the only authority for reporting success

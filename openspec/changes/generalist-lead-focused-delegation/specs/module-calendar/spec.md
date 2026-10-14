@@ -80,10 +80,11 @@ any party that does not resolve uniquely to the owner SHALL be dispatched only
 under per-event owner approval or a matching standing rule the owner created,
 whatever the goal's origin, grant or exposure and whatever the configured
 notification policy. On a butler that loads the calendar module with no
-approvals enqueuer wired, such a call SHALL execute only when its verified
-assertion carries an `approval_ref` covering the exact call; otherwise it SHALL
-be refused with a typed error that names the missing gate, so a missing approvals module
-can never bypass this rule; creating an event without an enqueuer (the
+approvals enqueuer wired, such a call SHALL always be refused with a typed
+error that names the missing gate, because the broker parks effects only
+through the owning domain's approvals module (RFC 0038 D13); a missing
+approvals module can therefore never bypass this rule, and a lead that needs
+to invite a non-owner uses a domain whose calendar is approval-gated; creating an event without an enqueuer (the
 "Allow overlap with approval gate" behavior) applies only to calls that reach
 no party other than the owner. A call that names only the owner, or that
 changes an event without attendees other than the owner and sends no updates,
@@ -100,7 +101,7 @@ Scope: v1-mandatory
 
 #### Scenario: A butler without an approvals module cannot invite a non-owner
 
-- **WHEN** a goal calls `calendar_create_event` with a non-owner attendee on a butler whose calendar module has no approvals enqueuer wired, and the broker did not forward an `approval_ref` covering the call
+- **WHEN** a goal calls `calendar_create_event` with a non-owner attendee on a butler whose calendar module has no approvals enqueuer wired
 - **THEN** the module refuses the call with a typed error naming the missing gate, and no event is created and no invitation is sent
 
 #### Scenario: Notifying existing attendees of a change is parked

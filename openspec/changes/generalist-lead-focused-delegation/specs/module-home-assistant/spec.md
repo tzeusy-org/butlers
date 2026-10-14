@@ -14,7 +14,9 @@ protected call.
 A call whose service can deliver content to a person (the `notify`, `tts`,
 `persistent_notification` and other messaging or announcement service domains)
 SHALL additionally be `communicate`: `ha_call_service` SHALL declare its target
-and service data as `recipient_params`, and such a call is owner communication
+(entity, device or notify service) as `recipient_params` and the message,
+title and other recipient-visible service data as content-bearing arguments,
+so the template-pinned test can apply; such a call is owner communication
 only when every target resolves uniquely to an owner device or the owner's
 notification service; any other target, including a shared speaker, a guest
 device or a target it cannot resolve, is non-owner communication and SHALL

@@ -178,7 +178,7 @@ Scope: v1-mandatory
 ## ADDED Requirements
 
 ### Requirement: Deterministic Ingestion Gating Before Goal Admission
-Connector-scoped ingestion rules (`block` action) SHALL be evaluated at the connector, and global ingestion rules SHALL be evaluated post-ingest by the Switchboard in priority order, first match wins. No ingestion rule, envelope field, thread history or model classification SHALL select a target butler. An accepted message envelope that no global rule withholds SHALL be handed to goal admission with no classification or routing step before it; a device or telemetry feed envelope SHALL follow the feed path of `REQ-butler-switchboard-007` instead.
+Connector-scoped ingestion rules (`block` action) SHALL be evaluated at the connector, and global ingestion rules SHALL be evaluated post-ingest by the Switchboard in priority order, first match wins. No ingestion rule, envelope field, thread history or model classification SHALL select a target butler. An accepted message envelope that no global rule withholds SHALL be handed to goal admission with no classification or routing step before it; a device or telemetry feed envelope SHALL follow the feed path of `REQ-butler-switchboard-007` instead. Each connector SHALL declare at registration whether its channel is a message channel or a device or telemetry feed, and Switchboard SHALL treat an undeclared channel as a message channel, whose goals take origin from owner-channel authorization.
 
 ID: REQ-connector-base-spec-003
 Source: RFC 0038 D1, D5; RFC 0003 disposition

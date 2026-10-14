@@ -25,7 +25,9 @@ unstamped steering artifact.
   NOT supersede an owner-class fact with a non-owner-class one. Consolidation
   SHALL also derive each fact and rule's taint: an artifact is tainted when any
   of its validated evidence episodes is tainted or when the consolidation write
-  is made under an exposed assertion, whatever authority it derives.
+  is made under an exposed assertion, whatever authority it derives. A tainted
+  artifact SHALL NOT supersede an untainted fact or rule; it is stored as a
+  held candidate beside the untainted one until the owner endorses it.
 - A rule is *held* when its authority is not owner-class (or is NULL on a legacy
   row) or it is tainted, and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
   `memory_context` Active Rules, and the discovery catalog (they are not written
@@ -59,7 +61,8 @@ Scope: v1-mandatory
 #### Scenario: Mixed evidence is held
 
 - **WHEN** consolidation derives one rule from one owner episode and one
-  third-party episode
+  third-party episode (possible only in the partition that holds tainted or
+  non-owner-class episodes)
 - **THEN** the rule SHALL have `content_authority = 'mixed'` and SHALL be held
 
 #### Scenario: Tainted owner evidence yields a held rule
@@ -69,6 +72,15 @@ Scope: v1-mandatory
 - **THEN** the rule SHALL have `content_authority = 'owner'`, SHALL be tainted
   and SHALL be held until the owner endorses it
 - **AND** it SHALL be absent from `memory_context` Active Rules
+
+#### Scenario: A tainted update cannot replace a true profile fact
+
+- **WHEN** an exposed consolidation goal submits an `updated_facts` entry,
+  derived from tainted owner-authority evidence, that targets an untainted
+  owner-class fact
+- **THEN** the untainted fact SHALL remain current and in Profile Facts
+- **AND** the tainted entry SHALL be stored as a held candidate until the owner
+  endorses it
 
 #### Scenario: A forged owner anchor in content is not authority
 
@@ -102,8 +114,11 @@ The memory module SHALL register its goal-outcome episode capture and its
 `context.search` handler as one runtime owned by the started daemon's butler
 identity, so one daemon's module-private memory pool cannot service another
 daemon's work. Episodes SHALL no longer be captured from per-session
-transcripts: when a goal reaches a final state, the memory-owning domain SHALL
-record one episode from the goal's outcome in the goal ledger, stamped with the
+transcripts: when a goal reaches a final state, each domain whose capabilities
+the goal called SHALL record one episode from the goal's outcome in the goal
+ledger in its own memory store (General records it when the goal called no
+domain capability), so consolidation keeps grouping by source butler. Each
+episode is stamped with the
 authority its goal origin yields under `REQ-module-memory-013` and tainted when
 the goal was exposed. Both stamps SHALL come from the goal ledger, never from
 the outcome text. Memory context SHALL reach a goal invocation only through
@@ -151,9 +166,12 @@ The consolidation pipeline SHALL transform unconsolidated episodes into durable
 facts and rules as an obligation goal of the memory-owning domain (RFC 0038 D2
 and D18), not as a Spawner session or a model function. The scheduled
 `memory_consolidation` job SHALL only submit obligation admissions, one per
-episode group, whose capability set is declared in git: memory read capabilities over pending
+`(tenant_id, butler, partition)`, whose capability set is declared in git: memory read capabilities over pending
 episodes and existing facts and rules, and one consolidation-apply `record`
-capability. The goal's invocation SHALL read pending episodes as stamped data
+capability. The consolidation-apply capability SHALL NOT be flagged
+`owner_authority`, so an exposed partition's goal can still apply its
+artifacts; their safety rests on the taint and held-rule rules of
+`REQ-module-memory-013`. The goal's invocation SHALL read pending episodes as stamped data
 grouped by `(tenant_id, source butler)`, with each episode's content fenced as
 data, and SHALL submit each group's artifacts through the consolidation-apply
 capability. Deterministic code behind that capability SHALL validate artifact
@@ -170,9 +188,9 @@ Scope: v1-mandatory
 
 - **WHEN** the consolidation goal reads pending episodes
 - **THEN** the read capability MUST claim episodes with `consolidation_status='pending'` ordered by `(tenant_id, butler, created_at, id)` with `FOR UPDATE SKIP LOCKED`
-- **AND** episodes MUST be grouped by the composite key `(tenant_id, butler)`, not by `butler` alone, and each group MUST be split into untainted owner-class episodes and all others
-- **AND** existing active facts (up to 100) and rules (up to 50) for each butler MUST be returned for dedup context, scoped to the same `tenant_id`
-- **AND** the job MUST submit one obligation admission per group, so exposure from one group's episodes cannot taint another group's artifacts
+- **AND** episodes MUST be grouped by the composite key `(tenant_id, butler)`, not by `butler` alone, and each group MUST be split into two partitions: untainted owner-class episodes, and all others
+- **AND** existing active facts (up to 100) and rules (up to 50) for each butler MUST be returned for dedup context, scoped to the same `tenant_id`; for the untainted owner-class partition the dedup context MUST contain only untainted owner-class facts and rules, so reading it cannot expose that partition's goal, and that partition's `updated_facts` MAY target only those facts
+- **AND** the job MUST submit one obligation admission per `(tenant_id, butler, partition)`, so exposure from one partition's episodes cannot taint another partition's artifacts
 
 #### Scenario: Scheduled consolidation uses the catalog-backed daemon spawner
 
@@ -224,4 +242,9 @@ Scope: v1-mandatory
 - **WHEN** a consolidation goal's group holds episodes with non-owner authority or a taint stamp
 - **THEN** reading them exposes the goal, so every artifact it submits is tainted
 - **AND** each derived rule is held until the owner endorses it (`REQ-module-memory-013`)
-- **AND** the goal for the same butler's untainted owner-class episodes is unaffected
+- **AND** the goal for the same butler's untainted owner-class partition is unaffected
+
+#### Scenario: The untainted partition stays unexposed
+
+- **WHEN** the goal for a butler's untainted owner-class partition reads its episodes and dedup context while that butler also holds third-party contact facts
+- **THEN** the dedup context excludes the third-party and tainted facts and rules, the goal stays unexposed, and the rules it derives from owner evidence are active without endorsement

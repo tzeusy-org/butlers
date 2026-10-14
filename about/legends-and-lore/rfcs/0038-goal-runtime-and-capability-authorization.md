@@ -202,8 +202,9 @@ policy at `roster/switchboard/goal-policy/LEAD.md`, loaded into every lead
 alongside the owner profile. The lead policy also owns the reply style for
 interactive owner goals, which today each butler's `CLAUDE.md` defines. The
 session listener's port follows the repository's port assignment convention.
-Switchboard's manifesto is amended in the cutover release to describe the control-plane contract. General keeps its narrow
-capture-and-collections manifesto and gains no authority.
+Switchboard's manifesto is amended in the cutover release to describe the
+control-plane contract. General keeps its narrow capture-and-collections
+manifesto and gains no authority.
 
 A new, separate control-plane daemon was rejected: it would duplicate
 Switchboard's ingress, buffer, fleet MCP clients and registry. Moving
@@ -231,9 +232,11 @@ sandbox; each one becomes a domain capability or is retired.
 
 Memory consolidation, which today runs as a spawned session with MCP tools,
 becomes an obligation goal of the memory-owning domain with a declared
-capability set. Episode capture moves from per-session transcripts to the
-goal ledger: the domain records an episode from each completed goal's outcome,
-carrying the goal's stamps and taint.
+capability set, one per tenant, source domain and partition (untainted
+owner-class episodes apart from all others). Episode capture moves from
+per-session transcripts to the goal ledger: each domain whose capabilities a
+goal called records an episode from the completed goal's outcome, carrying the
+goal's stamps and taint.
 
 ### D3. Session sandbox
 
@@ -251,9 +254,9 @@ credential store, resolves each launch's model credential and stages it over
 the control channel; the session host never reads the credential store or the
 database. Model functions (D18) keep the narrow provider credentials their
 deterministic callers use today. The existing runtime-credential flows,
-Codex auth synchronization and the dashboard's CLI login, are retargeted to the session host's credential
-volume through the control plane's service listener; the session host itself
-exposes no inbound port to the dashboard.
+Codex auth synchronization and the dashboard's CLI login, are retargeted to
+the session host's credential volume through the control plane's service
+listener; the session host itself exposes no inbound port to the dashboard.
 
 Each invocation runs in its own kernel-enforced filesystem and process domain
 (Bubblewrap, as `src/butlers/cli_auth/sandbox.py` already uses; the session
@@ -431,10 +434,13 @@ An invocation becomes exposed when:
 
 When any invocation of a goal becomes exposed, the goal is marked exposed.
 
-Admission input follows the same stamps and fails closed. A domain event or
-other admission input that carries no goal lineage starts its goal exposed
-unless the publishing domain stamps it as derived only from untainted
-owner-authority records; a missing or unreadable stamp counts as exposed.
+Domain-published admission input follows the same stamps and fails closed. A
+domain event, feed record or other input a domain publishes that carries no
+goal lineage starts its goal exposed unless the publishing domain stamps it as
+derived only from untainted owner-authority records; a missing or unreadable
+stamp counts as exposed. Ingest envelopes take their starting exposure from
+the origin and span rules of D5, and an obligation's declared prompt is
+trusted unless the obligation was created under exposure.
 
 **Taint** makes exposure survive storage. The assertion carries the invoking
 session's exposure (D7); a domain storing data under an exposed assertion
@@ -528,8 +534,9 @@ dark-build task.
 **Service-plane relays.** Service-to-service traffic that today rides the
 generic `route` tool moves to named endpoints on the control plane's service
 listener: domain-event fan-out (RFC 0022), the QA error relay, and module
-runtime wiring. Each endpoint has a fixed payload schema, authenticates its
-calling daemon, is not LLM-presentable, and is not on the session listener.
+runtime wiring. Each endpoint has a fixed payload schema and one target,
+authenticates its calling daemon against a per-endpoint allowlist, is not
+LLM-presentable, and is not on the session listener.
 Domain events that an effect produced carry the effect's goal lineage, which
 caused admission reads (D5).
 
@@ -1021,7 +1028,7 @@ built.
 |---|---|---|---|
 | 1 | Host of the control plane | Switchboard, moved into its own process and container (D1). | Switchboard, own process. |
 | 2 | Release scope | The cutover is a v1 milestone; v1's classifier criterion becomes replay and adversarial-suite criteria. | Yes, v1 ships on goals. |
-| 3 | Exposure strictness | As D4 and D6, including the narrowed exemptions: owner `notify` with inert links, and standing rules only to the owner or with template-pinned bodies. Stricter gating costs more approval taps; looser gating lets an injected session message a pinned third party. | Narrow exemptions. |
+| 3 | Exposure strictness | As D4 and D6, including the narrowed exemptions: owner `notify` with inert links, and standing rules only to the owner or template-pinned (D13). Stricter gating costs more approval taps; looser gating lets an injected session message a pinned third party. | Narrow exemptions. |
 | 4 | Default model tiers | As D16; replay evaluation sets the final assignments. | Not asked; deferred to replay evaluation. |
 | 5 | Default budgets | Per origin, set from replay evaluation before the switch. | Not asked; deferred to replay evaluation. |
 | 6 | `GOAL_BROKER_SIGNING_KEY` | Approve as the second named process-bound deployment control key (D7). | Approved. |

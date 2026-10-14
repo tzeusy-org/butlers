@@ -76,11 +76,13 @@ quoted or embedded span (`REQ-connector-base-spec-004`) SHALL start exposed,
 with each span fenced as data in the goal input; a staffer goal whose inputs
 include third-party content or error payloads, and every QA goal, SHALL start
 exposed; every occurrence of a runtime-created obligation created under
-exposure SHALL start exposed; and an admission input with no goal lineage,
-such as a domain event published by deterministic code, SHALL start its goal
-exposed unless its publishing domain stamps it as derived only from untainted
-owner-authority records, a missing or unreadable stamp counting as exposed. A
-third-party goal's ceiling
+exposure SHALL start exposed; and a domain-published admission input with no
+goal lineage, such as an event-bus payload or a feed record, SHALL start its
+goal exposed unless its publishing domain stamps it as derived only from
+untainted owner-authority records, a missing or unreadable stamp counting as
+exposed. Ingest envelopes take their starting exposure from the origin and
+span rules above, and an obligation's declared prompt is trusted unless the
+obligation was created under exposure. A third-party goal's ceiling
 SHALL exclude `transact`, `actuate` and `administer` capabilities and SHALL
 hold `communicate` capabilities, other than owner `notify`, only as park-only
 grants that can produce a parked effect but never execute one.
