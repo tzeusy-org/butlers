@@ -1488,3 +1488,221 @@ async def test_inverse_closure_uses_only_the_runtime_roles_own_private_memory_sc
     finally:
         await own.close()
         await peer.close()
+
+
+@pytest.mark.parametrize("symmetric", [False, True], ids=["inverse", "symmetric"])
+async def test_native_baseline_inverse_gap_red_then_fixed_application_green(
+    pool_factory, memory_migrated_db, session_hook, symmetric, record_property
+):
+    """AC1: actual old writer commits its inverse but fails the closure invariant."""
+    import json
+
+    from tests.modules.memory.inverse_gap_process import run_source_child
+
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+    forward, reverse = await _edge_predicates(pool, symmetric=symmetric)
+    direct_conv, object_conv = await _conversation(pool), await _conversation(pool)
+    await _decline(pool, direct_conv, left, forward)
+    await _decline(pool, object_conv, right, reverse)
+    original_object = await _gap(pool, right, reverse)
+    role = dict(await pool.fetchrow("SELECT current_user AS role, current_schema() AS schema"))
+    request = {
+        "database_url": memory_migrated_db,
+        "owner": str(owner),
+        "left": str(left),
+        "right": str(right),
+        "forward": forward,
+        "reverse": reverse,
+        "gap": str(original_object["id"]),
+        "require_answerable": True,
+    }
+
+    baseline = await run_source_child("baseline", "write", **request)
+
+    assert (baseline["exit_code"], baseline["verdict"], baseline["invariant"]) == (
+        1,
+        "RED",
+        "object-gap-closure",
+    )
+    assert baseline["source"]["baseline_commit"] == "3bde6119914e066414451d3df609a8c20e84fa30"
+    assert baseline["state"]["database_role"] == role
+    old_inverse = await _inverse(pool, left, right, reverse)
+    old_direct = await _gap(pool, left, forward)
+    assert old_inverse is not None
+    assert str(old_inverse["id"]) == baseline["state"]["inverse_id"]
+    assert old_inverse["id"] != uuid.UUID(baseline["state"]["forward_id"])
+    assert (old_inverse["validity"], old_inverse["content"], old_inverse["content_authority"]) == (
+        "active",
+        "Mei",
+        "owner",
+    )
+    assert old_inverse["authority_entity_id"] == owner
+    assert old_direct["answered_by_ref"] == f"fact:{baseline['state']['forward_id']}"
+    assert (await _gap(pool, right, reverse)) == original_object
+    assert (baseline["state"]["gap_status"], baseline["state"]["coverage_state"]) == (
+        "open",
+        "unknown",
+    )
+
+    # A genuine later property write, with unchanged inputs, replaces the old
+    # active edge pair. No gap UPDATE, history repair, reset or rollback is used.
+    fixed = await run_source_child("current", "write", **request)
+
+    assert (fixed["exit_code"], fixed["verdict"]) == (0, "PASS")
+    assert fixed["pid"] != baseline["pid"]
+    assert fixed["invocation"] != baseline["invocation"]
+    assert fixed["state"]["database_role"] == role
+    inverse = await _inverse(pool, left, right, reverse)
+    gap = await _gap(pool, right, reverse)
+    assert inverse["id"] != old_inverse["id"]
+    assert (gap["id"], gap["status"], gap["answered_by_ref"], gap["answered_value"]) == (
+        original_object["id"],
+        "answerable",
+        f"fact:{inverse['id']}",
+        "Mei",
+    )
+    assert (gap["answered_authority"], gap["answered_authority_entity_id"]) == ("owner", owner)
+    assert fixed["state"]["inverse_id"] == str(inverse["id"])
+    assert fixed["state"]["coverage_state"] == "present"
+    assert (await _gap(pool, left, forward)) == old_direct
+    async with pool.acquire() as conn:
+        old_rows = await conn.fetch(
+            "SELECT id, validity FROM facts WHERE id = ANY($1::uuid[])",
+            [uuid.UUID(baseline["state"]["forward_id"]), old_inverse["id"]],
+        )
+    assert len(old_rows) == 2 and {row["validity"] for row in old_rows} == {"superseded"}
+    assert await _notices(pool, object_conv) == []
+    record_property(
+        "native_baseline_red_fixed_green", json.dumps({"baseline": baseline, "fixed": fixed})
+    )
+
+
+@pytest.mark.parametrize("symmetric", [False, True], ids=["inverse", "symmetric"])
+async def test_application_revert_and_process_restart_preserve_committed_inverse_answers(
+    pool_factory, memory_migrated_db, session_hook, symmetric, record_property
+):
+    """M31: old application reads/delivers retained state, but loses new inverse closure."""
+    import json
+
+    from tests.modules.memory.inverse_gap_process import run_source_child
+
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+    forward, reverse = await _edge_predicates(pool, symmetric=symmetric)
+    origins = [await _conversation(pool) for _ in range(2)]
+    for conv in origins:
+        await _decline(pool, conv, right, reverse)
+    gap = await _gap(pool, right, reverse)
+    role = dict(await pool.fetchrow("SELECT current_user AS role, current_schema() AS schema"))
+    request = {
+        "database_url": memory_migrated_db,
+        "owner": str(owner),
+        "left": str(left),
+        "right": str(right),
+        "forward": forward,
+        "reverse": reverse,
+        "gap": str(gap["id"]),
+    }
+    producer = await run_source_child("current", "write", require_answerable=True, **request)
+    assert (producer["exit_code"], producer["verdict"]) == (0, "PASS")
+    inverse = await _inverse(pool, left, right, reverse)
+    answer = await _gap(pool, right, reverse)
+    assert answer["status"] == "answerable"
+    assert answer["answered_by_ref"] == f"fact:{inverse['id']}"
+    ids = [uuid.UUID(producer["state"]["forward_id"]), inverse["id"]]
+    async with pool.acquire() as conn:
+        canonical = await conn.fetch(
+            "SELECT * FROM facts WHERE id = ANY($1::uuid[]) ORDER BY id", ids
+        )
+        projected = await conn.fetch(
+            "SELECT * FROM public.entity_graph_edges WHERE source_id = ANY($1::uuid[]) ORDER BY source_id",
+            ids,
+        )
+        origin_rows = await conn.fetch(
+            "SELECT * FROM knowledge_gap_origins WHERE gap_id=$1 ORDER BY id", gap["id"]
+        )
+        schema = await conn.fetch(
+            "SELECT table_schema,table_name,column_name,data_type FROM information_schema.columns"
+            " WHERE table_name IN ('facts','knowledge_gaps','knowledge_gap_origins')"
+            " ORDER BY table_schema,table_name,ordinal_position"
+        )
+    assert len(canonical) == 2 and len(projected) == 2 and len(origin_rows) == 2
+    assert [await _notices(pool, conv) for conv in origins] == [[], []]
+
+    future_left, future_right = await _entity(pool), await _entity(pool)
+    future_forward, future_reverse = await _edge_predicates(pool, symmetric=symmetric)
+    await _decline(pool, await _conversation(pool), future_right, future_reverse)
+    future_gap = await _gap(pool, future_right, future_reverse)
+    future = {
+        "left": str(future_left),
+        "right": str(future_right),
+        "forward": future_forward,
+        "reverse": future_reverse,
+        "gap": str(future_gap["id"]),
+    }
+    # The producer has exited. This new interpreter imports the byte-exact old
+    # application package, then reads and delivers the SAME committed database.
+    restarted = await run_source_child("baseline", "deliver", future=future, **request)
+    assert (restarted["exit_code"], restarted["verdict"]) == (0, "PASS")
+    assert restarted["pid"] != producer["pid"]
+    assert restarted["invocation"] != producer["invocation"]
+    assert restarted["source"]["baseline_commit"] == "3bde6119914e066414451d3df609a8c20e84fa30"
+    state = restarted["state"]
+    assert state["before"]["database_role"] == state["after"]["database_role"] == role
+    assert (state["before"]["gap_status"], state["before"]["coverage_state"]) == (
+        "answerable",
+        "present",
+    )
+    assert state["before"]["answered_by_ref"] == answer["answered_by_ref"]
+    assert state["after"]["gap_status"] == "delivered"
+    for conv in origins:
+        [notice] = await _notices(pool, conv)
+        assert "Now known: Mei" in notice and f"fact:{inverse['id']}" in notice
+        assert f"fact:{producer['state']['forward_id']}" not in notice
+    assert (await _gap(pool, future_right, future_reverse)) == future_gap
+    future_inverse = await _inverse(pool, future_left, future_right, future_reverse)
+    assert str(future_inverse["id"]) == state["future"]["inverse_id"]
+    assert (state["future"]["gap_status"], state["future"]["coverage_state"]) == ("open", "unknown")
+    notices = [await _notices(pool, conv) for conv in origins]
+    again = await run_source_child("baseline", "deliver", **request)
+    assert (again["exit_code"], again["verdict"]) == (0, "PASS")
+    assert len({producer["pid"], restarted["pid"], again["pid"]}) == 3
+    assert [await _notices(pool, conv) for conv in origins] == notices
+    delivered = await _gap(pool, right, reverse)
+    for column in set(answer.keys()) - {"status", "delivered_at", "last_error"}:
+        assert delivered[column] == answer[column]
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetch("SELECT * FROM facts WHERE id = ANY($1::uuid[]) ORDER BY id", ids)
+            == canonical
+        )
+        assert (
+            await conn.fetch(
+                "SELECT * FROM public.entity_graph_edges WHERE source_id = ANY($1::uuid[]) ORDER BY source_id",
+                ids,
+            )
+            == projected
+        )
+        after_origins = await conn.fetch(
+            "SELECT * FROM knowledge_gap_origins WHERE gap_id=$1 ORDER BY id", gap["id"]
+        )
+        for old, new in zip(origin_rows, after_origins, strict=True):
+            assert new["delivered_at"] is not None
+            assert {k: v for k, v in old.items() if k != "delivered_at"} == {
+                k: v for k, v in new.items() if k != "delivered_at"
+            }
+        assert (
+            await conn.fetch(
+                "SELECT table_schema,table_name,column_name,data_type FROM information_schema.columns"
+                " WHERE table_name IN ('facts','knowledge_gaps','knowledge_gap_origins')"
+                " ORDER BY table_schema,table_name,ordinal_position"
+            )
+            == schema
+        )
+    record_property(
+        "native_revert_restart",
+        json.dumps({"producer": producer, "restarted": restarted, "again": again}),
+    )
