@@ -357,7 +357,15 @@ async def test_telegram_removal_same_version_reappearance(deletion_context, vers
     timestamp = after[key]["deleted_at"]
     assert (await engine.sync(account_id=ctx.account, mode="full")).deleted_contacts == 0
     assert (await _deletion_rows(ctx))[key]["deleted_at"] == timestamp
-    assert sum(r.msg == "contact_sync_deleted_source" for r in caplog.records) == 1
+    transitions = [r for r in caplog.records if r.msg == "contact_sync_deleted_source"]
+    assert len(transitions) == 1
+    event = transitions[0]
+    assert (event.entity_id, event.provider, event.account_id, event.external_id) == (
+        str(ctx.ids[10]),
+        "telegram",
+        ctx.account,
+        "telegram:10",
+    )
     # The raw/etag remains byte-identical and the contact has no name or phone.
     assert original[0].display_name is None and not original[0].phones
     ctx.provider.contacts, ctx.provider.cursor = original, "reappeared"
@@ -426,6 +434,11 @@ async def test_telegram_absence_guard_refusals(deletion_context, caplog, monkeyp
         "empty_full",
         "sharp_shrink",
     }
+    for event in caplog.records:
+        if event.msg == "contact_sync_absence_refused":
+            assert event.provider == "telegram" and event.account_id == ctx.account
+            assert event.baseline_count == 3
+            assert event.present_count == (0 if event.reason == "empty_full" else 1)
     # A late page error after a plausible nonempty first page still changes no link.
     from butlers.modules.contacts.sync import ContactBatch
 
@@ -577,9 +590,17 @@ async def test_telegram_absence_persistent_fencing_and_isolation(deletion_contex
             else:
                 # Real positive backfill changes the absent candidate's anchor.
                 await ctx.backfill(contacts[0])
+            competing_state = await ctx.store.load(provider="telegram", account_id=ctx.account)
             release.set()
             with pytest.raises(ContactsSyncError):
                 await asyncio.wait_for(task, 10)
+            retained_state = await ctx.store.load(provider="telegram", account_id=ctx.account)
+            if competing_state_commit:
+                assert retained_state == competing_state
+            else:
+                assert retained_state.model_dump(
+                    exclude={"last_error"}
+                ) == competing_state.model_dump(exclude={"last_error"})
         finally:
             release.set()
             if not task.done():
