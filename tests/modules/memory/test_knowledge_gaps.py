@@ -1336,17 +1336,26 @@ async def test_inverse_closure_uses_only_the_runtime_roles_own_private_memory_sc
             for p in projections
         )
         # Missing-local-table control uses only this disposable own-schema fixture.
-        # Rename it temporarily; no product migration/grant or peer access is added.
-        await own.execute("ALTER TABLE knowledge_gaps RENAME TO knowledge_gaps_offline")
+        # The normal migration login owns these fixture tables; runtime roles only
+        # perform their authorized DML. No privilege/grant or peer access is added.
+        fixture_conn = await asyncpg.connect(private_gap_db)
         try:
-            second = await _internal_edge(own, left, right, forward, tenant_id="other-tenant")
-            assert (
-                await own.fetchval("SELECT validity FROM facts WHERE id=$1", second["id"])
-                == "active"
+            await fixture_conn.execute(
+                "ALTER TABLE general.knowledge_gaps RENAME TO knowledge_gaps_offline"
             )
-            assert await _inverse(own, left, right, reverse) is not None
+            try:
+                second = await _internal_edge(own, left, right, forward, tenant_id="other-tenant")
+                assert (
+                    await own.fetchval("SELECT validity FROM facts WHERE id=$1", second["id"])
+                    == "active"
+                )
+                assert await _inverse(own, left, right, reverse) is not None
+            finally:
+                await fixture_conn.execute(
+                    "ALTER TABLE general.knowledge_gaps_offline RENAME TO knowledge_gaps"
+                )
         finally:
-            await own.execute("ALTER TABLE knowledge_gaps_offline RENAME TO knowledge_gaps")
+            await fixture_conn.close()
         assert (await _gap(peer, right, reverse)) == sentinel
         assert (await _gap(own, right, reverse))["id"] == own_gap["id"]
     finally:
