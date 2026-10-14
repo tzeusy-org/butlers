@@ -369,7 +369,7 @@ in the session sandbox with only `PATH` and their model credential.
    all private subnets then punches holes for specific tailnet hosts.
 4. **No secret values in compose files.** Infrastructure bootstrap vars only.
    Runtime and user credentials are DB-first through their authoritative tier.
-   The sole process-bound deployment control key named above is file-mounted
+   Each process-bound deployment control key named above is file-mounted
    only into its signing process and never supplied as a Compose environment
    value or `CredentialStore` fallback.
 5. **No `privileged: true`, no Docker socket mounts, no `cap_add`.** Containers

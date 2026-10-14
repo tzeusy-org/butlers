@@ -271,6 +271,13 @@ Two kinds of tool are never LLM-presentable and therefore never grantable:
   content. RFC 0037 forbids model-facing custody tools; the goal runtime keeps
   that.
 
+Output trust has one rule: a capability whose output can include anything a
+model-reachable `record` capability, a connector or a third party can write is
+`stamped` or `untrusted`. `trusted` is reserved for outputs no such writer can
+influence, such as sensor readings, account balances from a bank feed, or the
+catalog itself. The catalog check enforces this per store: a read over a table
+that any `record` capability writes cannot be declared `trusted`.
+
 The catalog is assembled from each domain's final, approval-wrapped registry at
 startup and published to the broker with schema and description digests. The
 broker rejects a call whose catalog digest differs from the domain's current
@@ -306,8 +313,10 @@ Rules:
   domain event that an effect produced, the admission carries `caused_by_goal`
   and `caused_by_effect` from the effect's assertion lineage. The caused goal
   inherits the causing goal's exposure, its ceiling is the declared
-  subscription's set and nothing more, and its causal chain length is at most
-  the configured limit (default 2). Admission refuses and records a goal that
+  subscription's set intersected with the causing goal's origin ceiling, and
+  its causal chain length is at most the configured limit (default 2). A
+  reaction to a third-party goal's effect therefore holds no more than a
+  third-party ceiling. Admission refuses and records a goal that
   would exceed it. A child cannot reach admission directly; this rule bounds
   the indirect path through declared domain reactions.
 
@@ -336,9 +345,10 @@ When any invocation of a goal becomes exposed, the goal is marked exposed.
 **Taint** makes exposure survive storage. The assertion carries the invoking
 session's exposure (D7); a domain storing data under an exposed assertion
 stamps the record as tainted, alongside today's memory content-authority stamp.
-Memory, fact, capture, conversation-history, goal-outcome, insight-candidate
-and decision-memory reads are `stamped`, and `context.search` returns each item
-with its stamp. Owner-authored, untainted records stay trusted, so ordinary
+Reads over every store a `record` capability writes are `stamped` (D4), which
+includes memory, facts, capture, contact notes, conversation history, goal
+outcomes, insight candidates and decision memory; `context.search` returns each
+item with its stamp. Owner-authored, untainted records stay trusted, so ordinary
 memory reads do not expose a goal; text that an exposed goal stored from an
 email exposes whichever later goal reads it back.
 
@@ -642,12 +652,16 @@ and never reaches the broker or a domain capability:
   anonymized payloads RFC 0015 allows. The QA staffer's own triage reasoning is
   a staffer goal.
 - **Model functions.** Tool-less, single-turn, structured-output calls made by
-  deterministic code: connector discretion screening and RFC 0036 vision
-  probes. They have no tools; any consequence comes from the deterministic code
-  that reads their typed output.
+  deterministic code: connector discretion screening (forward or ignore for
+  non-owner chatter; owner messages skip it), connector speech-to-text
+  transcription, and RFC 0036 vision probes. They have no tools; any
+  consequence comes from the deterministic code that reads their typed
+  output, and their output entering a goal is third-party content.
 
 Any other model use is a goal invocation. Adding a kind to this list requires
-an RFC amendment.
+an RFC amendment. Pending OpenSpec changes that add a model path, such as
+`define-dashboard-fast-answer-runtime`, must be re-scoped as goals or as a
+named kind here before approval.
 
 ## Disposition of existing RFCs
 
@@ -773,8 +787,8 @@ built.
 | 1 | Host of the control plane | Switchboard, moved into its own process and container (D1). | Switchboard, own process. |
 | 2 | Release scope | The cutover is a v1 milestone; v1's classifier criterion becomes replay and adversarial-suite criteria. | Yes, v1 ships on goals. |
 | 3 | Exposure strictness | As D4 and D6, including the narrowed exemptions: owner `notify` with inert links, and standing rules only to the owner or with template-pinned bodies. Stricter gating costs more approval taps; looser gating lets an injected session message a pinned third party. | Narrow exemptions. |
-| 4 | Default model tiers | As D16; replay evaluation sets the final assignments. | Set by replay evaluation. |
-| 5 | Default budgets | Per origin, set from replay evaluation before the switch. | Set by replay evaluation. |
+| 4 | Default model tiers | As D16; replay evaluation sets the final assignments. | Not asked; deferred to replay evaluation. |
+| 5 | Default budgets | Per origin, set from replay evaluation before the switch. | Not asked; deferred to replay evaluation. |
 | 6 | `GOAL_BROKER_SIGNING_KEY` | Approve as the second named process-bound deployment control key (D7). | Approved. |
 | 7 | Third-party park-only effects | Allow: inbound mail can prepare a reply or booking for one-tap approval; it can never execute one. | Approved. |
 

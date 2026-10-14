@@ -331,7 +331,9 @@ only component that can cheaply distinguish a 3-person family group from a
 
 **What connectors MUST NOT gate:** Content-based filtering, semantic
 classification, or decisions about what a message means. Those belong to the
-goal that admission creates. The connector gates on structural metadata (participant count,
+goal that admission creates. The one exception is the tool-less discretion
+screen (RFC 0038 D18), which may drop non-owner chatter; owner messages skip
+it, and it never routes or acts. The connector gates on structural metadata (participant count,
 chat type) that is available from the transport API without reading message
 content.
 

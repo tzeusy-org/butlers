@@ -36,11 +36,17 @@ Every LLM-presentable tool SHALL declare its owner domain, effect class, output
 trust, output sensitivity, resource parameters, safety arguments, approval
 policy, idempotency mode and owner-authority flag. A tool without complete
 metadata SHALL NOT be grantable, and CI SHALL fail when a registered
-LLM-presentable tool lacks it.
+LLM-presentable tool lacks it. A capability whose output can include data that
+a model-reachable `record` capability, a connector or a third party can write
+SHALL NOT declare trusted output.
 
 ID: REQ-capability-authorization-002
 Source: RFC 0038, D4
 Scope: proposed-v1
+
+#### Scenario: A read over writable notes is declared trusted
+- **WHEN** a module declares trusted output for a read capability over a table that one of its `record` capabilities writes
+- **THEN** the catalog check fails in CI
 
 #### Scenario: A new module tool omits its effect class
 - **WHEN** a module registers an LLM-presentable tool without an effect class
@@ -242,8 +248,9 @@ Scope: proposed-v1
 ### Requirement: Caused admissions and runtime obligations cannot widen authority
 An admission caused by an effect, or by a domain event an effect produced, SHALL
 record the causing goal and effect, inherit the causing goal's exposure, receive
-no more than the declared subscription's capability set, and be refused beyond
-the configured causal chain length. An obligation created at runtime SHALL have
+no more than the intersection of the declared subscription's capability set and
+the causing goal's origin ceiling, and be refused beyond the configured causal
+chain length. An obligation created at runtime SHALL have
 a capability set no larger than its creator's grant at creation, and if created
 under exposure SHALL start every occurrence exposed.
 
@@ -254,6 +261,10 @@ Scope: proposed-v1
 #### Scenario: A child's booking triggers a finance reaction
 - **WHEN** an exposed child commits a booking whose domain event wakes a declared finance subscription that needs reasoning
 - **THEN** the finance goal is admitted with the booking goal as its cause, starts exposed, and holds only the subscription's declared capabilities
+
+#### Scenario: A third-party goal's effect wakes a privileged subscription
+- **WHEN** a third-party goal records a fact that wakes a subscription whose declared set includes `actuate`
+- **THEN** the caused goal holds no `actuate` capability, because its ceiling is limited by the third-party origin
 
 #### Scenario: Reactions chain past the limit
 - **WHEN** a caused goal's effect would admit a further goal beyond the causal chain limit

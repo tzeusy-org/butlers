@@ -45,7 +45,7 @@ Numbered doctrine rules keep their identifiers; existing citations do not move.
 | `vision.md`, Rule 6 | "Every agent has a governing document that controls its scope." | Governing documents remain; children inherit policy and domain guidance plus a bounded brief, without a new roster identity. |
 | `architecture.md`, Domain Specialization | "Context pollution", "Prompt bloat", "Scope creep", "Personality incoherence" described as inevitable for one general agent. | Retrieval, prompt loading and reasoning allocation are evolving mechanisms; custody and permissions are enforced independently. |
 | `architecture.md`, The Core Loop | `trigger -> classify -> route -> spawn -> act -> log` | `admit -> establish authority -> reason -> act/delegate -> reconcile -> record`. |
-| `security.md`, Session Sandboxing | "A session cannot spawn other sessions." (Configured, never enforced; see RFC 0038 Context.) | Sessions are sandboxed and reach only the broker; only a lead can start a session, and only a depth-1 child. |
+| `security.md`, Session Sandboxing | "A session cannot spawn other sessions." (Configured, never enforced; see RFC 0038 Context.) | Sessions are sandboxed and reach only the broker; only the goal runner starts sessions, and a lead can obtain only depth-1 children. |
 | `security.md`, deployment control keys | One named key. | `GOAL_BROKER_SIGNING_KEY` is the second named key (owner decision 6). |
 | `v1.md`, success criterion 2 | Over 90% classification accuracy. | Goal runtime meets or beats recorded outcomes on replay; zero unauthorized effects in the adversarial suite (owner decision 2). |
 
@@ -120,7 +120,7 @@ the cutover gate in a dev namespace, the single switching release and
 rollback by redeploying the previous release. Nothing runs both paths for the
 owner at once.
 
-Until the switch, RFCs 0001, 0002, 0003, 0008 and 0027 carry a one-line
+Until the switch, RFCs 0001, 0002, 0003, 0008, 0027 and 0037 carry a one-line
 supersession header naming exactly what RFC 0038 replaces; their bodies stay
 as written. `about/lay-and-land/`, `docs/` and `CLAUDE.md` describe the running
 code and are rewritten by the cutover release. Baseline OpenSpec deltas are
@@ -132,8 +132,8 @@ authored after owner signoff of RFC 0038 and applied by the same release.
 |---|---|
 | `about/README.md`, `heart-and-soul/{README,vision,architecture,security,v1}.md` | Describe the goal system only. `about/README.md`, `CLAUDE.md` and the local `doctrine` skill each carry one cutover pointer. |
 | `craft-and-care/{performance-discipline,observability-and-operations}.md` | Whole-goal outcome evaluation and goal-ledger evidence. |
-| RFCs 0001, 0002, 0003, 0008, 0027 | One-line supersession header now; status and body updated by the cutover release. |
-| RFCs 0005, 0006, 0009, 0010, 0011, 0014, 0017, 0020, 0021, 0026, 0028, 0030, 0033, 0037 | Remain authoritative; session attribution maps to invocation lineage. |
+| RFCs 0001, 0002, 0003, 0008, 0027, 0037 | One-line supersession header now; status and body updated by the cutover release. |
+| All other RFCs | Disposition per RFC 0038's table: most remain authoritative with session attribution mapped to invocation lineage; 0021 is amended. |
 | `openspec/specs/*` baseline capabilities | MODIFIED/REMOVED deltas after RFC signoff (tasks 1.4). |
 | `roster/switchboard/MANIFESTO.md`, domain `CLAUDE.md` files | Rewritten by the cutover release: control-plane contract; domain guidance. |
 | `lay-and-land/*`, `docs/*` | Unchanged until the cutover release. |

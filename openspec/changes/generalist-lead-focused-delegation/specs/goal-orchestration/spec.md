@@ -145,7 +145,7 @@ The only model use outside goals SHALL be the engineering executors and
 tool-less model functions that RFC 0038 names, which receive no capabilities.
 
 ID: REQ-goal-orchestration-008
-Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2 and Hard cutover
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2, D18 and Hard cutover
 Scope: proposed-v1
 
 #### Scenario: A domain schedule needs reasoning
