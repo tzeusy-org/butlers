@@ -523,6 +523,96 @@
         "existing ownership reused",
         "no runtime implementation or activation"
       ]
+    },
+    {
+      "page": "direction-graph",
+      "tier": "verify",
+      "verdict": "met",
+      "scope": "Independent read-only review of actual sanitized Beads descriptions, design, acceptance criteria, ownership and dependency edges against the converged allocation. Consumed normative R4 outcome without re-auditing or replanning.",
+      "artifact_commit": "62625c30c980b982265f9f7867d9ce11d2dbbe96",
+      "findings": [],
+      "minors": [],
+      "minimum_correction": null,
+      "clean_checks": [
+        {
+          "check": "Exact source integrity",
+          "result": "met",
+          "evidence": "All 14 release-manifest normative_file_sha256 entries match both current files and git blobs at 62625c30c980b982265f9f7867d9ce11d2dbbe96."
+        },
+        {
+          "check": "Cold-start dispatch packets",
+          "result": "met",
+          "evidence": "graph-review-packet.json A–G design and acceptance_criteria match allocation-plan.md sections A–G exactly. A–F each name outcome/exclusions, baseline and requirements, owned surfaces/trust boundaries, failure/concurrency/replay/rollback behavior, documentation impact, existing executing test seams and expected Tests delta. Description fields provide exact capability/spec section links. G names full coverage, real code/negative-path review, report destination and milestone callback."
+        },
+        {
+          "check": "Mandatory coverage",
+          "result": "met",
+          "evidence": "Independently parsed 25 spec IDs and 25 coverage rows; every mapped ID appears in the actual owning description, with no missing or extra implementation requirement. REQ-qa-investigation-dispatch-006 is explicitly partitioned between A launch/phase lineage and C lifetime budgets."
+        },
+        {
+          "check": "Cohesion and serial ownership",
+          "result": "met",
+          "evidence": "Epic bu-6a9xxw design records one warm A→B→C→D→E→F→G lane. Seven parented children comprise six implementation outcomes and one combined reconciliation/report. Shared dispatch/schema/fixture surfaces serialize. B owns canonical breaker projection; C consumes it. Worker assignment is explicitly deferred to coordinator after release and dependencies, so null current child assignees are consistent with the held planning state."
+        },
+        {
+          "check": "Dependency fidelity and acyclicity",
+          "result": "met",
+          "evidence": "All 28 actual blocks edges equal release-manifest.json blocking_edges exactly. Direct HOLD dependencies cover A–G plus INBOX_SOURCE_ACCEPTANCE; B–F follow the serial chain; G waits all six implementation children. graph-verification.json records cycle-free traversal of 30 reachable current Dolt nodes."
+        },
+        {
+          "check": "External scope deduplication",
+          "result": "met",
+          "evidence": "Actual dependencies preserve A→bu-2jtfw.5/bu-mc01y5.3, B→bu-dss7he.1, C→bu-w24vr3/bu-ratgnb, D→bu-dss7he.13, E→bu-mc01y5.4/.2, F→bu-s11n0s.6. Packet exclusions consume predecessor runtime, publisher, Retry, scanner and attestation work. G explicitly preserves bu-fvw4ap.6 broad readiness ownership."
+        },
+        {
+          "check": "Canonical inbox prerequisite",
+          "result": "met",
+          "evidence": "bu-ratgnb is blocked, assigned tze, not parented as an eighth child, and dependent on bu-gjmx8w. Its packet records bu-s3qvp closure at task 1.3/PR #3735 and unfinished tasks 1.4–1.7. Acceptance requires exact landed authenticated/fenced/idempotent inbox evidence and accountable predecessor owner; missing source keeps it blocked. C explicitly depends on this verification. Neither prerequisite completion nor owner HOLD closure authorizes inbox implementation, replay or activation."
+        },
+        {
+          "check": "One gate species per invariant",
+          "result": "met",
+          "evidence": "A–F select behavior-executing tests at named seams and explicitly prohibit duplicate source-string assertions; no second behavior gate is introduced. G and inbox prerequisite reuse executing receipts (Tests +0 ~0 -0), with missing invariants returned to implementation owners. General lint/knip/hosted checks remain repository hygiene and broad delivery evidence."
+        },
+        {
+          "check": "Owner/source release holds",
+          "result": "met",
+          "evidence": "bu-gjmx8w remains open assigned tze; epic remains assigned tze. HOLD structured AC requires protected-queue landing of source PR #4517 or exact reviewed equivalent, exact owner adoption, graph/normative verification and predecessor refresh. Closing it does not waive external dependencies. Receipt reports zero ready implementation items; each implementation task has its own direct open-HOLD edge."
+        },
+        {
+          "check": "Lint and scoped completion",
+          "result": "met",
+          "evidence": "graph-verification.json reports all 10 items lint clean. G requires landed exact-tree hosted receipts, real code-to-requirement mapping, bounded reconciliation generations, unavailable operational proof reported as incomplete, and milestone synthesis for uncovered mandates; no mandatory deferral can masquerade as completion."
+        }
+      ],
+      "acceptance": {
+        "packet_complete": true,
+        "mandatory_requirements": 25,
+        "implementation_outcomes": 6,
+        "combined_reconciliation_report_children": 1,
+        "serial_lanes": 1,
+        "actual_blocking_edges": 28,
+        "reachable_nodes_reported": 30,
+        "lint_zero_warning_items_reported": 10,
+        "ready_implementation_items": 0,
+        "owner_release_granted": false,
+        "operational_completion_claimed": false,
+        "acceptance_criteria": "met",
+        "blocking_findings": []
+      },
+      "limits": [
+        "Snapshot review, not a new live Dolt/PR/runtime audit. The sanitized actual-record packet is the graph evidence; full reachable-node acyclicity, live readiness and lint are consumed from the supplied mechanical receipt and its inspected producer.",
+        "No live actions, tracker mutations, repository edits, implementation, test execution, owner release or operational verification performed. This verdict establishes planning-graph acceptance only.",
+        "Source/doctrine hashes, predecessor ownership and required landed evidence must be refreshed before owner release/dispatch as the packets require."
+      ],
+      "reviewed_sha256": {
+        "/home/orca/.tmp/qa-direction/graph-review-packet.json": "bb11ab56f67da0f40e08cfab79d7fffa5b5f07c4db32a7ed3664e53cf0881796",
+        "/home/orca/.tmp/qa-direction/graph-verification.json": "3af142c8ee6ae2dc46c182d79f26864ab527a0ad59918fb142d2fcbc99efa2cd",
+        "/home/orca/.butlers-worktrees/docs-qa-month-review/openspec/changes/restore-qa-remediation-loop/release-manifest.json": "8ac4e1f90f4106176e9a9f748236f9ec5f91eb5069f1a25907d92ce6d4e564fd",
+        "/home/orca/.butlers-worktrees/docs-qa-month-review/openspec/changes/restore-qa-remediation-loop/allocation-plan.md": "bd011ebbbe40ac1cd7bfe70969fa2a6c6b15d0d9dbc0ae7fe080df074a318657",
+        "/home/orca/.butlers-worktrees/docs-qa-month-review/openspec/changes/restore-qa-remediation-loop/coverage.md": "093848477b3114b9ded64edf9b58439e44bdf7e78fd77c50b38c86d27f381b80",
+        "/home/orca/.butlers-worktrees/docs-qa-month-review/openspec/changes/restore-qa-remediation-loop/inbox-prerequisite.md": "326b23b448f410e3ff788f9f6f68857f948d824cef1d3c6f973c1b5873e5f768"
+      }
     }
   ]
 }

@@ -65,3 +65,21 @@ Read structured reviewer output with `jq '.audits[] | select(.page=="direction-r
 ## Planning receipts
 
 Phase 1 scope verification accepted the direction. Change-tier R1–R3 found and corrected contract, authority, lifecycle, consumer and ownership conflicts; fresh R4 accepted the full slice with no remaining findings. All 25 requirement IDs are unique and allocated, and every baseline scenario heading is retained. `make check-guards` passed, including 269 strict OpenSpec items. Relative-link check: 33 checked, none missing. Global `spec-trace-check --authoring` still reports 2,597 pre-existing errors and 206 pre-existing warnings; this slice adds zero errors and 25 expected missing-test-citation warnings for proposed work. These are planned contracts, not runtime test evidence.
+
+## Generated held graph
+
+Epic **bu-6a9xxw** is assigned to `tze`. Owner gate **bu-gjmx8w** remains open; closing it is the owner's explicit release after source PR acceptance and the [exact manifest](../../openspec/changes/restore-qa-remediation-loop/release-manifest.json). Every implementation child and the external prerequisite depends on it.
+
+| Key | Bead | Outcome | Priority |
+|---|---|---|---|
+| A | bu-6a9xxw.1 | Restore QA-owned launch capability and durable session lineage | P1 |
+| B | bu-6a9xxw.2 | Bind QA evidence to its invocation and expose truthful outcomes | P1 |
+| C | bu-6a9xxw.3 | Persist incident admission and deferred QA work with finite budgets | P1 |
+| D | bu-6a9xxw.4 | Resume bounded discovery with honest source coverage | P2 |
+| E | bu-6a9xxw.5 | Integrate governed proposals and exact feedback-driven follow-ups | P2 |
+| F | bu-6a9xxw.6 | Verify deployed recovery and report an honest QA outcome and usage funnel | P2 |
+| G | bu-6a9xxw.7 | Reconcile QA remediation delivery and generate epic report (gen-1) | P1 |
+
+External prerequisite **bu-ratgnb** (P1, owner-assigned, blocked) reconciles canonical QA inbox source acceptance; it authorizes no duplicate implementation. C waits for it. All descriptions pin evidence to `62625c30c980b982265f9f7867d9ce11d2dbbe96:docs/redesigns/2026-10-14-qa-remediation-pursuit-data.json`. The seven-child graph is packet-complete and intentionally not runnable.
+
+Final graph verification accepted with no findings: 25 mandatory requirements, 14 exact source hashes, 28 blocking edges, 30 reachable dependency nodes, seven children, all ten new records linted with zero warnings, and zero ready implementation items. A separate source-acceptance blocker preserves the unfinished inbox owner. The planner reports ESCALATE because the scoped spec-overwrite ratchet is under scripts/; hosted CI remains the broad source gate, with no broad local pytest run or runtime-delivery claim. The scoped ratchet adds only 17 reviewed replacement entries (77 exact baseline clauses), preserving all unrelated entries. A fresh main comparison stayed at 3bde6119914e066414451d3df609a8c20e84fa30 with no scoped source drift and a clean merge-tree probe.
