@@ -47,7 +47,9 @@ invocation's grant. Creating or reactivating such a subscription at runtime
 SHALL be an `administer` effect, never granted to a child, and a subscription
 created under exposure SHALL admit every goal it wakes exposed. Deactivating a
 subscription that wakes reasoning through `unsubscribe_from_event` suppresses
-an obligation and SHALL also be an `administer` effect.
+an obligation. Because one tool cannot be classed per call in the catalog,
+`subscribe_to_event` and `unsubscribe_from_event` SHALL be catalogued as
+`administer` outright.
 
 Source: RFC 0038 D2, D4, D5
 Scope: v1-mandatory
