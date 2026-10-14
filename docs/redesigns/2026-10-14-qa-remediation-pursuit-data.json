@@ -613,6 +613,18 @@
         "/home/orca/.butlers-worktrees/docs-qa-month-review/openspec/changes/restore-qa-remediation-loop/coverage.md": "093848477b3114b9ded64edf9b58439e44bdf7e78fd77c50b38c86d27f381b80",
         "/home/orca/.butlers-worktrees/docs-qa-month-review/openspec/changes/restore-qa-remediation-loop/inbox-prerequisite.md": "326b23b448f410e3ff788f9f6f68857f948d824cef1d3c6f973c1b5873e5f768"
       }
+    },
+    {
+      "page": "pr-review-corrections",
+      "source_review_head": "808b6c9fc44a659bd64797d8410b6fafed867e9e",
+      "findings": {
+        "F4517-01": "Owner credential correction acknowledged; resolver/provider/author metadata recheck lacks a retained receipt and is author-reported, currently unverified. No new live query.",
+        "F4517-02": "Retained main funnel preserved. Global distinct counts, attempt-hour total, weekly cadence, model/no-op split, other-schema exclusion and all-authorization attribution are explicitly unretained author observations.",
+        "F4517-03": "Exact successor D2/D4/manifesto and fleet-condition cross-reference requires every eligibility and suppression gate before authoritative admission; prelaunch failures remain dispatch decisions.",
+        "main-drift": "Carry adopted RFC0038 engineering-executor, service-plane relay and verified goal-origin rules into overlapping proposed clauses."
+      },
+      "prior_reviews": "Earlier R1-R4 and graph verdicts apply only to their original source checkpoint; they do not attest these corrections.",
+      "authority": "Proposed owner HOLD remains open. Separate coordinator must refresh Beads source pins and predecessor acceptance before release."
     }
   ]
 }

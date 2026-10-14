@@ -16,11 +16,36 @@ This explicitly supersedes D1's current-file-only/skip-rotation filtering senten
 
 Replace “clears all three checks is novel and eligible” with:
 
-> Clearing the fingerprint fast paths makes a finding a candidate for incident-aware admission. Trusted common occurrence/session/request/condition lineage may join source observations; message similarity cannot. Material evidence/configuration/deployment/severity change can qualify new reasoning, subject to every normal gate and remaining lifetime budget. Cooldown or dismissal expiry, count-only changes and polling time cannot reset an unchanged supported or inconclusive outcome. Source observations remain individually inspectable.
+> Clearing the fingerprint fast paths makes a finding a candidate for incident-aware admission. Trusted common occurrence/session/request/condition or verified goal/invocation lineage may join source observations; message similarity cannot. Material evidence/configuration/deployment/severity change can qualify new reasoning, subject to every normal gate and remaining lifetime budget. Cooldown or dismissal expiry, count-only changes and polling time cannot reset an unchanged supported or inconclusive outcome. Source observations remain individually inspectable.
+
+Replace D2's parenthetical “gate 6, novelty gate via `SELECT … FOR UPDATE`” with “the post-eligibility atomic admission/novelty claim in D4, after active-condition and incident-state checks”. Clearing the triage fast paths never itself authorizes that claim.
 
 Replace fetch-and-clear `dispatch_queued` handling with:
 
 > Pending work is persisted separately from attempt status. A fenced lease claims it without erasing its pending disposition. Acknowledgement and authoritative attempt linkage or explicit final suppression commit together. Lease expiry permits a successor claimant; stale fences cannot acknowledge it. Capacity deferral and crashes never rely on rediscovery beyond the source lookback. Persistence unavailable means no new reasoning launch.
+
+## RFC0015 D4: exact admission order
+
+Replace D4's introductory “authoritative 10-gate sequence” sentence and entire numbered list with this successor. Apply the same sequence to the QA manifesto's **Investigation Dispatch Policy**, replacing its claim-first four-step list:
+
+> After triage's fast checks, deterministic dispatch applies these gates in order:
+>
+> 1. Enforce the no-recursion guard, including QA meta-review routing and verified goal-origin or engineering-executor provenance under RFC0038; never trust caller-asserted provenance.
+> 2. Enforce owner policy and opt-in.
+> 3. Accept triage's canonical fingerprint, not an unvalidated caller hint.
+> 4. Persist the finding and its durable pending disposition before any launch. Preserve the existing best-effort source-session fingerprint projection where applicable; its failure does not replace required durable QA persistence. Unavailable required persistence refuses launch.
+> 5. Enforce severity eligibility (default threshold 2).
+> 6. Enforce cooldown.
+> 7. Enforce the QA-only concurrency cap (default 2, `qa_patrol_id IS NOT NULL`); preserve the shared global semaphore. Capacity deferral remains durable pending work.
+> 8. Enforce the execution circuit breaker.
+> 9. Resolve and pin an eligible model in the `self_healing` tier. Missing eligibility is a prelaunch dispatch decision, not an execution failure.
+> 10. For `infra_state`, match explicit canonical source and fingerprint against active `open` or `aging` conditions. A match records `infra_condition_open` and returns before `create_or_join_attempt`, without creating, joining, deleting or changing a healing attempt, worktree or session.
+> 11. Check material evidence revision, typed prior outcome, durable pending work, remaining incident-generation lifetime budget and publication lineage holds. These checks cannot bypass any earlier protection or turn unchanged evidence/cooldown expiry into new work.
+> 12. Only after all checks pass, atomically revalidate admission state and the checked evidence revision, perform the authoritative novelty claim (`create_or_join_attempt` / row lock), and reserve the launch with durable attempt/session/phase lineage. Concurrent losers join or defer without launching twice. A changed model resolution repeats admission; an uncertain prior launch reconciles its receipt rather than relaunching blindly.
+>
+> Worktree preparation and credential-free QA execution follow successful admission, with the existing finite phase timeout and smaller remaining lifetime budget. Rejections before the first investigation session launches persist an explicit dispatch decision and `qa_findings.dedup_reason`, never an execution failure or breaker failure event. No pre-claim rejection manufactures an investigation attempt; rejected or deferred pending work receives its authoritative disposition through fenced acknowledgement. Existing no-user-delivery, restricted publisher and human merge boundaries remain unchanged.
+
+Also replace RFC0015's fleet-condition appendix reference “dispatch Gate 5.5” with “the pre-claim active-condition suppression gate in D4”. Preserve its feature flag, episode lineage and legacy-condition carry-forward behavior; this is a cross-reference repair, not a new suppression policy. C applies all D2/D4/appendix/manifesto ordering replacements together before or with admission implementation.
 
 ## RFC0015 D4/D5: launch, notes and outcome axes
 
@@ -55,4 +80,4 @@ Apply the corresponding clauses above to **Responsibilities** (Triage, Investiga
 
 ## Application and overlapping-change order
 
-Owner adoption must identify this exact payload plus the existing active changes. Apply documentary amendments before or alongside each affected behavior, while the implementation gate remains held until source acceptance. For archive, first synchronize the durable-dashboard, control-plane and restricted-publisher owners, then rebuild this changeset against their resulting baseline, diffing every retained scenario and authorization clause. Never archive a stale whole-requirement block over a newer parent. A material predecessor contract change returns here for reconciliation and fresh owner adoption; it does not authorize a worker to choose a new design.
+Owner adoption must identify this exact payload plus the existing active changes. Apply documentary amendments before or alongside each affected behavior, while the implementation gate remains held until source acceptance. For archive, first synchronize the durable-dashboard, control-plane, restricted-publisher and `generalist-lead-focused-delegation` owners, then rebuild this changeset against their resulting baseline, diffing every retained scenario and authorization clause. RFC0038 D18 retains QA as an engineering executor with shell/worktree and empty MCP, without situational context; this proposal does not turn it into a lead/child session. At generalist cutover, reactive reports use only the deterministic Switchboard service-plane relay, not the deleted generic `route` tool or a session listener, and start no goal. Discovery consumes the sanctioned goal-invocation/executor-session view with its existing exclusions; trusted verified goal origin drives recursion checks for invocation failures. Preserve those adopted clauses when composing discovery and triage changes. This proposal neither implements nor gates on the entire generalist runtime rollout. Never archive a stale whole-requirement block over a newer parent. A material predecessor contract change returns here for reconciliation and fresh owner adoption; it does not authorize a worker to choose a new design.

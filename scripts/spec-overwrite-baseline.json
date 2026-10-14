@@ -4537,6 +4537,12 @@
       "scenario": "Patrol crash recovery"
     },
     {
+      "digest": "4da93a7fc8c2",
+      "excerpt": "- **THEN** the finding is relayed to the QA staffer via Switchboard's `route()` tool calling the QA staffer's `report...",
+      "kind": "clause",
+      "scenario": "Reactive findings between patrols"
+    },
+    {
       "digest": "96ccbe73549f",
       "excerpt": "- **AND** the finding is buffered in the `butler_reports` source's in-memory queue",
       "kind": "clause",

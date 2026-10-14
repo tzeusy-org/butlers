@@ -6,7 +6,7 @@
 
 ## Evidence and direction
 
-The [accepted monthly packet](../reviews/2026-10-14-qa-month-packet.md) is the evidence owner. Its source baseline is `b747a55a530364d987fb37457c343193e9362fe7`; a scoped comparison with `origin/main` at `3bde6119914e066414451d3df609a8c20e84fa30` found no intervening change to QA source/specs, governing doctrine or RFC0015. The month had 100 attempts, 95 linked sessions attributed to Travel, 38 no-op outcomes and no QA PR. The corrected identity is `tzeusy-orca`, with read/push access to `tzeusy-org/butlers`; operational publication and isolation remain separate proof obligations.
+The [accepted monthly packet](../reviews/2026-10-14-qa-month-packet.md) is the evidence owner. Its source baseline is `b747a55a530364d987fb37457c343193e9362fe7`; a scoped comparison with `origin/main` at `3bde6119914e066414451d3df609a8c20e84fa30` found no intervening change to QA source/specs, governing doctrine or RFC0015. The month had 100 attempts, 95 linked sessions attributed to Travel, 38 no-op outcomes and no QA PR. The owner reported correcting identity to `tzeusy-orca`; the author-reported read/push recheck was not retained and is currently unverified. The configured repository is `tzeusy-org/butlers`; effective identity, publication and isolation remain proof obligations.
 
 **Work next:** make investigations trustworthy, then suppress needless reasoning through durable state and meaningful evidence changes, then measure observed recovery. Stop calling a no-op unfixable, inherited notes a diagnosis, a merge a repair, missing costs zero, and rediscovery a durable queue. Cheap deterministic patrol remains a safety net. Better future models cannot repair a stale artifact or a missing claim transaction by themselves.
 
@@ -20,7 +20,7 @@ The [changeset](../../openspec/changes/restore-qa-remediation-loop/proposal.md) 
 | Runtime ownership and lineage | Broken | Not comparable | All 95 linked investigation sessions owned by Travel; phase times reflect bookkeeping |
 | Investigation evidence and outcomes | Broken | Not comparable | 38 no-op cases and inherited notes |
 | Durable admission and feedback | Weak | Not comparable | Queue-cap loss path, state-insensitive retries, broken feedback projection |
-| Publication capability | Unverified after credential correction | Identity correction observed; end-to-end outcome unverified | Read-only GitHub identity/repo probe only |
+| Publication capability | Unverified after credential correction | Owner correction reported; effective identity and outcome unverified | Recheck receipt unavailable |
 | Recovery and cost assurance | Weak | Not comparable | No month PRs; cost null on all linked sessions; merge not deployment |
 
 No code shipped in this run, so no tier is claimed improved by the proposed work.
@@ -47,7 +47,7 @@ One serial warm lane A→B→C→D→E→F→G, plus one separately held externa
 | `bu-w24vr3` | C waits evidence-write authority; no claim to repair all public grants |
 | `bu-dss7he.13`, PR #4474 | D consumes log-backend owner; coverage must survive replacement |
 | `bu-s11n0s.6`, PR #4398 | F consumes served-model/usage evidence, preserves unknowns |
-| `bu-nh37dt`, `bu-vc90le` | Identity read proof recorded; operational capability/confinement remains theirs |
+| `bu-nh37dt`, `bu-vc90le` | Identity recheck author-reported without retained receipt; effective identity/capability/confinement remains theirs |
 | `bu-fvw4ap.6` | Broader readiness reconciliation retained; G is epic-local |
 | `bu-74pu9h` (closed) | No re-file of model-fit/auth classification/proposal wording fixes |
 | Durable dashboard terminal-action recovery / closed `bu-s3qvp` | Dedicated source-acceptance prerequisite blocks C: closed parent proves only task 1.3, not the unfinished QA inbox. Reconcile original ownership; no duplicate inbox |
@@ -83,3 +83,10 @@ Epic **bu-6a9xxw** is assigned to `tze`. Owner gate **bu-gjmx8w** remains open; 
 External prerequisite **bu-ratgnb** (P1, owner-assigned, blocked) reconciles canonical QA inbox source acceptance; it authorizes no duplicate implementation. C waits for it. All descriptions pin evidence to `62625c30c980b982265f9f7867d9ce11d2dbbe96:docs/redesigns/2026-10-14-qa-remediation-pursuit-data.json`. The seven-child graph is packet-complete and intentionally not runnable.
 
 Final graph verification accepted with no findings: 25 mandatory requirements, 14 exact source hashes, 28 blocking edges, 30 reachable dependency nodes, seven children, all ten new records linted with zero warnings, and zero ready implementation items. A separate source-acceptance blocker preserves the unfinished inbox owner. The planner reports ESCALATE because the scoped spec-overwrite ratchet is under scripts/; hosted CI remains the broad source gate, with no broad local pytest run or runtime-delivery claim. The scoped ratchet adds only 17 reviewed replacement entries (77 exact baseline clauses), preserving all unrelated entries. A fresh main comparison stayed at 3bde6119914e066414451d3df609a8c20e84fa30 with no scoped source drift and a clean merge-tree probe.
+
+
+PR-review reconciliation against main `15705379bfd0c3879881de9c2466cb7b439b4bce`: PR #4509 has since landed the adopted RFC0038/generalist direction. The earlier no-drift comparison is historical. QA retains its separate engineering-executor boundary (D18); the proposed relay and provenance clauses now carry the adopted service-plane and verified goal-origin rules. No generalist runtime implementation or owner adoption of this QA proposal is claimed.
+
+## PR-review correction provenance
+
+The original R4 and graph receipts above attest checkpoint `62625c30c980b982265f9f7867d9ce11d2dbbe96`, not the subsequent corrections. F4517-01/F4517-02 now qualify unsupported observations rather than reconstructing receipts. F4517-03 adds the missing higher-pillar admission order; current-main reconciliation carries RFC0038 service-plane relay and provenance. The release manifest identifies the corrected source checkpoint and hashes. Existing Beads evidence pins remain historical until the owning coordinator refreshes their packets against this corrected source before exact owner adoption. No graph edge, assignment, lifecycle status or owner HOLD is changed by this PR correction.

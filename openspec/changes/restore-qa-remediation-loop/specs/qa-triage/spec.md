@@ -37,9 +37,7 @@ Scope: v1-mandatory
   `event_summary` (str), `call_site` (str), `occurrence_count` (int),
   `first_seen` (timestamptz), `last_seen` (timestamptz), `dedup_reason`
   (nullable text), `healing_attempt_id` (nullable UUID FK preserving the referenced legacy identity),
-  `source_session_trigger_source` (nullable text — the `trigger_source` from
-  the session or log entry that produced the error; drives QA self-recursion
-  suppression), a pending-work reference when deferred; the new fenced pending-work record is the sole queue authority, replacing dispatch_queued and retiring get_dispatch_queued_findings(),
+  `source_session_trigger_source` (nullable text — verified goal origin for goal-invocation failures, or the engineering-executor session/log `trigger_source` otherwise; drives QA self-recursion suppression under RFC0038, never caller-asserted provenance), a pending-work reference when deferred; the new fenced pending-work record is the sole queue authority, replacing dispatch_queued and retiring get_dispatch_queued_findings(),
   `created_at` (timestamptz)
 - **AND** when dispatch suppresses an otherwise eligible `infra_state`
   finding for an active condition, it updates the existing row with
@@ -102,7 +100,7 @@ Scope: v1-mandatory
 ## ADDED Requirements
 
 ### Requirement: Incident Correlation and Reasoning Admission
-QA SHALL retain source observations independently while correlating them into incident generations by trustworthy shared occurrence/session/request/condition lineage, and SHALL atomically admit reasoning on material state changes within finite persisted budgets.
+QA SHALL retain source observations independently while correlating them into incident generations by trustworthy shared occurrence/session/request/condition or verified goal/invocation lineage, and SHALL atomically admit reasoning on material state changes within finite persisted budgets.
 
 ID: REQ-qa-triage-003
 Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md

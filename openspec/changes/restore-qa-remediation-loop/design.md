@@ -2,7 +2,7 @@
 
 Proposed direction, awaiting exact owner adoption/release. Evidence is the accepted [monthly packet](../../../docs/reviews/2026-10-14-qa-month-packet.md), reviewed source `b747a55a530364d987fb37457c343193e9362fe7`, deployed image `c966a1cdde9e`. A scoped diff through origin/main `3bde6119914e066414451d3df609a8c20e84fa30` found no changes to the governing QA source/specs, doctrine or RFC0015. Refresh that check before release. This changes required behavior; it does not assert that the repair has shipped.
 
-The month produced 100 attempts, 95 linked sessions all attributed to travel, 38 no-op outcomes and 15 publication-auth failures; no QA PR was opened in the window. Discovery worked substantially better than investigation. Identity now resolves to `tzeusy-orca` with push access to `tzeusy-org/butlers`; that read-only evidence does not prove publication confinement or operational recovery.
+The month produced 100 attempts, 95 linked sessions attributed to travel, 38 no-op outcomes and 15 publication failures; no QA PR was opened in the window. Discovery worked substantially better than investigation. The owner reported correcting identity to `tzeusy-orca`; the author-reported resolver/grant recheck was not retained and is currently unverified. Configured repository `tzeusy-org/butlers` does not prove publication capability, confinement or operational recovery.
 
 ## Goals / Non-Goals
 
@@ -81,3 +81,6 @@ Strong evidence can reduce apparent success rates; that is desired truth, not a 
 ## Open Questions
 
 No implementation-shaping question is delegated silently. Proposed defaults and dependency order above are explicit decisions for the owner-held adoption gate. Runtime backend/API details must follow surviving predecessor contracts; a predecessor that materially changes an invariant returns to the spec gate rather than worker invention.
+
+
+PR-review reconciliation against main `15705379bfd0c3879881de9c2466cb7b439b4bce`: PR #4509 has since landed the adopted RFC0038/generalist direction. The earlier no-drift comparison is historical. QA retains its separate engineering-executor boundary (D18); the proposed relay and provenance clauses now carry the adopted service-plane and verified goal-origin rules. No generalist runtime implementation or owner adoption of this QA proposal is claimed.

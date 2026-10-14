@@ -2,7 +2,7 @@
 
 Proposed exact replacements, held for owner adoption with this changeset and contract-amendments.md. Scenario headings remain for OpenSpec lineage, including obsolete Retry/current-file headings; the successor bodies intentionally supersede prior behavior. No implementation or baseline capability spec is changed here.
 
-Rationale: bound evidence replaces inherited notes; lease/ack replaces fetch-and-clear; incident admission qualifies novelty; terminal timestamps preserve retention; truthful outcome/deployment/recovery replaces merge-as-repair and false escalation; removed Retry consumes its existing owner; source progress replaces lookback-only coverage; actor attribution follows the existing server-derived policy; legacy UUID identity is clarified. All unrelated clauses are carried. Scoped ratchet entries record proposed loss, not release authority.
+Rationale: bound evidence replaces inherited notes; lease/ack replaces fetch-and-clear; incident admission qualifies novelty; terminal timestamps preserve retention; truthful outcome/deployment/recovery replaces merge-as-repair and false escalation; removed Retry consumes its existing owner; source progress replaces lookback-only coverage; actor attribution follows the existing server-derived policy; legacy UUID identity is clarified; the generic route clause yields to the adopted RFC0038 service-plane relay. All unrelated clauses are carried. Scoped ratchet entries record proposed loss, not release authority.
 
 ## QA Summary KPI Extension
 
@@ -129,5 +129,6 @@ Rationale: bound evidence replaces inherited notes; lease/ack replaces fetch-and
 
 - scenario "Patrol cycle completes with no findings": - **WHEN** all discovery sources return empty finding sets
 - scenario "Patrol crash recovery": - **AND** findings that were novel but not yet dispatched when the crash occurred are NOT durably queued; they will b...
+- scenario "Reactive findings between patrols": - **THEN** the finding is relayed to the QA staffer via Switchboard's `route()` tool calling the QA staffer's `report...
 - scenario "Reactive findings between patrols": - **AND** the finding is buffered in the `butler_reports` source's in-memory queue
 - scenario "Reactive findings between patrols": - **AND** that mini-patrol is a full patrol across every enabled source, recorded with `origin='scheduled'`, and coun...

@@ -41,7 +41,8 @@ Scope: v1-mandatory
 
 #### Scenario: Reactive findings between patrols
 - **WHEN** a butler calls `report_error` between patrol cycles
-- **THEN** the finding is relayed to the QA staffer via Switchboard's `route()` tool calling the QA staffer's `report_finding` tool — this is direct butler-to-staffer tool routing (bypasses user-message classification)
+- **THEN** the finding is relayed to the QA staffer through the Switchboard service-plane relay calling the QA staffer's `report_finding` tool — a deterministic butler-to-staffer forward that starts no goal
+- **AND** at the RFC0038 generalist cutover this relay is not LLM-presentable or on the session listener and never uses the deleted generic `route` tool
 - **AND** ordinary relay findings retain their existing volatile buffer contract until persisted; durable dashboard reports continue through their separately specified inbox
 - **AND** it is picked up on the next patrol tick
 - **AND** if the finding's severity is 0 (critical), an immediate mini-patrol is triggered without waiting for the next timer tick
