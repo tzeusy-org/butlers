@@ -596,7 +596,11 @@ def _build_dashboard_lane_prompt(
         "question — it must never be routed there.\n"
         "  - If the question is about the butler ecosystem/infrastructure "
         "itself (not one butler's domain data), call `answer_question` with "
-        "scope='system' and `question` set (omit `target`).\n"
+        "scope='system', `question`, and `system_tool` naming an existing Concierge "
+        "dashboard_read tool with its `system_args` (omit `target`). After the read, "
+        "write your final answer solely from its data; do not invent missing values, "
+        "hide unpriced usage, or treat estimates as actual charges. If the tool "
+        "declines, do not add an answer.\n"
         "  - If you cannot identify an owning butler or scope at all, do NOT "
         "guess a target and do NOT call `route_to_butler`. Call "
         "`cannot_answer` with `question_summary`, `scope_checked` (what you "
@@ -708,12 +712,9 @@ def _extract_cannot_answer_calls(
 ) -> tuple[bool, bool, str | None]:
     """Parse ``cannot_answer`` tool calls out of a spawn result's tool_calls.
 
-    Also matches an ``answer_question(scope="system")`` call: that scope
-    always falls back to the same dead-letter/honest-decline path today (no
-    Concierge available — bu-0ynlk.3), returning the exact
-    ``{"status": "ok"/"error", "dead_letter_id": ...}`` shape ``cannot_answer``
-    returns — so callers only need this one function to detect "this turn was
-    terminally declined, not routed".
+    Also matches a failed ``answer_question(scope="system")`` read that used
+    the same dead-letter/honest-decline path. Successful system reads are
+    handled separately and must never be mistaken for a terminal decline.
 
     Returns
     -------
@@ -758,6 +759,9 @@ def _extract_cannot_answer_calls(
         if not isinstance(result, dict):
             result = {}
 
+        if is_answer_question and result.get("answered") is True:
+            continue
+
         if result.get("status") == "refused":
             # A prior terminal tool owns the turn. This declined call did not
             # dead-letter anything and must not override the first lane's
@@ -778,8 +782,8 @@ def _extract_answer_question_calls(
     failed) lists — mirrors ``_extract_routed_butlers`` so a successful
     dispatch flows through the same routing-verdict/telemetry bookkeeping as
     ``route_to_butler``. A scope="system" call is deliberately excluded here
-    — that scope always falls back to a terminal decline today, handled by
-    :func:`_extract_cannot_answer_calls`, not a route.
+    — successful system reads are published directly by the question lane;
+    unavailable reads use :func:`_extract_cannot_answer_calls`, never a route.
     """
     routed: list[str] = []
     acked: list[str] = []
@@ -3802,6 +3806,51 @@ class MessagePipeline:
                                 routed_targets=[],
                                 acked_targets=["qa"] if bug_succeeded else [],
                                 failed_targets=[] if bug_succeeded else ["qa"],
+                            )
+
+                        from butlers.core_tools._dashboard_system_answer import (
+                            extract_system_answer,
+                            persist_system_answer,
+                        )
+
+                        system_answer = extract_system_answer(tool_calls)
+                        if system_answer is not None:
+                            outcome = await persist_system_answer(
+                                self._pool,
+                                dashboard_context=dashboard_context,
+                                message_id=dashboard_turn_id,
+                                request_id=UUID(str(request_id)),
+                                answer=cc_output,
+                                evidence=system_answer,
+                            )
+                            succeeded = outcome == "completed"
+                            if message_inbox_id:
+                                completed_at = datetime.now(UTC)
+                                await self._update_message_inbox_lifecycle(
+                                    message_inbox_id=message_inbox_id,
+                                    decomposition_output={
+                                        "request_id": request_id,
+                                        "lane": "system_answer",
+                                        "tool": system_answer["tool"],
+                                    },
+                                    dispatch_outcomes={
+                                        "request_id": request_id,
+                                        "acked": [],
+                                        "failed": [],
+                                    },
+                                    response_summary="system_answer:" + outcome,
+                                    lifecycle_state="parsed" if succeeded else "errored",
+                                    classified_at=completed_at,
+                                    classification_duration_ms=spawn_latency_ms,
+                                    final_state_at=completed_at,
+                                )
+                            return RoutingResult(
+                                target_butler="concierge",
+                                route_result={"lane": "system_answer", "status": outcome},
+                                routing_error=None if succeeded else "system_answer:" + outcome,
+                                routed_targets=[],
+                                acked_targets=[],
+                                failed_targets=[],
                             )
 
                         # Dashboard Lane D (decline path): cannot_answer, or
