@@ -34,7 +34,7 @@ Scope: v1-mandatory
 
 ### Requirement: Review Delivery via notify()
 
-Review prompts SHALL be delivered to the owner via the `notify()` capability, targeting the owner's preferred channel. The education butler does not hold direct Telegram or email credentials — every outbound message goes through Switchboard `deliver()` to Messenger's deterministic delivery endpoint. A review goal SHALL NOT wait inside a session for the owner's answer: the answer SHALL arrive as a new owner-origin goal, and failures SHALL be recorded in the goal ledger.
+Review prompts SHALL be delivered to the owner via the `notify()` capability, targeting the owner's preferred channel. The education butler does not hold direct Telegram or email credentials — every outbound message goes through Switchboard `deliver()` to Messenger's deterministic delivery endpoint. A review goal SHALL NOT wait inside a session for the owner's answer: the answer SHALL be admitted as an owner-origin goal that records the review goal as its cause, so the answer is graded against that review (the reply-join mechanism is settled during the dark build, RFC 0038 "Details settled during the dark build"), and failures SHALL be recorded in the goal ledger.
 
 Source: RFC 0038 D2, D5, D7, D17
 Scope: v1-mandatory

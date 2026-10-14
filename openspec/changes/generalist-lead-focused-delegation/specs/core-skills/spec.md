@@ -54,9 +54,9 @@ Scope: v1-mandatory
 ### Requirement: AGENTS.md Read/Write Access
 
 The implementation SHALL provide the behavior described by this requirement.
-`read_agents_md(config_dir)` reads the AGENTS.md file, returning empty string if absent. `write_agents_md(config_dir, content)` writes/overwrites. `append_agents_md(config_dir, content)` appends to existing content. These SHALL be used only by developer and deployment tooling: a goal invocation has no filesystem access and no capability that reaches these functions, so runtime instances do not write agent notes.
+`read_agents_md(config_dir)` reads the AGENTS.md file, returning empty string if absent. `write_agents_md(config_dir, content)` writes/overwrites. `append_agents_md(config_dir, content)` appends to existing content. These SHALL be used only by developer and deployment tooling: a goal invocation has no filesystem access and no capability that reaches these functions, so runtime instances do not write agent notes to AGENTS.md. Runtime notes reach domain guidance only through the domain's `owner_authority` notes `record` capability (`REQ-core-skills-003`, RFC 0038 D2), which exposed invocations cannot write.
 
-Source: RFC 0038 D3, D4
+Source: RFC 0038 D2, D3, D4
 Scope: v1-mandatory
 
 #### Scenario: Read existing AGENTS.md
@@ -109,3 +109,19 @@ Scope: v1-mandatory
 - **WHEN** an invocation loads guidance that describes a capability outside its grant
 - **THEN** the invocation's grant is unchanged
 - **AND** a call to that capability is refused
+
+### Requirement: Domain Guidance Notes Capability
+
+Each domain SHALL offer a `record` capability that appends a note to the domain's guidance-notes store, the successor of AGENTS.md "Notes to self". The capability SHALL be flagged `owner_authority`, so the broker refuses it to an exposed invocation, and each note SHALL carry the writing invocation's verified goal lineage. Notes SHALL be searchable through `guidance.search` and returned by `guidance.load` with their stamps. The cutover SHALL move each domain's existing "Notes to self" content into its store.
+
+ID: REQ-core-skills-003
+Source: RFC 0038 D2, D4 and D6
+Scope: v1-mandatory
+
+#### Scenario: An unexposed goal records a note
+- **WHEN** an unexposed owner goal calls a domain's notes capability under its grant
+- **THEN** the note is stored with the invocation's goal lineage and later appears in that domain's guidance
+
+#### Scenario: An exposed invocation cannot steer later sessions
+- **WHEN** an exposed invocation calls a domain's notes capability
+- **THEN** the broker refuses the call and nothing is stored

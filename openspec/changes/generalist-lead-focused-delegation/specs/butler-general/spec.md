@@ -27,14 +27,14 @@ Scope: v1-mandatory
 - **THEN** it registers: `collection_create`, `collection_list`, `collection_delete`, `item_create`, `item_get`, `item_update`, `item_delete`, `item_search`, `collection_export`, and calendar tools
 
 ### Requirement: General Butler Schedules
-The general butler SHALL run memory maintenance, briefing aggregation, and a daily end-of-day preparation obligation that incorporates cross-butler data. When `eod-tomorrow-prep` is due, the general daemon SHALL submit an obligation admission whose grant is no larger than the capability set declared for that obligation in git, and the obligation's governing brief SHALL replace the prompt previously sent to a General session. Memory and briefing-aggregation jobs SHALL remain deterministic jobs.
+The general butler SHALL run memory maintenance, briefing aggregation, and a daily end-of-day preparation obligation that incorporates cross-butler data. When `eod-tomorrow-prep` is due, the general daemon SHALL submit an obligation admission whose grant is no larger than the capability set declared for that obligation in git, and the obligation's governing brief SHALL replace the prompt previously sent to a General session. Memory episode cleanup and briefing aggregation SHALL remain deterministic jobs. The `memory_consolidation` job SHALL only submit an obligation admission for the memory-owning domain's consolidation goal with its declared capability set, because consolidation reasons with a model (RFC 0038 D2 and D18).
 
-Source: RFC 0038 D2 and D5
+Source: RFC 0038 D2, D5 and D18
 Scope: v1-mandatory
 
 #### Scenario: Scheduled task inventory
 - **WHEN** the general butler daemon is running
-- **THEN** it executes: `memory_consolidation` (0 */6 * * *, job), `memory_episode_cleanup` (0 4 * * *, job), `collect_briefing_contributions` (58 6 * * *, job: 14:58 SGT; aggregates specialist briefing contributions into combined payload), and `eod-tomorrow-prep` (0 15 * * *, obligation: 23:00 SGT end-of-day briefing reviewing tomorrow's calendar AND incorporating cross-butler specialist summaries, sent via Telegram)
+- **THEN** it executes: `memory_consolidation` (0 */6 * * *, job that submits the consolidation obligation admission), `memory_episode_cleanup` (0 4 * * *, job), `collect_briefing_contributions` (58 6 * * *, job: 14:58 SGT; aggregates specialist briefing contributions into combined payload), and `eod-tomorrow-prep` (0 15 * * *, obligation: 23:00 SGT end-of-day briefing reviewing tomorrow's calendar AND incorporating cross-butler specialist summaries, sent via Telegram)
 
 #### Scenario: EOD briefing reads combined contributions
 - **WHEN** the `eod-tomorrow-prep` obligation goal runs

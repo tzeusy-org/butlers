@@ -30,6 +30,11 @@ Scope: v1-mandatory
 - **THEN** its catalog includes: `measurement_log`, `measurement_history`, `measurement_latest`, `medication_add`, `medication_list`, `medication_log_dose`, `medication_history`, `condition_add`, `condition_list`, `condition_update`, `symptom_log`, `symptom_history`, `symptom_search`, `meal_log`, `meal_history`, `nutrition_summary`, `research_save`, `research_search`, `health_summary`, `trend_report`, and calendar tools
 - **AND** it SHALL additionally include: `health_sleep_latest`, `health_sleep_history`, `health_hr_history`, `health_hrv_history`, `health_spo2_history`, `health_breathing_rate_history`, `health_activity_summary`, `health_vo2_max_latest`
 
+#### Scenario: Medication snapshot service tool for Travel
+- **WHEN** the health butler registers its tools
+- **THEN** it also registers a non-LLM-presentable medication snapshot service tool returning the same `health.medication-travel.v1` envelope as `medication_travel_snapshot`, reachable only through the Switchboard service-plane relay from the authenticated Travel daemon
+- **AND** the service tool is never listed in the broker catalog or granted to a goal invocation
+
 ### Requirement: Wellness Envelope Ingestion Path
 
 The Health butler SHALL receive accepted `wellness/google_health` envelopes through its deterministic `wellness_ingest_envelope` service-plane ingest, which is not LLM-presentable and is not on the session listener. Delivery SHALL NOT use `route.execute`, model classification, or a reasoning session. The butler's module code SHALL translate each envelope into predicate-keyed memory facts.

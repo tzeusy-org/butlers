@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Tool Metadata for Approvals
-Every module SHALL declare, for each LLM-presentable tool it registers, the authorization metadata that `capability-authorization` requires: owner domain, effect class, output trust, output sensitivity, resource parameters, safety arguments, recipient arguments for `communicate` tools, approval policy, idempotency mode and owner-authority flag. Modules MAY override `tool_metadata()` to return `dict[str, ToolMeta]` mapping tool names to `ToolMeta(arg_sensitivities)` instances; the returned mapping SHALL declare which tool arguments are safety-critical for the approvals subsystem, and those arguments SHALL be the tool's declared safety arguments. A tool without complete metadata SHALL NOT be grantable to any goal invocation.
+Every module SHALL declare, for each LLM-presentable tool it registers, the authorization metadata that `capability-authorization` requires: owner domain, effect class, output trust, output sensitivity, resource parameters, safety arguments, party arguments (or an undeterminable declaration) for every tool whose call can deliver content to or invite a party, whatever its effect class, approval policy, idempotency mode and owner-authority flag. Modules MAY override `tool_metadata()` to return `dict[str, ToolMeta]` mapping tool names to `ToolMeta(arg_sensitivities)` instances; the returned mapping SHALL declare which tool arguments are safety-critical for the approvals subsystem, and those arguments SHALL be the tool's declared safety arguments. A tool without complete metadata SHALL NOT be grantable to any goal invocation.
 
 Source: RFC 0038 D4; RFC 0021; RFC 0027
 Scope: v1-mandatory

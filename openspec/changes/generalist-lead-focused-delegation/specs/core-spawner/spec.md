@@ -12,10 +12,10 @@ Scope: v1-mandatory
 
 #### Scenario: Claude Code adapter invocation via subprocess
 - **WHEN** the selected runtime type is `claude`
-- **THEN** the ClaudeCodeAdapter locates the `claude` binary on PATH via `shutil.which("claude")` and invokes it as an async subprocess with the flags `-p`, `--output-format stream-json`, `--bare`, `--no-session-persistence` and `--strict-mcp-config`
+- **THEN** the ClaudeCodeAdapter locates the `claude` binary on PATH via `shutil.which("claude")` and invokes it as an async subprocess with the flags `-p`, `--output-format stream-json`, `--bare`, `--no-session-persistence` and `--strict-mcp-config`, adding `--permission-mode bypassPermissions` only for an engineering executor and never for a goal invocation
 - **AND** it passes the system prompt via `--system-prompt <prompt>`, the MCP config file via `--mcp-config <path>` (the file written by `build_config_file()`), the model via `--model <model>` when specified, additional CLI arguments from `runtime_args` after the fixed flags, and the user prompt as the final positional argument
 - **AND** it parses `stream-json` JSON-line events from stdout for result text, tool calls, and token usage
-- **AND** it captures stderr to a per-invocation log and populates `last_process_info` with subprocess metadata (pid, exit_code, command, stderr)
+- **AND** it captures stderr to a per-invocation log for a goal invocation and, for an engineering executor, to the per-butler log file at `{log_root}/butlers/{butler_name}_cc_stderr.log`, and populates `last_process_info` with subprocess metadata (pid, exit_code, command, stderr)
 
 #### Scenario: Goal invocation disables runtime built-in tools
 - **WHEN** an adapter launches a goal invocation
@@ -243,11 +243,11 @@ Scope: v1-mandatory
 - **AND** the invocation can reach Messenger's capability only through the broker
 
 ### Requirement: System Prompt Composition
-For an engineering executor the Spawner launches, the system prompt is read from `CLAUDE.md` in the launching butler's config directory. Include directives (`<!-- @include path/to/file.md -->`) are resolved relative to the roster directory. Shared prompt snippets (`BUTLER_SKILLS.md`, `MCP_LOGGING.md`) are appended if present. When active situational context signals exist, the spawner SHALL call `get_active_context()` and `format_context_preamble()` to prepend a context summary to the system prompt. The context preamble SHALL appear after the identity preamble and before the memory context block. Context preamble injection is fail-open: if the context query fails, the spawner logs the error and proceeds without context.
+For an engineering executor the Spawner launches, the system prompt is read from `CLAUDE.md` in the launching butler's config directory. Include directives (`<!-- @include path/to/file.md -->`) are resolved relative to the roster directory. Shared prompt snippets (`BUTLER_SKILLS.md`, `MCP_LOGGING.md`) are appended if present. The Spawner SHALL NOT inject situational context into an engineering executor's prompt (RFC 0038 D18): it no longer calls `get_active_context()` or `format_context_preamble()` at launch, and an executor sees only the anonymized payloads RFC 0015 allows.
 
 A goal invocation's system prompt SHALL NOT be read from any butler's `CLAUDE.md`. The goal runner SHALL compose a lead's system prompt from the versioned lead policy (`roster/switchboard/goal-policy/LEAD.md`), the owner profile, the goal input with third-party spans fenced as data, an index of domains and their guidance, and, on recovery or escalation, the summary of the goal record, effect ledger and returned child results; it SHALL compose a child's from its brief. Situational context, memory and domain guidance SHALL reach a goal invocation only through `context.search`, domain read capabilities and `guidance.load`, which return stamped results.
 
-Source: RFC 0038 D2, D6, D9, D14 and D15; RFC 0009
+Source: RFC 0038 D2, D6, D9, D14, D15 and D18; RFC 0009
 Scope: v1-mandatory
 
 #### Scenario: System prompt with includes
@@ -255,18 +255,17 @@ Scope: v1-mandatory
 - **THEN** the directive is replaced with the contents of `roster/shared/NOTIFY.md`
 
 #### Scenario: Context preamble injected when signals active
-- **WHEN** the spawner prepares an invocation and `get_active_context()` returns active signals
-- **THEN** the context preamble is prepended to the system prompt after the identity preamble
-- **AND** the preamble format follows `format_context_preamble()` output
+- **WHEN** the Spawner prepares an engineering executor while situational context signals are active
+- **THEN** no context preamble is prepended to the executor's system prompt
+- **AND** the executor's prompt carries only the anonymized payload RFC 0015 allows
 
 #### Scenario: No context preamble when no signals
-- **WHEN** the spawner prepares an invocation and `get_active_context()` returns an empty list
+- **WHEN** the Spawner prepares an engineering executor and no situational context signal is active
 - **THEN** no context preamble is added to the system prompt
 
 #### Scenario: Context query failure does not block invocation
-- **WHEN** the `get_active_context()` call raises an exception
-- **THEN** the failure is logged at WARNING level
-- **AND** the invocation proceeds with the system prompt without context preamble
+- **WHEN** the situational-context store is unavailable while the Spawner prepares an engineering executor
+- **THEN** the launch is unaffected, because the Spawner makes no context query
 
 #### Scenario: Lead prompt comes from the lead policy
 - **WHEN** the goal runner launches a lead for an owner goal

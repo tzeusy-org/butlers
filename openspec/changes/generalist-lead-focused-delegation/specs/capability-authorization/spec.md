@@ -65,7 +65,11 @@ Goal admission SHALL derive the goal's authority ceiling deterministically from
 server-held origin context: owner, obligation, third party or staffer. Message
 text, model output and sender-supplied envelope fields SHALL NOT change the
 origin or the ceiling. A message SHALL be owner-origin only when owner-channel
-authorization verifies its channel and sender. A third-party goal's ceiling
+authorization verifies its channel and sender. Device and telemetry feeds that
+carry no message from a person SHALL wake reasoning only through a declared
+subscription and SHALL be admitted with origin `obligation` under that
+subscription's capability set; feed fields a person other than the owner can
+author SHALL be untrusted output. A third-party goal's ceiling
 SHALL exclude `transact`, `actuate` and `administer` capabilities and SHALL
 hold `communicate` capabilities, other than owner `notify`, only as park-only
 grants that can produce a parked effect but never execute one.
@@ -81,6 +85,11 @@ Scope: v1-mandatory
 #### Scenario: A scheduled obligation runs
 - **WHEN** a domain obligation declared in git becomes due
 - **THEN** its goal receives exactly the capability set declared for that obligation
+
+#### Scenario: A device state change wakes a declared subscription
+- **WHEN** a Home Assistant state change matches a subscription declared in git whose capability set includes `actuate`
+- **THEN** the goal is admitted with origin `obligation` and exactly that capability set, and its actuation follows the RFC 0028 risk map
+- **AND** a device name or note in the event that someone other than the owner could set is untrusted output, so reading it exposes the invocation
 
 ### Requirement: Grants bound discovery and every call
 The broker SHALL list to an invocation only capabilities within its grant and
@@ -158,7 +167,12 @@ a domain SHALL verify the signature, its own name as audience, the expiry, the
 capability name, the argument digest, and that the call identifier has not
 been used before, and SHALL expose the verified lineage to the handler as its
 only source of session and actor context. The signing key SHALL be readable
-only by the control-plane process.
+only by the control-plane process. A dashboard call to a model-reachable tool
+SHALL reach the domain only through the control plane's service listener,
+authenticated by the signed dashboard control client, and SHALL be forwarded
+with an assertion whose origin is `owner`, principal `dashboard` and goal
+null; such calls SHALL follow the two owner rules
+(`REQ-capability-authorization-015`, `REQ-capability-authorization-016`).
 
 ID: REQ-capability-authorization-007
 Source: RFC 0038, D1 and D7
@@ -171,6 +185,10 @@ Scope: v1-mandatory
 #### Scenario: An assertion is replayed or redirected
 - **WHEN** a valid assertion is presented a second time, or to a domain other than its audience
 - **THEN** the domain refuses the call
+
+#### Scenario: The dashboard messages a contact
+- **WHEN** the owner uses the dashboard to send a message to a contact who is not the owner
+- **THEN** the control plane forwards the call with an owner-origin dashboard assertion and no goal, and the message is parked for owner approval unless an owner-created standing rule matches
 
 ### Requirement: Invocation tokens are single-invocation and revocable
 Each invocation SHALL authenticate to the broker with a random token bound to

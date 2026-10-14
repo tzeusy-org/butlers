@@ -30,7 +30,7 @@ Scope: v1-mandatory
 - **AND** if the creating invocation was exposed, every occurrence of the obligation starts exposed
 
 ### Requirement: Deadline Prompt Context Injection
-When a deadline task fires a threshold, the owning daemon SHALL submit an obligation admission instead of dispatching a prompt to a session, and the admitted goal's input SHALL carry the deadline's original prompt text as its brief plus structured context including `target_date`, `days_remaining`, `fired_threshold` (the threshold that triggered this admission), `deadline_status`, and `all_thresholds` (for the lead to understand the full alert timeline).
+When a deadline task in `prompt` mode fires a threshold, the owning daemon SHALL submit an obligation admission instead of dispatching a prompt to a session, and the admitted goal's input SHALL carry the deadline's original prompt text as its brief plus structured context including `target_date`, `days_remaining`, `fired_threshold` (the threshold that triggered this admission), `deadline_status`, and `all_thresholds` (for the lead to understand the full alert timeline). A job-mode deadline task SHALL keep receiving the same threshold metadata in its job context and SHALL start no goal.
 
 Source: RFC 0038 D2 and D5
 Scope: v1-mandatory

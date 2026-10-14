@@ -77,15 +77,17 @@ Scope: v1-mandatory
 #### Scenario: Session record source
 - **WHEN** the `session_records` source is enabled
 - **THEN** it queries a read-only SQL view `public.v_qa_recent_failures` (sanctioned cross-schema exception per RFC 0010 pattern) for recent goal-invocation failures within the lookback window
-- **AND** the view reads Switchboard's goal-ledger invocation records filtered to the `failed` and `timed_out` invocation states
+- **AND** the view reads Switchboard's goal-ledger invocation records filtered to the `failed` and `timed_out` invocation states, UNION engineering-executor rows of butler `sessions` tables filtered to error/timeout/crash statuses
 - **AND** the view is read-only (structurally enforced — no INSERT/UPDATE/DELETE), date-filtered, and created via auditable migration with explicit per-schema GRANT
-- **AND** extracts exception type, call site, `goal_id`, `invocation_id` and the goal's origin from the invocation record, never goal arguments or results, and attributes the finding to `source_butler = "switchboard"`, the owner of the goal runner
+- **AND** extracts exception type, call site, `goal_id`, `invocation_id` and the goal's origin from an invocation record, never goal arguments or results, and attributes a goal-invocation finding to `source_butler = "switchboard"`, the owner of the goal runner, except a failed staffer-origin goal, which is attributed to the staffer whose contract admitted it (for example `"qa"`); it extracts exception type, traceback, call site and butler name from an executor session row and attributes that finding to the butler whose `sessions` table holds it
 - **AND** event summaries extracted from invocation records are passed through `anonymize()` before storage (failure messages may contain user data)
 - **AND** computes fingerprints using the same algorithm as log scanner findings
 - **AND** excludes invocations that represent expected or controlled outcomes rather than product/runtime failures:
   - invocations ended by owner Stop or replaced by escalation (`stopped`, `escalated`)
   - lead invocations superseded by lead recovery after a lease lapse
   - invocations the runner terminated for exceeding their own turn, token or spend limits, and invocations of goals that ended `budget_exhausted`; these remain visible in the goal ledger but do not spawn autonomous code-fix investigations
+  - synthetic startup-recovery executor rows (`orphaned: daemon restart`)
+  - executor rows ended by a spawner guardrail whose error text contains an intentional-stop marker (`token_budget_exceeded`, `tool_call_budget_exceeded`, `degenerate_tool_loop`)
 
 #### Scenario: Butler report source (reactive relay via Switchboard)
 - **WHEN** the `butler_reports` source is enabled

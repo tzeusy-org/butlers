@@ -14,7 +14,7 @@ Scope: v1-mandatory
 
 #### Scenario: Switchboard registration
 - **WHEN** the travel butler starts
-- **THEN** it registers with the switchboard at `http://localhost:41100/mcp` with `advertise = true`, `liveness_ttl_s = 300`, and route contract version range `route.v1` to `route.v1`
+- **THEN** it registers with the switchboard's service listener in `butlers-control`, at the address its deployment configuration names, with `advertise = true`, `liveness_ttl_s = 300`, and route contract version range `route.v1` to `route.v1`
 
 #### Scenario: Module profile
 - **WHEN** the travel butler starts
@@ -39,8 +39,11 @@ Scope: v1-mandatory
 ### Requirement: Travel Health Medication Snapshot MCP Consumer
 The Travel butler SHALL keep a parameterless `health_medication_snapshot` consumer for deterministic
 Travel code that retrieves the minimum active medication preparation view from Health's
-`medication_travel_snapshot` through a Switchboard service-plane endpoint, not through the deleted
-generic `route` tool. The consumer SHALL NOT be LLM-presentable and SHALL NOT accept a
+non-LLM-presentable medication snapshot service tool through the Switchboard service-plane relay
+(`REQ-butler-switchboard-008`), which authenticates the calling Travel daemon, not through the
+deleted generic `route` tool. The service tool returns the same `health.medication-travel.v1`
+envelope as Health's LLM-presentable `medication_travel_snapshot` capability, which the relay never
+forwards to. The consumer SHALL NOT be LLM-presentable and SHALL NOT accept a
 caller-selected target butler, tool name, scope, or raw query. A goal invocation that needs this view
 SHALL call Health's `medication_travel_snapshot` capability under its own grant.
 
@@ -50,8 +53,9 @@ Scope: v1-mandatory
 #### Scenario: Authorized request routes through Switchboard and Health MCP
 - **WHEN** Travel is allowed the `cross_butler` permission and deterministic Travel code calls
   `health_medication_snapshot`
-- **THEN** it SHALL call Health's `medication_travel_snapshot` through the Switchboard service-plane
-  endpoint with `source_butler = "travel"`
+- **THEN** it SHALL call Health's non-LLM-presentable medication snapshot service tool through the
+  Switchboard service-plane relay, which authenticates the calling Travel daemon rather than trusting
+  a caller-supplied `source_butler`
 - **AND** it SHALL validate the returned `health.medication-travel.v1` envelope strictly before
   returning it
 - **AND** it MUST NOT query the Health schema directly

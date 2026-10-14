@@ -2,7 +2,7 @@
 
 ### Requirement: Ingestion Architecture
 
-Live data SHALL enter the system through connectors and flow through the Switchboard, whose ingress submits every envelope that the deterministic ingestion policy does not suppress to goal admission. No domain butler SHALL receive an inbound message by classification or route dispatch. Modules on individual butlers provide runtime data lookup — they do not participate in ingestion.
+Live data SHALL enter the system through connectors and flow through the Switchboard before reaching any domain butler. Switchboard ingress SHALL submit every envelope that needs reasoning to goal admission; deterministic ingestion that needs none (ingestion-policy gating, channel-bound envelopes such as `wellness` readings delivered to the owning domain's service-plane ingest, and bulk backfill and sync) SHALL stay on the service plane and admit no goal (RFC 0038 D1). No domain butler SHALL receive an inbound message by classification or route dispatch. Modules on individual butlers provide runtime data lookup — they do not participate in ingestion.
 
 Source: RFC 0038 D1, D5
 Scope: v1-mandatory
@@ -11,7 +11,8 @@ Scope: v1-mandatory
 - **WHEN** an external message arrives (Telegram, email, API, etc.)
 - **THEN** it is received by a connector process, normalized to an `ingest.v1` envelope, and submitted to Switchboard via MCP
 - **AND** Switchboard assigns canonical request context (UUID7 request_id, timestamps, source identity), persists to `message_inbox`, and applies the deterministic ingestion policy
-- **AND** an envelope the policy does not suppress is submitted to goal admission without an LLM classification or route-dispatch step
+- **AND** an envelope the policy does not suppress and that no channel binds to a service-plane ingest is submitted to goal admission without an LLM classification or route-dispatch step
+- **AND** an envelope bound by its channel to a deterministic service-plane ingest (such as `wellness`) is delivered to that ingest and admits no goal
 
 #### Scenario: Connectors own ingestion
 - **WHEN** a message is ingested from an external channel

@@ -46,7 +46,7 @@ Scope: v1-mandatory
 #### Scenario: QaFinding carries source session trigger_source
 - **WHEN** a discovery source produces a `QaFinding`
 - **THEN** the finding MUST include `source_session_trigger_source` (nullable str): the provenance of the work that produced the error — an engineering-executor session's `trigger_source`, or the goal origin of a goal invocation
-- **AND** for `session_records` source: `source_session_trigger_source` is the failed invocation's goal origin read from the goal ledger through the view
+- **AND** for `session_records` source: `source_session_trigger_source` is the failed invocation's goal origin read from the goal ledger through the view; for an engineering-executor session row, it is that row's `trigger_source` column
 - **AND** for `log_scanner` source: `source_session_trigger_source` is extracted from the structured JSON log field `trigger_source` if present; `null` if absent
 - **AND** for `butler_reports` source: `source_session_trigger_source` is set by the reporting butler's deterministic relay code — from the active engineering-executor session's `trigger_source` when that session's failure is reported, or from the goal origin of the verified assertion lineage when a goal invocation's call reaches `report_error`; the `report_finding` tool SHALL accept an optional `trigger_source` parameter and include it in the buffered finding
 - **AND** `source_session_trigger_source` is stored in the `qa_findings` row for auditing

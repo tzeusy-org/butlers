@@ -100,8 +100,12 @@ Scope: v1-mandatory
 - **AND** modules that need inter-butler communication (e.g., self_healing QA relay) implement the optional `wire_runtime()` hook, which the daemon calls in phase 14 after `on_startup()` and after the Switchboard connection is established in phase 12, to inject the daemon's engineering-executor Spawner (if any) and the daemon's Switchboard MCPClient (or None when switchboard is not configured); the module uses that client to relay findings through a Switchboard service-plane endpoint that is not LLM-presentable, because the generic `route()` tool no longer exists. The Switchboard client is NOT passed as an `on_startup()` kwarg
 
 #### Scenario: Module tool metadata
+- **WHEN** a module has tools with safety-sensitive arguments, whether or not they are LLM-presentable
+- **THEN** it implements `tool_metadata()` returning a dict of tool names to `ToolMeta` with safety sensitivity annotations
+
+#### Scenario: LLM-presentable tool authorization metadata
 - **WHEN** a module registers an LLM-presentable tool
-- **THEN** it declares the authorization metadata `capability-authorization` requires: owner domain, effect class, output trust and sensitivity, resource, safety and recipient arguments, approval policy, idempotency and owner authority
+- **THEN** it declares the authorization metadata `capability-authorization` requires: owner domain, effect class, output trust and sensitivity, resource, safety and party arguments (for any tool that can deliver to or invite a party, whatever its effect class), approval policy, idempotency and owner authority
 - **AND** the safety sensitivity annotations its `tool_metadata()` returns as `ToolMeta` supply the tool's safety arguments
 - **AND** a tool without complete metadata is never grantable to a goal invocation
 
@@ -331,7 +335,7 @@ Scope: v1-mandatory
 - **THEN** each entry declares a scheduled task with `name`, `cron` expression, and dispatch mode
 - **AND** `dispatch_mode = "prompt"` with a `prompt` string declares an obligation: when due, the daemon submits an obligation admission whose goal receives exactly the capability set declared for that entry in git, defaulting to owner-domain `read` and `record` plus owner `notify`
 - **AND** `dispatch_mode = "job"` with `job_name` string executes a native Python job function that never starts a reasoning session
-- **AND** a job function that needs model judgment submits an obligation admission instead, and may call only the tool-less model functions that RFC 0038 D18 names
+- **AND** a job function that needs model judgment submits an obligation admission instead; the only model use a job may start itself is a D18 kind, either a tool-less model function or an engineering executor launched through the Spawner
 
 #### Scenario: Switchboard registration (non-switchboard agents)
 - **WHEN** `[butler.switchboard]` section is present with `advertise = true`
@@ -401,7 +405,7 @@ Scope: v1-mandatory
 
 #### Scenario: AGENTS.md contains only general-purpose information
 - **WHEN** a butler's AGENTS.md is authored or updated
-- **THEN** it contains: butler identity (name, role, one-paragraph purpose), tool surface summary (tool names with one-line descriptions), behavioral guidelines (concise rules, not multi-step procedures), calendar usage (domain-specific lines only — shared rules come from `@../shared/AGENTS.md`), skill references (one-liner pointers to skills for specific workflows), and a `# Notes to self` section for runtime agent notes
+- **THEN** it contains: butler identity (name, role, one-paragraph purpose), tool surface summary (tool names with one-line descriptions), behavioral guidelines (concise rules, not multi-step procedures), calendar usage (domain-specific lines only — shared rules come from `@../shared/AGENTS.md`), skill references (one-liner pointers to skills for specific workflows), and a `# Notes to self` section for runtime agent notes, which at cutover moves into the domain's guidance-notes store written only through the domain's notes capability (`REQ-core-skills-003`)
 - **AND** it does NOT inline: multi-step workflow procedures with tool call sequences, extensive examples (more than one brief example per section), decision frameworks with branching logic, classification rule tables, memory classification taxonomies with example code, or scheduled task execution logic
 
 #### Scenario: Workflow content lives in skills

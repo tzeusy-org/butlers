@@ -132,9 +132,10 @@ Scope: v1-mandatory
 - **AND** the usage counts against the quota (tokens were consumed by the provider regardless of invocation outcome)
 
 #### Scenario: Failover storm retains every measured attempt
-- **WHEN** three failover-eligible attempts of one invocation report usage before failing and a fourth attempt succeeds with reported usage
-- **THEN** the goal runner SHALL write four `usage_source='measured'` ledger rows with four distinct non-null `attempt_id` values
+- **WHEN** three failover-eligible invocations of one engineering-executor session report usage before failing and a fourth invocation succeeds with reported usage
+- **THEN** the spawner SHALL write four `usage_source='measured'` ledger rows with four distinct non-null `attempt_id` values
 - **AND** month-to-date measured spend SHALL equal the priced sum of all four attempts
+- **AND** for a goal invocation, which relaunches at most once, the failed attempt and its relaunch each get their own measured row with its own `attempt_id` and `invocation_id`
 
 ### Requirement: Purpose-Tagged Spend Attribution
 `public.token_usage_ledger` SHALL carry a nullable `purpose` column recording a coarse "why" dimension for each row, independent of `butler_name` (who spent) and the cache-aware token buckets (what was spent). `record_token_usage()` SHALL accept an optional `purpose` keyword argument and write it through unchanged; omitting it SHALL record `NULL`, never a fabricated default. For goal invocations the purpose SHALL be the goal's origin, because the trigger sources that named routes, classification and the `trigger` tool no longer start sessions.

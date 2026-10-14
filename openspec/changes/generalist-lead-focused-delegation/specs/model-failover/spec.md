@@ -3,12 +3,14 @@
 ### Requirement: Same-Tier Availability Failover
 The runtime SHALL support automatic same-tier failover among model catalog entries after
 a catalog candidate is selected but cannot safely complete the invocation. For a goal
-invocation the goal runner SHALL perform the failover under the same goal, invocation
-role, brief, grants, exposure and epoch, SHALL charge every attempt to the goal's budget,
-and SHALL treat any capability call the broker recorded for the invocation as side-effect
-evidence that suppresses failover, because failover never replays work.
+invocation the goal runner SHALL relaunch a failed invocation at most once, as a new
+invocation of the same goal, role, brief, grants and exposure on the next eligible
+same-tier model; a relaunched lead SHALL advance the goal's lead epoch, which revokes the
+failed attempt's token, exactly as recovery does; the relaunch SHALL count against the
+goal's invocation budget; and any capability call the broker recorded for the failed
+invocation SHALL suppress the relaunch, because failover never replays work.
 
-Source: RFC 0038 D3, D10, D12, D16
+Source: RFC 0038 D3, D10, D12, D14, D16
 Scope: v1-mandatory
 
 #### Scenario: Systemic primary failure before side effects
@@ -19,9 +21,16 @@ Scope: v1-mandatory
   SHALL retry with the next eligible same-tier model
 - **AND** it SHALL exclude the failed `catalog_entry_id` from the next-candidate query
 - **AND** it SHALL preserve the original dispatch intent and skip any same-tier candidate that was not fit-eligible for that intent before invoking an adapter
-- **AND** for a goal invocation it SHALL preserve the `goal_id`, `invocation_id`, role,
-  brief, grants, exposure and epoch; outside goals it SHALL preserve the original prompt,
-  context, trigger source, request_id, and runtime session correlation
+- **AND** for a goal invocation it SHALL launch at most one replacement invocation that
+  keeps the `goal_id`, role, brief, grants and exposure and receives a new
+  `invocation_id`, a new token and, for a lead, the next epoch; outside goals it SHALL
+  preserve the original prompt, context, trigger source, request_id, and runtime session
+  correlation
+
+#### Scenario: A goal invocation's single relaunch also fails
+- **WHEN** the one relaunch of a failed goal invocation fails as well
+- **THEN** the goal runner SHALL NOT try another model
+- **AND** a child invocation ends `failed` and the decision returns to its lead, while a lead's failure ends the goal `failed` with its ledger intact
 
 #### Scenario: Broker-recorded call suppresses goal invocation failover
 - **WHEN** a goal invocation fails with a failover-eligible error after the broker
@@ -85,9 +94,10 @@ for a logical session. As built, attempt provenance is written best-effort to th
 carrying `outcome` (`quota_skip` / `runtime_failure` / `resume_failure` / `suppressed` / `success` / `exhausted`),
 `catalog_entry_id`, `attempt_index`, `failure_reason`, `error_code`, `error_message`,
 `tool_call_count`, and a `logical_session_id` that ties all attempts of one logical session
-together. For a goal invocation the logical session SHALL be the invocation: the goal
-runner SHALL write its attempt rows with the `invocation_id` as `logical_session_id` and
-SHALL also record the invocation's `goal_id`, so attempt provenance joins the goal ledger.
+together. For a goal invocation the logical session SHALL be the first attempt's
+invocation: the goal runner SHALL write the rows of the attempt and its relaunch with the
+first attempt's `invocation_id` as `logical_session_id`, and SHALL also record each row's
+own `invocation_id` and the `goal_id`, so attempt provenance joins the goal ledger.
 Operators read it via `GET /api/dispatch/attempts` and
 `GET /api/settings/models/{entry_id}/attempts`.
 
@@ -95,8 +105,8 @@ Source: RFC 0038 D17
 Scope: v1-mandatory
 
 #### Scenario: Goal invocation attempts carry invocation lineage
-- **WHEN** the goal runner writes attempt rows for a lead or child invocation
-- **THEN** every row carries the invocation's `invocation_id` as `logical_session_id`
+- **WHEN** the goal runner writes attempt rows for a lead or child invocation and its relaunch
+- **THEN** every row carries the first attempt's `invocation_id` as `logical_session_id` and its own `invocation_id`
 - **AND** every row carries the invocation's `goal_id`
 
 #### Scenario: Failed primary then successful fallback

@@ -57,7 +57,7 @@ Scope: v1-mandatory
 #### Scenario: Daily spaced-repetition nudge configuration
 
 - **WHEN** 17:00 arrives each day
-- **THEN** the education butler submits an obligation admission for the scheduled task named `daily-spaced-repetition-nudge` on cron `0 17 * * *`, whose goal input asks the lead to list active mind maps, collect pending reviews per map, and notify the owner once only when at least one review is pending
+- **THEN** the education butler submits an obligation admission for the scheduled task named `daily-spaced-repetition-nudge` on cron `0 17 * * *`, whose goal input asks the lead to list active mind maps, collect pending reviews per map, and send the owner a single Telegram summary through `notify` only when at least one review is pending
 - **AND** nothing is sent when there are zero pending reviews
 - **AND** the obligation's capability set MUST be declared in git and SHALL NOT exceed education `read` and `record` plus owner `notify`
 

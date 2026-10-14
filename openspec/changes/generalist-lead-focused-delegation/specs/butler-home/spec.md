@@ -88,7 +88,7 @@ Scope: v1-mandatory
 #### Scenario: Switchboard advertisement
 
 - **WHEN** the home butler starts
-- **THEN** it SHALL register with the Switchboard at `http://localhost:41100/mcp` with `advertise = true`
+- **THEN** it SHALL register with the Switchboard's service listener in `butlers-control`, at the address its deployment configuration names, with `advertise = true`
 - **AND** liveness TTL of 300 seconds
 - **AND** route contract `route.v1`
 
