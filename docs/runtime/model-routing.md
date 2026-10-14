@@ -323,7 +323,13 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
   `_NEXT_SAME_TIER_SQL`) drops every entry on an account with `state='exhausted'` and
   `reset_at > now()`, even entries never attempted. The receipt records them as
   `excluded_allowance`. Exclusion lifts by itself at `reset_at`; a successful attempt on the account
-  clears it early. `unknown` never excludes and must never be rendered as available.
+  clears only the exhausted rejection observed before that invocation, when the rejection is
+  strictly older than the attempt's database-clock start and the entry still names the captured
+  account. A later rejection, an equal timestamp, or missing capture leaves the row unchanged.
+  Capture is best-effort with a five-second bookkeeping bound, after any dashboard invoke claim
+  and before the final pending Stop check; failover and cold retry each capture anew. Rejections
+  use the database wall clock at the write, including when a transaction began earlier.
+  `unknown` never excludes and must never be rendered as available.
 - **Reset honesty**: only an epoch, an ISO-8601 instant with an offset, or "in N hours/minutes" is
   parsed. A bare clock time ("try again at 12:25 PM") has no timezone and is not guessed; the state
   then records `reset_source='default_window'`. A default-window guess never shortens a parsed reset.

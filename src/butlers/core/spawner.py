@@ -93,6 +93,7 @@ from butlers.core.model_routing import (
     SpendRoutingResult,
     TierQuotaExhausted,
     apply_spend_routing_rules,
+    capture_allowance_attempt,
     check_monthly_ceiling,
     check_token_quota,
     clear_allowance_exhaustion,
@@ -2625,6 +2626,7 @@ class Spawner:
                 # entry this iteration invoked, not the whole failover chain —
                 # necessary for per-model evidence (bu-ep4ks.13).
                 _attempt_t0 = time.monotonic()
+                _allowance_attempt_context = None
 
                 # Build per-attempt invoke kwargs using current (possibly updated) model.
                 invoke_kwargs: dict[str, Any] = {
@@ -2701,6 +2703,14 @@ class Spawner:
                             self._dashboard_cancel_acknowledged_events[runtime_session_id] = (
                                 dashboard_cancel_acknowledged_event
                             )
+
+                    # Capture after the dashboard claim, before the final Stop
+                    # check. Each failover/cold retry has its own account fence;
+                    # no await may open a new Stop gap between that check and invoke.
+                    if catalog_entry_id is not None and self._pool is not None:
+                        _allowance_attempt_context = await capture_allowance_attempt(
+                            self._pool, catalog_entry_id
+                        )
 
                     if runtime_session_id and runtime_session_id in self._owner_cancelled_sessions:
                         # Owner clicked Stop while this session was still
@@ -3221,7 +3231,9 @@ class Spawner:
                     invoked=True,
                     resolution_receipt=_current_resolution_receipt,
                 )
-                await clear_allowance_exhaustion(self._pool, catalog_entry_id)
+                await clear_allowance_exhaustion(
+                    self._pool, catalog_entry_id, attempt_context=_allowance_attempt_context
+                )
 
             # ------------------------------------------------------------------
             # Guardrail checks — run after tool-call merge and token extraction.
