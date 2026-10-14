@@ -138,8 +138,78 @@ async def run_source_child(generation: str, operation: str, **payload) -> dict:
         return result
 
 
-async def _write(pool, request):
-    """Call the real registered Memory writer; only embeddings are deterministic."""
+class _DeterministicEmbeddings:
+    """Match the native cache identity and complete 384-vector interface."""
+
+    _model_name = "test-model"
+    _dim = 384
+
+    @property
+    def model_name(self):
+        return self._model_name
+
+    @property
+    def dimension(self):
+        return self._dim
+
+    def embed(self, _text):
+        return [0.1] * self.dimension
+
+    def embed_batch(self, texts):
+        return [self.embed(text) for text in texts]
+
+
+@contextlib.contextmanager
+def _deterministic_memory_module():
+    """Exercise the real getter before PG; refuse any paid factory throughout."""
+    from unittest.mock import patch
+
+    from butlers.modules.memory import MemoryModule, MemoryModuleConfig, tools
+    from butlers.modules.memory.embedding import _EMBEDDING_DIM
+
+    module = MemoryModule()
+    module._config = MemoryModuleConfig(embedding_model="test-model", groups=["core"])
+    engine = _DeterministicEmbeddings()
+    module._embedding_engine = engine
+    with patch.object(
+        tools, "get_embedding_engine", side_effect=AssertionError("unexpected-embedding-factory")
+    ) as factory:
+        assert module._get_embedding_engine() is engine
+        assert engine.model_name == engine._model_name == module._config.embedding_model
+        assert engine.dimension == _EMBEDDING_DIM == 384
+        vector = engine.embed("fixture text")
+        assert len(vector) == engine.dimension and all(type(value) is float for value in vector)
+        assert any(vector)  # The migrated cosine-vector fixture rejects zero vectors.
+        assert engine.embed_batch(["first", "second"]) == [vector, vector]
+        assert engine.embed_batch([]) == []
+        contract = {
+            "model_name": engine.model_name,
+            "dimension": engine.dimension,
+            "real_getter_retained_engine": True,
+            "factory_requests": factory.call_count,
+            "heavy_model_modules_loaded": [],
+        }
+        assert factory.call_count == 0
+        assert not any(
+            name.startswith(("sentence_transformers", "transformers", "torch"))
+            for name in sys.modules
+        )
+        try:
+            yield module, contract
+            assert module._get_embedding_engine() is engine
+            assert factory.call_count == 0
+        finally:
+            contract["factory_requests"] = factory.call_count
+            contract["heavy_model_modules_loaded"] = [
+                name
+                for name in sys.modules
+                if name.startswith(("sentence_transformers", "transformers", "torch"))
+            ]
+        assert not contract["heavy_model_modules_loaded"]
+
+
+async def _write(pool, request, module):
+    """Call the real registered Memory writer with the prevalidated service seam."""
     from types import SimpleNamespace
 
     from fastmcp import FastMCP
@@ -150,20 +220,11 @@ async def _write(pool, request):
         set_current_runtime_session_id,
         set_runtime_session_routing_context,
     )
-    from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 
-    class Embeddings:
-        model_name = "test-model"
-
-        def embed(self, _text):
-            return [0.1] * 384
-
-    module = MemoryModule()
-    module._embedding_engine = Embeddings()
     mcp = FastMCP("inverse-gap-application-generation")
     await module.register_tools(
         mcp,
-        MemoryModuleConfig(embedding_model="test-model", groups=["core"]),
+        module._config,
         SimpleNamespace(pool=pool, schema="public"),
         "kgtest",
     )
@@ -225,7 +286,7 @@ async def _snapshot(pool, request):
     }
 
 
-async def _operate(request):
+async def _operate(request, module):
     import asyncpg
 
     from butlers.api.conversations import conversation_reply_create
@@ -242,7 +303,7 @@ async def _operate(request):
     )
     try:
         if request["operation"] == "write":
-            forward_id = await _write(pool, request)
+            forward_id = await _write(pool, request, module)
             return dict(await _snapshot(pool, request), forward_id=forward_id)
         before = await _snapshot(pool, request)
 
@@ -254,7 +315,7 @@ async def _operate(request):
         result = {"before": before, "after": after}
         if request.get("future"):
             future = dict(request, **request["future"])
-            forward_id = await _write(pool, future)
+            forward_id = await _write(pool, future, module)
             result["future"] = dict(await _snapshot(pool, future), forward_id=forward_id)
         return result
     finally:
@@ -280,8 +341,10 @@ def _main():
     try:
         source_root = Path(sys.argv[1]).resolve()
         _verify_loaded_sources(source_root, request["source"])
-        if request["operation"] != "probe":
-            result["state"] = asyncio.run(_operate(request))
+        with _deterministic_memory_module() as (module, contract):
+            result["embedding_seam"] = contract
+            if request["operation"] != "probe":
+                result["state"] = asyncio.run(_operate(request, module))
         _verify_loaded_sources(source_root, request["source"])
         # A real pre-fix write commits both rows before this exact invariant fails.
         if request.get("require_answerable"):
