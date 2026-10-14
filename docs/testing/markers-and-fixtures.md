@@ -15,6 +15,9 @@ read them there. The semantics that matter:
 
 - **Deselected by default:** `addopts` carries `-m 'not nightly and not bench and not perf'` and
   ignores `tests/benchmarks`, so those tests run only when asked for with `-m`.
+- **Quarantined tests are deselected by node, not by marker.** `addopts` also loads
+  `-p tests.quarantine`, which deselects the flaky tests listed in `tests/quarantine.json`; see
+  [Flaky-Test Quarantine](quarantine.md).
 - **`e2e` is not deselected by marker.** Every gate keeps it out with `--ignore=tests/e2e`, and its
   own conftest skips without credentials; see the [E2E suite](e2e/README.md). `benchmark`,
   `routing_accuracy` and `tool_accuracy` subdivide that suite.

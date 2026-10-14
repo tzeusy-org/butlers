@@ -363,3 +363,64 @@ jobs:
                 or test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence \
                 or test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other \
                 or test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment"
+
+  quarantined:
+    timeout-minutes: 30
+    # bu-w4c1iw: tests listed in tests/quarantine.json flake for a known cause
+    # owned by a bead, so every default pytest run (PR and merge-queue shards
+    # included) deselects them. This job runs exactly those tests, serially and
+    # alone on the runner, so they keep producing a signal until the PR that
+    # fixes the cause deletes the registry entry. It is not a required check.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.15"
+
+      - name: Install uv
+        run: |
+          set -euo pipefail
+          max_attempts=5
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              echo "uv installed on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              echo "::error::uv install failed after ${max_attempts} attempts" >&2
+              exit 1
+            fi
+            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install request file-access observer
+        # The quarantined condensation proofs observe their workers with strace.
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Quarantined tests
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: |
+          set +e
+          uv run pytest tests/ roster/ --ignore=tests/e2e --quarantined -n 0 -v -rf --tb=short
+          status=$?
+          if [ "${status}" -eq 5 ]; then
+            echo "::notice::tests/quarantine.json lists no tests"
+            exit 0
+          fi
+          exit "${status}"

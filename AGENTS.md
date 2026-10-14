@@ -555,6 +555,15 @@ it before changing the subsystem.
 - Testcontainers setup ERRORs (0 FAILED / N ERROR, `Read timed out` at fixture setup) mean Docker
   contention from concurrent gates, not a broken branch. Record the red, then re-run alone before
   attributing it to the code.
+- A flaky test whose cause cannot be removed yet goes in `tests/quarantine.json` with a bead
+  ([quarantine](docs/testing/quarantine.md)), never behind a rerun, a raised timeout or a looser
+  assertion. Marking it `nightly` in the test file does not work for most tests: the condensation
+  ledger guard refuses marker changes to existing tests without a proof.
+- Logging state is process-global and survives across tests in an xdist worker: a test that calls
+  `set_butler_context`, `configure_logging` or `lifecycle.run_startup` must restore the context var
+  (`reset_butler_context(token)`), root handlers, filters and level. A leaked `ButlerDBLogHandler`
+  plus a leaked butler context made an unrelated caplog assertion see an extra WARNING ("no running
+  event loop; dropping ... log line") depending on which file ran first on the worker (bu-w4c1iw).
 
 ### Git and recovery
 
