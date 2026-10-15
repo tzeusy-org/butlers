@@ -103,6 +103,7 @@ _assert_butlers_resolves_in_tree()
 from butlers.testing.shared_fixtures import (  # noqa: E402
     MockSpawner,
     SpawnerResult,
+    detach_leaked_db_log_handlers,
     mock_spawner,
 )
 
@@ -220,6 +221,13 @@ def _restore_approval_hook_runtimes():
     finally:
         _hooks._approval_hooks_by_pool.clear()
         _hooks._approval_hooks_by_pool.update(saved_runtimes)
+
+
+@pytest.fixture(autouse=True)
+def _detach_leaked_db_log_handlers():
+    """Detach butler DB log handlers a test attached and never shut down (bu-sg5nia)."""
+    with detach_leaked_db_log_handlers():
+        yield
 
 
 if TYPE_CHECKING:
