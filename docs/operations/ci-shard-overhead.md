@@ -1,11 +1,55 @@
 # CI shard overhead and evidence
 
-The backend still has five unit and five integration manifests, independent
+The backend has five unit and six integration computed file shards, independent
 preflight and affected paths, and the always-running fail-closed fan-in. All
 existing watchdogs and healthy-workload floors remain. This change claims no
 wall-clock gain. Ten genuine merge-group observations per original slice,
 installation and image measurements, full normal/protected gates, and the hard
 setup/first-result/tail targets remain required before whole closure.
+
+## Early inventory and concurrent required guards
+
+`route` starts `inventory`, `guards` and the two applicable Vitest children.
+The bounded inventory job uses the same Python identity, exact advisory environment
+key, mandatory frozen editable repair and existing `ci_partition.py` command as
+the former guards producer. It performs one fresh installed full collection,
+enforces both unchanged lane budgets and uploads the same exact-attempt
+`ci-inventory` artifact. Five unit and six integration children depend on route
+and successful inventory, so unrelated static checks and the frontend build no
+longer serialize their start. The scoped affected job also starts after route.
+
+`check` remains checkout-free and verdict-only. Its mode table requires successful
+inventory for full PR/merge-group and main push, and a skipped inventory only for
+scoped/docs PRs. Missing, failed, cancelled, malformed or wrong-mode inventory
+results fail. Guards stays mandatory in `check` and required `frontend`; browser
+still waits for guards and consumes its one source-bound build. Preflight retains
+its guards and matrix prerequisites and all eleven complete-identity, smoke and
+release-evidence checks. Coverage cadence, instrumentation, membership and weights
+are unchanged.
+
+The actual expanded DAG has 22 rows (20 before the two final required fan-ins,
+including the mutually exclusive affected row). Its maximum weighted antichain
+is 14: eleven backend children plus guards plus two Vitest children. Once guards
+finishes, browser can replace its one slot. The workflow contract enumerates the
+actual DAG rather than assuming matrix declarations each cost one runner.
+Inventory retains the former producer's complete 35-minute cap provisionally;
+there is no independent healthy inventory p95 yet, and all existing job caps and
+UV recovery reserves remain.
+
+The independent 30-run before observation on 2026-10-15 measured required-path
+p50/p95 at 1165s/1555s and guards at 353.5s/414s; scheduling delay was 3s/358s.
+The sample contains the latest 30 successful merge-group runs from
+[38078327862](https://github.com/tzeusy-org/butlers/actions/runs/38078327862)
+(2026-10-10T19:04:17Z) through
+[38667022310](https://github.com/tzeusy-org/butlers/actions/runs/38667022310)
+(2026-10-15T01:41:37Z). Required-path duration spans run creation to the latest
+completion of check, guards and frontend; p95 uses nearest rank. Failed and
+retried runs are excluded, so this is not an all-run service SLO.
+The source graph removes guards from backend/Vitest start prerequisites but
+adds a separately scheduled environment setup. A named hosted after observation
+is still required to measure the result; a single run cannot establish the
+parent 20-run objective, a seven-minute bound, or the original five-minute lane
+promises. No wall-clock gain is claimed from the graph alone.
 
 ## Dependencies and database targets
 
@@ -76,6 +120,57 @@ job metadata to measure job start to setup/first result. The job setup target is
 installation about 5 seconds and container absence/under 3 seconds remain
 unmet until genuine named hosted observations demonstrate them.
 
+## Owned full coverage assurance
+
+The `CI coverage assurance` workflow in `.github/workflows/ci-coverage.yml`
+executes daily at 19:37 UTC, supports manual invocation, and validates coverage
+pipeline changes through an explicit PR path filter. Its job names are distinct
+from the protected CI contexts. Each run records its actual schedule, manual or
+PR event throughout inventory, execution and coverage metadata. No merge-group
+identity is borrowed to authorize a different event.
+
+Four job stages preserve the complete proof: one fresh installed inventory and
+both budgets; an explicit five-unit/six-integration covered matrix; independent
+eleven-child execution reconciliation with the existing real smoke fallback;
+and strict eleven-input CoverageData validation before combination, report
+upload or badge output. Failed, skipped, cancelled, missing or unknown
+prerequisites fail the always-running preflight/report gates. Every input keeps
+its current checkout, assignment, run and attempt binding. A genuine pipeline
+PR produces a full report but cannot update the main badge. Only a successful
+scheduled or manual main run can publish the badge.
+
+The local `ci-python-environment` composite retains the existing exact Python
+identity, bounded UV installer, advisory cache key and mandatory frozen editable
+repair. Test consumers request the same file-access observer. Unit and
+integration rows retain their complete 28/36-minute watchdogs; inventory,
+preflight and report retain 35/27/16 minutes. New-workflow bounds are provisional
+until separately observed. The covered matrix has eleven concurrent children;
+its concurrency group does not cancel the protected CI run. The one validation
+PR may therefore consume extra runner capacity and is not a natural timing
+sample for the queue optimization.
+
+Required CI runs all eleven protected queue shards without coverage instrumentation
+(`CI_COVERAGE=0`), retaining the same selected tests, workers, markers, timeouts,
+execution receipts, smoke reconciliation and mandatory fan-in. Its former reporter,
+raw coverage paths and uploads are retired. Full coverage belongs to the owned
+daily/manual and pipeline-PR workflow (`CI_COVERAGE=1`); standalone calls still
+default to covered execution.
+
+[Covered PR validation run 38672598762](https://github.com/tzeusy-org/butlers/actions/runs/38672598762)
+passed all eleven covered children, independent complete reconciliation with real
+smoke coverage and strict eleven-input reporting before the source cutover. It
+used genuine pull_request checkout 0f29a2d99b5c46213773dac0d0a6e3e1e2d8d9bb from
+branch revision bf1094a0725b8d5c4a76aeedc0163a013cb67a1d, not the later cutover head.
+Maximum shard job wall times were 442s unit and 475s integration under concurrent
+unrelated work. These are covered PR validation observations, not queue
+before/after measurements, final-source evidence or seven-minute proof. Existing
+historical M1/M2 observation obligations remain separately unearned where noted.
+
+The weights observer currently refreshes merge-group profiles only. After the
+cutover it can refresh untraced queue costs; covered profiles may age past
+fourteen days and use the ordinary truthful deterministic fallback. Genuine
+covered-workflow candidate refresh is deferred; no event identity is borrowed.
+
 ## Independent experiments and coverage
 
 Ordinary/local unit defaults remain three workers, integration remains bounded
@@ -96,13 +191,13 @@ The miniature real subprocess controls prove mechanism conformance only.
 
 `ci_shard_comparison.py before.json after.json` compares complete identity and
 phase outcomes without count-only or incomplete gain claims. Its coverage
-comparison normalizes complete filenames/lines/branches/contexts. The existing
-coverage validator still requires ten unique current source/attempt/lane shards,
-rejects population/identity drift and governs report/upload/badge. CI_COVERAGE
-remains exactly 0/1, ordinary PRs remain uncovered, merge-group remains covered,
-and append across independent jobs remains forbidden. Nightly and other
-covered consumers keep their own existing settings; this issue does not adopt
-the future matrix/partition/planner/sixth-shard work.
+comparison normalizes complete filenames/lines/branches/contexts. At the original experiment stage, the coverage validator required ten unique
+current source/attempt/lane shards and merge-group coverage remained enabled.
+Those historical comparison controls remain preserved. The current adopted
+five-unit/six-integration producer above requires eleven inputs in owned
+coverage assurance, while protected queue execution is untraced. CI_COVERAGE
+remains exactly 0/1 and append across independent jobs remains forbidden.
+Worker/core comparisons and their original evidence obligations remain separate.
 
 ## Completion and rollback
 
@@ -117,7 +212,7 @@ normal/nonself/protected gates and elapsed observations have separate receipts.
 
 ## Hosted image preparation
 
-All ordinary, nightly and migration uv installers call
+All ordinary, covered, nightly and migration uv installers call
 `python3 scripts/install_ci_uv.py`. Each attempt owns a fresh process session;
 the supervisor keeps its leader PID reserved until it has killed that group,
 including after a successful or failed early shell exit. The 120-second attempt
@@ -188,3 +283,84 @@ only their actual bounded scope.
 Root-authenticated normal37799700172 at source9b3fa6dcb728a2c661854ae450d985af0143c4ef finished with all11 official XML artifacts and zero failures/errors. The actual PG17 bootstrap/ordinary-role/vector/commit/separate-readback node passed4.678s without skip. Manual image37800940231 at that source completed all four before/current normal and RouteA builds and bounded CPU/offline-input/runtime controls in1029.347s within1800, cleanup0. Historical1690 input bodies and the reversible representation adapter remain explicitly bound; the unsupported literal-old recipe is a separately retained compiler negative. These observations establish preparation, not trained-model/provider/launcher admission, timing gain or whole delivery.
 
 Following independent HIGH preparation review and root completion-scope approval, normal validated own archive automatically synchronized the five046–050 requirements and32 scenarios into testing. Complete public38-requirement/153-scenario bytes and all foreign native/tasks were preserved; baseline now has43 requirements/185 scenarios. No product, metric, default or watchdog changed in this native successor. Fresh final-head normal, independent/protected union and every original hard timing, ten-run and supported full worker/core obligation remain separately mandatory.
+
+## Measured file weights across source changes
+
+`.github/ci-test-weights.json` contains reviewed `ci-weights.v2` profiles for
+`none`, `CTracer` or `SysMonitor`. The inventory job passes the same `CI_COVERAGE`
+and, when overridden, `CI_COVERAGE_CORE` as its test children. Local commands
+retain covered defaults; PR inventories default to untraced costs. A missing
+matching profile uses deterministic fallback, never a different tracer's costs.
+
+Each profile retains the original run/attempt/head, collection timestamp,
+complete file durations and source-file SHA-256 digests. Eligibility requires
+matching Python and pytest versions, dependency lock and lane selectors, with
+an age of at most fourteen days. The current fresh inventory includes each
+selected test file's digest. Only an unchanged file can reuse its measured cost;
+changed or new files use the valid lane median, or one when no valid costs exist.
+An advisory file cost cannot exceed one day, a generous ceiling above every
+finite hosted shard cap. This also keeps median and shard-sum arithmetic finite;
+positive but implausibly large numeric inputs receive the same fallback.
+Product-source changes do not discard all costs. A fixture or implementation
+change can still change an untouched test's runtime, so these are scheduling
+hints, not a wall-time guarantee. The original full source/config/run/attempt
+identity continues to bind inventory, assignment and every execution receipt.
+
+The observer emits one matching profile from complete actual shard receipts.
+An empty actual tracer set records `none`; mixed or unsupported tracers refuse
+candidate publication. Its timestamp comes from the original inventory, so
+reading an old run does not renew its cost lifetime. The inventory restores the
+latest successful main observer's profile into a temporary file, retaining the
+committed seed's other modes. This uses three GitHub reads, each bounded to five
+seconds. It checks the observer workflow/ref, artifact ownership, matching
+candidate receipt/source, runtime, timestamp, finite costs and file digests.
+An absent, expired, malformed or incompatible candidate leaves the reviewed
+seed; an older candidate cannot replace a newer compatible seed. Both restore
+and fallback always write a usable weights file, plus a closed diagnostic
+receipt. No observer or reader commits source or admits test membership.
+
+The pipeline wiring uses its read-only Actions token and the installed Python:
+Both the early required-CI inventory and the owned coverage inventory restore
+after frozen environment repair, before fresh collection. Only these inventory
+jobs gain `actions: read`; their restore steps alone receive `GH_TOKEN`. The
+covered producer retains `CI_COVERAGE=1` and selects covered costs independently
+of the required workflow's current event policy.
+
+```sh
+uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "$RUNNER_TEMP/ci-weights"
+uv run --no-sync python scripts/ci_partition.py --weights "$RUNNER_TEMP/ci-weights/weights.json" --output "$RUNNER_TEMP/ci-inventory"
+```
+
+The six-hour observer owns refresh; CI reads its latest successful main run.
+Static seeds remain the outage fallback and can be refreshed by a reviewed PR.
+A seed older than fourteen days still receives the ordinary deterministic
+fallback; stale data never gets a renewed measurement timestamp.
+
+The first two profiles were independently reconciled from all eleven actual
+receipts in [PR run 38664906626](https://github.com/tzeusy-org/butlers/actions/runs/38664906626)
+(`none`) and [queue run 38667022310](https://github.com/tzeusy-org/butlers/actions/runs/38667022310)
+(`CTracer`). Their older inventories predate file digests: the seed digests were
+read from Git blobs at each inventory's exact `origin.head`, preserving the
+original artifacts and their identities. This is historical measurement
+provenance, not a claim of current execution. Both seeds keep their actual
+runtime and timestamp; incompatible or stale environments fall back normally.
+
+Whole-file LPT can improve aggregate balance, but a single long file still runs
+on one xdist worker. The forecast is bounded by its measured duration and by
+setup, collection and runner wait. New hosted runs must demonstrate actual
+latency before any hard timing target is credited.
+
+A simulation on those two seeds gives the following largest shard sums. These
+are setup/call/teardown phase seconds, not predicted job or queue wall time:
+
+| Measured mode | Lane | Existing assignment | Weighted LPT |
+| --- | --- | ---: | ---: |
+| Untraced PR | Unit | 594 | 451 |
+| Untraced PR | Integration | 1079 | 803 |
+| Covered queue | Unit | 1446 | 793 |
+| Covered queue | Integration | 1536 | 916 |
+
+The slowest whole unit file in those samples was 139s untraced and 242s covered;
+older observations were much slower. This variation is why the measured profile,
+trace mode and ongoing refresh matter, and why a balanced sum is not a latency
+claim.

@@ -1,0 +1,12 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-q1hzqn-ci-speed-20261015",
+  "owners": [
+    "tests/contracts/test_ci_test_targets.py::test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shard",
+    "tests/contracts/test_ci_test_targets.py::test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift",
+    "tests/contracts/test_ci_test_targets.py::test_ci_coverage_report_rejects_any_bad_input_before_publication",
+    "tests/scripts/test_ci_partition.py::test_partition_preserves_fresh_membership_with_unknown_weights",
+    "tests/scripts/test_ci_partition.py::test_reconciliation_requires_complete_node_identity"
+  ],
+  "timeout_s": 300
+}

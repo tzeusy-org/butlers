@@ -240,6 +240,12 @@ def worker(request: Path) -> int:
     output = Path(config["output"])
     selected = config["selection"]
     nonce = config["nonce"]
+    runtime_environment = None
+    if "runtime_environment" in config:
+        runtime_environment = {
+            name: os.environ.get(name) for name in ("TMPDIR", "PYTEST_DEBUG_TEMPROOT")
+        }
+        runtime_environment["tempfile_root"] = tempfile.gettempdir()
     cases = {}
     complete_collection = False
     deselected = 0
@@ -411,6 +417,11 @@ def worker(request: Path) -> int:
                 "descendant_execution": descendant_execution,
             },
             "tools": tool_record(),
+            **(
+                {"runtime_environment": runtime_environment}
+                if runtime_environment is not None
+                else {}
+            ),
         },
     )
     return 0 if complete else 2
@@ -519,7 +530,14 @@ def suite(
     timeout: float,
     control_inputs: set[str] | None = None,
     cancellation: threading.Event | None = None,
+    runner=None,
+    temporary_root: Path | None = None,
 ) -> dict:
+    runtime_environment = (
+        {"TMPDIR": str(temporary_root), "PYTEST_DEBUG_TEMPROOT": str(temporary_root)}
+        if temporary_root is not None
+        else None
+    )
     request = output.with_suffix(".request.json")
     publish(
         request,
@@ -531,9 +549,16 @@ def suite(
             "output": str(output),
             "id": id_,
             "control_inputs": sorted(control_inputs or []),
+            **(
+                {"runtime_environment": runtime_environment}
+                if runtime_environment is not None
+                else {}
+            ),
         },
     )
     env = dict(os.environ)
+    if runtime_environment is not None:
+        env.update(runtime_environment)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(copy_root / "src"), str(copy_root), str(Path(__file__).resolve().parent)]
     )
@@ -543,7 +568,7 @@ def suite(
     if control_inputs:
         output.with_suffix(".subject-probe").write_bytes(nonce.encode())
     try:
-        code, cleaned, access = request_access_run(
+        code, cleaned, access = (runner or request_access_run)(
             command, copy_root, request, output, env, timeout, control_inputs or set(), cancellation
         )
     finally:
@@ -882,8 +907,8 @@ class RequestAccessStream:
         return complete, rows
 
 
-def request_access_run(command, root, request, output, env, timeout, inputs, cancellation=None):
-    access = {
+def request_access_record(inputs):
+    return {
         "observer": "strace" if inputs else "not-required",
         "inputs": sorted(inputs),
         "accesses": 0,
@@ -900,6 +925,10 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
         "version_sha256": None,
         "finalization_failures": [],
     }
+
+
+def request_access_run(command, root, request, output, env, timeout, inputs, cancellation=None):
+    access = request_access_record(inputs)
     carrier = output.with_suffix(".access.json")
     publish(carrier, access)
     process_record = output.with_suffix(".process.json")

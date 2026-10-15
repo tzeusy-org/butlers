@@ -12,14 +12,27 @@ import hashlib
 import io
 import json
 import os
+import platform
 import re
 import statistics
 import subprocess
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ci_partition import DIMENSIONS, ROOT, body_digest, reconcile
+from ci_partition import (
+    DIMENSIONS,
+    HEX,
+    MAX_ADVISORY_FILE_SECONDS,
+    ROOT,
+    SELECTORS,
+    body_digest,
+    exact_json,
+    load_advisory_weights,
+    reconcile,
+    unique_object,
+    weight_runtime,
+)
 
 
 class Provenance:
@@ -77,8 +90,8 @@ class Provenance:
         }
 
 
-def api(path: str, *, binary: bool = False):
-    result = subprocess.run(["gh", "api", path], capture_output=True, timeout=30)
+def api(path: str, *, binary: bool = False, timeout: int = 30):
+    result = subprocess.run(["gh", "api", path], capture_output=True, timeout=timeout)
     if result.returncode or len(result.stdout) > 32 * 1024 * 1024:
         raise ValueError("bounded GitHub read unavailable")
     return result.stdout if binary else json.loads(result.stdout)
@@ -89,7 +102,7 @@ def member(blob: bytes, filename: str) -> dict:
         matches = [info for info in archive.infolist() if info.filename == filename]
         if len(matches) != 1 or matches[0].file_size > 16 * 1024 * 1024:
             raise ValueError("candidate artifact member unavailable")
-        value = json.loads(archive.read(matches[0]))
+        value = json.loads(archive.read(matches[0]), object_pairs_hook=unique_object)
         if not isinstance(value, dict):
             raise ValueError("candidate evidence malformed")
         return value
@@ -222,8 +235,14 @@ def candidate(*, repository: str, output: Path, provenance: Provenance | None = 
     trace.stage = "population-reconciliation"
     reconcile(inventory, assignment, receipts, root=ROOT, current=False)
     trace.stage = "tracing-species"
-    tracers = {tuple(receipt.get("actual_tracers", [])) for receipt in receipts.values()}
-    if len(tracers) != 1 or next(iter(tracers)) not in {("CTracer",), ("SysMonitor",)}:
+    observed_tracers = [receipt.get("actual_tracers") for receipt in receipts.values()]
+    if any(
+        type(value) is not list or value not in ([], ["CTracer"], ["SysMonitor"])
+        for value in observed_tracers
+    ):
+        raise ValueError("candidate tracing species incomplete or mixed")
+    tracers = {tuple(value) for value in observed_tracers}
+    if len(tracers) != 1:
         raise ValueError("candidate tracing species incomplete or mixed")
     trace.stage = "candidate-durations"
     durations = {lane: {} for lane in DIMENSIONS}
@@ -231,17 +250,31 @@ def candidate(*, repository: str, output: Path, provenance: Provenance | None = 
         for index in range(1, DIMENSIONS[lane] + 1):
             for name, seconds in receipts[f"{lane}-{index}"]["file_durations_s"].items():
                 durations[lane].setdefault(name, []).append(seconds)
-    result = {
-        "schema": "ci-weights.v1",
-        "collected_at": datetime.now(UTC).isoformat(),
+    file_digests = inventory.get("file_digests")
+    names = {name for files in inventory["lanes"].values() for name in files}
+    if (
+        not isinstance(file_digests, dict)
+        or set(file_digests) != names
+        or any(
+            not isinstance(value, str) or not HEX.fullmatch(value)
+            for value in file_digests.values()
+        )
+    ):
+        raise ValueError("candidate source file digests unavailable")
+    tracer = next(iter(tracers))
+    profile = {
+        "collected_at": inventory["collected_at"],
+        "runtime": weight_runtime(inventory),
+        "file_digests": file_digests,
         "config_digest": identity["config_digest"],
         "lanes": {
             lane: {name: statistics.median(values) for name, values in files.items()}
             for lane, files in durations.items()
         },
-        "state": "uncommitted advisory candidate; reviewed PR required",
+        "state": "advisory candidate from reconciled historical execution",
         "origin": identity,
     }
+    result = {"schema": "ci-weights.v2", "profiles": {tracer[0] if tracer else "none": profile}}
     trace.stage = "candidate-write"
     output.mkdir(parents=True, exist_ok=True)
     (output / "candidate.json").write_text(json.dumps(result, sort_keys=True) + "\n")
@@ -262,10 +295,162 @@ def candidate(*, repository: str, output: Path, provenance: Provenance | None = 
     trace.stage = "complete"
 
 
+def restore(*, repository: str, output: Path, root: Path = ROOT) -> None:
+    """Read one trusted main observer artifact; always leave usable seed fallback.
+
+    Three GitHub reads have five-second bounds. This is advisory scheduling,
+    never a source of current inventory or executed-item identity.
+    """
+    import pytest
+
+    weights = load_advisory_weights(root / ".github/ci-test-weights.json")
+    status = {"state": "FALLBACK", "reason": "observer candidate unavailable or incompatible"}
+    try:
+        runs = api(
+            f"repos/{repository}/actions/workflows/ci-shard-weights.yml/runs"
+            "?status=success&branch=main&per_page=1",
+            timeout=5,
+        )["workflow_runs"]
+        run = runs[0]
+        if (
+            run["head_branch"] != "main"
+            or run["head_repository"]["full_name"] != repository
+            or run["path"] != ".github/workflows/ci-shard-weights.yml"
+            or run["status"] != "completed"
+            or run["conclusion"] != "success"
+            or run["event"] not in {"schedule", "workflow_dispatch"}
+        ):
+            raise ValueError("observer source unavailable")
+        artifacts = api(
+            f"repos/{repository}/actions/runs/{run['id']}/artifacts?per_page=100",
+            timeout=5,
+        )["artifacts"]
+        matches = [row for row in artifacts if row["name"] == "ci-weight-candidate"]
+        if len(matches) != 1:
+            raise ValueError("observer artifact unavailable")
+        artifact = matches[0]
+        if (
+            artifact["expired"] is not False
+            or type(artifact["size_in_bytes"]) is not int
+            or not 0 < artifact["size_in_bytes"] <= 32 * 1024 * 1024
+            or artifact["workflow_run"]["id"] != run["id"]
+            or artifact["workflow_run"]["head_sha"] != run["head_sha"]
+        ):
+            raise ValueError("observer artifact identity unavailable")
+        blob = api(
+            f"repos/{repository}/actions/artifacts/{artifact['id']}/zip", binary=True, timeout=5
+        )
+        candidate = member(blob, "candidate.json")
+        receipt = member(blob, "receipt.json")
+        if candidate["schema"] != "ci-weights.v2" or len(candidate["profiles"]) != 1:
+            raise ValueError("observer profile unavailable")
+        tracer, profile = next(iter(candidate["profiles"].items()))
+        origin = profile["origin"]
+        coordinates = {key: origin[key] for key in ("run", "attempt", "head")}
+        if (
+            tracer not in {"none", "CTracer", "SysMonitor"}
+            or not isinstance(origin["head"], str)
+            or not re.fullmatch(r"[0-9a-f]{40}", origin["head"])
+            or any(
+                not isinstance(origin[key], str) or not re.fullmatch(r"[1-9][0-9]*", origin[key])
+                for key in ("run", "attempt")
+            )
+            or receipt["state"] != "CANDIDATE"
+            or any(receipt[key] != value for key, value in coordinates.items())
+            or receipt["provenance"]["selected_run"] != coordinates
+            or receipt["provenance"]["failure"] is not None
+            or origin["repository"] != repository
+            or origin["event"] != "merge_group"
+            or profile["config_digest"] != origin["config_digest"]
+        ):
+            raise ValueError("observer measurement identity unavailable")
+        lock = root / "uv.lock"
+        runtime = {
+            "python": platform.python_version(),
+            "pytest_version": pytest.__version__,
+            "selectors": SELECTORS,
+            "lock_digest": hashlib.sha256(lock.read_bytes()).hexdigest()
+            if lock.is_file()
+            else None,
+        }
+        measured_at = datetime.fromisoformat(profile["collected_at"])
+        now = datetime.now(UTC)
+        age = now - measured_at
+        if (
+            not exact_json(profile["runtime"], runtime)
+            or any(origin[key] != runtime[key] for key in ("python", "lock_digest", "selectors"))
+            or not timedelta(0) <= age <= timedelta(days=14)
+            or set(profile["lanes"]) != set(DIMENSIONS)
+        ):
+            raise ValueError("observer runtime unavailable")
+        names = set()
+        for costs in profile["lanes"].values():
+            if (
+                not isinstance(costs, dict)
+                or not costs
+                or any(
+                    not isinstance(name, str)
+                    or type(value) not in (int, float)
+                    or not 0 <= value <= MAX_ADVISORY_FILE_SECONDS
+                    for name, value in costs.items()
+                )
+            ):
+                raise ValueError("observer durations unavailable")
+            names.update(costs)
+        hashes = profile["file_digests"]
+        if (
+            not isinstance(hashes, dict)
+            or set(hashes) != names
+            or any(
+                not isinstance(value, str) or not HEX.fullmatch(value) for value in hashes.values()
+            )
+        ):
+            raise ValueError("observer file digests unavailable")
+        profiles = weights.get("profiles", {}) if weights.get("schema") == "ci-weights.v2" else {}
+        profiles = dict(profiles) if isinstance(profiles, dict) else {}
+        previous = profiles.get(tracer, {})
+        # A recent reviewed seed must not be replaced by an older observer sample.
+        try:
+            previous_age = now - datetime.fromisoformat(previous["collected_at"])
+            keep_seed = timedelta(0) <= previous_age < age and exact_json(
+                previous["runtime"], runtime
+            )
+        except (KeyError, TypeError, ValueError):
+            keep_seed = False
+        if not keep_seed:
+            profiles[tracer] = profile
+        weights = {"schema": "ci-weights.v2", "profiles": profiles}
+        status = {
+            "state": "SEED_NEWER" if keep_seed else "RESTORED",
+            "observer_run": str(run["id"]),
+            "profile": tracer,
+            "sample": coordinates,
+        }
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        IndexError,
+        AttributeError,
+        subprocess.TimeoutExpired,
+        zipfile.BadZipFile,
+    ):
+        pass
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "weights.json").write_text(json.dumps(weights, sort_keys=True) + "\n")
+    (output / "restore-receipt.json").write_text(json.dumps(status, sort_keys=True) + "\n")
+    print(json.dumps(status, sort_keys=True))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--restore", action="store_true")
     args = parser.parse_args()
+    if args.restore:
+        restore(repository=os.environ.get("GITHUB_REPOSITORY", ""), output=args.output)
+        return 0
     trace = Provenance()
     try:
         candidate(repository=os.environ["GITHUB_REPOSITORY"], output=args.output, provenance=trace)

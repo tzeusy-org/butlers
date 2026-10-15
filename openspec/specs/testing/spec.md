@@ -853,6 +853,8 @@ authentication and reports a healthy status when the API is up.
   string returned regardless of server state
 
 ### Requirement: Smoke Tests Run In CI As A Fast Gate
+Fresh full pytest inventory, both lane budgets and the exact attempt assignment SHALL be produced by a dedicated bounded job after route. Full backend children SHALL await successful inventory; affected and Vitest execution MAY begin after route while static guards execute. Required final verdicts SHALL retain mandatory guards and require inventory success only for full/main-push modes, with explicit inventory skips only for scoped/docs modes. Browser SHALL retain its dependency on the guards-built source-bound artifact. Complete eleven-child reconciliation, smoke and existing event/selector policies SHALL remain unchanged.
+
 The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every merge-group tree and every backend-applicable
 pull request as a fast gate, distinct from and faster than the integration tier,
 and MUST NOT pull in the E2E suite or any real LLM dependency. The dedicated-selection scenario below and the distinct/faster fast-gate description apply to scoped execution and uncovered full-mode smoke items; full derived mode does not claim a separate smoke job completed faster than the full integration run. Complete full execution MAY use exact-identity derived smoke evidence from the same successful lane population under P8; this explicitly qualifies the previous unconditional dedicated invocation while preserving its command, no-LLM/no-E2E and failure contracts.
@@ -1261,7 +1263,7 @@ Scope: v1-mandatory
 - **AND** credentials, env values, DSNs, provider content, shared worktree venvs and unrelated cache deletion remain excluded
 
 ### Requirement: Measured Worker and Coverage Core Selection
-Unit worker and covered tracer selection SHALL be independent measured comparisons against current unit3 and ctrace baselines. Actual worker identities, capacity, memory and no-OOM evidence SHALL govern any fixed4 or bounded-auto choice; local3 and integration cap behavior SHALL remain. A sysmon candidate SHALL prove its actual supported installed tracer, complete source/file/line/context population and report/badge semantics; unsupported or fallback execution SHALL be rejected or truthfully retained as baseline. CI_COVERAGE 0/1, all ten protected covered shards and fail-closed publisher identity checks SHALL remain mandatory.
+Unit worker and covered tracer selection SHALL be independent measured comparisons against current unit3 and ctrace baselines. Actual worker identities, capacity, memory and no-OOM evidence SHALL govern any fixed4 or bounded-auto choice; local3 and integration cap behavior SHALL remain. A sysmon candidate SHALL prove its actual supported installed tracer, complete source/file/line/context population and report/badge semantics; unsupported or fallback execution SHALL be rejected or truthfully retained as baseline. CI_COVERAGE 0/1, all eleven full-source covered assurance shards, the complete protected queue test population and fail-closed publisher identity checks SHALL remain mandatory. Owned scheduled/manual and coverage-pipeline PR validation SHALL retain actual event provenance, complete fresh inventory and eleven-input execution reconciliation before report publication; PR validation MUST NOT publish the main badge. Protected merge-group and ordinary PR executions SHALL preserve their existing required test populations and run untraced with CI_COVERAGE=0; the owned daily scheduled/manual and coverage-pipeline PR assurance workflow SHALL own full eleven-shard coverage with CI_COVERAGE=1. Local covered defaults and every actual worker/tracer comparison remain unchanged.
 
 ID: REQ-testing-049
 Source: bu-ly3lv5.5 full original seven outcomes and twelve committed folded objects; released bu-7lh5ew; AGENTS.md test policy; testing-and-verification; performance-discipline
@@ -1283,7 +1285,7 @@ Scope: v1-mandatory
 - **AND** a planted covered-line companion proves collection and a forced fallback or unsupported branch/context/concurrency candidate is rejected
 
 #### Scenario: Coverage mode stays exact
-- **WHEN** ordinary PR, standalone or merge_group covered consumers execute
+- **WHEN** ordinary PR, standalone, protected untraced merge_group or owned scheduled/manual/pipeline-validation covered consumers execute
 - **THEN** strict CI_COVERAGE 0/1 selection and governed coverage flags stay exact
 - **AND** a worker/core experiment does not enable partial coverage, append across jobs or skip any protected shard
 
