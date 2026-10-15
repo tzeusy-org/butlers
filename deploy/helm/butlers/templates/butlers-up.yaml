@@ -37,6 +37,7 @@ spec:
             - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
+            - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ .Values.butlersUp.maxGlobalSessions }}"}
           readinessProbe:
             httpGet: {path: /health, port: switchboard}
             periodSeconds: 5

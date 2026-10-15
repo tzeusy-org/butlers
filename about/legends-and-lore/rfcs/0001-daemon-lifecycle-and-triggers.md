@@ -99,7 +99,7 @@ still address exact durably registered predecessor sessions.
 The Spawner enforces two layers:
 
 1. **Per-butler semaphore** -- `asyncio.Semaphore` sized by `max_concurrent_sessions` in `butler.toml` (default: 1, meaning serial dispatch).
-2. **Global semaphore** -- Process-wide `asyncio.Semaphore` limiting total concurrent LLM sessions across all butlers. Default: 5, configurable via `BUTLERS_MAX_GLOBAL_SESSIONS`. Lazy-initialized on first access.
+2. **Global semaphore** -- Process-wide `asyncio.Semaphore` limiting total concurrent LLM sessions across all butlers. Default: 3, configurable via `BUTLERS_MAX_GLOBAL_SESSIONS`. Lazy-initialized on first access.
 
 Both semaphores MUST be acquired before a session starts. When a trigger arrives and all slots are occupied, it queues behind the semaphore. Metrics track queue depth at both levels (see RFC 0005).
 

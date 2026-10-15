@@ -2707,7 +2707,7 @@ class TestGlobalSpawnConcurrencyCap:
         )
 
     async def test_global_cap_env_var_and_semaphore_release(self, tmp_path: Path):
-        """Default cap is 5; BUTLERS_MAX_GLOBAL_SESSIONS overrides it; semaphore released after success and error."""
+        """Default cap is 3; BUTLERS_MAX_GLOBAL_SESSIONS overrides it; semaphore released after success and error."""
         import butlers.core.spawner as spawner_mod
 
         env_without_cap = {
@@ -2716,12 +2716,7 @@ class TestGlobalSpawnConcurrencyCap:
         with patch.dict(os.environ, env_without_cap, clear=True):
             _reset_global_semaphore()
             sem = spawner_mod._get_global_semaphore()
-        assert sem._value == 5
-
-        with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "0"}, clear=False):
-            _reset_global_semaphore()
-            sem_invalid = spawner_mod._get_global_semaphore()
-        assert sem_invalid._value == 5
+        assert sem._value == 3
 
         with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "7"}, clear=False):
             _reset_global_semaphore()

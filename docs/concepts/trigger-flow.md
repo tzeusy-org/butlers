@@ -57,7 +57,7 @@ When multiple butlers share the same cron expression (e.g., `0 * * * *` for hour
 The spawner enforces two layers of concurrency control:
 
 1. **Per-butler semaphore** --- Each `Spawner` instance holds an `asyncio.Semaphore` configured by `max_concurrent_sessions` in `butler.toml` (default 1, meaning serial dispatch).
-2. **Global semaphore** --- A process-wide `asyncio.Semaphore` limits total concurrent LLM sessions across all butlers. Defaults to 5, configurable via `BUTLERS_MAX_GLOBAL_SESSIONS`.
+2. **Global semaphore** --- A process-wide `asyncio.Semaphore` limits total concurrent LLM sessions across all butlers. Defaults to 3, configurable via `BUTLERS_MAX_GLOBAL_SESSIONS`.
 
 Both semaphores must be acquired before a session starts. When a trigger arrives and all slots are occupied, the trigger queues behind the semaphore. Metrics track queue depth at both levels.
 

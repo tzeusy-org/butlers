@@ -192,7 +192,7 @@ On startup, `ButlerMetrics.ensure_registered()` emits zero-value adds on key UpD
 |----------|----------|---------|-------------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | (unset) | OTLP HTTP base endpoint. When unset, tracing and metrics are no-op. |
 | `ENV` | No | (unset) | Sets `deployment.environment` resource attribute. |
-| `BUTLERS_MAX_GLOBAL_SESSIONS` | No | `5` | Global concurrency cap (affects queue depth metrics). |
+| `BUTLERS_MAX_GLOBAL_SESSIONS` | No | `3` | Global concurrency cap (affects queue depth metrics). |
 
 ## Integration
 

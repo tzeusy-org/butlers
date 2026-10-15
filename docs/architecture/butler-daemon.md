@@ -100,7 +100,7 @@ An append-only record of LLM CLI invocations. Each session row is created before
 
 ### Spawner
 
-The component that invokes ephemeral AI runtime instances. Controlled by an `asyncio.Semaphore` for per-butler concurrency limiting (default 1 = serial dispatch) and a process-wide global semaphore (default 5 max concurrent sessions across all butlers). Before invoking an adapter it composes and receipts the effective system prompt, and it enforces the content-blind private-content model lane before provider setup. See [Spawner](../runtime/spawner.md).
+The component that invokes ephemeral AI runtime instances. Controlled by an `asyncio.Semaphore` for per-butler concurrency limiting (default 1 = serial dispatch) and a process-wide global semaphore (default 3 max concurrent sessions across all butlers). Before invoking an adapter it composes and receipts the effective system prompt, and it enforces the content-blind private-content model lane before provider setup. See [Spawner](../runtime/spawner.md).
 
 ## Module Loading
 

@@ -18,7 +18,7 @@ number of concurrently running LLM sessions across **all** Spawner instances in
 the process.  This prevents runaway parallelism when many butlers are triggered
 simultaneously.
 
-The cap defaults to 5 and can be overridden via the
+The cap defaults to 3 and can be overridden via the
 ``BUTLERS_MAX_GLOBAL_SESSIONS`` environment variable.  Per-butler concurrency
 limits (``max_concurrent_sessions`` in butler.toml) remain unchanged and still
 apply — the global cap is an additional outer constraint.
@@ -179,7 +179,7 @@ logger = logging.getLogger(__name__)
 # Global spawn concurrency cap
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MAX_GLOBAL_SESSIONS = 5
+_DEFAULT_MAX_GLOBAL_SESSIONS = 3
 _global_semaphore: asyncio.Semaphore | None = None
 
 # Lazily-populated pricing config cache — loaded once from pricing.toml on first
@@ -248,7 +248,7 @@ def _get_global_semaphore() -> asyncio.Semaphore:
     """Return the process-wide spawn concurrency semaphore (lazy init).
 
     The cap is read from the ``BUTLERS_MAX_GLOBAL_SESSIONS`` environment
-    variable on first call.  Defaults to 5 when the variable is absent or
+    variable on first call.  Defaults to 3 when the variable is absent or
     unparseable.  The semaphore is shared across **all** Spawner instances,
     so concurrent LLM sessions across every butler in the process are
     collectively bounded by this limit.

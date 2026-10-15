@@ -182,7 +182,7 @@ content-blind dry run and exact owner-reviewed recovery policy.
 
 **Concurrency control**: Two-level semaphore.
 - Per-butler: `max_concurrent_sessions` (from `butler.toml`, default 1).
-- Global: `BUTLERS_MAX_GLOBAL_SESSIONS` (default 5, across all butlers in-process).
+- Global: `BUTLERS_MAX_GLOBAL_SESSIONS` (default 3, across all butlers in-process).
 
 **Session lifecycle**:
 - `session_create()` -- DB INSERT before CLI invocation.
