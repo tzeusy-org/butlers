@@ -221,3 +221,12 @@ change. See [CI shard overhead](../../docs/operations/ci-shard-overhead.md) for
 exact receipt meanings, twelve-job service retirement, CPU dependencies and
 rollback. These mechanisms do not establish the staged five-minute goal or
 replace the terminal hosted gate, original hard targets or ten-run observations.
+
+
+The [2026-10-15 ten-run historical cost baseline](../../docs/testing/ci-cost-baseline-2026-10-15.md)
+preserves exact main/run/attempt identities, job and step decompositions,
+selected populations and sanitized per-file costs. It separates source variants
+and missing observations explicitly: covered pre-rollout costs are not current
+untraced latency, and two current-file samples do not establish a current p95.
+Neither the staged five-minute lanes nor the seven-minute required-context
+natural target is established by that historical cohort.
