@@ -5,11 +5,6 @@
       "node": "tests/scripts/test_condense_evidence.py::test_distinct_status_owner_loses_kill_and_arcs",
       "bead": "bu-uikmow",
       "reason": "CPU-bound strace/ctrace condensation proofs exhaust their fixed 60 s proof deadline under xdist co-tenancy, leaving a worker's request-access observation incomplete."
-    },
-    {
-      "node": "tests/scripts/test_condense_evidence.py::test_fresh_paired_runtime_lineage_uses_each_source_and_named_owner",
-      "bead": "bu-xle97o",
-      "reason": "It runs five full condensation proofs in sequence. After the #4551 cost cuts, hosted unit-lane items still take 116-167 s, above the 150 s bar (2x headroom under the 300 s item timeout)."
     }
   ]
 }
