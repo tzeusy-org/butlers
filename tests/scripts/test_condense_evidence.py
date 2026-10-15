@@ -140,6 +140,100 @@ def _config(removed="tests/test_toy.py::test_removed", survivor="tests/test_toy.
     }
 
 
+# BEGIN exact-coordinate helper (bu-kb2l6g)
+def _assert_exact_mutation_coordinates(
+    consumer,
+    root,
+    base,
+    carrier,
+    saved,
+    ledger_bytes,
+    journal_path,
+    journal_bytes,
+    protected_bytes,
+    tmp_path,
+):
+    coordinate_results = []
+    fixed_bytes = {path: body for path, body in protected_bytes.items() if path != carrier}
+    for field, replacement in (
+        ("line", 3.0),
+        ("column", 15.0),
+        ("line", True),
+        ("column", False),
+    ):
+        changed_ledger = copy.deepcopy(saved)
+        changed_journal = json.loads(journal_bytes)
+        original = changed_ledger["proof"]["mutation"]["mutants"][0][field]
+        assert type(original) is int
+        if type(replacement) is float:
+            assert original == replacement
+        changed_ledger["proof"]["mutation"]["mutants"][0][field] = replacement
+        changed_journal["mutations"][0][field] = replacement
+        evidence.publish(carrier, changed_ledger)
+        evidence.publish(journal_path, changed_journal)
+        account_bytes = {path: path.read_bytes() for path in (carrier, journal_path)}
+        attempts = []
+        try:
+            for _ in range(2):
+                try:
+                    result = consumer.verify(root, base, [carrier])
+                except consumer.EvidenceError as refusal:
+                    result = {"status": "REFUSED", "category": str(refusal)}
+                attempts.append({"status": result["status"], "category": result.get("category")})
+                assert all(path.read_bytes() == body for path, body in fixed_bytes.items())
+                assert all(path.read_bytes() == body for path, body in account_bytes.items())
+            coordinate_results.append(
+                {"case": f"{field}:{type(replacement).__name__}", "attempts": attempts}
+            )
+        finally:
+            carrier.write_bytes(ledger_bytes)
+            journal_path.write_bytes(journal_bytes)
+        assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+        assert all(path.read_bytes() == body for path, body in protected_bytes.items())
+    reordered = copy.deepcopy(saved)
+    reordered["proof"]["mutation"]["mutants"][0] = dict(
+        reversed(list(reordered["proof"]["mutation"]["mutants"][0].items()))
+    )
+    reordered_journal = json.loads(journal_bytes)
+    reordered_journal["mutations"][0] = dict(
+        reversed(list(reordered_journal["mutations"][0].items()))
+    )
+    carrier.write_text(json.dumps(reordered, indent=2) + "\n")
+    journal_path.write_text(json.dumps(reordered_journal, indent=2) + "\n")
+    assert carrier.read_bytes() != ledger_bytes and journal_path.read_bytes() != journal_bytes
+    assert list(json.loads(carrier.read_bytes())["proof"]["mutation"]["mutants"][0]) != list(
+        saved["proof"]["mutation"]["mutants"][0]
+    )
+    assert list(json.loads(journal_path.read_bytes())["mutations"][0]) != list(
+        json.loads(journal_bytes)["mutations"][0]
+    )
+    reordered_bytes = {path: path.read_bytes() for path in (carrier, journal_path)}
+    try:
+        for _ in range(2):
+            assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+            assert all(path.read_bytes() == body for path, body in fixed_bytes.items())
+            assert all(path.read_bytes() == body for path, body in reordered_bytes.items())
+    finally:
+        carrier.write_bytes(ledger_bytes)
+        journal_path.write_bytes(journal_bytes)
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    assert all(path.read_bytes() == body for path, body in protected_bytes.items())
+    evidence.publish(
+        tmp_path / "coordinate-type-results.json",
+        {"cases": coordinate_results, "key_order_reads": 2, "restored_healthy": "PASS"},
+    )
+    assert all(
+        attempt["status"] == "REFUSED"
+        and attempt["category"] == "changed-paired-mutation-operation"
+        for case in coordinate_results
+        for attempt in case["attempts"]
+    ), coordinate_results
+    return coordinate_results
+
+
+# END exact-coordinate helper (bu-kb2l6g)
+
+
 def test_prove_isolates_runtime_temporaries_and_binds_carriers(tmp_path, monkeypatch):
     """REQ-testing-053: actual retention stays owned and original requests bind runtime roots."""
     import getpass
@@ -396,6 +490,20 @@ def test_prove_isolates_runtime_temporaries_and_binds_carriers(tmp_path, monkeyp
         case["status"] == "REFUSED" and case["category"] == "invalid-owned-copy-journal"
         for case in journal_type_results
     ), journal_type_results
+    # BEGIN exact-coordinate caller (bu-kb2l6g)
+    assert _assert_exact_mutation_coordinates(
+        consumer,
+        root,
+        base,
+        carrier,
+        saved,
+        ledger_bytes,
+        journal_path,
+        journal_bytes,
+        protected_bytes,
+        tmp_path,
+    )
+    # END exact-coordinate caller (bu-kb2l6g)
     evidence.publish(tmp_path / "runtime-forgery-results.json", {"refusals": refusals})
     assert consumer.verify(root, base, [carrier])["status"] == "PASS"
     with pytest.raises(evidence.EvidenceError, match="output-already-exists"):

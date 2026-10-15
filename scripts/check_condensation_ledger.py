@@ -1312,7 +1312,8 @@ def executable_proof(
                 raise EvidenceError("mutation-journal-before-mismatch")
             actual = expected_mutants[mutant["id"]][0 if side == "removed" else 1]
             if (
-                any(
+                any(type(change.get(k)) is not int for k in ("line", "column"))
+                or any(
                     change.get(k) != actual[k] for k in ("id", "path", "line", "column", "operator")
                 )
                 or canonical(change.get("target")) != canonical(actual["target"])
