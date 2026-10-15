@@ -26,12 +26,14 @@ AUTHORIZATIONS = "tests/contract-evolution-authorizations/"
 REQUESTS = "tests/contract-evolution-requests/"
 AUTH_SCHEMA = "contract-evolution-authorization/v1"
 REQUEST_SCHEMA = "contract-evolution-request/v1"
-# These exact execution/control implementations are not subject dependencies.
-# The existing external observer forbids their use by the selected subjects.
+# Actual execution bodies must also be independently authorized source inputs.
 MACHINERY = {
     "scripts/contract_evolution.py",
     "scripts/check_condensation_ledger.py",
-    "tests/scripts/test_check_condensation_ledger.py",
+    "scripts/contract_lifecycle.py",
+    "scripts/condense_evidence.py",
+    "scripts/pre_push.py",
+    "scripts/condensation_lineage.py",
 }
 
 
@@ -131,6 +133,8 @@ def authorize(root: Path, base: str, trusted: str, request: dict) -> tuple[dict,
     authority_record = record_at(root, trusted, name)
     if authority_record is None:
         raise ledger.EvidenceError("missing-protected-contract-authority")
+    if current_record(root, name) != authority_record:
+        raise ledger.EvidenceError("changed-protected-contract-authority")
     authority = ledger._strict_json_body(ledger.committed_body(root, trusted, name).decode())
     ledger.fields(authority, {"schema", "id", "bead", "decision", "owners", "contracts", "inputs"})
     if authority["schema"] != AUTH_SCHEMA or authority["id"] != request["authorization"]:
@@ -211,17 +215,21 @@ def authorize(root: Path, base: str, trusted: str, request: dict) -> tuple[dict,
     records = {row["path"]: row for row in inputs}
     if any(records[p]["before"] != records[p]["after"] for p in ("pyproject.toml", "uv.lock")):
         raise ledger.EvidenceError("changed-environment-needs-independent-installed-tools")
-    # New public history is already trusted. Candidate-only deltas must be
-    # explicitly reviewed inputs, exact changed normative blocks, or machinery
-    # that the executing subject is forbidden to observe.
+    # Freshness alone cannot approve executing machinery or a new request.
+    tracked = set(ledger.tracked_paths(root))
+    actual = {r["path"]: r for r in executor_records()}
+    for path in MACHINERY:
+        if path not in tracked or ledger.input_record(root, path) != actual[path]:
+            raise ledger.EvidenceError("unapproved-contract-executor")
+    # New public history is trusted; every candidate delta needs exact approval.
     changed = ledger.git(root, "diff", "--name-only", "-z", "--no-renames", trusted, "--")
     for path in filter(None, changed.split("\0")):
         ledger.public_path(path)
-        if path in names or path in MACHINERY:
+        if path.startswith(AUTHORIZATIONS):
+            if current_record(root, path) != record_at(root, trusted, path):
+                raise ledger.EvidenceError("changed-protected-contract-authority")
             continue
-        if path.startswith((REQUESTS, AUTHORIZATIONS)) and path.endswith(".json"):
-            if current_record(root, path) is None:
-                raise ledger.EvidenceError("missing-contract-control")
+        if path in names:
             continue
         if path in by_path:
             old = ledger.committed_body(root, trusted, path).decode()
@@ -260,19 +268,15 @@ def _read_run(directory, run, side, selection, records, controls, tools, nonce):
     if run["id"] != side:
         raise ledger.EvidenceError("changed-contract-run-identity")
     execution_request = ledger.strict_json(directory / (side + ".request.json"))
-    if (
-        execution_request
-        != {
-            "root": str(directory / side),
-            "selection": selection,
-            "scope": scope,
-            "nonce": nonce,
-            "output": str(directory / (side + ".json")),
-            "id": side,
-            "control_inputs": sorted(controls),
-        }
-        or (directory / (side + ".subject-probe")).read_bytes() != nonce.encode()
-    ):
+    if execution_request != {
+        "root": str(directory / side),
+        "selection": selection,
+        "scope": scope,
+        "nonce": nonce,
+        "output": str(directory / (side + ".json")),
+        "id": side,
+        "control_inputs": [],
+    }:
         raise ledger.EvidenceError("changed-contract-execution-request")
     saved = ledger.strict_json(directory / (side + ".json"))
     if saved != run or (
@@ -306,12 +310,24 @@ def _read_run(directory, run, side, selection, records, controls, tools, nonce):
     boundary = run["request_boundary"]
     ledger.fields(boundary, {"inputs", "runtime_read", "descendant_execution"})
     if (
-        boundary["inputs"] != sorted(controls)
+        boundary["inputs"] != []
         or boundary["runtime_read"] is not False
         or type(boundary["descendant_execution"]) is not bool
     ):
         raise ledger.EvidenceError("contract-control-runtime-boundary")
-    ledger.require_request_observation(run["request_access"], boundary, controls, records)
+    ledger.require_request_observation(run["request_access"], boundary, set(), records)
+    import contract_lifecycle
+
+    contract_lifecycle.validate(
+        directory / (side + ".json"),
+        [
+            sys.executable,
+            str(Path(__file__).resolve().with_name("condense_evidence.py")),
+            "_worker",
+            str(directory / (side + ".request.json")),
+        ],
+        nonce,
+    )
     arcs = ledger.coverage_arcs(directory / (run["id"] + ".coverage"), run)
     if arcs != run["arcs"] or any(not arcs[row["key"]] for row in cases):
         raise ledger.EvidenceError("unproved-contract-case-execution")
@@ -335,6 +351,7 @@ def executor_records():
 def execute(root, base, authority, request, directory, controls, *, trusted, nonce=None):
     """Reuse the existing observed executor in exact complete owned snapshots."""
     import condense_evidence as producer
+    import contract_lifecycle
 
     directory.mkdir()
     deadline = time.monotonic() + request["timeout_s"]
@@ -400,8 +417,9 @@ def execute(root, base, authority, request, directory, controls, *, trusted, non
                             directory / (side + ".json"),
                             side,
                             max(0.001, deadline - time.monotonic() - 15),
-                            controls,
+                            set(),
                             cancelled,
+                            contract_lifecycle.run,
                         ): side
                         for side in copies
                     }
@@ -537,7 +555,7 @@ def fresh_accounts(
                         nonce,
                     ],
                     root,
-                    timeout=max(0.001, request["timeout_s"] - 8),
+                    timeout=max(0.001, request["timeout_s"] - 10),
                 )
             except Refusal:
                 raise ledger.EvidenceError("fresh-contract-evolution-proof-refused") from None
@@ -634,7 +652,7 @@ def main():
 
     previous_handler = signal.signal(signal.SIGALRM, expired)
     previous_timer = signal.getitimer(signal.ITIMER_REAL)
-    signal.setitimer(signal.ITIMER_REAL, max(0.001, request["timeout_s"] - 15))
+    signal.setitimer(signal.ITIMER_REAL, max(0.001, request["timeout_s"] - 25))
     try:
         authority, name = authorize(root, args.base, args.trusted, request)
         paths = ledger.tracked_paths(root)

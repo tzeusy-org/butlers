@@ -519,6 +519,7 @@ def suite(
     timeout: float,
     control_inputs: set[str] | None = None,
     cancellation: threading.Event | None = None,
+    runner=None,
 ) -> dict:
     request = output.with_suffix(".request.json")
     publish(
@@ -543,7 +544,7 @@ def suite(
     if control_inputs:
         output.with_suffix(".subject-probe").write_bytes(nonce.encode())
     try:
-        code, cleaned, access = request_access_run(
+        code, cleaned, access = (runner or request_access_run)(
             command, copy_root, request, output, env, timeout, control_inputs or set(), cancellation
         )
     finally:
@@ -882,8 +883,8 @@ class RequestAccessStream:
         return complete, rows
 
 
-def request_access_run(command, root, request, output, env, timeout, inputs, cancellation=None):
-    access = {
+def request_access_record(inputs):
+    return {
         "observer": "strace" if inputs else "not-required",
         "inputs": sorted(inputs),
         "accesses": 0,
@@ -900,6 +901,10 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
         "version_sha256": None,
         "finalization_failures": [],
     }
+
+
+def request_access_run(command, root, request, output, env, timeout, inputs, cancellation=None):
+    access = request_access_record(inputs)
     carrier = output.with_suffix(".access.json")
     publish(carrier, access)
     process_record = output.with_suffix(".process.json")
