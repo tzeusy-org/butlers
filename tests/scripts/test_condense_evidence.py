@@ -198,8 +198,15 @@ def _assert_exact_mutation_coordinates(
     reordered_journal["mutations"][0] = dict(
         reversed(list(reordered_journal["mutations"][0].items()))
     )
-    evidence.publish(carrier, reordered)
-    evidence.publish(journal_path, reordered_journal)
+    carrier.write_text(json.dumps(reordered, indent=2) + "\n")
+    journal_path.write_text(json.dumps(reordered_journal, indent=2) + "\n")
+    assert carrier.read_bytes() != ledger_bytes and journal_path.read_bytes() != journal_bytes
+    assert list(json.loads(carrier.read_bytes())["proof"]["mutation"]["mutants"][0]) != list(
+        saved["proof"]["mutation"]["mutants"][0]
+    )
+    assert list(json.loads(journal_path.read_bytes())["mutations"][0]) != list(
+        json.loads(journal_bytes)["mutations"][0]
+    )
     reordered_bytes = {path: path.read_bytes() for path in (carrier, journal_path)}
     try:
         for _ in range(2):
