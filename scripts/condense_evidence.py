@@ -43,12 +43,14 @@ from check_condensation_ledger import (
     named_coverage_residue,
     production_dependencies,
     public_path,
+    runtime_directory_identity,
     same_owner_context_accounts,
     source_records,
     strict_json,
     test_path,
     tool_record,
     tracked_paths,
+    validate_runtime_directory,
 )
 from pre_push import Refusal, await_owned_group_exit, recovery_signals
 
@@ -351,6 +353,12 @@ def worker(request: Path) -> int:
             name: os.environ.get(name) for name in ("TMPDIR", "PYTEST_DEBUG_TEMPROOT")
         }
         runtime_environment["tempfile_root"] = tempfile.gettempdir()
+    runtime_directory = None
+    if "runtime_directory" in config:
+        validate_runtime_directory(config["runtime_directory"])
+        runtime_directory = runtime_directory_identity(Path(tempfile.gettempdir()))
+        if runtime_directory != config["runtime_directory"]:
+            raise EvidenceError("runtime-directory-replaced")
     cases = {}
     complete_collection = False
     deselected = 0
@@ -530,6 +538,7 @@ def worker(request: Path) -> int:
                 if runtime_environment is not None
                 else {}
             ),
+            **({"runtime_directory": runtime_directory} if runtime_directory is not None else {}),
         },
     )
     return 0 if complete else 2
@@ -640,7 +649,15 @@ def suite(
     cancellation: threading.Event | None = None,
     runner=None,
     temporary_root: Path | None = None,
+    runtime_directory: dict | None = None,
 ) -> dict:
+    if runtime_directory is not None:
+        validate_runtime_directory(runtime_directory)
+        if (
+            temporary_root is None
+            or runtime_directory_identity(temporary_root) != runtime_directory
+        ):
+            raise EvidenceError("runtime-directory-replaced")
     runtime_environment = (
         {"TMPDIR": str(temporary_root), "PYTEST_DEBUG_TEMPROOT": str(temporary_root)}
         if temporary_root is not None
@@ -662,6 +679,7 @@ def suite(
                 if runtime_environment is not None
                 else {}
             ),
+            **({"runtime_directory": runtime_directory} if runtime_directory is not None else {}),
         },
     )
     env = dict(os.environ)
@@ -1266,8 +1284,9 @@ def artifact(path: Path, output: Path) -> dict:
 
 
 def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60) -> dict:
-    if output.exists():
+    if output.exists() or output.is_symlink():
         raise EvidenceError("output-already-exists")
+    output = output.resolve()
     output.mkdir(parents=True)
     receipt = {
         "status": "UNKNOWN",
@@ -1382,6 +1401,11 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
         base = git(root, "rev-parse", config["base"])
         if overlap:
             same_owner_context_accounts(root, base, overlap)
+        runtime_roots = {kind: output / (kind + ".runtime-tmp") for kind in selections}
+        runtime_identities = {}
+        for kind, temporary in runtime_roots.items():
+            temporary.mkdir()
+            runtime_identities[kind] = runtime_directory_identity(temporary)
         runs, baseline = [], {}
         killed = {"removed": [], "survivors": []}
         with tempfile.TemporaryDirectory(prefix="condense-owned-", dir=output) as directory:
@@ -1446,6 +1470,8 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                     remaining,
                     control_inputs,
                     cancellation,
+                    temporary_root=runtime_roots[kind],
+                    runtime_directory=runtime_identities[kind],
                 )
                 run["side"] = kind
                 publish(path, run)

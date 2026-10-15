@@ -58,6 +58,37 @@ regardless of completion order.
 Sibling cancellation retains an observed terminal child status while still
 stopping running children within the existing finite wait quantum.
 
+Every ordinary phase overrides inherited `TMPDIR` and `PYTEST_DEBUG_TEMPROOT`
+with its side's fresh real `removed.runtime-tmp` or `survivors.runtime-tmp`
+directory directly beneath the canonical fresh proof output. Root creation and
+every launch remain inside the same absolute proof deadline. Direct `suite`
+callers keep their existing environment behavior; contract evolution retains its
+existing owned temporary placement. No phase falls back to inherited roots or
+cleans host pytest trees. The two runtime directories remain with the proof
+carriers for independent consumption; source copies are restored and removed.
+
+Each original `<id>.request.json` has exactly the two string environment fields
+`TMPDIR` and `PYTEST_DEBUG_TEMPROOT`. Every actual ordinary worker run adds the
+required closed `runtime_environment` record with those fields and the observed
+`tempfile_root`; all three equal the independently derived side directory.
+A separate closed `runtime_directory:{device,inode}` record in the original
+request and worker run binds the fresh directory's actual filesystem identity.
+The producer rechecks identity before every launch. The reader rejects missing,
+replaced, indirect, shared or escaping roots, compares current identity with the
+original request and saved run, and reconstructs the complete request from the
+binding, side, selection, scope, nonce, output and protected control inputs. Its
+source-copy root comes from the retained restored journal, including its exact
+mutation and batch account, rather than trusting a supplied measurement path.
+Original requests must be real direct sibling files. Rewriting a ledger and its
+matching run JSON/digest cannot replace this independent original request check.
+
+Old carriers without these required records need fresh execution. Directory
+identity detects replacement while original request evidence remains intact;
+these local unsigned files provide no cryptographic guarantee if all original
+evidence is rewritten. This ownership boundary does not sandbox arbitrary host
+access by subjects. Existing protected-request observation, complete SQLite
+contexts, source binding, settlement and UNKNOWN rules remain mandatory.
+
 A protected PASS requires nonempty actual branch arcs, zero residue, no waived
 normative arcs, and every removed owner's semantic mutant kill retained by one
 of its named survivors. Coverage is compared for each removed owner against
