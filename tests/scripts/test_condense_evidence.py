@@ -356,6 +356,46 @@ def test_prove_isolates_runtime_temporaries_and_binds_carriers(tmp_path, monkeyp
             assert refusals[-1]["category"] == "invalid-owned-copy-journal"
         finally:
             journal_path.write_bytes(journal_bytes)
+    # Change only the retained journal: genuine request/run/SQLite bytes remain
+    # fixed, and Python-equal numeric representations must still refuse.
+    protected_paths = {carrier}
+    for run in saved["proof"]["runs"]:
+        protected_paths.add(output / (run["id"] + ".request.json"))
+        protected_paths.add(output / run["artifact"]["path"])
+        protected_paths.add(output / run["coverage_artifact"]["path"])
+    protected_bytes = {path: path.read_bytes() for path in protected_paths}
+    journal_type_results = []
+    for account, field, replacement in (
+        ("batches", "index", 0.0),
+        ("batches", "index", False),
+        ("mutations", "line", 3.0),
+    ):
+        changed_journal = json.loads(journal_bytes)
+        original = changed_journal[account][0][field]
+        assert type(original) is int and original == replacement
+        changed_journal[account][0][field] = replacement
+        evidence.publish(journal_path, changed_journal)
+        try:
+            try:
+                result = consumer.verify(root, base, [carrier])
+            except consumer.EvidenceError as refusal:
+                result = {"status": "REFUSED", "category": str(refusal)}
+            journal_type_results.append(
+                {
+                    "case": f"{account}.{field}:{type(replacement).__name__}",
+                    "status": result["status"],
+                    "category": result.get("category"),
+                }
+            )
+            assert all(path.read_bytes() == body for path, body in protected_bytes.items())
+        finally:
+            journal_path.write_bytes(journal_bytes)
+    assert consumer.verify(root, base, [carrier])["status"] == "PASS"
+    evidence.publish(tmp_path / "journal-type-results.json", {"cases": journal_type_results})
+    assert all(
+        case["status"] == "REFUSED" and case["category"] == "invalid-owned-copy-journal"
+        for case in journal_type_results
+    ), journal_type_results
     evidence.publish(tmp_path / "runtime-forgery-results.json", {"refusals": refusals})
     assert consumer.verify(root, base, [carrier])["status"] == "PASS"
     with pytest.raises(evidence.EvidenceError, match="output-already-exists"):

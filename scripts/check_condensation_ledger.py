@@ -1662,10 +1662,11 @@ def verify_ledger(
     executable_proof(directory, proof, binding, value["removed"], value["survivors"], root=root)
     # Preserve the existing causal mutation/SQLite refusals before checking the
     # additional retained journal account. Both must qualify for admission.
+    # Canonical JSON identity preserves numeric types that Python equality merges.
     journal = strict_json(directory / "journal.json")
     if (
-        journal["mutations"] != proof["mutation"]["mutants"]
-        or journal["batches"] != proof["mutation"]["batches"]
+        canonical(journal["mutations"]) != canonical(proof["mutation"]["mutants"])
+        or canonical(journal["batches"]) != canonical(proof["mutation"]["batches"])
     ):
         raise EvidenceError("invalid-owned-copy-journal")
     return removed
