@@ -1029,3 +1029,209 @@ def test_reconciliation_requires_complete_node_identity(
     restored_code, restored_receipt, _ = observer("restored")
     assert restored_code == 0 and restored_receipt["state"] == "CANDIDATE"
     assert restored_receipt["provenance"] == healthy_receipt["provenance"]
+
+
+def test_covered_weight_refresh_is_independent_and_source_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-ci-shard-assurance-002/006: genuine source policy, independent cost hints."""
+    import struct
+
+    _corpus(tmp_path, monkeypatch)
+    inventory = partition.collect_inventory(root=tmp_path)
+    covered = _weights(inventory)
+    profile = covered["profiles"]["CTracer"]
+    profile["origin"] = {
+        **inventory["identity"],
+        "repository": "fixture/repo",
+        "workflow": "CI coverage assurance",
+        "run": "123",
+        "attempt": "1",
+        "event": "workflow_dispatch",
+    }
+    coordinates = {key: profile["origin"][key] for key in ("run", "attempt", "head")}
+    receipt = {
+        "state": "CANDIDATE",
+        **coordinates,
+        "provenance": {"failure": None, "selected_run": coordinates},
+        "source": {
+            "repository": "fixture/repo",
+            "workflow": ".github/workflows/ci-coverage.yml",
+            "branch": "main",
+            "event": "workflow_dispatch",
+            **coordinates,
+        },
+    }
+    untraced = copy.deepcopy(covered)
+    untraced["profiles"]["none"] = untraced["profiles"].pop("CTracer")
+    untraced["profiles"]["none"]["origin"]["event"] = "merge_group"
+    legacy_receipt = {key: value for key, value in receipt.items() if key != "source"}
+    bodies = {
+        "candidate.json": untraced,
+        "receipt.json": legacy_receipt,
+        "covered-candidate.json": covered,
+        "covered-receipt.json": receipt,
+    }
+    observer = {
+        "id": 321,
+        "head_branch": "main",
+        "head_sha": "a" * 40,
+        "head_repository": {"full_name": "fixture/repo"},
+        "conclusion": "success",
+        "status": "completed",
+        "event": "schedule",
+        "path": ".github/workflows/ci-shard-weights.yml",
+    }
+    artifact = {
+        "id": 456,
+        "name": "ci-weight-candidate",
+        "expired": False,
+        "size_in_bytes": 1000,
+        "workflow_run": {"id": 321, "head_sha": "a" * 40},
+    }
+    requests = []
+    duplicate_member = False
+    damaged_member = None
+
+    def public_api(path, *, binary=False, timeout=30):
+        requests.append((path, timeout))
+        assert timeout == 5
+        if binary:
+            memory = io.BytesIO()
+            with zipfile.ZipFile(memory, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, body in bodies.items():
+                    archive.writestr(name, json.dumps(body))
+                if duplicate_member:
+                    archive.writestr("covered-candidate.json", json.dumps(covered))
+            original = memory.getvalue()
+            if damaged_member is None:
+                return original
+            name, kind = damaged_member
+            broken = bytearray(original)
+            with zipfile.ZipFile(io.BytesIO(original)) as archive:
+                info = archive.getinfo(name)
+                central = archive.start_dir
+                for item in archive.infolist():
+                    if item.filename == name:
+                        break
+                    lengths = struct.unpack_from("<HHH", broken, central + 28)
+                    central += 46 + sum(lengths)
+            local = info.header_offset
+            data = local + 30 + len(info.filename.encode()) + len(info.extra)
+            if kind == "reserved-deflate":
+                broken[data] = 7
+            elif kind == "unsupported-compression":
+                struct.pack_into("<H", broken, local + 8, 99)
+                struct.pack_into("<H", broken, central + 10, 99)
+            elif kind == "encrypted":
+                struct.pack_into("<H", broken, local + 6, info.flag_bits | 1)
+                struct.pack_into("<H", broken, central + 8, info.flag_bits | 1)
+            elif kind == "crc":
+                struct.pack_into("<I", broken, local + 14, info.CRC ^ 1)
+                struct.pack_into("<I", broken, central + 16, info.CRC ^ 1)
+            elif kind == "zero-length":
+                struct.pack_into("<I", broken, local + 18, 0)
+                struct.pack_into("<I", broken, central + 20, 0)
+            else:
+                raise AssertionError(kind)
+            sibling = "candidate.json" if name.startswith("covered-") else "covered-candidate.json"
+            with (
+                zipfile.ZipFile(io.BytesIO(broken)) as damaged,
+                zipfile.ZipFile(io.BytesIO(original)) as healthy,
+            ):
+                assert damaged.read(sibling) == healthy.read(sibling)
+            return bytes(broken)
+        if "/workflows/" in path:
+            return {"workflow_runs": [observer]}
+        return {"artifacts": [artifact]}
+
+    monkeypatch.setattr(candidates, "api", public_api)
+    output = tmp_path / "restored"
+
+    def restored():
+        requests.clear()
+        candidates.restore(repository="fixture/repo", output=output, root=tmp_path)
+        assert len(requests) == 3
+        return partition.read_json(output / "weights.json")["profiles"]
+
+    assert set(restored()) == {"none", "CTracer"}
+    for event in ("schedule", "workflow_dispatch"):
+        profile["origin"]["event"] = event
+        receipt["source"]["event"] = event
+        assert restored()["CTracer"] == profile
+    for target, field, invalid in (
+        (profile["origin"], "event", "pull_request"),
+        (profile["origin"], "workflow", "Other workflow"),
+        (profile["origin"], "repository", "foreign/repo"),
+        (profile["origin"], "attempt", "2"),
+        (receipt["source"], "workflow", ".github/workflows/ci.yml"),
+        (receipt["source"], "branch", "foreign"),
+        (receipt["source"], "event", "schedule"),
+        (receipt, "state", "UNKNOWN"),
+        (profile, "collected_at", "2000-01-01T00:00:00+00:00"),
+        (profile, "runtime", {**profile["runtime"], "lock_digest": "0" * 64}),
+        (profile, "file_digests", {}),
+    ):
+        original = target[field]
+        target[field] = invalid
+        assert set(restored()) == {"none"}
+        target[field] = original
+    duplicate_member = True
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        assert set(restored()) == {"none"}
+    duplicate_member = False
+    removed = bodies.pop("covered-receipt.json")
+    assert set(restored()) == {"none"}
+    bodies["covered-receipt.json"] = removed
+    legacy_receipt["state"] = "UNKNOWN"
+    assert set(restored()) == {"CTracer"}
+    legacy_receipt["state"] = "CANDIDATE"
+    assert restored()["none"] == untraced["profiles"]["none"]
+
+    # Real malformed ZIP members must refuse only their own advisory pair.
+    for kind in ("reserved-deflate", "unsupported-compression", "encrypted", "crc", "zero-length"):
+        for name, valid, invalid in (
+            ("candidate.json", "CTracer", "uncovered"),
+            ("covered-candidate.json", "none", "covered"),
+        ):
+            damaged_member = (name, kind)
+            assert set(restored()) == {valid}
+            status = partition.read_json(output / "restore-receipt.json")
+            assert status["sources"][invalid]["state"] == "FALLBACK"
+    damaged_member = None
+    assert set(restored()) == {"none", "CTracer"}
+
+    # This is source selection, not synthetic execution masquerading as a run.
+    run = {
+        "id": 123,
+        "run_attempt": 1,
+        "head_sha": coordinates["head"],
+        "head_branch": "main",
+        "head_repository": {"full_name": "fixture/repo"},
+        "repository": {"full_name": "fixture/repo"},
+        "path": ".github/workflows/ci-coverage.yml",
+        "name": "CI coverage assurance",
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+    }
+    monkeypatch.setattr(candidates, "api", lambda *args, **kwargs: {"workflow_runs": [run]})
+    for event in ("schedule", "workflow_dispatch"):
+        run["event"] = event
+        assert candidates.covered_run("fixture/repo", candidates.Provenance()) == run
+    for field, invalid in (
+        ("event", "pull_request"),
+        ("event", "merge_group"),
+        ("head_branch", "foreign"),
+        ("head_repository", {"full_name": "foreign/repo"}),
+        ("repository", {"full_name": "foreign/repo"}),
+        ("path", ".github/workflows/ci.yml"),
+        ("status", "in_progress"),
+        ("conclusion", "failure"),
+        ("run_attempt", True),
+    ):
+        original = run[field]
+        run[field] = invalid
+        with pytest.raises(ValueError):
+            candidates.covered_run("fixture/repo", candidates.Provenance())
+        run[field] = original
