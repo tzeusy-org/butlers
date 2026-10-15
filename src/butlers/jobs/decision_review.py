@@ -332,9 +332,9 @@ def _source_updated_at(value: Any) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        return parsed.astimezone(UTC) if parsed.utcoffset() is not None else None
+    except (ValueError, OverflowError):
         return None
-    return parsed.astimezone(UTC) if parsed.utcoffset() is not None else None
 
 
 def _is_p1_bug(issue: dict[str, Any]) -> bool:
