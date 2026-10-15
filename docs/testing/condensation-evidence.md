@@ -440,14 +440,21 @@ reader. Existing CTracer, pytest phases, mutation journal and SQLite authority
 remain necessary. Unsupported forms stay UNKNOWN rather than borrowing a
 library or executable allowlist.
 
-Prompt sibling cancellation preserves the original refusal and deadlines. It
-signals only currently live tracees whose original start identity and owning
-process group still match, allowing the observer to record their actual exits
-within the existing deadline. The observer's signal set is SIGKILL alone: it
-admits strace's killed-exit records for those tracees while delivered-signal
-records stay out of the stream. The existing whole-group finally still settles
-all owned processes. Missing or uncertain actor settlement remains incomplete;
-a completed diagnostic is not a successful proof.
+A worker failure, timeout or interrupt cancels the sibling side promptly,
+preserving the original failure and deadlines. Cancellation signals only
+currently live tracees whose original start identity and owning process group
+still match. The observer's signal set is SIGKILL alone, so strace records each
+killed tracee's `+++ killed by SIGKILL +++` exit within the existing deadline,
+while delivered-signal records stay out of the stream. The existing whole-group
+finally still settles all owned processes. Missing or uncertain actor settlement
+remains incomplete; a completed diagnostic is not a successful proof.
+
+A worker that completed and published, but whose observation refuses, is not
+such a failure and does not cancel its sibling. Both sides settle inside the
+same total deadline, then refusals raise in fixed side order, removed first, so
+the receipt and both carriers never depend on which side finished first. If the
+sibling fails or times out after an earlier completed refusal, that refusal
+remains the reported cause.
 
 A closed incomplete observation is published before launch and merged onto an
 already-published actual worker result even when observation or cancellation
