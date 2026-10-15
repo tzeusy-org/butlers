@@ -448,11 +448,31 @@ library or executable allowlist.
 A worker failure, timeout or interrupt cancels the sibling side promptly,
 preserving the original failure and deadlines. Cancellation signals only
 currently live tracees whose original start identity and owning process group
-still match. The observer's signal set is SIGKILL alone, so strace records each
-killed tracee's `+++ killed by SIGKILL +++` exit within the existing deadline,
-while delivered-signal records stay out of the stream. The existing whole-group
-finally still settles all owned processes. Missing or uncertain actor settlement
-remains incomplete; a completed diagnostic is not a successful proof.
+still match. The ordinary observer captures `signal=all`: strace's signal
+filter also controls killed terminal records, so a delivery filter would omit
+other actual deaths. Complete TERM and KILL histories retain each real
+`+++ killed by ... +++` record within the unchanged deadline.
+
+The parser recognizes only complete canonical nonterminal notifications: standard
+(non-realtime) signal names with matching `si_signo`, `SI_USER` or `SI_TKILL`
+source PID/UID fields; `SIGCHLD` with `CLD_EXITED` numeric status or
+`CLD_KILLED/DUMPED/TRAPPED/STOPPED/CONTINUED` signal status, PID/UID and numeric
+user/system ticks (including strace's numeric seconds comments); and
+`--- stopped by SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU ---` group stops. Other siginfo
+layouts, malformed/truncated records and notifications after exit remain UNKNOWN.
+These records never provide an exit, executable, parent, probe or input read and
+never clear a pending syscall. Only a paired resumed syscall settles its pending
+entry; even a genuine terminal cannot erase an unfinished call. A notification
+cannot substitute for an omitted terminal. Handler syscalls remain fully observed,
+including genuine excluded-input accesses. The real ordinary producer and strict
+reader exercise TERM/KILL descendants, group stop/continue, a nonfatal handler and
+its continuation, both probes, and an omitted actual killed-terminal refusal.
+
+The existing whole-group finally still settles all owned processes. Missing or
+uncertain actor settlement remains incomplete; a completed diagnostic is not a
+successful proof. The changed canonical trace options invalidate older observer
+bindings: regenerate actual source/tool/options/nonce-bound evidence instead of
+restamping a receipt. Unsupported session/namespace changes remain refused.
 
 A worker that completed and published, but whose observation refuses, is not
 such a failure and does not cancel its sibling. Both sides settle inside the
