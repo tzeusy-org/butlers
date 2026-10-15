@@ -780,6 +780,22 @@ class RequestAccessStream:
     EXITED = re.compile(
         r"\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+(?: \(core dumped\))?) \+\+\+"
     )
+    # Supported canonical strace notifications, not syscall or terminal records.
+    # Other siginfo layouts (including realtime/queued payloads) stay UNKNOWN.
+    SIGNAL = "(?:" + "|".join(s.name for s in signal.Signals if s.value < signal.SIGRTMIN) + ")"
+    DELIVERY = re.compile(
+        r"--- (?P<signal>" + SIGNAL + r") \{si_signo=(?P=signal), "
+        r"si_code=(?:SI_USER|SI_TKILL), si_pid=\d+, si_uid=\d+\} ---"
+    )
+    TICKS = r"\d+(?: /\* \d+\.\d+ s \*/)?"
+    CHILD_DELIVERY = re.compile(
+        r"--- SIGCHLD \{si_signo=SIGCHLD, si_code=(?:CLD_EXITED, "
+        r"si_pid=\d+, si_uid=\d+, si_status=\d+|"
+        r"CLD_(?:KILLED|DUMPED|TRAPPED|STOPPED|CONTINUED), "
+        r"si_pid=\d+, si_uid=\d+, si_status=" + SIGNAL + r"), "
+        r"si_utime=" + TICKS + r", si_stime=" + TICKS + r"\} ---"
+    )
+    GROUP_STOP = re.compile(r"--- stopped by SIG(?:STOP|TSTP|TTIN|TTOU) ---")
     RESUMED = re.compile(r"<\.\.\. (\w+) resumed>(.*)")
     CALL = re.compile(r"(\w+)\((.*)\) += (.+)")
     RESULT = re.compile(r"(-?\d+)")
@@ -841,6 +857,14 @@ class RequestAccessStream:
                 return
             if actor in self.exits:
                 self.failed = True
+                return
+            if (
+                self.DELIVERY.fullmatch(statement)
+                or self.CHILD_DELIVERY.fullmatch(statement)
+                or self.GROUP_STOP.fullmatch(statement)
+            ):
+                # A delivery may interrupt a pending call. Only its matching
+                # resumed syscall can settle that call; only +++ records exit.
                 return
             if statement.endswith(" <unfinished ...>"):
                 if actor in self.pending:

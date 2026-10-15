@@ -151,11 +151,10 @@ REQUEST_TRACE_OPTIONS = (
     "-xx",
     "-s",
     "0",
-    # The signal set also selects strace's "+++ killed by" exit records. SIGKILL
-    # has no delivery stop, so this keeps delivery records out of the stream
-    # while an owned cancellation's killed tracee still records its exit.
+    # This also selects "+++ killed by" terminals: filtering delivery signals
+    # would silently omit actual deaths outside that same filter.
     "-e",
-    "signal=SIGKILL",
+    "signal=all",
     "-e",
     "trace=%file,%desc,%process,%memory",
 )
