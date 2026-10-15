@@ -29,7 +29,8 @@ pytestmark = pytest.mark.unit
 
 def _corpus(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # This real miniature Git checkout is local fixture evidence. Never borrow
-    # the hosted checkout/attempt identity; pytest restores it after this test.
+    # the hosted checkout/attempt identity or instrumentation mode; explicit
+    # profile cases set their own overrides and pytest restores the environment.
     for name in (
         "GITHUB_SHA",
         "GITHUB_REPOSITORY",
@@ -37,6 +38,8 @@ def _corpus(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GITHUB_RUN_ID",
         "GITHUB_RUN_ATTEMPT",
         "GITHUB_EVENT_NAME",
+        "CI_COVERAGE",
+        "CI_COVERAGE_CORE",
     ):
         monkeypatch.delenv(name, raising=False)
     (root / "tests").mkdir()
