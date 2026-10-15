@@ -1,0 +1,34 @@
+## ADDED Requirements
+
+### Requirement: D19 dark surface preserves dashboard-permissions authority
+
+The specification-only D19 change SHALL leave every existing dashboard-permissions requirement and scenario normative and unchanged at its existing functional boundary: owner-authenticated audit, bounded readable evidence, reason validation, data export/delete safeguards, webhook state and historical seed migration. It SHALL NOT remove, replace, reinterpret or activate those contracts by adding a dark goal/region interface specification. Per-butler permissions are not the future D7 broker grant authority. The UI retires that matrix at M6 while retaining read-only historical decisions, the last-15 privileged-event audit, secret-like-reason rejection, separate export/delete and webhook contracts. Exact seed migration and operator rows remain untouched; no new grant editor is proposed.
+Any M6 integration SHALL have an allocated complete clause-by-clause amendment and fresh independent semantic review with the actual current capability and active-change owner. A historical body annex, matching scenario name, unchanged count, separate path, green source guard or final owner silence SHALL NOT establish that a future producer or consumer preserves a guarantee.
+
+ID: REQ-dashboard-permissions-901
+Source: RFC 0038 D19; design.md; contract-migration.md
+Scope: post-v1
+
+#### Scenario: Existing Permissions Page remains authoritative
+
+- **WHEN** D19 artifacts are added before the complete owner-allocated M6 semantic migration of Permissions Page
+- **THEN** the full original requirement and every original scenario remain binding at the existing dashboard-permissions boundary
+- **AND** the new surface does not establish source clearance, execute a retired unit control or infer a successful future replacement.
+
+#### Scenario: Existing Permissions Matrix API remains authoritative
+
+- **WHEN** D19 artifacts are added before the complete owner-allocated M6 semantic migration of Permissions Matrix API
+- **THEN** the full original requirement and every original scenario remain binding at the existing dashboard-permissions boundary
+- **AND** the new surface does not establish source clearance, execute a retired unit control or infer a successful future replacement.
+
+#### Scenario: Existing Inherited defaults have no legacy persisted seed remains authoritative
+
+- **WHEN** D19 artifacts are added before the complete owner-allocated M6 semantic migration of Inherited defaults have no legacy persisted seed
+- **THEN** the full original requirement and every original scenario remain binding at the existing dashboard-permissions boundary
+- **AND** the new surface does not establish source clearance, execute a retired unit control or infer a successful future replacement.
+
+## Source References
+
+- Non-Negotiable Rules 1, 3, 4 and 6 in about/heart-and-soul/vision.md.
+- RFC 0038 D19 and owner decision 11; further exact decisions and current source boundaries remain the per-requirement Source fields.
+- Requirement-level source: RFC 0038 D19; design.md; contract-migration.md
