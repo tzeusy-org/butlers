@@ -443,7 +443,9 @@ library or executable allowlist.
 Prompt sibling cancellation preserves the original refusal and deadlines. It
 signals only currently live tracees whose original start identity and owning
 process group still match, allowing the observer to record their actual exits
-within the existing deadline. The existing whole-group finally still settles
+within the existing deadline. The observer's signal set is SIGKILL alone: it
+admits strace's killed-exit records for those tracees while delivered-signal
+records stay out of the stream. The existing whole-group finally still settles
 all owned processes. Missing or uncertain actor settlement remains incomplete;
 a completed diagnostic is not a successful proof.
 

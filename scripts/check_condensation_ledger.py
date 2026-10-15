@@ -151,8 +151,11 @@ REQUEST_TRACE_OPTIONS = (
     "-xx",
     "-s",
     "0",
+    # The signal set also selects strace's "+++ killed by" exit records. SIGKILL
+    # has no delivery stop, so this keeps delivery records out of the stream
+    # while an owned cancellation's killed tracee still records its exit.
     "-e",
-    "signal=none",
+    "signal=SIGKILL",
     "-e",
     "trace=%file,%desc,%process,%memory",
 )
@@ -275,6 +278,23 @@ def require_request_observation(access, boundary, requests, records):
         raise EvidenceError("execution-request-runtime-boundary-unproved")
 
 
+def resolve_in(path: Path, directories: dict[Path, Path]) -> Path:
+    """Exactly ``path.resolve()``, reusing resolutions of its directory.
+
+    A non-link entry under a directory the kernel resolves is that directory's
+    resolution plus its name. Files sharing a directory then pay one lstat, not
+    a walk of every component; a traced proof worker observes each of those.
+    """
+    try:
+        if path.name not in {"", ".."} and not stat.S_ISLNK(path.lstat().st_mode):
+            if path.parent not in directories:
+                directories[path.parent] = path.parent.resolve()
+            return directories[path.parent] / path.name
+    except OSError:
+        pass
+    return path.resolve()
+
+
 def tool_record() -> dict:
     """Bind installed proof tools/plugins by actual files, without importing them."""
     names = {"coverage", "pytest"}
@@ -285,24 +305,35 @@ def tool_record() -> dict:
     )
     rows = []
     prefixes = {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}
+    directories = {}
     for name in sorted(names):
         dist = importlib.metadata.distribution(name)
-        if not dist.files:
+        # Each read of ``files`` re-reads RECORD and stats every listed file.
+        files = dist.files
+        if not files:
             raise EvidenceError("installed-tool-files-unknown")
-        for item in sorted(dist.files, key=str):
+        for item in sorted(files, key=str):
             if item.suffix not in {".py", ".so"} and item.name not in {
                 "METADATA",
                 "entry_points.txt",
             }:
                 continue
-            path = Path(dist.locate_file(item)).resolve()
+            path = resolve_in(Path(dist.locate_file(item)), directories)
             if not path.is_file() or not any(prefix in path.parents for prefix in prefixes):
                 raise EvidenceError("installed-tool-source-unknown")
+            # Raw reads: a buffered file object adds four observed syscalls per file.
+            digest = hashlib.sha256()
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                while chunk := os.read(descriptor, 1 << 20):
+                    digest.update(chunk)
+            finally:
+                os.close(descriptor)
             rows.append(
                 {
                     "distribution": name,
                     "path": str(item),
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "sha256": digest.hexdigest(),
                     "mode": path.stat().st_mode & 0o777,
                 }
             )

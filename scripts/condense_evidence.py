@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import codecs
 import copy
 import fcntl
 import hashlib
@@ -16,6 +17,7 @@ import secrets
 import select
 import shutil
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -25,11 +27,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-
-# The owned launcher must not run project startup hooks before the external
-# request-access observer starts. Restore only this exact installed script home.
-if __name__ == "__main__" and sys.flags.isolated:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_condensation_ledger import (
     PROTECTED,
@@ -54,6 +51,16 @@ from check_condensation_ledger import (
     tracked_paths,
 )
 from pre_push import Refusal, await_owned_group_exit, recovery_signals
+
+# The owned launcher waits for its parent's go byte, then becomes the command.
+# Isolated mode runs no project startup hooks before the external observer
+# starts, and the launcher imports nothing: every observed run starts one.
+LAUNCHER = (
+    "import os, sys\n"
+    "if sys.stdin.buffer.read(1) != b'1':\n"
+    "    sys.exit(2)\n"
+    "os.execvpe(sys.argv[1], sys.argv[1:], os.environ)\n"
+)
 
 
 def publish(path: Path, value: dict) -> None:
@@ -83,7 +90,7 @@ def owned_run(
     observer_cancel=None,
 ) -> tuple[int, bool]:
     """Use the landed R1 completion admission for this exact owned child group."""
-    launched = [sys.executable, "-I", str(Path(__file__).resolve()), "_launch", *command]
+    launched = [sys.executable, "-I", "-c", LAUNCHER, *command]
     child = subprocess.Popen(
         launched,
         cwd=cwd,
@@ -229,6 +236,93 @@ def recover(output: Path) -> dict:
         raise EvidenceError("recovery-input-unknown") from None
 
 
+def resolves_to(path: str, targets: set[str]) -> bool:
+    """Exactly ``os.path.realpath(path) in targets``, without its lstat per component.
+
+    A spelling whose final component is not a symlink, under a directory the
+    kernel resolves, has that component last in its realpath. Only a spelling
+    that could end at a target pays the full walk; traced workers open
+    thousands of files, and each walk is a dozen observed syscalls.
+    """
+    if not targets:
+        return False
+    directory, name = os.path.split(path)
+    if name not in {"", os.curdir, os.pardir, *(os.path.basename(t) for t in targets)}:
+        try:
+            info = os.lstat(path)
+        except OSError:
+            try:
+                os.stat(directory or os.curdir)
+            except OSError:
+                pass
+            else:
+                return False
+        else:
+            if not stat.S_ISLNK(info.st_mode):
+                return False
+    return os.path.realpath(path) in targets
+
+
+def directory_sharing_realpath(original):
+    """Return ``original`` (``os.path.realpath``) answering identically with shared walks.
+
+    A non-link absolute path is its directory's realpath plus its name, so each
+    directory is resolved once, by the same rule, rather than once per file.
+    """
+    directories = {}
+
+    def realpath(filename, *, strict=False):
+        path = os.fspath(filename)
+        if not strict and isinstance(path, str) and path.startswith("/"):
+            directory, name = os.path.split(path)
+            if name not in {"", os.curdir, os.pardir}:
+                try:
+                    link = stat.S_ISLNK(os.lstat(path).st_mode)
+                except OSError:
+                    link = True
+                if not link:
+                    if directory not in directories:
+                        directories[directory] = realpath(directory)
+                    return os.path.join(directories[directory], name)
+        return original(filename, strict=strict)
+
+    return realpath
+
+
+def case_arcs(data, root: Path, keys: list[str]) -> dict[str, list]:
+    """Each case's arcs, over its three phase contexts, in files under ``root``.
+
+    The public query API opens and closes the SQLite file for every context and
+    file. One read-only connection answers the same literal context equality,
+    never a regex, and each measured file resolves once.
+    """
+    if not keys:
+        return {}
+    measured = {}
+    for filename in data.measured_files():
+        path = Path(filename).resolve()
+        if root in path.parents:
+            measured[filename] = str(path.relative_to(root))
+    arcs = {}
+    db = sqlite3.connect(Path(data.data_filename()).as_uri() + "?mode=ro&immutable=1", uri=True)
+    try:
+        for key in keys:
+            rows = set()
+            for phase in ("setup", "call", "teardown"):
+                for filename, start, end in db.execute(
+                    "SELECT file.path, arc.fromno, arc.tono FROM arc "
+                    "JOIN file ON file.id = arc.file_id "
+                    "JOIN context ON context.id = arc.context_id WHERE context.context = ?",
+                    (key + "|" + phase,),
+                ):
+                    if filename in measured:
+                        rows.add((measured[filename], start, end))
+            arcs[key] = sorted(rows)
+    finally:
+        db.close()
+    return arcs
+
+
 def worker(request: Path) -> int:
     """Raw pytest parameter identities remain only in this process's memory."""
     import coverage
@@ -274,7 +368,7 @@ def worker(request: Path) -> int:
             # excluded request dependency without that isolation evidence.
             descendant_execution = True
         if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):
-            if os.path.realpath(os.fsdecode(args[0])) in control_inputs:
+            if resolves_to(os.fsdecode(args[0]), control_inputs):
                 control_read = True
                 raise RuntimeError("execution-request-used-as-runtime-data")
 
@@ -330,8 +424,16 @@ def worker(request: Path) -> int:
     previous_core = os.environ.get("COVERAGE_CORE")
     try:
         os.environ["COVERAGE_CORE"] = "ctrace"
-        cov.start()
-        tracer = dict(cov.sys_info()).get("core", "UNKNOWN")
+        # Starting coverage resolves the path of every loaded module, a walk of
+        # observed lstat calls each. Only this setup, never the subject, shares
+        # directory resolutions.
+        realpath = os.path.realpath
+        os.path.realpath = directory_sharing_realpath(realpath)
+        try:
+            cov.start()
+            tracer = dict(cov.sys_info()).get("core", "UNKNOWN")
+        finally:
+            os.path.realpath = realpath
         # Establish the installed tracer first: its sys_info reads platform
         # metadata through an owned subprocess. No subject has been imported or
         # invoked yet. Guard every subsequent event, before pytest's collection,
@@ -366,19 +468,7 @@ def worker(request: Path) -> int:
             os.environ.pop("COVERAGE_CORE", None)
         else:
             os.environ["COVERAGE_CORE"] = previous_core
-    data = cov.get_data()
-    arcs = {}
-    for row in cases.values():
-        case_arcs = set()
-        for phase in ("setup", "call", "teardown"):
-            data.set_query_context(row["key"] + "|" + phase)  # literal exact SQL query, never regex
-            for filename in data.measured_files():
-                path = Path(filename).resolve()
-                if root in path.parents:
-                    case_arcs.update(
-                        (str(path.relative_to(root)), a, b) for a, b in (data.arcs(filename) or [])
-                    )
-        arcs[row["key"]] = sorted(case_arcs)
+    arcs = case_arcs(cov.get_data(), root, [row["key"] for row in cases.values()])
     public_cases = list(cases.values())
     complete = (
         complete_collection
@@ -666,6 +756,18 @@ class RequestAccessStream:
     UNKNOWN rather than zero. No executable or import identity grants an exemption.
     """
 
+    # strace blocks its tracee once the observer pipe fills, so every record's
+    # parse cost is paid by the observed run itself.
+    RECORD = re.compile(r"(\d+) +(.+)")
+    EXITED = re.compile(
+        r"\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+(?: \(core dumped\))?) \+\+\+"
+    )
+    RESUMED = re.compile(r"<\.\.\. (\w+) resumed>(.*)")
+    CALL = re.compile(r"(\w+)\((.*)\) += (.+)")
+    RESULT = re.compile(r"(-?\d+)")
+    ENCODED = re.compile(r"(?:\\x[0-9a-f]{2})++")
+    DESCRIPTOR = re.compile(r"\d+<[^>]+>")
+
     def __init__(self, root, inputs, request, output, nonce):
         self.targets = {os.fsencode(root / public_path(name)) for name in inputs}
         self.objects = {}
@@ -677,6 +779,7 @@ class RequestAccessStream:
                 self.absent.add(path)
             else:
                 self.objects[path] = (info.st_dev, info.st_ino)
+        self.identities = frozenset(self.objects.values())
         self.probe = os.fsencode(request)
         self.subject = os.fsencode(output.with_suffix(".subject-probe"))
         self.nonce = nonce
@@ -692,29 +795,29 @@ class RequestAccessStream:
 
     @staticmethod
     def paths(value):
+        # A token holds only \xHH escapes; escape_decode (as pickle uses it)
+        # turns each into its byte without a rewrite and a hex parse.
         return [
-            bytes.fromhex(token.replace("\\x", ""))
-            for token in re.findall(r"(?:\\x[0-9a-f]{2})+", value)
+            codecs.escape_decode(token)[0] for token in RequestAccessStream.ENCODED.findall(value)
         ]
 
     def consume(self, raw):
         try:
             line = raw.decode("ascii")
-            match = re.fullmatch(r"(\d+) +(.+)", line)
+            match = self.RECORD.fullmatch(line)
             if match is None:
                 self.failed = True
                 return
             actor, statement = int(match[1]), match[2]
-            self.actors.add(actor)
-            if actor not in self.live:
+            if actor not in self.actors:
+                # Only an actor's first record can name the process strace
+                # reported; a later read of a reaped PID may find its reuse.
                 identity = process_identity(actor)
                 if identity is not None:
                     self.live[actor] = identity
+            self.actors.add(actor)
             if statement.startswith("+++ "):
-                if actor in self.exits or not re.fullmatch(
-                    r"\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+(?: \(core dumped\))?) \+\+\+",
-                    statement,
-                ):
+                if actor in self.exits or not self.EXITED.fullmatch(statement):
                     self.failed = True
                 self.exits.add(actor)
                 return
@@ -726,7 +829,7 @@ class RequestAccessStream:
                     self.failed = True
                 self.pending[actor] = statement[: -len(" <unfinished ...>")]
                 return
-            resumed = re.match(r"<\.\.\. (\w+) resumed>(.*)", statement)
+            resumed = self.RESUMED.match(statement)
             if resumed:
                 prefix = self.pending.pop(actor, None)
                 if prefix is None or not prefix.startswith(resumed[1] + "("):
@@ -736,12 +839,12 @@ class RequestAccessStream:
             elif actor in self.pending:
                 self.failed = True
                 return
-            call = re.fullmatch(r"(\w+)\((.*)\) += (.+)", statement)
+            call = self.CALL.fullmatch(statement)
             if call is None:
                 self.failed = True
                 return
             name, args, result = call.groups()
-            success = re.match(r"(-?\d+)", result)
+            success = self.RESULT.match(result)
             if name in {"clone", "clone3", "fork", "vfork"} and success and int(success[1]) > 0:
                 child = int(success[1])
                 if child in self.parents:
@@ -765,13 +868,14 @@ class RequestAccessStream:
                         "mode": stat.S_IMODE(info.st_mode),
                     }
             matched = bool(self.targets.intersection(paths))
-            for path in paths:
+            # An alias can only match an input object that existed at start.
+            for path in paths if self.identities else ():
                 if path.startswith(b"/"):
                     try:
                         info = os.stat(path, follow_symlinks=False)
                     except OSError:
                         continue
-                    if (info.st_dev, info.st_ino) in self.objects.values():
+                    if (info.st_dev, info.st_ino) in self.identities:
                         matched = True
             if name in {
                 "rename",
@@ -794,11 +898,9 @@ class RequestAccessStream:
             # Relative pathname candidates are conservative until kernel descriptor
             # resolution proves otherwise. They never establish absence by spelling.
             if not matched:
-                matched = any(
-                    not path.startswith(b"/") and target.endswith(b"/" + path)
-                    for path in paths
-                    for target in self.targets
-                    if path
+                relative = [path for path in paths if path and not path.startswith(b"/")]
+                matched = bool(relative) and any(
+                    target.endswith(b"/" + path) for path in relative for target in self.targets
                 )
             if matched:
                 self.accesses += 1
@@ -819,7 +921,7 @@ class RequestAccessStream:
                 and success
                 and (int(success[1]) > 0 or (name in {"mmap", "mmap2"} and result.startswith("0x")))
             ):
-                if not re.search(r"\d+<[^>]+>", args) and (
+                if not self.DESCRIPTOR.search(args) and (
                     name not in {"mmap", "mmap2"} or "MAP_ANONYMOUS" not in args
                 ):
                     self.failed = True
@@ -974,10 +1076,17 @@ def request_access_run(command, root, request, output, env, timeout, inputs, can
                 if len(pending) > 1024 * 1024:
                     stream.failed = True
                     pending = b""
-                while b"\n" in pending:
-                    line, pending = pending.split(b"\n", 1)
+                # One split per chunk: re-splitting the remainder per record
+                # copies a lagging full pipe quadratically.
+                *lines, pending = pending.split(b"\n")
+                for line in lines:
                     if line:
                         stream.consume(line)
+                if len(chunk) < 65536:
+                    # strace writes record by record; waking for each one costs
+                    # more than parsing it. Let a batch accumulate well inside
+                    # the pipe's capacity. A stop ends the wait at once.
+                    stopped.wait(0.002)
             if pending:
                 stream.failed = True
         except (OSError, ValueError):
@@ -1603,11 +1712,6 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
 
 
 def main(argv=None):
-    arguments = sys.argv[1:] if argv is None else argv
-    if arguments and arguments[0] == "_launch":
-        if sys.stdin.buffer.read(1) != b"1":
-            return 2
-        os.execvpe(arguments[1], arguments[1:], os.environ)
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
     run = sub.add_parser("prove")
