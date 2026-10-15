@@ -6,7 +6,7 @@ The system SHALL record each owner decision choice as a durable decision intent 
 schema before any tracker effect. An intent SHALL carry its bead id, the chosen option text, its
 source (`dashboard` or `telegram`), its actor, an optional originating prompt id, a status, an
 attempt count, categorical failure and last-error reasons, and creation, claim, and terminal
-timestamps. Its status SHALL be exactly one of `pending`, `applying`, `applied`, or `failed`.
+timestamps. Its status SHALL be exactly one of `pending`, `applying`, `applied`, `failed`, or `superseded`.
 
 Recording SHALL validate the choice against the current decision digest. The bead SHALL be an open
 decision with available structured details, and the option SHALL exactly match one of its current
@@ -17,8 +17,13 @@ offered. Recording SHALL NOT invent, normalize, or default an option.
 At most one intent per bead SHALL be live (`pending`, `applying`, or `applied`), enforced by the
 database. Recording the same option for a bead that already has a live intent SHALL return that
 intent unchanged and identify it as not newly created. Recording a different option SHALL be
-refused as a conflict that names the existing intent's state. A `failed` intent SHALL NOT block a
-new choice.
+refused as a conflict that names the existing intent's state. A `failed` or `superseded` intent SHALL NOT block a
+new choice. A `superseded` intent SHALL remain immutable choice history: its original option, actor,
+source, prompt id, attempt count, claim timestamp, and applied `finished_at` SHALL be preserved.
+It SHALL NOT be returned to `pending`, claimed, or applied again. A later explicit owner choice,
+including the same option text, SHALL create a new `pending` intent with a new id. A Telegram
+prompt that produced a superseded intent SHALL remain consumed: a later callback on that prompt
+SHALL be refused as `intent_conflict:superseded` without recording an intent or re-sending a prompt.
 
 ID: REQ-owner-decision-desk-001
 Source: bu-ckkpz.3; owner ruling 2026-10-08
@@ -52,6 +57,26 @@ Scope: v1-mandatory
 
 The development tracker bridge workload SHALL apply decision intents with `bd` so that each
 intent's tracker effect happens at most once and every intent reaches an honest terminal state.
+
+Before listing or recording choices, the runtime SHALL reconcile an `applied` intent to `superseded`
+using only the existing local decision export. It SHALL do so only when that export identifies the
+bead as an open decision and provides all of the following evidence: the intent has a recorded
+`finished_at`; the bead has a valid timezone-aware source `updated_at` strictly later than
+`finished_at` and no later than the export file's `export_as_of`; and the export's `export_as_of`
+is at least ten minutes after `finished_at`, no later than the digest's `checked_at`, and no more
+than ten minutes before `checked_at`. The ten-minute grace and snapshot window are conservative
+operational windows based on two cycles of the enabled development bridge's five-minute export
+cadence, not a measured worst-case lag guarantee. They do not establish a guarantee for the
+default-disabled fifteen-minute schedule or a stalled exporter. Missing, malformed, timezone-naive,
+future, unavailable, or old evidence SHALL preserve the applied intent. A new file mtime alone
+SHALL NOT establish that a bead was reopened.
+
+This reconciliation SHALL change only the eligible applied row's status and update timestamp,
+using an atomic status-guarded transition. It SHALL NOT reach the tracker, close the bead, mutate
+a newer live intent, replay an earlier effect, or interpret an unknown `applying` outcome as
+reopened. Recording a later explicit choice SHALL retain the database-enforced single-live-intent
+invariant under concurrent listing, recording, and old callbacks. Existing `applying` reconciliation
+and its finite unreadable-claim settlement SHALL remain unchanged.
 
 The applier SHALL first reconcile every intent left `applying` by an earlier run, using the
 tracker's current state as evidence: a closed bead whose close reason carries the intent's marker
@@ -132,6 +157,34 @@ Scope: v1-mandatory
 - **WHEN** a bead's show command fails and one bounded statistics probe returns a valid healthy summary
 - **THEN** only that pending intent fails with reason `bead_unreadable` and remaining intents apply
 - **AND** an empty successful probe does not establish tracker health
+
+
+#### Scenario: A reopened applied decision permits a new explicit choice
+
+- **WHEN** an open decision has qualified post-grace source evidence and an applied intent
+- **THEN** the prior intent becomes `superseded` without changing its applied history
+- **AND** a later explicit owner choice records a distinct `pending` intent, even for the same option
+- **AND** at most one intent remains live and no earlier tracker effect is replayed
+
+#### Scenario: Export lag within grace preserves an applied intent
+
+- **WHEN** an export shows the decision open less than ten minutes after its intent finished
+- **THEN** the applied intent is unchanged and still occupies the live-intent slot
+- **AND** a different choice remains a named conflict
+
+#### Scenario: Incomplete or stale reopening evidence preserves an applied intent
+
+- **WHEN** the export is unavailable or older than the snapshot window, its open-bead update does
+  not postdate the applied finish, or its required timestamps are missing, invalid, or future
+- **THEN** the intent remains `applied` and no tracker operation is attempted
+- **AND** copying old open-bead content into a file with a new mtime does not supersede the intent
+
+#### Scenario: A consumed prompt cannot choose again after supersession
+
+- **WHEN** the owner taps a prompt that already produced a superseded intent
+- **THEN** the choose route refuses it as `intent_conflict:superseded`
+- **AND** the existing connector acknowledges it as already handled and removes its keyboard
+- **AND** no new intent is recorded and the prompt is not re-sent
 
 ### Requirement: Decision Prompts Route Through the Attention Policy
 

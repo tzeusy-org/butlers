@@ -49,8 +49,8 @@ class DecisionIntentSummary(BaseModel):
     """A recorded owner choice and its honest apply state (bu-ckkpz.3).
 
     ``status`` is ``pending``/``applying`` (recorded, awaiting the tracker
-    bridge), ``applied`` or ``failed``. ``failure_reason`` and ``last_error``
-    are categorical codes, never raw ``bd`` output.
+    bridge), ``applied``, ``failed`` or ``superseded`` (previous applied history).
+    ``failure_reason`` and ``last_error`` are categorical codes, never raw ``bd`` output.
     """
 
     id: UUID

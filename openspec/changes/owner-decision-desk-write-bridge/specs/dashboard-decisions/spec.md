@@ -5,7 +5,8 @@
 When a selected decision carries a recorded intent, its inline detail SHALL render the intent's
 chosen option and an honest status line: `pending` and `applying` read as recorded and awaiting
 application to the tracker, `applied` reads as applied, and `failed` reads as failed with its
-categorical reason. A pending intent carrying a `last_error` SHALL name that the last attempt did
+categorical reason. A `superseded` intent reads as a previous choice superseded after reopening,
+with its original option; it SHALL NOT read as awaiting application. A pending intent carrying a `last_error` SHALL name that the last attempt did
 not complete. This rendering SHALL remain read-only: it SHALL NOT add approve, deny, close, choose,
 retry, or default-application controls, and a decision without an intent SHALL render exactly as
 before.
@@ -20,3 +21,9 @@ before.
 
 - **WHEN** the owner selects a decision whose intent is `failed`
 - **THEN** the detail names the chosen option, that applying it failed, and the categorical reason
+
+#### Scenario: A superseded intent is shown as previous choice history
+
+- **WHEN** the owner selects a reopened decision whose projected intent is `superseded`
+- **THEN** the detail states that its previous chosen option was superseded after reopening
+- **AND** it does not state that the choice awaits application or render any mutation control

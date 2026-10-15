@@ -275,3 +275,23 @@ async def test_decided_or_unstructured_beads_are_not_offered(pool, enabled, seam
 
     assert result["candidates"] == 0
     seams.assert_not_awaited()
+
+
+async def test_superseded_intent_does_not_resend_a_consumed_prompt(pool, enabled, seams) -> None:
+    await pool.execute(
+        "INSERT INTO switchboard.decision_prompts (bead_id, options, default_option, "
+        "delivery_outcome, delivered_at) VALUES ('bu-test1', '[\"Ship it\",\"Hold\"]', "
+        "'Hold', 'delivered', now())"
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.decision_intents (bead_id, option, source, actor, status, "
+        "prompt_id, finished_at) SELECT bead_id, 'Ship it', 'telegram', 'owner@telegram', "
+        "'superseded', id, now() FROM switchboard.decision_prompts WHERE bead_id = 'bu-test1'"
+    )
+
+    result = await run_decision_routing(pool, _now=NOW, _digest=make_digest(make_bead()))
+
+    assert result["candidates"] == 0
+    seams.assert_not_awaited()
+    assert await _prompts(pool) == {"bu-test1": "delivered"}
+    assert await _ledger(pool) == []

@@ -163,7 +163,9 @@ async def list_decisions(request: Request) -> ApiResponse[list[DecisionBeadSumma
         try:
             if pool is None:
                 raise RuntimeError("switchboard pool unavailable")
-            intents = await latest_intents(pool, [bead.id for bead in digest.open_decisions])
+            intents = await latest_intents(
+                pool, [bead.id for bead in digest.open_decisions], digest=digest
+            )
         except Exception:  # noqa: BLE001 - degrade the intent field, never the digest
             logger.warning("decisions: intent lookup failed; serving digest without intents")
             sources_degraded.append(_INTENT_SOURCE)
