@@ -15,21 +15,27 @@ is not proof that its requirements reached the baseline.
 | `openspec/specs/<capability>/spec.md` | What behavior is required now? |
 | `openspec/changes/<change>/proposal.md` | Why change it, and which capabilities are affected? |
 | `openspec/changes/<change>/specs/<capability>/spec.md` | Which requirements and WHEN/THEN scenarios change? |
-| `openspec/changes/<change>/design.md` | How will the change work, including tradeoffs and migration? |
+| `openspec/changes/<change>/design.md` | How will the change work, including tradeoffs and migration? Required at the boundaries below; optional for an eligible single-butler change. |
 | `openspec/changes/<change>/tasks.md` | Which implementation and verification steps remain? |
 | `openspec/changes/archive/<dated-change>/` | What was proposed and delivered in that change? |
 
 ## Contributor Workflow
 
 1. Read the governing doctrine, RFC, and baseline requirements. The
-   [development principles](../../about/heart-and-soul/development.md#openspec-driven-development)
+   [development principles](../../about/heart-and-soul/development.md#spec-before-code-rfc-before-exception)
    define when a specification or RFC is required.
 2. Write the proposal and capability deltas. Preserve existing requirements
    and scenarios unless the change explicitly amends them; record unresolved
    decisions and obtain any required owner sign-off before implementation.
-3. Capture design choices in `design.md` and use countable `- [ ]` checkboxes
-   in `tasks.md`. Track execution ownership and dependencies in Beads, as
-   required by the [development workflow](../../about/heart-and-soul/development.md#issue-tracking-with-beads).
+3. Apply the [design requirement](../../about/heart-and-soul/development.md#spec-before-code-rfc-before-exception)
+   to the actual scope: `design.md` is required for changes to a cross-butler
+   contract, a schema shared across butlers, or a security boundary. Otherwise
+   a single-butler change can use `openspec new change <name> --schema single-butler`
+   with proposal, delta specs and tasks only. Keep the default `spec-driven`
+   workflow when a design is required or chosen, and read any existing design
+   regardless of schema. Use countable `- [ ]` checkboxes in `tasks.md`.
+   Track execution ownership and dependencies in Beads, as
+   required by the [development workflow](../../about/heart-and-soul/development.md#work-exists-only-in-beads).
 4. Implement and verify the approved behavior. Update the affected specs,
    runbooks, and interface documentation in the same change.
 5. Before archiving, compare same-named MODIFIED requirements in other active

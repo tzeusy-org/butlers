@@ -21,10 +21,18 @@ Fast-forward through artifact creation - generate everything needed to start imp
    **IMPORTANT**: Do NOT proceed without understanding what the user wants to build.
 
 2. **Create the change directory**
+   First classify the scope under `about/heart-and-soul/development.md`.
+   For a single-butler change that alters no cross-butler contract, schema
+   shared across butlers, or security boundary, proposal + delta specs + tasks
+   suffice: add `--schema single-butler` when omitting design. Otherwise use
+   the default `spec-driven` workflow and include a design. Keep and read
+   existing designs; folder placement alone does not establish eligibility.
    ```bash
    openspec new change "<name>"
    ```
    This creates a scaffolded change at `openspec/changes/<name>/`.
+   If the change already exists, preserve its artifacts and recheck its scope
+   and selected schema before continuing. Do not delete a design to make it optional.
 
 3. **Get the artifact build order**
    ```bash
@@ -61,6 +69,10 @@ Fast-forward through artifact creation - generate everything needed to start imp
       - After creating each artifact, re-run `openspec status --change "<name>" --json`
       - Check if every artifact ID in `applyRequires` has `status: "done"` in the artifacts array
       - Stop when all `applyRequires` artifacts are done
+      - Recheck the repository design requirement before declaring apply-ready;
+        if the actual scope needs a design, a missing design still blocks work.
+        Artifact readiness does not confer spec/owner approval or waive review
+        and executing verification.
 
    c. **If an artifact requires user input** (unclear context):
       - Use **AskUserQuestion tool** to clarify
