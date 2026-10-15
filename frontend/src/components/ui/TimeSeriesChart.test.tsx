@@ -22,11 +22,11 @@ vi.mock("recharts", () => {
         "data-scale": p.scale,
         "data-domain": JSON.stringify(p.domain),
       }),
-    Line: (p: { type?: string; dot?: boolean; connectNulls?: boolean }) =>
+    Line: (p: { type?: string; dot?: unknown; connectNulls?: boolean }) =>
       createElement("i", {
         "data-testid": "line",
         "data-join": p.type,
-        "data-dot": String(p.dot),
+        "data-dot": String(Boolean(p.dot)),
         "data-connect": String(p.connectNulls),
       }),
     Area: (p: { fill?: string }) => createElement("i", { "data-testid": "area", "data-fill": p.fill }),
