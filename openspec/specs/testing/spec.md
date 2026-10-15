@@ -1372,9 +1372,32 @@ Scope: v1-mandatory
 
 The system MUST refuse condensation admission until exact source-bound survivor evidence preserves the removed behavior, complete case multiplicity and protected architecture, wire, privacy, authorization, retry, idempotency and migration outcomes. Neither test counts, similar text, source deletion, attestation nor coverage alone establishes that evidence. The consumer SHALL preserve the existing selection, budgets, default coverage core, required CI event predicates and full terminal merge-group gate.
 
+Separately, the same complete consumer MAY admit intentional contract evolution
+for retained owners under an independently reviewed, exact normative amendment
+authorized in the trusted public source before the candidate executes. This
+distinct mode SHALL require fresh actual before/after execution, identical
+complete owner and opaque case populations, successful setup/call/teardown,
+bounded owned cleanup, and exact reviewed owner/context/runtime/requirement and
+source/tool/run binding. It SHALL NOT infer authorization from a candidate plan,
+reviewer-name string, successful test result or current-branch approval file.
+The initial mode SHALL NOT admit deletions, renames, reduced case populations,
+environment waivers or migration/runtime substitutions. Every other loss SHALL
+retain ordinary survivor-evidence obligations.
+
 ID: REQ-testing-053
 Source: bu-ly3lv5.11 preserving A82/B146 contract; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md Five-Minute Routine-Lane Target; AGENTS.md Test Scope Policy
 Scope: v1-mandatory
+
+#### Scenario: Approved contract changes retain fresh complete execution
+- **WHEN** an independently reviewed normative amendment intentionally replaces expectations in retained owners
+- **THEN** an exact authorization already present in trusted public source binds the old/new owners, contexts, runtime inputs and changed requirement blocks
+- **AND** fresh before/after runs preserve identical opaque case identities and complete successful phases before the same loss consumer admits only those named changes
+- **AND** the original event comparison base still defines the old execution and complete loss scan when the pull-request public parent is newer
+
+#### Scenario: Candidate declarations cannot grant their own exception
+- **WHEN** authorization exists only on the candidate, reviewed source drifts, cases change, execution is incomplete, or an additional loss is unlisted
+- **THEN** the evolution path refuses without a count fallback, cached receipt, attestation-only approval or automatic baseline rewrite
+- **AND** unrelated losses, deletions, renames and genuine condensation retain ordinary survivor proof requirements
 
 #### Scenario: Exact branch contexts and retained mutation kills
 - **WHEN** removed cases and named survivors execute a protected proof
