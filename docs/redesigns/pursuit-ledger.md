@@ -29,6 +29,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 16 | 2026-10-06 | 15 | bu-s11n0s | [2026-10-06-jarvis-pursuit.md](2026-10-06-jarvis-pursuit.md) |
 | 17 (SDLC velocity) | 2026-10-06 | 15 | bu-ly3lv5 | [2026-10-06-sdlc-velocity-pursuit.md](2026-10-06-sdlc-velocity-pursuit.md) |
 | 18 (platform simplification) | 2026-10-13 | 15 | bu-dss7he | [2026-10-13-simplification-pursuit.md](2026-10-13-simplification-pursuit.md) |
+| 19 (QA remediation direction) | 2026-10-14 | 6 + reconciliation | bu-6a9xxw | [2026-10-14-qa-remediation-pursuit.md](2026-10-14-qa-remediation-pursuit.md) |
 
 ## Tier history
 
@@ -390,3 +391,17 @@ gaps survived to the next run's QC; early runs often shipped behavior before the
 reconciliation and review beads, not outcomes, drove most of the bead count in runs 05-06. The run-09
 gate (bu-xf54r) was closed on 2026-09-15 with no recorded actor; the owner confirmed on 2026-10-08
 that it was their release, and the gate was re-closed to ratify it.
+
+### 19 (QA remediation direction) (2026-10-14) · epic bu-6a9xxw
+
+Scoped project-direction from the accepted monthly audit; no new ecosystem fan-out or runtime delivery. Gate bu-gjmx8w remains owner-held.
+
+1. Restore QA-owned launch capability and durable session lineage (bu-6a9xxw.1)
+2. Bind QA evidence to its invocation and expose truthful outcomes (bu-6a9xxw.2)
+3. Persist incident admission and deferred QA work with finite budgets (bu-6a9xxw.3)
+4. Resume bounded discovery with honest source coverage (bu-6a9xxw.4)
+5. Integrate governed proposals and exact feedback-driven follow-ups (bu-6a9xxw.5)
+6. Verify deployed recovery and report an honest QA outcome and usage funnel (bu-6a9xxw.6)
+7. Reconcile QA remediation delivery and generate epic report (gen-1) (bu-6a9xxw.7)
+
+Canonical inbox source acceptance bu-ratgnb is a separate held prerequisite, not a competing inbox implementation. Tier movement is not comparable to the earlier broad ops cohort.
