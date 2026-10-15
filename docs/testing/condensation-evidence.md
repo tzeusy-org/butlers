@@ -40,6 +40,11 @@ paired route below. Changed installed environments or links still refuse. The pr
 are current-bound execution machinery; their introduction grants no production
 dependency exemption. Ordinary tests retain their coverage core,
 markers and parallel defaults; only the isolated proof uses ctrace and `-n 0`.
+Coverage's isolated path resolver re-resolves each file's canonical parent on
+every call, including during subject execution. It retains no directory result
+across calls: a subject may temporarily retarget a directory symlink and restore
+it before source readback. Actual SQLite arcs must retain both executed targets;
+unchanged final source records alone cannot establish that population.
 Its finite total budget defaults to60s and may be explicitly set up to300s. These
 proof times are not routine-lane or historical condensation savings.
 Within each baseline, mutant or restored phase, the two source sides execute

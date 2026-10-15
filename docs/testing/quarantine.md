@@ -75,6 +75,12 @@ restore those owners to blocking coverage.
 - **Un-quarantine by fixing the cause.** The PR that removes the cause deletes the entry. Nothing
   else should bring a test back into the blocking lanes.
 
+The ctrace and distinct condensation owners remain registered under their
+original cost beads. Correcting canonical-path arc loss does not earn their
+original loaded hosted BOTH-mode exit criteria (proof <=30 s and item <=150 s).
+The paired owner remains registered as well; local correctness runs cannot
+replace those full cost and population measurements.
+
 ## Related Pages
 
 - [Markers and Fixtures](markers-and-fixtures.md)

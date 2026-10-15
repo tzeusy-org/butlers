@@ -268,13 +268,12 @@ def resolves_to(path: str, targets: set[str]) -> bool:
 
 
 def directory_sharing_realpath(original):
-    """Return ``original`` (``os.path.realpath``) answering identically with shared walks.
+    """Resolve a regular absolute file through its freshly resolved parent.
 
-    A non-link absolute path is its directory's realpath plus its name, so each
-    directory is resolved once, by the same rule, rather than once per file.
-    Its helpers are bound now, so a subject replacing them cannot reach it.
+    Never retain parent resolutions between calls: a covered subject can retarget
+    a directory symlink and restore it before source readback. Bind helpers now
+    so replacing the subject's os.path helpers cannot reach coverage's copy.
     """
-    directories = {}
     fspath, split, join, lstat, is_link = (
         os.fspath,
         os.path.split,
@@ -294,9 +293,7 @@ def directory_sharing_realpath(original):
                 except OSError:
                     link = True
                 if not link:
-                    if directory not in directories:
-                        directories[directory] = realpath(directory)
-                    return join(directories[directory], name)
+                    return join(original(directory), name)
         return original(filename, strict=strict)
 
     return realpath
@@ -437,17 +434,16 @@ def worker(request: Path) -> int:
 
     previous_core = os.environ.get("COVERAGE_CORE")
     # Coverage canonicalizes each newly executed file through its own isolated
-    # copy of os.path, a walk of observed lstat calls per file. Only that copy
-    # shares directory resolutions for the whole run; the subject's is untouched.
+    # copy of os.path. Resolve each parent afresh, including during the subject;
+    # retained directory resolutions can silently drop real arcs after retargeting.
     covered_paths = coverage.files.os.path
     covered_realpath = covered_paths.realpath
     if covered_paths is not os.path:
         covered_paths.realpath = directory_sharing_realpath(covered_realpath)
     try:
         os.environ["COVERAGE_CORE"] = "ctrace"
-        # Starting coverage resolves the path of every loaded module, a walk of
-        # observed lstat calls each. Only this setup, never the subject, shares
-        # directory resolutions.
+        # Starting coverage resolves the path of every loaded module. This
+        # temporary wrapper also retains no parent resolution between calls.
         realpath = os.path.realpath
         os.path.realpath = directory_sharing_realpath(realpath)
         try:
