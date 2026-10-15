@@ -219,7 +219,7 @@ Scope: v1-mandatory
 
 #### Scenario: Concurrent capacity follows the actual DAG
 - **WHEN** guards, eleven backend children, two Vitest children, browser and post jobs become eligible
-- **THEN** dependencies bound peak14 and account for20 matrix-stage rows versus22 final rows, including the new inventory producer and mutually exclusive affected row without changing required contexts
+- **THEN** dependencies bound peak14 and account for20 full-mode expanded rows and21 total declared expanded rows, including the new inventory producer and mutually exclusive affected row without changing required contexts
 
 #### Scenario: Metrics retain their full ten-run windows
 - **WHEN** route/guards/spread/lane performance observations are incomplete
