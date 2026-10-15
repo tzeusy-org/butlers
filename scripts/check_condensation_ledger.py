@@ -1664,10 +1664,9 @@ def verify_ledger(
     # additional retained journal account. Both must qualify for admission.
     # Canonical JSON identity preserves numeric types that Python equality merges.
     journal = strict_json(directory / "journal.json")
-    if (
-        canonical(journal["mutations"]) != canonical(proof["mutation"]["mutants"])
-        or canonical(journal["batches"]) != canonical(proof["mutation"]["batches"])
-    ):
+    if canonical(journal["mutations"]) != canonical(proof["mutation"]["mutants"]) or canonical(
+        journal["batches"]
+    ) != canonical(proof["mutation"]["batches"]):
         raise EvidenceError("invalid-owned-copy-journal")
     return removed
 
