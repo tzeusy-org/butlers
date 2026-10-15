@@ -7,7 +7,7 @@ context: |
   Design contracts: about/legends-and-lore/rfcs/ (12 accepted RFCs)
 
 rules:
-  spec:
+  specs:
     - >
       Include a "## Source References" section at the end of each spec listing
       the doctrine principles (by rule number from vision.md) and RFC numbers
