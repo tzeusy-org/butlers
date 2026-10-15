@@ -1,5 +1,5 @@
 # Full current-source coverage with genuine schedule/manual/PR event provenance.
-# Stage1 validates this replacement before the queue coverage cadence changes.
+# Owns full coverage; required CI runs the same selected tests without instrumentation.
 name: CI coverage assurance
 on:
   schedule:

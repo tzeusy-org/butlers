@@ -53,9 +53,11 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
 5. Do **not** run the broad lanes locally by default. At final merge readiness,
    push the exact head after targeted tests, collection, and hygiene checks,
    then use one terminal hosted CI run as the broad evidence. These
-   receipt-producing targets mirror the pytest and coverage portions of CI's
+   receipt-producing targets mirror the pytest populations of CI's
    `check-unit (N)` and `check-integration (N)` matrix children when a local reproduction
-   is genuinely needed:
+   is genuinely needed. They retain local covered defaults; required CI runs those
+   populations untraced, and owned daily/manual plus pipeline-PR assurance supplies
+   full eleven-shard coverage:
 
    ```bash
    make test-ci-unit

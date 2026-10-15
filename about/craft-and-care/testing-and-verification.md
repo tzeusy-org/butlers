@@ -119,18 +119,19 @@ These diagnostics do not admit missing evidence, install weights or change test 
 Full-mode smoke may use exact successful child identities only. An uncovered item runs the
 original dedicated command. Derived release evidence names actual child commands, selector
 provenance and maximum actual child elapsed time; it never invents a dedicated smoke timer.
-The non-required `coverage` job verifies all eleven actual CoverageData databases, source
-population, tracing, digest and same-checkout/run/attempt/computed assignment before combine.
-PRs still run without coverage; merge-group and ordinary standalone shard calls retain it.
-Reporting integrity remains separate from required check/guards/frontend verdicts.
-The owned daily/manual coverage workflow also validates coverage-pipeline PR changes
-with actual event provenance, full fresh inventory, all eleven covered children,
-independent execution reconciliation and real smoke fallback before strict reporting.
-Its always-running preflight/report gates refuse every failed or skipped prerequisite.
-Pipeline PRs may upload authentic reports but only successful scheduled/manual main
-runs may update the badge. Queue coverage remains enabled during replacement
-validation until actual covered hosted evidence and independent review authorize
-cutover; no source addition proves that result or timing gain.
+The owned daily/manual coverage workflow validates all eleven actual CoverageData databases,
+source population, tracing, digest and same-checkout/run/attempt/computed assignment before
+combination. It also validates coverage-pipeline PR changes with actual event provenance,
+full fresh inventory, all eleven covered children, independent execution reconciliation
+and real smoke fallback. Its always-running preflight/report gates refuse every failed or
+skipped prerequisite. Pipeline PRs upload authentic reports; only successful scheduled/manual
+main runs may update the badge. Reporting integrity remains separate from required
+check/guards/frontend verdicts.
+Protected merge-group and ordinary PR shards use CI_COVERAGE=0 with the same complete
+selection, workers, markers, timeouts and execution receipts. The owned assurance workflow
+uses CI_COVERAGE=1; ordinary standalone calls retain covered defaults. Actual covered PR
+validation run 38672598762 established the replacement mechanism before this cadence change.
+It does not prove final-head queue success, queue speedup or the seven-minute goal.
 
 Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
 survivors run in guards. Two locked Vitest children independently prove complete disjoint

@@ -149,12 +149,27 @@ its concurrency group does not cancel the protected CI run. The one validation
 PR may therefore consume extra runner capacity and is not a natural timing
 sample for the queue optimization.
 
-Replacement validation is staged. The queue and its existing reporter remain
-covered while the owned workflow obtains an actual successful eleven-input
-hosted result and independent source review. Only then may a subsequent change
-set the queue to untraced execution and retire its advisory reporter. Local
-standalone calls retain covered defaults throughout. No replacement hosted
-success, cadence cutover or wall-clock gain is claimed by this source addition.
+Required CI runs all eleven protected queue shards without coverage instrumentation
+(`CI_COVERAGE=0`), retaining the same selected tests, workers, markers, timeouts,
+execution receipts, smoke reconciliation and mandatory fan-in. Its former reporter,
+raw coverage paths and uploads are retired. Full coverage belongs to the owned
+daily/manual and pipeline-PR workflow (`CI_COVERAGE=1`); standalone calls still
+default to covered execution.
+
+[Covered PR validation run 38672598762](https://github.com/tzeusy-org/butlers/actions/runs/38672598762)
+passed all eleven covered children, independent complete reconciliation with real
+smoke coverage and strict eleven-input reporting before the source cutover. It
+used genuine pull_request checkout 0f29a2d99b5c46213773dac0d0a6e3e1e2d8d9bb from
+branch revision bf1094a0725b8d5c4a76aeedc0163a013cb67a1d, not the later cutover head.
+Maximum shard job wall times were 442s unit and 475s integration under concurrent
+unrelated work. These are covered PR validation observations, not queue
+before/after measurements, final-source evidence or seven-minute proof. Existing
+historical M1/M2 observation obligations remain separately unearned where noted.
+
+The weights observer currently refreshes merge-group profiles only. After the
+cutover it can refresh untraced queue costs; covered profiles may age past
+fourteen days and use the ordinary truthful deterministic fallback. Genuine
+covered-workflow candidate refresh is deferred; no event identity is borrowed.
 
 ## Independent experiments and coverage
 
@@ -176,13 +191,13 @@ The miniature real subprocess controls prove mechanism conformance only.
 
 `ci_shard_comparison.py before.json after.json` compares complete identity and
 phase outcomes without count-only or incomplete gain claims. Its coverage
-comparison normalizes complete filenames/lines/branches/contexts. The existing
-coverage validator still requires ten unique current source/attempt/lane shards,
-rejects population/identity drift and governs report/upload/badge. CI_COVERAGE
-remains exactly 0/1, ordinary PRs remain uncovered, merge-group remains covered,
-and append across independent jobs remains forbidden. Nightly and other
-covered consumers keep their own existing settings; this issue does not adopt
-the future matrix/partition/planner/sixth-shard work.
+comparison normalizes complete filenames/lines/branches/contexts. At the original experiment stage, the coverage validator required ten unique
+current source/attempt/lane shards and merge-group coverage remained enabled.
+Those historical comparison controls remain preserved. The current adopted
+five-unit/six-integration producer above requires eleven inputs in owned
+coverage assurance, while protected queue execution is untraced. CI_COVERAGE
+remains exactly 0/1 and append across independent jobs remains forbidden.
+Worker/core comparisons and their original evidence obligations remain separate.
 
 ## Completion and rollback
 

@@ -580,8 +580,42 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         json.loads(json.dumps(jobs["check-integration"]).replace("${{ matrix.shard }}", str(index)))
         for index in jobs["check-integration"]["strategy"]["matrix"]["shard"]
     ]
+    # Required queue receipts must exist in their own jobs. Covered-workflow
+    # artifacts cannot satisfy ordinary preflight or the timing observer.
+    for lane, children in (("unit", unit_jobs), ("integration", integration_jobs)):
+        for index, job in enumerate(children, 1):
+            artifact = _artifact_step(job=job, artifact_name=f"ci-{lane}-{index}-test-evidence")
+            filenames = [
+                "junit.xml",
+                "top-durations.txt",
+                "shard-observation.json",
+                "runner-observation.json",
+            ]
+            if lane == "unit":
+                filenames.append("condensation-refusal-*.json")
+            assert artifact["if"] == "always()"
+            assert artifact["uses"] == "actions/upload-artifact@v4"
+            assert artifact["with"] == {
+                "name": f"ci-{lane}-{index}-test-evidence",
+                "path": "".join(
+                    f"${{{{ runner.temp }}}}/ci-artifacts/{lane}-{index}/{filename}\n"
+                    for filename in filenames
+                ),
+                "retention-days": 14,
+                "if-no-files-found": "error",
+                "overwrite": True,
+            }
     check_job = jobs["check"]
-    coverage_job = jobs["coverage"]
+    covered_workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
+    coverage_job = covered_workflow["jobs"]["coverage-report"]
+    covered_matrix = covered_workflow["jobs"]["coverage-shards"]
+    covered_jobs = []
+    for row in covered_matrix["strategy"]["matrix"]["include"]:
+        expanded = json.dumps(covered_matrix)
+        for key, value in row.items():
+            expanded = expanded.replace("${{ matrix." + key + " }}", str(value))
+        covered_jobs.append(json.loads(expanded))
+    assert "coverage" not in jobs
 
     # Merge-queue topology (bu-r5mnn): the queue's merge_group run is the terminal
     # broad gate, so the workflow must accept that event.
@@ -699,6 +733,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     assert len(unit_jobs) == 5 and len(integration_jobs) == 6
     inventory = jobs["inventory"]
     assert inventory["needs"] == ["route"]
+    assert inventory["env"]["CI_COVERAGE"] == "0"
     assert inventory["env"]["CI_COVERAGE"] == jobs["check-unit"]["env"]["CI_COVERAGE"]
     assert inventory["env"]["CI_COVERAGE"] == jobs["check-integration"]["env"]["CI_COVERAGE"]
     assert inventory["if"] == "needs.route.outputs.inventory == 'true'"
@@ -767,7 +802,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         selected = [i for i in range(len(names)) if mask & (1 << i)]
         if all(mask & ~(compatible[i] | (1 << i)) == 0 for i in selected):
             peak = max(peak, sum(weights[i] for i in selected))
-    assert sum(weights) + 1 == 22  # Includes the mutually exclusive affected row.
+    assert sum(weights) + 1 == 21  # Includes the mutually exclusive affected row.
     assert peak == 14
     assert "plan" not in jobs and "changes" not in jobs
     route_command = _workflow_step(
@@ -1185,7 +1220,7 @@ else:
         assert run_step["run"].startswith(
             f"uv run python scripts/check_ci_test_shards.py run --lane unit --shard {index}"
         )
-        assert run_step["env"]["COVERAGE_FILE"].endswith(f"coverage-unit-{index}.data")
+        assert "COVERAGE_FILE" not in run_step["env"]
         assert run_step["env"]["TEST_EVIDENCE_DIR"].endswith(f"ci-artifacts/unit-{index}")
         expected_coverage_artifacts.append(
             (
@@ -1213,7 +1248,7 @@ else:
         assert run_step["run"].startswith(
             f"uv run python scripts/check_ci_test_shards.py run --lane integration --shard {index}"
         )
-        assert run_step["env"]["COVERAGE_FILE"].endswith(f"coverage-integration-{index}.data")
+        assert "COVERAGE_FILE" not in run_step["env"]
         assert run_step["env"]["TEST_EVIDENCE_DIR"].endswith(f"ci-artifacts/integration-{index}")
         assert run_step["env"]["TESTCONTAINERS_RYUK_DISABLED"] == "true"
         expected_coverage_artifacts.append(
@@ -1225,9 +1260,21 @@ else:
             )
         )
 
+    for row, job in zip(covered_matrix["strategy"]["matrix"]["include"], covered_jobs, strict=True):
+        run_step = _workflow_step(job=job, name="Run the complete assigned covered shard")
+        assert run_step["env"]["COVERAGE_FILE"].endswith(
+            f"coverage-{row['lane']}-{row['shard']}.data"
+        )
+    assert covered_workflow["env"]["CI_COVERAGE"] == "1"
+    assert len(covered_jobs) == 11
+    assert not any(
+        "coverage-data" in str(step)
+        for job in [*unit_jobs, *integration_jobs]
+        for step in job["steps"]
+    )
     artifact_steps = {
         step["with"]["name"]: step
-        for job in [preflight, *unit_jobs, *integration_jobs, coverage_job]
+        for job in [preflight, *unit_jobs, *integration_jobs, *covered_jobs, coverage_job]
         for step in job["steps"]
         if step.get("uses") == "actions/upload-artifact@v4"
     }
@@ -1238,7 +1285,7 @@ else:
         *{name for name, _, _, _ in expected_coverage_artifacts},
         *{
             f"ci-{lane}-{index}-test-evidence"
-            for lane, count in (("unit", 5), ("integration", 5))
+            for lane, count in (("unit", 5), ("integration", 6))
             for index in range(1, count + 1)
         },
     }
@@ -1275,11 +1322,9 @@ else:
         "NEEDS_JSON": "${{ toJSON(needs) }}",
     }
     assert check_job["steps"] == [gate]
-    expected_shards = ["check-unit", "check-integration"]
+    expected_shards = ["coverage-inventory", "coverage-shards", "coverage-preflight"]
     assert coverage_job["needs"] == expected_shards
-    assert coverage_job["if"] == (
-        "github.event_name == 'merge_group' && needs.check-unit.result == 'success' && needs.check-integration.result == 'success'"
-    )
+    assert coverage_job["if"] == "always()"
     assert "coverage" not in check_job["needs"]
 
     combine = _workflow_step(
@@ -1364,7 +1409,10 @@ else:
     assert smoke_artifact["with"]["path"].endswith("smoke/release-evidence.json")
 
     badge = _workflow_step(job=coverage_job, name="Update coverage badge")
-    assert badge["if"] == "${{ success() }}"
+    assert badge["if"] == (
+        "${{ success() && github.ref == 'refs/heads/main' && "
+        "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}"
+    )
 
     # Every job, including rare/scheduled/reporting jobs, has a positive outer
     # watchdog. Provenance is before-only/provisional, never after calibration.
@@ -1895,9 +1943,10 @@ def test_ci_coverage_report_rejects_any_bad_input_before_publication(
             for lane, index in specs
         },
     }
-    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci-coverage.yml").read_text())
     fixed = _workflow_step(
-        job=workflow["jobs"]["coverage"], name="Combine coverage from all independent test shards"
+        job=workflow["jobs"]["coverage-report"],
+        name="Combine coverage from all independent test shards",
     )["run"]
     old_path = REPO_ROOT / "tests/fixtures/ci_coverage/m1-combine.sh"
     old = old_path.read_text()
