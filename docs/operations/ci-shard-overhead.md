@@ -176,3 +176,76 @@ only their actual bounded scope.
 Root-authenticated normal37799700172 at source9b3fa6dcb728a2c661854ae450d985af0143c4ef finished with all11 official XML artifacts and zero failures/errors. The actual PG17 bootstrap/ordinary-role/vector/commit/separate-readback node passed4.678s without skip. Manual image37800940231 at that source completed all four before/current normal and RouteA builds and bounded CPU/offline-input/runtime controls in1029.347s within1800, cleanup0. Historical1690 input bodies and the reversible representation adapter remain explicitly bound; the unsupported literal-old recipe is a separately retained compiler negative. These observations establish preparation, not trained-model/provider/launcher admission, timing gain or whole delivery.
 
 Following independent HIGH preparation review and root completion-scope approval, normal validated own archive automatically synchronized the five046–050 requirements and32 scenarios into testing. Complete public38-requirement/153-scenario bytes and all foreign native/tasks were preserved; baseline now has43 requirements/185 scenarios. No product, metric, default or watchdog changed in this native successor. Fresh final-head normal, independent/protected union and every original hard timing, ten-run and supported full worker/core obligation remain separately mandatory.
+
+## Measured file weights across source changes
+
+`.github/ci-test-weights.json` contains reviewed `ci-weights.v2` profiles for
+`none`, `CTracer` or `SysMonitor`. The inventory job passes the same `CI_COVERAGE`
+and, when overridden, `CI_COVERAGE_CORE` as its test children. Local commands
+retain covered defaults; PR inventories default to untraced costs. A missing
+matching profile uses deterministic fallback, never a different tracer's costs.
+
+Each profile retains the original run/attempt/head, collection timestamp,
+complete file durations and source-file SHA-256 digests. Eligibility requires
+matching Python and pytest versions, dependency lock and lane selectors, with
+an age of at most fourteen days. The current fresh inventory includes each
+selected test file's digest. Only an unchanged file can reuse its measured cost;
+changed or new files use the valid lane median, or one when no valid costs exist.
+Product-source changes do not discard all costs. A fixture or implementation
+change can still change an untouched test's runtime, so these are scheduling
+hints, not a wall-time guarantee. The original full source/config/run/attempt
+identity continues to bind inventory, assignment and every execution receipt.
+
+The observer emits one matching profile from complete actual shard receipts.
+An empty actual tracer set records `none`; mixed or unsupported tracers refuse
+candidate publication. Its timestamp comes from the original inventory, so
+reading an old run does not renew its cost lifetime. The inventory restores the
+latest successful main observer's profile into a temporary file, retaining the
+committed seed's other modes. This uses three GitHub reads, each bounded to five
+seconds. It checks the observer workflow/ref, artifact ownership, matching
+candidate receipt/source, runtime, timestamp, finite costs and file digests.
+An absent, expired, malformed or incompatible candidate leaves the reviewed
+seed; an older candidate cannot replace a newer compatible seed. Both restore
+and fallback always write a usable weights file, plus a closed diagnostic
+receipt. No observer or reader commits source or admits test membership.
+
+The pipeline wiring uses its read-only Actions token and the installed Python:
+
+```sh
+uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "$RUNNER_TEMP/ci-weights"
+uv run --no-sync python scripts/ci_partition.py --weights "$RUNNER_TEMP/ci-weights/weights.json" --output "$RUNNER_TEMP/ci-inventory"
+```
+
+The six-hour observer owns refresh; CI reads its latest successful main run.
+Static seeds remain the outage fallback and can be refreshed by a reviewed PR.
+A seed older than fourteen days still receives the ordinary deterministic
+fallback; stale data never gets a renewed measurement timestamp.
+
+The first two profiles were independently reconciled from all eleven actual
+receipts in [PR run 38664906626](https://github.com/tzeusy-org/butlers/actions/runs/38664906626)
+(`none`) and [queue run 38667022310](https://github.com/tzeusy-org/butlers/actions/runs/38667022310)
+(`CTracer`). Their older inventories predate file digests: the seed digests were
+read from Git blobs at each inventory's exact `origin.head`, preserving the
+original artifacts and their identities. This is historical measurement
+provenance, not a claim of current execution. Both seeds keep their actual
+runtime and timestamp; incompatible or stale environments fall back normally.
+
+Whole-file LPT can improve aggregate balance, but a single long file still runs
+on one xdist worker. The forecast is bounded by its measured duration and by
+setup, collection and runner wait. New hosted runs must demonstrate actual
+latency before any hard timing target is credited.
+
+A simulation on those two seeds gives the following largest shard sums. These
+are setup/call/teardown phase seconds, not predicted job or queue wall time:
+
+| Measured mode | Lane | Existing assignment | Weighted LPT |
+| --- | --- | ---: | ---: |
+| Untraced PR | Unit | 594 | 451 |
+| Untraced PR | Integration | 1079 | 803 |
+| Covered queue | Unit | 1446 | 793 |
+| Covered queue | Integration | 1536 | 916 |
+
+The slowest whole unit file in those samples was 139s untraced and 242s covered;
+older observations were much slower. This variation is why the measured profile,
+trace mode and ongoing refresh matter, and why a balanced sum is not a latency
+claim.

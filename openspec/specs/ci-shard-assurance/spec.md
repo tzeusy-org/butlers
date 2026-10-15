@@ -29,7 +29,7 @@ Scope: v1-mandatory
 - **THEN** the actual fresh source population governs equality and historical counts remain provenance only
 
 ### Requirement: Deterministic whole-file weighted assignment
-The partitioner SHALL assign each freshly selected lane file exactly once to five unit or six integration shards using deterministic LPT. A mixed-marker file SHALL remain whole separately within both lanes. Timing data SHALL influence balancing only and malformed/unknown costs SHALL use explicit deterministic defaults.
+The partitioner SHALL assign each freshly selected lane file exactly once to five unit or six integration shards using deterministic LPT. A mixed-marker file SHALL remain whole separately within both lanes. Timing data SHALL influence balancing only and malformed/unknown costs SHALL use explicit deterministic defaults. Admitted cost profiles SHALL bind the actual tracing mode, Python and pytest versions, dependency lock and lane selectors for at most fourteen days. Per-file source digests SHALL retire only the changed files' hints; ordinary product-source changes MUST NOT invalidate all advisory costs. Authoritative inventory, assignment and execution identities SHALL remain exact for the current source and attempt.
 
 ID: REQ-ci-shard-assurance-002
 Source: bu-ly3lv5.6 P4/P12; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
@@ -43,6 +43,11 @@ Scope: v1-mandatory
 - **WHEN** an eligible file has missing, zero, NaN, infinite, stale or incompatible cost evidence
 - **THEN** the finite median-or-one default assigns it normally and advisory degradation never changes membership
 
+#### Scenario: Source changes preserve compatible cost hints
+- **WHEN** product source changes or a test file is added or edited
+- **THEN** unchanged test files retain compatible measured costs, changed or new files receive finite median-or-one defaults, and fresh collection still determines every selected item
+- **AND** incompatible runtime, dependency, selector, age or tracing profiles never supply hints for the current assignment
+
 #### Scenario: Mixed markers retain their two lane homes
 - **WHEN** one whole file contains unit and integration items
 - **THEN** the file is whole in each lane while each actual eligible item is executed exactly once in its own lane
@@ -50,6 +55,7 @@ Scope: v1-mandatory
 #### Scenario: Durations refresh is advisory and read only
 - **WHEN** the bounded scheduled observer finishes or fails
 - **THEN** it emits provenance-bound candidate weights or UNKNOWN without source commits, test-population changes or authority from missing samples
+- **AND** an inventory consumer MAY restore a runtime-compatible profile from the latest successful main-branch observer using bounded reads and matching artifact/receipt/source provenance; absence, expiry or incompatibility leaves the reviewed seed or deterministic fallback and never grants current membership authority
 
 ### Requirement: Independent complete-identity execution reconciliation
 Every required matrix child SHALL produce source/run/attempt-bound collected and executed opaque item receipts independently of assignment. Check-preflight SHALL reject missing, duplicate, extra, stale, incomplete or wrong-identity evidence before its success; sanitized per-file JUnit counts alone MUST NOT prove exact-once.
