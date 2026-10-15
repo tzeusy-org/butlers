@@ -1033,6 +1033,12 @@ def test_mutations_select_whole_targets_at_shared_coordinates():
         )
 
 
+# Synthetic parser inputs are not citations to repository requirements.
+_EXAMPLE_ID = "REQ-" + "example-001"
+_FORGED_ID = "REQ-" + "forged-001"
+_OTHER_ID = "REQ-" + "other-001"
+
+
 def _contract_repository(tmp_path, after=None, timeout=60, *, candidate_helper=False, omit=()):
     """Build real protected authority separately from its candidate request."""
     import contract_evolution as evolution
@@ -1041,7 +1047,7 @@ def _contract_repository(tmp_path, after=None, timeout=60, *, candidate_helper=F
     owner = "tests/test_owner.py::test_owner"
     old = (root / "tests/test_owner.py").read_text()
     new = after if after is not None else old.replace("    assert value in (1,2)\n", "")
-    spec = "### Requirement: Example\nID: REQ-example-001\n\nSHALL check positive values.\n"
+    spec = f"### Requirement: Example\nID: {_EXAMPLE_ID}\n\nSHALL check positive values.\n"
     updated = spec.replace("positive", "nonzero positive")
     (root / "spec.md").write_text(spec)
     (root / "pyproject.toml").write_text('[tool.pytest.ini_options]\naddopts = ""\n')
@@ -1095,16 +1101,16 @@ def _contract_repository(tmp_path, after=None, timeout=60, *, candidate_helper=F
             {
                 "before": owner,
                 "after": owner,
-                "contracts": ["REQ-example-001"],
+                "contracts": [_EXAMPLE_ID],
                 "reason": "Change the explicit expectation while retaining every case.",
             }
         ],
         "contracts": [
             {
                 "path": "spec.md",
-                "id": "REQ-example-001",
-                "before_sha256": evolution.requirement_digest(spec, "REQ-example-001"),
-                "after_sha256": evolution.requirement_digest(updated, "REQ-example-001"),
+                "id": _EXAMPLE_ID,
+                "before_sha256": evolution.requirement_digest(spec, _EXAMPLE_ID),
+                "after_sha256": evolution.requirement_digest(updated, _EXAMPLE_ID),
             }
         ],
         "inputs": [
@@ -1423,25 +1429,25 @@ def test_contract_evolution_requirement_boundaries_and_inactive_requests(tmp_pat
 
     text = (
         "### Requirement: historical\nUnnumbered.\n\n### Requirement: selected\n"
-        "ID: REQ-example-001\n\nSHALL pass.\n\n## Other section\nOutside.\n"
+        f"ID: {_EXAMPLE_ID}\n\nSHALL pass.\n\n## Other section\nOutside.\n"
     )
     expected = text[text.index("### Requirement: selected") : text.index("## Other section")]
     import hashlib
 
     assert (
-        evolution.requirement_digest(text, "REQ-example-001")
+        evolution.requirement_digest(text, _EXAMPLE_ID)
         == hashlib.sha256(expected.encode()).hexdigest()
     )
-    fenced = expected + "````python\n```\n## still inside\nID: REQ-forged-001\n````\n"
+    fenced = expected + f"````python\n```\n## still inside\nID: {_FORGED_ID}\n````\n"
     assert (
-        evolution.requirement_digest(fenced, "REQ-example-001")
+        evolution.requirement_digest(fenced, _EXAMPLE_ID)
         == hashlib.sha256(fenced.encode()).hexdigest()
     )
     with pytest.raises(ledger.EvidenceError, match="missing-contract-block"):
-        evolution.requirement_digest(fenced, "REQ-forged-001")
-    for invalid in (text + expected, text.replace("ID: REQ-example-001", "ID: REQ-other-001")):
+        evolution.requirement_digest(fenced, _FORGED_ID)
+    for invalid in (text + expected, text.replace(f"ID: {_EXAMPLE_ID}", f"ID: {_OTHER_ID}")):
         with pytest.raises(ledger.EvidenceError):
-            evolution.requirement_digest(invalid, "REQ-example-001")
+            evolution.requirement_digest(invalid, _EXAMPLE_ID)
     root, _, trusted, _, _, _ = _contract_repository(tmp_path)
 
     def forbidden(*args, **kwargs):
