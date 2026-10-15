@@ -4,9 +4,32 @@
 
 The system MUST refuse condensation admission until exact source-bound survivor evidence preserves the removed behavior, complete case multiplicity and protected architecture, wire, privacy, authorization, retry, idempotency and migration outcomes. Neither test counts, similar text, source deletion, attestation nor coverage alone establishes that evidence. The consumer SHALL preserve the existing selection, budgets, default coverage core, required CI event predicates and full terminal merge-group gate. Changed non-Python inputs SHALL remain bound through the complete tracked old/current union. An optional resource-exclusion account MAY qualify only the named software scope whose complete governed producer, required-reader and subject/descendant lifetimes have fresh independent source-bound observation, positive resource probes and no semantic resource use. Worker-only zero access, source hashes, role declarations and document/path/type/extension labels SHALL NOT establish that exclusion. Binding-only full-byte inventory operations SHALL remain explicitly distinguished from semantic consumption. A consumed or uncertain configuration, schema, native/executable input, governing obligation or installed environment SHALL remain refused or UNKNOWN until its actual independent authority route qualifies; measured runtime exclusion SHALL NOT substitute for normative preservation, schema compatibility, supported native administration or protected SQL outcomes. Every original coverage, mutation, case, privacy, deadline, process completion, restoration and delivery obligation SHALL remain intact. Complete execution images MAY be constructed through independently observed identity-preserving source transport. That account MUST retain the complete original/current object population, exact original and copied logical/physical versions, source-qualified operations, actual data and metadata accesses, and complete governed producer/required-reader/descendant closure. Copy consultation SHALL be recorded positively and separately from identity binding and semantic consumption; no actor/role/path/type label or same-body hash establishes it. Only the exact completely qualified transport operation MAY be distinguished from semantic use. Extra, unqualified, ambiguous or semantically consumed accesses SHALL remain refused or UNKNOWN, and complete ordinary copies, execution, named evidence, recovery, privacy and unchanged deadlines SHALL remain intact.
 
+Separately, the same complete consumer MAY admit intentional contract evolution
+for retained owners under an independently reviewed, exact normative amendment
+authorized in the trusted public source before the candidate executes. This
+distinct mode SHALL require fresh actual before/after execution, identical
+complete owner and opaque case populations, successful setup/call/teardown,
+bounded owned cleanup, and exact reviewed owner/context/runtime/requirement and
+source/tool/run binding. It SHALL NOT infer authorization from a candidate plan,
+reviewer-name string, successful test result or current-branch approval file.
+The initial mode SHALL NOT admit deletions, renames, reduced case populations,
+environment waivers or migration/runtime substitutions. Every other loss SHALL
+retain ordinary survivor-evidence obligations.
+
 ID: REQ-testing-053
 Source: bu-ly3lv5.11 preserving A82/B146 contract; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md Five-Minute Routine-Lane Target; AGENTS.md Test Scope Policy
 Scope: v1-mandatory
+
+#### Scenario: Approved contract changes retain fresh complete execution
+- **WHEN** an independently reviewed normative amendment intentionally replaces expectations in retained owners
+- **THEN** an exact authorization already present in trusted public source binds the old/new owners, contexts, runtime inputs and changed requirement blocks
+- **AND** fresh before/after runs preserve identical opaque case identities and complete successful phases before the same loss consumer admits only those named changes
+- **AND** the original event comparison base still defines the old execution and complete loss scan when the pull-request public parent is newer
+
+#### Scenario: Candidate declarations cannot grant their own exception
+- **WHEN** authorization exists only on the candidate, reviewed source drifts, cases change, execution is incomplete, or an additional loss is unlisted
+- **THEN** the evolution path refuses without a count fallback, cached receipt, attestation-only approval or automatic baseline rewrite
+- **AND** unrelated losses, deletions, renames and genuine condensation retain ordinary survivor proof requirements
 
 #### Scenario: Exact branch contexts and retained mutation kills
 - **WHEN** removed cases and named survivors execute a protected proof
