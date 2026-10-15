@@ -1,11 +1,55 @@
 # CI shard overhead and evidence
 
-The backend still has five unit and five integration manifests, independent
+The backend has five unit and six integration computed file shards, independent
 preflight and affected paths, and the always-running fail-closed fan-in. All
 existing watchdogs and healthy-workload floors remain. This change claims no
 wall-clock gain. Ten genuine merge-group observations per original slice,
 installation and image measurements, full normal/protected gates, and the hard
 setup/first-result/tail targets remain required before whole closure.
+
+## Early inventory and concurrent required guards
+
+`route` starts `inventory`, `guards` and the two applicable Vitest children.
+The bounded inventory job uses the same Python identity, exact advisory environment
+key, mandatory frozen editable repair and existing `ci_partition.py` command as
+the former guards producer. It performs one fresh installed full collection,
+enforces both unchanged lane budgets and uploads the same exact-attempt
+`ci-inventory` artifact. Five unit and six integration children depend on route
+and successful inventory, so unrelated static checks and the frontend build no
+longer serialize their start. The scoped affected job also starts after route.
+
+`check` remains checkout-free and verdict-only. Its mode table requires successful
+inventory for full PR/merge-group and main push, and a skipped inventory only for
+scoped/docs PRs. Missing, failed, cancelled, malformed or wrong-mode inventory
+results fail. Guards stays mandatory in `check` and required `frontend`; browser
+still waits for guards and consumes its one source-bound build. Preflight retains
+its guards and matrix prerequisites and all eleven complete-identity, smoke and
+release-evidence checks. Coverage cadence, instrumentation, membership and weights
+are unchanged.
+
+The actual expanded DAG has 22 rows (20 before the two final required fan-ins,
+including the mutually exclusive affected row). Its maximum weighted antichain
+is 14: eleven backend children plus guards plus two Vitest children. Once guards
+finishes, browser can replace its one slot. The workflow contract enumerates the
+actual DAG rather than assuming matrix declarations each cost one runner.
+Inventory retains the former producer's complete 35-minute cap provisionally;
+there is no independent healthy inventory p95 yet, and all existing job caps and
+UV recovery reserves remain.
+
+The independent 30-run before observation on 2026-10-15 measured required-path
+p50/p95 at 1165s/1555s and guards at 353.5s/414s; scheduling delay was 3s/358s.
+The sample contains the latest 30 successful merge-group runs from
+[38078327862](https://github.com/tzeusy-org/butlers/actions/runs/38078327862)
+(2026-10-10T19:04:17Z) through
+[38667022310](https://github.com/tzeusy-org/butlers/actions/runs/38667022310)
+(2026-10-15T01:41:37Z). Required-path duration spans run creation to the latest
+completion of check, guards and frontend; p95 uses nearest rank. Failed and
+retried runs are excluded, so this is not an all-run service SLO.
+The source graph removes guards from backend/Vitest start prerequisites but
+adds a separately scheduled environment setup. A named hosted after observation
+is still required to measure the result; a single run cannot establish the
+parent 20-run objective, a seven-minute bound, or the original five-minute lane
+promises. No wall-clock gain is claimed from the graph alone.
 
 ## Dependencies and database targets
 

@@ -155,6 +155,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     scoped["route"]["outputs"].update(
         mode="scoped", inventory="false", test_paths='["tests/contracts/test_ci_test_targets.py"]'
     )
+    scoped["inventory"]["result"] = "skipped"
     scoped["check-affected"]["result"] = "success"
     scoped["check-affected"]["outputs"] = {"verified": "true"}
     contexts.append(("scoped", "pull_request", "refs/pull/1/merge", scoped, False))
@@ -165,6 +166,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     contexts.append(("docs", "pull_request", "refs/pull/1/merge", docs, False))
     push = copy.deepcopy(docs)
     push["route"]["outputs"].update(backend="true", frontend="true", mode="push", inventory="true")
+    push["inventory"]["result"] = "success"
     contexts.append(("push", "push", "refs/heads/main", push, False))
     merge_group = copy.deepcopy(full)
     merge_group["route"]["outputs"]["frontend"] = "true"
@@ -172,12 +174,16 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
         ("merge_group", "merge_group", "refs/heads/gh-readonly-queue/main/x", merge_group, True)
     )
 
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    from ci_route import verdict as script_verdict
+
     failures = []
 
     def check(label: str, needs: object, event: str, ref: str, expected: bool) -> None:
         result, output = _run_fan_in(
             gate=gate, needs=needs, event=event, ref=ref, tmp_path=tmp_path
         )
+        assert script_verdict(needs=needs, event=event, ref=ref) is expected, label
         if (result.returncode == 0) != expected:
             failures.append(f"{label}: exit={result.returncode}, expected_success={expected}")
         if expected:
@@ -207,7 +213,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             changed["new-needed-job"] = {"result": result, "outputs": {}}
             check(f"{mode}/added/{result}", changed, event, ref, result == "success")
     for mode, event, ref, needs, _ in contexts:
-        for name in ("route", "guards", "check-preflight", "check-affected", *heavy):
+        for name in ("route", "guards", "inventory", "check-preflight", "check-affected", *heavy):
             changed = copy.deepcopy(needs)
             changed[name]["result"] = "skipped" if needs[name]["result"] == "success" else "success"
             check(f"{mode}/{name}/wrong-pairing", changed, event, ref, False)
@@ -271,6 +277,15 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     # Reached fault controls prove that each independent policy check matters.
     # They edit only the extracted actual step, never another implementation.
     mutations = [
+        (
+            "inventory",
+            gate["run"].replace(
+                "needs = json.loads(os.environ['NEEDS_JSON'])",
+                "needs = json.loads(os.environ['NEEDS_JSON'])\nneeds['inventory']['result']='success'",
+            ),
+            "inventory",
+            "failure",
+        ),
         (
             "preflight",
             gate["run"].replace(
@@ -676,10 +691,82 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     assert preflight["if"].startswith("always()")
     assert "mode == 'full'" in preflight["if"] and "mode == 'scoped'" in preflight["if"]
     for job in [*unit_jobs, *integration_jobs]:
-        assert job["needs"] == ["route", "guards"]
-        assert job["if"] == "needs.route.outputs.mode == 'full' && needs.guards.result == 'success'"
+        assert job["needs"] == ["route", "inventory"]
+        assert (
+            job["if"] == "needs.route.outputs.mode == 'full' && needs.inventory.result == 'success'"
+        )
         assert job["strategy"]["fail-fast"] is False
     assert len(unit_jobs) == 5 and len(integration_jobs) == 6
+    inventory = jobs["inventory"]
+    assert inventory["needs"] == ["route"]
+    assert inventory["env"]["CI_COVERAGE"] == jobs["check-unit"]["env"]["CI_COVERAGE"]
+    assert inventory["env"]["CI_COVERAGE"] == jobs["check-integration"]["env"]["CI_COVERAGE"]
+    assert inventory["if"] == "needs.route.outputs.inventory == 'true'"
+    collect = _workflow_step(
+        job=inventory, name="Collect one fresh installed pytest inventory and enforce both budgets"
+    )
+    assert collect["run"] == (
+        'uv run --no-sync python scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"'
+    )
+    assert "if" not in collect
+    upload = _artifact_step(job=inventory, artifact_name="ci-inventory")
+    assert upload["with"] == {
+        "name": "ci-inventory",
+        "path": "${{ runner.temp }}/ci-inventory/*.json",
+        "if-no-files-found": "error",
+        "retention-days": 14,
+        "overwrite": True,
+    }
+    assert inventory["steps"].index(collect) < inventory["steps"].index(upload)
+    assert not any("ci_partition.py" in step.get("run", "") for step in guards["steps"])
+    for step_name in (
+        "Set up Python 3.12",
+        "Install uv",
+        "Compute exact environment cache key",
+        "Restore advisory environment cache",
+        "Install dependencies",
+    ):
+        assert _workflow_step(job=inventory, name=step_name) == _workflow_step(
+            job=guards, name=step_name
+        )
+
+    # Enumerate weighted antichains of the actual job DAG. Matrix aggregates
+    # carry their full concurrent row counts; affected cannot run in full mode.
+    active = {name: job for name, job in jobs.items() if name != "check-affected"}
+    ancestors = {}
+
+    def upstream(name):
+        if name not in ancestors:
+            parents = active[name].get("needs", [])
+            parents = [parents] if isinstance(parents, str) else parents
+            ancestors[name] = set(parents)
+            for parent in parents:
+                if parent in active:
+                    ancestors[name].update(upstream(parent))
+        return ancestors[name]
+
+    names = list(active)
+    weights = [
+        math.prod(
+            len(values) for values in active[name].get("strategy", {}).get("matrix", {}).values()
+        )
+        for name in names
+    ]
+    compatible = [
+        sum(
+            1 << j
+            for j, other in enumerate(names)
+            if name != other and name not in upstream(other) and other not in upstream(name)
+        )
+        for name in names
+    ]
+    peak = 0
+    for mask in range(1 << len(names)):
+        selected = [i for i in range(len(names)) if mask & (1 << i)]
+        if all(mask & ~(compatible[i] | (1 << i)) == 0 for i in selected):
+            peak = max(peak, sum(weights[i] for i in selected))
+    assert sum(weights) + 1 == 22  # Includes the mutually exclusive affected row.
+    assert peak == 14
     assert "plan" not in jobs and "changes" not in jobs
     route_command = _workflow_step(
         job=changes, name="Classify and conservatively plan with stdlib only"
@@ -687,11 +774,13 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     assert route_command["run"] == "python3 scripts/ci_route.py"
     assert not any("uv" in step.get("run", "") for step in changes["steps"])
     check_affected = jobs["check-affected"]
-    assert check_affected["needs"] == ["route", "guards"]
+    assert check_affected["needs"] == ["route"]
     assert "mode == 'scoped'" in check_affected["if"]
     assert jobs["frontend-e2e"]["needs"] == ["route", "guards"]
     assert jobs["frontend"]["needs"] == ["route", "guards", "frontend-vitest"]
     assert jobs["frontend"]["if"] == "always()"
+    assert jobs["frontend-vitest"]["needs"] == ["route"]
+    assert jobs["frontend-vitest"]["if"] == "needs.route.outputs.frontend == 'true'"
     assert jobs["frontend-vitest"]["strategy"]["matrix"]["shard"] == [1, 2]
     frontend_gate = jobs["frontend"]["steps"][0]
     fe_needs = {name: {"result": "success", "outputs": {}} for name in jobs["frontend"]["needs"]}
@@ -1057,6 +1146,7 @@ else:
     assert check_job["needs"] == [
         "route",
         "guards",
+        "inventory",
         "check-preflight",
         "check-unit",
         "check-integration",

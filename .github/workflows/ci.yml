@@ -65,11 +65,79 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 scripts/ci_route.py
 
+  inventory:
+    timeout-minutes: 35
+    # Fresh membership, both budgets and the exact attempt assignment are the
+    # only backend prerequisites. Static guards remain mandatory final gates.
+    runs-on: ubuntu-latest
+    needs: [route]
+    if: needs.route.outputs.inventory == 'true'
+    permissions:
+      contents: read
+    env:
+      CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.15"
+
+      - name: Install uv
+        run: |
+          set -euo pipefail
+          max_attempts=5
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              echo "uv installed on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              echo "::error::uv install failed after ${max_attempts} attempts" >&2
+              exit 1
+            fi
+            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Compute exact environment cache key
+        id: environment-key
+        run: |
+          set -euo pipefail
+          cache_key="$(python3 scripts/ci_environment.py key)"
+          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore advisory environment cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: .venv
+          key: ${{ steps.environment-key.outputs.key }}
+
+      - name: Install dependencies
+        run: python3 scripts/ci_environment.py prepare
+
+      - name: Collect one fresh installed pytest inventory and enforce both budgets
+        run: uv run --no-sync python scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"
+
+      - name: Upload exact attempt inventory and assignment
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-inventory
+          path: ${{ runner.temp }}/ci-inventory/*.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
   guards:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
-    # their exact scopes; guards owns inventory/budget, preflight owns reconciliation and smoke.
+    # their exact scopes; inventory owns membership/budgets, preflight owns reconciliation and smoke.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
     # the comment block that explains why it exists; those comments are
@@ -420,23 +488,6 @@ jobs:
           done <<< "$GUARD_OUTCOMES"
           exit "$failed"
 
-  # Preserve the historic `check` status as a fail-closed fan-in. The
-  # one-time preflight and ten duration-balanced file shards all begin
-  # independently; no broad lane serializes the backend critical path.
-      - name: Collect one fresh installed pytest inventory and enforce both budgets
-        if: needs.route.outputs.inventory == 'true'
-        run: uv run --no-sync python scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"
-
-      - name: Upload exact attempt inventory and assignment
-        if: needs.route.outputs.inventory == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory/*.json
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
-
       - name: Set up Node 24
         if: needs.route.outputs.frontend == 'true'
         uses: actions/setup-node@v6
@@ -689,13 +740,13 @@ jobs:
   check-unit:
     timeout-minutes: 28
     runs-on: ubuntu-latest
-    needs: [route, guards]
+    needs: [route, inventory]
     # Whole-file computed assignment, independently recollected before execution.
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5]
-    if: needs.route.outputs.mode == 'full' && needs.guards.result == 'success'
+    if: needs.route.outputs.mode == 'full' && needs.inventory.result == 'success'
 
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
@@ -828,13 +879,13 @@ jobs:
   check-integration:
     timeout-minutes: 36
     runs-on: ubuntu-latest
-    needs: [route, guards]
+    needs: [route, inventory]
     # Whole-file computed assignment, independently recollected before execution.
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
-    if: needs.route.outputs.mode == 'full' && needs.guards.result == 'success'
+    if: needs.route.outputs.mode == 'full' && needs.inventory.result == 'success'
 
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
@@ -1008,9 +1059,9 @@ jobs:
     # merge queue's merge_group run still exercises every shard with
     # coverage before anything lands on main.
     runs-on: ubuntu-latest
-    needs: [route, guards]
-    # Explicit route/guard prerequisites keep the conditional affected lane
-    # from becoming a substitute for a failed classifier or static gate.
+    needs: [route]
+    # Explicit route admission bounds the scoped lane; the required final
+    # verdict still refuses a failed classifier or static guard.
     if: always() && needs.route.result == 'success' && github.event_name == 'pull_request' && needs.route.outputs.mode == 'scoped'
 
     steps:
@@ -1103,7 +1154,7 @@ jobs:
   check:
     timeout-minutes: 3
     runs-on: ubuntu-latest
-    needs: [route, guards, check-preflight, check-unit, check-integration, check-affected]
+    needs: [route, guards, inventory, check-preflight, check-unit, check-integration, check-affected]
     if: always()
     steps:
       - name: Fail closed from prerequisite verdicts only
@@ -1141,6 +1192,7 @@ jobs:
               expected = {
                   "route",
                   "guards",
+                  "inventory",
                   "check-preflight",
                   "check-unit",
                   "check-integration",
@@ -1202,6 +1254,7 @@ jobs:
               results = {
                   "route": "success",
                   "guards": "success",
+                  "inventory": "success" if mode in {"full", "push"} else "skipped",
                   "check-preflight": "success" if mode in {"full", "scoped"} else "skipped",
                   "check-affected": "success" if mode == "scoped" else "skipped",
                   "check-unit": "success" if mode == "full" else "skipped",
@@ -1416,8 +1469,8 @@ jobs:
   frontend-vitest:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route, guards]
-    if: needs.route.outputs.frontend == 'true' && needs.guards.result == 'success'
+    needs: [route]
+    if: needs.route.outputs.frontend == 'true'
     strategy:
       fail-fast: false
       matrix:

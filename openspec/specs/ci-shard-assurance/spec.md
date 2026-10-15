@@ -6,7 +6,7 @@ TBD - created by archiving change computed-ci-shard-partition. Update Purpose af
 ## Requirements
 
 ### Requirement: Fresh collected membership and one inventory
-The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and predicates. Advisory weights, diffs, file globs and cached counts MUST NOT establish membership. Both test budgets SHALL consume this same inventory; collection and envelope failures SHALL be non-passing.
+The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and predicates. Advisory weights, diffs, file globs and cached counts MUST NOT establish membership. A dedicated bounded inventory job SHALL start after route and own collection, both budgets and the exact source/run/attempt-bound inventory/assignment artifact. Backend matrix children SHALL depend on route and successful inventory, independently of static guards. Both test budgets SHALL consume this same inventory; collection and envelope failures SHALL be non-passing.
 
 ID: REQ-ci-shard-assurance-001
 Source: bu-ly3lv5.6 P1-P3; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
@@ -22,7 +22,7 @@ Scope: v1-mandatory
 
 #### Scenario: Unknown collection cannot become a budget pass
 - **WHEN** collection fails, is empty unexpectedly or has malformed/stale identity/config evidence
-- **THEN** guards refuses both inventory and budget success and required check fails
+- **THEN** the inventory job refuses both inventory and budget success and required check fails
 
 #### Scenario: Historical counts do not replace current population
 - **WHEN** dated17501 or budget-update17522/4935 counts are presented
@@ -75,7 +75,7 @@ Scope: v1-mandatory
 - **THEN** the artifact is rejected without logging raw values and ordinary same-attempt sanitized evidence passes
 
 ### Requirement: Fail-closed matrix routing and event policy
-Routing SHALL remain stdlib-only and conservative. The required check SHALL remain verdict-only and always evaluate all current needed results under explicit event/plan rules. Existing required contexts SHALL survive; merge_group MUST retain full inventory, all eleven backend children, guards, frontend and browser evidence.
+Routing SHALL remain stdlib-only and conservative. The required check SHALL remain verdict-only and always evaluate all current needed results under explicit event/plan rules. Required check SHALL require inventory success for full and main-push modes and an explicit inventory skip for scoped and docs modes; missing, failed, cancelled, unknown or mode-incompatible inventory results MUST fail. Static guards SHALL remain mandatory in every required final verdict even when test bodies start concurrently. Existing required contexts SHALL survive; merge_group MUST retain full inventory, all eleven backend children, guards, frontend and browser evidence.
 
 ID: REQ-ci-shard-assurance-004
 Source: bu-ly3lv5.6 P6-P7; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
@@ -83,7 +83,7 @@ Scope: v1-mandatory
 
 #### Scenario: A full terminal tree requires eleven backend carriers
 - **WHEN** merge_group or a full backend PR executes
-- **THEN** five unit and six integration children plus independent preflight must succeed; an unknown/failed/partial result fails the required verdict
+- **THEN** fresh inventory, five unit and six integration children, guards and independent preflight must succeed; an unknown/failed/partial result fails the required verdict
 
 #### Scenario: Scoped and docs skips remain explicitly bounded
 - **WHEN** a genuine scoped backend PR or classifier-proven docs-only PR is evaluated
@@ -91,7 +91,7 @@ Scope: v1-mandatory
 
 #### Scenario: Main push retains fresh inventory without rerunning heavy lanes
 - **WHEN** push targets main after protected queue validation
-- **THEN** guards performs complete inventory/budget while existing heavy/preflight post-queue skips remain explicit
+- **THEN** the dedicated inventory job performs complete inventory/budget while existing heavy/preflight post-queue skips remain explicit
 
 #### Scenario: Unknown inputs widen or fail
 - **WHEN** classifier/planner/inventory-change evidence is absent or an added needed job lacks skip permission
@@ -144,7 +144,7 @@ Scope: v1-mandatory
 - **THEN** its identity is retained as historical and no extra/missing current population is silently omitted or accepted
 
 ### Requirement: Frontend static test and browser evidence is complete
-The frontend required context SHALL combine mandatory static/knip/build evidence with both complete Vitest shard verdicts. The advisory browser job SHALL consume the one genuine source-bound build artifact without rebuilding and SHALL preserve all locked browser/OS dependency and finite installer assertions. Every Vitest child SHALL collect one fresh complete unsharded installed item reference before its actual shard execution. Its pre-body-emitted declaration tree, logical-ready and terminal-result multiplicities SHALL match that independent CURRENT reference and exact installed whole-file selector, including all parameter and skip/todo distinctions. Required frontend success SHALL independently reconcile both complete full references and both opaque selected/start/result ledgers; file counts, cached previous populations and matrix SUCCESS alone MUST NOT authorize it. Default isolated-fork selectors/configuration SHALL remain unchanged. Full collection plus execution and own cleanup SHALL share one900s total envelope under unchanged finite job caps; the former failed180s full-prepass outcome and subphase relocation SHALL be recorded explicitly without hard-metric or prior-cap credit.
+The frontend required context SHALL combine mandatory static/knip/build evidence with both complete Vitest shard verdicts. Vitest children MAY begin directly after successful route admission; browser SHALL still await the source-bound build produced by successful guards. The advisory browser job SHALL consume the one genuine source-bound build artifact without rebuilding and SHALL preserve all locked browser/OS dependency and finite installer assertions. Every Vitest child SHALL collect one fresh complete unsharded installed item reference before its actual shard execution. Its pre-body-emitted declaration tree, logical-ready and terminal-result multiplicities SHALL match that independent CURRENT reference and exact installed whole-file selector, including all parameter and skip/todo distinctions. Required frontend success SHALL independently reconcile both complete full references and both opaque selected/start/result ledgers; file counts, cached previous populations and matrix SUCCESS alone MUST NOT authorize it. Default isolated-fork selectors/configuration SHALL remain unchanged. Full collection plus execution and own cleanup SHALL share one900s total envelope under unchanged finite job caps; the former failed180s full-prepass outcome and subphase relocation SHALL be recorded explicitly without hard-metric or prior-cap credit.
 
 ID: REQ-ci-shard-assurance-007
 Source: bu-ly3lv5.6 P10; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
@@ -203,7 +203,7 @@ Scope: v1-mandatory
 
 #### Scenario: Concurrent capacity follows the actual DAG
 - **WHEN** guards, eleven backend children, two Vitest children, browser and post jobs become eligible
-- **THEN** dependencies bound peak14 and account for19 matrix-stage rows versus21 final rows without changing required contexts
+- **THEN** dependencies bound peak14 and account for20 matrix-stage rows versus22 final rows, including the new inventory producer and mutually exclusive affected row without changing required contexts
 
 #### Scenario: Metrics retain their full ten-run windows
 - **WHEN** route/guards/spread/lane performance observations are incomplete

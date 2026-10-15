@@ -62,7 +62,7 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    make test-ci-integration
    ```
 
-   CI also runs `guards` for static checks and fresh inventory/budgets, and
+   CI also runs `guards` for static checks, `inventory` for fresh inventory/budgets, and
    `check-preflight` for complete-identity reconciliation and smoke/release evidence,
    plus the fail-closed `check` fan-in, so these targets alone are not a full
    hosted Python gate claim. Run only one broad
@@ -85,7 +85,7 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    `check-affected`; any planner uncertainty (escalation trigger, empty plan, or
    a plan reaching into `tests/e2e/`) reports `mode=full` and all eleven children run.
    Measured precision is in `about/craft-and-care/testing-and-verification.md`.
-   `guards` enforces the freshly collected inventory against the per-lane
+   `inventory` enforces the freshly collected inventory against the per-lane
    collected-test budget in `scripts/test-budget-baseline.json`: a PR that
    pushes a lane over budget condenses tests in the same PR, or raises the
    budget with `--update-baseline` and states the net test delta
@@ -397,16 +397,18 @@ it before changing the subsystem.
     PR as settled.
   - The job set varies by design (`route` explicitly skips shards or frontend jobs as neutral).
     Judge completeness by the required contexts (`check`, `guards`, `frontend`), not a job count.
-- CI fan-out: route→guards→five unit/six integration matrix children→complete-identity `check-preflight`, then
+- CI fan-out: route→inventory→five unit/six integration matrix children→complete-identity `check-preflight`, then
   the `check` fan-in, which uses `always()` and reads every declared job through `NEEDS_JSON`.
   `always()` alone does not enforce prerequisites: route and guards verdicts
-  must succeed, and preflight is checked independently of the heavy-shard consistency state.
+  must succeed, inventory succeeds for full/main-push and skips only for scoped/docs,
+  and preflight is checked independently of the heavy-shard consistency state.
   Preflight never counts as a heavy shard; a scoped PR requires preflight and check-affected
   success with every heavy shard skipped. Docs-only PR and main-push skips require the exact
   classifier/event/ref policy; full PR and merge_group require all heavy shards. New needed jobs
   accept success and deny skips until an explicit policy is added. Malformed or missing results,
   classifier outputs or planner paths fail closed.
-  Lock, lint, format, SQL safety and fresh inventory/budgets run in guards with their original scopes;
+  Lock, lint, format and SQL safety run in guards with their original scopes;
+  fresh inventory/budgets run in the early inventory job;
   exact-once and smoke/release evidence remain in preflight. `make check-guards` includes the same
   nonmutating static checks (`check-lock`, `lint`, `check-format`, `check-for-update-joins`).
   Never add `!cancelled()` to it (a skipped check can read green to branch protection). Never use

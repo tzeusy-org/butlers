@@ -24,6 +24,22 @@
     },
     {
       "workflow": ".github/workflows/ci.yml",
+      "job": "inventory",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 35,
+      "retry_extra_s": 0,
+      "state": "provisional; extracted producer retains complete former guards35min envelope; named current calibration pending",
+      "sample_source": "bu-q1hzqn.1 extraction from guards; no independent inventory whole-job observations",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 180,
+      "review_policy": "Retain the complete35min former producer job cap rather than infer a shorter collection/setup floor. Frozen editable repair and full UV recovery remain. No stable p95 or timing gain is established by this source move.",
+      "installed_timeout_minutes": 35
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
       "job": "guards",
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,

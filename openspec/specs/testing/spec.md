@@ -853,6 +853,8 @@ authentication and reports a healthy status when the API is up.
   string returned regardless of server state
 
 ### Requirement: Smoke Tests Run In CI As A Fast Gate
+Fresh full pytest inventory, both lane budgets and the exact attempt assignment SHALL be produced by a dedicated bounded job after route. Full backend children SHALL await successful inventory; affected and Vitest execution MAY begin after route while static guards execute. Required final verdicts SHALL retain mandatory guards and require inventory success only for full/main-push modes, with explicit inventory skips only for scoped/docs modes. Browser SHALL retain its dependency on the guards-built source-bound artifact. Complete eleven-child reconciliation, smoke and existing event/selector policies SHALL remain unchanged.
+
 The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every merge-group tree and every backend-applicable
 pull request as a fast gate, distinct from and faster than the integration tier,
 and MUST NOT pull in the E2E suite or any real LLM dependency. The dedicated-selection scenario below and the distinct/faster fast-gate description apply to scoped execution and uncovered full-mode smoke items; full derived mode does not claim a separate smoke job completed faster than the full integration run. Complete full execution MAY use exact-identity derived smoke evidence from the same successful lane population under P8; this explicitly qualifies the previous unconditional dedicated invocation while preserving its command, no-LLM/no-E2E and failure contracts.

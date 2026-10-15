@@ -63,7 +63,7 @@ the exact tree about to land. A pull request's own CI run is narrower on
 purpose: a docs/spec-only diff skips the backend shards and frontend jobs, and
 a push to `main` skips the shards because the queue already ran them. The
 suite also has a size budget: `scripts/check_test_budget.py` fails
-`check-preflight` when a lane collects more tests than
+`inventory` when a lane collects more tests than
 `scripts/test-budget-baseline.json` allows, so a change that grows the suite
 past its headroom condenses tests in the same PR or raises the budget with a
 stated net test delta and reason. Tests are production code with a run-time
@@ -99,11 +99,11 @@ A boolean is never an integer count/exit, and an equal floating-point number is 
 Both scoped and full-matrix consumers reject malformed representations without coercion;
 finite nonnegative integer or floating-point phase timers remain valid numeric durations.
 
-Guards performs one actual installed `pytest tests/ roster/ --collect-only -q -n0 -m ""`
+The dedicated bounded `inventory` job begins after route, in parallel with static guards, and performs one actual installed `pytest tests/ roster/ --collect-only -q -n0 -m ""`
 collection. Exact inherited markers establish both populations; advisory weights never do.
 Missing, malformed, nonobject or duplicate-key advisory weight files fall back to the same
 finite deterministic costs and set assignment degradation; inventory, assignment and execution
-evidence still use strict JSON admission in every entrypoint. Both unchanged lane budgets consume this inventory. Deterministic LPT assigns whole files to
+evidence still use strict JSON admission in every entrypoint. Both unchanged lane budgets consume this inventory. Full backend children await route and successful inventory, while affected and Vitest may start after route; every final required verdict still requires successful guards. Required check admits inventory success only for full/main-push and inventory skips only for scoped/docs modes. Browser still awaits the guards-built artifact. Deterministic LPT assigns whole files to
 five unit and six integration children. Each child independently recollects its assignment;
 preflight reconciles complete nonce-hashed identity multiplicity, logical starts and phases
 across all eleven children. Missing/extra/stale receipts cannot hide behind a matrix aggregate.
