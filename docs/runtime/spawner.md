@@ -42,7 +42,7 @@ prompt-free `resolution_receipt` so callers keep the no-winner explanation.
 Two semaphores must be acquired in order:
 
 1. **Per-butler semaphore** --- sized from `runtime_config.max_concurrent` (seeded from `[butler.runtime_seed]`; a cold field, so changes need a restart). Default is 1 (serial dispatch). Can be bypassed with `bypass_butler_semaphore=True` for internal dispatch.
-2. **Global semaphore** --- Process-wide `asyncio.Semaphore` defaulting to 3, configurable via `BUTLERS_MAX_GLOBAL_SESSIONS`. Limits total concurrent sessions across all butlers in the process.
+2. **Global semaphore** --- Process-wide `asyncio.Semaphore` defaulting to 3, configurable via `BUTLERS_MAX_GLOBAL_SESSIONS`. Limits total concurrent sessions across all butlers in the process. The `butlers-up` deployments (Compose and the Helm chart) set it to 5.
 
 Metrics track queue depth at both levels (`butlers.spawner.queued_triggers` and `butlers.spawner.global_queue_depth`).
 

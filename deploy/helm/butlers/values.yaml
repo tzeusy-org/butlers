@@ -104,6 +104,10 @@ butlersUp:
   resources:
     requests: {cpu: 500m, memory: 2Gi}
     limits: {memory: 12Gi}
+  # Fleet-wide cap on concurrent LLM sessions (BUTLERS_MAX_GLOBAL_SESSIONS).
+  # Every butler shares this one process, so this is the whole fleet's limit.
+  # Owner-set to 5 on 2026-10-15 (bu-6y6f6m); the code default is 3.
+  maxGlobalSessions: 5
   # Persist LLM CLI homes (~/.claude, ~/.codex, ...). Tokens are also
   # restored from the DB credential store at startup.
   runtimeHome:

@@ -156,6 +156,19 @@ def test_dev_ships_review_jobs_on_and_one_tap_routing_off() -> None:
 
 
 @needs_helm
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_butlers_up_runs_the_owner_set_fleet_session_cap(env: str) -> None:
+    # Owner decision 2026-10-15 (bu-6y6f6m): 5 parallel sessions fleet-wide. Every
+    # butler shares the butlers-up process, so its env sets the cap; the code default stays 3.
+    names = _by_kind_name(_render(env, *_SITE))
+    container_env = {
+        e["name"]: e.get("value")
+        for e in _pod_spec(names[("Deployment", "butlers-up")])["containers"][0]["env"]
+    }
+    assert container_env["BUTLERS_MAX_GLOBAL_SESSIONS"] == "5"
+
+
+@needs_helm
 def test_dev_enables_the_bridge_with_its_own_credential_secret() -> None:
     names = _by_kind_name(_render("dev", *_SITE))
     cron = names[("CronJob", "butlers-beads-export")]

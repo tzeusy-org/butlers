@@ -655,6 +655,9 @@ services:
       # own. Point it at the shared wa_bridge_socket volume, matching the
       # connector's WA_BRIDGE_SOCKET, so only one authenticated session exists.
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
+      # Fleet-wide concurrent LLM session cap; every butler shares this process.
+      # Owner-set to 5 (bu-6y6f6m); the code default is 3.
+      BUTLERS_MAX_GLOBAL_SESSIONS: ${BUTLERS_MAX_GLOBAL_SESSIONS:-5}
     volumes:
       - ./roster:/app/roster:ro
       - ./logs:/app/logs
@@ -800,6 +803,7 @@ services:
       DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
+      BUTLERS_MAX_GLOBAL_SESSIONS: ${BUTLERS_MAX_GLOBAL_SESSIONS:-5}
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro
