@@ -160,6 +160,15 @@ def test_worker_shares_only_coverage_walks_never_the_subject_realpath(tmp_path):
     assert result["complete"] is True
     assert {row[0] for row in result["arcs"][case["key"]]} == {"real/product.py"}
 
+    assert _retargeted_worker_arcs(tmp_path, root) == [
+        [path, start, end]
+        for path, arcs in [
+            ("other/second.py", [(-1, 1), (-1, 2), (1, -1), (2, -1)]),
+            ("real/product.py", [(-1, 2), (2, -1)]),
+        ]
+        for start, end in arcs
+    ]
+
 
 def test_tool_resolution_equals_path_resolve(tmp_path):
     """REQ-testing-053: shared directory resolution never changes a bound tool path."""
@@ -281,3 +290,69 @@ def test_owned_launcher_execs_only_after_the_go_byte():
     command = [sys.executable, "-I", "-c", evidence.LAUNCHER, sys.executable, "-c", "exit(7)"]
     for signal, code in ((b"1", 7), (b"0", 2), (b"", 2)):
         assert subprocess.run(command, input=signal, timeout=30).returncode == code
+
+
+def _retargeted_worker_arcs(tmp_path, root):
+    # A new filename under the same parent must use that parent's current
+    # target. Restore the link before source readback, as a real subject may do.
+    (root / "other").mkdir()
+    (root / "other/second.py").write_text("def value():\n    return 2\n")
+    subject = root / "tests/test_subject.py"
+    subject.write_text(
+        subject.read_text()
+        + "    import importlib.util\n"
+        + "    from pathlib import Path\n"
+        + "    root = Path(__file__).resolve().parents[1]\n"
+        + "    (root / 'src').unlink()\n"
+        + "    (root / 'src').symlink_to('other', target_is_directory=True)\n"
+        + "    try:\n"
+        + "        spec = importlib.util.spec_from_file_location('second', root / 'src/second.py')\n"
+        + "        second = importlib.util.module_from_spec(spec)\n"
+        + "        spec.loader.exec_module(second)\n"
+        + "        assert second.value() == 2\n"
+        + "    finally:\n"
+        + "        (root / 'src').unlink()\n"
+        + "        (root / 'src').symlink_to('real', target_is_directory=True)\n"
+    )
+    node = "tests/test_subject.py::test_subject"
+    scope = ["real/product.py", "other/second.py"]
+    plan = {
+        "base": "event-base",
+        "scope": scope,
+        "removed": [node],
+        "survivors": [node],
+        "cluster": "fresh-covered-parent",
+        "bead": "bu-1kw4n9",
+        "contract": {"class": "wire", "cites": ["REQ-testing-053"]},
+        "mapping": {node: {"survivors": [node], "reason": "Retain both executed files"}},
+    }
+    plans = root / "tests/condensation-plans"
+    plans.mkdir()
+    (plans / "current.json").write_text(json.dumps(plan))
+    consumer.validate_execution_request(plan)
+    names = [*scope, "src", "tests/test_subject.py", "tests/condensation-plans/current.json"]
+    before = consumer.source_records(root, names)
+    controls = consumer.execution_request_inputs(root, before)
+    assert controls == {"tests/condensation-plans/current.json"}
+    observed_output = tmp_path / "observed.json"
+    observed = evidence.suite(
+        root, [node], scope, "1" * 64, observed_output, "observed", 60, controls
+    )
+    assert observed["complete"] and observed["cleanup"] and observed["exit"] == 0
+    assert observed["tracer"] == "CTracer"
+    assert observed["selected"] == 1 and observed["deselected"] == 0
+    [observed_case] = observed["cases"]
+    assert observed_case["phases"] == {"setup": "passed", "call": "passed", "teardown": "passed"}
+    access = observed["request_access"]
+    assert access["complete"] and access["accesses"] == access["reads"] == 0
+    assert access["probe_accesses"] == access["subject_probes"] == 1
+    assert access["actors"] and all(actor["exited"] for actor in access["actors"])
+    assert access["finalization_failures"] == []
+    assert observed["request_boundary"]["runtime_read"] is False
+    assert consumer.source_records(root, names) == before
+    assert os.readlink(root / "src") == "real"
+    assert (
+        consumer.coverage_arcs(observed_output.with_suffix(".coverage"), observed)
+        == observed["arcs"]
+    )
+    return observed["arcs"][observed_case["key"]]
