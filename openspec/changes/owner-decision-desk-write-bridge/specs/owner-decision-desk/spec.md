@@ -251,6 +251,29 @@ Each callback token SHALL be `dsk1:<prompt id>:<option index>:<signature>`, at m
 signed with the same Tier-1 callback secret and signer as RFC 0021 approval tokens over a payload
 that includes the `dsk1` prefix, the prompt id, the option index, and the prompt's creation time.
 
+The connector SHALL forward the original verified token as JSON `token` alongside `option_index`
+and the existing scoped callback credential and fixed actor header. The API SHALL independently
+resolve the shared Tier 1 callback secret from the database with environment fallback disabled.
+It SHALL lock the current prompt row through the intent transaction's commit, verify the HMAC
+against that row's creation time, and compare both signed prompt id and option index to the URL
+and body before any reopening reconciliation or choice write. Authentication failure SHALL NOT
+mutate prompt or intent history, including otherwise-qualified reopening metadata. Authenticated
+named business refusals SHALL preserve the existing commit of proved supersession; ordinary
+database failures SHALL roll back. A legal later reservation SHALL retain its existing policy.
+
+Token-only validation/authentication failures SHALL return `403 invalid_callback_token`; malformed
+whole requests, invalid URL UUIDs or other request-field validation errors SHALL return
+`422 invalid_callback_request`, including mixed failures. Unavailable shared secret custody SHALL
+return `503 callback_verification_unavailable` without environment rescue. A missing prompt with
+usable custody SHALL retain `404 prompt_not_found`; offered-option, changed-options, unavailable
+digest, consumed-prompt and identical-repeat outcomes SHALL retain their existing semantics.
+Callback audit events SHALL retain method, path, response status, result, verified context and
+trace correlation with only a fixed safe body projection, including malformed bodies and the
+single trailing slash. Responses, logs and telemetry SHALL NOT retain raw tokens, identifiable
+signature fragments, signing secrets, credentials or raw validation/exception input. The callback
+allowlist and non-redirecting trailing-slash behavior SHALL remain unchanged. A newly token-bearing
+transport failure SHALL retain retry/keyboard behavior without ingestion or error-buffer storage.
+
 The Telegram bot connector SHALL handle a `dsk1` callback before ingestion and before its generic
 callback acknowledgement. It SHALL verify that the tapping sender is the primary verified owner
 channel, load the prompt through a connector-scoped route, verify the signature against the
@@ -291,6 +314,42 @@ Scope: v1-mandatory
 - **WHEN** a `decision_request` envelope lacks a recipient, a `choose` action, or the single
   `open_dashboard` action, or carries an approval verb
 - **THEN** the envelope is rejected before delivery
+
+#### Scenario: The API independently refuses forged or mismatched tokens
+
+- **WHEN** otherwise-valid callback provenance carries an invalid signature, another prompt's
+  token, another option's token or a token bound to an older stored creation time
+- **THEN** choose returns `403 invalid_callback_token` before reconciliation or recording
+- **AND** prompt generations and all intent fields remain unchanged
+
+#### Scenario: Missing shared signing custody fails closed
+
+- **WHEN** the shared credential pool or its nonempty signing secret is unavailable or lookup fails
+- **THEN** choose returns `503 callback_verification_unavailable` and records nothing
+- **AND** an environment value cannot rescue the lookup or appear in the error
+
+#### Scenario: Verification and reservation use one current generation
+
+- **WHEN** a legal reservation refreshes a prompt before choose locks it
+- **THEN** the old token is refused without an intent
+- **AND** a reservation concurrent with an already verified locked choice waits through its commit,
+  while that choice records only the locked generation's exact option
+
+#### Scenario: A valid consumed token preserves committed supersession
+
+- **WHEN** a valid consumed-prompt token reaches otherwise-qualified applied history
+- **THEN** choose returns `409 intent_conflict:superseded` without creating a new intent
+- **AND** proved supersession commits while original choice and application fields remain intact
+
+#### Scenario: Private callback requests remain private on every refusal path
+
+- **WHEN** valid, token-invalid, malformed, oversized, scalar/list, invalid-path, trailing-slash or
+  exceptional callback requests pass through the production API stack
+- **THEN** audit events retain correlated request/effect metadata with a fixed safe body projection
+- **AND** responses, logs and exported telemetry contain no raw token, signature fragment, signing
+  secret, credential or validation/exception input
+- **AND** token-only failures use the fixed 403 category and other or mixed validation failures
+  use the fixed 422 category, without expanding callback authorization
 
 ## Source References
 

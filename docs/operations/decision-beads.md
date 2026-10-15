@@ -79,6 +79,38 @@ prompt stays consumed and returns Already handled; no prompt is re-sent or routi
 Migration `sw_046` expands the status check only. Its downgrade refuses superseded rows rather
 than rewriting or deleting history.
 
+Telegram decision callbacks use `POST /api/decisions/prompts/{prompt_id}/choose` with JSON
+`{"option_index": 0, "token": "<original dsk1 callback token>"}`. The connector forwards the
+original verified token, its scoped `X-Butlers-Approval-Callback-Token` credential, and the fixed
+`X-Butlers-Decision-Actor: owner@telegram` header. A token alone grants no authority; the owner
+dashboard key cannot substitute for callback provenance. Caller body attribution is ignored.
+
+The API independently resolves `APPROVAL_CALLBACK_SECRET` from the shared Tier 1 database through
+`CredentialStore.resolve(..., env_fallback=False)`. An unavailable pool, absent/empty secret or
+lookup failure returns `503 callback_verification_unavailable`; environment values do not rescue
+it. Inside the intent transaction the API locks the current prompt with `FOR UPDATE`, verifies the
+token against that row's creation time, and compares both the signed prompt id and option index to
+the request before any reconciliation or choice write. The lock lasts through commit, including
+an authenticated business refusal that commits proved supersession. Invalid authentication
+cannot supersede history. A legal reservation may still refresh a `not_attempted` prompt after
+the choice commits; an old token cannot authorize that refreshed generation.
+
+Missing, malformed, unencodable, oversized or incorrectly bound tokens return
+`403 invalid_callback_token`. Malformed whole requests, invalid path UUIDs and other field
+validation errors return `422 invalid_callback_request`; mixed token and other validation errors
+use that 422 category. With usable custody a missing prompt remains `404 prompt_not_found`;
+unoffered index `422 option_not_offered`, changed options `409 options_changed`, unavailable digest
+503, and consumed superseded prompt `409 intent_conflict:superseded` retain their meanings.
+Identical authenticated repeats preserve `200` with `meta.created=false`.
+
+Callback audit events retain method, path, status, result, verified context and trace correlation,
+but use only a fixed safe body projection, including malformed JSON and the unsupported single
+trailing slash. Responses, logs and telemetry omit raw tokens, signature fragments, credentials
+and request/exception bodies. The trailing slash remains non-redirecting (owner: 404; scoped
+callback credential alone: 401). Connector transport failures say to retry and retain the keyboard.
+Deploy compatible connector and API versions together: the API requires `token` and provides no
+tokenless fallback. This hardening does not enable routing, expire tokens or change reoffer policy.
+
 
 ## Related Pages
 
