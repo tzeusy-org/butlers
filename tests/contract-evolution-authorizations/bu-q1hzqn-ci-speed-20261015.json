@@ -109,8 +109,8 @@
     {
       "path": "openspec/changes/fail-closed-ci-assurance/specs/testing/spec.md",
       "id": "REQ-testing-034",
-      "before_sha256": "a00d5f2cdb3b5283ff0409343ef32bba121c0a275290eb635f4bfdb6df49d627",
-      "after_sha256": "6f3098a86005a16e75c4fb4383a8d83b1c4e589ef912215d3a53338d27755e94"
+      "before_sha256": "df5be6fe73585084c1b9d27bddd4394f2b2fd594210aaa52dbe33213e13532aa",
+      "after_sha256": "574538ac496da8c97d0f80bb68ed4047822bbc0162ed350f538d91696bac416d"
     }
   ],
   "inputs": [

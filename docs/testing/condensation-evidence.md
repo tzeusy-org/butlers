@@ -149,8 +149,8 @@ mode and SHA-256 of exact bytes. Owner/context files must exist on both sides.
 sides. A changed installed environment needs a separate real proof; this mode
 does not certify it. Relevant normative requirements are bound separately by
 path, qualified ID and exact before/after block hashes. Each block starts at its
-level-three `Requirement` heading and ends at the next such heading or the
-`Source References` section. Both hashes must differ. An existing citation or
+level-three `Requirement` heading and ends at the next heading of level three
+or higher, outside fenced code. Both hashes must differ. An existing citation or
 the policy requirement alone cannot authorize an unrelated expectation change.
 
 Every candidate change outside inherited public source must have an explicit
