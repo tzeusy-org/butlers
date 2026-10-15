@@ -413,3 +413,23 @@ async def test_record_intent_without_switchboard_db_is_503(app):
 
     assert resp.status_code == 503
     assert resp.json()["detail"] == "decision_intents_unavailable"
+
+
+async def test_digest_forwards_reopening_evidence_and_projects_superseded_history(app, tmp_path):
+    from butlers.api.routers import decisions as decisions_router
+
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(export, [_decision("bu-a", updated_at=_iso(_NOW))])
+    app.dependency_overrides[decisions_router._get_db_manager] = _SwitchboardOnly
+    latest = AsyncMock(
+        return_value={"bu-a": _intent_row("bu-a", status="superseded", failure_reason=None)}
+    )
+    with patch.object(decisions_router, "latest_intents", latest):
+        response = await _get_decisions(app, export)
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["intent"]["status"] == "superseded"
+    digest = latest.await_args.kwargs["digest"]
+    assert digest.available and digest.open_decisions[0].id == "bu-a"
+    assert digest.open_decisions[0].updated_at == _NOW
+    assert digest.export_as_of is not None

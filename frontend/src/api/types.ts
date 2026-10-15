@@ -10235,7 +10235,7 @@ export interface DecisionIntentSummary {
   id: string;
   bead_id: string;
   option: string;
-  status: "pending" | "applying" | "applied" | "failed";
+  status: "pending" | "applying" | "applied" | "failed" | "superseded";
   source: "dashboard" | "telegram";
   created_at: string;
   /** Categorical reason, set exactly when `status` is `failed`. */

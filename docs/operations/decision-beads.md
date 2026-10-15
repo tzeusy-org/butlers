@@ -62,6 +62,24 @@ actor `butlers-decision-desk`. An intent whose bead was closed, relabelled or re
 fails with a categorical reason and leaves the bead alone; see
 [Kubernetes deployment](kubernetes-deployment.md#beads-export).
 
+An applied intent can become `superseded` history when a later local export proves that the
+same decision was reopened. Listing or recording a choice requires a timezone-aware bead
+`updated_at` after the original applied `finished_at`, a snapshot at least ten minutes after
+that finish, and snapshot age between zero and ten minutes. Missing, invalid, future, old or
+unavailable evidence preserves the applied live slot; a fresh file mtime alone is insufficient.
+Ten minutes is a conservative two-cycle window for the enabled development five-minute export
+cadence, not a measured worst-case lag guarantee or calibration for the disabled fifteen-minute
+default. An outage cannot qualify by elapsed time alone.
+
+Supersession preserves the original application and audit fields, releases the existing positive
+live-index slot, and never requeues or reapplies that intent. A later explicit owner choice gets a
+new pending id, including the same option. The Decisions lane shows the live intent first, otherwise
+its newest terminal history, and renders superseded as a previous choice. A consumed Telegram
+prompt stays consumed and returns Already handled; no prompt is re-sent or routing enabled.
+Migration `sw_046` expands the status check only. Its downgrade refuses superseded rows rather
+than rewriting or deleting history.
+
+
 ## Related Pages
 
 - [Operations index](index.md)
