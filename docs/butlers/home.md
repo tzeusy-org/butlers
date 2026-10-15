@@ -25,7 +25,9 @@ hidden in data, unlisted or invalid parameters and climate temperatures outside 
 (equivalent60.8–82.4F) park for exact owner approval. Climate auto-execution requires consistent
 known unit context from the existing entity cache; missing units require approval, never a Celsius
 guess. Range/mode updates also require approval. The full subset is in the module specification.
-A parked action records a categorical reason and exact original arguments. An explicit target
+Argument snapshots reject NUL or surrogate code points in string values and object keys before
+parking or sending; representable text stays exact. A parked action records a categorical reason
+and exact original arguments. An explicit target
 combined with a selector in data is ambiguous and cannot be silently merged even after approval;
 create a new unambiguous action. A deliberately approved area/device/all command sends once but
 remains unverified when no explicit target can be observed. No retry or receipt-success shortcut

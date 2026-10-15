@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel, ValidationError
 
+import butlers.modules._roster_home.actuation as ha_actuation
 from butlers.modules._roster_home import (
     HomeAssistantConfig,
     HomeAssistantModule,
@@ -39,7 +40,6 @@ from butlers.modules._roster_home import (
 from butlers.modules._roster_home.actuation import (
     ActuationRisk,
     classify_actuation,
-    effective_actuation_risk,
     rollback_hint,
     verify_post_condition,
 )
@@ -153,12 +153,10 @@ class TestPhysicalRiskContract:
         self, domain: str, service: str, expected: ActuationRisk
     ) -> None:
         assert classify_actuation(domain, service) is expected
-        effective = effective_actuation_risk(domain, service, None, None)
-        assert effective.base is expected
-        if expected is ActuationRisk.REVERSIBLE:
-            assert effective.risk is ActuationRisk.CONSEQUENTIAL
-        else:
-            assert effective.risk is expected
+        assert ha_actuation.effective_actuation_risk(domain, service, None, None).base is expected
+        assert ha_actuation.effective_actuation_risk(domain, service, None, None).risk is (
+            ActuationRisk.CONSEQUENTIAL if expected is ActuationRisk.REVERSIBLE else expected
+        )
 
     def test_reversible_action_has_concrete_rollback_hint(self) -> None:
         assert rollback_hint(
@@ -1181,7 +1179,7 @@ async def test_registered_climate_risk_cohort(mock_mcp, monkeypatch):
             _assert_automatic(case, args, result, case_id)
 
 
-async def test_registered_non_json_command_refusal_cohort(mock_mcp, monkeypatch):
+async def test_registered_non_json_command_refusal_cohort(mock_mcp, monkeypatch, caplog):
     cycle = {}
     cycle["cycle"] = cycle
     cases = [
@@ -1193,8 +1191,31 @@ async def test_registered_non_json_command_refusal_cohort(mock_mcp, monkeypatch)
         ("nonstring_object_key", {1: 2}, {"entity_id": "light.fixture"}),
         ("cyclic_value", cycle, {"entity_id": "light.fixture"}),
         ("custom_value", {"value": object()}, {"entity_id": "light.fixture"}),
+        (
+            "nul_string_value",
+            {"unlisted_setting": "private\x00value"},
+            {"entity_id": "light.fixture"},
+        ),
+        (
+            "high_surrogate_value",
+            {"nested": ["private\ud800value"]},
+            {"entity_id": "light.fixture"},
+        ),
+        (
+            "low_surrogate_value",
+            {"nested": {"value": "private\udfff"}},
+            {"entity_id": "light.fixture"},
+        ),
+        ("nul_object_key", {"private\x00key": 1}, {"entity_id": "light.fixture"}),
+        ("high_surrogate_key", {"nested": {"private\ud800key": 1}}, {"entity_id": "light.fixture"}),
+        (
+            "low_surrogate_key",
+            {"nested": [{"private\udfffkey": 1}]},
+            {"entity_id": "light.fixture"},
+        ),
     ]
     for case_id, data, target in cases:
+        caplog.clear()
         args = {"domain": "light", "service": "turn_on", "target": target, "data": data}
         case = await _registered_actuation(mock_mcp, monkeypatch, args)
         with pytest.raises(ValueError) as exc:
@@ -1205,6 +1226,30 @@ async def test_registered_non_json_command_refusal_cohort(mock_mcp, monkeypatch)
         case.pool.execute.assert_not_awaited()
         case.client.get.assert_not_awaited()
         case.client.post.assert_not_awaited()
+        case.audit.assert_not_awaited()
+        case.event.assert_not_awaited()
+        assert "private" not in caplog.text, case_id
+        if case_id in {
+            "nul_string_value",
+            "high_surrogate_value",
+            "low_surrogate_value",
+            "nul_object_key",
+            "high_surrogate_key",
+            "low_surrogate_key",
+        }:
+            assert (
+                str(exc.value) == "Home Assistant argument strings must be representable in JSONB"
+            )
+
+    # Real Unicode scalar values and ordinary control characters remain exact.
+    args = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.fixture"},
+        "data": {"unicode_☀": ["synthetic-😀\n\t"]},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    _assert_parked(case, args, await case.tool(**args), "representable_unicode_control")
 
 
 async def test_argument_snapshot_and_diagnostic_privacy(mock_mcp, monkeypatch, caplog):

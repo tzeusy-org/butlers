@@ -117,7 +117,11 @@ def snapshot_actuation_arguments(
     active: set[int] = set()
 
     def clone(value: Any) -> Any:
-        if value is None or type(value) in (str, bool, int):
+        if type(value) is str:
+            if "\x00" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+                raise ValueError("Home Assistant argument strings must be representable in JSONB")
+            return value
+        if value is None or type(value) in (bool, int):
             return value
         if type(value) is float and math.isfinite(value):
             return value
@@ -128,7 +132,7 @@ def snapshot_actuation_arguments(
             if type(value) is dict:
                 if any(type(key) is not str for key in value):
                     raise ValueError("Home Assistant argument object keys must be strings")
-                return {key: clone(item) for key, item in value.items()}
+                return {clone(key): clone(item) for key, item in value.items()}
             return [clone(item) for item in value]
         finally:
             active.remove(id(value))

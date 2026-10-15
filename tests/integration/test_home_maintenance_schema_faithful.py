@@ -236,12 +236,22 @@ async def test_promoted_bulk_approved_replay_has_one_physical_attempt(
         )
         == 1
     )
-    event = await home_pool.fetchval(
-        "SELECT payload FROM public.domain_events WHERE event_type = 'home.actuation_executed' "
-        "AND payload->>'attempt_id' = $1",
-        str(receipt["attempt_id"]),
+    event_rows = await home_pool.fetch(
+        "SELECT payload FROM public.domain_events WHERE event_type = 'home.actuation_executed'"
     )
-    assert event == {
+    # The shared publisher/codec can return serialized JSON, as in the existing
+    # protected-call test. Decode before matching this exact attempt, never latest.
+    event_payloads = [
+        json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+        for row in event_rows
+    ]
+    matching_events = [
+        payload
+        for payload in event_payloads
+        if isinstance(payload, dict) and payload.get("attempt_id") == str(receipt["attempt_id"])
+    ]
+    assert len(matching_events) == 1
+    assert matching_events[0] == {
         "attempt_id": str(receipt["attempt_id"]),
         "domain": "switch",
         "service": "turn_off",
