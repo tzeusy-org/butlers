@@ -188,7 +188,7 @@ whole-head reuse exemption. The manifest contains five retained owners, nine
 changed requirement blocks and twenty-four exact input records. The original
 eighteen subject inputs remain unchanged; six additional machinery, owning-test
 and request records bind the reviewed execution source
-`fa4dfb726e0da18ccbab1e159f7cc13dba0590cc`. The authorization covers
+`1bec9aa09b200aafa776fe62172c88f6932040f4`. The authorization covers
 REQ-ci-shard-assurance-001/002/004/006/007/008 and REQ-testing-034/049; the
 REQ-testing-034 amendment is bound in both its baseline and active change file.
 Independent review corrected the final DAG account to twenty expanded full-mode
