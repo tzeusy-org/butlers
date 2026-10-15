@@ -863,6 +863,124 @@ def _assert_full_request_descriptor_observation(tmp_path):
     return outcomes
 
 
+def test_pure_decode_cache(tmp_path):
+    """REQ-testing-053: token reuse never supplies context or an access verdict."""
+    tmp_path = tmp_path / "pure-decode-cache"
+    tmp_path.mkdir()
+    watched = tmp_path / "watched.json"
+    watched.write_bytes(b"synthetic control")
+    request = tmp_path / "request.json"
+    output = tmp_path / "output.json"
+
+    def stream():
+        return evidence.RequestAccessStream(tmp_path, {watched.name}, request, output, "n")
+
+    def token(body):
+        return "".join(f"\\x{byte:02x}" for byte in body)
+
+    calls = []
+
+    class Decoder:
+        @staticmethod
+        def fromhex(value):
+            calls.append(value)
+            return bytes.fromhex(value)
+
+    previous = getattr(evidence, "bytes", None)
+    evidence.bytes = Decoder
+    try:
+        cached = stream()
+        repeated = r'"\x61\x62" "\x61\x62"'
+        assert cached._paths(repeated) == [b"ab", b"ab"]
+        assert cached._paths(repeated) == [b"ab", b"ab"]
+        assert len(calls) == 1
+        assert cached._paths(r'"\x61\x63"') == [b"ac"]
+        assert len(calls) == 2
+        assert cached.paths(repeated) == [b"ab", b"ab"]
+        bounded = stream()
+        bounded._DECODE_CACHE_MAX_ENTRIES = 2
+        bounded._DECODE_CACHE_MAX_BYTES = 10
+        for value in (r"\x61", r"\x62", r"\x63", r"\x61"):
+            assert bounded._paths(value) == bounded.paths(value)
+            assert len(bounded._decode_cache) <= 2
+            assert bounded._decode_cache_bytes <= 10
+            assert bounded._decode_cache_bytes == sum(
+                len(key) + len(value) for key, value in bounded._decode_cache.items()
+            )
+        assert r"\x62" not in bounded._decode_cache
+        oversized = token(b"synthetic oversize")
+        before = len(calls)
+        assert bounded._paths(oversized) == [b"synthetic oversize"]
+        assert bounded._paths(oversized) == [b"synthetic oversize"]
+        assert len(calls) == before + 2
+        assert oversized not in bounded._decode_cache
+        retained = bounded._decode_cache
+        bounded.finish()
+        assert retained == {} and bounded._decode_cache is None
+        assert bounded._decode_cache_bytes == 0
+        before = len(calls)
+        assert bounded._paths(r"\x61") == [b"a"]
+        assert bounded._paths(r"\x61") == [b"a"]
+        assert len(calls) == before + 2 and bounded._decode_cache is None
+    finally:
+        if previous is None:
+            del evidence.bytes
+        else:
+            evidence.bytes = previous
+
+    alias = tmp_path / "alias"
+    encoded_alias = token(os.fsencode(alias))
+    records = [
+        f'701 execve("{token(os.fsencode(Path(sys.executable).resolve()))}", [], {{}}) = 0',
+        f'701 read(3<{token(os.fsencode(request))}>, "\\x61", 1) = 1',
+        f'701 read(4<{token(os.fsencode(output.with_suffix(".subject-probe")))}>, "\\x61", 1) = 1',
+        "701 clone(NULL) = 702",
+        f'702 newfstatat(AT_FDCWD, "{encoded_alias}", NULL, 0) = 0',
+        f'702 read(5<{encoded_alias}>, "\\x61", 1) = 1',
+        '701 openat(AT_FDCWD, "\\x77\\x61\\x74\\x63\\x68\\x65\\x64\\x2e\\x6a\\x73\\x6f\\x6e", 0) = 5',
+        "702 +++ exited with 0 +++",
+        "701 +++ exited with 0 +++",
+    ]
+    observations = []
+    for uncached in (True, False, True, False):
+        alias.write_bytes(b"unrelated synthetic object")
+        observed = stream()
+        if uncached:
+            observed._paths = observed.paths
+        observed.consume(records[0].encode())
+        observed.consume(records[1].encode())
+        observed.consume(records[2].encode())
+        observed.consume(records[3].encode())
+        observed.consume(records[4].encode())
+        assert observed.accesses == 0
+        alias.unlink()
+        os.link(watched, alias)
+        observed.consume(records[4].encode())
+        assert observed.accesses == 1
+        for record in records[5:]:
+            observed.consume(record.encode())
+        complete, actors = observed.finish()
+        observations.append(
+            (
+                complete,
+                actors,
+                observed.accesses,
+                observed.reads,
+                observed.probes,
+                observed.subject_reads,
+                observed.subject_children,
+                observed.failed,
+                observed.pending,
+                observed.exits,
+                observed.parents,
+            )
+        )
+        assert complete is True and observed.accesses == 3 and observed.reads == 1
+        assert observed._decode_cache is None and observed._decode_cache_bytes == 0
+        alias.unlink()
+    assert observations[0] == observations[1] == observations[2] == observations[3]
+
+
 def _assert_observer_completion_failure(tmp_path):
     """A real finished worker keeps closed custody beside the original primary."""
     tmp_path.mkdir()
