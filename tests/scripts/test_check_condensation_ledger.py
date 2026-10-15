@@ -1152,6 +1152,10 @@ def test_contract_evolution_executes_complete_cases_and_consumes_raw_carriers(tm
         "import pytest\n@pytest.mark.parametrize('value',[1,2])\ndef test_owner(value):\n"
         "    import subprocess,sys\n"
         f"    subprocess.run([{str(Path(sys.executable).parent / 'pytest')!r},'--version'], check=True)\n"
+        "    import tempfile\n    from pathlib import Path\n"
+        "    tool = Path(tempfile.mkdtemp()) / 'temporary-tool'\n"
+        "    tool.write_text('#!' + sys.executable + '\\npass\\n')\n"
+        "    tool.chmod(0o755)\n    subprocess.run([str(tool)], check=True)\n"
         "    assert value > 0\n"
     )
     root, base, trusted, authority, request, _ = _contract_repository(tmp_path, after=after)
@@ -1175,11 +1179,24 @@ def test_contract_evolution_executes_complete_cases_and_consumes_raw_carriers(tm
     assert {p for p in controls if p.startswith(evolution.AUTHORIZATIONS)}
     assert {p for p in controls if p.startswith(evolution.REQUESTS)}
     assert all(not (directory / side).exists() for side in ("before", "after"))
+    for side in ("before", "after"):
+        temporary_root = directory / (side + ".runtime-tmp")
+        assert temporary_root.is_dir() and not temporary_root.is_symlink()
+        environment = dict.fromkeys(("TMPDIR", "PYTEST_DEBUG_TEMPROOT"), str(temporary_root))
+        assert (
+            ledger.strict_json(directory / (side + ".request.json"))["runtime_environment"]
+            == environment
+        )
+        assert receipt["runs"][side]["runtime_environment"] == {
+            **environment,
+            "tempfile_root": str(temporary_root),
+        }
     for field, value in (
         ("scope", ["spec.md"]),
         ("scope_inputs", []),
         ("command_flags", []),
         ("measurement_root", str(root)),
+        ("runtime_environment", {}),
         ("complete", False),
         ("selected", 1),
         ("deselected", True),
@@ -1196,6 +1213,16 @@ def test_contract_evolution_executes_complete_cases_and_consumes_raw_carriers(tm
             )
     receipt_path.write_text(json.dumps(receipt))
     (directory / "after.json").write_text(json.dumps(receipt["runs"]["after"]))
+    execution_request_path = directory / "after.request.json"
+    execution_request = ledger.strict_json(execution_request_path)
+    forged_request = copy.deepcopy(execution_request)
+    forged_request["runtime_environment"]["TMPDIR"] = str(tmp_path)
+    execution_request_path.write_text(json.dumps(forged_request))
+    with pytest.raises(ledger.EvidenceError, match="changed-contract-execution-request"):
+        evolution.consume(
+            root, base, authority, request, directory, controls, receipt["binding"]["nonce"]
+        )
+    execution_request_path.write_text(json.dumps(execution_request))
     changed_nonce = copy.deepcopy(receipt)
     changed_nonce["binding"]["nonce"] = "0" * 64
     receipt_path.write_text(json.dumps(changed_nonce))

@@ -267,6 +267,10 @@ def _read_run(directory, run, side, selection, records, controls, tools, nonce):
     ]
     if run["id"] != side:
         raise ledger.EvidenceError("changed-contract-run-identity")
+    temporary_root = directory / (side + ".runtime-tmp")
+    runtime_environment = dict.fromkeys(("TMPDIR", "PYTEST_DEBUG_TEMPROOT"), str(temporary_root))
+    if temporary_root.is_symlink() or not temporary_root.is_dir():
+        raise ledger.EvidenceError("changed-contract-runtime-directory")
     execution_request = ledger.strict_json(directory / (side + ".request.json"))
     if execution_request != {
         "root": str(directory / side),
@@ -276,6 +280,7 @@ def _read_run(directory, run, side, selection, records, controls, tools, nonce):
         "output": str(directory / (side + ".json")),
         "id": side,
         "control_inputs": [],
+        "runtime_environment": runtime_environment,
     }:
         raise ledger.EvidenceError("changed-contract-execution-request")
     saved = ledger.strict_json(directory / (side + ".json"))
@@ -295,6 +300,8 @@ def _read_run(directory, run, side, selection, records, controls, tools, nonce):
         or run["scope_inputs"] != [r for p in scope for r in records if r["path"] == p]
         or run["command_flags"] != expected_flags
         or run["measurement_root"] != str(directory / side)
+        or run["runtime_environment"]
+        != {**runtime_environment, "tempfile_root": str(temporary_root)}
     ):
         raise ledger.EvidenceError("incomplete-contract-execution")
     cases = run["cases"]
@@ -389,6 +396,11 @@ def execute(root, base, authority, request, directory, controls, *, trusted, non
     }
     try:
         copies = {side: directory / side for side in ("before", "after")}
+        # Retain per-side pytest/tool temporaries through independent consumption.
+        # Shared pytest retention may otherwise reap the earlier side's executables.
+        temporary_roots = {side: directory / (side + ".runtime-tmp") for side in copies}
+        for path in temporary_roots.values():
+            path.mkdir()
         for path in copies.values():
             path.mkdir()
         if ledger.source_records(root, ledger.tracked_paths(root)) != inputs:
@@ -420,6 +432,7 @@ def execute(root, base, authority, request, directory, controls, *, trusted, non
                             set(),
                             cancelled,
                             contract_lifecycle.run,
+                            temporary_roots[side],
                         ): side
                         for side in copies
                     }
