@@ -1,0 +1,310 @@
+{
+  "schema": "contract-evolution-authorization/v1",
+  "id": "bu-q1hzqn-ci-speed-20261015",
+  "bead": "bu-q1hzqn.10",
+  "decision": {
+    "owner": "repository owner",
+    "date": "2026-10-15",
+    "reference": "docs/testing/condensation-evidence.md#ci-speed-authorization-2026-10-15"
+  },
+  "owners": [
+    {
+      "before": "tests/contracts/test_ci_test_targets.py::test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shard",
+      "after": "tests/contracts/test_ci_test_targets.py::test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shard",
+      "contracts": [
+        "REQ-ci-shard-assurance-004"
+      ],
+      "reason": "Require the new inventory prerequisite in full/main-push modes and its explicit skip in scoped/docs modes. Preserve every required verdict and malformed/missing/failure/skip/cancellation control; execute the real Python verdict alongside the actual shell and add the inventory fault control."
+    },
+    {
+      "before": "tests/contracts/test_ci_test_targets.py::test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift",
+      "after": "tests/contracts/test_ci_test_targets.py::test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift",
+      "contracts": [
+        "REQ-ci-shard-assurance-001",
+        "REQ-ci-shard-assurance-004",
+        "REQ-ci-shard-assurance-006",
+        "REQ-ci-shard-assurance-007",
+        "REQ-ci-shard-assurance-008",
+        "REQ-testing-034",
+        "REQ-testing-049"
+      ],
+      "reason": "Move full-shard start dependency from guards to fresh inventory while retaining mandatory guards at final fan-in; start affected/Vitest after route, keep browser build binding. Move raw coverage and report expectations to all eleven owned assurance children, retaining ordinary queue evidence, exact reconciliation, smoke, finite caps and main-only scheduled/manual badge publication. The bound companion test_owned_coverage_workflow_retains_complete_assurance exercises actual triggers, rows, artifacts and prerequisite failures."
+    },
+    {
+      "before": "tests/contracts/test_ci_test_targets.py::test_ci_coverage_report_rejects_any_bad_input_before_publication",
+      "after": "tests/contracts/test_ci_test_targets.py::test_ci_coverage_report_rejects_any_bad_input_before_publication",
+      "contracts": [
+        "REQ-ci-shard-assurance-006",
+        "REQ-testing-049"
+      ],
+      "reason": "Select the actual combine/report shell from the owned assurance workflow. Retain all real CoverageData corruption/missing/extra/source/identity negative controls; add genuine per-event traced populations for schedule/manual/PR and refuse cross-event borrowing or unsupported push reporting."
+    },
+    {
+      "before": "tests/scripts/test_ci_partition.py::test_partition_preserves_fresh_membership_with_unknown_weights",
+      "after": "tests/scripts/test_ci_partition.py::test_partition_preserves_fresh_membership_with_unknown_weights",
+      "contracts": [
+        "REQ-ci-shard-assurance-002"
+      ],
+      "reason": "Evolve _weights to tracer-specific v2 profiles and place malformed/stale fields at their real profile location. Preserve duplicate-key rejection, deterministic advisory fallback, fresh inventory authority, budgets, actual standalone execution and exact assignment membership; _corpus clears inherited tracing flags so explicit profile cases own their instrumentation."
+    },
+    {
+      "before": "tests/scripts/test_ci_partition.py::test_reconciliation_requires_complete_node_identity",
+      "after": "tests/scripts/test_ci_partition.py::test_reconciliation_requires_complete_node_identity",
+      "contracts": [
+        "REQ-ci-shard-assurance-002",
+        "REQ-ci-shard-assurance-006"
+      ],
+      "reason": "Read the real CTracer candidate profile while retaining original origin, config, population, bounded archive, ambiguity and missing-input controls. Add a separately measured untraced profile and reject missing tracer evidence; no covered costs are relabelled as untraced and no membership authority moves to advisory weights."
+    }
+  ],
+  "contracts": [
+    {
+      "path": "openspec/specs/ci-shard-assurance/spec.md",
+      "id": "REQ-ci-shard-assurance-001",
+      "before_sha256": "f61b905e67524ada593ccd280b42e8be7b6530ab78c4787c6039b6ced757578c",
+      "after_sha256": "3ad9434da8493f6c620ac142dbabefb7b61a813d3fb117c88ca73487638954d1"
+    },
+    {
+      "path": "openspec/specs/ci-shard-assurance/spec.md",
+      "id": "REQ-ci-shard-assurance-002",
+      "before_sha256": "06d27b924f87e5eb6f7f235bf045f69802d83bc1aa031386f48a3b4e2a99ff3a",
+      "after_sha256": "409601b8655babcf2c711ebcec192a54ea840bf3fee8a8e22286ba43dc101ab4"
+    },
+    {
+      "path": "openspec/specs/ci-shard-assurance/spec.md",
+      "id": "REQ-ci-shard-assurance-004",
+      "before_sha256": "44fd7c7eea4651cb2bd14cc69f24e6dfee6194e3fcd95606527d2c03ac1e52db",
+      "after_sha256": "026dbe8188865f52e6c57231d0d6dc7cdd53d3864eee9e8a7b752f0f70b1f9d8"
+    },
+    {
+      "path": "openspec/specs/ci-shard-assurance/spec.md",
+      "id": "REQ-ci-shard-assurance-006",
+      "before_sha256": "1f4c5fd226db07c0d9ccff54b9500b2f6155db08b02a022dbf294280deeb39dc",
+      "after_sha256": "2eb9b749a58b373b58ee0cd4a9f876576e8b6b6e0699000acb9e4eb8fbbd8076"
+    },
+    {
+      "path": "openspec/specs/ci-shard-assurance/spec.md",
+      "id": "REQ-ci-shard-assurance-007",
+      "before_sha256": "c67a69a8536baa0e6af7ec05c8e6e5a740c4cb2e317ea1850cdd5b38b817794b",
+      "after_sha256": "682bc92b21ea67473b81e4dd664b36b2a9290c98b1f209be3007e7523959e977"
+    },
+    {
+      "path": "openspec/specs/ci-shard-assurance/spec.md",
+      "id": "REQ-ci-shard-assurance-008",
+      "before_sha256": "88d05d487a1ad47eab374148e97cc2a34dd91dbf694e87d65466cacdccde5bc5",
+      "after_sha256": "ff2f65077ba510abfed41ca168c2e21870c6de752b1e17629a277264ee4e6185"
+    },
+    {
+      "path": "openspec/specs/testing/spec.md",
+      "id": "REQ-testing-034",
+      "before_sha256": "df5be6fe73585084c1b9d27bddd4394f2b2fd594210aaa52dbe33213e13532aa",
+      "after_sha256": "574538ac496da8c97d0f80bb68ed4047822bbc0162ed350f538d91696bac416d"
+    },
+    {
+      "path": "openspec/specs/testing/spec.md",
+      "id": "REQ-testing-049",
+      "before_sha256": "827a8e5e95f5df75882c9d1041366bcfff8b0df42738dc47a8ab8028d7cea924",
+      "after_sha256": "3a929e48d59a0af884ae25843ccab21b8fa835c8668c2e53372531eaf489fda2"
+    },
+    {
+      "path": "openspec/changes/fail-closed-ci-assurance/specs/testing/spec.md",
+      "id": "REQ-testing-034",
+      "before_sha256": "a00d5f2cdb3b5283ff0409343ef32bba121c0a275290eb635f4bfdb6df49d627",
+      "after_sha256": "6f3098a86005a16e75c4fb4383a8d83b1c4e589ef912215d3a53338d27755e94"
+    }
+  ],
+  "inputs": [
+    {
+      "path": ".github/actions/ci-python-environment/action.yml",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "b1fc46334b1397286455b97f78e6db28540a88328870f3c3342ca2b6bde733ec"
+      }
+    },
+    {
+      "path": ".github/ci-test-weights.json",
+      "before": {
+        "mode": "100644",
+        "sha256": "9fdf8dcfd5c2ef1c2fa52361d38ce6d052fcbc6ef11448e1805053b676a1d1b8"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ae84b072b52b82ad446219617ed734f51c6abb7dd276268ab6b0e8e9d01f048d"
+      }
+    },
+    {
+      "path": ".github/workflows/ci-coverage.yml",
+      "before": null,
+      "after": {
+        "mode": "100644",
+        "sha256": "9af2081a03929763e46b76a744121e1af6177cc5c3255d6c9e458c80b6b87c76"
+      }
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "before": {
+        "mode": "100644",
+        "sha256": "47a1814614ff7ce2b03d0a28b9248db54abb8b77af81a793c30d6abf82b06668"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "f7f446d7414f6d1afb532d951889e12112ea28ea310c139dfac4e723f3feb1a2"
+      }
+    },
+    {
+      "path": "AGENTS.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "a2518e3485d87157869198b4c8399be50bb4d96498863b03bc9793cd8ff0904c"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ca0f34f8ba62158cfd96d88e82d523cde6cbb3fabf611ed3d5b6410da77bc29d"
+      }
+    },
+    {
+      "path": "about/craft-and-care/testing-and-verification.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "701fb96eac17434c69e5cee9a2b6edd481e5b007bdbca6c109b19ba57a872aed"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b8c13d78f1807adee78587ed3dd08a64f0558b8ecc8f177acfc55124a4bceda6"
+      }
+    },
+    {
+      "path": "conftest.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "3004e89283254e1f03946547fcb90272f5590f68d8eede6c7baaaad26e2d6d2b"
+      }
+    },
+    {
+      "path": "docs/operations/ci-shard-overhead.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "19c8936836fa3f3dec9e65146beaa5d216da0148f0949e4190d1eee28ea92596"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "ae6454ff50f662012f532f0ec4238f65194915e2e3deed2b1f78881ec9942dbb"
+      }
+    },
+    {
+      "path": "docs/testing/markers-and-fixtures.md",
+      "before": {
+        "mode": "100644",
+        "sha256": "4a862d1954daaa0ad2ce6f03b2b7196453e85053d11918bde42925c62f658adc"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b7b9eb8f198dfb48a1a2b38b82799548f68ae3bf0f458d59d0bf29f40d761354"
+      }
+    },
+    {
+      "path": "pyproject.toml",
+      "before": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "eb1c7409c8b17bfc41e0ab753ca405188112d2a87d5324b550e2e4e6727c94ca"
+      }
+    },
+    {
+      "path": "scripts/check_ci_coverage.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "3a10b92df916f2e3be5318cd8223c7b984b486ce56ca8de7c428860b67604f76"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "535c4323d06448e33ccb7f17e32ae721dcd2d8540233b1a3010db1edd19da356"
+      }
+    },
+    {
+      "path": "scripts/ci-job-timeouts.json",
+      "before": {
+        "mode": "100644",
+        "sha256": "221c850bc2a65046f84a6164f8a8a5b9007789f5d7877a99d87bb514f682bd78"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b2917f2ec064695a723ab3605a5c04248a2b179aa82e21c093e9600316dcb048"
+      }
+    },
+    {
+      "path": "scripts/ci_partition.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "dffc6e70ab152a489258f403157fd77cce27519713e97154fcf69bd79f692e9e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "e4f110c28a7bcec8741c5c56451d8e5e7f988af696013eaf9f3fcf5f4be5c6ad"
+      }
+    },
+    {
+      "path": "scripts/ci_route.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "353735410e89bdf3d5d840a02c93b326798cdf80c252317f16067b5a0eb4a8cc"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "2cee818bebd862303f3344e5f85c373ed688b324962ba67717850afd71a6aaa2"
+      }
+    },
+    {
+      "path": "scripts/ci_weight_candidates.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "d022e1cd9e5901e699583f9b9546c6f74e2f3aacee6b06dca674171902e29f5e"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "6b3cac7f44dd3809871ff33e90132ece954a15ac75b1c3ba557217e14a610cd7"
+      }
+    },
+    {
+      "path": "tests/contracts/test_ci_test_targets.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "2983d7ec606a04c0d5e827fc68ce47cd3a6c4abd6a01cb80468c56f4bbca096d"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "a648444dc67e7fa3659cdd11254b58639875fc5e7a0a3ea0304e4976c85d78ba"
+      }
+    },
+    {
+      "path": "tests/scripts/test_ci_partition.py",
+      "before": {
+        "mode": "100644",
+        "sha256": "5e90e101a089d3ddda7f926ac9788f76844900eea44e04568fdf92698ea52887"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "5b2e74581f7aec2c1675b17b88538f27e9af6b41dca59c9758e7379e09e06a89"
+      }
+    },
+    {
+      "path": "uv.lock",
+      "before": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      },
+      "after": {
+        "mode": "100644",
+        "sha256": "b1a61a4ba90c5c0a738c725447ee52e822fb6c8dc2fcea71171832549641ef2f"
+      }
+    }
+  ]
+}

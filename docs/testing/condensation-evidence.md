@@ -105,7 +105,110 @@ production files do not automatically allow protected test loss. A complete
 executing survivor account remains required. An empty ledger population is
 healthy only when the actual complete source scan finds no losses.
 
+## Independently authorized contract evolution
+
+On 2026-10-15 the repository owner answered **Yes** to the narrow policy amendment
+allowing intentional governing-contract changes to replace obsolete test
+expectations. That decision authorizes this admission mechanism, not arbitrary
+test loss. Genuine condensation continues to require the branch/mutation survivor
+proof above. This first evolution mode retains the same static owners and every
+opaque collected case identity; it admits no deletion, rename, reduced case
+population, environment waiver or substitute for migration/runtime evidence.
+
+Authorization and execution are separate:
+
+1. An independent review identifies the precise normative amendment, obsolete
+   expectations, replacement enforcement and preserved obligations. Its strict
+   `contract-evolution-authorization/v1` manifest lands in a separate protected
+   main PR under `tests/contract-evolution-authorizations/` before the candidate
+   can consume it. The owner/date/reference fields record provenance; their text
+   does not itself grant authority.
+2. The required consumer reads that manifest from the trusted public source,
+   never from the candidate's copy. For a provider PR union this is its validated
+   public first parent; for merge-group it is the exact event base. The original
+   event comparison base still governs the complete loss scan and old execution,
+   even if the PR's public parent is newer. A candidate-only authorization refuses.
+3. A candidate request selects that authorization and causes new execution in
+   separate full before/current source snapshots. The existing owned runner,
+   complete collection and raw per-case phase/coverage carriers remain the
+   evidence boundary. Every named owner and exact opaque case key must appear
+   on both sides with successful setup, call and teardown. Skips, deselection,
+   failed or missing phases, timeout and uncertain cleanup refuse. A finite
+   proof deadline, at most 300 seconds, includes both sides and owned cleanup.
+4. The same complete source-loss consumer checks fresh source, installed tools,
+   config, selection, nonce, carriers and final source stability. Exact reviewed
+   input drift refuses; unrelated unchanged public history is not a waiver or
+   an artificial whole-head authorization lock. Historical requests do nothing
+   when their owners have no current loss. Every unlisted loss still needs its
+   ordinary survivor account.
+
+The manifest binds complete old/new test files, their helper/import context,
+ancestral conftests, and explicitly enumerated runtime/fixture inputs by Git
+mode and SHA-256 of exact bytes. Owner/context files must exist on both sides.
+`pyproject.toml` and `uv.lock` must remain identical across the two execution
+sides. A changed installed environment needs a separate real proof; this mode
+does not certify it. Relevant normative requirements are bound separately by
+path, qualified ID and exact before/after block hashes. Each block starts at its
+level-three `Requirement` heading and ends at the next such heading or the
+`Source References` section. Both hashes must differ. An existing citation or
+the policy requirement alone cannot authorize an unrelated expectation change.
+
+Every candidate change outside inherited public source must have an explicit
+account: exact approved inputs, reviewed requirement blocks with unchanged
+surrounding public text, or the finite named proof machinery/request paths that
+cannot be read as subject runtime inputs. There is no general Markdown, JSON,
+test-file or directory exemption. A request cannot select extra owners, rebind
+old evidence or extend the reviewed contract. Fresh passing suites establish
+actual execution; the independent amendment review establishes which semantic
+changes are intended. Neither replaces the other, or the ordinary final hosted
+and protected merge gates.
+
+### CI speed authorization, 2026-10-15
+
+The first scoped authorization is
+[`bu-q1hzqn-ci-speed-20261015.json`](../../tests/contract-evolution-authorizations/bu-q1hzqn-ci-speed-20261015.json),
+owned by bead `bu-q1hzqn.10` for the implementation in PR #4530. It records the
+owner's approval above and a separately reviewed source mapping. It is inert
+until an executor satisfies this protocol; landing the manifest is neither a
+test PASS nor permission to merge the candidate without fresh evidence.
+
+The reviewed before source is
+`d276a32a1f6e5f44c11ef8e0b4eb1d2d8200f20c`; the approved subject is
+`2560ef2caf90ef95c2289498fafebfa9c63c7ddd`. These are review provenance, not a
+whole-head reuse exemption. The manifest contains five retained owners, nine
+changed requirement blocks and eighteen exact input records. It covers
+REQ-ci-shard-assurance-001/002/004/006/007/008 and REQ-testing-034/049; the
+REQ-testing-034 amendment is bound in both its baseline and active change file.
+Independent review corrected the final DAG account to twenty expanded full-mode
+rows and twenty-one declared rows including the mutually exclusive affected row;
+the existing peak-fourteen and twenty-one-row test assertions were preserved.
+
+The review distinguishes these five retained owners and their obligations:
+
+| Retained owner | Intentional replacement and surviving enforcement |
+| --- | --- |
+| `test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shard` | Inventory becomes a separate prerequisite. Full/main-push modes require it; scoped/docs modes require its explicit skip. The actual shell and Python verdict reader retain malformed, missing, failed, skipped, cancelled and unknown prerequisite controls, and gain an inventory fault control. |
+| `test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift` | Full tests await fresh inventory while guards remain mandatory at fan-in; affected and Vitest may start after route. All five unit and six integration children retain their ordinary evidence. Raw covered execution and reporting move to the owned assurance workflow, with eleven distinct coverage inputs, required reconciliation/smoke, finite caps and restricted badge publication. Browser still waits for the guards-built artifact. |
+| `test_ci_coverage_report_rejects_any_bad_input_before_publication` | The actual report command is read from the assurance workflow. Existing corrupt, empty, missing, extra and wrong-identity raw CoverageData controls remain; new genuine traced inputs validate scheduled/manual/PR event identity and reject borrowed merge-group metadata and unsupported push reporting. |
+| `test_partition_preserves_fresh_membership_with_unknown_weights` | Advisory weight fixtures move from schema v1 to tracer-specific v2 profiles. Missing, malformed, stale and duplicate-key advisory inputs still degrade deterministically; real fresh inventory, unchanged budgets, exact whole-file assignment and strict identity admission remain authoritative. |
+| `test_reconciliation_requires_complete_node_identity` | The candidate is read from its actual tracer profile. Original complete identity, origin, artifact, ambiguity and missing-input controls remain; untraced costs gain their own genuine profile and absent tracer evidence refuses. |
+
+Both complete test files are bound, including `_corpus`, `_weights` and the new
+`test_owned_coverage_workflow_retains_complete_assurance` companion. That
+companion checks the scheduled/manual/pipeline-PR triggers, actual eleven matrix
+rows and commands, sanitized execution artifacts, fresh inventory, prerequisite
+failure controls, complete reconciliation, smoke evidence and main-only badge
+publication. Retaining obsolete queue-coverage literals would contradict the
+approved cadence change; their replacement obligations live in the actual
+covered workflow and these executing controls. No assertion count or manifest
+hash substitutes for the fresh old/new runs.
+
 ## Retained owners with additive changes
+
+The additive route below preserves the original contract. Intentional replacement
+of obsolete expectations uses the separately authorized route described in
+[contract evolution](#independently-authorized-contract-evolution), never a
+relaxation of the additive preservation rules.
 
 Unchanged names or assertion totals alone do not admit an additive change.
 A retained owner may appear on both sides of an executing proof when every old
