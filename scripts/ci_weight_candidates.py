@@ -17,6 +17,7 @@ import re
 import statistics
 import subprocess
 import zipfile
+import zlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -102,7 +103,11 @@ def member(blob: bytes, filename: str) -> dict:
         matches = [info for info in archive.infolist() if info.filename == filename]
         if len(matches) != 1 or matches[0].file_size > 16 * 1024 * 1024:
             raise ValueError("candidate artifact member unavailable")
-        value = json.loads(archive.read(matches[0]), object_pairs_hook=unique_object)
+        try:
+            payload = archive.read(matches[0])
+        except (zlib.error, NotImplementedError, RuntimeError) as exc:
+            raise ValueError("candidate archive member unreadable") from exc
+        value = json.loads(payload, object_pairs_hook=unique_object)
         if not isinstance(value, dict):
             raise ValueError("candidate evidence malformed")
         return value

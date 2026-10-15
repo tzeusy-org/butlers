@@ -1035,6 +1035,8 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """REQ-ci-shard-assurance-002/006: genuine source policy, independent cost hints."""
+    import struct
+
     _corpus(tmp_path, monkeypatch)
     inventory = partition.collect_inventory(root=tmp_path)
     covered = _weights(inventory)
@@ -1089,18 +1091,56 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
     }
     requests = []
     duplicate_member = False
+    damaged_member = None
 
     def public_api(path, *, binary=False, timeout=30):
         requests.append((path, timeout))
         assert timeout == 5
         if binary:
             memory = io.BytesIO()
-            with zipfile.ZipFile(memory, "w") as archive:
+            with zipfile.ZipFile(memory, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for name, body in bodies.items():
                     archive.writestr(name, json.dumps(body))
                 if duplicate_member:
                     archive.writestr("covered-candidate.json", json.dumps(covered))
-            return memory.getvalue()
+            original = memory.getvalue()
+            if damaged_member is None:
+                return original
+            name, kind = damaged_member
+            broken = bytearray(original)
+            with zipfile.ZipFile(io.BytesIO(original)) as archive:
+                info = archive.getinfo(name)
+                central = archive.start_dir
+                for item in archive.infolist():
+                    if item.filename == name:
+                        break
+                    lengths = struct.unpack_from("<HHH", broken, central + 28)
+                    central += 46 + sum(lengths)
+            local = info.header_offset
+            data = local + 30 + len(info.filename.encode()) + len(info.extra)
+            if kind == "reserved-deflate":
+                broken[data] = 7
+            elif kind == "unsupported-compression":
+                struct.pack_into("<H", broken, local + 8, 99)
+                struct.pack_into("<H", broken, central + 10, 99)
+            elif kind == "encrypted":
+                struct.pack_into("<H", broken, local + 6, info.flag_bits | 1)
+                struct.pack_into("<H", broken, central + 8, info.flag_bits | 1)
+            elif kind == "crc":
+                struct.pack_into("<I", broken, local + 14, info.CRC ^ 1)
+                struct.pack_into("<I", broken, central + 16, info.CRC ^ 1)
+            elif kind == "zero-length":
+                struct.pack_into("<I", broken, local + 18, 0)
+                struct.pack_into("<I", broken, central + 20, 0)
+            else:
+                raise AssertionError(kind)
+            sibling = "candidate.json" if name.startswith("covered-") else "covered-candidate.json"
+            with (
+                zipfile.ZipFile(io.BytesIO(broken)) as damaged,
+                zipfile.ZipFile(io.BytesIO(original)) as healthy,
+            ):
+                assert damaged.read(sibling) == healthy.read(sibling)
+            return bytes(broken)
         if "/workflows/" in path:
             return {"workflow_runs": [observer]}
         return {"artifacts": [artifact]}
@@ -1147,6 +1187,19 @@ def test_covered_weight_refresh_is_independent_and_source_bound(
     assert set(restored()) == {"CTracer"}
     legacy_receipt["state"] = "CANDIDATE"
     assert restored()["none"] == untraced["profiles"]["none"]
+
+    # Real malformed ZIP members must refuse only their own advisory pair.
+    for kind in ("reserved-deflate", "unsupported-compression", "encrypted", "crc", "zero-length"):
+        for name, valid, invalid in (
+            ("candidate.json", "CTracer", "uncovered"),
+            ("covered-candidate.json", "none", "covered"),
+        ):
+            damaged_member = (name, kind)
+            assert set(restored()) == {valid}
+            status = partition.read_json(output / "restore-receipt.json")
+            assert status["sources"][invalid]["state"] == "FALLBACK"
+    damaged_member = None
+    assert set(restored()) == {"none", "CTracer"}
 
     # This is source selection, not synthetic execution masquerading as a run.
     run = {
