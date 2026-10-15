@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import hashlib
 import importlib.metadata
 import json
@@ -295,6 +296,44 @@ def resolve_in(path: Path, directories: dict[Path, Path]) -> Path:
     return path.resolve()
 
 
+# The stat errors for which ``Path.is_file()`` answers False instead of raising.
+STAT_ABSENT = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+
+
+def tool_file(path: Path, prefixes: set[Path]) -> tuple[str, int]:
+    """Exactly ``path.is_file()``, then the file's sha256 and stat mode.
+
+    One stat answers both the regular-file check and the bound mode. A regular
+    file returns fewer bytes than asked only at its end, so a read of exactly
+    its stat size, asked for one more, already saw EOF. A traced proof worker
+    observes the second stat and the empty read it would otherwise make.
+    """
+    try:
+        info = path.stat()
+    except OSError as error:
+        if error.errno not in STAT_ABSENT:
+            raise
+        info = None
+    if (
+        info is None
+        or not stat.S_ISREG(info.st_mode)
+        or not any(prefix in path.parents for prefix in prefixes)
+    ):
+        raise EvidenceError("installed-tool-source-unknown")
+    # Raw reads: a buffered file object adds four observed syscalls per file.
+    digest = hashlib.sha256()
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        chunk = os.read(descriptor, info.st_size + 1)
+        digest.update(chunk)
+        if len(chunk) != info.st_size:
+            while chunk := os.read(descriptor, 1 << 20):
+                digest.update(chunk)
+    finally:
+        os.close(descriptor)
+    return digest.hexdigest(), info.st_mode & 0o777
+
+
 def tool_record() -> dict:
     """Bind installed proof tools/plugins by actual files, without importing them."""
     names = {"coverage", "pytest"}
@@ -318,25 +357,10 @@ def tool_record() -> dict:
                 "entry_points.txt",
             }:
                 continue
-            path = resolve_in(Path(dist.locate_file(item)), directories)
-            if not path.is_file() or not any(prefix in path.parents for prefix in prefixes):
-                raise EvidenceError("installed-tool-source-unknown")
-            # Raw reads: a buffered file object adds four observed syscalls per file.
-            digest = hashlib.sha256()
-            descriptor = os.open(path, os.O_RDONLY)
-            try:
-                while chunk := os.read(descriptor, 1 << 20):
-                    digest.update(chunk)
-            finally:
-                os.close(descriptor)
-            rows.append(
-                {
-                    "distribution": name,
-                    "path": str(item),
-                    "sha256": digest.hexdigest(),
-                    "mode": path.stat().st_mode & 0o777,
-                }
+            sha256, mode = tool_file(
+                resolve_in(Path(dist.locate_file(item)), directories), prefixes
             )
+            rows.append({"distribution": name, "path": str(item), "sha256": sha256, "mode": mode})
     observer = shutil.which("strace")
     if observer is not None:
         path = Path(observer).resolve(strict=True)
