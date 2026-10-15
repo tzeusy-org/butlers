@@ -1,0 +1,16 @@
+{
+  "schema": "contract-evolution-request/v1",
+  "authorization": "bu-2hlwhh-callback-hardening-20261015",
+  "owners": [
+    "tests/integration/test_telegram_decision_callback_flow.py::test_owner_tap_records_a_pending_intent_and_clears_the_keyboard",
+    "tests/integration/test_telegram_decision_callback_flow.py::test_conflicting_second_tap_is_refused",
+    "tests/integration/test_telegram_decision_callback_flow.py::test_unverified_taps_record_nothing",
+    "tests/integration/test_telegram_decision_callback_flow.py::test_closed_decision_tap_says_so",
+    "tests/integration/test_telegram_decision_callback_flow.py::test_changed_options_tap_points_at_the_dashboard",
+    "tests/integration/test_telegram_decision_callback_flow.py::test_unreachable_api_keeps_the_keyboard",
+    "tests/integration/test_telegram_decision_callback_flow.py::test_unreachable_prompt_lookup_says_retry",
+    "tests/integration/test_telegram_decision_callback_flow.py::test_unknown_prompt_gets_only_the_generic_acknowledgement",
+    "tests/integration/test_telegram_decision_callback_flow.py::test_credentials_are_not_interchangeable"
+  ],
+  "timeout_s": 300
+}
