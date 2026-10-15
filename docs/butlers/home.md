@@ -19,6 +19,18 @@ live read-back confirms the requested state; any uncertainty after sending is `u
 needs owner attention. An unverified or crashed approved attempt is never blindly retried under
 the same approval; the owner reconciles the device and issues a new approved action.
 
+Automatic reversible execution requires explicit same-domain entity targets and the repository's
+service-specific data key/type/bounds subset. Area/device/label/all or absent targets, selectors
+hidden in data, unlisted or invalid parameters and climate temperatures outside inclusive16–28C
+(equivalent60.8–82.4F) park for exact owner approval. Climate auto-execution requires consistent
+known unit context from the existing entity cache; missing units require approval, never a Celsius
+guess. Range/mode updates also require approval. The full subset is in the module specification.
+A parked action records a categorical reason and exact original arguments. An explicit target
+combined with a selector in data is ambiguous and cannot be silently merged even after approval;
+create a new unambiguous action. A deliberately approved area/device/all command sends once but
+remains unverified when no explicit target can be observed. No retry or receipt-success shortcut
+is created. The fixed numerical subset is conservative gating, not a stored comfort preference.
+
 ## Home Assistant source health
 
 `home.ha_entity_snapshot` is a last-known-state cache, not proof that Home Assistant is reachable.
