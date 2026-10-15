@@ -972,6 +972,85 @@ def integer(value, minimum=0):
         raise EvidenceError("nonexact-count")
 
 
+def runtime_directory_identity(path: Path) -> dict:
+    """Read a real canonical directory, rejecting every indirect path component."""
+    try:
+        if not path.is_absolute() or path.resolve(strict=True) != path:
+            raise EvidenceError("indirect-runtime-directory")
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise EvidenceError("non-directory-runtime-root")
+    except (OSError, RuntimeError) as exc:
+        raise EvidenceError("missing-runtime-directory") from exc
+    return {"device": info.st_dev, "inode": info.st_ino}
+
+
+def validate_runtime_directory(value) -> None:
+    fields(value, {"device", "inode"})
+    integer(value["device"])
+    integer(value["inode"], minimum=1)
+
+
+def runtime_request(directory: Path, run: dict, binding: dict, requests: set[str]) -> None:
+    """Reconstruct original launch authority independently of rewritten run carriers."""
+    directory = directory.resolve()
+    side = run["side"]
+    if side not in {"removed", "survivors"}:
+        raise EvidenceError("invalid-runtime-side")
+    temporary = directory / (side + ".runtime-tmp")
+    identity = runtime_directory_identity(temporary)
+    validate_runtime_directory(run["runtime_directory"])
+    environment = {"TMPDIR": str(temporary), "PYTEST_DEBUG_TEMPROOT": str(temporary)}
+    effective = run["runtime_environment"]
+    fields(effective, {"TMPDIR", "PYTEST_DEBUG_TEMPROOT", "tempfile_root"})
+    if effective != {**environment, "tempfile_root": str(temporary)}:
+        raise EvidenceError("runtime-environment-mismatch")
+    if run["runtime_directory"] != identity:
+        raise EvidenceError("runtime-directory-replaced")
+    identifier = run["id"]
+    if (
+        not isinstance(identifier, str)
+        or Path(identifier).name != identifier
+        or identifier in {"", ".", ".."}
+    ):
+        raise EvidenceError("invalid-runtime-id")
+    path = directory / (identifier + ".request.json")
+    journal_path = directory / "journal.json"
+    for original in (path, journal_path):
+        if original.is_symlink() or not original.is_file() or original.resolve() != original:
+            raise EvidenceError("indirect-or-missing-original-request")
+    journal = strict_json(journal_path)
+    fields(journal, {"owned_copy", "status", "mutations", "batches"})
+    owned = Path(journal["owned_copy"])
+    if (
+        journal["status"] != "RESTORED"
+        or owned.parent != directory
+        or not owned.name.startswith("condense-owned-")
+        or owned.resolve() != owned
+    ):
+        raise EvidenceError("invalid-owned-copy-journal")
+    scope = (
+        binding.get("lineage", {}).get("scope", binding["scope"])
+        if side == "removed"
+        else binding["scope"]
+    )
+    expected = {
+        "root": str(owned / side),
+        "selection": binding["selection"][side],
+        "scope": scope,
+        "nonce": binding["nonce"],
+        "output": str(directory / (identifier + ".json")),
+        "id": identifier,
+        "control_inputs": sorted(requests),
+        "runtime_environment": environment,
+        "runtime_directory": identity,
+    }
+    original = strict_json(path)
+    validate_runtime_directory(original.get("runtime_directory"))
+    if run["measurement_root"] != expected["root"] or original != expected:
+        raise EvidenceError("original-runtime-request-mismatch")
+
+
 def identities(rows: list, field: str) -> set:
     if not isinstance(rows, list) or not rows:
         raise EvidenceError("empty-population")
@@ -1533,8 +1612,11 @@ def verify_ledger(
                 "side",
                 "artifact",
                 "coverage_artifact",
+                "runtime_environment",
+                "runtime_directory",
             },
         )
+        runtime_request(directory, run, binding, requests)
         boundary = run["request_boundary"]
         fields(boundary, {"inputs", "runtime_read", "descendant_execution"})
         if (
@@ -1578,6 +1660,14 @@ def verify_ledger(
         ):
             raise EvidenceError("nonexact-timing")
     executable_proof(directory, proof, binding, value["removed"], value["survivors"], root=root)
+    # Preserve the existing causal mutation/SQLite refusals before checking the
+    # additional retained journal account. Both must qualify for admission.
+    # Canonical JSON identity preserves numeric types that Python equality merges.
+    journal = strict_json(directory / "journal.json")
+    if canonical(journal["mutations"]) != canonical(proof["mutation"]["mutants"]) or canonical(
+        journal["batches"]
+    ) != canonical(proof["mutation"]["batches"]):
+        raise EvidenceError("invalid-owned-copy-journal")
     return removed
 
 
