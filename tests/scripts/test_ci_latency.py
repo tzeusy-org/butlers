@@ -218,6 +218,94 @@ def test_bounded_read_and_error_report_are_closed(tmp_path):
     )
 
 
+def test_observer_deadline_stops_the_next_read_and_retains_error(tmp_path, monkeypatch):
+    """REQ-ci-latency-001: an exhausted observer cannot start another read."""
+    import json
+
+    # Permit the index read, then reach the exact whole-observer deadline.
+    # A read-level timeout alone cannot prevent another request after this point.
+    fetch, calls = fake_api([run()])
+    clock = iter((0, 0, 240))
+    with monkeypatch.context() as context:
+        context.setattr(latency.time, "monotonic", lambda: next(clock))
+        expired = latency.observe(repository="owner/repo", since=stamp(), fetch=fetch)
+    assert len(calls) == 1
+    assert expired["verdict"] == "ERROR"
+    assert expired["failure"] == {
+        "stage": "attempt-jobs",
+        "run": 1,
+        "kind": "read-timeout",
+    }
+    assert expired["samples"] == []
+    deadline_output = tmp_path / "deadline"
+    latency.write_report(expired, deadline_output)
+    assert json.loads((deadline_output / "report.json").read_text()) == expired
+    assert "ERROR" in (deadline_output / "report.md").read_text()
+
+
+def test_workflow_preserves_observer_exit_and_retained_summary(tmp_path):
+    """REQ-ci-latency-001: actual scheduled shell preserves every observer verdict."""
+    import json
+    import os
+    import subprocess
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((root / ".github/workflows/ci-latency.yml").read_text())
+    job = workflow["jobs"]["observe"]
+    # Execute the real workflow scalar in a miniature checkout. Only the
+    # observer boundary is synthetic; bash exit handling and summary writes
+    # are the exact scheduled commands, including their nonzero paths.
+    checkout = tmp_path / "workflow"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "ci_latency.py").write_text(
+        "import argparse,json,os\n"
+        "from pathlib import Path\n"
+        "parser=argparse.ArgumentParser()\n"
+        "parser.add_argument('--output',type=Path,required=True)\n"
+        "parser.add_argument('--since')\n"
+        "args=parser.parse_args()\n"
+        "code=int(os.environ['OBSERVER_EXIT'])\n"
+        "verdict=('PASS','BREACH','INSUFFICIENT_SAMPLES','ERROR')[code]\n"
+        "args.output.mkdir(parents=True)\n"
+        "(args.output/'report.json').write_text(json.dumps(\n"
+        " {'verdict':verdict,'since':args.since})+'\\n')\n"
+        "(args.output/'report.md').write_text('Verdict: '+verdict+'\\n')\n"
+        "raise SystemExit(code)\n"
+    )
+    for code, verdict in enumerate(("PASS", "BREACH", "INSUFFICIENT_SAMPLES", "ERROR")):
+        runner_temp = tmp_path / f"runner-{code}"
+        runner_temp.mkdir()
+        summary = runner_temp / "summary.md"
+        summary.write_text("Earlier summary\n")
+        since = stamp() if code % 2 else ""
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", job["steps"][1]["run"]],
+            cwd=checkout,
+            env={
+                "PATH": os.environ["PATH"],
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "LATENCY_SINCE": since,
+                "OBSERVER_EXIT": str(code),
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == code, (result.stdout, result.stderr)
+        retained = runner_temp / "ci-latency"
+        assert json.loads((retained / "report.json").read_text()) == {
+            "verdict": verdict,
+            "since": since or None,
+        }
+        markdown = (retained / "report.md").read_text()
+        assert markdown == f"Verdict: {verdict}\n"
+        assert summary.read_text() == "Earlier summary\n" + markdown
+
+
 def test_gh_transport_refuses_partial_duplicate_or_failed_payloads(monkeypatch):
     import subprocess
     from types import SimpleNamespace
