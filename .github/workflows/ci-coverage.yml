@@ -166,9 +166,9 @@ jobs:
       - name: Prepare ${{ matrix.lane }} shard ${{ matrix.shard }} duration evidence
         if: always()
         run: |
-          python3 scripts/summarize_j${{ matrix.lane }}_durations.py \
-            --input "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/raw-j${{ matrix.lane }}.xml" \
-            --sanitized-j${{ matrix.lane }} "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/j${{ matrix.lane }}.xml" \
+          python3 scripts/summarize_junit_durations.py \
+            --input "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/junit.xml" \
             --durations-output "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/top-durations.txt" \
             --limit 25
       - name: Upload complete covered execution evidence
@@ -177,7 +177,7 @@ jobs:
         with:
           name: ci-${{ matrix.lane }}-${{ matrix.shard }}-test-evidence
           path: |
-            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/j${{ matrix.lane }}.xml
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/shard-observation.json
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.shard }}/runner-observation.json

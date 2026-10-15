@@ -1591,6 +1591,37 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
     assert execute["env"]["COVERAGE_FILE"].endswith(
         "coverage-${{ matrix.lane }}-${{ matrix.shard }}.data"
     )
+    duration = _workflow_step(
+        job=shards, name="Prepare ${{ matrix.lane }} shard ${{ matrix.shard }} duration evidence"
+    )
+    evidence = _workflow_step(job=shards, name="Upload complete covered execution evidence")
+    for row in rows:
+        directory = tmp_path / "ci-artifacts" / f"{row['lane']}-{row['shard']}"
+        directory.mkdir(parents=True)
+        (directory / "raw-junit.xml").write_text(
+            '<testsuites><testsuite><testcase classname="tests.contract" '
+            'name="test_receipt[private-value]" time="0.125">'
+            "<system-out>private captured output</system-out>"
+            "</testcase></testsuite></testsuites>"
+        )
+        command = duration["run"]
+        uploads = evidence["with"]["path"]
+        for key, value in row.items():
+            command = command.replace("${{ matrix." + key + " }}", str(value))
+            uploads = uploads.replace("${{ matrix." + key + " }}", str(value))
+        result = subprocess.run(
+            ["bash", "-e", "-c", command],
+            cwd=REPO_ROOT,
+            env={**os.environ, "RUNNER_TEMP": str(tmp_path)},
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, (row, result.stderr.decode())
+        sanitized = (directory / "junit.xml").read_text()
+        assert 'name="test_receipt[...]"' in sanitized
+        assert "private" not in sanitized
+        assert "test_receipt[...]" in (directory / "top-durations.txt").read_text()
+        assert f"/ci-artifacts/{row['lane']}-{row['shard']}/junit.xml" in uploads
     assert (
         _workflow_step(job=shards, name="Upload raw covered shard inputs")["with"][
             "if-no-files-found"
