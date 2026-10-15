@@ -121,3 +121,11 @@ for reusing action outputs, while
 for selecting tests likely to expose regressions. The applicable lesson is to
 measure repeated work and selection economics; neither technique establishes
 this repository's latency or justifies weakening its full merge-group population.
+
+## Queue admission and developer lead time
+
+The [bounded admission experiment](ci-queue-admission.md) supplements this
+observer with complete enqueue/requeue/merge metadata and throughput. Its
+read-only plan does not change live settings. Run-created latency alone cannot
+establish the trial's end-to-end benefit, and observed job overlap does not
+certify an administrative runner quota.
