@@ -63,6 +63,10 @@ LAUNCHER = (
 )
 
 
+class ObservedRefusal(EvidenceError):
+    """A completed, published worker whose request-access observation refuses."""
+
+
 def publish(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -703,7 +707,7 @@ def suite(
         raise EvidenceError("worker-incomplete")
     result = strict_json(output)
     if not access["complete"] or access["accesses"]:
-        raise EvidenceError("worker-incomplete")
+        raise ObservedRefusal("worker-incomplete")
     if result["complete"] is not True or result["core"] != "ctrace":
         raise EvidenceError("worker-phases-or-tracer-unknown")
     result["cleanup"] = cleaned
@@ -1438,6 +1442,7 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 # unregistered, so the pool's exit would not join it and the
                 # receipt would be written beside its live process group.
                 workers_live = True
+                observed, refused = {}, {}
                 try:
                     with ThreadPoolExecutor(max_workers=2) as pool:
                         pending = {
@@ -1445,16 +1450,29 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                         }
                         try:
                             sides = {future: kind for kind, future in pending.items()}
-                            observed = {
-                                sides[future]: future.result() for future in as_completed(sides)
-                            }
-                        except BaseException:
+                            for future in as_completed(sides):
+                                try:
+                                    observed[sides[future]] = future.result()
+                                except ObservedRefusal as refusal:
+                                    # A completed worker's refused observation leaves its
+                                    # sibling running inside the same deadline, so both
+                                    # carriers settle and the refusal raised below never
+                                    # depends on which side finished first.
+                                    refused[sides[future]] = refusal
+                        except BaseException as error:
                             cancellation.set()
+                            if refused and isinstance(error, EvidenceError):
+                                # A later sibling failure cannot replace the earlier
+                                # completed refusal as the reported cause.
+                                raise next(iter(refused.values())) from None
                             raise
                 finally:
                     workers_live = False
                 if cancellation.is_set():
                     raise InterruptedError
+                for kind in selections:
+                    if kind in refused:
+                        raise refused[kind]
                 # Completion order only controls prompt failure observation;
                 # successful carriers retain the original deterministic side order.
                 completed = {kind: observed[kind] for kind in selections}
