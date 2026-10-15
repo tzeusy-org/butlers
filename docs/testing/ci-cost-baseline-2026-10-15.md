@@ -38,10 +38,12 @@ including setup/call/teardown, **not** a parallel job's elapsed time.
 `test_condense_evidence.py` is the instructive exception. Current blob
 `7de943d80d640c9864fd2e7f1947927f5fac1014`, SHA-256
 `ff16dea36a249cbb510bcae72f2def457bc722bc602ab8fb413065119a5d2d2a`, matches
-only **2/10 samples: 92.251 and 104.020 seconds**. This is insufficient for a
-current ten-run p95. Older blob `ed11e426a78510c4ca742044195acf1cdf178d90`
-appears in eight samples at 651.570–747.312 seconds (median 699.980). The mixed
-historical ten-run median is 682.841 seconds; ranking that as today's cost would
+only **2/10 samples: 92.251 and 104.020 seconds**, each selecting **eight
+cases**. This is insufficient for a current ten-run p95. Older blob
+`ed11e426a78510c4ca742044195acf1cdf178d90`
+appears in eight samples, each selecting **ten cases**, at 651.570–747.312
+seconds (median 699.980). This includes selection/quarantine changes and is not
+a matched speedup measurement. The mixed historical ten-run median is 682.841 seconds; ranking that as today's cost would
 be misleading. The module is unit-marked. Current `tests/quarantine.json` excludes
 three owners from ordinary runs, separately owned by `bu-oq6eiu`, `bu-uikmow`
 and `bu-xle97o`; `tests/quarantine.py` performs the deselection. Historical and
@@ -218,7 +220,9 @@ lane/file, discard all testcase names, and require exact selected population
 counts. Inventory and Vitest receipt identities must match the same head/tree/
 run/attempt/event. Do not print logs or testcase identities. Raw indexes/ZIPs
 remain private scratch, not repository contents. Per-job artifact IDs/digests
-and raw-metadata hashes make the acquisition auditable after GitHub expiry.
+and raw-metadata hashes authenticate retained identities after GitHub expiry;
+full independent reparsing still requires the retained private archives and
+metadata. A digest alone does not prove the projection was computed correctly.
 
 The following offline check reproduces the main quantiles, required completion,
 per-file totals and selected populations from the durable projection. It runs
