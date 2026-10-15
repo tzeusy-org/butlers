@@ -86,7 +86,7 @@ def _ordinary_signal_history(root):
     for species in ("complete", "missing-terminal", "handler-read"):
         output = root / (species + ".json")
         request = output.with_suffix(".request.json")
-        nonce = "a" * 64
+        nonce = os.urandom(32).hex()
         evidence.publish(request, {"nonce": nonce})
         output.with_suffix(".subject-probe").write_bytes(nonce.encode())
         sleeper = (
