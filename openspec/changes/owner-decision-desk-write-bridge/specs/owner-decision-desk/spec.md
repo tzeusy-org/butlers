@@ -236,6 +236,23 @@ Scope: v1-mandatory
 - **THEN** the prompt is recorded `uncertain` and the ledger records `failed`
 - **AND** no later run sends a prompt for that bead
 
+#### Scenario: Oversized decision prompts are visible in routing summaries
+
+- **WHEN** an enabled routing pass has an available digest and a decision otherwise satisfies its existing non-length eligibility checks
+- **AND** an option exceeds the current512-character limit or the fixed prompt text exceeds the current4096-character limit
+- **THEN** that bead is excluded from delivery and contributes once to the integer `skipped_unsendable` summary count
+- **AND** every enabled, available summary includes that count, including0 and the no-candidate, suppression and budget paths
+- **AND** the diagnostic creates no prompt, intent, attention-ledger entry, budget debit or send for that excluded bead and changes no existing enabled-job maintenance
+- **AND** disabled or unavailable passes retain their existing no-action/reason response without a fabricated measured count
+
+#### Scenario: The decision linter warns without changing convention validity
+
+- **WHEN** the decision-bead linter encounters an option over512 characters or an estimated fixed prompt over4096 characters
+- **THEN** its human and JSON output exposes an advisory warning with category and length information
+- **AND** existing convention violations, `ok` meaning, discovery modes and exit0/1/2 semantics remain unchanged
+- **AND** the estimate follows current literal template, date, Unicode and newline counting, with explicit conservative lower bounds for incomplete date context
+- **AND** advisory warnings neither enable routing nor become an additional owner notification or authority to change the choice/default
+
 ### Requirement: Telegram One-Tap Decision Capture
 
 A decision prompt SHALL travel as a `notify.v1` envelope with intent `decision_request` through

@@ -81,6 +81,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -163,13 +164,94 @@ class LintResult:
     issue_id: str
     title: str
     violations: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return not self.violations
 
 
-def lint_issue(issue: Any) -> LintResult:
+def _estimate_timestamp(value: Any) -> datetime | None:
+    """Source-compatible UTC time, or missing context for an advisory estimate."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def _estimated_prompt_length(issue: dict[str, Any], *, now: datetime) -> tuple[int, bool] | None:
+    """Return (characters, lower_bound), retaining the standalone stdlib CLI.
+
+    This mirrors decision_routing.compose_prompt_message's literal lengths,
+    not routing eligibility. Cross-seam behavior tests guard template drift.
+    Missing dates use the shortest age and omit the due suffix. Never invent
+    options or a default when the structured layout itself is unavailable.
+    """
+    metadata = issue.get("metadata")
+    decision = metadata.get("decision") if isinstance(metadata, dict) else None
+    if not isinstance(decision, dict):
+        return None
+    options = decision.get("options")
+    default = decision.get("default")
+    if (
+        not isinstance(options, list)
+        or not options
+        or any(not isinstance(option, str) or not option.strip() for option in options)
+        or len(set(options)) != len(options)
+        or not isinstance(default, str)
+        or not default.strip()
+        or default not in options
+    ):
+        return None
+    created = _estimate_timestamp(issue.get("created_at"))
+    due = _estimate_timestamp(issue.get("due_at"))
+    age = now - created if created is not None else None
+    age_label = (
+        f"{age.days}d"
+        if age is not None and age.days >= 1
+        else f"{max(int(age.total_seconds() // 3600), 0) if age is not None else 0}h"
+    )
+    issue_id = str(issue.get("id") or "<unknown>")
+    title = str(issue.get("title") or issue_id)
+    lengths = [
+        len("Decision needed: ") + len(title),
+        len(issue_id) + len(", open ") + len(age_label),
+    ]
+    if due is not None:
+        lengths[-1] += len(", due ") + len(due.date().isoformat())
+    lengths.extend(len(f"{index + 1}. ") + len(option) for index, option in enumerate(options))
+    lengths.extend(
+        [len("Default if unanswered: ") + len(default), len("Tap an option to record your choice.")]
+    )
+    return sum(lengths) + len(options) + 5, created is None or due is None
+
+
+def _renderability_warnings(issue: dict[str, Any], *, now: datetime) -> list[str]:
+    warnings = []
+    metadata = issue.get("metadata")
+    decision = metadata.get("decision") if isinstance(metadata, dict) else None
+    options = decision.get("options") if isinstance(decision, dict) else None
+    if isinstance(options, list):
+        for index, option in enumerate(options, start=1):
+            if isinstance(option, str) and len(option) > 512:
+                warnings.append(
+                    f"Telegram option {index} exceeds limit 512: {len(option)} characters"
+                )
+    estimate = _estimated_prompt_length(issue, now=now)
+    if estimate is not None and estimate[0] > 4096:
+        qualification = "; conservative lower bound (incomplete dates)" if estimate[1] else ""
+        warnings.append(
+            f"Telegram prompt exceeds limit 4096: estimated {estimate[0]} characters{qualification}"
+        )
+    return warnings
+
+
+def lint_issue(issue: Any, *, now: datetime | None = None) -> LintResult:
     """Check one issue dict against the decision-bead convention.
 
     Accepts any issue shape returned by `bd show`/`bd list --json` (or the
@@ -222,11 +304,17 @@ def lint_issue(issue: Any) -> LintResult:
     if not issue.get("due_at"):
         violations.append("due_at (deadline) must be set -- e.g. `bd update <id> --due 2026-07-25`")
 
-    return LintResult(issue_id=issue_id, title=title, violations=violations)
+    return LintResult(
+        issue_id=issue_id,
+        title=title,
+        violations=violations,
+        warnings=_renderability_warnings(issue, now=now or datetime.now(UTC)),
+    )
 
 
 def lint_issues(issues: list[Any]) -> list[LintResult]:
-    return [lint_issue(issue) for issue in issues]
+    now = datetime.now(UTC)
+    return [lint_issue(issue, now=now) for issue in issues]
 
 
 class BdUnavailableError(RuntimeError):
@@ -324,14 +412,22 @@ def load_issues_from_file(path: Path) -> list[dict[str, Any]]:
 def format_results(results: list[LintResult]) -> str:
     failing = [r for r in results if not r.ok]
     if not failing:
-        return f"lint_decision_beads: clean -- {len(results)} decision bead(s) checked."
-    lines = [
-        f"lint_decision_beads: {len(failing)}/{len(results)} decision bead(s) fail the convention:"
-    ]
-    for r in failing:
-        lines.append(f"  {r.issue_id} ({r.title!r}):")
-        for v in r.violations:
-            lines.append(f"    - {v}")
+        lines = [f"lint_decision_beads: clean -- {len(results)} decision bead(s) checked."]
+    else:
+        lines = [
+            f"lint_decision_beads: {len(failing)}/{len(results)} "
+            "decision bead(s) fail the convention:"
+        ]
+        for r in failing:
+            lines.append(f"  {r.issue_id} ({r.title!r}):")
+            for v in r.violations:
+                lines.append(f"    - {v}")
+    advisory = [r for r in results if r.warnings]
+    if advisory:
+        lines.extend(["", "Telegram renderability (advisory):"])
+        for r in advisory:
+            lines.append(f"  {r.issue_id}:")
+            lines.extend(f"    - {warning}" for warning in r.warnings)
     return "\n".join(lines)
 
 
@@ -394,7 +490,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         json.dump(
             [
-                {"id": r.issue_id, "title": r.title, "ok": r.ok, "violations": r.violations}
+                {
+                    "id": r.issue_id,
+                    "title": r.title,
+                    "ok": r.ok,
+                    "violations": r.violations,
+                    "warnings": r.warnings,
+                }
                 for r in results
             ],
             sys.stdout,
