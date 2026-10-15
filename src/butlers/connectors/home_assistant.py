@@ -76,6 +76,12 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.home_assistant_envelope import parse_time_fired
+from butlers.connectors.home_assistant_scrub import (
+    HABearerScrubError,
+    scrub_ha_envelope,
+    scrub_ha_event,
+    scrub_ha_state,
+)
 from butlers.connectors.home_assistant_wellness import (
     ClassifyResult,
     WellnessClassifier,
@@ -515,7 +521,7 @@ class HAWebSocketClient:
                     try:
                         msg: dict[str, Any] = json.loads(raw.data)
                     except json.JSONDecodeError:
-                        logger.warning("HAWebSocketClient: invalid JSON: %r", raw.data[:200])
+                        logger.warning("HAWebSocketClient: invalid JSON message withheld")
                         continue
                     if not isinstance(msg, dict):
                         continue
@@ -915,6 +921,11 @@ class HAEventReorderBuffer:
         polled via the REST fallback keep their ``rest_fallback`` checkpoint
         tag; WebSocket events pass ``None`` and let the dispatcher infer it.
         """
+        try:
+            event = scrub_ha_event(event)
+        except HABearerScrubError:
+            logger.warning("ha-connector: event withheld after content scrub failure")
+            return
         heapq.heappush(
             self._heap,
             (
@@ -1701,14 +1712,16 @@ async def persist_ha_history(
         recorded_at: Timezone-aware datetime for the ``recorded_at`` column.
     """
     try:
+        safe_state = scrub_ha_state({"state": state, "attributes": attributes})
+        assert safe_state is not None
         await pool.execute(
             f"""
             INSERT INTO {_HA_HISTORY_TABLE} (entity_id, state, attributes, recorded_at)
             VALUES ($1, $2, $3, $4)
             """,
             entity_id,
-            state,
-            attributes,
+            safe_state["state"],
+            safe_state["attributes"],
             recorded_at,
         )
         return True
@@ -1716,7 +1729,6 @@ async def persist_ha_history(
         logger.warning(
             "ha-connector: failed to persist history row for entity_id=%s (non-fatal)",
             entity_id,
-            exc_info=True,
         )
         return False
 
@@ -1768,7 +1780,7 @@ async def emit_with_wellness_promotion(
         if ha_envelope is None:
             raise ValueError("ha_envelope is required when emit_home_assistant=True")
         try:
-            await mcp_client.call_tool("ingest", ha_envelope)
+            await mcp_client.call_tool("ingest", scrub_ha_envelope(ha_envelope))
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "success")
         except Exception as exc:
@@ -1784,7 +1796,6 @@ async def emit_with_wellness_promotion(
                 logger.warning(
                     "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
                     entity_id,
-                    exc_info=True,
                 )
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "error")
@@ -1824,7 +1835,7 @@ async def emit_with_wellness_promotion(
     )
 
     try:
-        await mcp_client.call_tool("ingest", wellness_envelope)
+        await mcp_client.call_tool("ingest", scrub_ha_envelope(wellness_envelope))
         if metrics is not None:
             metrics.inc_submission("wellness", "success")
     except Exception as exc:
@@ -1841,7 +1852,6 @@ async def emit_with_wellness_promotion(
                 "ha-connector: failed to submit wellness envelope for entity_id=%s metric=%s",
                 entity_id,
                 result.metric,
-                exc_info=True,
             )
         if metrics is not None:
             metrics.inc_submission("wellness", "error")
@@ -1867,6 +1877,11 @@ async def _emit_history_wellness_measurement(
     WebSocket/REST checkpoint. ``time_fired`` is the HA ``last_updated``
     measurement timestamp supplied by the history reader.
     """
+    try:
+        event = scrub_ha_event(event)
+    except HABearerScrubError:
+        logger.warning("ha-connector: history event withheld after content scrub failure")
+        return False
     event_data = event.get("data") or {}
     new_state = event_data.get("new_state") or {}
     attributes = new_state.get("attributes") or {}
@@ -2252,6 +2267,13 @@ def _make_event_dispatcher(
             connector.on_event_received(passed_all_filters=False)
             return
 
+        try:
+            event = scrub_ha_event(event)
+        except HABearerScrubError:
+            logger.warning("ha-connector: event withheld after content scrub failure")
+            connector.on_event_received(passed_all_filters=False)
+            return
+
         # Extract common fields
         event_data: dict[str, Any] = event.get("data", {})
         time_fired: str = event.get("time_fired", "")
@@ -2312,14 +2334,13 @@ def _make_event_dispatcher(
             )
             try:
                 ingest_start = time.monotonic()
-                await connector._mcp_client.call_tool("ingest", envelope)
+                await connector._mcp_client.call_tool("ingest", scrub_ha_envelope(envelope))
                 connector._ha_metrics and connector._ha_metrics.observe_event_latency(
                     time.monotonic() - ingest_start
                 )
             except Exception:
                 logger.warning(
                     "ha-connector: failed to submit automation_triggered envelope",
-                    exc_info=True,
                 )
                 connector.on_event_received(passed_all_filters=False)
                 return

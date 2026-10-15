@@ -265,3 +265,9 @@ A dry run is not a stable-snapshot or applied-repair claim.
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema
 - [Switchboard Butler Role](../concepts/switchboard-routing.md) -- Ingestion authority
 - [API Authentication](../identity_and_secrets/cli-runtime-auth.md) -- Token lifecycle
+
+## Home Assistant event bearer custody
+
+The HA connector's state and recursive attribute content uses the shared ingestion bearer scrubber before filtering/discretion, submission, filtered-event buffering, person-history writes, and wellness emission. It withholds the shared detector's recognized keyword OTPs and reset/magic links in both normalized text and raw duplicates. The HA adapter does not enable Telegram's aggressive bare-number mode; ordinary readings and enum states keep their existing representation and event identity.
+
+Scrub failure withholds the affected content and logs a fixed warning. Replay protects outgoing content without restoring withheld values or backfilling old rows. The transient REST comparison cache retains provider values for correct diff membership; only its copied downstream event is admitted to content consumers. This connector guarantee does not claim remediation of the separate module-owned HA entity snapshot/cache or the shared full-payload/error-custody investigations. No notification capability, allowlist, or authentication behavior is changed.

@@ -1,0 +1,411 @@
+"""Prospective ordinary-consumer regressions; synthetic data only.
+
+Spec: REQ-connector-home-assistant-001, REQ-connector-home-assistant-002.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import hashlib
+import json
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from butlers import ingestion_bearer_scrub
+from butlers.connectors.home_assistant import (
+    HAConnector,
+    HAConnectorConfig,
+    HAEventReorderBuffer,
+    HAWebSocketClient,
+    _emit_history_wellness_measurement,
+    _make_event_dispatcher,
+    persist_ha_history,
+)
+from butlers.connectors.home_assistant_filter import HAFilterPersistence
+from butlers.connectors.home_assistant_pipeline import HAFilterPipeline, HAFilterPipelineConfig
+from butlers.connectors.home_assistant_rest import (
+    EntityStateSnapshot,
+    HAStateCache,
+    build_rest_state_changed_event,
+)
+from butlers.connectors.home_assistant_wellness import WellnessClassifier
+
+pytestmark = pytest.mark.unit
+
+_ENDPOINT = "home_assistant:homeassistant.test:8123"
+_TIME = "2026-10-15T09:00:00+00:00"
+_CODE = "482913"
+_URL = "https://acct.example.com/reset-password?token=abc123def456"
+
+
+def _event(entity="sensor.phone_last_notification", state="Your code is 482913"):
+    return {
+        "event_type": "state_changed",
+        "time_fired": _TIME,
+        "context": {"id": "synthetic-context"},
+        "data": {
+            "entity_id": entity,
+            "old_state": {"state": "Your login code is 771122", "attributes": {"note": _URL}},
+            "new_state": {
+                "state": state,
+                "attributes": {
+                    "friendly_name": "Synthetic notification",
+                    "nested": [{"note": "Your code is 482913", "link": _URL}],
+                },
+            },
+        },
+    }
+
+
+def _wire(*, db_pool=None):
+    connector = HAConnector(HAConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"))
+    connector._set_endpoint_identity("http://homeassistant.test:8123")
+    connector._mcp_client = MagicMock(call_tool=AsyncMock(return_value={"status": "accepted"}))
+    connector._starting = False
+    persistence = HAFilterPersistence(_ENDPOINT, None, AsyncMock())
+    dispatch = _make_event_dispatcher(
+        connector=connector,
+        config=connector._config,
+        db_pool=db_pool,
+        pipeline=HAFilterPipeline(
+            config=HAFilterPipelineConfig(domain_allowlist=connector._config.domain_allowlist),
+            evaluator=None,
+            metrics=connector._ha_metrics,
+        ),
+        wellness_classifier=WellnessClassifier(),
+        endpoint_identity=_ENDPOINT,
+        resume_ts=None,
+        ha_filter_persistence=persistence,
+        global_ingestion_policy=None,
+    )
+    return connector, persistence, dispatch
+
+
+def _no_bearer(value):
+    rendered = json.dumps(value, sort_keys=True, default=str)
+    for secret in (_CODE, "771122", _URL, "abc123def456"):
+        assert secret not in rendered
+
+
+async def _ordinary_consumer_outputs():
+    """Capture real consumer outputs using the retained pre-fix owner fixtures."""
+    from tests.connectors.test_home_assistant_global_skip import (
+        _build_connector,
+        _make_binary_sensor_event,
+        _make_person_event,
+        _make_weight_event,
+    )
+    from tests.connectors.test_home_assistant_global_skip import (
+        _wire as wire_original,
+    )
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 15, 9, tzinfo=UTC).astimezone(tz)
+
+    cases = {
+        "decimal": _make_binary_sensor_event(
+            entity_id="sensor.synthetic_temperature",
+            old_state="21.50",
+            new_state="22.00",
+            device_class="temperature",
+        ),
+        "enum": _make_binary_sensor_event(entity_id="binary_sensor.synthetic_door"),
+        "presence": _make_person_event(entity_id="person.synthetic"),
+        "measurement": _make_weight_event(
+            entity_id="sensor.synthetic_weight", old_state="72.0", new_state="72.4"
+        ),
+    }
+    outputs = {}
+    for name, event in cases.items():
+        pool = MagicMock(execute=AsyncMock())
+        connector = _build_connector()
+        dispatch, _ = wire_original(connector, None, dispatcher_db_pool=pool)
+        await dispatch("state_changed", event)
+        filtered = HAFilterPersistence(_ENDPOINT, None, AsyncMock())
+        data = event["data"]
+        args = dict(
+            entity_id=data["entity_id"],
+            ha_event=event,
+            time_fired=event["time_fired"],
+            old_state=data["old_state"],
+            new_state=data["new_state"],
+        )
+        with patch("butlers.connectors.filtered_event_buffer.datetime", FixedClock):
+            filtered.record_domain_excluded(**args, domain="synthetic")
+            filtered.record_insignificant_delta(**args, device_class="temperature", delta=0.1)
+            filtered.record_discretion_ignore(**args)
+            filtered.record_global_skip(**args, rule_type="source_channel")
+        # Compare complete envelopes and actual SQL value/representation, not
+        # an expected rendering reimplemented beside the producer.
+        outputs[name] = {
+            "event": event,
+            "submissions": [
+                dict(args=call.args, kwargs=call.kwargs)
+                for call in connector._mcp_client.call_tool.call_args_list
+            ],
+            "database_calls": [
+                dict(args=call.args, kwargs=call.kwargs) for call in pool.execute.call_args_list
+            ],
+            "filtered_rows": filtered._buffer._rows,
+        }
+    return outputs
+
+
+@pytest.mark.asyncio
+async def test_ha_content_is_withheld_at_submission_and_history_consumers():
+    """Both dispatch transports, recorder wellness, person history, numeric control."""
+    for transport in (None, "rest_fallback"):
+        connector, _, dispatch = _wire()
+        original = _event()
+        if transport is not None:
+            data = original["data"]
+            previous = EntityStateSnapshot.from_ha_state(
+                {
+                    **data["old_state"],
+                    "entity_id": data["entity_id"],
+                }
+            )
+            current = EntityStateSnapshot.from_ha_state(
+                {
+                    **data["new_state"],
+                    "entity_id": data["entity_id"],
+                }
+            )
+            cache = HAStateCache()
+            cache.apply([previous])
+            assert len(cache.diff([current])) == 1
+            original = build_rest_state_changed_event(previous, current, _TIME)
+        frozen = copy.deepcopy(original)
+        if transport is None:
+            client = HAWebSocketClient(
+                ha_base_url="http://homeassistant.test:8123",
+                ha_access_token="synthetic",
+                dispatch=dispatch,
+            )
+            await client._dispatch_message({"type": "event", "event": original})
+        else:
+            await dispatch("state_changed", original, transport)
+        calls = connector._mcp_client.call_tool.call_args_list
+        assert len(calls) == 1 and calls[0].args[0] == "ingest"
+        submitted = calls[0].args[1]
+        _no_bearer(submitted)
+        assert submitted["control"]["bearer_scrubbed"] is True
+        assert submitted["sender"]["identity"] == original["data"]["entity_id"]
+        assert submitted["event"]["observed_at"] == _TIME
+        assert original == frozen
+
+    # The same state/attribute protection is required before the reorder queue,
+    # without mutating the provider-owned object or collapsing event membership.
+    delivered = []
+
+    async def receive(event_type, event, transport):
+        delivered.append((event_type, event, transport))
+
+    reorder = HAEventReorderBuffer(submit=receive, window_s=0, max_size=100)
+    original = _event()
+    await reorder.add("state_changed", original, "rest_fallback")
+    await reorder.flush_all()
+    assert len(delivered) == 1 and delivered[0][2] == "rest_fallback"
+    _no_bearer(delivered[0][1])
+    assert original["data"]["new_state"]["state"] == "Your code is 482913"
+
+    from butlers.connectors.home_assistant_scrub import scrub_ha_event
+
+    ordinary = await _ordinary_consumer_outputs()
+    encoded = json.dumps(ordinary, sort_keys=True, default=str, separators=(",", ":")).encode()
+    # Original source 08d03fa7: full consumer snapshot retained in implementation evidence.
+    assert (
+        hashlib.sha256(encoded).hexdigest()
+        == "125cbcc8d7d0a809659f5d68bcf760b392efc488cc729cd42b1e89dde0bff053"
+    )
+
+    for state in (
+        "21.5",
+        "22.00",
+        "482913",
+        "home",
+        "not_home",
+        "on",
+        "off",
+        "unknown",
+        "unavailable",
+    ):
+        normal = _event("sensor.normal", state)
+        normal["data"]["old_state"] = {"state": state, "attributes": {"unit": "kg"}}
+        normal["data"]["new_state"]["attributes"] = {
+            "friendly_name": "Ordinary 2026-10-15",
+            "value": 72.4,
+            "note": "Zip code 90210; order 12345678",
+        }
+        before = json.dumps(normal, sort_keys=True, separators=(",", ":"))
+        assert json.dumps(scrub_ha_event(normal), sort_keys=True, separators=(",", ":")) == before
+        assert scrub_ha_event(scrub_ha_event(normal)) == normal
+
+    pool = MagicMock(execute=AsyncMock())
+    person = _event("person.synthetic", "home")
+    _, _, person_dispatch = _wire(db_pool=pool)
+    await person_dispatch("state_changed", person)
+    history_calls = [
+        call.args
+        for call in pool.execute.call_args_list
+        if "INSERT INTO connectors.home_assistant_history" in call.args[0]
+    ]
+    assert len(history_calls) == 1
+    history_call = history_calls[0]
+    assert history_call[1:3] == ("person.synthetic", "home")
+    _no_bearer(history_call[3])
+
+    weight = _event("sensor.body_weight", "72.4")
+    weight["data"]["new_state"]["attributes"].update(
+        device_class="weight", unit_of_measurement="kg"
+    )
+    live_connector, _, live_dispatch = _wire()
+    await live_dispatch("state_changed", weight)
+    live_envelopes = [call.args[1] for call in live_connector._mcp_client.call_tool.call_args_list]
+    assert [envelope["source"]["channel"] for envelope in live_envelopes] == [
+        "home_assistant",
+        "wellness",
+    ]
+    for envelope in live_envelopes:
+        _no_bearer(envelope)
+    client = MagicMock(call_tool=AsyncMock(return_value={"status": "accepted"}))
+    assert await _emit_history_wellness_measurement(
+        mcp_client=client,
+        classifier=WellnessClassifier(),
+        endpoint_identity=_ENDPOINT,
+        event=weight,
+        metrics=None,
+    )
+    wellness = client.call_tool.call_args.args[1]
+    _no_bearer(wellness)
+    assert wellness["source"]["channel"] == "wellness"
+    assert wellness["payload"]["raw"]["wellness_measurement"]["value"] == 72.4
+
+
+@pytest.mark.asyncio
+async def test_ha_filter_persistence_and_replay_withhold_all_content_copies():
+    """Drive the real HA adapter and shared buffer; do not mock the sanitizer."""
+    submit = AsyncMock()
+    persistence = HAFilterPersistence(_ENDPOINT, None, submit)
+    event = _event()
+    common = {
+        "entity_id": event["data"]["entity_id"],
+        "ha_event": event,
+        "time_fired": _TIME,
+        "old_state": event["data"]["old_state"],
+        "new_state": event["data"]["new_state"],
+        "friendly_name": "Your code is 482913",
+    }
+    persistence.record_domain_excluded(**common, domain="sensor")
+    persistence.record_insignificant_delta(**common, device_class="temperature", delta=0.1)
+    persistence.record_discretion_ignore(**common)
+    persistence.record_global_skip(**common, rule_type="source_channel")
+    assert len(persistence) == 4
+    assert [row[7] for row in persistence._buffer._rows] == [
+        "domain_excluded:sensor",
+        "insignificant_delta:temperature:0.1",
+        "discretion_ignore",
+        "global_rule:skip:source_channel",
+    ]
+    for row in persistence._buffer._rows:
+        _no_bearer(row)
+        assert row[9]["control"]["bearer_scrubbed"] is True
+    payload = copy.deepcopy(persistence._buffer._rows[0][9])
+    payload["payload"]["normalized_text"] = "Your code is 482913"
+    await persistence._submit_scrubbed_replay({"schema_version": "ingest.v1", **payload})
+    assert submit.await_count == 1
+    _no_bearer(submit.call_args.args[0])
+    assert "482913" in payload["payload"]["normalized_text"]
+
+
+@pytest.mark.asyncio
+async def test_ha_scrubber_failure_withholds_raw_content_and_logs_no_exception(monkeypatch, caplog):
+    """A raising real shared dependency must fail closed at every direct seam."""
+    checkpoint_pool = MagicMock(execute=AsyncMock())
+    connector, persistence, dispatch = _wire(db_pool=checkpoint_pool)
+    pool = MagicMock(execute=AsyncMock())
+    event = _event()
+    original = ingestion_bearer_scrub.scrub_json
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("Your code is 482913; " + _URL)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ingestion_bearer_scrub, "scrub_json", broken)
+        await dispatch("state_changed", event)
+        connector._mcp_client.call_tool.assert_not_awaited()
+        assert not persistence
+        checkpoint_pool.execute.assert_not_awaited()
+        from butlers.connectors.home_assistant_scrub import HABearerScrubError
+
+        assert (
+            await persist_ha_history(
+                pool,
+                entity_id="person.synthetic",
+                state="home",
+                attributes=event["data"]["new_state"]["attributes"],
+                recorded_at=datetime(2026, 10, 15, 9, tzinfo=UTC),
+            )
+            is False
+        )
+        pool.execute.assert_not_awaited()
+        with pytest.raises(HABearerScrubError, match="Home Assistant content scrub failed"):
+            persistence.record_discretion_ignore(
+                entity_id=event["data"]["entity_id"], ha_event=event, time_fired=_TIME
+            )
+        assert not persistence
+        assert (
+            await _emit_history_wellness_measurement(
+                mcp_client=connector._mcp_client,
+                classifier=WellnessClassifier(),
+                endpoint_identity=_ENDPOINT,
+                event=event,
+                metrics=None,
+            )
+            is False
+        )
+    assert ingestion_bearer_scrub.scrub_json is original
+    _no_bearer(caplog.text)
+    assert all(record.exc_info is None for record in caplog.records)
+    # Recovery is positive evidence that a fail-closed test did not disable HA.
+    await dispatch("state_changed", _event("sensor.healthy", "A normal notification"))
+    assert connector._mcp_client.call_tool.await_count == 1
+    assert len(persistence) == 0
+    failing_submit = AsyncMock(side_effect=RuntimeError("Your code is 482913"))
+    replay = HAFilterPersistence(_ENDPOINT, None, failing_submit)
+    with pytest.raises(HABearerScrubError) as refusal:
+        await replay._submit_scrubbed_replay({"payload": {"raw": {}, "normalized_text": "safe"}})
+    assert str(refusal.value) == "Home Assistant replay submission failed"
+    assert refusal.value.__suppress_context__ is True
+
+    cancelled = HAFilterPersistence(
+        _ENDPOINT, None, AsyncMock(side_effect=asyncio.CancelledError())
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled._submit_scrubbed_replay({"payload": {"raw": {}, "normalized_text": "safe"}})
+
+    import aiohttp
+
+    ws = HAWebSocketClient(
+        ha_base_url="http://homeassistant.test:8123",
+        ha_access_token="synthetic",
+        dispatch=AsyncMock(),
+    )
+    ws._ws_connection = SimpleNamespace(
+        closed=False,
+        receive=AsyncMock(
+            side_effect=[
+                SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data="{broken Your code is 482913"),
+                SimpleNamespace(type=aiohttp.WSMsgType.CLOSED),
+            ]
+        ),
+    )
+    await ws._message_loop()
+    _no_bearer(caplog.text)
+    assert "invalid JSON message withheld" in caplog.text

@@ -1,0 +1,18 @@
+## 1. Contract and source
+- [x] 1.1 Bind ROOT-approved connector-local P1 scope and qualify complete-event replay fidelity only for bearer content.
+- [x] 1.2 Survey complete actual Git/public/native ID population and bind REQ-connector-home-assistant-001/002 with metadata and source references.
+- [x] 1.3 Capture complete baseline strict/overwrite/trace findings and preserve all old requirement/scenario/test bodies.
+- [x] 1.4 Apply HA-only adapter and producer/direct-sink protection; keep shared detector/buffer/kit and independent module contracts unchanged.
+
+## 2. Behavioral verification
+- [x] 2.1 Demonstrate causal old-source RED for three real consumer regressions, then GREEN after implementation.
+- [x] 2.2 Capture and compare complete actual ordinary numeric/enum dispatch/filter/history consumer outputs against old-source fixtures.
+- [x] 2.3 Run the complete owning HA/shared-scrubber/buffer/Chronicler scope:167 passed.
+- [ ] 2.4 Execute canonical migrated PostgreSQL role/codec/commit/replay/concurrency/rollback proof: fixture PermissionError prevents execution; remains NONPASS, no privilege retry.
+
+## 3. Source checkpoint and delivery
+- [x] 3.1 Record actual topology collection, unchanged inventory/budgets, strict/overwrite and immutable-fork guard PASS; retain default admission refusal, full-trace existing debt and affected-authoring refusal without resets or waivers.
+- [x] 3.2 Sync and archive the complete validated spec successor, preserving every old scenario and recording remaining PostgreSQL and hosted verification limitations.
+- [ ] 3.3 Obtain independent exact-source review and hosted normal/protected gates before any delivery or closure claim; ROOT owns later publication allocation.
+
+Original expected test delta remains Tests: +3 ~0 -0. Actual added delta is Tests: +4 ~0 -0: three ordinary unit tests plus one distinct real-Postgres durability species. No old assertion, fixture, decorator, parameter or test is removed. PostgreSQL and hosted delivery limitations above are not completion claims.
