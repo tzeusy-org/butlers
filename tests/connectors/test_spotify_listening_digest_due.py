@@ -69,6 +69,22 @@ def test_digest_resumes_with_only_the_new_tracks_once_playback_moves_on() -> Non
     assert "Track rain" not in digest["payload"]["normalized_text"]
 
 
+def test_resuming_on_a_new_track_after_a_pause_makes_the_digest_due() -> None:
+    tracker = ListeningSessionTracker(idle_timeout_s=600, digest_interval_s=3600)
+    _play(tracker, "rain", _START)
+    _emit_digest(tracker, _START + _HOUR)
+    pause = _START + 2 * _HOUR
+    tracker.process_no_playback(pause)
+    assert tracker.state == "draining"
+    assert not tracker.check_digest_due(pause)
+
+    resumed = pause + timedelta(minutes=5)
+    _play(tracker, "storm", resumed)
+    assert tracker.state == "active"
+    assert tracker.check_digest_due(resumed)
+    assert _emit_digest(tracker, resumed)["payload"]["raw"]["period_tracks"] == ["Track storm"]
+
+
 def test_new_tracks_still_wait_for_the_digest_interval() -> None:
     tracker = ListeningSessionTracker(digest_interval_s=3600)
     _play(tracker, "a", _START)

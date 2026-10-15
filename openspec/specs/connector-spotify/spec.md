@@ -72,9 +72,10 @@ The connector SHALL emit one context-start event per listening context when play
 
 #### Scenario: No digest without new tracks
 
-- **WHEN** the digest interval has elapsed but no track was played since the context start or previous digest (one long track is still playing)
+- **WHEN** the digest interval has elapsed but no new track has started since the previous digest (one long track is still playing)
 - **THEN** the connector SHALL NOT emit a `spotify.listening_digest` event
-- **AND** the next digest SHALL become due as soon as a new track plays, reporting only the tracks played since the previous digest
+- **AND** the next digest SHALL become due as soon as a new track starts, reporting only the tracks started since the previous digest
+- **AND** a session's first digest SHALL include the track that started the session
 
 #### Scenario: Repeated poll with same track
 
