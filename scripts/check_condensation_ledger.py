@@ -991,9 +991,7 @@ def validate_runtime_directory(value) -> None:
     integer(value["inode"], minimum=1)
 
 
-def runtime_request(
-    directory: Path, run: dict, binding: dict, requests: set[str], proof: dict
-) -> None:
+def runtime_request(directory: Path, run: dict, binding: dict, requests: set[str]) -> None:
     """Reconstruct original launch authority independently of rewritten run carriers."""
     directory = directory.resolve()
     side = run["side"]
@@ -1029,8 +1027,6 @@ def runtime_request(
         or owned.parent != directory
         or not owned.name.startswith("condense-owned-")
         or owned.resolve() != owned
-        or journal["mutations"] != proof["mutation"]["mutants"]
-        or journal["batches"] != proof["mutation"]["batches"]
     ):
         raise EvidenceError("invalid-owned-copy-journal")
     scope = (
@@ -1620,7 +1616,7 @@ def verify_ledger(
                 "runtime_directory",
             },
         )
-        runtime_request(directory, run, binding, requests, proof)
+        runtime_request(directory, run, binding, requests)
         boundary = run["request_boundary"]
         fields(boundary, {"inputs", "runtime_read", "descendant_execution"})
         if (
@@ -1664,6 +1660,14 @@ def verify_ledger(
         ):
             raise EvidenceError("nonexact-timing")
     executable_proof(directory, proof, binding, value["removed"], value["survivors"], root=root)
+    # Preserve the existing causal mutation/SQLite refusals before checking the
+    # additional retained journal account. Both must qualify for admission.
+    journal = strict_json(directory / "journal.json")
+    if (
+        journal["mutations"] != proof["mutation"]["mutants"]
+        or journal["batches"] != proof["mutation"]["batches"]
+    ):
+        raise EvidenceError("invalid-owned-copy-journal")
     return removed
 
 
