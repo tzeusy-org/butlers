@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
@@ -14,8 +15,24 @@ from butlers.core.definer_search_path import (
     is_pinned,
     log_unpinned_definers,
 )
+from butlers.core.logging import _butler_context
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_butler_context() -> Iterator[None]:
+    """Log as a caller outside any butler, whatever an earlier test left current.
+
+    A butler's DB log handler left on the root logger by another test forwards
+    records only while that butler is the current context; it then warns that
+    no event loop is running, adding a record these exact-record tests never emit.
+    """
+    token = _butler_context.set(None)
+    try:
+        yield
+    finally:
+        _butler_context.reset(token)
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -2189,6 +2190,56 @@ def test_owned_timeout_leaves_unknown_and_no_active_group(tmp_path, outcome):
         if child.poll() is None:
             os.killpg(child.pid, signal.SIGKILL)
             child.wait(timeout=5)
+
+
+def test_interrupt_while_a_side_worker_starts_still_settles_it_before_the_receipt(
+    tmp_path, monkeypatch
+):
+    """REQ-testing-053: cancellation never writes the receipt beside a live owned worker.
+
+    The signal lands after the pool started the mutation's second worker thread
+    but before the pool registered it, which is where a hosted SIGTERM landed in
+    merge_group run 38606517087. Leaving the pool then joins only registered
+    workers, so the durable receipt was written while that worker still owned a
+    process group and reported cleanup False. That worker's group cleanup waits
+    (at most 1 s) for the receipt, standing in for a contended runner.
+    """
+    root = _toy(tmp_path)
+    started, alive_at_receipt = [], []
+    receipt_written = threading.Event()
+    original_start = threading.Thread.start
+    original_publish = evidence.publish
+    original_await = evidence.await_owned_group_exit
+
+    def start(thread):
+        original_start(thread)
+        if thread.name.startswith("ThreadPoolExecutor"):
+            started.append(thread)
+            if len(started) == 4:
+                signal.raise_signal(signal.SIGTERM)
+
+    def publish(path, value):
+        if path.name == "receipt.json" and value.get("category") == "InterruptedError":
+            alive_at_receipt.extend(thread.name for thread in started if thread.is_alive())
+            receipt_written.set()
+        original_publish(path, value)
+
+    def await_owned_group_exit(group):
+        if len(started) >= 4 and threading.current_thread() is started[3]:
+            receipt_written.wait(timeout=1)
+        original_await(group)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(evidence, "publish", publish)
+    monkeypatch.setattr(evidence, "await_owned_group_exit", await_owned_group_exit)
+    with pytest.raises(evidence.EvidenceError, match="proof-unknown"):
+        evidence.prove(root, _config(), tmp_path / "interrupted")
+
+    assert len(started) >= 4
+    receipt = evidence.strict_json(tmp_path / "interrupted/receipt.json")
+    assert receipt["category"] == "InterruptedError"
+    assert alive_at_receipt == []
+    assert receipt["restored"] and receipt["cleanup"]
 
 
 def _assert_either_side_failure_cancels(tmp_path):

@@ -1104,10 +1104,14 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
     owned = None
     nonce = secrets.token_hex(32)
     cancellation = threading.Event()
+    workers_live = False
 
     def interrupted(_signum, _frame):
         cancellation.set()
-        raise InterruptedError
+        # While side workers run, execute_sides raises once every worker it
+        # started is joined; raising inside submit() or join() would orphan one.
+        if not workers_live:
+            raise InterruptedError
 
     for signum in [signal.SIGTERM, signal.SIGINT]:
         previous_handlers[signum] = signal.signal(signum, interrupted)
@@ -1270,19 +1274,31 @@ def prove(root: Path, config: dict | Path, output: Path, *, timeout: float = 60)
                 return run
 
             def execute_sides(label):
+                nonlocal workers_live
                 # The two source copies, requests, SQLite files and process groups
                 # are disjoint. Every phase still executes freshly under the same
                 # total deadline; joining both sides also completes failed cleanup.
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    pending = {kind: pool.submit(execute, kind, label(kind)) for kind in selections}
-                    try:
-                        sides = {future: kind for kind, future in pending.items()}
-                        observed = {
-                            sides[future]: future.result() for future in as_completed(sides)
+                # A signal raised inside submit() could leave a started worker
+                # unregistered, so the pool's exit would not join it and the
+                # receipt would be written beside its live process group.
+                workers_live = True
+                try:
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        pending = {
+                            kind: pool.submit(execute, kind, label(kind)) for kind in selections
                         }
-                    except BaseException:
-                        cancellation.set()
-                        raise
+                        try:
+                            sides = {future: kind for kind, future in pending.items()}
+                            observed = {
+                                sides[future]: future.result() for future in as_completed(sides)
+                            }
+                        except BaseException:
+                            cancellation.set()
+                            raise
+                finally:
+                    workers_live = False
+                if cancellation.is_set():
+                    raise InterruptedError
                 # Completion order only controls prompt failure observation;
                 # successful carriers retain the original deterministic side order.
                 completed = {kind: observed[kind] for kind in selections}
