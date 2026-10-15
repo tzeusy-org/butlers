@@ -1254,6 +1254,53 @@ def test_contract_evolution_executes_complete_cases_and_consumes_raw_carriers(tm
             f"999999 execveat(AT_FDCWD, {pathname}, [], 0x0, AT_EMPTY_PATH) = 0".encode()
         )
         assert stream.failed  # no guessed argv/dirfd/native-image authority
+    # Real child death must retain its terminal marker, even if optional child
+    # /proc metadata disappears. Missing root custody still cannot admit PASS.
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import subprocess,sys,time; "
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)']); "
+            "time.sleep(0.2); child.kill(); child.wait(); assert child.returncode==-9"
+        ),
+    ]
+    read_text = Path.read_text
+    for drop in ("nonroot", "root"):
+        control = tmp_path / ("custody-" + drop)
+        control.mkdir()
+        output_path = control / "control.json"
+        request_path = output_path.with_suffix(".request.json")
+        nonce = "2" * 64
+        request_path.write_text(json.dumps({"nonce": nonce}))
+        root_pid, dropped = [], []
+
+        def disappearing(path, *args, **kwargs):
+            if str(path).startswith("/proc/") and str(path).endswith("/status"):
+                pid = str(path).split("/")[2]
+                if not root_pid:
+                    root_pid.append(pid)
+                if (drop == "root") == (pid == root_pid[0]):
+                    dropped.append(pid)
+                    raise FileNotFoundError("actual optional-status race control")
+            return read_text(path, *args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(Path, "read_text", disappearing)
+            if drop == "nonroot":
+                code, cleaned, _ = contract_lifecycle.run(
+                    command, control, request_path, output_path, dict(os.environ), 5, set()
+                )
+                assert code == 0 and cleaned is True
+                contract_lifecycle.validate(output_path, command, nonce)
+                observed = ledger.strict_json(output_path.with_suffix(".lifecycle.json"))
+                assert len(observed["actors"]) == 2 and all(r["exited"] for r in observed["actors"])
+            else:
+                with pytest.raises(ledger.EvidenceError, match="contract-lifecycle-incomplete"):
+                    contract_lifecycle.run(
+                        command, control, request_path, output_path, dict(os.environ), 5, set()
+                    )
+            assert dropped  # both controls exercise their actual metadata lookup
     # A new tracked owner invalidates the complete source binding.
     (root / "tests/test_other.py").write_text("def test_other():\n    assert True\n")
     ledger.git(root, "add", ".")

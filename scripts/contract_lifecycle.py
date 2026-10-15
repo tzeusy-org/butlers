@@ -22,6 +22,7 @@ import check_condensation_ledger as ledger
 import condense_evidence as producer
 
 OPTIONS = [
+    "--seccomp-bpf",
     "-q",
     "-f",
     "--kill-on-exit",
@@ -29,7 +30,7 @@ OPTIONS = [
     "4096",
     "-xx",
     "-e",
-    "signal=none",
+    "signal=all",
     "-e",
     "trace=clone,clone3,fork,vfork,execve,execveat,exit,exit_group,setsid,setpgid",
 ]
@@ -41,7 +42,7 @@ def tool_identity():
         raise ledger.EvidenceError("contract-lifecycle-tool-unavailable")
     tool = str(Path(tool).resolve())
     help_ = subprocess.run([tool, "--help"], capture_output=True, timeout=5, check=True)
-    if b"--kill-on-exit" not in help_.stdout:
+    if any(flag not in help_.stdout for flag in (b"--kill-on-exit", b"--seccomp-bpf")):
         raise ledger.EvidenceError("contract-lifecycle-exitkill-unavailable")
     return tool, {
         "sha256": hashlib.sha256(Path(tool).read_bytes()).hexdigest(),
@@ -106,8 +107,14 @@ class Stream:
                 identity = producer.process_identity(actor)
                 if identity is not None:
                     self.identities[actor] = identity
-                    status = Path(f"/proc/{actor}/status").read_text()
-                    self.tracers[actor] = int(re.search(r"^TracerPid:\s+(\d+)$", status, re.M)[1])
+                    try:
+                        status = Path(f"/proc/{actor}/status").read_text()
+                    except (FileNotFoundError, ProcessLookupError):
+                        pass  # optional child metadata may disappear before a real exit line
+                    else:
+                        self.tracers[actor] = int(
+                            re.search(r"^TracerPid:\s+(\d+)$", status, re.M)[1]
+                        )
             if statement.startswith("+++ "):
                 if actor in self.exits or not re.fullmatch(
                     r"\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+(?: \(core dumped\))?) \+\+\+",
@@ -119,6 +126,8 @@ class Stream:
                 return
             if actor in self.exits:
                 raise ValueError
+            if re.fullmatch(r"--- SIG[A-Z0-9_+]+ .* ---", statement):
+                return  # retain terminal deaths; ancillary signal payloads grant no authority
             if statement.endswith(" <unfinished ...>"):
                 if actor in self.pending:
                     raise ValueError
