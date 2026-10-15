@@ -706,7 +706,9 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         job=inventory, name="Collect one fresh installed pytest inventory and enforce both budgets"
     )
     assert collect["run"] == (
-        'uv run --no-sync python scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"'
+        "uv run --no-sync python scripts/ci_partition.py "
+        '--weights "${RUNNER_TEMP}/ci-weights/weights.json" '
+        '--output "${RUNNER_TEMP}/ci-inventory"'
     )
     assert "if" not in collect
     upload = _artifact_step(job=inventory, artifact_name="ci-inventory")
@@ -1556,6 +1558,8 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         "scripts/check_ci_coverage.py",
         "scripts/check_ci_test_shards.py",
         "scripts/ci_partition.py",
+        "scripts/ci_weight_candidates.py",
+        ".github/ci-test-weights.json",
         "tests/contracts/test_ci_test_targets.py",
         "pyproject.toml",
         "uv.lock",
@@ -1632,8 +1636,39 @@ def test_owned_coverage_workflow_retains_complete_assurance(tmp_path: Path) -> N
         job=jobs["coverage-inventory"], name="Collect full current inventory"
     )
     assert inventory["run"].endswith(
-        'scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"'
+        'scripts/ci_partition.py --weights "${RUNNER_TEMP}/ci-weights/weights.json" '
+        '--output "${RUNNER_TEMP}/ci-inventory"'
     )
+    main_jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    for producer, collection_name, repaired_name in (
+        (
+            main_jobs["inventory"],
+            "Collect one fresh installed pytest inventory and enforce both budgets",
+            "Install dependencies",
+        ),
+        (jobs["coverage-inventory"], "Collect full current inventory", None),
+    ):
+        assert producer["permissions"] == {"contents": "read", "actions": "read"}
+        restore = _workflow_step(job=producer, name="Restore compatible advisory file weights")
+        assert restore["env"] == {"GH_TOKEN": "${{ github.token }}"}
+        assert restore["run"] == (
+            "uv run --no-sync python scripts/ci_weight_candidates.py --restore "
+            '--output "${RUNNER_TEMP}/ci-weights"'
+        )
+        assert "if" not in restore and "continue-on-error" not in restore
+        repaired = (
+            _workflow_step(job=producer, name=repaired_name)
+            if repaired_name
+            else next(
+                step
+                for step in producer["steps"]
+                if step.get("uses") == "./.github/actions/ci-python-environment"
+            )
+        )
+        assert producer["steps"].index(repaired) < producer["steps"].index(restore)
+        assert producer["steps"].index(restore) < producer["steps"].index(
+            _workflow_step(job=producer, name=collection_name)
+        )
     for name, prerequisites in (
         ("coverage-preflight", ["coverage-inventory", "coverage-shards"]),
         ("coverage-report", ["coverage-inventory", "coverage-shards", "coverage-preflight"]),

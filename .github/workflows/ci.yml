@@ -74,6 +74,7 @@ jobs:
     if: needs.route.outputs.inventory == 'true'
     permissions:
       contents: read
+      actions: read
     env:
       CI_COVERAGE: ${{ github.event_name == 'merge_group' && '1' || '0' }}
     steps:
@@ -121,8 +122,13 @@ jobs:
       - name: Install dependencies
         run: python3 scripts/ci_environment.py prepare
 
+      - name: Restore compatible advisory file weights
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "${RUNNER_TEMP}/ci-weights"
+
       - name: Collect one fresh installed pytest inventory and enforce both budgets
-        run: uv run --no-sync python scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"
+        run: uv run --no-sync python scripts/ci_partition.py --weights "${RUNNER_TEMP}/ci-weights/weights.json" --output "${RUNNER_TEMP}/ci-inventory"
 
       - name: Upload exact attempt inventory and assignment
         uses: actions/upload-artifact@v4

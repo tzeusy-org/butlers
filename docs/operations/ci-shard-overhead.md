@@ -293,6 +293,11 @@ and fallback always write a usable weights file, plus a closed diagnostic
 receipt. No observer or reader commits source or admits test membership.
 
 The pipeline wiring uses its read-only Actions token and the installed Python:
+Both the early required-CI inventory and the owned coverage inventory restore
+after frozen environment repair, before fresh collection. Only these inventory
+jobs gain `actions: read`; their restore steps alone receive `GH_TOKEN`. The
+covered producer retains `CI_COVERAGE=1` and selects covered costs independently
+of the required workflow's current event policy.
 
 ```sh
 uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "$RUNNER_TEMP/ci-weights"

@@ -13,6 +13,8 @@ on:
       - scripts/check_ci_coverage.py
       - scripts/check_ci_test_shards.py
       - scripts/ci_partition.py
+      - scripts/ci_weight_candidates.py
+      - .github/ci-test-weights.json
       - scripts/ci_inventory_collector.py
       - scripts/ci_preflight_reconcile.py
       - scripts/ci_shard_observer.py
@@ -38,13 +40,20 @@ jobs:
   coverage-inventory:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: ./.github/actions/ci-python-environment
+      - name: Restore compatible advisory file weights
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "${RUNNER_TEMP}/ci-weights"
       - name: Collect full current inventory
-        run: uv run --no-sync python scripts/ci_partition.py --output "${RUNNER_TEMP}/ci-inventory"
+        run: uv run --no-sync python scripts/ci_partition.py --weights "${RUNNER_TEMP}/ci-weights/weights.json" --output "${RUNNER_TEMP}/ci-inventory"
       - name: Upload exact attempt inventory and assignment
         uses: actions/upload-artifact@v4
         with:
