@@ -332,8 +332,7 @@ def partition(data: dict, weights: dict, *, root: Path = ROOT) -> dict:
             for name, value in candidates.items()
             if name in files
             and type(value) in (int, float)
-            and math.isfinite(value)
-            and value > 0
+            and 0 < value <= sys.float_info.max
             and isinstance(profile["file_digests"].get(name), str)
             and HEX.fullmatch(profile["file_digests"][name])
             and profile["file_digests"][name] == data.get("file_digests", {}).get(name)

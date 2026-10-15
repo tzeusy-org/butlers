@@ -11,12 +11,12 @@ import argparse
 import hashlib
 import io
 import json
-import math
 import os
 import platform
 import re
 import statistics
 import subprocess
+import sys
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -391,8 +391,7 @@ def restore(*, repository: str, output: Path, root: Path = ROOT) -> None:
                 or any(
                     not isinstance(name, str)
                     or type(value) not in (int, float)
-                    or not math.isfinite(value)
-                    or value < 0
+                    or not 0 <= value <= sys.float_info.max
                     for name, value in costs.items()
                 )
             ):

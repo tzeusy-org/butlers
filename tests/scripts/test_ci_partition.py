@@ -125,7 +125,7 @@ def test_advisory_costs_survive_source_changes_without_changing_membership(
         incompatible = copy.deepcopy(weights)
         incompatible["profiles"]["CTracer"]["runtime"][field] = bad
         assert partition.partition(changed_file, incompatible, root=tmp_path)["shards"] == defaults
-    for bad in (True, -1, 0, float("nan"), float("inf")):
+    for bad in (True, -1, 0, float("nan"), float("inf"), 10**400):
         malformed = copy.deepcopy(weights)
         malformed["profiles"]["CTracer"]["lanes"]["unit"] = dict.fromkeys(costs, bad)
         result = partition.partition(changed_file, malformed, root=tmp_path)
@@ -225,6 +225,11 @@ def test_observer_refresh_is_bounded_and_advisory(
             profile,
             "lanes",
             {**profile["lanes"], "unit": dict.fromkeys(profile["lanes"]["unit"], float("nan"))},
+        ),
+        (
+            profile,
+            "lanes",
+            {**profile["lanes"], "unit": dict.fromkeys(profile["lanes"]["unit"], 10**400)},
         ),
         (weights, "profiles", {"unsupported": profile}),
     ):
