@@ -2,7 +2,7 @@
 
 **Reader:** owner deciding which Dots-superset capabilities to release. **Status:** proposed planning record; not adopted requirements or deployment evidence. Researched at baseline `1fe05f13c` (Asia/Singapore, 2026-10-15 11:12 to about 20:40).
 
-A non-standard-lens run of the JARVIS pursuit, aimed at the owner's goal: Butlers should be a superset of ChatGPT Dots, with access to more APIs and more freeform reach, inside its doctrine. It starts from the Dots capability gap study (epics `bu-svqpzo`, `bu-6qaju2`, `bu-kqme7f`, `bu-z0b0ah`) and asks what Butlers could do that Dots cannot, and what the filed beads still miss. Twenty-one read-only agents researched it; a critic tried to falsify the boldest claims. 86 candidate moves reduce to fifteen ranked moves, six owner decisions and 38 vetted follow-ups, deduplicated against each other, every non-closed bead and prior pursuits.
+A non-standard-lens run of the JARVIS pursuit, aimed at the owner's goal: Butlers should be a superset of ChatGPT Dots, with access to more APIs and more freeform reach, inside its doctrine. It starts from the Dots capability gap study (epics `bu-svqpzo`, `bu-6qaju2`, `bu-kqme7f`, `bu-z0b0ah`) and asks what Butlers could do that Dots cannot, and what the filed beads still miss. Twenty-one read-only agents researched it; a critic tried to falsify the boldest claims. 86 candidate moves reduce to fifteen ranked moves, six owner decisions and 36 vetted follow-ups, deduplicated against each other, every non-closed bead and prior pursuits.
 
 Naming: the run's working files, workflow name and some bead notes written during the run call it "pursuit run 19". The ledger already had a run 19 (QA remediation, `bu-6a9xxw`), so this is run 20.
 
