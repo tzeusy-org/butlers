@@ -204,6 +204,7 @@ def test_prove_isolates_runtime_temporaries_and_binds_carriers(tmp_path, monkeyp
     ]
     monkeypatch.setenv("TMPDIR", str(inherited[0]))
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(inherited[1]))
+    inherited_identities = [(p.stat().st_mode, p.stat().st_dev, p.stat().st_ino) for p in inherited]
     parent_cwd = Path.cwd()
     output = tmp_path / "isolated-proof"
     try:
@@ -344,6 +345,17 @@ def test_prove_isolates_runtime_temporaries_and_binds_carriers(tmp_path, monkeyp
         finally:
             original_request.unlink()
             request_held.rename(original_request)
+    journal_path = output / "journal.json"
+    journal_bytes = journal_path.read_bytes()
+    for key in ("mutations", "batches"):
+        changed_journal = json.loads(journal_bytes)
+        changed_journal[key] = []
+        evidence.publish(journal_path, changed_journal)
+        try:
+            reject("journal " + key)
+            assert refusals[-1]["category"] == "invalid-owned-copy-journal"
+        finally:
+            journal_path.write_bytes(journal_bytes)
     evidence.publish(tmp_path / "runtime-forgery-results.json", {"refusals": refusals})
     assert consumer.verify(root, base, [carrier])["status"] == "PASS"
     with pytest.raises(evidence.EvidenceError, match="output-already-exists"):
@@ -417,6 +429,9 @@ def test_prove_isolates_runtime_temporaries_and_binds_carriers(tmp_path, monkeyp
             proof_output / "survivors.runtime-tmp"
         ).stat().st_ino
     assert carrier.read_bytes() == ledger_bytes and original_request.read_bytes() == request_bytes
+    assert [
+        (p.stat().st_mode, p.stat().st_dev, p.stat().st_ino) for p in inherited
+    ] == inherited_identities
     assert [
         (p.read_bytes(), p.stat().st_mode, p.stat().st_dev, p.stat().st_ino) for p in sentinels
     ] == snapshots
