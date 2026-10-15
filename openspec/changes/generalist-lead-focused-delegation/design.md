@@ -63,32 +63,31 @@ assigned from this evaluation, not from vendor benchmarks.
 
 ## Cross-change collisions
 
-Active changes at this change's authoring that touch the same capabilities;
-each must archive first, be re-scoped, or be folded in before task 4.2:
+The [complete disposition ledger](collision-dispositions.md) retains the original nineteen authoring-list changes and the fresh entire active-change census. At the recorded base, 45 active changes touch the 79 capabilities this change modifies or removes; the six-requirement/56-scenario dashboard fast-answer change is an additional explicit D18 collision and is treated first. The full affected-change population is 443 requirements and 1,968 scenarios.
 
-- Requirements this change removes or rewrites:
-  `durable-dashboard-terminal-action-recovery` (Switchboard chat lanes,
-  `staffer-qa`), `specify-telegram-continuity-routed-context-contract`
-  (misroute re-dispatch), `recover-ingestion-target-deliveries`
-  (`module-pipeline`), `add-runtime-tool-surface-discovery`
-  (`runtime-config-api`), `harden-runtime-auth-and-breaker-attention` and
-  `generation-fenced-codex-auth-rotation-provenance` (`core-credentials`).
-- Routing-dependent additions to re-scope: `ask-once-knowledge-gaps`,
-  `durable-precommit-cancellation-admission`,
-  `restore-butler-control-plane-liveness`,
-  `strict-owner-telegram-wake-recovery`,
-  `specify-roster-identity-owner-operations-overlay`,
-  `repair-whatsapp-identity-reconciliation`, `account-security-perception`,
-  `reconcile-dashboard-conversation-contracts`.
-- Same-capability edits to merge: `specify-improvement-proposal-spine`
-  (`core-skills`), `education-mind-map-lifecycle-integrity` (education
-  capabilities), `relationship-fact-effective-time` (`butler-relationship`),
-  `compose-general-capture-with-private-custody` (`butler-general`).
-- Any change that adds a model path outside D18, such as
-  `define-dashboard-fast-answer-runtime`, is re-scoped before approval.
+Each ledger row requires archive-first, a reviewed re-scope, or an explicit whole-body fold-in before task4.2. A recorded disposition does not mean that its archive, foreign owner transfer, approval or PR has occurred. Same-name MODIFIED blocks must be rebuilt from the actual refreshed baseline; every full scenario body stays authoritative until its successor is concretely preserved and signed where required.
 
-The `dashboard-*` capabilities that conflict with the goal runtime are left to
-the D19 dashboard change.
+PR4485 cannot introduce its tool-capable model path outside goals. Its complete signed twelve-choice contract is re-scoped through feature-request amendment mode, with genuine independent review and a resolving owner choice before that changed behavior is implemented. No new D18 exception or decision change is proposed.
+
+The dashboard capability successors remain owned by the separate D19 change and its owner signoff. Existing source/custody gates and foreign claims remain binding; D19's historical generic retirement drafts are not whole-clause preservation proof; its current qualified review and authority limits are below.
+
+
+
+
+### Complete correction5 functional composer — proposed, unadopted
+
+All46outcomes (18archive-first/24rescope/4fold-in),19named scope changes,443originalrequirements/1968oldscenarios/4604oldparagraphs,324Generalist bodies, full Generalist81files1083cases79blocks, four complete folds,21outside101REQ498SC,121archive-later complete MODIFIED bodies and12provisional identities remain. The actual future remains443REQ2010SC. Every2010C4case and full C2/C3/C4 repair union has an actual complete C5successor; no case was removed or added. Current source transport has94changed/38unchanged/132coalesced paths and172atomic paths. Counts/hashes are not semantic or execution proof.
+
+C15 removes recipient/message resolution as retry authority. Automatic enqueue requires affirmative proven pre-send/not-attempted evidence, complete recipient/message and the existing bounded policy. A confirmed external receipt survives bookkeeping faults with no resend. Begun/possibly begun transport without confirmation stays explicit uncertain and runtime-attention terminal under the existing claim/token/epoch/lease fence, with only the existing authenticated owner-confirmed one-successor reissue path. Closed safe failure reasons, quiet-hours deliver_at, the single deferral path, supersede dedupe and confirmed-only debounce remain.
+
+C16 preserves the mandatory fixed private-result/public-audit transaction and constrained NOLOGIN audit writer. Projection rejection rolls the enclosing attempted result/timestamp/failure epoch back. Only genuine post-commit best-effort attention/independent telemetry may fail without erasing a committed result. Uncommitted/unavailable attempt evidence creates no new checked_at/failing_since or24hour fail clock. Reader/API and due checks retain only the last actual committed result, immediate no-result policy, or truthful degraded authority read. Cleanup, closed stage/code vocabulary,512character sanitization, seven-day committed-pass/24-hour committed-fail cadence, privilege boundaries and real-PG obligations survive in the complete cases.
+
+All prior F01–F09/C01–C14 repairs remain binding, including closed D15 prompts, trusted/exposed Memory partitions and scoped apply, fixed authenticated QA relay/truthful attribution, admitted effect-free readiness, absolute initial+at-most-one pre-capability replacement, exact Education obligation grants and same bound map150cases, native deny-all, operation-bound DB-free host, existing custody/control provenance transaction owner, complete5+6coverage, retained TOML orphan cadence, original fullspan ingress/WhatsApp, current goal/invocation fleet facts, and core-ingest Telegram lifecycle ownership. Actual three-control attachment synthetic goals retain fullD3/D5/D7/D14grant/tuple/custody/private comparison/redaction/cleanup/zero-retry rules; tool-lessD18measurement cannot substitute. Full two-RFC proposals remain exact C4 candidates, unadopted. No eligibility/custodyB/private/PG/M6 release.
+
+PR4485 remains first: no new goal-external tool-capable D18fast-answer exception. Operative6REQ56SC and separate held4file8REQ65SC/canonical8/65candidate remain distinct with all12SIGNEDhistory choices,12unsigned treatments,oneexactUNSENTquestion,sevencompound obligations/sixcitationcases. Four native append proposals remain unchanged/unapplied. Inherited outside-onlyO01–O03 retain complete bodies/treatments/existing-holder limits and are not introduced by this composer.
+
+Latest full native query2026-10-15T00:31:53.689715+00:00–2026-10-15T00:31:55.955834+00:00 is8934ALL136READY320BLOCKED31IP58OPEN/allfiveexit0, with210full relevant holders/204rowrefs and58unchangedheads/1354complete paginatedpublic files. Foreign authority and source allocations remain held. Existing PR4524/4525/4526 ordinary green contexts do not clear protected failed runs or establish merge/delivery. OriginalAC1–3 remainunmet;AC4source-onlyTests:+0~0-0 preserved. Allstrict/guards/productgates remainUNRUN; inherited trace NONPASS. Fresh independent whole review and exact ROOT/holder source allocation/adoption precede any repository action.
+
 
 ## Spec format note
 
