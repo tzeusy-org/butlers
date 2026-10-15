@@ -825,7 +825,9 @@ def same_owner_context_accounts(root: Path, base: str, owners: set[str]) -> None
                 raise EvidenceError("same-owner-ancestral-fixture-change")
 
 
-def destructive_changes(root: Path, base: str) -> dict[str, str]:
+def destructive_changes(
+    root: Path, base: str, *, _current_shapes: dict | None = None
+) -> dict[str, str]:
     base = git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base):
         raise EvidenceError("invalid-base-commit")
@@ -853,10 +855,11 @@ def destructive_changes(root: Path, base: str) -> dict[str, str]:
             new_source = f.read_text()
             imports_preserved[path] = preserving_import_bindings(old_source, new_source)
             shapes = test_shapes(path, new_source)
+            if _current_shapes is not None:
+                _current_shapes[path, new_source] = shapes
             mode = input_record(root, path)["mode"]
-            for shape in shapes.values():
-                shape["mode"] = mode
-            current.update(shapes)
+            # Classification owns its mode metadata; shared pure shapes stay unchanged.
+            current.update({key: {**shape, "mode": mode} for key, shape in shapes.items()})
     if not before:
         raise EvidenceError("empty-baseline-test-inventory")
     losses = {}
@@ -1542,11 +1545,16 @@ def _verify(root: Path, base: str, ledgers: list[Path]) -> dict:
         if (test_path(p) or Path(p).name == "conftest.py" or p in {"pyproject.toml", "uv.lock"})
         and (root / p).is_file()
     ]
-    losses = destructive_changes(root, base)
+    current_shapes = {}
+    losses = destructive_changes(root, base, _current_shapes=current_shapes)
     current = {}
     for path in tracked_paths(root):
         if test_path(path) and (root / path).is_file():
-            current.update(test_shapes(path, (root / path).read_text()))
+            # Always reread: reuse only this invocation's exact path/text analysis.
+            # Source/mode/link and Git identity are still freshly checked below.
+            text = (root / path).read_text()
+            shapes = current_shapes.get((path, text))
+            current.update(test_shapes(path, text) if shapes is None else shapes)
     admitted = set()
     clusters = set()
     for path in ledgers:
