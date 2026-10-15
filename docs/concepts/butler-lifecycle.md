@@ -95,7 +95,7 @@ After startup completes, the butler enters its idle running state. It is:
 
 When a trigger arrives (either from the `trigger` MCP tool, the `route.execute` dispatch from Switchboard, or the scheduler), the Spawner takes over:
 
-1. **Concurrency gate** --- The spawner acquires a slot from both the per-butler semaphore (`max_concurrent_sessions`, default 1) and the global process-wide semaphore (`BUTLERS_MAX_GLOBAL_SESSIONS`, default 3). Self-trigger deadlocks are detected and rejected.
+1. **Concurrency gate** --- The spawner acquires a slot from both the per-butler semaphore (`max_concurrent_sessions`, default 1) and the global process-wide semaphore (`BUTLERS_MAX_GLOBAL_SESSIONS`, default 5). Self-trigger deadlocks are detected and rejected.
 
 2. **Session creation** --- A database record is created with status `running`, capturing the trigger source, prompt, request ID, and timestamp.
 

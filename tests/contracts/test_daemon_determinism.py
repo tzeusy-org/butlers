@@ -133,7 +133,7 @@ class TestCrashRecoveryAndGlobalConcurrency:
 
         The global semaphore is process-wide and shared across all butler instances.
         It is lazy-initialized on first access via _get_global_semaphore().
-        Default cap is 3, configurable via BUTLERS_MAX_GLOBAL_SESSIONS env var.
+        Default cap is 5, configurable via BUTLERS_MAX_GLOBAL_SESSIONS env var.
         """
         from butlers.core.spawner import _get_global_semaphore
 
@@ -149,7 +149,7 @@ class TestCrashRecoveryAndGlobalConcurrency:
         # Default max global sessions documented in RFC 0001
         from butlers.core.spawner import _DEFAULT_MAX_GLOBAL_SESSIONS
 
-        assert _DEFAULT_MAX_GLOBAL_SESSIONS == 3, "Default max global sessions must be 3 (RFC 0001)"
+        assert _DEFAULT_MAX_GLOBAL_SESSIONS == 5, "Default max global sessions must be 5 (RFC 0001)"
 
     def test_route_inbox_state_machine_transitions(self):
         r"""RFC 0001: route_inbox row transitions: accepted -> processing -> processed/errored.
